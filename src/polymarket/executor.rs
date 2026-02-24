@@ -84,7 +84,8 @@ impl Executor {
     pub async fn run(mut self) {
         info!(
             "⚡ Executor started [MAKER-ONLY] | dry_run={} has_client={}",
-            self.cfg.dry_run, self.client.is_some(),
+            self.cfg.dry_run,
+            self.client.is_some(),
         );
 
         loop {
@@ -96,7 +97,7 @@ impl Executor {
                             self.handle_place_bid(side, price, size, reason).await;
                         }
                         Some(ExecutionCmd::CancelOrder { order_id, reason }) => {
-                            self.handle_cancel_order(&order_id, reason).await;
+                            let _ = self.handle_cancel_order(&order_id, reason).await;
                         }
                         Some(ExecutionCmd::CancelSide { side, reason }) => {
                             self.handle_cancel_side(side, reason).await;
@@ -133,7 +134,8 @@ impl Executor {
             if orders.remove(&fill.order_id).is_some() {
                 warn!(
                     "📋 Lifecycle: {:?} order {}… FAILED — removed from tracking ({} remaining)",
-                    fill.side, &fill.order_id[..8.min(fill.order_id.len())],
+                    fill.side,
+                    &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
             }
@@ -148,14 +150,17 @@ impl Executor {
                 orders.remove(&fill.order_id);
                 info!(
                     "📋 Lifecycle: {:?} order {}… fully filled — removed ({} remaining on side)",
-                    fill.side, &fill.order_id[..8.min(fill.order_id.len())],
+                    fill.side,
+                    &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
             } else {
                 info!(
                     "📋 Lifecycle: {:?} order {}… partial fill {:.2}, remaining={:.2}",
-                    fill.side, &fill.order_id[..8.min(fill.order_id.len())],
-                    fill.filled_size, remaining,
+                    fill.side,
+                    &fill.order_id[..8.min(fill.order_id.len())],
+                    fill.filled_size,
+                    remaining,
                 );
             }
         }
@@ -189,6 +194,19 @@ impl Executor {
             return;
         }
 
+        // Safety: do not place a new bid on a side while we still track
+        // uncanceled live orders on that side.
+        if let Some(existing) = self.open_orders.get(&side) {
+            if !existing.is_empty() {
+                warn!(
+                    "🚫 Refusing PlacePostOnlyBid {:?}@{:.3}: {} tracked order(s) still open on side",
+                    side, price, existing.len(),
+                );
+                let _ = self.result_tx.send(OrderResult::OrderFailed { side }).await;
+                return;
+            }
+        }
+
         match self.place_post_only_order(side, price, size).await {
             Ok(order_id) => {
                 info!("✅ Order placed: {:?}@{:.3} id={}", side, price, order_id);
@@ -209,7 +227,7 @@ impl Executor {
     // Cancel operations
     // ─────────────────────────────────────────────────
 
-    async fn handle_cancel_order(&mut self, order_id: &str, reason: CancelReason) {
+    async fn handle_cancel_order(&mut self, order_id: &str, reason: CancelReason) -> bool {
         info!("🗑️ Cancel order {} (reason={:?})", order_id, reason);
 
         if self.cfg.dry_run || self.client.is_none() {
@@ -218,7 +236,7 @@ impl Executor {
                 orders.remove(order_id);
             }
             info!("📝 [DRY-RUN] CancelOrder {}", order_id);
-            return;
+            return true;
         }
 
         // P1-4: Call remote FIRST. Only remove from local tracking on success.
@@ -230,16 +248,23 @@ impl Executor {
                         orders.remove(order_id);
                     }
                     info!("✅ Order canceled: {}", order_id);
+                    return true;
                 }
                 Err(e) => {
-                    warn!("❌ Cancel failed {}: {:?} — KEEPING in local tracking (may retry)", order_id, e);
+                    warn!(
+                        "❌ Cancel failed {}: {:?} — KEEPING in local tracking (may retry)",
+                        order_id, e
+                    );
+                    return false;
                 }
             }
         }
+        false
     }
 
     async fn handle_cancel_side(&mut self, side: Side, reason: CancelReason) {
-        let order_ids: Vec<String> = self.open_orders
+        let order_ids: Vec<String> = self
+            .open_orders
             .get(&side)
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
@@ -250,16 +275,13 @@ impl Executor {
 
         info!(
             "🗑️ Cancel {} {:?} orders (reason={:?})",
-            order_ids.len(), side, reason,
+            order_ids.len(),
+            side,
+            reason,
         );
 
         for id in &order_ids {
-            self.handle_cancel_order(id, reason).await;
-        }
-
-        // Clear the side
-        if let Some(orders) = self.open_orders.get_mut(&side) {
-            orders.clear();
+            let _ = self.handle_cancel_order(id, reason).await;
         }
     }
 
@@ -273,15 +295,46 @@ impl Executor {
             return;
         }
 
-        if let Some(client) = &self.client {
-            if let Err(e) = client.cancel_all_orders().await {
-                warn!("❌ Failed to cancel all: {:?}", e);
-            } else {
+        let client = match &self.client {
+            Some(c) => c,
+            None => {
+                warn!("❌ CancelAll skipped: no authenticated client");
+                return;
+            }
+        };
+        let cancel_all_result = client.cancel_all_orders().await;
+
+        match cancel_all_result {
+            Ok(_) => {
                 info!("✅ All orders canceled");
+                self.open_orders.values_mut().for_each(|v| v.clear());
+            }
+            Err(e) => {
+                warn!(
+                    "❌ Failed to cancel all: {:?} — fallback to per-order cancel",
+                    e
+                );
+
+                let mut ids = Vec::new();
+                for side_orders in self.open_orders.values() {
+                    ids.extend(side_orders.keys().cloned());
+                }
+
+                for id in ids {
+                    let _ = self.handle_cancel_order(&id, reason).await;
+                }
+
+                let remaining: usize = self.open_orders.values().map(|v| v.len()).sum();
+                if remaining > 0 {
+                    warn!(
+                        "⚠️ CancelAll fallback completed with {} tracked order(s) still open",
+                        remaining
+                    );
+                } else {
+                    info!("✅ CancelAll fallback canceled all tracked orders");
+                }
             }
         }
-
-        self.open_orders.values_mut().for_each(|v| v.clear());
     }
 
     // ─────────────────────────────────────────────────
@@ -289,13 +342,20 @@ impl Executor {
     // ─────────────────────────────────────────────────
 
     async fn place_post_only_order(
-        &self, side: Side, price: f64, size: f64,
+        &self,
+        side: Side,
+        price: f64,
+        size: f64,
     ) -> anyhow::Result<String> {
         use polymarket_client_sdk::clob::types::{OrderStatusType, Side as SdkSide};
 
-        let client = self.client.as_ref()
+        let client = self
+            .client
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No authenticated client"))?;
-        let signer = self.signer.as_ref()
+        let signer = self
+            .signer
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No signer"))?;
 
         let token_id = match side {
@@ -310,8 +370,8 @@ impl Executor {
             .ok_or_else(|| anyhow::anyhow!("Invalid price"))?;
         let size_decimal = rust_decimal::Decimal::from_f64(size_rounded)
             .ok_or_else(|| anyhow::anyhow!("Invalid size"))?;
-        let token_id_uint = alloy::primitives::U256::from_str_radix(token_id, 10)
-            .context("Invalid token_id")?;
+        let token_id_uint =
+            alloy::primitives::U256::from_str_radix(token_id, 10).context("Invalid token_id")?;
 
         // Both YES and NO are bought via BUY side on the CLOB
         // CRITICAL: post_only(true) ensures we NEVER cross the spread.
@@ -338,7 +398,10 @@ impl Executor {
             );
         }
 
-        if !matches!(response.status, OrderStatusType::Live | OrderStatusType::Matched) {
+        if !matches!(
+            response.status,
+            OrderStatusType::Live | OrderStatusType::Matched
+        ) {
             anyhow::bail!(
                 "post_order unexpected status: {:?} error={:?}",
                 response.status,

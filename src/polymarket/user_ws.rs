@@ -21,7 +21,7 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use super::messages::{FillEvent, FillStatus};
 use super::types::Side;
@@ -91,11 +91,8 @@ impl UserWsListener {
         let url = format!("{}/user", self.cfg.ws_base_url);
         info!(%url, "👤 Connecting User WS (authenticated)");
 
-        let connect_result = tokio::time::timeout(
-            Duration::from_secs(10),
-            connect_async(&url),
-        )
-        .await;
+        let connect_result =
+            tokio::time::timeout(Duration::from_secs(10), connect_async(&url)).await;
 
         let (ws, response) = match connect_result {
             Ok(Ok((ws, resp))) => (ws, resp),
@@ -167,8 +164,11 @@ impl UserWsListener {
                             for fill in fills {
                                 info!(
                                     "🔔 REAL FILL: {:?} {:.2}@{:.3} status={:?} id={}",
-                                    fill.side, fill.filled_size, fill.price,
-                                    fill.status, &fill.order_id[..8.min(fill.order_id.len())],
+                                    fill.side,
+                                    fill.filled_size,
+                                    fill.price,
+                                    fill.status,
+                                    &fill.order_id[..8.min(fill.order_id.len())],
                                 );
                                 let _ = self.fill_tx.send(fill).await;
                             }
@@ -205,7 +205,8 @@ impl UserWsListener {
     ///   RETRYING = transient, ignore
     fn parse_trade_event(&self, val: &Value, seen: &mut HashSet<String>) -> Vec<FillEvent> {
         // P2 FIX: Case-insensitive event type check
-        let event_type = val.get("event_type")
+        let event_type = val
+            .get("event_type")
             .or_else(|| val.get("type"))
             .and_then(|v| v.as_str())
             .unwrap_or_default();
@@ -215,7 +216,10 @@ impl UserWsListener {
         }
 
         // Parse status
-        let status_str = val.get("status").and_then(|v| v.as_str()).unwrap_or("UNKNOWN");
+        let status_str = val
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("UNKNOWN");
         let status = match status_str {
             "MATCHED" => FillStatus::Matched,
             "MINED" | "CONFIRMED" => FillStatus::Confirmed,
@@ -230,26 +234,24 @@ impl UserWsListener {
             }
         };
 
-        // Skip CONFIRMED — already counted at MATCHED
-        if status == FillStatus::Confirmed {
-            return vec![];
-        }
-
         // P1-7: Routing — check trader_side, but also try maker_orders if missing
-        let trader_side = val.get("trader_side")
+        let trader_side = val
+            .get("trader_side")
             .and_then(|v| v.as_str())
             .unwrap_or_default();
 
-        let has_maker_orders = val.get("maker_orders")
+        let has_maker_orders = val
+            .get("maker_orders")
             .and_then(|v| v.as_array())
             .map(|a| !a.is_empty())
             .unwrap_or(false);
 
-        if trader_side.eq_ignore_ascii_case("MAKER") || (trader_side.is_empty() && has_maker_orders) {
+        if trader_side.eq_ignore_ascii_case("MAKER") || (trader_side.is_empty() && has_maker_orders)
+        {
             // ═══ MAKER PATH: extract from maker_orders[] ═══
             // When trader_side is missing, we still try maker_orders if present
             // (owner filtering inside will catch non-ours)
-            let fills = self.parse_maker_fills(val, status, status_str, seen);
+            let fills = self.parse_maker_fills(val, status, seen);
             if fills.is_empty() {
                 debug!("👤 Maker path yielded no owned fills — skip top-level taker fallback");
             }
@@ -257,8 +259,9 @@ impl UserWsListener {
         }
 
         // ═══ TAKER/UNKNOWN PATH: fallback to top-level fields ═══
-        self.parse_taker_fill(val, status, status_str, seen)
-            .into_iter().collect()
+        self.parse_taker_fill(val, status, seen)
+            .into_iter()
+            .collect()
     }
 
     /// Extract fills from maker_orders[] — called when trader_side == "MAKER".
@@ -268,7 +271,6 @@ impl UserWsListener {
         &self,
         val: &Value,
         status: FillStatus,
-        status_str: &str,
         seen: &mut HashSet<String>,
     ) -> Vec<FillEvent> {
         let maker_orders = match val.get("maker_orders").and_then(|v| v.as_array()) {
@@ -286,7 +288,8 @@ impl UserWsListener {
 
         for mo in maker_orders {
             // P1-7: Owner filtering — only process our own maker fills
-            let owner = mo.get("owner")
+            let owner = mo
+                .get("owner")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .trim()
@@ -308,7 +311,8 @@ impl UserWsListener {
 
             // Map asset_id to Side — Polymarket asset_ids are large decimal numbers
             // JSON may encode them as strings or numbers, so normalize via to_string()
-            let asset_str = mo.get("asset_id")
+            let asset_str = mo
+                .get("asset_id")
                 .map(|v| v.to_string().trim_matches('"').to_string())
                 .unwrap_or_default();
 
@@ -339,20 +343,26 @@ impl UserWsListener {
                 continue;
             }
 
-            let order_id = mo.get("order_id")
+            let order_id = mo
+                .get("order_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_string();
 
             // Dedup using trade-level unique id + maker order_id
-            let trade_id = val.get("id")
-                .and_then(|v| v.as_str())
-                .unwrap_or_default();
+            let trade_id = val.get("id").and_then(|v| v.as_str()).unwrap_or_default();
 
+            // Treat MATCHED/MINED/CONFIRMED as one successful fill bucket.
+            // This prevents double-counting while still allowing recovery if
+            // MATCHED was missed and CONFIRMED arrives first.
+            let dedup_bucket = match status {
+                FillStatus::Matched | FillStatus::Confirmed => "SUCCESS",
+                FillStatus::Failed => "FAILED",
+            };
             let dedup_key = if !trade_id.is_empty() {
-                format!("tid:{}:mo:{}:{}", trade_id, order_id, status_str)
+                format!("tid:{}:mo:{}:{}", trade_id, order_id, dedup_bucket)
             } else {
-                format!("mo:{}:{}:{}", order_id, status_str, price)
+                format!("mo:{}:{}:{}", order_id, dedup_bucket, price)
             };
 
             if !seen.insert(dedup_key.clone()) {
@@ -362,7 +372,10 @@ impl UserWsListener {
 
             info!(
                 "👤 Maker fill: {:?} {:.2}@{:.3} order={}…",
-                side, size, price, &order_id[..8.min(order_id.len())],
+                side,
+                size,
+                price,
+                &order_id[..8.min(order_id.len())],
             );
 
             fills.push(FillEvent {
@@ -394,7 +407,6 @@ impl UserWsListener {
         &self,
         val: &Value,
         status: FillStatus,
-        status_str: &str,
         seen: &mut HashSet<String>,
     ) -> Option<FillEvent> {
         let asset_id = val.get("asset_id").and_then(|v| v.as_str())?;
@@ -403,7 +415,10 @@ impl UserWsListener {
         } else if asset_id == self.cfg.no_asset_id {
             Side::No
         } else {
-            debug!("👤 Ignoring trade for unknown asset: {}...", &asset_id[..8.min(asset_id.len())]);
+            debug!(
+                "👤 Ignoring trade for unknown asset: {}...",
+                &asset_id[..8.min(asset_id.len())]
+            );
             return None;
         };
 
@@ -414,21 +429,24 @@ impl UserWsListener {
             return None;
         }
 
-        let order_id = val.get("taker_order_id")
+        let order_id = val
+            .get("taker_order_id")
             .or_else(|| val.get("order_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
 
         // Dedup
-        let trade_id = val.get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default();
+        let trade_id = val.get("id").and_then(|v| v.as_str()).unwrap_or_default();
 
+        let dedup_bucket = match status {
+            FillStatus::Matched | FillStatus::Confirmed => "SUCCESS",
+            FillStatus::Failed => "FAILED",
+        };
         let dedup_key = if !trade_id.is_empty() {
-            format!("tid:{}:{}", trade_id, status_str)
+            format!("tid:{}:{}", trade_id, dedup_bucket)
         } else {
-            format!("oid:{}:{}:{}", order_id, status_str, price)
+            format!("oid:{}:{}:{}", order_id, dedup_bucket, price)
         };
 
         if !seen.insert(dedup_key.clone()) {
@@ -450,7 +468,8 @@ impl UserWsListener {
 /// Parse a JSON field as f64, handling both string ("0.50") and number (0.50) formats.
 fn parse_f64_field(val: &Value, field: &str) -> Option<f64> {
     val.get(field).and_then(|v| {
-        v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+        v.as_f64()
+            .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
     })
 }
 
@@ -487,7 +506,10 @@ pub async fn derive_api_key(
     let api_secret = creds.secret().expose_secret().to_string();
     let api_passphrase = creds.passphrase().expose_secret().to_string();
 
-    info!("✅ L2 API key derived: {}...", &api_key[..8.min(api_key.len())]);
+    info!(
+        "✅ L2 API key derived: {}...",
+        &api_key[..8.min(api_key.len())]
+    );
 
     Ok((api_key, api_secret, api_passphrase))
 }
