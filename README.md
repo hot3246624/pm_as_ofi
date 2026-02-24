@@ -1,6 +1,6 @@
 # pm_as_ofi / Polymarket Maker-Only 引擎
 
-> 当前仓库目录仍是 `mev_backrun_rs_cu`，可改名为 `pm_as_ofi`；代码本身不依赖目录名。
+> 当前仓库目录已切换为 `pm_as_ofi`。
 
 ## 1. 项目定位
 
