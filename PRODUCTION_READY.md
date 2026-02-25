@@ -1,77 +1,24 @@
-# 生产就绪检查（V2）
+# 🚀 PRODUCTION READY CHECKLIST 🚀
 
-更新时间：2026-02-24
+## 1. Environment Variables (`.env`)
+- [ ] `POLYMARKET_PRIVATE_KEY` 必须填写（有资金操作权限的钱包私钥）。
+- [ ] `POLYMARKET_FUNDER_ADDRESS` （可选）如果使用 Proxy 账户需填写，否则留空。
+- [ ] `PM_DRY_RUN` 必须设置为 `false`。
+- [ ] `PM_PAIR_TARGET` 建议第一次跑设为 `0.985`（保守防滑点）。
+- [ ] `PM_BID_SIZE` 建议第一次跑设为 `5.0`（单侧 5 股进行微型压力测试）。
+- [ ] `PM_MAX_NET_DIFF` 建议设为 `15.0`（单侧倾斜上限，超额拒单）。
 
-该清单用于上线前自检，针对 `polymarket_v2`。
+## 2. Funding & Approval
+- [ ] 确保在 Polygon 链上的该钱包有足够的 `USDC.e` 用于双边双排做市。
+- [ ] 确保钱包有少量 `MATIC/POL` 用于支付 Gas 费。
+- [ ] 确保已经在前端授权过了 CTF 交易所的 Token Approvals。
 
-## 1. 必须为真
+## 3. Network & Deployment
+- [ ] 确保服务器时钟已经同步 (`ntpdate`)，误差 < 1s 会影响 5 分钟市场切场倒计时。
+- [ ] 建议使用 `screen` 或 `tmux` 维持进程，防止 SSH 掉线导致死机。
+- [ ] 启动命令：`cargo run --bin polymarket_v2 --release`
 
-- [ ] `cargo check --bin polymarket_v2` 通过
-- [ ] `cargo test --lib` 通过
-- [ ] dry 模式可持续接收行情
-- [ ] live 模式认证成功（REST + User WS）
-- [ ] 下单失败会触发 `OrderFailed`，不会遗留幽灵 slot
-- [ ] 市场轮转时会 `CancelAll` 并清理 session tasks
-
-## 2. 运行前配置
-
-最小 live 配置：
-
-```bash
-POLYMARKET_MARKET_SLUG="btc-updown-15m"
-POLYMARKET_PRIVATE_KEY="..."
-POLYMARKET_FUNDER_ADDRESS="0x..."
-PM_DRY_RUN=false
-```
-
-建议同时配置：
-
-```bash
-PM_PAIR_TARGET=0.99
-PM_BID_SIZE=1
-PM_MAX_NET_DIFF=5
-PM_MAX_POSITION_VALUE=5
-PM_OFI_WINDOW_MS=3000
-PM_OFI_TOXICITY_THRESHOLD=50
-```
-
-## 3. 风险闸门复核
-
-- [ ] `post_only=true`（确保 maker-only）
-- [ ] `can_open` 三重限制生效
-- [ ] OFI 任一侧 toxic 会全局撤单
-- [ ] User WS owner 过滤与 API key 格式一致
-
-## 4. 监控建议（最少）
-
-- [ ] 每分钟下单/撤单量
-- [ ] `net_diff` 绝对值分布
-- [ ] `portfolio_cost`
-- [ ] `GLOBAL KILL` 触发次数
-- [ ] `OrderFailed` 次数
-
-## 5. 灰度上线节奏
-
-1. 先 dry 运行 30-60 分钟，确认轮转/订阅稳定
-2. live 小仓（`PM_BID_SIZE=1`, `PM_MAX_POSITION_VALUE=5`）
-3. 观察至少 1 个交易时段再放大
-
-## 6. 紧急处理
-
-```bash
-./stop_markets.sh
-```
-
-该脚本会：
-
-- 按 PID 文件关闭进程
-- 兜底 `pkill -f polymarket_v2` 清理残留
-
-## 7. 结论模板
-
-上线前请在内部记录中给出：
-
-- 本次配置 hash（`.env` 关键参数）
-- 检查时间窗口
-- 观察到的异常与处理
-- 是否允许扩大仓位
+## 4. Emergency Procedures
+- 如果发现吃单剧烈亏损，或者日志疯狂刷错误（比如余额不足、限速 429）：
+  1. 立刻按 `Ctrl+C`：收到 SIGINT 信号后，由于我们在底层绑定了 `CancelAll` 清盘撤单逻辑，系统会在销毁进程前安全撤销盘口所有的 Maker 挂单。
+  2. 如果由于网络原因 Crash 导致 `CancelAll` 发送失败，立刻打开网页版 Polymarket 进行撤单和手动平仓对冲。

@@ -29,6 +29,10 @@ pub struct OfiConfig {
     /// When |buy_vol − sell_vol| > threshold, that side's flow is toxic.
     /// Default: 50.0 (placeholder — calibrate with DRY-RUN data).
     pub toxicity_threshold: f64,
+
+    /// Heartbeat interval in milliseconds for evicting expired trades
+    /// even when no new trades arrive. Default: 200.
+    pub heartbeat_ms: u64,
 }
 
 impl Default for OfiConfig {
@@ -36,6 +40,7 @@ impl Default for OfiConfig {
         Self {
             window_duration: Duration::from_secs(3),
             toxicity_threshold: 50.0,
+            heartbeat_ms: 200,
         }
     }
 }
@@ -52,6 +57,11 @@ impl OfiConfig {
         if let Ok(v) = std::env::var("PM_OFI_TOXICITY_THRESHOLD") {
             if let Ok(f) = v.parse::<f64>() {
                 cfg.toxicity_threshold = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_OFI_HEARTBEAT_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                cfg.heartbeat_ms = ms;
             }
         }
         cfg
@@ -83,7 +93,11 @@ impl SideWindow {
     }
 
     fn push(&mut self, taker_side: TakerSide, size: f64, ts: Instant) {
-        self.ticks.push_back(TradeTick { taker_side, size, ts });
+        self.ticks.push_back(TradeTick {
+            taker_side,
+            size,
+            ts,
+        });
     }
 
     fn evict_expired(&mut self, now: Instant, window: Duration) {
@@ -151,55 +165,73 @@ impl OfiEngine {
     /// Actor main loop.
     pub async fn run(mut self) {
         info!(
-            "🔬 OFI Engine started | window={}ms threshold={:.1} (per-side)",
+            "🔬 OFI Engine started | window={}ms threshold={:.1} heartbeat={}ms",
             self.cfg.window_duration.as_millis(),
             self.cfg.toxicity_threshold,
+            self.cfg.heartbeat_ms,
         );
 
-        while let Some(msg) = self.md_rx.recv().await {
-            if let MarketDataMsg::TradeTick {
-                market_side,
-                taker_side,
-                size,
-                ts,
-                ..
-            } = msg
-            {
-                // Route to correct side window
-                match market_side {
-                    Side::Yes => self.yes_window.push(taker_side, size, ts),
-                    Side::No => self.no_window.push(taker_side, size, ts),
+        let mut ticker = tokio::time::interval(Duration::from_millis(self.cfg.heartbeat_ms));
+        let mut was_yes_toxic = false;
+        let mut was_no_toxic = false;
+
+        loop {
+            tokio::select! {
+                msg = self.md_rx.recv() => {
+                    match msg {
+                        Some(MarketDataMsg::TradeTick { market_side, taker_side, size, ts, .. }) => {
+                            match market_side {
+                                Side::Yes => self.yes_window.push(taker_side, size, ts),
+                                Side::No => self.no_window.push(taker_side, size, ts),
+                            }
+                        }
+                        None => break, // Channel closed
+                        _ => {}
+                    }
                 }
-
-                // Evict expired ticks from both windows
-                self.yes_window.evict_expired(ts, self.cfg.window_duration);
-                self.no_window.evict_expired(ts, self.cfg.window_duration);
-
-                // Compute per-side snapshots
-                let yes_ofi = self.yes_window.compute(self.cfg.toxicity_threshold);
-                let no_ofi = self.no_window.compute(self.cfg.toxicity_threshold);
-
-                let snapshot = OfiSnapshot {
-                    yes: yes_ofi,
-                    no: no_ofi,
-                    ts,
-                };
-
-                let _ = self.snapshot_tx.send(snapshot);
-
-                if yes_ofi.is_toxic {
-                    warn!(
-                        "☠️ YES toxic! OFI={:.1} (buy={:.1} sell={:.1})",
-                        yes_ofi.ofi_score, yes_ofi.buy_volume, yes_ofi.sell_volume,
-                    );
-                }
-                if no_ofi.is_toxic {
-                    warn!(
-                        "☠️ NO toxic! OFI={:.1} (buy={:.1} sell={:.1})",
-                        no_ofi.ofi_score, no_ofi.buy_volume, no_ofi.sell_volume,
-                    );
+                _ = ticker.tick() => {
+                    // Force time-based eviction and broadcast
                 }
             }
+
+            let now = Instant::now();
+
+            // Evict expired ticks from both windows using real-time clock
+            self.yes_window.evict_expired(now, self.cfg.window_duration);
+            self.no_window.evict_expired(now, self.cfg.window_duration);
+
+            // Compute per-side snapshots
+            let yes_ofi = self.yes_window.compute(self.cfg.toxicity_threshold);
+            let no_ofi = self.no_window.compute(self.cfg.toxicity_threshold);
+
+            let snapshot = OfiSnapshot {
+                yes: yes_ofi,
+                no: no_ofi,
+                ts: now,
+            };
+
+            let _ = self.snapshot_tx.send(snapshot);
+
+            // Edge-triggered logging for toxicity (prevent spam on 200ms tick)
+            if yes_ofi.is_toxic && !was_yes_toxic {
+                warn!(
+                    "☠️ YES entered toxicity! OFI={:.1} (buy={:.1} sell={:.1})",
+                    yes_ofi.ofi_score, yes_ofi.buy_volume, yes_ofi.sell_volume,
+                );
+            } else if !yes_ofi.is_toxic && was_yes_toxic {
+                info!("✅ YES flow recovered (OFI={:.1})", yes_ofi.ofi_score);
+            }
+            was_yes_toxic = yes_ofi.is_toxic;
+
+            if no_ofi.is_toxic && !was_no_toxic {
+                warn!(
+                    "☠️ NO entered toxicity! OFI={:.1} (buy={:.1} sell={:.1})",
+                    no_ofi.ofi_score, no_ofi.buy_volume, no_ofi.sell_volume,
+                );
+            } else if !no_ofi.is_toxic && was_no_toxic {
+                info!("✅ NO flow recovered (OFI={:.1})", no_ofi.ofi_score);
+            }
+            was_no_toxic = no_ofi.is_toxic;
         }
 
         info!("🔬 OFI Engine shutting down");
@@ -218,6 +250,7 @@ mod tests {
         let cfg = OfiConfig {
             window_duration: Duration::from_secs(3),
             toxicity_threshold: 10.0,
+            heartbeat_ms: 200,
         };
         let (_tx, rx) = mpsc::channel(16);
         let (snap_tx, _snap_rx) = watch::channel(OfiSnapshot::default());
@@ -240,8 +273,8 @@ mod tests {
         let yes_ofi = engine.yes_window.compute(10.0);
         let no_ofi = engine.no_window.compute(10.0);
 
-        assert!(yes_ofi.is_toxic);  // |13| > 10
-        assert!(!no_ofi.is_toxic);  // |1| < 10
+        assert!(yes_ofi.is_toxic); // |13| > 10
+        assert!(!no_ofi.is_toxic); // |1| < 10
         assert!((yes_ofi.ofi_score - 13.0).abs() < 1e-9);
         assert!((no_ofi.ofi_score - 1.0).abs() < 1e-9);
     }
@@ -310,5 +343,47 @@ mod tests {
         // This means: it's DANGEROUS to buy YES, but SAFE to buy NO
         assert!(yes_ofi.is_toxic);
         assert!(!no_ofi.is_toxic);
+    }
+
+    #[tokio::test]
+    async fn test_toxicity_timeout_recovery() {
+        let cfg = OfiConfig {
+            window_duration: Duration::from_millis(50),
+            toxicity_threshold: 10.0,
+            heartbeat_ms: 10,
+        };
+        let (tx, rx) = mpsc::channel(16);
+        let (snap_tx, snap_rx) = watch::channel(OfiSnapshot::default());
+        let engine = OfiEngine::new(cfg, rx, snap_tx);
+
+        let handle = tokio::spawn(engine.run());
+
+        let t0 = Instant::now();
+        // Send a toxic dump
+        let _ = tx
+            .send(MarketDataMsg::TradeTick {
+                asset_id: "".to_string(),
+                market_side: Side::Yes,
+                taker_side: TakerSide::Sell,
+                size: 50.0,
+                ts: t0,
+                price: 0.5,
+            })
+            .await;
+
+        // Wait for it to become toxic
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let snap1 = *snap_rx.borrow(); // Copy the snapshot
+        assert!(snap1.yes.is_toxic);
+        assert!((snap1.yes.ofi_score - (-50.0)).abs() < 1e-9);
+
+        // Wait for window_duration to pass, toxicity should clear without new ticks (thanks to heartbeat)
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let snap2 = *snap_rx.borrow(); // Copy the snapshot
+        assert!(!snap2.yes.is_toxic);
+        assert!((snap2.yes.ofi_score - 0.0).abs() < 1e-9);
+
+        drop(tx);
+        let _ = handle.await;
     }
 }

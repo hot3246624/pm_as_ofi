@@ -15,7 +15,7 @@
 use std::time::Instant;
 
 use tokio::sync::{mpsc, watch};
-use tracing::{info, warn, debug};
+use tracing::{debug, info, warn};
 
 use super::messages::*;
 use super::types::Side;
@@ -49,8 +49,8 @@ impl Default for CoordinatorConfig {
             max_net_diff: 5.0,
             bid_size: 2.0,
             tick_size: 0.001,
-            reprice_threshold: 0.005,
-            debounce_ms: 200,
+            reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
+            debounce_ms: 500,         // Increased to reduce churn (half second)
             dry_run: true,
         }
     }
@@ -59,13 +59,39 @@ impl Default for CoordinatorConfig {
 impl CoordinatorConfig {
     pub fn from_env() -> Self {
         let mut c = Self::default();
-        if let Ok(v) = std::env::var("PM_PAIR_TARGET")       { if let Ok(f) = v.parse() { c.pair_target = f; } }
-        if let Ok(v) = std::env::var("PM_MAX_NET_DIFF")      { if let Ok(f) = v.parse() { c.max_net_diff = f; } }
-        if let Ok(v) = std::env::var("PM_BID_SIZE")           { if let Ok(f) = v.parse() { c.bid_size = f; } }
-        if let Ok(v) = std::env::var("PM_TICK_SIZE")          { if let Ok(f) = v.parse() { c.tick_size = f; } }
-        if let Ok(v) = std::env::var("PM_REPRICE_THRESHOLD")  { if let Ok(f) = v.parse() { c.reprice_threshold = f; } }
-        if let Ok(v) = std::env::var("PM_DEBOUNCE_MS")        { if let Ok(f) = v.parse() { c.debounce_ms = f; } }
-        if let Ok(v) = std::env::var("PM_DRY_RUN") { c.dry_run = v != "0" && v.to_lowercase() != "false"; }
+        if let Ok(v) = std::env::var("PM_PAIR_TARGET") {
+            if let Ok(f) = v.parse() {
+                c.pair_target = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_MAX_NET_DIFF") {
+            if let Ok(f) = v.parse() {
+                c.max_net_diff = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_BID_SIZE") {
+            if let Ok(f) = v.parse() {
+                c.bid_size = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_TICK_SIZE") {
+            if let Ok(f) = v.parse() {
+                c.tick_size = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_REPRICE_THRESHOLD") {
+            if let Ok(f) = v.parse() {
+                c.reprice_threshold = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_DEBOUNCE_MS") {
+            if let Ok(f) = v.parse() {
+                c.debounce_ms = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_DRY_RUN") {
+            c.dry_run = v != "0" && v.to_lowercase() != "false";
+        }
         c
     }
 }
@@ -96,13 +122,20 @@ impl Default for BidSlot {
 /// Last known valid book prices (fallback for empty orderbook).
 #[derive(Debug, Clone, Copy)]
 struct Book {
-    yes_bid: f64, yes_ask: f64,
-    no_bid: f64, no_ask: f64,
+    yes_bid: f64,
+    yes_ask: f64,
+    no_bid: f64,
+    no_ask: f64,
 }
 
 impl Default for Book {
     fn default() -> Self {
-        Self { yes_bid: 0.0, yes_ask: 0.0, no_bid: 0.0, no_ask: 0.0 }
+        Self {
+            yes_bid: 0.0,
+            yes_ask: 0.0,
+            no_bid: 0.0,
+            no_ask: 0.0,
+        }
     }
 }
 
@@ -150,10 +183,17 @@ impl StrategyCoordinator {
         result_rx: mpsc::Receiver<OrderResult>,
     ) -> Self {
         Self {
-            cfg, book: Book::default(), last_valid_book: Book::default(),
-            yes_bid: BidSlot::default(), no_bid: BidSlot::default(),
+            cfg,
+            book: Book::default(),
+            last_valid_book: Book::default(),
+            yes_bid: BidSlot::default(),
+            no_bid: BidSlot::default(),
             stats: Stats::default(),
-            ofi_rx, inv_rx, md_rx, exec_tx, result_rx,
+            ofi_rx,
+            inv_rx,
+            md_rx,
+            exec_tx,
+            result_rx,
         }
     }
 
@@ -210,20 +250,47 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     fn update_book(&mut self, yb: f64, ya: f64, nb: f64, na: f64) {
-        self.book = Book { yes_bid: yb, yes_ask: ya, no_bid: nb, no_ask: na };
+        self.book = Book {
+            yes_bid: yb,
+            yes_ask: ya,
+            no_bid: nb,
+            no_ask: na,
+        };
 
         // Update last_valid_book only if we have real data
-        if yb > 0.0 && ya > 0.0 { self.last_valid_book.yes_bid = yb; self.last_valid_book.yes_ask = ya; }
-        if nb > 0.0 && na > 0.0 { self.last_valid_book.no_bid = nb; self.last_valid_book.no_ask = na; }
+        if yb > 0.0 && ya > 0.0 {
+            self.last_valid_book.yes_bid = yb;
+            self.last_valid_book.yes_ask = ya;
+        }
+        if nb > 0.0 && na > 0.0 {
+            self.last_valid_book.no_bid = nb;
+            self.last_valid_book.no_ask = na;
+        }
     }
 
     /// Get usable book (current if valid, otherwise last_valid fallback).
     fn usable_book(&self) -> Book {
         Book {
-            yes_bid: if self.book.yes_bid > 0.0 { self.book.yes_bid } else { self.last_valid_book.yes_bid },
-            yes_ask: if self.book.yes_ask > 0.0 { self.book.yes_ask } else { self.last_valid_book.yes_ask },
-            no_bid:  if self.book.no_bid > 0.0  { self.book.no_bid }  else { self.last_valid_book.no_bid },
-            no_ask:  if self.book.no_ask > 0.0   { self.book.no_ask }  else { self.last_valid_book.no_ask },
+            yes_bid: if self.book.yes_bid > 0.0 {
+                self.book.yes_bid
+            } else {
+                self.last_valid_book.yes_bid
+            },
+            yes_ask: if self.book.yes_ask > 0.0 {
+                self.book.yes_ask
+            } else {
+                self.last_valid_book.yes_ask
+            },
+            no_bid: if self.book.no_bid > 0.0 {
+                self.book.no_bid
+            } else {
+                self.last_valid_book.no_bid
+            },
+            no_ask: if self.book.no_ask > 0.0 {
+                self.book.no_ask
+            } else {
+                self.last_valid_book.no_ask
+            },
         }
     }
 
@@ -306,7 +373,11 @@ impl StrategyCoordinator {
                 // net_diff ≠ 0: only cancel the side that would ADD risk
                 // If net_diff > 0 → we have excess YES → cancel YES bids (don't buy more YES)
                 // If net_diff < 0 → we have excess NO  → cancel NO bids (don't buy more NO)
-                let risky_side = if inv.net_diff > 0.0 { Side::Yes } else { Side::No };
+                let risky_side = if inv.net_diff > 0.0 {
+                    Side::Yes
+                } else {
+                    Side::No
+                };
                 let slot_active = match risky_side {
                     Side::Yes => self.yes_bid.active,
                     Side::No => self.no_bid.active,
@@ -324,7 +395,7 @@ impl StrategyCoordinator {
         }
 
         let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
-        let mid_no  = (ub.no_bid + ub.no_ask) / 2.0;
+        let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
 
         // Constrain: bid_yes + bid_no ≤ pair_target
         let (bid_yes, bid_no) = if mid_yes + mid_no <= self.cfg.pair_target {
@@ -335,10 +406,12 @@ impl StrategyCoordinator {
         };
 
         let bid_yes = self.safe_price(bid_yes);
-        let bid_no  = self.safe_price(bid_no);
+        let bid_no = self.safe_price(bid_no);
 
-        self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide).await;
-        self.place_or_reprice(Side::No, bid_no, BidReason::Provide).await;
+        self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide)
+            .await;
+        self.place_or_reprice(Side::No, bid_no, BidReason::Provide)
+            .await;
     }
 
     // ═════════════════════════════════════════════════
@@ -360,7 +433,8 @@ impl StrategyCoordinator {
                     "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
                     price, ceiling, ub.no_ask, inv.net_diff,
                 );
-                self.place_or_reprice(Side::No, price, BidReason::Hedge).await;
+                self.place_or_reprice(Side::No, price, BidReason::Hedge)
+                    .await;
             }
         } else {
             // Excess NO → cancel NO bids, aggressive bid YES
@@ -376,7 +450,8 @@ impl StrategyCoordinator {
                     "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
                     price, ceiling, ub.yes_ask, inv.net_diff,
                 );
-                self.place_or_reprice(Side::Yes, price, BidReason::Hedge).await;
+                self.place_or_reprice(Side::Yes, price, BidReason::Hedge)
+                    .await;
             }
         }
     }
@@ -391,14 +466,18 @@ impl StrategyCoordinator {
     /// NEVER fall back to ceiling — that caused the phantom 0.490 oscillation.
     /// Bidding at ceiling when no ask exists = paying maximum price into a void.
     fn aggressive_price(&self, ceiling: f64, best_ask: f64) -> f64 {
-        if ceiling <= 0.0 || ceiling >= 1.0 { return 0.0; }
+        if ceiling <= 0.0 || ceiling >= 1.0 {
+            return 0.0;
+        }
         if best_ask <= 0.0 {
             // No sell-side liquidity — refuse to bid.
             // We cannot determine a safe price without an ask.
             return 0.0;
         }
         let one_tick_below = best_ask - self.cfg.tick_size;
-        if one_tick_below <= 0.0 { return 0.0; }
+        if one_tick_below <= 0.0 {
+            return 0.0;
+        }
         self.safe_price(ceiling.min(one_tick_below))
     }
 
@@ -423,7 +502,10 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     async fn place_or_reprice(&mut self, side: Side, price: f64, reason: BidReason) {
-        let slot = match side { Side::Yes => &self.yes_bid, Side::No => &self.no_bid };
+        let slot = match side {
+            Side::Yes => &self.yes_bid,
+            Side::No => &self.no_bid,
+        };
 
         // FIX #3: Debounce — skip if last place was too recent
         let elapsed = slot.last_placed.elapsed();
@@ -448,23 +530,38 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     async fn place(&mut self, side: Side, price: f64, reason: BidReason) {
-        let slot = match side { Side::Yes => &mut self.yes_bid, Side::No => &mut self.no_bid };
+        let slot = match side {
+            Side::Yes => &mut self.yes_bid,
+            Side::No => &mut self.no_bid,
+        };
         slot.active = true;
         slot.price = price;
         slot.last_placed = Instant::now();
         self.stats.placed += 1;
 
         if self.cfg.dry_run {
-            info!("📝 DRY {:?} {:?}@{:.3} sz={:.1}", reason, side, price, self.cfg.bid_size);
+            info!(
+                "📝 DRY {:?} {:?}@{:.3} sz={:.1}",
+                reason, side, price, self.cfg.bid_size
+            );
             return;
         }
-        let _ = self.exec_tx.send(ExecutionCmd::PlacePostOnlyBid {
-            side, price, size: self.cfg.bid_size, reason,
-        }).await;
+        let _ = self
+            .exec_tx
+            .send(ExecutionCmd::PlacePostOnlyBid {
+                side,
+                price,
+                size: self.cfg.bid_size,
+                reason,
+            })
+            .await;
     }
 
     async fn cancel(&mut self, side: Side, reason: CancelReason) {
-        let slot = match side { Side::Yes => &mut self.yes_bid, Side::No => &mut self.no_bid };
+        let slot = match side {
+            Side::Yes => &mut self.yes_bid,
+            Side::No => &mut self.no_bid,
+        };
         slot.active = false;
         slot.price = 0.0;
 
@@ -472,7 +569,10 @@ impl StrategyCoordinator {
             info!("📝 DRY cancel {:?} ({:?})", side, reason);
             return;
         }
-        let _ = self.exec_tx.send(ExecutionCmd::CancelSide { side, reason }).await;
+        let _ = self
+            .exec_tx
+            .send(ExecutionCmd::CancelSide { side, reason })
+            .await;
     }
 }
 
@@ -486,16 +586,23 @@ mod tests {
 
     fn cfg() -> CoordinatorConfig {
         CoordinatorConfig {
-            pair_target: 0.98, max_net_diff: 10.0,
-            bid_size: 2.0, tick_size: 0.01,
-            reprice_threshold: 0.005, debounce_ms: 0, // disable for tests
+            pair_target: 0.98,
+            max_net_diff: 10.0,
+            bid_size: 2.0,
+            tick_size: 0.01,
+            reprice_threshold: 0.005,
+            debounce_ms: 0, // disable for tests
             dry_run: false,
         }
     }
 
-    fn make(c: CoordinatorConfig) -> (
-        watch::Sender<OfiSnapshot>, watch::Sender<InventoryState>,
-        mpsc::Sender<MarketDataMsg>, mpsc::Receiver<ExecutionCmd>,
+    fn make(
+        c: CoordinatorConfig,
+    ) -> (
+        watch::Sender<OfiSnapshot>,
+        watch::Sender<InventoryState>,
+        mpsc::Sender<MarketDataMsg>,
+        mpsc::Receiver<ExecutionCmd>,
         StrategyCoordinator,
     ) {
         let (o, or) = watch::channel(OfiSnapshot::default());
@@ -507,7 +614,13 @@ mod tests {
     }
 
     fn bt(yb: f64, ya: f64, nb: f64, na: f64) -> MarketDataMsg {
-        MarketDataMsg::BookTick { yes_bid: yb, yes_ask: ya, no_bid: nb, no_ask: na, ts: Instant::now() }
+        MarketDataMsg::BookTick {
+            yes_bid: yb,
+            yes_ask: ya,
+            no_bid: nb,
+            no_ask: na,
+            ts: Instant::now(),
+        }
     }
 
     // ── Price clamping ──
@@ -549,12 +662,25 @@ mod tests {
     #[tokio::test]
     async fn test_global_kill_cancels_both_sides() {
         let (o, _i, m, mut e, mut coord) = make(cfg());
-        coord.yes_bid = BidSlot { active: true, price: 0.45, ..BidSlot::default() };
-        coord.no_bid = BidSlot { active: true, price: 0.50, ..BidSlot::default() };
+        coord.yes_bid = BidSlot {
+            active: true,
+            price: 0.45,
+            ..BidSlot::default()
+        };
+        coord.no_bid = BidSlot {
+            active: true,
+            price: 0.50,
+            ..BidSlot::default()
+        };
 
         // Only YES is toxic — but BOTH should be canceled (Lead-Lag)
         let _ = o.send(OfiSnapshot {
-            yes: SideOfi { ofi_score: 100.0, buy_volume: 100.0, sell_volume: 0.0, is_toxic: true },
+            yes: SideOfi {
+                ofi_score: 100.0,
+                buy_volume: 100.0,
+                sell_volume: 0.0,
+                is_toxic: true,
+            },
             no: SideOfi::default(),
             ts: Instant::now(),
         });
@@ -579,7 +705,8 @@ mod tests {
         assert!(canceled.contains(&Side::Yes));
         assert!(canceled.contains(&Side::No));
 
-        drop(m); let _ = h.await;
+        drop(m);
+        let _ = h.await;
     }
 
     #[tokio::test]
@@ -589,7 +716,12 @@ mod tests {
         // NO is toxic (even though balanced) → should NOT place any bids
         let _ = o.send(OfiSnapshot {
             yes: SideOfi::default(),
-            no: SideOfi { ofi_score: -80.0, buy_volume: 0.0, sell_volume: 80.0, is_toxic: true },
+            no: SideOfi {
+                ofi_score: -80.0,
+                buy_volume: 0.0,
+                sell_volume: 80.0,
+                is_toxic: true,
+            },
             ts: Instant::now(),
         });
 
@@ -599,7 +731,8 @@ mod tests {
         let c = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c.is_err()); // No commands = blocked
 
-        drop(m); let _ = h.await;
+        drop(m);
+        let _ = h.await;
     }
 
     // ── Balanced mid pricing ──
@@ -614,12 +747,17 @@ mod tests {
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
 
         let mut prices = std::collections::HashMap::new();
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c1 { prices.insert(side, price); }
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c2 { prices.insert(side, price); }
+        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c1 {
+            prices.insert(side, price);
+        }
+        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c2 {
+            prices.insert(side, price);
+        }
         assert!((prices[&Side::Yes] - 0.45).abs() < 1e-9);
         assert!((prices[&Side::No] - 0.50).abs() < 1e-9);
 
-        drop(m); let _ = h.await;
+        drop(m);
+        let _ = h.await;
     }
 
     #[tokio::test]
@@ -631,11 +769,16 @@ mod tests {
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let mut prices = std::collections::HashMap::new();
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c1 { prices.insert(side, price); }
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c2 { prices.insert(side, price); }
+        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c1 {
+            prices.insert(side, price);
+        }
+        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c2 {
+            prices.insert(side, price);
+        }
         assert!(prices[&Side::Yes] + prices[&Side::No] <= 0.98 + 1e-9);
 
-        drop(m); let _ = h.await;
+        drop(m);
+        let _ = h.await;
     }
 
     // ── Debounce ──
@@ -659,7 +802,8 @@ mod tests {
         let c3 = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c3.is_err()); // No commands = debounced
 
-        drop(m); let _ = h.await;
+        drop(m);
+        let _ = h.await;
     }
 
     // ── Empty book fallback ──
@@ -672,6 +816,7 @@ mod tests {
         let _ = m.send(bt(0.0, 0.0, 0.0, 0.0)).await;
         let c = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c.is_err()); // No commands
-        drop(m); let _ = h.await;
+        drop(m);
+        let _ = h.await;
     }
 }

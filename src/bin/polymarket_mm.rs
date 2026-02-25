@@ -1,8 +1,8 @@
 use anyhow::Context;
 use futures::{SinkExt, StreamExt};
-use mev_backrun_rs_cu::polymarket::legacy::order_manager::OrderManager;
-use mev_backrun_rs_cu::polymarket::legacy::strategy::{Position, Strategy, StrategyConfig};
-use mev_backrun_rs_cu::polymarket::types::{BookUpdate, OrderAction, OrderBook, OrderEvent, OrderStatus, Side};
+use pm_as_ofi::polymarket::legacy::order_manager::OrderManager;
+use pm_as_ofi::polymarket::legacy::strategy::{Position, Strategy, StrategyConfig};
+use pm_as_ofi::polymarket::types::{BookUpdate, OrderAction, OrderBook, OrderEvent, OrderStatus, Side};
 
 // Polymarket official SDK
 use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
@@ -120,7 +120,7 @@ impl Settings {
 
 // 市场解析：优先使用 slug，回退到手动配置
 async fn resolve_market(settings: &Settings) -> anyhow::Result<(String, String, String)> {
-    use mev_backrun_rs_cu::gamma_http::GammaClient;
+    use pm_as_ofi::gamma_http::GammaClient;
     
     // 1. 优先：使用 slug 自动发现
     if let Some(slug) = &settings.market_slug {

@@ -13,7 +13,7 @@
 //!   3. Subscribe with API key auth + market/asset IDs
 //!   4. Listen for trade events on our asset IDs
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
@@ -57,13 +57,66 @@ pub struct UserWsListener {
     fill_tx: mpsc::Sender<FillEvent>,
 }
 
+/// Cross-reconnect dedup cache for fill events.
+///
+/// We keep a bounded TTL cache instead of per-connection HashSet so replayed
+/// trade events after reconnect won't be counted twice.
+#[derive(Debug)]
+struct DedupCache {
+    seen_at: HashMap<String, Instant>,
+    ttl: Duration,
+    max_entries: usize,
+}
+
+impl DedupCache {
+    fn new(ttl: Duration, max_entries: usize) -> Self {
+        Self {
+            seen_at: HashMap::with_capacity(max_entries.min(4096)),
+            ttl,
+            max_entries,
+        }
+    }
+
+    fn remember(&mut self, key: String) -> bool {
+        let now = Instant::now();
+        self.evict_expired(now);
+
+        if self.seen_at.contains_key(&key) {
+            return false;
+        }
+        self.seen_at.insert(key, now);
+        self.evict_oldest_if_needed();
+        true
+    }
+
+    fn evict_expired(&mut self, now: Instant) {
+        let cutoff = now.checked_sub(self.ttl).unwrap_or(now);
+        self.seen_at.retain(|_, ts| *ts >= cutoff);
+    }
+
+    fn evict_oldest_if_needed(&mut self) {
+        while self.seen_at.len() > self.max_entries {
+            let oldest = self
+                .seen_at
+                .iter()
+                .min_by_key(|(_, ts)| *ts)
+                .map(|(k, _)| k.clone());
+            if let Some(key) = oldest {
+                self.seen_at.remove(&key);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
 impl UserWsListener {
     pub fn new(cfg: UserWsConfig, fill_tx: mpsc::Sender<FillEvent>) -> Self {
         Self { cfg, fill_tx }
     }
 
     /// Actor main loop. Connects to User WS with auth, listens for trades.
-    /// Reconnects on disconnect. Dedup set resets on each reconnect.
+    /// Reconnects on disconnect. Dedup cache is kept across reconnects.
     pub async fn run(self) {
         info!(
             "👤 UserWsListener started | market={} yes={}... no={}...",
@@ -72,8 +125,12 @@ impl UserWsListener {
             &self.cfg.no_asset_id[..8.min(self.cfg.no_asset_id.len())],
         );
 
+        // Keep dedup state across reconnects to avoid replay double-counting.
+        // 15 min TTL covers typical reconnect replay windows.
+        let mut dedup = DedupCache::new(Duration::from_secs(15 * 60), 50_000);
+
         loop {
-            match self.connect_and_listen().await {
+            match self.connect_and_listen(&mut dedup).await {
                 Ok(()) => {
                     info!("👤 User WS connection closed normally");
                 }
@@ -87,7 +144,7 @@ impl UserWsListener {
         }
     }
 
-    async fn connect_and_listen(&self) -> anyhow::Result<()> {
+    async fn connect_and_listen(&self, dedup: &mut DedupCache) -> anyhow::Result<()> {
         let url = format!("{}/user", self.cfg.ws_base_url);
         info!(%url, "👤 Connecting User WS (authenticated)");
 
@@ -143,10 +200,6 @@ impl UserWsListener {
             }
         });
 
-        // FIX #3: Dedup set — prevents double-counting on reconnect or
-        // duplicate pushes. Key = (trade_id, status). Resets per connection.
-        let mut seen: HashSet<String> = HashSet::new();
-
         // Read loop
         while let Some(msg) = read.next().await {
             match msg {
@@ -160,7 +213,7 @@ impl UserWsListener {
                         };
 
                         for val in &values {
-                            let fills = self.parse_trade_event(val, &mut seen);
+                            let fills = self.parse_trade_event(val, dedup);
                             for fill in fills {
                                 info!(
                                     "🔔 REAL FILL: {:?} {:.2}@{:.3} status={:?} id={}",
@@ -203,7 +256,7 @@ impl UserWsListener {
     ///   MATCHED → MINED → CONFIRMED (happy path)
     ///   MATCHED → FAILED (reversal)
     ///   RETRYING = transient, ignore
-    fn parse_trade_event(&self, val: &Value, seen: &mut HashSet<String>) -> Vec<FillEvent> {
+    fn parse_trade_event(&self, val: &Value, dedup: &mut DedupCache) -> Vec<FillEvent> {
         // P2 FIX: Case-insensitive event type check
         let event_type = val
             .get("event_type")
@@ -251,7 +304,7 @@ impl UserWsListener {
             // ═══ MAKER PATH: extract from maker_orders[] ═══
             // When trader_side is missing, we still try maker_orders if present
             // (owner filtering inside will catch non-ours)
-            let fills = self.parse_maker_fills(val, status, seen);
+            let fills = self.parse_maker_fills(val, status, dedup);
             if fills.is_empty() {
                 debug!("👤 Maker path yielded no owned fills — skip top-level taker fallback");
             }
@@ -259,7 +312,7 @@ impl UserWsListener {
         }
 
         // ═══ TAKER/UNKNOWN PATH: fallback to top-level fields ═══
-        self.parse_taker_fill(val, status, seen)
+        self.parse_taker_fill(val, status, dedup)
             .into_iter()
             .collect()
     }
@@ -271,7 +324,7 @@ impl UserWsListener {
         &self,
         val: &Value,
         status: FillStatus,
-        seen: &mut HashSet<String>,
+        dedup: &mut DedupCache,
     ) -> Vec<FillEvent> {
         let maker_orders = match val.get("maker_orders").and_then(|v| v.as_array()) {
             Some(arr) => arr,
@@ -355,17 +408,21 @@ impl UserWsListener {
             // Treat MATCHED/MINED/CONFIRMED as one successful fill bucket.
             // This prevents double-counting while still allowing recovery if
             // MATCHED was missed and CONFIRMED arrives first.
-            let dedup_bucket = match status {
-                FillStatus::Matched | FillStatus::Confirmed => "SUCCESS",
-                FillStatus::Failed => "FAILED",
-            };
+            let dedup_bucket = dedup_bucket(status);
             let dedup_key = if !trade_id.is_empty() {
                 format!("tid:{}:mo:{}:{}", trade_id, order_id, dedup_bucket)
             } else {
-                format!("mo:{}:{}:{}", order_id, dedup_bucket, price)
+                // No trade id: include size + event identity to avoid collapsing
+                // multiple partial fills at the same price.
+                let evt = event_identity(val).unwrap_or_else(|| "evt=none".to_string());
+                let maker_evt = event_identity(mo).unwrap_or_else(|| "mo_evt=none".to_string());
+                format!(
+                    "mo:{}:{}:{:.8}:{:.8}:{}:{}",
+                    order_id, dedup_bucket, price, size, evt, maker_evt
+                )
             };
 
-            if !seen.insert(dedup_key.clone()) {
+            if !dedup.remember(dedup_key.clone()) {
                 debug!("👤 Dedup: skipping duplicate maker fill key={}", dedup_key);
                 continue;
             }
@@ -407,9 +464,11 @@ impl UserWsListener {
         &self,
         val: &Value,
         status: FillStatus,
-        seen: &mut HashSet<String>,
+        dedup: &mut DedupCache,
     ) -> Option<FillEvent> {
-        let asset_id = val.get("asset_id").and_then(|v| v.as_str())?;
+        let asset_id = val
+            .get("asset_id")
+            .map(|v| v.to_string().trim_matches('"').to_string())?;
         let side = if asset_id == self.cfg.yes_asset_id {
             Side::Yes
         } else if asset_id == self.cfg.no_asset_id {
@@ -439,17 +498,18 @@ impl UserWsListener {
         // Dedup
         let trade_id = val.get("id").and_then(|v| v.as_str()).unwrap_or_default();
 
-        let dedup_bucket = match status {
-            FillStatus::Matched | FillStatus::Confirmed => "SUCCESS",
-            FillStatus::Failed => "FAILED",
-        };
+        let dedup_bucket = dedup_bucket(status);
         let dedup_key = if !trade_id.is_empty() {
             format!("tid:{}:{}", trade_id, dedup_bucket)
         } else {
-            format!("oid:{}:{}:{}", order_id, dedup_bucket, price)
+            let evt = event_identity(val).unwrap_or_else(|| "evt=none".to_string());
+            format!(
+                "oid:{}:{}:{:.8}:{:.8}:{}",
+                order_id, dedup_bucket, price, size, evt
+            )
         };
 
-        if !seen.insert(dedup_key.clone()) {
+        if !dedup.remember(dedup_key.clone()) {
             debug!("👤 Dedup: skipping duplicate fill key={}", dedup_key);
             return None;
         }
@@ -465,12 +525,120 @@ impl UserWsListener {
     }
 }
 
+fn dedup_bucket(status: FillStatus) -> &'static str {
+    match status {
+        FillStatus::Matched | FillStatus::Confirmed => "SUCCESS",
+        FillStatus::Failed => "FAILED",
+    }
+}
+
+fn value_component(v: &Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        let t = s.trim();
+        if !t.is_empty() {
+            return Some(t.to_string());
+        }
+    }
+    if let Some(n) = v.as_u64() {
+        return Some(n.to_string());
+    }
+    if let Some(n) = v.as_i64() {
+        return Some(n.to_string());
+    }
+    if let Some(n) = v.as_f64() {
+        return Some(format!("{n:.0}"));
+    }
+    None
+}
+
+fn event_identity(v: &Value) -> Option<String> {
+    const FIELDS: [&str; 10] = [
+        "id",
+        "trade_id",
+        "match_id",
+        "tx_hash",
+        "transaction_hash",
+        "timestamp",
+        "time",
+        "created_at",
+        "updated_at",
+        "nonce",
+    ];
+
+    for field in FIELDS {
+        if let Some(id) = v.get(field).and_then(value_component) {
+            return Some(format!("{field}={id}"));
+        }
+    }
+    None
+}
+
 /// Parse a JSON field as f64, handling both string ("0.50") and number (0.50) formats.
 fn parse_f64_field(val: &Value, field: &str) -> Option<f64> {
     val.get(field).and_then(|v| {
         v.as_f64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn listener() -> UserWsListener {
+        let (fill_tx, _fill_rx) = mpsc::channel(8);
+        UserWsListener::new(
+            UserWsConfig {
+                ws_base_url: "wss://example/ws".to_string(),
+                api_key: "api-key".to_string(),
+                api_secret: "secret".to_string(),
+                api_passphrase: "pass".to_string(),
+                market_id: "mkt".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+            },
+            fill_tx,
+        )
+    }
+
+    #[test]
+    fn test_dedup_cache_blocks_replay() {
+        let mut cache = DedupCache::new(Duration::from_secs(60), 16);
+        assert!(cache.remember("trade-1".to_string()));
+        assert!(!cache.remember("trade-1".to_string()));
+    }
+
+    #[test]
+    fn test_taker_dedup_does_not_merge_distinct_partial_fills_without_trade_id() {
+        let ws = listener();
+        let mut dedup = DedupCache::new(Duration::from_secs(60), 16);
+
+        let e1 = json!({
+            "event_type": "trade",
+            "status": "MATCHED",
+            "asset_id": "1",
+            "order_id": "o-1",
+            "size": "1.0",
+            "price": "0.51"
+        });
+        let e2 = json!({
+            "event_type": "trade",
+            "status": "MATCHED",
+            "asset_id": "1",
+            "order_id": "o-1",
+            "size": "0.4",
+            "price": "0.51"
+        });
+
+        let f1 = ws.parse_trade_event(&e1, &mut dedup);
+        let f2 = ws.parse_trade_event(&e2, &mut dedup);
+        let f3 = ws.parse_trade_event(&e2, &mut dedup);
+
+        assert_eq!(f1.len(), 1);
+        assert_eq!(f2.len(), 1);
+        assert_eq!(f3.len(), 0);
+    }
 }
 
 // ─────────────────────────────────────────────────────────

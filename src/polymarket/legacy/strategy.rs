@@ -3,21 +3,21 @@ use crate::polymarket::types::{DesiredOrder, OrderBook, Side};
 #[derive(Debug, Clone)]
 pub struct StrategyConfig {
     // 风控约束（核心指标）
-    pub max_pair_cost: f64,      // 最大 Pair Cost（平均成本和），默认 1.0112
-    pub max_diff_value: f64,     // 最大 Diff Value（净头寸美元值），默认 5.0
-    
+    pub max_pair_cost: f64,  // 最大 Pair Cost（平均成本和），默认 1.0112
+    pub max_diff_value: f64, // 最大 Diff Value（净头寸美元值），默认 5.0
+
     // 订单参数
-    pub tick: f64,               // 价格步长，默认 0.001（0.1美分）
-    pub levels: usize,           // 挂单层数，默认 3
-    pub qty_per_level: f64,      // 每层基础数量，默认 5.0
-    pub qty_cap: f64,            // 单笔最大数量，默认 10.0
-    pub min_order_size: f64,     // 最小订单数量，默认 1.0（建议≥5）
-    pub ttl_secs: u64,           // GTD 订单 TTL（秒），默认 60
-    
+    pub tick: f64,           // 价格步长，默认 0.001（0.1美分）
+    pub levels: usize,       // 挂单层数，默认 3
+    pub qty_per_level: f64,  // 每层基础数量，默认 5.0
+    pub qty_cap: f64,        // 单笔最大数量，默认 10.0
+    pub min_order_size: f64, // 最小订单数量，默认 1.0（建议≥5）
+    pub ttl_secs: u64,       // GTD 订单 TTL（秒），默认 60
+
     // Kelly 仓位管理
-    pub kelly_enabled: bool,     // 是否启用 Kelly，默认 true
-    pub kelly_fraction: f64,     // Kelly 比例（0-1），默认 0.5（半凯利）
-    pub edge_ref: f64,           // 参考 edge，默认 0.01
+    pub kelly_enabled: bool, // 是否启用 Kelly，默认 true
+    pub kelly_fraction: f64, // Kelly 比例（0-1），默认 0.5（半凯利）
+    pub edge_ref: f64,       // 参考 edge，默认 0.01
 }
 
 impl Default for StrategyConfig {
@@ -25,12 +25,12 @@ impl Default for StrategyConfig {
         Self {
             max_pair_cost: 1.0112,
             max_diff_value: 5.0,
-            tick: 0.001,             // ✅ 0.1美分精度（官方文档确认）
+            tick: 0.001, // ✅ 0.1美分精度（官方文档确认）
             levels: 3,
-            qty_per_level: 5.0,      // 提高到5（实际建议）
+            qty_per_level: 5.0, // 提高到5（实际建议）
             qty_cap: 10.0,
-            min_order_size: 1.0,     // 最小1份，实际建议≥5
-            ttl_secs: 60,  // GTD 订单标准 TTL
+            min_order_size: 1.0, // 最小1份，实际建议≥5
+            ttl_secs: 60,        // GTD 订单标准 TTL
             kelly_enabled: true,
             kelly_fraction: 0.5,
             edge_ref: 0.01,
@@ -86,7 +86,7 @@ impl Position {
                 let old_qty = self.yes_qty;
                 let old_avg = self.yes_avg;
                 self.yes_qty += qty;
-                
+
                 if self.yes_qty > 0.0 {
                     self.yes_avg = (old_qty * old_avg + qty * price) / self.yes_qty;
                 } else {
@@ -97,7 +97,7 @@ impl Position {
                 let old_qty = self.no_qty;
                 let old_avg = self.no_avg;
                 self.no_qty += qty;
-                
+
                 if self.no_qty > 0.0 {
                     self.no_avg = (old_qty * old_avg + qty * price) / self.no_qty;
                 } else {
@@ -230,7 +230,9 @@ impl Strategy {
         let kelly_qty = self.cfg.qty_per_level * edge_mult * self.cfg.kelly_fraction;
 
         // 限制在合理范围
-        kelly_qty.max(self.cfg.qty_per_level * 0.5).min(self.cfg.qty_cap)
+        kelly_qty
+            .max(self.cfg.qty_per_level * 0.5)
+            .min(self.cfg.qty_cap)
     }
 
     // 计算 YES 的最高可挂价格，确保 pair_cost 不破上限
@@ -258,7 +260,11 @@ impl Strategy {
         }
         let new_avg = (pos.yes_avg * pos.yes_qty + price * q) / new_qty;
         let net = new_qty - pos.no_qty;
-        let diff_value = if net > 0.0 { net * new_avg } else { (-net) * pos.no_avg };
+        let diff_value = if net > 0.0 {
+            net * new_avg
+        } else {
+            (-net) * pos.no_avg
+        };
         diff_value <= self.cfg.max_diff_value + 1e-9 // Changed from diff_value_max
     }
 
@@ -269,7 +275,11 @@ impl Strategy {
         }
         let new_avg = (pos.no_avg * pos.no_qty + price * q) / new_qty;
         let net = pos.yes_qty - new_qty;
-        let diff_value = if net > 0.0 { net * pos.yes_avg } else { (-net) * new_avg };
+        let diff_value = if net > 0.0 {
+            net * pos.yes_avg
+        } else {
+            (-net) * new_avg
+        };
         diff_value <= self.cfg.max_diff_value + 1e-9 // Changed from diff_value_max
     }
 

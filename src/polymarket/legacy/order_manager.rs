@@ -1,4 +1,6 @@
-use crate::polymarket::types::{DesiredOrder, Order, OrderAction, OrderBook, OrderEvent, OrderStatus, Side};
+use crate::polymarket::types::{
+    DesiredOrder, Order, OrderAction, OrderBook, OrderEvent, OrderStatus, Side,
+};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use uuid::Uuid;

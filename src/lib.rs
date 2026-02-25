@@ -1,18 +1,18 @@
 // pub mod flashbots; // temporarily disabled during alloy migration
 #[cfg(feature = "amms")]
+pub mod admin;
+pub mod gamma_http;
+#[cfg(feature = "amms")]
 pub mod path_evaluator;
+pub mod polymarket;
 #[cfg(feature = "amms")]
 pub mod pool_syncer;
-#[cfg(feature = "amms")]
-pub mod admin;
-pub mod polymarket;
-pub mod gamma_http;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use alloy_primitives::{Address, U256};
 #[cfg(feature = "amms")]
 use amms_rs::amms::balancer::BalancerPool;
-use alloy_primitives::{Address, U256};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -119,7 +119,11 @@ pub struct AppState {
 }
 
 impl PoolState {
-    pub fn simulate_swap(&self, amount_in: U256, token_in: Address) -> Option<SwapSimulationResult> {
+    pub fn simulate_swap(
+        &self,
+        amount_in: U256,
+        token_in: Address,
+    ) -> Option<SwapSimulationResult> {
         match &self.amm_data {
             AmmData::V2(data) => {
                 let (reserve_in, reserve_out) = if token_in == self.token0 {
@@ -142,10 +146,18 @@ impl PoolState {
                 let new_reserve_out = reserve_out - amount_out;
 
                 let updated_data = UniswapV2Data {
-                    reserve0: if token_in == self.token0 { new_reserve_in } else { new_reserve_out },
-                    reserve1: if token_in == self.token0 { new_reserve_out } else { new_reserve_in },
+                    reserve0: if token_in == self.token0 {
+                        new_reserve_in
+                    } else {
+                        new_reserve_out
+                    },
+                    reserve1: if token_in == self.token0 {
+                        new_reserve_out
+                    } else {
+                        new_reserve_in
+                    },
                 };
-                
+
                 let updated_amm_data = match self.protocol {
                     Protocol::UniswapV2 => AmmData::V2(updated_data),
                     Protocol::SushiSwap => AmmData::V2(updated_data),
@@ -161,12 +173,16 @@ impl PoolState {
                     },
                 })
             }
-            AmmData::V3(data) | AmmData::Aerodrome(data) | AmmData::PancakeV3(data) | AmmData::SushiSwapV3(data) => {
+            AmmData::V3(data)
+            | AmmData::Aerodrome(data)
+            | AmmData::PancakeV3(data)
+            | AmmData::SushiSwapV3(data) => {
                 // Simplified V3 simulation, does not account for ticks
                 // This is a placeholder and should be replaced with a proper V3 simulation logic
-                let amount_in_with_fee = amount_in * U256::from(1000000 - data.fee as u64) / U256::from(1000000);
+                let amount_in_with_fee =
+                    amount_in * U256::from(1000000 - data.fee as u64) / U256::from(1000000);
                 // This is a rough estimation and not accurate
-                let amount_out = amount_in_with_fee; 
+                let amount_out = amount_in_with_fee;
                 Some(SwapSimulationResult {
                     amount_out,
                     updated_pool: self.clone(),
@@ -203,8 +219,16 @@ impl PoolState {
                 let new_reserve_out = reserve_out - amount_out;
 
                 let updated_data = UniswapV2Data {
-                    reserve0: if token_in == self.token0 { new_reserve_in } else { new_reserve_out },
-                    reserve1: if token_in == self.token0 { new_reserve_out } else { new_reserve_in },
+                    reserve0: if token_in == self.token0 {
+                        new_reserve_in
+                    } else {
+                        new_reserve_out
+                    },
+                    reserve1: if token_in == self.token0 {
+                        new_reserve_out
+                    } else {
+                        new_reserve_in
+                    },
                 };
 
                 Some(SwapSimulationResult {

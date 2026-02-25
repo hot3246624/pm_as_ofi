@@ -121,7 +121,7 @@ impl InventoryManager {
     fn apply_fill(&mut self, fill: &FillEvent) {
         let multiplier = match fill.status {
             FillStatus::Matched | FillStatus::Confirmed => 1.0,
-            FillStatus::Failed => -1.0,  // Reverse: subtract from inventory
+            FillStatus::Failed => -1.0, // Reverse: subtract from inventory
         };
         let delta = fill.filled_size * multiplier;
 
@@ -177,8 +177,8 @@ impl InventoryManager {
             || self.state.portfolio_cost == 0.0;
         let yes_value = self.state.yes_qty * self.state.yes_avg_cost;
         let no_value = self.state.no_qty * self.state.no_avg_cost;
-        let value_ok = yes_value < self.cfg.max_position_value
-            && no_value < self.cfg.max_position_value;
+        let value_ok =
+            yes_value < self.cfg.max_position_value && no_value < self.cfg.max_position_value;
         net_ok && cost_ok && value_ok
     }
 }

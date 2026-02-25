@@ -110,7 +110,7 @@ impl Default for InventoryState {
             no_avg_cost: 0.0,
             net_diff: 0.0,
             portfolio_cost: 0.0,
-            can_open: true,  // Default: no positions → can open
+            can_open: true, // Default: no positions → can open
         }
     }
 }
@@ -137,14 +137,9 @@ pub enum ExecutionCmd {
         reason: CancelReason,
     },
     /// Cancel all orders on a specific side.
-    CancelSide {
-        side: Side,
-        reason: CancelReason,
-    },
+    CancelSide { side: Side, reason: CancelReason },
     /// Cancel all outstanding orders (full circuit breaker).
-    CancelAll {
-        reason: CancelReason,
-    },
+    CancelAll { reason: CancelReason },
 }
 
 /// Why a bid is being placed.

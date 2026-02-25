@@ -12,16 +12,16 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 // V2 Actor modules
-use mev_backrun_rs_cu::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
-use mev_backrun_rs_cu::polymarket::executor::{init_clob_client, Executor, ExecutorConfig};
-use mev_backrun_rs_cu::polymarket::inventory::{InventoryConfig, InventoryManager};
-use mev_backrun_rs_cu::polymarket::messages::*;
-use mev_backrun_rs_cu::polymarket::ofi::{OfiConfig, OfiEngine};
-use mev_backrun_rs_cu::polymarket::types::Side;
-use mev_backrun_rs_cu::polymarket::user_ws::{UserWsConfig, UserWsListener};
+use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
+use pm_as_ofi::polymarket::executor::{init_clob_client, Executor, ExecutorConfig};
+use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
+use pm_as_ofi::polymarket::messages::*;
+use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
+use pm_as_ofi::polymarket::types::Side;
+use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
 // ─────────────────────────────────────────────────────────
 // Settings (reused from V1, simplified)
@@ -87,6 +87,27 @@ fn detect_interval(prefix: &str) -> u64 {
     if prefix.contains("-5m") { 300 }
     else if prefix.contains("-15m") { 900 }
     else { 900 } // default 15min
+}
+
+fn should_skip_entry_window(now_unix: u64, end_ts: u64, interval: u64, grace: u64) -> bool {
+    if now_unix >= end_ts {
+        return true;
+    }
+    let start_ts = end_ts.saturating_sub(interval);
+    now_unix > start_ts.saturating_add(grace)
+}
+
+/// Compute how long to wait before attempting next round.
+///
+/// We align to `end_ts` precisely instead of fixed sleeps. This avoids
+/// missing opening seconds while still preventing boundary races when the
+/// current loop exits slightly early due to second-level rounding.
+fn rotation_wait_duration(now_unix: u64, end_ts: u64) -> Duration {
+    if now_unix >= end_ts {
+        Duration::from_millis(0)
+    } else {
+        Duration::from_secs(end_ts - now_unix)
+    }
 }
 
 /// Compute the slug and end-timestamp for the CURRENTLY ACTIVE market.
@@ -280,11 +301,19 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
                     .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
                     .unwrap_or(1.0); // Default to 1 if no size
 
+                let Some(side_val) = value.get("side").and_then(|v| v.as_str()) else {
+                    debug!("OFI parser: missing 'side' field in trade, skipping to avoid bias");
+                    return msgs;
+                };
+
                 // Determine taker side from the "side" field
-                let taker_side = match value.get("side").and_then(|v| v.as_str()) {
-                    Some("BUY") | Some("buy") | Some("Buy") => TakerSide::Buy,
-                    Some("SELL") | Some("sell") | Some("Sell") => TakerSide::Sell,
-                    _ => TakerSide::Buy, // Default assumption
+                let taker_side = match side_val {
+                    "BUY" | "buy" | "Buy" => TakerSide::Buy,
+                    "SELL" | "sell" | "Sell" => TakerSide::Sell,
+                    _ => {
+                        debug!("OFI parser: unknown 'side' value: {}, skipping", side_val);
+                        return msgs;
+                    },
                 };
 
                 // Classify which market side (YES or NO token)
@@ -575,7 +604,7 @@ async fn main() -> anyhow::Result<()> {
             info!("🔑 Using API credentials from environment");
             Some((k, s, p))
         } else if let Some(pk) = base_settings.private_key.as_deref() {
-            match mev_backrun_rs_cu::polymarket::user_ws::derive_api_key(
+            match pm_as_ofi::polymarket::user_ws::derive_api_key(
                 &base_settings.rest_url, pk,
             ).await {
                 Ok(creds) => Some(creds),
@@ -605,6 +634,11 @@ async fn main() -> anyhow::Result<()> {
     // OUTER LOOP: Market Rotation
     // ═══════════════════════════════════════════════════
 
+    // Channel for pre-resolved next markets to eliminate 7-8s rotation latency
+    let (preload_tx, mut preload_rx) =
+        mpsc::channel::<(String, anyhow::Result<(String, String, String)>)>(2);
+    let mut preloaded_market: Option<(String, anyhow::Result<(String, String, String)>)> = None;
+
     let mut round = 0u64;
     loop {
         round += 1;
@@ -616,11 +650,74 @@ async fn main() -> anyhow::Result<()> {
             (raw_slug.clone(), u64::MAX) // Fixed mode: no expiry
         };
 
+        // Entry gate: if startup is too late in the current interval, skip it.
+        if prefix_mode {
+            let interval_secs = detect_interval(&raw_slug);
+            let entry_grace_secs = env::var("PM_ENTRY_GRACE_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(30);
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+
+            // Secondary Entry Gate: if API resolution took too long and pushed us past grace, abort.
+            if should_skip_entry_window(now_unix, end_ts, interval_secs, entry_grace_secs) {
+                let start_ts = end_ts.saturating_sub(interval_secs);
+                let age_secs = now_unix.saturating_sub(start_ts);
+                let wait_secs = end_ts.saturating_sub(now_unix).saturating_add(1);
+                warn!(
+                    "⏭️ Late startup for {}: age={}s > grace={}s. Skip current market, wait {}s for next open.",
+                    slug, age_secs, entry_grace_secs, wait_secs
+                );
+
+                // Pre-resolve the NEXT market in the background while sleeping
+                let next_end_ts = end_ts + interval_secs;
+                let next_slug = format!("{}-{}", raw_slug, next_end_ts);
+                let p_tx = preload_tx.clone();
+                tokio::spawn(async move {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let sleep_time = if next_end_ts > now + 30 {
+                        next_end_ts - now - 30
+                    } else {
+                        0
+                    };
+                    if sleep_time > 0 {
+                        tokio::time::sleep(Duration::from_secs(sleep_time)).await;
+                    }
+                    info!("⏳ Pre-resolving next market in background during skip delay: {}", next_slug);
+                    let res = resolve_market_by_slug(&next_slug).await;
+                    let _ = p_tx.send((next_slug, res)).await;
+                });
+
+                sleep(Duration::from_secs(wait_secs)).await;
+                continue;
+            }
+        }
+
         info!("═══════════════════════════════════════════════════");
         info!("  Round #{} — {}", round, slug);
         info!("═══════════════════════════════════════════════════");
 
-        let resolved = resolve_market_by_slug(&slug).await;
+        // Drain any incoming preloads
+        while let Ok(pre) = preload_rx.try_recv() {
+            preloaded_market = Some(pre);
+        }
+
+        let resolved = if let Some((pre_slug, pre_res)) = preloaded_market.take() {
+            if pre_slug == slug {
+                info!("⚡ Using pre-resolved market data for {}", slug);
+                pre_res
+            } else {
+                resolve_market_by_slug(&slug).await
+            }
+        } else {
+            resolve_market_by_slug(&slug).await
+        };
         let (market_id, yes_asset_id, no_asset_id) = match resolved {
             Ok(ids) => ids,
             Err(err) => {
@@ -687,7 +784,7 @@ async fn main() -> anyhow::Result<()> {
             result_tx,
             exec_fill_rx,
         );
-        session_handles.push(tokio::spawn(executor.run()));
+        let executor_handle = tokio::spawn(executor.run());
 
         // 5. User WS Listener (live mode only — single source of truth for fills)
         if let Some((ref api_key, ref api_secret, ref api_passphrase)) = api_creds {
@@ -726,27 +823,111 @@ async fn main() -> anyhow::Result<()> {
         let _ = exec_tx.send(ExecutionCmd::CancelAll {
             reason: CancelReason::MarketExpired,
         }).await;
-        info!("🧹 CancelAll sent — waiting for executor flush");
-        sleep(Duration::from_millis(1200)).await;
-        info!("🧹 Aborting session tasks");
+        // Drop exec_tx so the executor channel closes, letting it break its loop after CancelAll
+        drop(exec_tx);
+        info!("🧹 CancelAll sent — waiting for executor graceful shutdown (8s timeout)");
+        
+        // Wait up to 8s for the executor to complete its work and exit
+        let _ = tokio::time::timeout(Duration::from_secs(8), executor_handle).await;
+
+        info!("🧹 Aborting remaining session tasks");
 
         // P0-2: Abort all session tasks to prevent leaking
         for h in session_handles {
             h.abort();
             let _ = h.await;
         }
-        // Drop channels to finalize
-        drop(exec_tx);
 
         if !prefix_mode {
             info!("📌 Fixed mode — exiting");
             break;
         }
 
-        // Brief pause before next round
-        info!("🔄 Rotating to next market in 3s...");
-        sleep(Duration::from_secs(3)).await;
+        // Background preload for next market
+        if prefix_mode {
+            let next_interval = detect_interval(&raw_slug);
+            let next_end_ts = end_ts + next_interval;
+            let next_slug = format!("{}-{}", raw_slug, next_end_ts);
+
+            let p_tx = preload_tx.clone();
+            tokio::spawn(async move {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs();
+                let sleep_time = if end_ts > now + 30 {
+                    end_ts - now - 30
+                } else {
+                    0
+                };
+                if sleep_time > 0 {
+                    tokio::time::sleep(Duration::from_secs(sleep_time)).await;
+                }
+                info!("⏳ Pre-resolving next market in background: {}", next_slug);
+
+                let res = resolve_market_by_slug(&next_slug).await;
+                let _ = p_tx.send((next_slug, res)).await;
+            });
+        }
+
+        // Wait using precise rotation wait duration instead of fixed 3s latency
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let wait = rotation_wait_duration(now_unix, end_ts);
+        if wait.is_zero() {
+            info!("🔄 Rotating immediately to next market");
+        } else {
+            info!(
+                "🔄 Waiting {}s for next market boundary before rotate",
+                wait.as_secs()
+            );
+            sleep(wait).await;
+        }
     }
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_should_skip_entry_window() {
+        let interval = 300; // 5 min
+        let grace = 30; // 30 sec grace
+        // Suppose current block ends at timestamp 1000. Start corresponds to 700.
+        // We are at 715 (15 seconds after open) -> within grace.
+        assert!(!should_skip_entry_window(715, 1000, interval, grace));
+        // We are at 735 (35 seconds after open) -> outside grace, we should skip!
+        assert!(should_skip_entry_window(735, 1000, interval, grace));
+        // We are at 1001 (already past)
+        assert!(should_skip_entry_window(1001, 1000, interval, grace));
+    }
+
+    #[test]
+    fn test_last_trade_price_missing_side_parsing() {
+        let val_with_side = json!({
+            "asset_id": "111",
+            "price": "0.50",
+            "size": "100",
+            "side": "SELL"
+        });
+
+        let val_no_side = json!({
+            "asset_id": "111",
+            "price": "0.50",
+            "size": "100"
+        });
+
+        let side1 = val_with_side.get("side").and_then(|v| v.as_str());
+        let side2 = val_no_side.get("side").and_then(|v| v.as_str());
+
+        assert_eq!(side1, Some("SELL"));
+        assert_eq!(side2, None);
+    }
+}
+

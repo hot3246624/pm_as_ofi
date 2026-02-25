@@ -2,7 +2,7 @@
 // 绕过 SDK 复杂类型，直接用 HTTP + serde_json
 
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 const GAMMA_API_BASE: &str = "https://gamma-api.polymarket.com";
 
@@ -22,11 +22,17 @@ pub struct GammaMarket {
     pub condition_id: String,
     pub question: Option<String>,
     #[serde(rename = "clobTokenIds")]
-    pub clob_token_ids: String,  // JSON字符串数组，如 "[\"123\", \"456\"]"
+    pub clob_token_ids: String, // JSON字符串数组，如 "[\"123\", \"456\"]"
 }
 
 pub struct GammaClient {
     client: reqwest::Client,
+}
+
+impl Default for GammaClient {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl GammaClient {
@@ -40,45 +46,53 @@ impl GammaClient {
     pub async fn get_event_by_slug(&self, slug: &str) -> Result<GammaEvent> {
         // Gamma API使用查询参数而不是路径段
         let url = format!("{}/events?slug={}", GAMMA_API_BASE, slug);
-        
-        let resp = self.client
+
+        let resp = self
+            .client
             .get(&url)
             .send()
             .await
             .context("Failed to request Gamma API")?;
-        
+
         if !resp.status().is_success() {
             anyhow::bail!("Gamma API returned status: {}", resp.status());
         }
-        
+
         // API返回数组，取第一个
-        let events: Vec<GammaEvent> = resp.json().await
+        let events: Vec<GammaEvent> = resp
+            .json()
+            .await
             .context("Failed to parse Gamma API response")?;
-        
-        events.into_iter().next()
+
+        events
+            .into_iter()
+            .next()
             .ok_or_else(|| anyhow::anyhow!("No event found for slug: {}", slug))
     }
 
     /// 从事件中提取最新的活跃市场
     pub fn extract_latest_market(event: &GammaEvent) -> Result<&GammaMarket> {
-        let markets = event.markets.as_ref()
+        let markets = event
+            .markets
+            .as_ref()
             .ok_or_else(|| anyhow::anyhow!("No markets in event"))?;
-        
+
         // 对于时间相关市场，通常最后一个是最新的
-        markets.last()
+        markets
+            .last()
             .ok_or_else(|| anyhow::anyhow!("No markets found"))
     }
 
     /// 从市场中提取 YES/NO token IDs
     pub fn extract_tokens(market: &GammaMarket) -> Result<(String, String)> {
         // clobTokenIds 是JSON字符串数组: "[\"yes_id\", \"no_id\"]"
-        let token_ids: Vec<String> = serde_json::from_str(&market.clob_token_ids)
-            .context("Failed to parse clobTokenIds")?;
-        
+        let token_ids: Vec<String> =
+            serde_json::from_str(&market.clob_token_ids).context("Failed to parse clobTokenIds")?;
+
         if token_ids.len() < 2 {
             anyhow::bail!("Expected at least 2 token IDs, got {}", token_ids.len());
         }
-        
+
         // 通常第一个是YES（Up），第二个是NO（Down）
         Ok((token_ids[0].clone(), token_ids[1].clone()))
     }

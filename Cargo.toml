@@ -1,5 +1,5 @@
 [package]
-name = "mev_backrun_rs_cu"
+name = "pm_as_ofi"
 version = "0.1.0"
 edition = "2021"
 autobins = false

@@ -1,19 +1,16 @@
 // 简单的WebSocket连接测试
-use tokio_tungstenite::connect_async;
 use std::time::Duration;
+use tokio_tungstenite::connect_async;
 
 #[tokio::main]
 async fn main() {
     println!("Testing WebSocket connection to Polymarket...");
-    
+
     let url = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
     println!("URL: {}", url);
-    
+
     println!("Attempting connection with 10s timeout...");
-    match tokio::time::timeout(
-        Duration::from_secs(10),
-        connect_async(url)
-    ).await {
+    match tokio::time::timeout(Duration::from_secs(10), connect_async(url)).await {
         Ok(Ok((ws, response))) => {
             println!("✅ SUCCESS! Connected to WebSocket");
             println!("Response status: {:?}", response.status());
