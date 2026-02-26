@@ -4,6 +4,7 @@
 - [ ] `POLYMARKET_PRIVATE_KEY` 必须填写（有资金操作权限的钱包私钥）。
 - [ ] `POLYMARKET_FUNDER_ADDRESS` （可选）如果使用 Proxy 账户需填写，否则留空。
 - [ ] `PM_DRY_RUN` 必须设置为 `false`。
+- [ ] `PM_ENTRY_GRACE_SECONDS` 建议设为 `30`（控制迟到入场时间，避免在收盘前过晚进入）。
 - [ ] `PM_PAIR_TARGET` 建议第一次跑设为 `0.985`（保守防滑点）。
 - [ ] `PM_BID_SIZE` 建议第一次跑设为 `5.0`（单侧 5 股进行微型压力测试）。
 - [ ] `PM_MAX_NET_DIFF` 建议设为 `15.0`（单侧倾斜上限，超额拒单）。

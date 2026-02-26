@@ -36,6 +36,7 @@ struct Settings {
     ws_base_url: String,
     rest_url: String,
     private_key: Option<String>,
+    #[allow(dead_code)]
     funder_address: Option<String>,
     custom_feature: bool,
 }
@@ -85,7 +86,6 @@ fn is_prefix_slug(slug: &str) -> bool {
 /// Detect interval from prefix: "...-5m" → 300, "...-15m" → 900.
 fn detect_interval(prefix: &str) -> u64 {
     if prefix.contains("-5m") { 300 }
-    else if prefix.contains("-15m") { 900 }
     else { 900 } // default 15min
 }
 
@@ -401,6 +401,7 @@ enum MarketEnd {
     /// Wall-clock hit the market's end timestamp.
     Expired,
     /// WS connection error (will reconnect internally unless expired).
+    #[allow(dead_code)]
     WsError(String),
 }
 
@@ -414,7 +415,7 @@ async fn run_market_ws(
 
     // Compute wall-clock deadline
     let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-    let secs_remaining = if end_ts > now_unix { end_ts - now_unix } else { 0 };
+    let secs_remaining = end_ts.saturating_sub(now_unix);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs_remaining);
     info!("⏰ Market deadline in {}s (end_ts={})", secs_remaining, end_ts);
 
@@ -635,8 +636,10 @@ async fn main() -> anyhow::Result<()> {
     // ═══════════════════════════════════════════════════
 
     // Channel for pre-resolved next markets to eliminate 7-8s rotation latency
+    #[allow(clippy::type_complexity)]
     let (preload_tx, mut preload_rx) =
         mpsc::channel::<(String, anyhow::Result<(String, String, String)>)>(2);
+    #[allow(clippy::type_complexity)]
     let mut preloaded_market: Option<(String, anyhow::Result<(String, String, String)>)> = None;
 
     let mut round = 0u64;

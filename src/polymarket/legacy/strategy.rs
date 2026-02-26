@@ -1,3 +1,5 @@
+#![allow(dead_code, clippy::manual_clamp)]
+
 use crate::polymarket::types::{DesiredOrder, OrderBook, Side};
 
 #[derive(Debug, Clone)]
