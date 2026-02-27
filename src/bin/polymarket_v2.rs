@@ -684,8 +684,8 @@ async fn main() -> anyhow::Result<()> {
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    let sleep_time = if next_end_ts > now + 30 {
-                        next_end_ts - now - 30
+                    let sleep_time = if end_ts > now + 30 {
+                        end_ts - now - 30
                     } else {
                         0
                     };
