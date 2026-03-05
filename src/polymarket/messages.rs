@@ -177,7 +177,7 @@ pub enum CancelReason {
 #[derive(Debug, Clone)]
 pub enum OrderResult {
     /// Order placement failed — Coordinator should reset the slot.
-    OrderFailed { side: Side },
+    OrderFailed { side: Side, cooldown_ms: u64 },
     /// Order fully filled — Coordinator should release the slot for new orders.
     OrderFilled { side: Side },
 }

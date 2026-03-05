@@ -233,11 +233,12 @@ impl UserWsListener {
                 }
                 Ok(Message::Close(_)) => {
                     warn!("👤 User WS closed by server");
-                    break;
+                    write_clone.abort();
+                    return Ok(());
                 }
                 Err(e) => {
-                    warn!("👤 User WS error: {:?}", e);
-                    break;
+                    write_clone.abort();
+                    return Err(anyhow::anyhow!("User WS read error: {:?}", e));
                 }
                 _ => {}
             }
@@ -626,7 +627,6 @@ pub async fn derive_api_key(
     Ok((api_key, api_secret, api_passphrase))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,4 +687,3 @@ mod tests {
         assert_eq!(f3.len(), 0);
     }
 }
-

@@ -214,7 +214,13 @@ impl Executor {
                     "🚫 Refusing PlacePostOnlyBid {:?}@{:.3}: {} tracked order(s) still open on side",
                     side, price, existing.len(),
                 );
-                let _ = self.result_tx.send(OrderResult::OrderFailed { side }).await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderFailed {
+                        side,
+                        cooldown_ms: 0,
+                    })
+                    .await;
                 return;
             }
         }
@@ -260,8 +266,23 @@ impl Executor {
                 }
 
                 warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
+                let cooldown_ms = if Self::is_balance_or_allowance_error(&final_err) {
+                    30_000
+                } else {
+                    0
+                };
+                if cooldown_ms > 0 {
+                    warn!(
+                        "⛔ Hard reject on {:?}: pausing new placements for {}s (balance/allowance)",
+                        side,
+                        cooldown_ms / 1000
+                    );
+                }
                 // FIX #4: Notify Coordinator the order failed so it can reset the slot
-                let _ = self.result_tx.send(OrderResult::OrderFailed { side }).await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderFailed { side, cooldown_ms })
+                    .await;
             }
         }
     }
@@ -483,6 +504,11 @@ impl Executor {
         num.parse::<f64>().ok().filter(|v| *v > 0.0)
     }
 
+    fn is_balance_or_allowance_error(err: &anyhow::Error) -> bool {
+        let lower = format!("{:#}", err).to_ascii_lowercase();
+        lower.contains("not enough balance") || lower.contains("allowance")
+    }
+
     /// Get count of open orders for a side.
     pub fn open_order_count(&self, side: Side) -> usize {
         self.open_orders.get(&side).map(|m| m.len()).unwrap_or(0)
@@ -493,6 +519,7 @@ impl Executor {
 pub async fn init_clob_client(
     rest_url: &str,
     private_key: Option<&str>,
+    funder_address: Option<alloy::primitives::Address>,
 ) -> (
     Option<AuthClient>,
     Option<LocalSigner<alloy::signers::k256::ecdsa::SigningKey>>,
@@ -525,7 +552,12 @@ pub async fn init_clob_client(
         }
     };
 
-    match client.authentication_builder(&signer).authenticate().await {
+    let mut auth_builder = client.authentication_builder(&signer);
+    if let Some(funder) = funder_address {
+        auth_builder = auth_builder.funder(funder);
+    }
+
+    match auth_builder.authenticate().await {
         Ok(auth_client) => {
             info!("✅ Polymarket CLOB client authenticated");
             (Some(auth_client), Some(signer))

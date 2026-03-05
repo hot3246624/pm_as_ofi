@@ -114,6 +114,8 @@ struct BidSlot {
     price: f64,
     /// When was the last bid placed (for debounce).
     last_placed: Instant,
+    /// Do not place before this instant (failure backoff).
+    retry_after: Instant,
 }
 
 impl Default for BidSlot {
@@ -123,6 +125,7 @@ impl Default for BidSlot {
             price: 0.0,
             // Start far in the past so first bid isn't debounced
             last_placed: Instant::now() - std::time::Duration::from_secs(60),
+            retry_after: Instant::now() - std::time::Duration::from_secs(60),
         }
     }
 }
@@ -155,6 +158,7 @@ struct Stats {
     cancel_inv: u64,
     cancel_reprice: u64,
     skipped_debounce: u64,
+    skipped_backoff: u64,
     skipped_empty_book: u64,
     skipped_inv_limit: u64,
     price_clamped: u64,
@@ -232,14 +236,23 @@ impl StrategyCoordinator {
                 // FIX #4: Executor order failure/fill feedback
                 result = self.result_rx.recv() => {
                     match result {
-                        Some(OrderResult::OrderFailed { side }) => {
-                            warn!("⚠️ OrderFailed {:?} — resetting ghost slot", side);
+                        Some(OrderResult::OrderFailed { side, cooldown_ms }) => {
                             let slot = match side {
                                 Side::Yes => &mut self.yes_bid,
                                 Side::No => &mut self.no_bid,
                             };
                             slot.active = false;
                             slot.price = 0.0;
+                            if cooldown_ms > 0 {
+                                let cooldown = std::time::Duration::from_millis(cooldown_ms);
+                                slot.retry_after = Instant::now() + cooldown;
+                                warn!(
+                                    "⚠️ OrderFailed {:?} — resetting ghost slot, cooldown={}ms",
+                                    side, cooldown_ms
+                                );
+                            } else {
+                                warn!("⚠️ OrderFailed {:?} — resetting ghost slot", side);
+                            }
                         }
                         Some(OrderResult::OrderFilled { side }) => {
                             // AUDIT FIX: Order fully filled — release the slot so
@@ -259,10 +272,10 @@ impl StrategyCoordinator {
         }
 
         info!(
-            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} inv={} reprice={}) skip(debounce={} empty={} inv_limit={}) clamped={}",
+            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} inv={} reprice={}) skip(debounce={} backoff={} empty={} inv_limit={}) clamped={}",
             self.stats.ticks, self.stats.placed,
             self.stats.cancel_toxic, self.stats.cancel_inv, self.stats.cancel_reprice,
-            self.stats.skipped_debounce, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
+            self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
             self.stats.price_clamped,
         );
     }
@@ -562,6 +575,12 @@ impl StrategyCoordinator {
             Side::Yes => &self.yes_bid,
             Side::No => &self.no_bid,
         };
+
+        // Failure backoff: temporarily suppress new placements after hard rejects.
+        if Instant::now() < slot.retry_after {
+            self.stats.skipped_backoff += 1;
+            return;
+        }
 
         // FIX #3: Debounce — skip if last place was too recent
         let elapsed = slot.last_placed.elapsed();

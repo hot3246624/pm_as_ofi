@@ -592,11 +592,35 @@ async fn main() -> anyhow::Result<()> {
         coord_cfg.pair_target, coord_cfg.bid_size,
         coord_cfg.tick_size, coord_cfg.max_net_diff, ofi_cfg.toxicity_threshold, dry_run);
 
+    // P1 FIX: Parse funder_address from environment, which represents the Magic Proxy Wallet.
+    // We need this BEFORE init_clob_client to configure the API key derivation.
+    let funder_address: Option<String> = if !dry_run {
+        let explicit = base_settings.funder_address.clone()
+            .filter(|s| !s.trim().is_empty());
+        if let Some(addr) = explicit {
+            info!("🔑 Using explicit POLYMARKET_FUNDER_ADDRESS: {}…", &addr[..10.min(addr.len())]);
+            Some(addr)
+        } else {
+            // We can't derive from an uninitialized signer anymore. Let's just fall back to standard EOA auth if empty.
+            // But log a critical warning.
+            warn!("⚠️ Live mode usually requires POLYMARKET_FUNDER_ADDRESS (Proxy Wallet) to trade.");
+            None
+        }
+    } else {
+        base_settings.funder_address.clone()
+    };
+
+    let funder_alloy = funder_address
+        .as_ref()
+        .and_then(|addr| addr.parse::<alloy::primitives::Address>().ok());
+
     // ═══ Initialize CLOB client (once, reused across rotations) ═══
+    // We pass funder_alloy down so API key is derived on behalf of the proxy wallet.
     let (clob_client, signer) = if !dry_run {
         init_clob_client(
             &base_settings.rest_url,
             base_settings.private_key.as_deref(),
+            funder_alloy,
         )
         .await
     } else {
@@ -610,32 +634,27 @@ async fn main() -> anyhow::Result<()> {
              Set PM_DRY_RUN=true or fix private key / auth config."
         );
     }
-
-    // P1 FIX: Derive funder_address from private key if not explicitly set.
-    // In live mode, empty funder_address would cause ALL maker fills to be filtered out.
-    let funder_address: Option<String> = if !dry_run {
-        let explicit = base_settings.funder_address.clone()
-            .filter(|s| !s.trim().is_empty());
-        if let Some(addr) = explicit {
-            info!("🔑 Using explicit POLYMARKET_FUNDER_ADDRESS: {}…", &addr[..10.min(addr.len())]);
-            Some(addr)
-        } else if let Some(ref s) = signer {
-            // Derive from the signer's address
+    
+    // Fallback: If no explicit funder address was given but we have a signer, we assume EOA mapping.
+    let funder_address = match funder_address {
+        Some(addr) => Some(addr),
+        None if signer.is_some() => {
             #[allow(unused_imports)]
             use alloy::signers::Signer;
-            let derived = format!("{:?}", s.address());
-            info!("🔑 Derived funder_address from private key: {}…", &derived[..10.min(derived.len())]);
+            let derived = format!("{:?}", signer.as_ref().unwrap().address());
+            info!("🔑 Deduced funder_address from EOA private key: {}…", &derived[..10.min(derived.len())]);
             Some(derived)
-        } else {
-            anyhow::bail!(
-                "🚨 FATAL: Live mode requires POLYMARKET_FUNDER_ADDRESS or a valid private key \
-                 to derive the wallet address. Without it, ALL maker fills will be silently \
-                 filtered out and inventory will never update."
-            );
         }
-    } else {
-        base_settings.funder_address.clone()
+        None => None,
     };
+
+    if !dry_run && funder_address.is_none() {
+        anyhow::bail!(
+            "🚨 FATAL: Live mode requires POLYMARKET_FUNDER_ADDRESS or a valid private key \
+             to derive the wallet address. Without it, ALL maker fills will be silently \
+             filtered out and inventory will never update."
+        );
+    }
 
     // ═══ Derive L2 API credentials for User WS (live mode only) ═══
     let api_creds: Option<(String, String, String)> = if !dry_run {
