@@ -452,7 +452,7 @@ impl UserWsListener {
         if fills.is_empty() {
             if owner_mismatch {
                 warn!(
-                    "👤 maker_orders owner does not match api_key; please verify owner/api_key format"
+                    "👤 maker_orders owner mismatch — verify POLYMARKET_FUNDER_ADDRESS is correct"
                 );
             } else if owner_missing {
                 warn!("👤 maker_orders missing owner field; skipped to avoid wrong inventory");

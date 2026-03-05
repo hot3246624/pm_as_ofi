@@ -4,7 +4,7 @@
 //! and broadcasts snapshots via a `watch` channel for the Coordinator to read.
 
 use tokio::sync::{mpsc, watch};
-use tracing::info;
+use tracing::{info, warn};
 
 use super::messages::{FillEvent, FillStatus, InventoryState};
 use super::types::Side;
@@ -131,8 +131,8 @@ impl InventoryManager {
         info!("📦 InventoryManager shutting down (channel closed)");
     }
 
-    /// P1 FIX: Apply a fill using ledger-based VWAP reconstruction.
-    /// Matched → add to ledger. Confirmed → idempotent (don't double-count).
+    /// Apply a fill using ledger-based VWAP reconstruction.
+    /// Matched → add to ledger. Confirmed → idempotent if Matched exists, else record.
     /// Failed → remove from ledger. Then recompute from scratch.
     fn apply_fill(&mut self, fill: &FillEvent) {
         match fill.status {
@@ -145,15 +145,35 @@ impl InventoryManager {
                 });
             }
             FillStatus::Confirmed => {
-                // AUDIT FIX: Confirmed is a status upgrade of an existing Matched fill.
-                // Polymarket sends MATCHED → CONFIRMED for the same trade.
-                // If we push again here, inventory doubles. So we do nothing —
-                // the Matched entry already recorded the correct size and price.
-                // Just log it for observability.
-                info!(
-                    "📦 Confirmed fill for order {}… — already tracked via Matched (no-op)",
-                    &fill.order_id[..8.min(fill.order_id.len())]
-                );
+                // Check if we already have a Matched entry for this order+side+size.
+                // If yes → idempotent no-op (MATCHED→CONFIRMED normal path).
+                // If no → this is a Confirmed-first scenario (e.g. after reconnect),
+                //         so we must record it to avoid losing the fill entirely.
+                let already_tracked = self.ledger.iter().any(|r| {
+                    r.order_id == fill.order_id
+                        && r.side == fill.side
+                        && (r.size - fill.filled_size).abs() < f64::EPSILON
+                });
+                if already_tracked {
+                    info!(
+                        "📦 Confirmed fill for order {}… — already tracked via Matched (no-op)",
+                        &fill.order_id[..8.min(fill.order_id.len())]
+                    );
+                    return; // Skip recompute — nothing changed
+                } else {
+                    // Confirmed-first: no Matched was seen (likely reconnect replay).
+                    // Record it to prevent inventory loss.
+                    warn!(
+                        "📦 Confirmed-first fill for order {}… — no prior Matched, recording to prevent loss",
+                        &fill.order_id[..8.min(fill.order_id.len())]
+                    );
+                    self.ledger.push(FillRecord {
+                        order_id: fill.order_id.clone(),
+                        side: fill.side,
+                        size: fill.filled_size,
+                        price: fill.price,
+                    });
+                }
             }
             FillStatus::Failed => {
                 // Remove the FIRST matching entry for this order_id + side + size

@@ -122,10 +122,14 @@ fn compute_current_slug(prefix: &str) -> (String, u64) {
 }
 
 /// Resolve a market by exact slug via Gamma API.
+/// P2 FIX: 10s timeout + explicit error on network stall.
 async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, String)> {
     info!("🔍 Resolving market: {}", slug);
     let url = format!("https://gamma-api.polymarket.com/markets?slug={}", slug);
-    let resp: Value = reqwest::get(&url).await?.json().await?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()?;
+    let resp: Value = client.get(&url).send().await?.json().await?;
 
     if let Some(markets) = resp.as_array() {
         if let Some(market) = markets.first() {
@@ -601,6 +605,32 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
+    // P1 FIX: Derive funder_address from private key if not explicitly set.
+    // In live mode, empty funder_address would cause ALL maker fills to be filtered out.
+    let funder_address: Option<String> = if !dry_run {
+        let explicit = base_settings.funder_address.clone()
+            .filter(|s| !s.trim().is_empty());
+        if let Some(addr) = explicit {
+            info!("🔑 Using explicit POLYMARKET_FUNDER_ADDRESS: {}…", &addr[..10.min(addr.len())]);
+            Some(addr)
+        } else if let Some(ref s) = signer {
+            // Derive from the signer's address
+            #[allow(unused_imports)]
+            use alloy::signers::Signer;
+            let derived = format!("{:?}", s.address());
+            info!("🔑 Derived funder_address from private key: {}…", &derived[..10.min(derived.len())]);
+            Some(derived)
+        } else {
+            anyhow::bail!(
+                "🚨 FATAL: Live mode requires POLYMARKET_FUNDER_ADDRESS or a valid private key \
+                 to derive the wallet address. Without it, ALL maker fills will be silently \
+                 filtered out and inventory will never update."
+            );
+        }
+    } else {
+        base_settings.funder_address.clone()
+    };
+
     // ═══ Derive L2 API credentials for User WS (live mode only) ═══
     let api_creds: Option<(String, String, String)> = if !dry_run {
         // Try env vars first, then derive from private key
@@ -804,6 +834,7 @@ async fn main() -> anyhow::Result<()> {
             exec_fill_rx,
         );
         let executor_handle = tokio::spawn(executor.run());
+        let executor_abort = executor_handle.abort_handle();
 
         // 5. User WS Listener (live mode only — single source of truth for fills)
         if let Some((ref api_key, ref api_secret, ref api_passphrase)) = api_creds {
@@ -822,7 +853,7 @@ async fn main() -> anyhow::Result<()> {
                     yes_asset_id: yes_asset_id.clone(),
                     no_asset_id: no_asset_id.clone(),
                     // P0 FIX: Pass wallet address for owner matching
-                    funder_address: base_settings.funder_address.clone().unwrap_or_default(),
+                    funder_address: funder_address.clone().unwrap_or_default(),
                 },
                 fill_tx,
             );
@@ -858,13 +889,12 @@ async fn main() -> anyhow::Result<()> {
         info!("🧹 CancelAll sent — waiting for executor graceful shutdown (8s timeout)");
         
         // Wait up to 8s for the executor to complete its work and exit
-        // P1 FIX: If timeout expires, explicitly abort executor to prevent task leak
+        // P1 FIX: If timeout expires, use the AbortHandle to force-kill the executor task
         match tokio::time::timeout(Duration::from_secs(8), executor_handle).await {
             Ok(_) => { /* executor exited gracefully */ }
             Err(_) => {
-                warn!("⚠️ Executor did not finish within 8s timeout — force aborting");
-                // executor_handle was consumed by timeout, but the spawned task
-                // is tracked via session_handles below which will be aborted.
+                warn!("⚠️ Executor did not finish within 8s timeout — force aborting via AbortHandle");
+                executor_abort.abort();
             }
         }
 
