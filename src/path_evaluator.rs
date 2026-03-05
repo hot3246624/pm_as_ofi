@@ -172,9 +172,8 @@ impl PathEvaluator {
                 let price_ratio = if zero_for_one {
                     // token0 -> token1: 基于 sqrtPriceX96
                     let sqrt_price_scaled = sqrt_price / U256::from(10).pow(U256::from(12));
-                    let price_scaled = (sqrt_price_scaled * sqrt_price_scaled)
-                        / U256::from(10).pow(U256::from(24));
-                    price_scaled
+                    (sqrt_price_scaled * sqrt_price_scaled)
+                        / U256::from(10).pow(U256::from(24))
                 } else {
                     // token1 -> token0: 反向计算
                     let sqrt_price_scaled = sqrt_price / U256::from(10).pow(U256::from(12));

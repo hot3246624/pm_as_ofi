@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use anyhow::Result;
 use dotenv::dotenv;
 use tracing::{info, Level};

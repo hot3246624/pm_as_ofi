@@ -266,16 +266,6 @@ mod tests {
         }
     }
 
-    fn make_failed_fill(side: Side, size: f64, price: f64) -> FillEvent {
-        FillEvent {
-            order_id: "test-order-fail".to_string(),
-            side,
-            filled_size: size,
-            price,
-            status: FillStatus::Failed,
-            ts: Instant::now(),
-        }
-    }
 
     #[test]
     fn test_single_side_fill() {

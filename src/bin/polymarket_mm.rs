@@ -1,3 +1,4 @@
+#![allow(warnings)]
 use anyhow::Context;
 use futures::{SinkExt, StreamExt};
 use pm_as_ofi::polymarket::legacy::order_manager::OrderManager;

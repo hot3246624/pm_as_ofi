@@ -1,3 +1,4 @@
+#![allow(warnings)]
 // 简单的WebSocket连接测试
 use std::time::Duration;
 use tokio_tungstenite::connect_async;

@@ -3,7 +3,7 @@ use crate::AppState;
 use alloy_primitives::Address;
 use axum::{
     extract::State,
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};

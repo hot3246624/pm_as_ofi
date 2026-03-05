@@ -307,7 +307,7 @@ where
                                     .getPair(a, b)
                                     .call()
                                     .await
-                                    .map_err(|e| anyhow::Error::from(e))
+                                    .map_err(anyhow::Error::from)
                             })
                         })
                         .await
@@ -359,7 +359,7 @@ where
                     let t1b = pair.token1();
                     let rb = pair.getReserves();
                     tokio::try_join!(t0b.call(), t1b.call(), rb.call())
-                        .map_err(|e| anyhow::Error::from(e))
+                        .map_err(anyhow::Error::from)
                 })
             })
             .await
@@ -488,7 +488,7 @@ where
                         let t1_builder = pair.token1();
                         let r_builder = pair.getReserves();
                         tokio::try_join!(t0_builder.call(), t1_builder.call(), r_builder.call())
-                            .map_err(|e| anyhow::Error::from(e))
+                            .map_err(anyhow::Error::from)
                     })
                 })
                 .await

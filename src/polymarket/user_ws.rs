@@ -585,6 +585,48 @@ fn parse_f64_field(val: &Value, field: &str) -> Option<f64> {
     })
 }
 
+// ─────────────────────────────────────────────────────────
+// API Key Derivation (L1 → L2)
+// ─────────────────────────────────────────────────────────
+
+/// Derive L2 API credentials from a private key via Polymarket REST API.
+///
+/// Calls: GET /auth/derive-api-key with L1 EIP-712 signature.
+/// Returns: (api_key, api_secret, api_passphrase)
+pub async fn derive_api_key(
+    rest_url: &str,
+    private_key: &str,
+) -> anyhow::Result<(String, String, String)> {
+    use alloy::signers::local::LocalSigner;
+    use alloy::signers::Signer;
+    use secrecy::ExposeSecret;
+
+    info!("🔑 Deriving L2 API credentials...");
+
+    // Parse private key
+    let signer: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> =
+        std::str::FromStr::from_str(private_key)?;
+    let signer = signer.with_chain_id(Some(137));
+
+    // Create unauthenticated CLOB client and derive API key
+    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
+    let client = ClobClient::new(rest_url, ClobConfig::default())?;
+    let creds = client.derive_api_key(&signer, None).await?;
+
+    // Extract credentials via public accessors
+    let api_key = creds.key().to_string();
+    let api_secret = creds.secret().expose_secret().to_string();
+    let api_passphrase = creds.passphrase().expose_secret().to_string();
+
+    info!(
+        "✅ L2 API key derived: {}...",
+        &api_key[..8.min(api_key.len())]
+    );
+
+    Ok((api_key, api_secret, api_passphrase))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,43 +688,3 @@ mod tests {
     }
 }
 
-// ─────────────────────────────────────────────────────────
-// API Key Derivation (L1 → L2)
-// ─────────────────────────────────────────────────────────
-
-/// Derive L2 API credentials from a private key via Polymarket REST API.
-///
-/// Calls: GET /auth/derive-api-key with L1 EIP-712 signature.
-/// Returns: (api_key, api_secret, api_passphrase)
-pub async fn derive_api_key(
-    rest_url: &str,
-    private_key: &str,
-) -> anyhow::Result<(String, String, String)> {
-    use alloy::signers::local::LocalSigner;
-    use alloy::signers::Signer;
-    use secrecy::ExposeSecret;
-
-    info!("🔑 Deriving L2 API credentials...");
-
-    // Parse private key
-    let signer: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> =
-        std::str::FromStr::from_str(private_key)?;
-    let signer = signer.with_chain_id(Some(137));
-
-    // Create unauthenticated CLOB client and derive API key
-    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
-    let client = ClobClient::new(rest_url, ClobConfig::default())?;
-    let creds = client.derive_api_key(&signer, None).await?;
-
-    // Extract credentials via public accessors
-    let api_key = creds.key().to_string();
-    let api_secret = creds.secret().expose_secret().to_string();
-    let api_passphrase = creds.passphrase().expose_secret().to_string();
-
-    info!(
-        "✅ L2 API key derived: {}...",
-        &api_key[..8.min(api_key.len())]
-    );
-
-    Ok((api_key, api_secret, api_passphrase))
-}
