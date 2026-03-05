@@ -161,6 +161,8 @@ pub struct StrategyCoordinator {
     book: Book,
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
+    /// P2 FIX: Timestamp of last valid book update for staleness detection.
+    last_valid_ts: Instant,
     yes_bid: BidSlot,
     no_bid: BidSlot,
     stats: Stats,
@@ -186,6 +188,7 @@ impl StrategyCoordinator {
             cfg,
             book: Book::default(),
             last_valid_book: Book::default(),
+            last_valid_ts: Instant::now(),
             yes_bid: BidSlot::default(),
             no_bid: BidSlot::default(),
             stats: Stats::default(),
@@ -261,11 +264,18 @@ impl StrategyCoordinator {
         if yb > 0.0 && ya > 0.0 {
             self.last_valid_book.yes_bid = yb;
             self.last_valid_book.yes_ask = ya;
+            self.last_valid_ts = Instant::now();
         }
         if nb > 0.0 && na > 0.0 {
             self.last_valid_book.no_bid = nb;
             self.last_valid_book.no_ask = na;
+            self.last_valid_ts = Instant::now();
         }
+    }
+
+    /// P2 FIX: Check if last_valid_book is stale (>30s without fresh data).
+    fn is_book_stale(&self) -> bool {
+        self.last_valid_ts.elapsed() > std::time::Duration::from_secs(30)
     }
 
     /// Get usable book (current if valid, otherwise last_valid fallback).
@@ -314,6 +324,20 @@ impl StrategyCoordinator {
         if ub.yes_bid <= 0.0 || ub.no_bid <= 0.0 {
             self.stats.skipped_empty_book += 1;
             return; // No valid book data at all
+        }
+
+        // P2 FIX: If last_valid_book is stale (>30s), cancel everything and refuse to open.
+        if self.is_book_stale() {
+            if self.yes_bid.active {
+                warn!("⚠️ Stale book (>30s) — canceling YES bid");
+                self.cancel(Side::Yes, CancelReason::Shutdown).await;
+            }
+            if self.no_bid.active {
+                warn!("⚠️ Stale book (>30s) — canceling NO bid");
+                self.cancel(Side::No, CancelReason::Shutdown).await;
+            }
+            self.stats.skipped_empty_book += 1;
+            return;
         }
 
         if inv.net_diff.abs() < f64::EPSILON {

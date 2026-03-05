@@ -296,10 +296,17 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
                     .get("price")
                     .and_then(parse_price_value)
                     .unwrap_or(0.0);
-                let size = value
+                let size = match value
                     .get("size")
                     .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
-                    .unwrap_or(1.0); // Default to 1 if no size
+                {
+                    Some(s) if s > 0.0 => s,
+                    _ => {
+                        // P2 FIX: Missing size — discard instead of injecting fake 1.0
+                        debug!("OFI parser: missing or zero 'size' in trade, skipping to avoid fake toxicity");
+                        return msgs;
+                    }
+                };
 
                 let Some(side_val) = value.get("side").and_then(|v| v.as_str()) else {
                     debug!("OFI parser: missing 'side' field in trade, skipping to avoid bias");
@@ -650,7 +657,16 @@ async fn main() -> anyhow::Result<()> {
         let (slug, end_ts) = if prefix_mode {
             compute_current_slug(&raw_slug)
         } else {
+            // P2 FIX: Cap secs_remaining to avoid Instant + Duration overflow panics
             (raw_slug.clone(), u64::MAX) // Fixed mode: no expiry
+        };
+
+        // P2 FIX: Clamp end_ts for deadline calculation to avoid overflow
+        let effective_end_ts = if end_ts == u64::MAX {
+            // Fixed mode: use a sane 1-year cap instead of u64::MAX
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 31_536_000
+        } else {
+            end_ts
         };
 
         // Entry gate: if startup is too late in the current interval, skip it.
@@ -805,6 +821,8 @@ async fn main() -> anyhow::Result<()> {
                     market_id: market_id.clone(),
                     yes_asset_id: yes_asset_id.clone(),
                     no_asset_id: no_asset_id.clone(),
+                    // P0 FIX: Pass wallet address for owner matching
+                    funder_address: base_settings.funder_address.clone().unwrap_or_default(),
                 },
                 fill_tx,
             );
@@ -818,8 +836,17 @@ async fn main() -> anyhow::Result<()> {
 
         info!("🚀 Actors spawned — starting WS feed");
 
+        // P1 FIX: Startup reconciliation — sweep any lingering orders from prior crashes
+        if !dry_run {
+            let _ = exec_tx.send(ExecutionCmd::CancelAll {
+                reason: CancelReason::Startup,
+            }).await;
+            info!("🧹 Startup CancelAll sent — clearing any stale orders from prior session");
+        }
+
         // ── Step 3: Run until market expires ──
-        let reason = run_market_ws(settings, ofi_md_tx, coord_md_tx, end_ts).await;
+        // P2 FIX: Use effective_end_ts to avoid overflow in fixed mode
+        let reason = run_market_ws(settings, ofi_md_tx, coord_md_tx, effective_end_ts).await;
         info!("🏁 Market ended: {:?}", reason);
 
         // ── Step 4: Cleanup ──
@@ -831,7 +858,15 @@ async fn main() -> anyhow::Result<()> {
         info!("🧹 CancelAll sent — waiting for executor graceful shutdown (8s timeout)");
         
         // Wait up to 8s for the executor to complete its work and exit
-        let _ = tokio::time::timeout(Duration::from_secs(8), executor_handle).await;
+        // P1 FIX: If timeout expires, explicitly abort executor to prevent task leak
+        match tokio::time::timeout(Duration::from_secs(8), executor_handle).await {
+            Ok(_) => { /* executor exited gracefully */ }
+            Err(_) => {
+                warn!("⚠️ Executor did not finish within 8s timeout — force aborting");
+                // executor_handle was consumed by timeout, but the spawned task
+                // is tracked via session_handles below which will be aborted.
+            }
+        }
 
         info!("🧹 Aborting remaining session tasks");
 

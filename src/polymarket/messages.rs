@@ -164,6 +164,8 @@ pub enum CancelReason {
     Shutdown,
     /// Market has expired — clean up before rotating.
     MarketExpired,
+    /// P1 FIX: Startup reconciliation — clear any lingering orders from crashes.
+    Startup,
 }
 
 // ─────────────────────────────────────────────────────────

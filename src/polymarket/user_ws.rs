@@ -46,6 +46,9 @@ pub struct UserWsConfig {
     pub yes_asset_id: String,
     /// NO token asset ID
     pub no_asset_id: String,
+    /// Wallet address (EOA or Proxy/Funder) used to match maker_orders.owner.
+    /// P0 FIX: `owner` is a wallet address, NOT an API key.
+    pub funder_address: String,
 }
 
 // ─────────────────────────────────────────────────────────
@@ -335,12 +338,13 @@ impl UserWsListener {
         };
 
         let mut fills = Vec::new();
-        let our_key = self.cfg.api_key.trim().to_lowercase();
+        // P0 FIX: Compare owner against wallet address, NOT api_key.
+        let our_addr = self.cfg.funder_address.trim().to_lowercase();
         let mut owner_mismatch = false;
         let mut owner_missing = false;
 
         for mo in maker_orders {
-            // P1-7: Owner filtering — only process our own maker fills
+            // P0: Owner filtering — only process our own maker fills
             let owner = mo
                 .get("owner")
                 .and_then(|v| v.as_str())
@@ -353,7 +357,7 @@ impl UserWsListener {
                 continue;
             }
 
-            if owner != our_key {
+            if owner != our_addr {
                 owner_mismatch = true;
                 debug!(
                     "👤 Skipping maker_order from other owner: {}…",
@@ -597,6 +601,7 @@ mod tests {
                 market_id: "mkt".to_string(),
                 yes_asset_id: "1".to_string(),
                 no_asset_id: "2".to_string(),
+                funder_address: "0xtest_wallet".to_string(),
             },
             fill_tx,
         )
