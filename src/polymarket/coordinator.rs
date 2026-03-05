@@ -6,7 +6,8 @@
 //!    cancel BOTH sides immediately. Arbitrageurs transmit imbalance
 //!    across YES/NO books — toxic flow on one side predicts the other.
 //!
-//! 2. **Price Boundary Clamping**: all bid prices → clamp(0.001, 0.999).
+//! 2. **Price Boundary Clamping**: all bid prices are tick-aligned and
+//!    clamped into `(tick, 1 - tick)`.
 //!    Prevents negative or >1.0 prices from math edge cases.
 //!
 //! 3. **Anti-Thrashing**: 200ms debounce per side after placing a bid.
@@ -48,7 +49,7 @@ impl Default for CoordinatorConfig {
             pair_target: 0.99,
             max_net_diff: 5.0,
             bid_size: 2.0,
-            tick_size: 0.001,
+            tick_size: 0.01,
             reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
             debounce_ms: 500,         // Increased to reduce churn (half second)
             dry_run: true,
@@ -76,7 +77,14 @@ impl CoordinatorConfig {
         }
         if let Ok(v) = std::env::var("PM_TICK_SIZE") {
             if let Ok(f) = v.parse() {
-                c.tick_size = f;
+                if (0.0..1.0).contains(&f) {
+                    c.tick_size = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_TICK_SIZE={} (must satisfy 0 < tick < 1), using {}",
+                        f, c.tick_size
+                    );
+                }
             }
         }
         if let Ok(v) = std::env::var("PM_REPRICE_THRESHOLD") {
@@ -516,10 +524,23 @@ impl StrategyCoordinator {
         self.safe_price(ceiling.min(one_tick_below))
     }
 
-    /// FIX #2: Clamp + round to tick. Prevents negative/out-of-range prices.
+    /// FIX #2: Clamp + floor to tick. Prevents negative/out-of-range prices.
     fn safe_price(&self, p: f64) -> f64 {
-        let floored = (p / self.cfg.tick_size).floor() * self.cfg.tick_size;
-        let clamped = floored.clamp(0.001, 0.999);
+        let tick = self.cfg.tick_size;
+        if !(0.0..1.0).contains(&tick) {
+            return 0.0;
+        }
+
+        // Keep price within strict valid quote bounds while preserving tick alignment.
+        let max_ticks = (1.0 / tick).floor() - 1.0;
+        if max_ticks < 1.0 {
+            return 0.0;
+        }
+        let min_price = tick;
+        let max_price = max_ticks * tick;
+
+        let floored = (p / tick).floor() * tick;
+        let clamped = floored.clamp(min_price, max_price);
         if (clamped - floored).abs() > 1e-9 {
             self.stats_price_clamped();
         }
@@ -663,13 +684,13 @@ mod tests {
     #[test]
     fn test_safe_price_clamps_negative() {
         let (_, _, _, _, c) = make(cfg());
-        assert!((c.safe_price(-0.5) - 0.001).abs() < 1e-9);
+        assert!((c.safe_price(-0.5) - 0.01).abs() < 1e-9);
     }
 
     #[test]
     fn test_safe_price_clamps_over_one() {
         let (_, _, _, _, c) = make(cfg());
-        assert!((c.safe_price(1.5) - 0.999).abs() < 1e-3);
+        assert!((c.safe_price(1.5) - 0.99).abs() < 1e-9);
     }
 
     #[test]

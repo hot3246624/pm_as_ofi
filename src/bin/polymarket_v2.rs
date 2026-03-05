@@ -831,6 +831,7 @@ async fn main() -> anyhow::Result<()> {
                 rest_url: settings.rest_url.clone(),
                 yes_asset_id: yes_asset_id.clone(),
                 no_asset_id: no_asset_id.clone(),
+                tick_size: coord_cfg.tick_size,
                 dry_run,
             },
             clob_client.clone(),

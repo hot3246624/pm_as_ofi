@@ -71,7 +71,7 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_DRY_RUN` | `true` | 模拟模式开关 |
 | `PM_PAIR_TARGET` | `0.99` | YES+NO 出价上限。越低越安全利润越高，但成交率下降 |
 | `PM_BID_SIZE` | `2.0` | 每次挂单股数（美元） |
-| `PM_TICK_SIZE` | `0.001` | 最小价格步长 |
+| `PM_TICK_SIZE` | `0.01` | 最小价格步长 |
 | `PM_REPRICE_THRESHOLD` | `0.010` | 价差偏移多少才触发重报价 |
 | `PM_DEBOUNCE_MS` | `500` | 同侧挂单最小间隔（毫秒） |
 | `PM_ENTRY_GRACE_SECONDS` | `30` | 开盘后允许入场窗口（秒） |
@@ -99,7 +99,7 @@ POLYMARKET_MARKET_SLUG="btc-updown-5m"
 # 策略核心
 PM_PAIR_TARGET=0.985          # 保守让利 1.5%，每对锁利 $0.015
 PM_BID_SIZE=5.0               # 每侧 $5 挂单
-PM_TICK_SIZE=0.001
+PM_TICK_SIZE=0.01
 PM_REPRICE_THRESHOLD=0.010    # 1分钱漂移才换单，防撤单风暴
 PM_DEBOUNCE_MS=500            # 半秒防抖
 

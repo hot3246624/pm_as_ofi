@@ -35,6 +35,7 @@ pub struct ExecutorConfig {
     pub rest_url: String,
     pub yes_asset_id: String,
     pub no_asset_id: String,
+    pub tick_size: f64,
     pub dry_run: bool,
 }
 
@@ -140,7 +141,10 @@ impl Executor {
                     orders.len(),
                 );
                 // Notify Coordinator: slot is now free
-                let _ = self.result_tx.send(OrderResult::OrderFilled { side: fill.side }).await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderFilled { side: fill.side })
+                    .await;
             }
             return;
         }
@@ -158,7 +162,10 @@ impl Executor {
                     orders.len(),
                 );
                 // AUDIT FIX: Notify Coordinator that the slot is free for new orders
-                let _ = self.result_tx.send(OrderResult::OrderFilled { side: fill.side }).await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderFilled { side: fill.side })
+                    .await;
             } else {
                 info!(
                     "📋 Lifecycle: {:?} order {}… partial fill {:.2}, remaining={:.2}",
@@ -221,7 +228,38 @@ impl Executor {
                 // NO FillEvent here. Fills come from User WS only.
             }
             Err(e) => {
-                warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, e);
+                let mut final_err = e;
+
+                // Runtime self-heal: if venue rejects due tick precision, learn min tick and retry once.
+                if let Some(min_tick) = Self::extract_min_tick_size(&format!("{:#}", final_err)) {
+                    if (0.0..1.0).contains(&min_tick)
+                        && (min_tick - self.cfg.tick_size).abs() > f64::EPSILON
+                    {
+                        warn!(
+                            "🔧 Venue min tick learned: {:.6} -> {:.6}; retrying once",
+                            self.cfg.tick_size, min_tick
+                        );
+                        self.cfg.tick_size = min_tick;
+                    }
+
+                    match self.place_post_only_order(side, price, size).await {
+                        Ok(order_id) => {
+                            info!(
+                                "✅ Order placed after tick-size retry: {:?}@{:.3} id={}",
+                                side, price, order_id
+                            );
+                            if let Some(orders) = self.open_orders.get_mut(&side) {
+                                orders.insert(order_id, size);
+                            }
+                            return;
+                        }
+                        Err(retry_err) => {
+                            final_err = retry_err;
+                        }
+                    }
+                }
+
+                warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
                 // FIX #4: Notify Coordinator the order failed so it can reset the slot
                 let _ = self.result_tx.send(OrderResult::OrderFailed { side }).await;
             }
@@ -368,7 +406,15 @@ impl Executor {
             Side::No => &self.cfg.no_asset_id,
         };
 
-        let price_rounded = (price * 1000.0).round() / 1000.0;
+        if !(0.0..1.0).contains(&self.cfg.tick_size) {
+            anyhow::bail!("invalid tick_size={}", self.cfg.tick_size);
+        }
+        let inv_tick = (1.0 / self.cfg.tick_size).round();
+        if !inv_tick.is_finite() || inv_tick <= 0.0 {
+            anyhow::bail!("invalid tick_size reciprocal={}", inv_tick);
+        }
+        // BUY maker bids must not round up to a more aggressive price.
+        let price_rounded = (price * inv_tick).floor() / inv_tick;
         let size_rounded = (size * 1_000_000.0).round() / 1_000_000.0;
 
         let price_decimal = rust_decimal::Decimal::from_f64(price_rounded)
@@ -420,6 +466,21 @@ impl Executor {
         // Fills come exclusively from the authenticated User WebSocket.
 
         Ok(order_id)
+    }
+
+    fn extract_min_tick_size(err: &str) -> Option<f64> {
+        let lower = err.to_ascii_lowercase();
+        let marker = "minimum tick size ";
+        let idx = lower.find(marker)?;
+        let tail = &lower[idx + marker.len()..];
+        let num: String = tail
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+            .collect();
+        if num.is_empty() {
+            return None;
+        }
+        num.parse::<f64>().ok().filter(|v| *v > 0.0)
     }
 
     /// Get count of open orders for a side.
