@@ -152,7 +152,7 @@ impl InventoryManager {
                 let already_tracked = self.ledger.iter().any(|r| {
                     r.order_id == fill.order_id
                         && r.side == fill.side
-                        && (r.size - fill.filled_size).abs() < f64::EPSILON
+                        && (r.size - fill.filled_size).abs() < 1e-6
                 });
                 if already_tracked {
                     info!(
@@ -180,7 +180,7 @@ impl InventoryManager {
                 if let Some(idx) = self.ledger.iter().position(|r| {
                     r.order_id == fill.order_id
                         && r.side == fill.side
-                        && (r.size - fill.filled_size).abs() < f64::EPSILON
+                        && (r.size - fill.filled_size).abs() < 1e-6
                 }) {
                     self.ledger.remove(idx);
                 } else {
@@ -363,5 +363,61 @@ mod tests {
         assert!((im.state.net_diff - 5.0).abs() < 1e-9);
         // P1 FIX: avg_cost should still be exactly 0.50 after reversal
         assert!((im.state.yes_avg_cost - 0.50).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_confirmed_first_records_fill() {
+        // Simulate reconnect scenario: only CONFIRMED arrives, no prior MATCHED.
+        // The fill should still be recorded to prevent silent inventory loss.
+        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+        let (_fill_tx, fill_rx) = mpsc::channel(16);
+        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+
+        // Only Confirmed arrives (no prior Matched)
+        im.apply_fill(&FillEvent {
+            order_id: "confirmed-only".to_string(),
+            side: Side::Yes,
+            filled_size: 5.0,
+            price: 0.48,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        });
+
+        // Should be recorded, not silently dropped
+        assert!((im.state.yes_qty - 5.0).abs() < 1e-9);
+        assert!((im.state.yes_avg_cost - 0.48).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_confirmed_after_matched_is_noop() {
+        // Normal lifecycle: MATCHED then CONFIRMED for the same order.
+        // Inventory should NOT double.
+        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+        let (_fill_tx, fill_rx) = mpsc::channel(16);
+        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+
+        // Matched first
+        im.apply_fill(&FillEvent {
+            order_id: "duptest".to_string(),
+            side: Side::No,
+            filled_size: 3.0,
+            price: 0.45,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+        assert!((im.state.no_qty - 3.0).abs() < 1e-9);
+
+        // Confirmed: should be no-op (idempotent)
+        im.apply_fill(&FillEvent {
+            order_id: "duptest".to_string(),
+            side: Side::No,
+            filled_size: 3.0,
+            price: 0.45,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        });
+        // Still 3.0, NOT 6.0
+        assert!((im.state.no_qty - 3.0).abs() < 1e-9);
+        assert!((im.state.no_avg_cost - 0.45).abs() < 1e-9);
     }
 }

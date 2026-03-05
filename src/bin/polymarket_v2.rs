@@ -469,8 +469,8 @@ async fn run_market_ws(
                     continue;
                 }
 
-                // Ping keepalive
-                tokio::spawn(async move {
+                // Ping keepalive — store handle for explicit cleanup
+                let ping_handle = tokio::spawn(async move {
                     let mut delay = tokio::time::interval(Duration::from_secs(10));
                     loop {
                         delay.tick().await;
@@ -489,6 +489,7 @@ async fn run_market_ws(
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => {
                             info!("🏁 Market expired (wall-clock) — stopping WS");
+                            ping_handle.abort();
                             return MarketEnd::Expired;
                         }
                         msg = read.next() => {
@@ -520,13 +521,18 @@ async fn run_market_ws(
                                 }
                                 Some(Ok(Message::Close(_))) => {
                                     warn!("WS closed by server");
+                                    ping_handle.abort();
                                     break;
                                 }
                                 Some(Err(err)) => {
                                     warn!("WS error: {err:?}");
+                                    ping_handle.abort();
                                     break;
                                 }
-                                None => break,
+                                None => {
+                                    ping_handle.abort();
+                                    break;
+                                }
                                 _ => {}
                             }
                         }
