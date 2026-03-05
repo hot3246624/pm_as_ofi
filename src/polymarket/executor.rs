@@ -111,7 +111,7 @@ impl Executor {
                 // FIX #4: Fill notifications — clean up open_orders lifecycle
                 fill = self.fill_rx.recv() => {
                     if let Some(fill) = fill {
-                        self.handle_fill_notification(&fill);
+                        self.handle_fill_notification(&fill).await;
                     }
                 }
             }
@@ -127,7 +127,8 @@ impl Executor {
     /// Handle fill notifications from User WS.
     /// MATCHED: decrement remaining_size, remove when fully filled.
     /// FAILED: order is dead/reverted — remove entirely.
-    fn handle_fill_notification(&mut self, fill: &FillEvent) {
+    /// AUDIT FIX: Sends OrderFilled back to Coordinator so it can release the slot.
+    async fn handle_fill_notification(&mut self, fill: &FillEvent) {
         // P1-3: FAILED = order terminated, remove entirely
         if fill.status == FillStatus::Failed {
             let orders = self.open_orders.entry(fill.side).or_default();
@@ -138,6 +139,8 @@ impl Executor {
                     &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
+                // Notify Coordinator: slot is now free
+                let _ = self.result_tx.send(OrderResult::OrderFilled { side: fill.side }).await;
             }
             return;
         }
@@ -154,6 +157,8 @@ impl Executor {
                     &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
+                // AUDIT FIX: Notify Coordinator that the slot is free for new orders
+                let _ = self.result_tx.send(OrderResult::OrderFilled { side: fill.side }).await;
             } else {
                 info!(
                     "📋 Lifecycle: {:?} order {}… partial fill {:.2}, remaining={:.2}",

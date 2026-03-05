@@ -221,11 +221,22 @@ impl StrategyCoordinator {
                         _ => {}
                     }
                 }
-                // FIX #4: Executor order failure feedback
+                // FIX #4: Executor order failure/fill feedback
                 result = self.result_rx.recv() => {
                     match result {
                         Some(OrderResult::OrderFailed { side }) => {
                             warn!("⚠️ OrderFailed {:?} — resetting ghost slot", side);
+                            let slot = match side {
+                                Side::Yes => &mut self.yes_bid,
+                                Side::No => &mut self.no_bid,
+                            };
+                            slot.active = false;
+                            slot.price = 0.0;
+                        }
+                        Some(OrderResult::OrderFilled { side }) => {
+                            // AUDIT FIX: Order fully filled — release the slot so
+                            // Coordinator can place a new order on next tick.
+                            info!("✅ OrderFilled {:?} — releasing slot for new quotes", side);
                             let slot = match side {
                                 Side::Yes => &mut self.yes_bid,
                                 Side::No => &mut self.no_bid,

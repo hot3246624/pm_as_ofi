@@ -132,17 +132,28 @@ impl InventoryManager {
     }
 
     /// P1 FIX: Apply a fill using ledger-based VWAP reconstruction.
-    /// Matched/Confirmed → add to ledger. Failed → remove from ledger.
-    /// Then recompute all state from scratch — zero drift guaranteed.
+    /// Matched → add to ledger. Confirmed → idempotent (don't double-count).
+    /// Failed → remove from ledger. Then recompute from scratch.
     fn apply_fill(&mut self, fill: &FillEvent) {
         match fill.status {
-            FillStatus::Matched | FillStatus::Confirmed => {
+            FillStatus::Matched => {
                 self.ledger.push(FillRecord {
                     order_id: fill.order_id.clone(),
                     side: fill.side,
                     size: fill.filled_size,
                     price: fill.price,
                 });
+            }
+            FillStatus::Confirmed => {
+                // AUDIT FIX: Confirmed is a status upgrade of an existing Matched fill.
+                // Polymarket sends MATCHED → CONFIRMED for the same trade.
+                // If we push again here, inventory doubles. So we do nothing —
+                // the Matched entry already recorded the correct size and price.
+                // Just log it for observability.
+                info!(
+                    "📦 Confirmed fill for order {}… — already tracked via Matched (no-op)",
+                    &fill.order_id[..8.min(fill.order_id.len())]
+                );
             }
             FillStatus::Failed => {
                 // Remove the FIRST matching entry for this order_id + side + size
