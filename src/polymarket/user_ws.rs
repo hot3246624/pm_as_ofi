@@ -199,7 +199,7 @@ impl UserWsListener {
             &self.cfg.yes_asset_id[..8.min(self.cfg.yes_asset_id.len())],
             &self.cfg.no_asset_id[..8.min(self.cfg.no_asset_id.len())],
         );
-        debug!("👤 Subscribe payload: {}", subscribe);
+        info!("👤 Subscribe payload: {}", subscribe);
 
         write.send(Message::Text(subscribe.to_string())).await?;
 
@@ -218,6 +218,8 @@ impl UserWsListener {
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
+                    // Log first few raw messages for auth debugging
+                    info!("👤 User WS raw msg: {}", &text[..200.min(text.len())]);
                     if let Ok(value) = serde_json::from_str::<Value>(&text) {
                         // Handle arrays (batched events)
                         let values = if value.is_array() {

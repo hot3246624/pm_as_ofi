@@ -809,8 +809,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ═══ L2 API credentials for User WS (live mode only) ═══
+    // CRITICAL: User WS requires EOA-mode API credentials (no funder/proxy).
+    // The CLOB client's credentials are Proxy-mode and get rejected by User WS.
+    // So we derive a SEPARATE set of credentials specifically for User WS.
     let api_creds: Option<(String, String, String)> = if !dry_run {
-        // Prefer explicit env vars; otherwise reuse credentials from authenticated CLOB client.
+        // Prefer explicit env vars first
         let env_key = env::var("POLYMARKET_API_KEY").ok();
         let env_secret = env::var("POLYMARKET_API_SECRET").ok();
         let env_pass = env::var("POLYMARKET_API_PASSPHRASE").ok();
@@ -818,20 +821,29 @@ async fn main() -> anyhow::Result<()> {
         if let (Some(k), Some(s), Some(p)) = (env_key, env_secret, env_pass) {
             info!("🔑 Using API credentials from environment");
             Some((k, s, p))
-        } else {
-            use secrecy::ExposeSecret;
-            if let Some(client) = clob_client.as_ref() {
-                let creds = client.credentials();
-                Some((
-                    creds.key().to_string(),
-                    creds.secret().expose_secret().to_string(),
-                    creds.passphrase().expose_secret().to_string(),
-                ))
-            } else {
-                anyhow::bail!(
-                    "🚨 FATAL: dry_run=false but no authenticated CLOB client available for User WS credentials."
-                );
+        } else if let Some(pk) = base_settings.private_key.as_deref() {
+            // Derive EOA-mode API key (WITHOUT funder) — User WS requires this
+            match pm_as_ofi::polymarket::user_ws::derive_api_key(
+                &base_settings.rest_url, pk,
+            ).await {
+                Ok(creds) => {
+                    info!("🔑 Derived separate EOA-mode API key for User WS");
+                    Some(creds)
+                }
+                Err(e) => {
+                    anyhow::bail!(
+                        "🚨 FATAL: dry_run=false but failed to derive User WS API key: {:?}\n\
+                         Cannot run live without User WS — inventory would never update.\n\
+                         Set PM_DRY_RUN=true or fix credentials.", e
+                    );
+                }
             }
+        } else {
+            anyhow::bail!(
+                "🚨 FATAL: dry_run=false but no POLYMARKET_PRIVATE_KEY set.\n\
+                 Cannot run live without User WS — inventory would never update.\n\
+                 Set PM_DRY_RUN=true or provide credentials."
+            );
         }
     } else {
         None
