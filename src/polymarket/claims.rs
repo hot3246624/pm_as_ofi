@@ -63,7 +63,6 @@ sol! {
 
 const RELAYER_DEFAULT_URL: &str = "https://relayer-v2.polymarket.com";
 const RELAYER_SAFE_TX_TYPE: &str = "SAFE";
-const RELAYER_MAX_POLLS: usize = 30;
 const RELAYER_POLL_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone)]
@@ -105,6 +104,8 @@ pub struct AutoClaimConfig {
     pub builder_credentials: Option<BuilderCredentials>,
     pub builder_credentials_partial: bool,
     pub signature_type: Option<u8>,
+    pub relayer_wait_confirm: bool,
+    pub relayer_wait_timeout: Duration,
 }
 
 #[derive(Debug, Default)]
@@ -263,6 +264,16 @@ impl AutoClaimConfig {
         let signature_type = std::env::var("PM_SIGNATURE_TYPE")
             .ok()
             .and_then(|v| v.parse::<u8>().ok());
+        let relayer_wait_confirm = std::env::var("PM_AUTO_CLAIM_WAIT_CONFIRM")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+        let relayer_wait_timeout = Duration::from_secs(
+            std::env::var("PM_AUTO_CLAIM_WAIT_TIMEOUT_SECONDS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(20),
+        );
 
         let builder_api_key = std::env::var("POLYMARKET_BUILDER_API_KEY")
             .ok()
@@ -300,6 +311,8 @@ impl AutoClaimConfig {
             builder_credentials,
             builder_credentials_partial,
             signature_type,
+            relayer_wait_confirm,
+            relayer_wait_timeout,
         }
     }
 }
@@ -575,8 +588,8 @@ async fn relayer_wait_transaction(
     transaction_id: &str,
 ) -> anyhow::Result<Option<String>> {
     let base = cfg.relayer_url.trim_end_matches('/');
-
-    for _ in 0..RELAYER_MAX_POLLS {
+    let deadline = Instant::now() + cfg.relayer_wait_timeout;
+    while Instant::now() < deadline {
         tokio::time::sleep(RELAYER_POLL_DELAY).await;
 
         let url = format!("{base}/transaction?id={transaction_id}");
@@ -763,15 +776,25 @@ async fn run_safe_relayer_claims(
         .await
         .with_context(|| format!("relayer submit failed for condition {}", c.condition_id))?;
 
+        if !cfg.relayer_wait_confirm {
+            tracing::info!(
+                "✅ AUTO-CLAIM SAFE submitted: condition={} tx_id={} (wait_confirm=false)",
+                c.condition_id,
+                tx_id,
+            );
+            continue;
+        }
+
         match relayer_wait_transaction(&http, cfg, &tx_id).await {
             Ok(Some(hash)) => tracing::info!(
-                "✅ AUTO-CLAIM SAFE success: condition={} tx_id={} tx_hash={}",
+                "✅ AUTO-CLAIM SAFE confirmed: condition={} tx_id={} tx_hash={}",
                 c.condition_id,
                 tx_id,
                 hash
             ),
             Ok(None) => tracing::warn!(
-                "⚠️ AUTO-CLAIM SAFE pending timeout: condition={} tx_id={}",
+                "⚠️ AUTO-CLAIM SAFE pending timeout after {}s: condition={} tx_id={}",
+                cfg.relayer_wait_timeout.as_secs(),
                 c.condition_id,
                 tx_id
             ),

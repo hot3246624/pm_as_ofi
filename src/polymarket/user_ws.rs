@@ -10,8 +10,8 @@
 //! Auth flow:
 //!   1. Derive L2 API credentials from private key (via REST)
 //!   2. Connect to wss://ws-subscriptions-clob.polymarket.com/ws/user
-//!   3. Subscribe with API key auth + market/asset IDs
-//!   4. Listen for trade events on our asset IDs
+//!   3. Subscribe with API key auth + market condition IDs
+//!   4. Listen for trade events and split maker/taker fills
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -46,9 +46,6 @@ pub struct UserWsConfig {
     pub yes_asset_id: String,
     /// NO token asset ID
     pub no_asset_id: String,
-    /// Wallet address (EOA or Proxy/Funder) used to match maker_orders.owner.
-    /// P0 FIX: `owner` is a wallet address, NOT an API key.
-    pub funder_address: String,
 }
 
 // ─────────────────────────────────────────────────────────
@@ -134,20 +131,34 @@ impl UserWsListener {
 
         let mut backoff = Duration::from_millis(100);
         const MAX_BACKOFF: Duration = Duration::from_secs(5);
+        const FAST_RESET_WINDOW: Duration = Duration::from_secs(2);
+        let mut fast_reset_streak = 0usize;
 
         loop {
+            let session_started = Instant::now();
             match self.connect_and_listen(&mut dedup).await {
                 Ok(()) => {
                     info!("👤 User WS closed normally");
                     backoff = Duration::from_millis(100); // Reset on clean close
+                    fast_reset_streak = 0;
                 }
                 Err(e) => {
                     let msg = format!("{:?}", e);
                     if msg.contains("ResetWithoutClosingHandshake") {
-                        info!("👤 User WS server reset (expected) — fast reconnect");
-                        // Don't escalate backoff for expected resets
+                        let elapsed = session_started.elapsed();
+                        if elapsed <= FAST_RESET_WINDOW {
+                            fast_reset_streak = fast_reset_streak.saturating_add(1);
+                        } else {
+                            fast_reset_streak = 1;
+                        }
+                        warn!(
+                            "👤 User WS server reset after {:?} (streak={}): possible auth/subscription mismatch",
+                            elapsed,
+                            fast_reset_streak,
+                        );
                     } else {
                         warn!("👤 User WS error: {:?}", e);
+                        fast_reset_streak = 0;
                     }
                 }
             }
@@ -174,30 +185,20 @@ impl UserWsListener {
         info!("✅ User WS connected (status={:?})", response.status());
         let (mut write, mut read) = ws.split();
 
-        // Subscribe with authentication + market and asset IDs
-        //
-        // FIX #1: Polymarket User WS requires non-empty markets[] and/or
-        // assets_ids[] to receive trade events. We pass both the market
-        // condition_id AND the specific asset IDs we care about.
+        // Polymarket User WS subscribe schema:
+        // { "auth": {...}, "type": "user", "markets": ["<condition_id>"] }
         let subscribe = json!({
-            "type": "user",
-            "operation": "subscribe",
-            "markets": [self.cfg.market_id],
-            "assets_ids": [
-                self.cfg.yes_asset_id,
-                self.cfg.no_asset_id,
-            ],
             "auth": {
                 "apiKey": self.cfg.api_key,
                 "secret": self.cfg.api_secret,
                 "passphrase": self.cfg.api_passphrase,
             },
+            "type": "user",
+            "markets": [self.cfg.market_id.clone()],
         });
         info!(
-            "👤 Subscribe User WS: market={} assets=[{}..., {}...]",
+            "👤 Subscribe User WS: market={}",
             &self.cfg.market_id[..8.min(self.cfg.market_id.len())],
-            &self.cfg.yes_asset_id[..8.min(self.cfg.yes_asset_id.len())],
-            &self.cfg.no_asset_id[..8.min(self.cfg.no_asset_id.len())],
         );
         info!(
             "👤 Subscribe auth: apiKey={}...",
@@ -230,6 +231,9 @@ impl UserWsListener {
                         };
 
                         for val in &values {
+                            if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                                warn!("👤 User WS server error payload: {}", err);
+                            }
                             let fills = self.parse_trade_event(val, dedup);
                             for fill in fills {
                                 info!(
@@ -245,10 +249,13 @@ impl UserWsListener {
                         }
                     }
                 }
-                Ok(Message::Close(_)) => {
-                    warn!("👤 User WS closed by server");
+                Ok(Message::Close(frame)) => {
                     write_clone.abort();
-                    return Ok(());
+                    let reason = frame
+                        .as_ref()
+                        .map(|f| format!("code={:?} reason='{}'", f.code, f.reason))
+                        .unwrap_or_else(|| "no close frame".to_string());
+                    return Err(anyhow::anyhow!("User WS closed by server: {}", reason));
                 }
                 Err(e) => {
                     write_clone.abort();
@@ -337,7 +344,7 @@ impl UserWsListener {
 
     /// Extract fills from maker_orders[] — called when trader_side == "MAKER".
     /// Each maker_order has its own order_id, matched_amount, price, and asset_id.
-    /// P1-7: Filters by owner to only process OUR fills.
+    /// P1-7: Owner field is API key UUID on User WS, not wallet address.
     fn parse_maker_fills(
         &self,
         val: &Value,
@@ -353,13 +360,11 @@ impl UserWsListener {
         };
 
         let mut fills = Vec::new();
-        // P0 FIX: Compare owner against wallet address, NOT api_key.
-        let our_addr = self.cfg.funder_address.trim().to_lowercase();
+        let our_api_key = self.cfg.api_key.trim().to_lowercase();
         let mut owner_mismatch = false;
         let mut owner_missing = false;
 
         for mo in maker_orders {
-            // P0: Owner filtering — only process our own maker fills
             let owner = mo
                 .get("owner")
                 .and_then(|v| v.as_str())
@@ -369,10 +374,7 @@ impl UserWsListener {
 
             if owner.is_empty() {
                 owner_missing = true;
-                continue;
-            }
-
-            if owner != our_addr {
+            } else if owner != our_api_key {
                 owner_mismatch = true;
                 debug!(
                     "👤 Skipping maker_order from other owner: {}…",
@@ -467,10 +469,10 @@ impl UserWsListener {
         if fills.is_empty() {
             if owner_mismatch {
                 warn!(
-                    "👤 maker_orders owner mismatch — verify POLYMARKET_FUNDER_ADDRESS is correct"
+                    "👤 maker_orders owner mismatch — User WS auth API key may not match order-owner API key"
                 );
             } else if owner_missing {
-                warn!("👤 maker_orders missing owner field; skipped to avoid wrong inventory");
+                warn!("👤 maker_orders owner missing — accepted only by market-scope filtering");
             }
         }
 
@@ -657,7 +659,6 @@ mod tests {
                 market_id: "mkt".to_string(),
                 yes_asset_id: "1".to_string(),
                 no_asset_id: "2".to_string(),
-                funder_address: "0xtest_wallet".to_string(),
             },
             fill_tx,
         )

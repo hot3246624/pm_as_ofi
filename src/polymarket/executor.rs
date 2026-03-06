@@ -545,14 +545,6 @@ pub async fn init_clob_client(
         }
     };
 
-    let client = match ClobClient::new(rest_url, ClobConfig::default()) {
-        Ok(c) => c,
-        Err(e) => {
-            warn!("⚠️ Failed to create CLOB client: {:?}", e);
-            return (None, None);
-        }
-    };
-
     #[allow(unused_imports)]
     use alloy::signers::Signer;
     let signer_addr = signer.address();
@@ -560,7 +552,11 @@ pub async fn init_clob_client(
     let derived_safe = polymarket_client_sdk::derive_safe_wallet(signer_addr, 137);
     let fmt_addr = |a: alloy::primitives::Address| -> String {
         let s = format!("{a:?}");
-        if s.len() > 10 { format!("{}…{}", &s[..6], &s[s.len()-4..]) } else { s }
+        if s.len() > 10 {
+            format!("{}…{}", &s[..6], &s[s.len() - 4..])
+        } else {
+            s
+        }
     };
     let s_signer = fmt_addr(signer_addr);
     let s_funder = funder_address.map_or_else(|| "None".to_string(), fmt_addr);
@@ -571,39 +567,117 @@ pub async fn init_clob_client(
         s_signer, s_funder, s_proxy, s_safe,
     );
 
-    let mut auth_builder = client.authentication_builder(&signer);
-    if let Some(creds) = api_credentials {
-        info!("🔑 Auth mode | using explicit POLYMARKET_API_* credentials from environment");
-        auth_builder = auth_builder.credentials(creds);
-    }
-    if let Some(funder) = funder_address {
-        use polymarket_client_sdk::clob::types::SignatureType;
-        let signature_type = match std::env::var("PM_SIGNATURE_TYPE")
-            .ok()
-            .and_then(|v| v.parse::<u8>().ok())
-        {
-            Some(2) => SignatureType::GnosisSafe,
-            Some(1) => SignatureType::Proxy,
-            Some(0) => SignatureType::Eoa, // Will fail fast with funder set; kept for explicit diagnostics.
-            _ => SignatureType::Proxy,
-        };
+    let explicit_api_creds = api_credentials.clone();
+    use polymarket_client_sdk::clob::types::SignatureType;
+    let signature_type = match std::env::var("PM_SIGNATURE_TYPE")
+        .ok()
+        .and_then(|v| v.parse::<u8>().ok())
+    {
+        Some(2) => SignatureType::GnosisSafe,
+        Some(1) => SignatureType::Proxy,
+        Some(0) => SignatureType::Eoa, // Will fail fast with funder set; kept for explicit diagnostics.
+        _ => SignatureType::Proxy,
+    };
+    if funder_address.is_some() {
         info!(
             "🔐 Auth mode | signature_type={} (0=EOA,1=Proxy,2=GnosisSafe)",
             signature_type as u8
         );
-        auth_builder = auth_builder
-            .funder(funder)
-            .signature_type(signature_type);
     }
 
-    match auth_builder.authenticate().await {
+    let authenticate_attempt = |creds: Option<polymarket_client_sdk::auth::Credentials>| async {
+        let client = ClobClient::new(rest_url, ClobConfig::default())?;
+        let mut builder = client.authentication_builder(&signer);
+        if let Some(creds) = creds {
+            builder = builder.credentials(creds);
+        }
+        if let Some(funder) = funder_address {
+            builder = builder.funder(funder).signature_type(signature_type);
+        }
+        builder.authenticate().await
+    };
+
+    let is_invalid_api_key_err = |err: &dyn std::fmt::Display| -> bool {
+        let lower = err.to_string().to_ascii_lowercase();
+        lower.contains("invalid api key") || lower.contains("unauthorized") || lower.contains("401")
+    };
+
+    let initial = if let Some(creds) = api_credentials {
+        info!("🔑 Auth mode | using explicit POLYMARKET_API_* credentials from environment");
+        authenticate_attempt(Some(creds)).await
+    } else {
+        authenticate_attempt(None).await
+    };
+
+    match initial {
         Ok(auth_client) => {
-            info!("✅ Polymarket CLOB client authenticated");
-            (Some(auth_client), Some(signer))
+            // If env API credentials were forced, verify they are truly usable.
+            // Some stale creds can pass construction but fail on first authenticated call.
+            if explicit_api_creds.is_some() {
+                match auth_client.ok().await {
+                    Ok(_) => {
+                        info!("✅ Polymarket CLOB client authenticated");
+                        return (Some(auth_client), Some(signer));
+                    }
+                    Err(e) if is_invalid_api_key_err(&e) => {
+                        warn!(
+                            "⚠️ Explicit POLYMARKET_API_* appears invalid ({}). \
+                             Falling back to L1 create/derive flow.",
+                            e
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            "⚠️ Auth probe failed with explicit POLYMARKET_API_*: {:?}. \
+                             Falling back to L1 create/derive flow.",
+                            e
+                        );
+                    }
+                }
+
+                match authenticate_attempt(None).await {
+                    Ok(fallback_client) => {
+                        info!(
+                            "✅ Polymarket CLOB client authenticated via L1 fallback (auto-derived API creds)"
+                        );
+                        (Some(fallback_client), Some(signer))
+                    }
+                    Err(fallback_err) => {
+                        warn!(
+                            "⚠️ CLOB auth fallback failed after invalid explicit POLYMARKET_API_*: {:?}",
+                            fallback_err
+                        );
+                        (None, Some(signer))
+                    }
+                }
+            } else {
+                info!("✅ Polymarket CLOB client authenticated");
+                (Some(auth_client), Some(signer))
+            }
         }
         Err(e) => {
-            warn!("⚠️ CLOB auth failed: {:?}", e);
-            (None, Some(signer))
+            if explicit_api_creds.is_some() && is_invalid_api_key_err(&e) {
+                warn!(
+                    "⚠️ Explicit POLYMARKET_API_* rejected ({}). \
+                     Retrying with L1 create/derive flow.",
+                    e
+                );
+                match authenticate_attempt(None).await {
+                    Ok(fallback_client) => {
+                        info!(
+                            "✅ Polymarket CLOB client authenticated via L1 fallback (auto-derived API creds)"
+                        );
+                        (Some(fallback_client), Some(signer))
+                    }
+                    Err(fallback_err) => {
+                        warn!("⚠️ CLOB auth fallback failed: {:?}", fallback_err);
+                        (None, Some(signer))
+                    }
+                }
+            } else {
+                warn!("⚠️ CLOB auth failed: {:?}", e);
+                (None, Some(signer))
+            }
         }
     }
 }

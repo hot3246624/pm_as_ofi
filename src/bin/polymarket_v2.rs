@@ -15,10 +15,10 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 // V2 Actor modules
-use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
 use pm_as_ofi::polymarket::claims::{
-    AutoClaimConfig, AutoClaimState, maybe_auto_claim, scan_claimable_positions,
+    maybe_auto_claim, scan_claimable_positions, AutoClaimConfig, AutoClaimState,
 };
+use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
 use pm_as_ofi::polymarket::executor::{init_clob_client, Executor, ExecutorConfig};
 use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
@@ -81,15 +81,19 @@ impl Settings {
 /// Full slug: "btc-updown-15m-1771904700"
 fn is_prefix_slug(slug: &str) -> bool {
     // If the last segment (after final '-') is NOT a pure number, it's a prefix
-    slug.rsplit('-').next()
+    slug.rsplit('-')
+        .next()
         .map(|last| last.parse::<u64>().is_err())
         .unwrap_or(true)
 }
 
 /// Detect interval from prefix: "...-5m" → 300, "...-15m" → 900.
 fn detect_interval(prefix: &str) -> u64 {
-    if prefix.contains("-5m") { 300 }
-    else { 900 } // default 15min
+    if prefix.contains("-5m") {
+        300
+    } else {
+        900
+    } // default 15min
 }
 
 fn should_skip_entry_window(now_unix: u64, end_ts: u64, interval: u64, grace: u64) -> bool {
@@ -119,7 +123,9 @@ fn rotation_wait_duration(now_unix: u64, end_ts: u64) -> Duration {
 fn compute_current_slug(prefix: &str) -> (String, u64) {
     let interval = detect_interval(prefix);
     let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH).unwrap().as_secs();
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let end_ts = ((now / interval) + 1) * interval;
     (format!("{}-{}", prefix, end_ts), end_ts)
 }
@@ -142,15 +148,20 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
                 .unwrap_or_default()
                 .to_string();
 
-            let tokens = market.get("clobTokenIds")
+            let tokens = market
+                .get("clobTokenIds")
                 .or_else(|| market.get("clob_token_ids"))
                 .and_then(|v| v.as_str())
                 .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok());
 
             if let Some(ids) = tokens {
                 if ids.len() >= 2 {
-                    info!("✅ Market resolved: {} (YES={}, NO={})",
-                        market_id, &ids[0][..8.min(ids[0].len())], &ids[1][..8.min(ids[1].len())]);
+                    info!(
+                        "✅ Market resolved: {} (YES={}, NO={})",
+                        market_id,
+                        &ids[0][..8.min(ids[0].len())],
+                        &ids[1][..8.min(ids[1].len())]
+                    );
                     return Ok((market_id, ids[0].clone(), ids[1].clone()));
                 }
             }
@@ -171,10 +182,7 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
     anyhow::bail!("Failed to resolve market from slug: {}", slug);
 }
 
-async fn maybe_log_claimable_positions(
-    funder_address: Option<&str>,
-    signer_address: Option<&str>,
-) {
+async fn maybe_log_claimable_positions(funder_address: Option<&str>, signer_address: Option<&str>) {
     let claim_monitor = env::var("PM_CLAIM_MONITOR")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(true);
@@ -188,7 +196,10 @@ async fn maybe_log_claimable_positions(
     let funder_addr = match funder.trim().parse::<alloy::primitives::Address>() {
         Ok(a) => a,
         Err(e) => {
-            warn!("⚠️ Claim monitor skipped: invalid funder address '{}': {:?}", funder, e);
+            warn!(
+                "⚠️ Claim monitor skipped: invalid funder address '{}': {:?}",
+                funder, e
+            );
             return;
         }
     };
@@ -232,7 +243,7 @@ async fn maybe_log_claimable_positions(
         if !signer.trim().eq_ignore_ascii_case(funder.trim()) {
             warn!(
                 "⚠️ Claim requires proxy/safe execution (signer={} funder={}). \
-                 Current bot only monitors claimables; use Polymarket UI Claim button for now.",
+                 To auto-claim, enable PM_AUTO_CLAIM=true and set POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE.",
                 signer, funder
             );
         }
@@ -283,17 +294,17 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
                 // P2-8: Find true best bid/ask — don't assume array is sorted
                 let best_bid = bids
                     .map(|levels| {
-                        levels.iter()
-                            .filter_map(|lvl| lvl.get("price")
-                                .and_then(parse_price_value))
+                        levels
+                            .iter()
+                            .filter_map(|lvl| lvl.get("price").and_then(parse_price_value))
                             .fold(0.0_f64, f64::max)
                     })
                     .unwrap_or(0.0);
                 let best_ask = asks
                     .map(|levels| {
-                        levels.iter()
-                            .filter_map(|lvl| lvl.get("price")
-                                .and_then(parse_price_value))
+                        levels
+                            .iter()
+                            .filter_map(|lvl| lvl.get("price").and_then(parse_price_value))
                             .fold(f64::MAX, f64::min)
                     })
                     .map(|v| if v == f64::MAX { 0.0 } else { v })
@@ -371,10 +382,10 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
                     .get("price")
                     .and_then(parse_price_value)
                     .unwrap_or(0.0);
-                let size = match value
-                    .get("size")
-                    .and_then(|v| v.as_f64().or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok())))
-                {
+                let size = match value.get("size").and_then(|v| {
+                    v.as_f64()
+                        .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+                }) {
                     Some(s) if s > 0.0 => s,
                     _ => {
                         // P2 FIX: Missing size — discard instead of injecting fake 1.0
@@ -395,7 +406,7 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
                     _ => {
                         debug!("OFI parser: unknown 'side' value: {}, skipping", side_val);
                         return msgs;
-                    },
+                    }
                 };
 
                 // Classify which market side (YES or NO token)
@@ -458,8 +469,7 @@ impl BookAssembler {
             }
 
             // Only emit a full BookTick when we have all four prices
-            if self.yes_bid > 0.0 && self.yes_ask > 0.0 && self.no_bid > 0.0 && self.no_ask > 0.0
-            {
+            if self.yes_bid > 0.0 && self.yes_ask > 0.0 && self.no_bid > 0.0 && self.no_ask > 0.0 {
                 return Some(MarketDataMsg::BookTick {
                     yes_bid: self.yes_bid,
                     yes_ask: self.yes_ask,
@@ -496,10 +506,16 @@ async fn run_market_ws(
     let mut book_asm = BookAssembler::default();
 
     // Compute wall-clock deadline
-    let now_unix = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let secs_remaining = end_ts.saturating_sub(now_unix);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs_remaining);
-    info!("⏰ Market deadline in {}s (end_ts={})", secs_remaining, end_ts);
+    info!(
+        "⏰ Market deadline in {}s (end_ts={})",
+        secs_remaining, end_ts
+    );
 
     let mut backoff = Duration::from_millis(100);
     let max_backoff = Duration::from_secs(5);
@@ -514,11 +530,8 @@ async fn run_market_ws(
         let url = settings.ws_url("market");
         info!(%url, "📡 connecting market WS");
 
-        let connect_result = tokio::time::timeout(
-            Duration::from_secs(10),
-            connect_async(&url),
-        )
-        .await;
+        let connect_result =
+            tokio::time::timeout(Duration::from_secs(10), connect_async(&url)).await;
 
         match connect_result {
             Ok(Ok((ws, response))) => {
@@ -549,11 +562,7 @@ async fn run_market_ws(
                     let mut delay = tokio::time::interval(Duration::from_secs(5));
                     loop {
                         delay.tick().await;
-                        if write
-                            .send(Message::Text("PING".to_string()))
-                            .await
-                            .is_err()
-                        {
+                        if write.send(Message::Text("PING".to_string())).await.is_err() {
                             break;
                         }
                     }
@@ -663,7 +672,9 @@ async fn main() -> anyhow::Result<()> {
     info!("═══════════════════════════════════════════════════");
 
     let base_settings = Settings::from_env()?;
-    let raw_slug = base_settings.market_slug.clone()
+    let raw_slug = base_settings
+        .market_slug
+        .clone()
         .unwrap_or_else(|| "btc-updown-15m".to_string());
     let prefix_mode = is_prefix_slug(&raw_slug);
 
@@ -680,31 +691,46 @@ async fn main() -> anyhow::Result<()> {
     let mut auto_claim_state = AutoClaimState::default();
     let dry_run = coord_cfg.dry_run;
 
-    info!("📊 Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
-        coord_cfg.pair_target, coord_cfg.bid_size,
-        coord_cfg.tick_size, coord_cfg.max_net_diff, ofi_cfg.toxicity_threshold, dry_run);
+    info!(
+        "📊 Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
+        coord_cfg.pair_target,
+        coord_cfg.bid_size,
+        coord_cfg.tick_size,
+        coord_cfg.max_net_diff,
+        ofi_cfg.toxicity_threshold,
+        dry_run
+    );
     if auto_claim_cfg.enabled {
         info!(
-            "💸 Auto-claim enabled: min_value=${} max_conditions={} interval={}s dry_run={}",
+            "💸 Auto-claim enabled: min_value=${} max_conditions={} interval={}s dry_run={} wait_confirm={} wait_timeout={}s",
             auto_claim_cfg.min_condition_value,
             auto_claim_cfg.max_conditions_per_run,
             auto_claim_cfg.run_interval.as_secs(),
-            auto_claim_cfg.dry_run
+            auto_claim_cfg.dry_run,
+            auto_claim_cfg.relayer_wait_confirm,
+            auto_claim_cfg.relayer_wait_timeout.as_secs()
         );
     }
 
     // P1 FIX: Parse funder_address from environment, which represents the Magic Proxy Wallet.
     // We need this BEFORE init_clob_client to configure the API key derivation.
     let funder_address: Option<String> = if !dry_run {
-        let explicit = base_settings.funder_address.clone()
+        let explicit = base_settings
+            .funder_address
+            .clone()
             .filter(|s| !s.trim().is_empty());
         if let Some(addr) = explicit {
-            info!("🔑 Using explicit POLYMARKET_FUNDER_ADDRESS: {}…", &addr[..10.min(addr.len())]);
+            info!(
+                "🔑 Using explicit POLYMARKET_FUNDER_ADDRESS: {}…",
+                &addr[..10.min(addr.len())]
+            );
             Some(addr)
         } else {
             // We can't derive from an uninitialized signer anymore. Let's just fall back to standard EOA auth if empty.
             // But log a critical warning.
-            warn!("⚠️ Live mode usually requires POLYMARKET_FUNDER_ADDRESS (Proxy Wallet) to trade.");
+            warn!(
+                "⚠️ Live mode usually requires POLYMARKET_FUNDER_ADDRESS (Proxy Wallet) to trade."
+            );
             None
         }
     } else {
@@ -728,9 +754,15 @@ async fn main() -> anyhow::Result<()> {
     // Shared L2 credentials for BOTH CLOB REST and User WS.
     // If provided in env, we force both channels to use exactly the same keypair.
     let shared_api_creds_env: Option<(String, String, String)> = {
-        let env_key = env::var("POLYMARKET_API_KEY").ok().filter(|s| !s.trim().is_empty());
-        let env_secret = env::var("POLYMARKET_API_SECRET").ok().filter(|s| !s.trim().is_empty());
-        let env_pass = env::var("POLYMARKET_API_PASSPHRASE").ok().filter(|s| !s.trim().is_empty());
+        let env_key = env::var("POLYMARKET_API_KEY")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let env_secret = env::var("POLYMARKET_API_SECRET")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
+        let env_pass = env::var("POLYMARKET_API_PASSPHRASE")
+            .ok()
+            .filter(|s| !s.trim().is_empty());
         match (env_key, env_secret, env_pass) {
             (Some(k), Some(s), Some(p)) => Some((k, s, p)),
             (None, None, None) => None,
@@ -781,18 +813,23 @@ async fn main() -> anyhow::Result<()> {
     }
     #[allow(unused_imports)]
     use alloy::signers::Signer;
-    let signer_address = signer
-        .as_ref()
-        .map(|s| format!("{:?}", s.address()));
+    let signer_address = signer.as_ref().map(|s| format!("{:?}", s.address()));
 
     // Startup preflight: force-refresh and inspect collateral balance/allowance.
     if !dry_run {
         use alloy::primitives::Address;
+        use alloy::primitives::U256;
         use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
         use polymarket_client_sdk::clob::types::{AssetType, SignatureType};
-        use polymarket_client_sdk::{POLYGON, contract_config};
-        use alloy::primitives::U256;
+        use polymarket_client_sdk::{contract_config, POLYGON};
         use rust_decimal::Decimal;
+
+        let is_api_key_unauthorized = |err: &dyn std::fmt::Display| -> bool {
+            let lower = format!("{:#}", err).to_ascii_lowercase();
+            lower.contains("unauthorized")
+                || lower.contains("invalid api key")
+                || lower.contains("401")
+        };
 
         if let Some(client) = clob_client.as_ref() {
             let req = BalanceAllowanceRequest::builder()
@@ -800,6 +837,13 @@ async fn main() -> anyhow::Result<()> {
                 .build();
 
             if let Err(e) = client.update_balance_allowance(req.clone()).await {
+                if is_api_key_unauthorized(&e) {
+                    anyhow::bail!(
+                        "🚨 FATAL: CLOB API key unauthorized during preflight update. \
+                         POLYMARKET_API_* is invalid/stale for current signer/funder. \
+                         Remove POLYMARKET_API_* to let bot auto-derive, or regenerate matching credentials."
+                    );
+                }
                 warn!("⚠️ balance-allowance/update failed: {:?}", e);
             }
 
@@ -863,7 +907,11 @@ async fn main() -> anyhow::Result<()> {
 
                     // Diagnostic probe: compare balance/allowance views across all signature types.
                     // This catches signature type mismatches for proxy/safe wallets.
-                    for sig in [SignatureType::Eoa, SignatureType::Proxy, SignatureType::GnosisSafe] {
+                    for sig in [
+                        SignatureType::Eoa,
+                        SignatureType::Proxy,
+                        SignatureType::GnosisSafe,
+                    ] {
                         let probe_req = BalanceAllowanceRequest::builder()
                             .asset_type(AssetType::Collateral)
                             .signature_type(sig)
@@ -893,7 +941,10 @@ async fn main() -> anyhow::Result<()> {
                     let allow_zero_allowance = env::var("PM_ALLOW_ZERO_ALLOWANCE")
                         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                         .unwrap_or(false);
-                    if resp.balance > Decimal::ZERO && max_allowance.is_zero() && !allow_zero_allowance {
+                    if resp.balance > Decimal::ZERO
+                        && max_allowance.is_zero()
+                        && !allow_zero_allowance
+                    {
                         anyhow::bail!(
                             "🚨 FATAL: wallet balance is non-zero but CLOB collateral allowance is zero. \
                              Use the same signer/funder to approve USDC for Polymarket contracts, then retry. \
@@ -902,12 +953,19 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Err(e) => {
+                    if is_api_key_unauthorized(&e) {
+                        anyhow::bail!(
+                            "🚨 FATAL: CLOB balance_allowance returned unauthorized/invalid API key. \
+                             Credentials do not match current signer/funder/signature_type. \
+                             Remove POLYMARKET_API_* and retry with auto-derive, or regenerate correct API creds."
+                        );
+                    }
                     warn!("⚠️ balance_allowance preflight failed: {:?}", e);
                 }
             }
         }
     }
-    
+
     // Fallback: If no explicit funder address was given but we have a signer, we assume EOA mapping.
     let funder_address = match funder_address {
         Some(addr) => Some(addr),
@@ -915,7 +973,10 @@ async fn main() -> anyhow::Result<()> {
             #[allow(unused_imports)]
             use alloy::signers::Signer;
             let derived = format!("{:?}", signer.as_ref().unwrap().address());
-            info!("🔑 Deduced funder_address from EOA private key: {}…", &derived[..10.min(derived.len())]);
+            info!(
+                "🔑 Deduced funder_address from EOA private key: {}…",
+                &derived[..10.min(derived.len())]
+            );
             Some(derived)
         }
         None => None,
@@ -929,11 +990,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     if !dry_run {
-        maybe_log_claimable_positions(
-            funder_address.as_deref(),
-            signer_address.as_deref(),
-        )
-        .await;
+        maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref()).await;
         if let Err(e) = maybe_auto_claim(
             &auto_claim_cfg,
             &mut auto_claim_state,
@@ -948,26 +1005,28 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // ═══ L2 API credentials for User WS (live mode only) ═══
-    // Use the SAME credential source as CLOB REST to avoid identity drift.
+    // Always source credentials from authenticated CLOB client to avoid REST/WS identity drift.
     let api_creds: Option<(String, String, String)> = if !dry_run {
-        if let Some((k, s, p)) = shared_api_creds_env.clone() {
-            info!("🔑 Using shared API credentials from environment (REST + User WS)");
-            Some((k, s, p))
-        } else {
-            use secrecy::ExposeSecret;
-            if let Some(client) = clob_client.as_ref() {
-                let creds = client.credentials();
-                info!("🔑 Reusing authenticated CLOB credentials for User WS");
-                Some((
-                    creds.key().to_string(),
-                    creds.secret().expose_secret().to_string(),
-                    creds.passphrase().expose_secret().to_string(),
-                ))
-            } else {
-                anyhow::bail!(
-                    "🚨 FATAL: dry_run=false but no authenticated CLOB client available for User WS credentials."
+        use secrecy::ExposeSecret;
+        if let Some(client) = clob_client.as_ref() {
+            let creds = client.credentials();
+            if shared_api_creds_env.is_some() {
+                info!(
+                    "🔑 User WS using verified credentials from authenticated CLOB client \
+                     (env POLYMARKET_API_* may be reused or auto-fallbacked)"
                 );
+            } else {
+                info!("🔑 User WS reusing auto-derived authenticated CLOB credentials");
             }
+            Some((
+                creds.key().to_string(),
+                creds.secret().expose_secret().to_string(),
+                creds.passphrase().expose_secret().to_string(),
+            ))
+        } else {
+            anyhow::bail!(
+                "🚨 FATAL: dry_run=false but no authenticated CLOB client available for User WS credentials."
+            );
         }
     } else {
         None
@@ -999,7 +1058,11 @@ async fn main() -> anyhow::Result<()> {
         // P2 FIX: Clamp end_ts for deadline calculation to avoid overflow
         let effective_end_ts = if end_ts == u64::MAX {
             // Fixed mode: use a sane 1-year cap instead of u64::MAX
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() + 31_536_000
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 31_536_000
         } else {
             end_ts
         };
@@ -1043,7 +1106,10 @@ async fn main() -> anyhow::Result<()> {
                     if sleep_time > 0 {
                         tokio::time::sleep(Duration::from_secs(sleep_time)).await;
                     }
-                    info!("⏳ Pre-resolving next market in background during skip delay: {}", next_slug);
+                    info!(
+                        "⏳ Pre-resolving next market in background during skip delay: {}",
+                        next_slug
+                    );
                     let res = resolve_market_by_slug(&next_slug).await;
                     let _ = p_tx.send((next_slug, res)).await;
                 });
@@ -1120,7 +1186,11 @@ async fn main() -> anyhow::Result<()> {
         session_handles.push(tokio::spawn(ofi.run()));
 
         let coord = StrategyCoordinator::new(
-            coord_cfg.clone(), ofi_watch_rx, inv_watch_rx, coord_md_rx, exec_tx.clone(),
+            coord_cfg.clone(),
+            ofi_watch_rx,
+            inv_watch_rx,
+            coord_md_rx,
+            exec_tx.clone(),
             result_rx,
         );
         session_handles.push(tokio::spawn(coord.run()));
@@ -1158,8 +1228,6 @@ async fn main() -> anyhow::Result<()> {
                     market_id: market_id.clone(),
                     yes_asset_id: yes_asset_id.clone(),
                     no_asset_id: no_asset_id.clone(),
-                    // P0 FIX: Pass wallet address for owner matching
-                    funder_address: funder_address.clone().unwrap_or_default(),
                 },
                 fill_tx,
             );
@@ -1175,9 +1243,11 @@ async fn main() -> anyhow::Result<()> {
 
         // P1 FIX: Startup reconciliation — sweep any lingering orders from prior crashes
         if !dry_run {
-            let _ = exec_tx.send(ExecutionCmd::CancelAll {
-                reason: CancelReason::Startup,
-            }).await;
+            let _ = exec_tx
+                .send(ExecutionCmd::CancelAll {
+                    reason: CancelReason::Startup,
+                })
+                .await;
             info!("🧹 Startup CancelAll sent — clearing any stale orders from prior session");
         }
 
@@ -1187,19 +1257,23 @@ async fn main() -> anyhow::Result<()> {
         info!("🏁 Market ended: {:?}", reason);
 
         // ── Step 4: Cleanup ──
-        let _ = exec_tx.send(ExecutionCmd::CancelAll {
-            reason: CancelReason::MarketExpired,
-        }).await;
+        let _ = exec_tx
+            .send(ExecutionCmd::CancelAll {
+                reason: CancelReason::MarketExpired,
+            })
+            .await;
         // Drop exec_tx so the executor channel closes, letting it break its loop after CancelAll
         drop(exec_tx);
         info!("🧹 CancelAll sent — waiting for executor graceful shutdown (8s timeout)");
-        
+
         // Wait up to 8s for the executor to complete its work and exit
         // P1 FIX: If timeout expires, use the AbortHandle to force-kill the executor task
         match tokio::time::timeout(Duration::from_secs(8), executor_handle).await {
             Ok(_) => { /* executor exited gracefully */ }
             Err(_) => {
-                warn!("⚠️ Executor did not finish within 8s timeout — force aborting via AbortHandle");
+                warn!(
+                    "⚠️ Executor did not finish within 8s timeout — force aborting via AbortHandle"
+                );
                 executor_abort.abort();
             }
         }
@@ -1213,11 +1287,8 @@ async fn main() -> anyhow::Result<()> {
         }
 
         if !dry_run {
-            maybe_log_claimable_positions(
-                funder_address.as_deref(),
-                signer_address.as_deref(),
-            )
-            .await;
+            maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref())
+                .await;
             if let Err(e) = maybe_auto_claim(
                 &auto_claim_cfg,
                 &mut auto_claim_state,
@@ -1325,24 +1396,24 @@ mod tests {
 
     #[tokio::test]
     async fn test_executor_timeout_abort_pattern() {
-        // P3 Regression Test: Verified that if timeout consumes the JoinHandle, 
+        // P3 Regression Test: Verified that if timeout consumes the JoinHandle,
         // the AbortHandle successfully terminates the lingering background task.
         use std::time::Duration;
         let handle = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(10)).await;
         });
-        
+
         let abort_handle = handle.abort_handle();
-        
+
         // 1. Simulate the market WS 8s shutdown timeout firing early.
         // NOTE: tokio::time::timeout consumes the `handle` itself if passed directly
         let res = tokio::time::timeout(Duration::from_millis(5), handle).await;
         assert!(res.is_err(), "timeout must expire");
-        
+
         // 2. We no longer have `handle`, but we have `abort_handle`. Force kill it.
         abort_handle.abort();
-        
-        // Verification: Since we can't join it (handle is gone), we just wait a tick 
+
+        // Verification: Since we can't join it (handle is gone), we just wait a tick
         // to ensure it didn't panic and the abort went through cleanly.
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -1355,12 +1426,15 @@ mod tests {
         let ping_handle = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(10)).await;
         });
-        
+
         // Simulate WS Exit Branch (e.g. server close or EOF) calling abort
         ping_handle.abort();
-        
+
         // Awaited task should explicitly yield a Cancelled error, proving no leak.
         let join_res = ping_handle.await;
-        assert!(join_res.unwrap_err().is_cancelled(), "Ping task must be cancelled on WS exit");
+        assert!(
+            join_res.unwrap_err().is_cancelled(),
+            "Ping task must be cancelled on WS exit"
+        );
     }
 }

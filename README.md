@@ -32,6 +32,7 @@ User WS  ──→ FillSplitter ──→ InventoryManager (watch→ Coordinator
 3. `Confirmed` 事件幂等处理，不重复入账
 4. 下单失败回传 `OrderFailed`，成交回传 `OrderFilled`，Coordinator 即时释放 slot
 5. `can_open` 为硬门控：三重限制（净仓差/组合成本/单侧敞口）
+6. User WS `maker_orders.owner` 是 API key UUID，不是钱包地址
 
 ## 3. 快速开始
 
@@ -59,10 +60,10 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 |------|------|------|
 | `POLYMARKET_MARKET_SLUG` | ✅ | 市场前缀 (如 `btc-updown-5m`) 或完整 slug |
 | `POLYMARKET_PRIVATE_KEY` | 实盘 | 钱包私钥（不带 0x 前缀） |
-| `POLYMARKET_FUNDER_ADDRESS` | 实盘 | 钱包地址（用于 User WS 成交归属匹配） |
+| `POLYMARKET_FUNDER_ADDRESS` | 实盘 | 资金钱包地址（用于 Proxy/Safe CLOB 认证与余额/授权读取） |
 | `POLYMARKET_WS_BASE_URL` | ❌ | 默认 `wss://ws-subscriptions-clob.polymarket.com/ws` |
 | `POLYMARKET_REST_URL` | ❌ | 默认 `https://clob.polymarket.com` |
-| `POLYMARKET_API_KEY/SECRET/PASSPHRASE` | ❌ | 可选，不填则自动派生 |
+| `POLYMARKET_API_KEY/SECRET/PASSPHRASE` | ❌ | 可选，不填则自动派生（用于 CLOB REST + User WS，不是 Builder 凭证） |
 | `POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE` | ❌ | 仅 Safe 自动 Claim 需要（Relayer Builder 认证） |
 | `POLYMARKET_RELAYER_URL` | ❌ | 默认 `https://relayer-v2.polymarket.com` |
 
@@ -99,6 +100,8 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_AUTO_CLAIM_MIN_VALUE` | `0` | 单个 condition 最小价值阈值（美元） |
 | `PM_AUTO_CLAIM_MAX_CONDITIONS` | `5` | 每轮最多处理的 condition 数 |
 | `PM_AUTO_CLAIM_INTERVAL_SECONDS` | `300` | 两次自动领取最小间隔 |
+| `PM_AUTO_CLAIM_WAIT_CONFIRM` | `false` | Safe 模式是否等待 relayer 交易确认（建议 false，避免阻塞交易轮次） |
+| `PM_AUTO_CLAIM_WAIT_TIMEOUT_SECONDS` | `20` | `WAIT_CONFIRM=true` 时的最长等待秒数 |
 
 ## 5. $100 实盘测试参数推荐
 
