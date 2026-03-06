@@ -552,9 +552,35 @@ pub async fn init_clob_client(
         }
     };
 
+    #[allow(unused_imports)]
+    use alloy::signers::Signer;
+    let signer_addr = signer.address();
+    let derived_proxy = polymarket_client_sdk::derive_proxy_wallet(signer_addr, 137);
+    let derived_safe = polymarket_client_sdk::derive_safe_wallet(signer_addr, 137);
+    info!(
+        "🔍 Auth identity | signer={:?} configured_funder={:?} derived_proxy={:?} derived_safe={:?}",
+        signer_addr, funder_address, derived_proxy, derived_safe
+    );
+
     let mut auth_builder = client.authentication_builder(&signer);
     if let Some(funder) = funder_address {
-        auth_builder = auth_builder.funder(funder);
+        use polymarket_client_sdk::clob::types::SignatureType;
+        let signature_type = match std::env::var("PM_SIGNATURE_TYPE")
+            .ok()
+            .and_then(|v| v.parse::<u8>().ok())
+        {
+            Some(2) => SignatureType::GnosisSafe,
+            Some(1) => SignatureType::Proxy,
+            Some(0) => SignatureType::Eoa, // Will fail fast with funder set; kept for explicit diagnostics.
+            _ => SignatureType::Proxy,
+        };
+        info!(
+            "🔐 Auth mode | signature_type={} (0=EOA,1=Proxy,2=GnosisSafe)",
+            signature_type as u8
+        );
+        auth_builder = auth_builder
+            .funder(funder)
+            .signature_type(signature_type);
     }
 
     match auth_builder.authenticate().await {

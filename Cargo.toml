@@ -15,6 +15,7 @@ tokio = { version = "1", features = ["full"] }
 tokio-tungstenite = { version = "0.23", features = ["native-tls"] }  # ✅ Enable TLS
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
 url = "2.5.2"
 axum = { version = "0.7", features = ["macros", "http1", "tokio"] }
 hyper = { version = "1", features = ["http1", "server"] }

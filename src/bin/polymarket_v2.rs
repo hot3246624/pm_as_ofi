@@ -430,6 +430,9 @@ async fn run_market_ws(
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs_remaining);
     info!("⏰ Market deadline in {}s (end_ts={})", secs_remaining, end_ts);
 
+    let mut backoff = Duration::from_millis(100);
+    let max_backoff = Duration::from_secs(5);
+
     loop {
         // Check if already expired before connecting
         if tokio::time::Instant::now() >= deadline {
@@ -449,6 +452,7 @@ async fn run_market_ws(
         match connect_result {
             Ok(Ok((ws, response))) => {
                 info!("✅ WS connected (status={:?})", response.status());
+                backoff = Duration::from_millis(100); // Reset on successful connect
                 let (mut write, mut read) = ws.split();
 
                 // Subscribe
@@ -471,7 +475,7 @@ async fn run_market_ws(
 
                 // Ping keepalive — store handle for explicit cleanup
                 let ping_handle = tokio::spawn(async move {
-                    let mut delay = tokio::time::interval(Duration::from_secs(10));
+                    let mut delay = tokio::time::interval(Duration::from_secs(5));
                     loop {
                         delay.tick().await;
                         if write
@@ -525,10 +529,15 @@ async fn run_market_ws(
                                     break;
                                 }
                                 Some(Err(err)) => {
-                                    warn!("WS error: {err:?}");
-                                    ping_handle.abort();
-                                    break;
-                                }
+                            let msg = format!("{err:?}");
+                            if msg.contains("ResetWithoutClosingHandshake") {
+                                info!("📡 Market WS server reset (expected) — fast reconnect");
+                            } else {
+                                warn!("WS error: {err:?}");
+                            }
+                            ping_handle.abort();
+                            break;
+                        }
                                 None => {
                                     ping_handle.abort();
                                     break;
@@ -553,8 +562,9 @@ async fn run_market_ws(
             return MarketEnd::Expired;
         }
 
-        info!("🔄 Reconnecting in 2s...");
-        sleep(Duration::from_secs(2)).await;
+        info!("🔄 Reconnecting in {:?}...", backoff);
+        sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
     }
 }
 
@@ -565,7 +575,16 @@ async fn run_market_ws(
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
-    tracing_subscriber::fmt().with_env_filter("info").init();
+    // Dual-output logging: stdout + daily rolling file in logs/
+    let file_appender = tracing_appender::rolling::daily("logs", "polymarket.log");
+    let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
+    {
+        use tracing_subscriber::fmt::writer::MakeWriterExt;
+        tracing_subscriber::fmt()
+            .with_env_filter("info")
+            .with_writer(std::io::stdout.and(non_blocking))
+            .init();
+    }
 
     info!("═══════════════════════════════════════════════════");
     info!("  Polymarket V2 — Async Inventory Arbitrage Engine");
@@ -610,9 +629,19 @@ async fn main() -> anyhow::Result<()> {
         base_settings.funder_address.clone()
     };
 
-    let funder_alloy = funder_address
-        .as_ref()
-        .and_then(|addr| addr.parse::<alloy::primitives::Address>().ok());
+    let funder_alloy = match funder_address.as_ref() {
+        Some(addr) => match addr.trim().parse::<alloy::primitives::Address>() {
+            Ok(a) => Some(a),
+            Err(e) => {
+                warn!(
+                    "⚠️ Invalid POLYMARKET_FUNDER_ADDRESS='{}': {:?}. Falling back to EOA auth.",
+                    addr, e
+                );
+                None
+            }
+        },
+        None => None,
+    };
 
     // ═══ Initialize CLOB client (once, reused across rotations) ═══
     // We pass funder_alloy down so API key is derived on behalf of the proxy wallet.
@@ -633,6 +662,129 @@ async fn main() -> anyhow::Result<()> {
             "🚨 FATAL: dry_run=false but CLOB client auth failed. \
              Set PM_DRY_RUN=true or fix private key / auth config."
         );
+    }
+
+    // Startup preflight: force-refresh and inspect collateral balance/allowance.
+    if !dry_run {
+        use alloy::primitives::Address;
+        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+        use polymarket_client_sdk::clob::types::{AssetType, SignatureType};
+        use polymarket_client_sdk::{POLYGON, contract_config};
+        use alloy::primitives::U256;
+        use rust_decimal::Decimal;
+
+        if let Some(client) = clob_client.as_ref() {
+            let req = BalanceAllowanceRequest::builder()
+                .asset_type(AssetType::Collateral)
+                .build();
+
+            if let Err(e) = client.update_balance_allowance(req.clone()).await {
+                warn!("⚠️ balance-allowance/update failed: {:?}", e);
+            }
+
+            match client.balance_allowance(req).await {
+                Ok(resp) => {
+                    let parse_u256 = |raw: &str| -> Option<U256> {
+                        let s = raw.trim().split('.').next().unwrap_or(raw.trim());
+                        if s.is_empty() {
+                            return None;
+                        }
+                        if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+                            U256::from_str_radix(hex, 16).ok()
+                        } else {
+                            U256::from_str_radix(s, 10).ok()
+                        }
+                    };
+
+                    let max_allowance = resp
+                        .allowances
+                        .values()
+                        .filter_map(|v| parse_u256(v))
+                        .max()
+                        .unwrap_or(U256::ZERO);
+                    let main_cfg = contract_config(POLYGON, false);
+                    let neg_cfg = contract_config(POLYGON, true);
+                    let expected_spenders: Vec<(&str, Option<Address>)> = vec![
+                        ("exchange", main_cfg.map(|c| c.exchange)),
+                        ("neg_risk_exchange", neg_cfg.map(|c| c.exchange)),
+                        ("neg_risk_adapter", neg_cfg.and_then(|c| c.neg_risk_adapter)),
+                    ];
+
+                    info!(
+                        "💰 Preflight collateral: balance={} max_allowance={} allowance_entries={}",
+                        resp.balance,
+                        max_allowance,
+                        resp.allowances.len()
+                    );
+                    for (label, maybe_addr) in expected_spenders {
+                        if let Some(addr) = maybe_addr {
+                            let raw = resp.allowances.get(&addr).cloned().unwrap_or_default();
+                            let parsed = parse_u256(&raw).unwrap_or(U256::ZERO);
+                            info!(
+                                "💳 Preflight allowance[{label}] {} raw='{}' parsed={}",
+                                addr, raw, parsed
+                            );
+                        }
+                    }
+                    if resp.balance <= Decimal::ZERO || max_allowance.is_zero() {
+                        let samples: Vec<String> = resp
+                            .allowances
+                            .iter()
+                            .take(3)
+                            .map(|(k, v)| format!("{k:?}={v}"))
+                            .collect();
+                        warn!(
+                            "⚠️ Preflight indicates insufficient balance/allowance for trading \
+                             (balance={} max_allowance={} samples={:?})",
+                            resp.balance, max_allowance, samples
+                        );
+                    }
+
+                    // Diagnostic probe: compare balance/allowance views across all signature types.
+                    // This catches signature type mismatches for proxy/safe wallets.
+                    for sig in [SignatureType::Eoa, SignatureType::Proxy, SignatureType::GnosisSafe] {
+                        let probe_req = BalanceAllowanceRequest::builder()
+                            .asset_type(AssetType::Collateral)
+                            .signature_type(sig)
+                            .build();
+                        match client.balance_allowance(probe_req).await {
+                            Ok(probe) => {
+                                let probe_max = probe
+                                    .allowances
+                                    .values()
+                                    .filter_map(|v| parse_u256(v))
+                                    .max()
+                                    .unwrap_or(U256::ZERO);
+                                info!(
+                                    "🧪 Collateral probe sig_type={} balance={} max_allowance={} entries={}",
+                                    sig as u8,
+                                    probe.balance,
+                                    probe_max,
+                                    probe.allowances.len()
+                                );
+                            }
+                            Err(e) => {
+                                warn!("⚠️ Collateral probe sig_type={} failed: {:?}", sig as u8, e);
+                            }
+                        }
+                    }
+
+                    let allow_zero_allowance = env::var("PM_ALLOW_ZERO_ALLOWANCE")
+                        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                    if resp.balance > Decimal::ZERO && max_allowance.is_zero() && !allow_zero_allowance {
+                        anyhow::bail!(
+                            "🚨 FATAL: wallet balance is non-zero but CLOB collateral allowance is zero. \
+                             Use the same signer/funder to approve USDC for Polymarket contracts, then retry. \
+                             Set PM_ALLOW_ZERO_ALLOWANCE=true to bypass this guard."
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️ balance_allowance preflight failed: {:?}", e);
+                }
+            }
+        }
     }
     
     // Fallback: If no explicit funder address was given but we have a signer, we assume EOA mapping.
@@ -656,9 +808,9 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // ═══ Derive L2 API credentials for User WS (live mode only) ═══
+    // ═══ L2 API credentials for User WS (live mode only) ═══
     let api_creds: Option<(String, String, String)> = if !dry_run {
-        // Try env vars first, then derive from private key
+        // Prefer explicit env vars; otherwise reuse credentials from authenticated CLOB client.
         let env_key = env::var("POLYMARKET_API_KEY").ok();
         let env_secret = env::var("POLYMARKET_API_SECRET").ok();
         let env_pass = env::var("POLYMARKET_API_PASSPHRASE").ok();
@@ -666,28 +818,20 @@ async fn main() -> anyhow::Result<()> {
         if let (Some(k), Some(s), Some(p)) = (env_key, env_secret, env_pass) {
             info!("🔑 Using API credentials from environment");
             Some((k, s, p))
-        } else if let Some(pk) = base_settings.private_key.as_deref() {
-            match pm_as_ofi::polymarket::user_ws::derive_api_key(
-                &base_settings.rest_url, pk,
-            ).await {
-                Ok(creds) => Some(creds),
-                Err(e) => {
-                    // P0-1 SAFETY: live mode REQUIRES User WS for inventory tracking.
-                    // Without it, real orders go out but net_diff never updates.
-                    anyhow::bail!(
-                        "🚨 FATAL: dry_run=false but failed to derive API key: {:?}\n\
-                         Cannot run live without User WS — inventory would never update.\n\
-                         Set PM_DRY_RUN=true or fix credentials.", e
-                    );
-                }
-            }
         } else {
-            // P0-1 SAFETY: No private key in live mode = no User WS = blind trading
-            anyhow::bail!(
-                "🚨 FATAL: dry_run=false but no POLYMARKET_PRIVATE_KEY set.\n\
-                 Cannot run live without User WS — inventory would never update.\n\
-                 Set PM_DRY_RUN=true or provide credentials."
-            );
+            use secrecy::ExposeSecret;
+            if let Some(client) = clob_client.as_ref() {
+                let creds = client.credentials();
+                Some((
+                    creds.key().to_string(),
+                    creds.secret().expose_secret().to_string(),
+                    creds.passphrase().expose_secret().to_string(),
+                ))
+            } else {
+                anyhow::bail!(
+                    "🚨 FATAL: dry_run=false but no authenticated CLOB client available for User WS credentials."
+                );
+            }
         }
     } else {
         None
@@ -1065,4 +1209,3 @@ mod tests {
         assert!(join_res.unwrap_err().is_cancelled(), "Ping task must be cancelled on WS exit");
     }
 }
-

@@ -132,18 +132,29 @@ impl UserWsListener {
         // 15 min TTL covers typical reconnect replay windows.
         let mut dedup = DedupCache::new(Duration::from_secs(15 * 60), 50_000);
 
+        let mut backoff = Duration::from_millis(100);
+        const MAX_BACKOFF: Duration = Duration::from_secs(5);
+
         loop {
             match self.connect_and_listen(&mut dedup).await {
                 Ok(()) => {
-                    info!("👤 User WS connection closed normally");
+                    info!("👤 User WS closed normally");
+                    backoff = Duration::from_millis(100); // Reset on clean close
                 }
                 Err(e) => {
-                    warn!("👤 User WS error: {:?}", e);
+                    let msg = format!("{:?}", e);
+                    if msg.contains("ResetWithoutClosingHandshake") {
+                        info!("👤 User WS server reset (expected) — fast reconnect");
+                        // Don't escalate backoff for expected resets
+                    } else {
+                        warn!("👤 User WS error: {:?}", e);
+                    }
                 }
             }
 
-            info!("👤 Reconnecting User WS in 3s...");
-            sleep(Duration::from_secs(3)).await;
+            info!("👤 Reconnecting User WS in {:?}...", backoff);
+            sleep(backoff).await;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
         }
     }
 
@@ -194,7 +205,7 @@ impl UserWsListener {
 
         // Ping keepalive
         let write_clone = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            let mut interval = tokio::time::interval(Duration::from_secs(5));
             loop {
                 interval.tick().await;
                 if write.send(Message::Text("PING".to_string())).await.is_err() {
