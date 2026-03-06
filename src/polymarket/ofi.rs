@@ -27,7 +27,7 @@ pub struct OfiConfig {
 
     /// Toxicity threshold on |OFI score| per side.
     /// When |buy_vol − sell_vol| > threshold, that side's flow is toxic.
-    /// Default: 50.0 (placeholder — calibrate with DRY-RUN data).
+    /// Default: 200.0 (calibrated from live btc-updown-5m: median spikes 100-200, peaks 1000).
     pub toxicity_threshold: f64,
 
     /// Heartbeat interval in milliseconds for evicting expired trades
@@ -39,7 +39,7 @@ impl Default for OfiConfig {
     fn default() -> Self {
         Self {
             window_duration: Duration::from_secs(3),
-            toxicity_threshold: 50.0,
+            toxicity_threshold: 200.0,
             heartbeat_ms: 200,
         }
     }

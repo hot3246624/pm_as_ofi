@@ -347,8 +347,14 @@ impl StrategyCoordinator {
         // ── Priority 1: Lead-Lag Global Kill Switch ──
         let global_toxic = ofi.yes.is_toxic || ofi.no.is_toxic;
         if global_toxic {
-            self.global_kill_switch(&ofi).await;
-            return; // Block ALL new orders until both sides recover
+            if inv.net_diff.abs() > f64::EPSILON {
+                // P0 FIX: When we have open inventory, only kill the risky side
+                // and PRESERVE the hedge side — it's more important during toxic flow.
+                self.selective_kill_with_hedge(&ofi, &inv).await;
+            } else {
+                self.global_kill_switch(&ofi).await;
+            }
+            return;
         }
 
         // ── Priority 2: Inventory-driven state machine ──
@@ -400,6 +406,35 @@ impl StrategyCoordinator {
             );
             self.cancel(Side::No, CancelReason::ToxicFlow).await;
             self.stats.cancel_toxic += 1;
+        }
+    }
+
+    /// Selective kill: cancel only the side that would ADD risk, preserve the hedge side.
+    /// Then immediately run state_hedge() to maintain/place the counterleg.
+    async fn selective_kill_with_hedge(&mut self, ofi: &OfiSnapshot, inv: &InventoryState) {
+        let (risky_side, hedge_side) = if inv.net_diff > 0.0 {
+            (Side::Yes, Side::No) // excess YES → kill YES bids, keep NO hedge
+        } else {
+            (Side::No, Side::Yes) // excess NO → kill NO bids, keep YES hedge
+        };
+
+        let risky_active = match risky_side {
+            Side::Yes => self.yes_bid.active,
+            Side::No => self.no_bid.active,
+        };
+        if risky_active {
+            warn!(
+                "☠️ SELECTIVE KILL {:?} (risky) | yes_ofi={:.1} no_ofi={:.1} net={:.1} — keeping {:?} hedge",
+                risky_side, ofi.yes.ofi_score, ofi.no.ofi_score, inv.net_diff, hedge_side,
+            );
+            self.cancel(risky_side, CancelReason::ToxicFlow).await;
+            self.stats.cancel_toxic += 1;
+        }
+
+        // Maintain the hedge order even during toxic flow
+        let ub = self.usable_book();
+        if ub.yes_bid > 0.0 && ub.no_bid > 0.0 {
+            self.state_hedge(inv, &ub).await;
         }
     }
 
@@ -485,10 +520,15 @@ impl StrategyCoordinator {
             let ceiling = self.cfg.pair_target - inv.yes_avg_cost;
             let price = self.aggressive_price(ceiling, ub.no_ask);
             if price > 0.0 {
-                info!(
-                    "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                    price, ceiling, ub.no_ask, inv.net_diff,
-                );
+                // P1 FIX: Only log when order will actually be placed/repriced
+                if !self.no_bid.active
+                    || (self.no_bid.price - price).abs() > self.cfg.reprice_threshold
+                {
+                    info!(
+                        "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
+                        price, ceiling, ub.no_ask, inv.net_diff,
+                    );
+                }
                 self.place_or_reprice(Side::No, price, BidReason::Hedge)
                     .await;
             }
@@ -502,10 +542,15 @@ impl StrategyCoordinator {
             let ceiling = self.cfg.pair_target - inv.no_avg_cost;
             let price = self.aggressive_price(ceiling, ub.yes_ask);
             if price > 0.0 {
-                info!(
-                    "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                    price, ceiling, ub.yes_ask, inv.net_diff,
-                );
+                // P1 FIX: Only log when order will actually be placed/repriced
+                if !self.yes_bid.active
+                    || (self.yes_bid.price - price).abs() > self.cfg.reprice_threshold
+                {
+                    info!(
+                        "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
+                        price, ceiling, ub.yes_ask, inv.net_diff,
+                    );
+                }
                 self.place_or_reprice(Side::Yes, price, BidReason::Hedge)
                     .await;
             }

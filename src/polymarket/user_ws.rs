@@ -374,11 +374,14 @@ impl UserWsListener {
 
             if owner.is_empty() {
                 owner_missing = true;
+                // P2 FIX: Accept fill when owner is empty — we're already
+                // scoped to our market/subscription, so it's likely ours.
             } else if owner != our_api_key {
                 owner_mismatch = true;
-                debug!(
-                    "👤 Skipping maker_order from other owner: {}…",
+                info!(
+                    "👤 Skipping maker_order: owner={}… ours={}…",
                     &owner[..8.min(owner.len())],
+                    &our_api_key[..8.min(our_api_key.len())],
                 );
                 continue;
             }
