@@ -63,6 +63,8 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `POLYMARKET_WS_BASE_URL` | ❌ | 默认 `wss://ws-subscriptions-clob.polymarket.com/ws` |
 | `POLYMARKET_REST_URL` | ❌ | 默认 `https://clob.polymarket.com` |
 | `POLYMARKET_API_KEY/SECRET/PASSPHRASE` | ❌ | 可选，不填则自动派生 |
+| `POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE` | ❌ | 仅 Safe 自动 Claim 需要（Relayer Builder 认证） |
+| `POLYMARKET_RELAYER_URL` | ❌ | 默认 `https://relayer-v2.polymarket.com` |
 
 ### 4.2 策略参数
 
@@ -86,6 +88,17 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 强制刷新心跳 |
+
+### 4.4 Claim 参数
+
+| 变量 | 默认 | 说明 |
+|------|------|------|
+| `PM_CLAIM_MONITOR` | `true` | 日志监控可领取收益 |
+| `PM_AUTO_CLAIM` | `false` | 开启自动领取 |
+| `PM_AUTO_CLAIM_DRY_RUN` | `false` | 仅打印待领取，不执行 |
+| `PM_AUTO_CLAIM_MIN_VALUE` | `0` | 单个 condition 最小价值阈值（美元） |
+| `PM_AUTO_CLAIM_MAX_CONDITIONS` | `5` | 每轮最多处理的 condition 数 |
+| `PM_AUTO_CLAIM_INTERVAL_SECONDS` | `300` | 两次自动领取最小间隔 |
 
 ## 5. $100 实盘测试参数推荐
 

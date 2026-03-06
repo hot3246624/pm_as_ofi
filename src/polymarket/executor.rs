@@ -520,6 +520,7 @@ pub async fn init_clob_client(
     rest_url: &str,
     private_key: Option<&str>,
     funder_address: Option<alloy::primitives::Address>,
+    api_credentials: Option<polymarket_client_sdk::auth::Credentials>,
 ) -> (
     Option<AuthClient>,
     Option<LocalSigner<alloy::signers::k256::ecdsa::SigningKey>>,
@@ -563,6 +564,10 @@ pub async fn init_clob_client(
     );
 
     let mut auth_builder = client.authentication_builder(&signer);
+    if let Some(creds) = api_credentials {
+        info!("🔑 Auth mode | using explicit POLYMARKET_API_* credentials from environment");
+        auth_builder = auth_builder.credentials(creds);
+    }
     if let Some(funder) = funder_address {
         use polymarket_client_sdk::clob::types::SignatureType;
         let signature_type = match std::env::var("PM_SIGNATURE_TYPE")

@@ -199,7 +199,10 @@ impl UserWsListener {
             &self.cfg.yes_asset_id[..8.min(self.cfg.yes_asset_id.len())],
             &self.cfg.no_asset_id[..8.min(self.cfg.no_asset_id.len())],
         );
-        info!("👤 Subscribe payload: {}", subscribe);
+        info!(
+            "👤 Subscribe auth: apiKey={}...",
+            &self.cfg.api_key[..8.min(self.cfg.api_key.len())]
+        );
 
         write.send(Message::Text(subscribe.to_string())).await?;
 

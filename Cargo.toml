@@ -24,11 +24,12 @@ anyhow = "1"
 uuid = { version = "1", features = ["v4"] }
 hmac = "0.12"
 sha2 = "0.10"
+base64 = "0.22"
 chrono = "0.4"
 rand = "0.8"
 
 # Polymarket official SDK (替换自实现的 client)
-polymarket-client-sdk = { version = "0.4", default-features = false, features = ["clob", "gamma"] }
+polymarket-client-sdk = { version = "0.4", default-features = false, features = ["clob", "gamma", "data", "ctf"] }
 rust_decimal = "1.40"
 rust_decimal_macros = "1.40"
 

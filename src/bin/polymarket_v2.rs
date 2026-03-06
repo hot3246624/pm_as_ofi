@@ -16,6 +16,9 @@ use tracing::{debug, info, warn};
 
 // V2 Actor modules
 use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
+use pm_as_ofi::polymarket::claims::{
+    AutoClaimConfig, AutoClaimState, maybe_auto_claim, scan_claimable_positions,
+};
 use pm_as_ofi::polymarket::executor::{init_clob_client, Executor, ExecutorConfig};
 use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
@@ -166,6 +169,74 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
         }
     }
     anyhow::bail!("Failed to resolve market from slug: {}", slug);
+}
+
+async fn maybe_log_claimable_positions(
+    funder_address: Option<&str>,
+    signer_address: Option<&str>,
+) {
+    let claim_monitor = env::var("PM_CLAIM_MONITOR")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(true);
+    if !claim_monitor {
+        return;
+    }
+
+    let Some(funder) = funder_address else {
+        return;
+    };
+    let funder_addr = match funder.trim().parse::<alloy::primitives::Address>() {
+        Ok(a) => a,
+        Err(e) => {
+            warn!("⚠️ Claim monitor skipped: invalid funder address '{}': {:?}", funder, e);
+            return;
+        }
+    };
+
+    let data_api_url = env::var("POLYMARKET_DATA_API_URL")
+        .unwrap_or_else(|_| "https://data-api.polymarket.com".to_string());
+
+    let summary = match tokio::time::timeout(
+        Duration::from_secs(8),
+        scan_claimable_positions(&data_api_url, funder_addr),
+    )
+    .await
+    {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
+            warn!("⚠️ Claim monitor failed: {:?}", e);
+            return;
+        }
+        Err(_) => {
+            warn!("⚠️ Claim monitor timed out after 8s");
+            return;
+        }
+    };
+
+    if summary.positions == 0 {
+        return;
+    }
+
+    warn!(
+        "💸 Claimable winnings detected: positions={} conditions={} est_value=${}",
+        summary.positions, summary.conditions, summary.total_value
+    );
+    for c in &summary.top_conditions {
+        info!(
+            "💸 Claim candidate: condition={} positions={} est_value=${}",
+            c.condition_id, c.positions, c.total_value
+        );
+    }
+
+    if let Some(signer) = signer_address {
+        if !signer.trim().eq_ignore_ascii_case(funder.trim()) {
+            warn!(
+                "⚠️ Claim requires proxy/safe execution (signer={} funder={}). \
+                 Current bot only monitors claimables; use Polymarket UI Claim button for now.",
+                signer, funder
+            );
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────
@@ -605,11 +676,22 @@ async fn main() -> anyhow::Result<()> {
     let inv_cfg = InventoryConfig::from_env();
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg = CoordinatorConfig::from_env();
+    let auto_claim_cfg = AutoClaimConfig::from_env();
+    let mut auto_claim_state = AutoClaimState::default();
     let dry_run = coord_cfg.dry_run;
 
     info!("📊 Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
         coord_cfg.pair_target, coord_cfg.bid_size,
         coord_cfg.tick_size, coord_cfg.max_net_diff, ofi_cfg.toxicity_threshold, dry_run);
+    if auto_claim_cfg.enabled {
+        info!(
+            "💸 Auto-claim enabled: min_value=${} max_conditions={} interval={}s dry_run={}",
+            auto_claim_cfg.min_condition_value,
+            auto_claim_cfg.max_conditions_per_run,
+            auto_claim_cfg.run_interval.as_secs(),
+            auto_claim_cfg.dry_run
+        );
+    }
 
     // P1 FIX: Parse funder_address from environment, which represents the Magic Proxy Wallet.
     // We need this BEFORE init_clob_client to configure the API key derivation.
@@ -643,13 +725,47 @@ async fn main() -> anyhow::Result<()> {
         None => None,
     };
 
+    // Shared L2 credentials for BOTH CLOB REST and User WS.
+    // If provided in env, we force both channels to use exactly the same keypair.
+    let shared_api_creds_env: Option<(String, String, String)> = {
+        let env_key = env::var("POLYMARKET_API_KEY").ok().filter(|s| !s.trim().is_empty());
+        let env_secret = env::var("POLYMARKET_API_SECRET").ok().filter(|s| !s.trim().is_empty());
+        let env_pass = env::var("POLYMARKET_API_PASSPHRASE").ok().filter(|s| !s.trim().is_empty());
+        match (env_key, env_secret, env_pass) {
+            (Some(k), Some(s), Some(p)) => Some((k, s, p)),
+            (None, None, None) => None,
+            _ => {
+                anyhow::bail!(
+                    "🚨 FATAL: POLYMARKET_API_KEY / POLYMARKET_API_SECRET / POLYMARKET_API_PASSPHRASE must be set together."
+                );
+            }
+        }
+    };
+    let shared_api_creds_auth = match shared_api_creds_env.as_ref() {
+        Some((key, secret, passphrase)) => {
+            let key_uuid = match key.parse::<polymarket_client_sdk::auth::ApiKey>() {
+                Ok(k) => k,
+                Err(e) => {
+                    anyhow::bail!("🚨 FATAL: Invalid POLYMARKET_API_KEY UUID: {:?}", e);
+                }
+            };
+            Some(polymarket_client_sdk::auth::Credentials::new(
+                key_uuid,
+                secret.clone(),
+                passphrase.clone(),
+            ))
+        }
+        None => None,
+    };
+
     // ═══ Initialize CLOB client (once, reused across rotations) ═══
-    // We pass funder_alloy down so API key is derived on behalf of the proxy wallet.
+    // We pass funder_alloy for maker identity and shared_api_creds_auth for unified L2 auth.
     let (clob_client, signer) = if !dry_run {
         init_clob_client(
             &base_settings.rest_url,
             base_settings.private_key.as_deref(),
             funder_alloy,
+            shared_api_creds_auth,
         )
         .await
     } else {
@@ -663,6 +779,11 @@ async fn main() -> anyhow::Result<()> {
              Set PM_DRY_RUN=true or fix private key / auth config."
         );
     }
+    #[allow(unused_imports)]
+    use alloy::signers::Signer;
+    let signer_address = signer
+        .as_ref()
+        .map(|s| format!("{:?}", s.address()));
 
     // Startup preflight: force-refresh and inspect collateral balance/allowance.
     if !dry_run {
@@ -807,43 +928,46 @@ async fn main() -> anyhow::Result<()> {
              filtered out and inventory will never update."
         );
     }
+    if !dry_run {
+        maybe_log_claimable_positions(
+            funder_address.as_deref(),
+            signer_address.as_deref(),
+        )
+        .await;
+        if let Err(e) = maybe_auto_claim(
+            &auto_claim_cfg,
+            &mut auto_claim_state,
+            funder_address.as_deref(),
+            signer_address.as_deref(),
+            base_settings.private_key.as_deref(),
+        )
+        .await
+        {
+            warn!("⚠️ Auto-claim runner failed at startup: {:?}", e);
+        }
+    }
 
     // ═══ L2 API credentials for User WS (live mode only) ═══
-    // CRITICAL: User WS requires EOA-mode API credentials (no funder/proxy).
-    // The CLOB client's credentials are Proxy-mode and get rejected by User WS.
-    // So we derive a SEPARATE set of credentials specifically for User WS.
+    // Use the SAME credential source as CLOB REST to avoid identity drift.
     let api_creds: Option<(String, String, String)> = if !dry_run {
-        // Prefer explicit env vars first
-        let env_key = env::var("POLYMARKET_API_KEY").ok();
-        let env_secret = env::var("POLYMARKET_API_SECRET").ok();
-        let env_pass = env::var("POLYMARKET_API_PASSPHRASE").ok();
-
-        if let (Some(k), Some(s), Some(p)) = (env_key, env_secret, env_pass) {
-            info!("🔑 Using API credentials from environment");
+        if let Some((k, s, p)) = shared_api_creds_env.clone() {
+            info!("🔑 Using shared API credentials from environment (REST + User WS)");
             Some((k, s, p))
-        } else if let Some(pk) = base_settings.private_key.as_deref() {
-            // Derive EOA-mode API key (WITHOUT funder) — User WS requires this
-            match pm_as_ofi::polymarket::user_ws::derive_api_key(
-                &base_settings.rest_url, pk,
-            ).await {
-                Ok(creds) => {
-                    info!("🔑 Derived separate EOA-mode API key for User WS");
-                    Some(creds)
-                }
-                Err(e) => {
-                    anyhow::bail!(
-                        "🚨 FATAL: dry_run=false but failed to derive User WS API key: {:?}\n\
-                         Cannot run live without User WS — inventory would never update.\n\
-                         Set PM_DRY_RUN=true or fix credentials.", e
-                    );
-                }
-            }
         } else {
-            anyhow::bail!(
-                "🚨 FATAL: dry_run=false but no POLYMARKET_PRIVATE_KEY set.\n\
-                 Cannot run live without User WS — inventory would never update.\n\
-                 Set PM_DRY_RUN=true or provide credentials."
-            );
+            use secrecy::ExposeSecret;
+            if let Some(client) = clob_client.as_ref() {
+                let creds = client.credentials();
+                info!("🔑 Reusing authenticated CLOB credentials for User WS");
+                Some((
+                    creds.key().to_string(),
+                    creds.secret().expose_secret().to_string(),
+                    creds.passphrase().expose_secret().to_string(),
+                ))
+            } else {
+                anyhow::bail!(
+                    "🚨 FATAL: dry_run=false but no authenticated CLOB client available for User WS credentials."
+                );
+            }
         }
     } else {
         None
@@ -1086,6 +1210,25 @@ async fn main() -> anyhow::Result<()> {
         for h in session_handles {
             h.abort();
             let _ = h.await;
+        }
+
+        if !dry_run {
+            maybe_log_claimable_positions(
+                funder_address.as_deref(),
+                signer_address.as_deref(),
+            )
+            .await;
+            if let Err(e) = maybe_auto_claim(
+                &auto_claim_cfg,
+                &mut auto_claim_state,
+                funder_address.as_deref(),
+                signer_address.as_deref(),
+                base_settings.private_key.as_deref(),
+            )
+            .await
+            {
+                warn!("⚠️ Auto-claim runner failed after round cleanup: {:?}", e);
+            }
         }
 
         if !prefix_mode {

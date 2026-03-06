@@ -1,5 +1,6 @@
 // ─── V2: Toxicity-Aware StatArb Actor Architecture ───
 pub mod coordinator;
+pub mod claims;
 pub mod executor;
 pub mod inventory;
 pub mod messages;

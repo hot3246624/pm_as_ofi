@@ -201,3 +201,11 @@
 [2m2026-03-06T02:55:11.471609Z[0m [32m INFO[0m [2mpm_as_ofi::polymarket::user_ws[0m[2m:[0m 👤 User WS server reset (expected) — fast reconnect
 [2m2026-03-06T02:55:11.471644Z[0m [32m INFO[0m [2mpm_as_ofi::polymarket::user_ws[0m[2m:[0m 👤 Reconnecting User WS in 3.2s...
 [2m2026-03-06T02:55:14.673323Z[0m [32m INFO[0m [2mpm_as_ofi::polymarket::user_ws[0m[2m:[0m 👤 Connecting User WS (authenticated) [3murl[0m[2m=[0mwss://ws-subscriptions-clob.polymarket.com/ws/user
+[2m2026-03-06T04:59:23.978757Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m ═══════════════════════════════════════════════════
+[2m2026-03-06T04:59:23.978842Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m   Polymarket V2 — Async Inventory Arbitrage Engine
+[2m2026-03-06T04:59:23.978845Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m   Auto-Discovery + Market Rotation
+[2m2026-03-06T04:59:23.978847Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m ═══════════════════════════════════════════════════
+[2m2026-03-06T04:59:23.978851Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m 🔄 PREFIX mode: 'btc-updown-5m' — will auto-rotate markets
+[2m2026-03-06T04:59:23.978905Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m 📊 Config: pair=0.98 bid=5.0 tick=0.010 net=10 ofi_thresh=50.0 dry=false
+[2m2026-03-06T04:59:23.978909Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m 💸 Auto-claim enabled: min_value=$0 max_conditions=5 interval=300s dry_run=true
+[2m2026-03-06T04:59:23.978945Z[0m [32m INFO[0m [2mpolymarket_v2[0m[2m:[0m 🔑 Using explicit POLYMARKET_FUNDER_ADDRESS: 0x529D9210…
