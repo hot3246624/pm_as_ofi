@@ -221,8 +221,6 @@ impl UserWsListener {
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
-                    // Log first few raw messages for auth debugging
-                    info!("👤 User WS raw msg: {}", &text[..200.min(text.len())]);
                     if let Ok(value) = serde_json::from_str::<Value>(&text) {
                         // Handle arrays (batched events)
                         let values = if value.is_array() {

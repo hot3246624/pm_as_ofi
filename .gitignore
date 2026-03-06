@@ -2,3 +2,6 @@
 Cargo.lock
 .env
 .archive/
+
+# Log files (may contain sensitive credentials)
+logs/

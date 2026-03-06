@@ -558,9 +558,17 @@ pub async fn init_clob_client(
     let signer_addr = signer.address();
     let derived_proxy = polymarket_client_sdk::derive_proxy_wallet(signer_addr, 137);
     let derived_safe = polymarket_client_sdk::derive_safe_wallet(signer_addr, 137);
+    let fmt_addr = |a: alloy::primitives::Address| -> String {
+        let s = format!("{a:?}");
+        if s.len() > 10 { format!("{}…{}", &s[..6], &s[s.len()-4..]) } else { s }
+    };
+    let s_signer = fmt_addr(signer_addr);
+    let s_funder = funder_address.map_or_else(|| "None".to_string(), fmt_addr);
+    let s_proxy = derived_proxy.map_or_else(|| "None".to_string(), fmt_addr);
+    let s_safe = derived_safe.map_or_else(|| "None".to_string(), fmt_addr);
     info!(
-        "🔍 Auth identity | signer={:?} configured_funder={:?} derived_proxy={:?} derived_safe={:?}",
-        signer_addr, funder_address, derived_proxy, derived_safe
+        "🔍 Auth identity | signer={} configured_funder={} derived_proxy={} derived_safe={}",
+        s_signer, s_funder, s_proxy, s_safe,
     );
 
     let mut auth_builder = client.authentication_builder(&signer);
