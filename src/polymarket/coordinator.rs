@@ -378,11 +378,7 @@ impl StrategyCoordinator {
             return;
         }
 
-        if inv.net_diff.abs() < f64::EPSILON {
-            self.state_balanced(&ub).await;
-        } else {
-            self.state_hedge(&inv, &ub).await;
-        }
+        self.state_unified(&inv, &ub).await;
     }
 
     // ═════════════════════════════════════════════════
@@ -434,126 +430,150 @@ impl StrategyCoordinator {
         // Maintain the hedge order even during toxic flow
         let ub = self.usable_book();
         if ub.yes_bid > 0.0 && ub.no_bid > 0.0 {
-            self.state_hedge(inv, &ub).await;
+            self.quote_hedge_only(inv, &ub).await;
         }
     }
 
     // ═════════════════════════════════════════════════
-    // State A: BALANCED — passive mid-based maker
+    // Toxic Flow Hedge Override
     // ═════════════════════════════════════════════════
 
-    async fn state_balanced(&mut self, ub: &Book) {
-        // P1-5: Hard inventory gate with tiered cancel
-        let inv = *self.inv_rx.borrow();
-        if !inv.can_open {
-            self.stats.skipped_inv_limit += 1;
-
-            if inv.net_diff.abs() < 0.001 {
-                // net_diff ≈ 0: no hedge needed, stop both sides.
-                // Use local cancel() so slot state is reset (avoid stale active slots).
-                debug!("🚫 Inventory limit + balanced → cancel both sides");
-                if self.yes_bid.active {
-                    self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
-                    self.stats.cancel_inv += 1;
-                }
-                if self.no_bid.active {
-                    self.cancel(Side::No, CancelReason::InventoryLimit).await;
-                    self.stats.cancel_inv += 1;
-                }
-            } else {
-                // net_diff ≠ 0: only cancel the side that would ADD risk
-                // If net_diff > 0 → we have excess YES → cancel YES bids (don't buy more YES)
-                // If net_diff < 0 → we have excess NO  → cancel NO bids (don't buy more NO)
-                let risky_side = if inv.net_diff > 0.0 {
-                    Side::Yes
-                } else {
-                    Side::No
-                };
-                let slot_active = match risky_side {
-                    Side::Yes => self.yes_bid.active,
-                    Side::No => self.no_bid.active,
-                };
-                if slot_active {
-                    debug!(
-                        "🚫 Inventory limit (net={:.1}) → cancel {:?} side only (keep hedge)",
-                        inv.net_diff, risky_side,
-                    );
-                    self.cancel(risky_side, CancelReason::InventoryLimit).await;
-                    self.stats.cancel_inv += 1;
-                }
-            }
-            return;
-        }
-
-        let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
-        let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
-
-        // Constrain: bid_yes + bid_no ≤ pair_target
-        let (bid_yes, bid_no) = if mid_yes + mid_no <= self.cfg.pair_target {
-            (mid_yes, mid_no)
-        } else {
-            let excess = (mid_yes + mid_no) - self.cfg.pair_target;
-            (mid_yes - excess / 2.0, mid_no - excess / 2.0)
-        };
-
-        let bid_yes = self.safe_price(bid_yes);
-        let bid_no = self.safe_price(bid_no);
-
-        self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide)
-            .await;
-        self.place_or_reprice(Side::No, bid_no, BidReason::Provide)
-            .await;
-    }
-
-    // ═════════════════════════════════════════════════
-    // State B: HEDGE — aggressive maker
-    // ═════════════════════════════════════════════════
-
-    async fn state_hedge(&mut self, inv: &InventoryState, ub: &Book) {
+    async fn quote_hedge_only(&mut self, inv: &InventoryState, ub: &Book) {
         if inv.net_diff > 0.0 {
-            // Excess YES → cancel YES bids, aggressive bid NO
-            if self.yes_bid.active {
-                info!("⚠️ excess YES ({:.1}) → cancel Bid_YES", inv.net_diff);
-                self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
-                self.stats.cancel_inv += 1;
-            }
             let ceiling = self.cfg.pair_target - inv.yes_avg_cost;
             let price = self.aggressive_price(ceiling, ub.no_ask);
             if price > 0.0 {
-                // P1 FIX: Only log when order will actually be placed/repriced
-                if !self.no_bid.active
-                    || (self.no_bid.price - price).abs() > self.cfg.reprice_threshold
-                {
-                    info!(
-                        "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        price, ceiling, ub.no_ask, inv.net_diff,
-                    );
+                if !self.no_bid.active || (self.no_bid.price - price).abs() > self.cfg.reprice_threshold {
+                    info!("🔧 TOXIC HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}", price, ceiling, ub.no_ask, inv.net_diff);
                 }
-                self.place_or_reprice(Side::No, price, BidReason::Hedge)
-                    .await;
+                self.place_or_reprice(Side::No, price, BidReason::Hedge).await;
             }
         } else {
-            // Excess NO → cancel NO bids, aggressive bid YES
-            if self.no_bid.active {
-                info!("⚠️ excess NO ({:.1}) → cancel Bid_NO", inv.net_diff);
-                self.cancel(Side::No, CancelReason::InventoryLimit).await;
-                self.stats.cancel_inv += 1;
-            }
             let ceiling = self.cfg.pair_target - inv.no_avg_cost;
             let price = self.aggressive_price(ceiling, ub.yes_ask);
             if price > 0.0 {
-                // P1 FIX: Only log when order will actually be placed/repriced
-                if !self.yes_bid.active
-                    || (self.yes_bid.price - price).abs() > self.cfg.reprice_threshold
-                {
+                if !self.yes_bid.active || (self.yes_bid.price - price).abs() > self.cfg.reprice_threshold {
+                    info!("🔧 TOXIC HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}", price, ceiling, ub.yes_ask, inv.net_diff);
+                }
+                self.place_or_reprice(Side::Yes, price, BidReason::Hedge).await;
+            }
+        }
+    }
+
+    // ═════════════════════════════════════════════════
+    // State Unified: A-S Skew + Gabagool22 Cost Averaging
+    // ═════════════════════════════════════════════════
+
+    async fn state_unified(&mut self, inv: &InventoryState, ub: &Book) {
+        let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
+        let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
+
+        // Base required profit margin based on pair_target limits
+        let excess = f64::max(0.0, (mid_yes + mid_no) - self.cfg.pair_target);
+        
+        let skew = if self.cfg.max_net_diff > 0.0 {
+            (inv.net_diff / self.cfg.max_net_diff).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+
+        // A-S linear shift based on inventory.
+        // Holding YES (skew>0) shifts YES down and NO up.
+        let skew_shift = skew * 0.03;
+
+        let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
+        let mut raw_no  = mid_no - (excess / 2.0) + skew_shift;
+
+        if raw_yes + raw_no > self.cfg.pair_target {
+            let overflow = (raw_yes + raw_no) - self.cfg.pair_target;
+            raw_yes -= overflow / 2.0;
+            raw_no -= overflow / 2.0;
+        }
+
+        let mut bid_yes = self.safe_price(raw_yes);
+        let mut bid_no  = self.safe_price(raw_no);
+
+        let net_diff = inv.net_diff;
+
+        if !inv.can_open {
+            self.stats.skipped_inv_limit += 1;
+        }
+
+        if net_diff > f64::EPSILON {
+            if !inv.can_open {
+                bid_yes = 0.0;
+                if self.yes_bid.active {
+                    debug!("🚫 YES maxed out (net={:.1}) → stop buying YES", net_diff);
+                    self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
+                    self.stats.cancel_inv += 1;
+                }
+            }
+            
+            let ceiling_no = self.cfg.pair_target - inv.yes_avg_cost;
+            let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
+            
+            if agg_no > 0.0 {
+                bid_no = f64::max(bid_no, agg_no);
+                if bid_no > ceiling_no {
+                    bid_no = self.safe_price(ceiling_no);
+                }
+                
+                if !self.no_bid.active || (self.no_bid.price - bid_no).abs() > self.cfg.reprice_threshold {
                     info!(
-                        "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        price, ceiling, ub.yes_ask, inv.net_diff,
+                        "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
+                        bid_no, ceiling_no, ub.no_ask, inv.net_diff,
                     );
                 }
-                self.place_or_reprice(Side::Yes, price, BidReason::Hedge)
-                    .await;
             }
+        } else if net_diff < -f64::EPSILON {
+            if !inv.can_open {
+                bid_no = 0.0;
+                if self.no_bid.active {
+                    debug!("🚫 NO maxed out (net={:.1}) → stop buying NO", net_diff);
+                    self.cancel(Side::No, CancelReason::InventoryLimit).await;
+                    self.stats.cancel_inv += 1;
+                }
+            }
+            
+            let ceiling_yes = self.cfg.pair_target - inv.no_avg_cost;
+            let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
+            
+            if agg_yes > 0.0 {
+                bid_yes = f64::max(bid_yes, agg_yes);
+                if bid_yes > ceiling_yes {
+                    bid_yes = self.safe_price(ceiling_yes);
+                }
+
+                if !self.yes_bid.active || (self.yes_bid.price - bid_yes).abs() > self.cfg.reprice_threshold {
+                    info!(
+                        "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
+                        bid_yes, ceiling_yes, ub.yes_ask, inv.net_diff,
+                    );
+                }
+            }
+        } else {
+            if !inv.can_open {
+                bid_yes = 0.0;
+                bid_no = 0.0;
+                if self.yes_bid.active {
+                    self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
+                }
+                if self.no_bid.active {
+                    self.cancel(Side::No, CancelReason::InventoryLimit).await;
+                }
+            }
+        }
+
+        if bid_yes > 0.0 {
+            self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide).await;
+        } else if self.yes_bid.active {
+            self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
+        }
+
+        if bid_no > 0.0 {
+            self.place_or_reprice(Side::No, bid_no, BidReason::Provide).await;
+        } else if self.no_bid.active {
+            self.cancel(Side::No, CancelReason::InventoryLimit).await;
         }
     }
 

@@ -1,71 +1,42 @@
-# 策略详解：Polymarket V2 Maker-Only Engine
+# Polymarket 做市策略说明
 
-## 1. 利润模型
+## 📋 系统定位
 
-```
-价格假设：YES mid ≈ 0.50, NO mid ≈ 0.50
-我方出价：bid_yes + bid_no ≤ pair_target (0.985)
-结算收入：resolution 无论方向必定支付 1.00
+**此系统是高度优化的 Maker-Only 纯做市场商，核心基于 Gabagool22 组合成本摊薄风控，叠加了 Avellaneda-Stoikov (A-S) 纯正库存偏移（Skew）模型以及 OFI 流动性防身。**
 
-profit_per_pair = 1.00 - (bid_yes + bid_no)
-               ≥ 1.00 - 0.985 = $0.015 per share pair
-```
+- **做市（Market Making）**: 在市场上同时挂买单和卖单，赚取 bid-ask spread
+- **Maker-Only**: 所有订单都是 **Post-Only** 限价单，确保赚取 maker rebate  
+- **网格摊薄体系**: 不盲目止损抛售。下跌时开启网格买入，通过摊平成本拉起对冲天花板。
+- **A-S 偏移**: 仓位越重，挂单越偏。自然消化风险。
+
+## 🎯 核心架构（Gabagool22 + A-S 综合体）
 
 **只要双边都成交，无论 YES 对还是 NO 对最终胜出，都能确保每 pair $0.015+ 的利润。**
 
-## 2. 策略状态机
+### 2. 阶段化做市引擎 (Unified Pricing Engine)
 
-### State A: BALANCED（`net_diff ≈ 0` + `can_open = true`）
+**核心思想**: **消灭死扛，永远保持活跃性。**系统有三种自然演化的做市状态。
 
-- 计算 `mid_yes = (yes_bid + yes_ask) / 2`
-- 计算 `mid_no = (no_bid + no_ask) / 2`
-- 如果 `mid_yes + mid_no > pair_target`，对称扣除超额
-- 双边同时挂 Post-Only Bid
+#### 第一道防线：基于 OFI 的毒性流避险 (Toxic Hedge Override)
+当市场出现狂跌/暴涨的单边砸盘时，`OFI > 200`（阈值）。
+系统触发 **选择性防飞刀**：
+- 如果没有敞口，全面撤单，不接挂空中飞刀。
+- 如果有被套敞口（例如拿着 YES），立刻撤销 YES（防接盘），并直接向上顶格挂出最高额度的对冲单（NO），力求在巨震中脱身。
 
-### State B: HEDGE（`net_diff ≠ 0`）
+#### 核心输出：常规做市区间（A-S 网格做市）
+只要还在安全线内（未触及 `max_net_diff` 限制），系统永远在双边挂单，同时利用 **纯正 Avellaneda-Stoikov** 存货倾斜模型给出最优价：
+- 如果没有仓位：买卖分布非常匀称（Mid ± 半差价）。
+- 如果手中有过量 YES 被套：
+  1. A-S 惩罚机制启动：YES 挂单自动打骨折（向远离市场价的安全区挂，拉低均价）。
+  2. A-S 奖励机制启动：NO 挂单给出溢价（迎合对手盘，提升撮合几率）。
+  3. 通过网格一路向下接：随着你继续以更低阶买入 YES，你的 `yes_avg_cost` 持续降低。
 
-- 如果 `net_diff > 0`（持有过多 YES）：
-  - 撤销 YES 侧挂单
-  - `ceiling = pair_target - yes_avg_cost`（确保总成本不超标）
-  - `price = min(ceiling, no_ask - tick)`（不会溢价追单）
-  - Aggressive bid NO
-
-- 如果 `net_diff < 0`（持有过多 NO）：
-  - 同理反方向
-
-### Priority 0: GLOBAL KILL SWITCH
-
-- 任一侧 `|OFI| > toxicity_threshold` → 双边全部撤单
-- 基于 Lead-Lag 理论：套利者在 YES 和 NO 间传导信息流
-
-### Priority Gate: `!can_open`
-
-三重检查全部通过才允许开仓：
-1. `|net_diff| < max_net_diff`（仓位偏差 < 10）
-2. `portfolio_cost < max_portfolio_cost`（组合成本 < 1.02）
-3. `single_side_value < max_position_value`（单侧 < $50）
-
-## 3. 成交生命周期
-
-```
-Coordinator.place()  →  set slot.active=true
-  │
-Executor.handle_place_bid()  →  SDK post_order(post_only=true)
-  │
-  ├─ 成功 → open_orders[side].insert(order_id, size)
-  │   │
-  │   └─ User WS: FillEvent(MATCHED)
-  │       ├─ Executor: remaining -= fill_size
-  │       │   └─ remaining ≤ 0 → remove + send OrderFilled(side)
-  │       ├─ InventoryManager: ledger.push() + recompute_from_ledger()
-  │       └─ Coordinator: slot.active = false (可立刻重新挂单)
-  │
-  │   └─ User WS: FillEvent(CONFIRMED)
-  │       └─ InventoryManager: no-op（幂等，不重复入账）
-  │
-  └─ 失败 → send OrderFailed(side)
-      └─ Coordinator: slot.active = false（重置 ghost slot）
-```
+#### 绝境防守区间：触及风控天花板（Gabagool22 硬兜底）
+当你积累单侧仓位触发了 `net_diff >= max_net_diff`。
+- 此时执行铁律：坚决停止买入持有侧。
+- 对手端对冲公式启动：`NO bid = min(pair_target - yes_avg_cost, 市场 NO 卖首 - tick)`
+- 由于你前面的 A-S 网格一路成功把 `yes_avg_cost` 从 0.5 摊薄到了极低水平，此时对冲天花板将大幅跃升贴近最新市价。
+- 只要稍微回调或填档，立刻零风险完美对冲离场。
 
 ## 4. OFI 毒性引擎
 
