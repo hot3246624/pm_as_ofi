@@ -490,6 +490,14 @@ impl StrategyCoordinator {
             raw_no -= overflow / 2.0;
         }
 
+        // 1. Strict Maker Clamp: base quotes must never cross the spread
+        if ub.yes_ask > 0.0 {
+            raw_yes = f64::min(raw_yes, ub.yes_ask - self.cfg.tick_size);
+        }
+        if ub.no_ask > 0.0 {
+            raw_no = f64::min(raw_no, ub.no_ask - self.cfg.tick_size);
+        }
+
         let mut bid_yes = self.safe_price(raw_yes);
         let mut bid_no  = self.safe_price(raw_no);
 
