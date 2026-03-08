@@ -124,6 +124,9 @@ struct BidSlot {
     last_placed: Instant,
     /// Do not place before this instant (failure backoff).
     retry_after: Instant,
+    /// Pending an outcome (OrderFilled or OrderFailed) from the Executor. 
+    /// Blocks new placements on this side.
+    inflight: bool,
 }
 
 impl Default for BidSlot {
@@ -134,6 +137,7 @@ impl Default for BidSlot {
             // Start far in the past so first bid isn't debounced
             last_placed: Instant::now() - std::time::Duration::from_secs(60),
             retry_after: Instant::now() - std::time::Duration::from_secs(60),
+            inflight: false,
         }
     }
 }
@@ -251,6 +255,7 @@ impl StrategyCoordinator {
                             };
                             slot.active = false;
                             slot.price = 0.0;
+                            slot.inflight = false;
                             if cooldown_ms > 0 {
                                 let cooldown = std::time::Duration::from_millis(cooldown_ms);
                                 slot.retry_after = Instant::now() + cooldown;
@@ -272,6 +277,7 @@ impl StrategyCoordinator {
                             };
                             slot.active = false;
                             slot.price = 0.0;
+                            slot.inflight = false;
 
                             // FIX: Prevent inventory-sync race conditions.
                             // Force the slot to pause so InventoryManager can process the fill and push the new InventoryState
@@ -708,6 +714,15 @@ impl StrategyCoordinator {
             return;
         }
 
+        // Coordinator level inflight queue check
+        if slot.inflight {
+            debug!(
+                "⏳ Skipping {:?}@{:.3} — previous order still inflight",
+                side, price
+            );
+            return;
+        }
+
         // FIX #3: Debounce — skip if last place was too recent
         let elapsed = slot.last_placed.elapsed();
         let debounce = std::time::Duration::from_millis(self.cfg.debounce_ms);
@@ -742,6 +757,7 @@ impl StrategyCoordinator {
         slot.active = true;
         slot.price = price;
         slot.last_placed = Instant::now();
+        slot.inflight = true;
         self.stats.placed += 1;
 
         if self.cfg.dry_run {
@@ -769,7 +785,9 @@ impl StrategyCoordinator {
         };
         slot.active = false;
         slot.price = 0.0;
+        slot.inflight = false;
 
+        debug!("🗑️ Cancel {:?} ({:?})", side, reason);
         if self.cfg.dry_run {
             info!("📝 DRY cancel {:?} ({:?})", side, reason);
             return;
