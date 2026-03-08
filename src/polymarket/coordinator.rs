@@ -532,12 +532,12 @@ impl StrategyCoordinator {
 
         let net_diff = inv.net_diff;
 
-        if !inv.can_open {
+        if !inv.can_buy_yes && !inv.can_buy_no {
             self.stats.skipped_inv_limit += 1;
         }
 
         if net_diff > f64::EPSILON {
-            if !inv.can_open {
+            if !inv.can_buy_yes {
                 bid_yes = 0.0;
                 if self.yes_bid.active {
                     debug!("🚫 YES maxed out (net={:.1}) → stop buying YES", net_diff);
@@ -570,7 +570,7 @@ impl StrategyCoordinator {
                 bid_no = 0.0; // Consumed
             }
         } else if net_diff < -f64::EPSILON {
-            if !inv.can_open {
+            if !inv.can_buy_no {
                 bid_no = 0.0;
                 if self.no_bid.active {
                     debug!("🚫 NO maxed out (net={:.1}) → stop buying NO", net_diff);
@@ -603,12 +603,14 @@ impl StrategyCoordinator {
                 bid_yes = 0.0; // Consumed
             }
         } else {
-            if !inv.can_open {
+            if !inv.can_buy_yes {
                 bid_yes = 0.0;
-                bid_no = 0.0;
                 if self.yes_bid.active {
                     self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
                 }
+            }
+            if !inv.can_buy_no {
+                bid_no = 0.0;
                 if self.no_bid.active {
                     self.cancel(Side::No, CancelReason::InventoryLimit).await;
                 }

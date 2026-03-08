@@ -28,6 +28,9 @@ pub struct InventoryConfig {
     /// Maximum dollar value of position on a single side.
     /// Default: $5.
     pub max_position_value: f64,
+
+    /// Order size to project capacity (fetched from env).
+    pub bid_size: f64,
 }
 
 impl Default for InventoryConfig {
@@ -36,6 +39,7 @@ impl Default for InventoryConfig {
             max_net_diff: 10.0,
             max_portfolio_cost: 1.02,
             max_position_value: 5.0,
+            bid_size: 5.0,
         }
     }
 }
@@ -57,6 +61,11 @@ impl InventoryConfig {
         if let Ok(v) = std::env::var("PM_MAX_POSITION_VALUE") {
             if let Ok(f) = v.parse::<f64>() {
                 cfg.max_position_value = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_BID_SIZE") {
+            if let Ok(f) = v.parse::<f64>() {
+                cfg.bid_size = f;
             }
         }
         cfg
@@ -230,22 +239,35 @@ impl InventoryManager {
             0.0 // Not a complete pair yet
         };
 
-        self.state.can_open = self.can_open();
+        self.state.can_buy_yes = self.can_buy_yes();
+        self.state.can_buy_no = self.can_buy_no();
     }
 
-    /// Check whether current inventory allows opening new positions.
-    /// Checks three independent limits:
-    ///   1. net_diff < max_net_diff  (imbalance limit)
-    ///   2. portfolio_cost < max_portfolio_cost  (pair cost limit)
-    ///   3. single-side value < max_position_value  (dollar exposure limit)
-    pub fn can_open(&self) -> bool {
-        let net_ok = self.state.net_diff.abs() < self.cfg.max_net_diff;
+    /// Check whether current inventory allows opening a new YES position.
+    pub fn can_buy_yes(&self) -> bool {
+        let projected_net = self.state.net_diff + self.cfg.bid_size;
+        let net_ok = projected_net <= self.cfg.max_net_diff + 1e-4;
+
         let cost_ok = self.state.portfolio_cost < self.cfg.max_portfolio_cost
             || self.state.portfolio_cost == 0.0;
-        let yes_value = self.state.yes_qty * self.state.yes_avg_cost;
-        let no_value = self.state.no_qty * self.state.no_avg_cost;
-        let value_ok =
-            yes_value < self.cfg.max_position_value && no_value < self.cfg.max_position_value;
+
+        let projected_yes_value = (self.state.yes_qty + self.cfg.bid_size) * self.state.yes_avg_cost;
+        let value_ok = projected_yes_value <= self.cfg.max_position_value + 1e-4;
+
+        net_ok && cost_ok && value_ok
+    }
+
+    /// Check whether current inventory allows opening a new NO position.
+    pub fn can_buy_no(&self) -> bool {
+        let projected_net = self.state.net_diff - self.cfg.bid_size;
+        let net_ok = projected_net >= -self.cfg.max_net_diff - 1e-4;
+
+        let cost_ok = self.state.portfolio_cost < self.cfg.max_portfolio_cost
+            || self.state.portfolio_cost == 0.0;
+
+        let projected_no_value = (self.state.no_qty + self.cfg.bid_size) * self.state.no_avg_cost;
+        let value_ok = projected_no_value <= self.cfg.max_position_value + 1e-4;
+
         net_ok && cost_ok && value_ok
     }
 }
@@ -291,7 +313,8 @@ mod tests {
 
         assert!((im.state.net_diff - 0.0).abs() < 1e-9);
         assert!((im.state.portfolio_cost - 0.97).abs() < 1e-9); // 0.48+0.49
-        assert!(im.can_open());
+        assert!(im.can_buy_yes());
+        assert!(im.can_buy_no());
     }
 
     #[test]
@@ -318,8 +341,8 @@ mod tests {
         let (_fill_tx, fill_rx) = mpsc::channel(16);
         let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
 
-        im.apply_fill(&make_fill(Side::Yes, 6.0, 0.50));
-        assert!(!im.can_open()); // net_diff=6 > max=5
+        im.apply_fill(&make_fill(Side::Yes, 5.0, 0.50));
+        assert!(!im.can_buy_yes()); // 5.0 + 5.0 (bid_size) = 10 > 5
     }
 
     #[test]

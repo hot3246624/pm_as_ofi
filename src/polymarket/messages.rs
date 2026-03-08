@@ -96,9 +96,10 @@ pub struct InventoryState {
     pub no_avg_cost: f64,
     pub net_diff: f64,
     pub portfolio_cost: f64,
-    /// Whether inventory constraints allow opening new positions.
-    /// Computed by InventoryManager from max_net_diff / max_portfolio_cost.
-    pub can_open: bool,
+    /// Projected validation: does placing a new YES bid stay within Inventory limits?
+    pub can_buy_yes: bool,
+    /// Projected validation: does placing a new NO bid stay within Inventory limits?
+    pub can_buy_no: bool,
 }
 
 impl Default for InventoryState {
@@ -110,7 +111,8 @@ impl Default for InventoryState {
             no_avg_cost: 0.0,
             net_diff: 0.0,
             portfolio_cost: 0.0,
-            can_open: true, // Default: no positions → can open
+            can_buy_yes: true,
+            can_buy_no: true,
         }
     }
 }
