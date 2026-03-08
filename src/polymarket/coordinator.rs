@@ -272,6 +272,11 @@ impl StrategyCoordinator {
                             };
                             slot.active = false;
                             slot.price = 0.0;
+
+                            // FIX: Prevent inventory-sync race conditions.
+                            // Force the slot to pause so InventoryManager can process the fill and push the new InventoryState
+                            // before we evaluate state_unified and accidentally double-buy (which caused net_diff=20).
+                            slot.retry_after = Instant::now() + std::time::Duration::from_millis(self.cfg.debounce_ms);
                         }
                         None => {} // Channel closed, ignore
                     }
@@ -451,19 +456,35 @@ impl StrategyCoordinator {
             let ceiling = self.cfg.pair_target - inv.yes_avg_cost;
             let price = self.aggressive_price(ceiling, ub.no_ask);
             if price > 0.0 {
-                if !self.no_bid.active || (self.no_bid.price - price).abs() > self.cfg.reprice_threshold {
-                    info!("🔧 TOXIC HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}", price, ceiling, ub.no_ask, inv.net_diff);
-                }
-                self.place_or_reprice(Side::No, price, BidReason::Hedge).await;
+                let log_msg = if !self.no_bid.active
+                    || (self.no_bid.price - price).abs() > self.cfg.reprice_threshold
+                {
+                    Some(format!(
+                        "🔧 TOXIC HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
+                        price, ceiling, ub.no_ask, inv.net_diff
+                    ))
+                } else {
+                    None
+                };
+                self.place_or_reprice(Side::No, price, BidReason::Hedge, log_msg)
+                    .await;
             }
         } else {
             let ceiling = self.cfg.pair_target - inv.no_avg_cost;
             let price = self.aggressive_price(ceiling, ub.yes_ask);
             if price > 0.0 {
-                if !self.yes_bid.active || (self.yes_bid.price - price).abs() > self.cfg.reprice_threshold {
-                    info!("🔧 TOXIC HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}", price, ceiling, ub.yes_ask, inv.net_diff);
-                }
-                self.place_or_reprice(Side::Yes, price, BidReason::Hedge).await;
+                let log_msg = if !self.yes_bid.active
+                    || (self.yes_bid.price - price).abs() > self.cfg.reprice_threshold
+                {
+                    Some(format!(
+                        "🔧 TOXIC HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
+                        price, ceiling, ub.yes_ask, inv.net_diff
+                    ))
+                } else {
+                    None
+                };
+                self.place_or_reprice(Side::Yes, price, BidReason::Hedge, log_msg)
+                    .await;
             }
         }
     }
@@ -478,7 +499,7 @@ impl StrategyCoordinator {
 
         // Base required profit margin based on pair_target limits
         let excess = f64::max(0.0, (mid_yes + mid_no) - self.cfg.pair_target);
-        
+
         let skew = if self.cfg.max_net_diff > 0.0 {
             (inv.net_diff / self.cfg.max_net_diff).clamp(-1.0, 1.0)
         } else {
@@ -490,7 +511,7 @@ impl StrategyCoordinator {
         let skew_shift = skew * self.cfg.as_skew_factor;
 
         let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
-        let mut raw_no  = mid_no - (excess / 2.0) + skew_shift;
+        let mut raw_no = mid_no - (excess / 2.0) + skew_shift;
 
         if raw_yes + raw_no > self.cfg.pair_target {
             let overflow = (raw_yes + raw_no) - self.cfg.pair_target;
@@ -507,7 +528,7 @@ impl StrategyCoordinator {
         }
 
         let mut bid_yes = self.safe_price(raw_yes);
-        let mut bid_no  = self.safe_price(raw_no);
+        let mut bid_no = self.safe_price(raw_no);
 
         let net_diff = inv.net_diff;
 
@@ -524,22 +545,29 @@ impl StrategyCoordinator {
                     self.stats.cancel_inv += 1;
                 }
             }
-            
+
             let ceiling_no = self.cfg.pair_target - inv.yes_avg_cost;
             let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
-            
+
             if agg_no > 0.0 {
                 bid_no = f64::max(bid_no, agg_no);
                 if bid_no > ceiling_no {
                     bid_no = self.safe_price(ceiling_no);
                 }
-                
-                if !self.no_bid.active || (self.no_bid.price - bid_no).abs() > self.cfg.reprice_threshold {
-                    info!(
+
+                let log_msg = if !self.no_bid.active
+                    || (self.no_bid.price - bid_no).abs() > self.cfg.reprice_threshold
+                {
+                    Some(format!(
                         "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        bid_no, ceiling_no, ub.no_ask, inv.net_diff,
-                    );
-                }
+                        bid_no, ceiling_no, ub.no_ask, inv.net_diff
+                    ))
+                } else {
+                    None
+                };
+                self.place_or_reprice(Side::No, bid_no, BidReason::Provide, log_msg)
+                    .await;
+                bid_no = 0.0; // Consumed
             }
         } else if net_diff < -f64::EPSILON {
             if !inv.can_open {
@@ -550,22 +578,29 @@ impl StrategyCoordinator {
                     self.stats.cancel_inv += 1;
                 }
             }
-            
+
             let ceiling_yes = self.cfg.pair_target - inv.no_avg_cost;
             let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
-            
+
             if agg_yes > 0.0 {
                 bid_yes = f64::max(bid_yes, agg_yes);
                 if bid_yes > ceiling_yes {
                     bid_yes = self.safe_price(ceiling_yes);
                 }
 
-                if !self.yes_bid.active || (self.yes_bid.price - bid_yes).abs() > self.cfg.reprice_threshold {
-                    info!(
+                let log_msg = if !self.yes_bid.active
+                    || (self.yes_bid.price - bid_yes).abs() > self.cfg.reprice_threshold
+                {
+                    Some(format!(
                         "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        bid_yes, ceiling_yes, ub.yes_ask, inv.net_diff,
-                    );
-                }
+                        bid_yes, ceiling_yes, ub.yes_ask, inv.net_diff
+                    ))
+                } else {
+                    None
+                };
+                self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide, log_msg)
+                    .await;
+                bid_yes = 0.0; // Consumed
             }
         } else {
             if !inv.can_open {
@@ -581,13 +616,15 @@ impl StrategyCoordinator {
         }
 
         if bid_yes > 0.0 {
-            self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide).await;
+            self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide, None)
+                .await;
         } else if self.yes_bid.active {
             self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
         }
 
         if bid_no > 0.0 {
-            self.place_or_reprice(Side::No, bid_no, BidReason::Provide).await;
+            self.place_or_reprice(Side::No, bid_no, BidReason::Provide, None)
+                .await;
         } else if self.no_bid.active {
             self.cancel(Side::No, CancelReason::InventoryLimit).await;
         }
@@ -651,7 +688,13 @@ impl StrategyCoordinator {
     // Place / Reprice with debounce
     // ═════════════════════════════════════════════════
 
-    async fn place_or_reprice(&mut self, side: Side, price: f64, reason: BidReason) {
+    async fn place_or_reprice(
+        &mut self,
+        side: Side,
+        price: f64,
+        reason: BidReason,
+        log_msg: Option<String>,
+    ) {
         let slot = match side {
             Side::Yes => &self.yes_bid,
             Side::No => &self.no_bid,
@@ -669,6 +712,10 @@ impl StrategyCoordinator {
         if elapsed < debounce {
             self.stats.skipped_debounce += 1;
             return;
+        }
+
+        if let Some(msg) = log_msg {
+            info!("{}", msg);
         }
 
         if !slot.active {
