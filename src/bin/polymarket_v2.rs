@@ -120,19 +120,20 @@ fn rotation_wait_duration(now_unix: u64, end_ts: u64) -> Duration {
 /// Compute the slug and end-timestamp for the CURRENTLY ACTIVE market.
 ///
 /// "btc-updown-15m" + now=03:36 UTC → ("btc-updown-15m-1771904700", 1771904700)
-fn compute_current_slug(prefix: &str) -> (String, u64) {
+fn compute_current_slug(prefix: &str) -> (String, u64, u64) {
     let interval = detect_interval(prefix);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs();
-    let end_ts = ((now / interval) + 1) * interval;
-    (format!("{}-{}", prefix, end_ts), end_ts)
+    let start_ts = (now / interval) * interval;
+    let expected_end_ts = start_ts + interval;
+    (format!("{}-{}", prefix, start_ts), start_ts, expected_end_ts)
 }
 
 /// Resolve a market by exact slug via Gamma API.
 /// P2 FIX: 10s timeout + explicit error on network stall.
-async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, String)> {
+async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, String, Option<u64>)> {
     info!("🔍 Resolving market: {}", slug);
     let url = format!("https://gamma-api.polymarket.com/markets?slug={}", slug);
     let client = reqwest::Client::builder()
@@ -148,6 +149,12 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
                 .unwrap_or_default()
                 .to_string();
 
+            let end_date_ts = market
+                .get("endDate")
+                .and_then(|v| v.as_str())
+                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.timestamp() as u64);
+
             let tokens = market
                 .get("clobTokenIds")
                 .or_else(|| market.get("clob_token_ids"))
@@ -162,7 +169,7 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
                         &ids[0][..8.min(ids[0].len())],
                         &ids[1][..8.min(ids[1].len())]
                     );
-                    return Ok((market_id, ids[0].clone(), ids[1].clone()));
+                    return Ok((market_id, ids[0].clone(), ids[1].clone(), end_date_ts));
                 }
             }
 
@@ -174,7 +181,7 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
                     let yes_id = y["token_id"].as_str().unwrap_or_default().to_string();
                     let no_id = n["token_id"].as_str().unwrap_or_default().to_string();
                     info!("✅ Market resolved via tokens: {}", market_id);
-                    return Ok((market_id, yes_id, no_id));
+                    return Ok((market_id, yes_id, no_id, end_date_ts));
                 }
             }
         }
@@ -1039,32 +1046,21 @@ async fn main() -> anyhow::Result<()> {
     // Channel for pre-resolved next markets to eliminate 7-8s rotation latency
     #[allow(clippy::type_complexity)]
     let (preload_tx, mut preload_rx) =
-        mpsc::channel::<(String, anyhow::Result<(String, String, String)>)>(2);
+        mpsc::channel::<(String, anyhow::Result<(String, String, String, Option<u64>)>)>(2);
     #[allow(clippy::type_complexity)]
-    let mut preloaded_market: Option<(String, anyhow::Result<(String, String, String)>)> = None;
+    let mut preloaded_market: Option<(String, anyhow::Result<(String, String, String, Option<u64>)>)> = None;
 
     let mut round = 0u64;
     loop {
         round += 1;
 
         // ── Step 1: Resolve current market ──
-        let (slug, end_ts) = if prefix_mode {
-            compute_current_slug(&raw_slug)
+        let (slug, _slug_ts, mut expected_end_ts) = if prefix_mode {
+            let (s, ts, e_ts) = compute_current_slug(&raw_slug);
+            (s, ts, e_ts)
         } else {
             // P2 FIX: Cap secs_remaining to avoid Instant + Duration overflow panics
-            (raw_slug.clone(), u64::MAX) // Fixed mode: no expiry
-        };
-
-        // P2 FIX: Clamp end_ts for deadline calculation to avoid overflow
-        let effective_end_ts = if end_ts == u64::MAX {
-            // Fixed mode: use a sane 1-year cap instead of u64::MAX
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs()
-                + 31_536_000
-        } else {
-            end_ts
+            (raw_slug.clone(), u64::MAX, u64::MAX) // Fixed mode: no expiry
         };
 
         // Entry gate: if startup is too late in the current interval, skip it.
@@ -1080,26 +1076,26 @@ async fn main() -> anyhow::Result<()> {
                 .as_secs();
 
             // Secondary Entry Gate: if API resolution took too long and pushed us past grace, abort.
-            if should_skip_entry_window(now_unix, end_ts, interval_secs, entry_grace_secs) {
-                let start_ts = end_ts.saturating_sub(interval_secs);
+            if should_skip_entry_window(now_unix, expected_end_ts, interval_secs, entry_grace_secs) {
+                let start_ts = expected_end_ts.saturating_sub(interval_secs);
                 let age_secs = now_unix.saturating_sub(start_ts);
-                let wait_secs = end_ts.saturating_sub(now_unix).saturating_add(1);
+                let wait_secs = expected_end_ts.saturating_sub(now_unix).saturating_add(1);
                 warn!(
                     "⏭️ Late startup for {}: age={}s > grace={}s. Skip current market, wait {}s for next open.",
                     slug, age_secs, entry_grace_secs, wait_secs
                 );
 
                 // Pre-resolve the NEXT market in the background while sleeping
-                let next_end_ts = end_ts + interval_secs;
-                let next_slug = format!("{}-{}", raw_slug, next_end_ts);
+                let next_slug_ts = expected_end_ts;
+                let next_slug = format!("{}-{}", raw_slug, next_slug_ts);
                 let p_tx = preload_tx.clone();
                 tokio::spawn(async move {
                     let now = SystemTime::now()
                         .duration_since(UNIX_EPOCH)
                         .unwrap()
                         .as_secs();
-                    let sleep_time = if end_ts > now + 30 {
-                        end_ts - now - 30
+                    let sleep_time = if expected_end_ts > now + 30 {
+                        expected_end_ts - now - 30
                     } else {
                         0
                     };
@@ -1138,13 +1134,30 @@ async fn main() -> anyhow::Result<()> {
         } else {
             resolve_market_by_slug(&slug).await
         };
-        let (market_id, yes_asset_id, no_asset_id) = match resolved {
+        let (market_id, yes_asset_id, no_asset_id, api_end_date) = match resolved {
             Ok(ids) => ids,
             Err(err) => {
                 warn!("❌ Failed to resolve '{}': {} — retrying in 10s", slug, err);
                 sleep(Duration::from_secs(10)).await;
                 continue;
             }
+        };
+
+        // P0 FIX: Apply API verifiable endDate if present
+        if let Some(actual_end_ts) = api_end_date {
+            expected_end_ts = actual_end_ts;
+        }
+
+        // P2 FIX: Clamp end_ts for deadline calculation to avoid overflow
+        let effective_end_ts = if expected_end_ts == u64::MAX {
+            // Fixed mode: use a sane 1-year cap instead of u64::MAX
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_secs()
+                + 31_536_000
+        } else {
+            expected_end_ts
         };
 
         let mut settings = base_settings.clone();
@@ -1309,9 +1322,8 @@ async fn main() -> anyhow::Result<()> {
 
         // Background preload for next market
         if prefix_mode {
-            let next_interval = detect_interval(&raw_slug);
-            let next_end_ts = end_ts + next_interval;
-            let next_slug = format!("{}-{}", raw_slug, next_end_ts);
+            let next_slug_ts = expected_end_ts;
+            let next_slug = format!("{}-{}", raw_slug, next_slug_ts);
 
             let p_tx = preload_tx.clone();
             tokio::spawn(async move {
@@ -1319,8 +1331,8 @@ async fn main() -> anyhow::Result<()> {
                     .duration_since(UNIX_EPOCH)
                     .unwrap()
                     .as_secs();
-                let sleep_time = if end_ts > now + 30 {
-                    end_ts - now - 30
+                let sleep_time = if expected_end_ts > now + 30 {
+                    expected_end_ts - now - 30
                 } else {
                     0
                 };
@@ -1339,7 +1351,7 @@ async fn main() -> anyhow::Result<()> {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        let wait = rotation_wait_duration(now_unix, end_ts);
+        let wait = rotation_wait_duration(now_unix, expected_end_ts);
         if wait.is_zero() {
             info!("🔄 Rotating immediately to next market");
         } else {
