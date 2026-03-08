@@ -39,6 +39,8 @@ pub struct CoordinatorConfig {
     pub reprice_threshold: f64,
     /// Minimum time between place/reprice on same side (anti-thrashing).
     pub debounce_ms: u64,
+    /// A-S Skew penalty factor. 0.03 = pure conservative A-S. 0.00 = pure Gabagool grid.
+    pub as_skew_factor: f64,
     /// DRY-RUN mode.
     pub dry_run: bool,
 }
@@ -52,6 +54,7 @@ impl Default for CoordinatorConfig {
             tick_size: 0.01,
             reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
             debounce_ms: 500,         // Increased to reduce churn (half second)
+            as_skew_factor: 0.03,     // Original strictly conservative A-S
             dry_run: true,
         }
     }
@@ -95,6 +98,11 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_DEBOUNCE_MS") {
             if let Ok(f) = v.parse() {
                 c.debounce_ms = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_AS_SKEW_FACTOR") {
+            if let Ok(f) = v.parse() {
+                c.as_skew_factor = f;
             }
         }
         if let Ok(v) = std::env::var("PM_DRY_RUN") {
@@ -479,7 +487,7 @@ impl StrategyCoordinator {
 
         // A-S linear shift based on inventory.
         // Holding YES (skew>0) shifts YES down and NO up.
-        let skew_shift = skew * 0.03;
+        let skew_shift = skew * self.cfg.as_skew_factor;
 
         let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
         let mut raw_no  = mid_no - (excess / 2.0) + skew_shift;
@@ -740,6 +748,7 @@ mod tests {
             tick_size: 0.01,
             reprice_threshold: 0.005,
             debounce_ms: 0, // disable for tests
+            as_skew_factor: 0.03,
             dry_run: false,
         }
     }
