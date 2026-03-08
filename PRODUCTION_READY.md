@@ -15,7 +15,9 @@
 - [ ] `PM_MAX_PORTFOLIO_COST=1.02` — 组合成本上限
 - [ ] `PM_REPRICE_THRESHOLD=0.010` — 1 分钱漂移才换单
 - [ ] `PM_DEBOUNCE_MS=500` — 半秒防抖
-- [ ] `PM_OFI_TOXICITY_THRESHOLD=50.0` — 毒性阈值
+- [ ] `PM_OFI_WINDOW_MS=3000` — OFI 判定滑窗
+- [ ] `PM_OFI_TOXICITY_THRESHOLD=300.0` — 毒性阈值 (基于实盘最新观察)
+- [ ] `PM_AS_SKEW_FACTOR=0.03` — 空仓/被套的 A-S 惩罚与激励系数参数
 - [ ] `PM_ENTRY_GRACE_SECONDS=30` — 入场窗口
 
 ## 2. 链上资金

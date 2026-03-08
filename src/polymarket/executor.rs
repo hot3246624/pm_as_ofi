@@ -569,15 +569,25 @@ pub async fn init_clob_client(
 
     let explicit_api_creds = api_credentials.clone();
     use polymarket_client_sdk::clob::types::SignatureType;
+    
+    let default_sig_type = if funder_address == derived_safe {
+        SignatureType::GnosisSafe
+    } else if funder_address == Some(signer_addr) {
+        SignatureType::Eoa
+    } else {
+        SignatureType::Proxy
+    };
+
     let signature_type = match std::env::var("PM_SIGNATURE_TYPE")
         .ok()
         .and_then(|v| v.parse::<u8>().ok())
     {
         Some(2) => SignatureType::GnosisSafe,
         Some(1) => SignatureType::Proxy,
-        Some(0) => SignatureType::Eoa, // Will fail fast with funder set; kept for explicit diagnostics.
-        _ => SignatureType::Proxy,
+        Some(0) => SignatureType::Eoa,
+        _ => default_sig_type,
     };
+    
     if funder_address.is_some() {
         info!(
             "🔐 Auth mode | signature_type={} (0=EOA,1=Proxy,2=GnosisSafe)",
