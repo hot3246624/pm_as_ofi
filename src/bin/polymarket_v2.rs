@@ -1181,18 +1181,29 @@ async fn main() -> anyhow::Result<()> {
                     .build();
                 
                 if let Ok(resp) = client.balance_allowance(req).await {
-                    let balance_f64 = rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
+                    // Polymarket returns collateral balance in 6 decimals (1 USDC = 1,000,000)
+                    let raw_balance = rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
+                    let balance_f64 = raw_balance / 1_000_000.0;
                     
-                    let dyn_bid_size = 5.0f64.max(balance_f64 * 0.05).round(); // Floor: 5.0
-                    let dyn_net_diff = 10.0f64.max(balance_f64 * 0.20).round(); // Floor: 10.0
-                    // Inventory limit can stay static or be derived from max_net_diff:
-                    // Here we override the coordinate system bounds:
+                    let bid_pct: f64 = std::env::var("PM_BID_PCT")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0.02); // Default 2%
+                        
+                    let net_diff_pct: f64 = std::env::var("PM_NET_DIFF_PCT")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0.10); // Default 10%
+                    
+                    let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round(); // Floor: 5.0
+                    let dyn_net_diff = 10.0f64.max(balance_f64 * net_diff_pct).round(); // Floor: 10.0
+                    
                     coord_cfg.bid_size = dyn_bid_size;
                     coord_cfg.max_net_diff = dyn_net_diff;
 
                     info!(
-                        "💡 [DYNAMIC SIZING] Account balance: {:.2} USDC -> Setting BID_SIZE={:.1}, MAX_NET_DIFF={:.1}",
-                        balance_f64, dyn_bid_size, dyn_net_diff
+                        "💡 [DYNAMIC SIZING] Account balance: {:.2} USDC -> Setting BID_SIZE={:.1}, MAX_NET_DIFF={:.1} (bid_pct={}, net_pct={})",
+                        balance_f64, dyn_bid_size, dyn_net_diff, bid_pct, net_diff_pct
                     );
                 } else {
                     warn!("⚠️ Failed to fetch balance for dynamic sizing. Falling back to env defaults.");

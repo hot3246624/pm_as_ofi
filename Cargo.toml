@@ -33,7 +33,7 @@ rust_decimal = "1.40"
 rust_decimal_macros = "1.40"
 
 # Alloy ecosystem (Extreme diet version)
-alloy = { version = "1.0.32", features = ["providers", "signer-local", "signers", "sol-types", "dyn-abi", "contract"] }
+alloy = { version = "1", features = ["providers", "signer-local", "signers", "sol-types", "dyn-abi", "contract"] }
 
 [features]
 default = []
