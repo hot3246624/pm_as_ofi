@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build --bin polymarket_v2 2>&1 | head -80)",
+      "Bash(cargo build --bin polymarket_v2 2>&1 | tail -40)",
+      "Bash(cargo test 2>&1 | tail -40)",
+      "Bash(cargo build 2>&1 | head -80)",
+      "Bash(cargo test 2>&1)"
+    ]
+  }
+}

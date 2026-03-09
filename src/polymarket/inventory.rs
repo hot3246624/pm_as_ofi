@@ -251,7 +251,16 @@ impl InventoryManager {
         let cost_ok = self.state.portfolio_cost < self.cfg.max_portfolio_cost
             || self.state.portfolio_cost == 0.0;
 
-        let projected_yes_value = (self.state.yes_qty + self.cfg.bid_size) * self.state.yes_avg_cost;
+        // ISSUE 7 FIX: When yes_avg_cost == 0 (no position yet), the old formula
+        // projected_value = (qty + bid_size) * 0 = 0, which always passed the cap check.
+        // Use a conservative worst-case price of 1.0 for the initial purchase so the
+        // size limit is enforced from the very first buy.
+        let price_est = if self.state.yes_avg_cost > f64::EPSILON {
+            self.state.yes_avg_cost
+        } else {
+            1.0 // Worst-case: binary option pays at most $1 per share
+        };
+        let projected_yes_value = (self.state.yes_qty + self.cfg.bid_size) * price_est;
         let value_ok = projected_yes_value <= self.cfg.max_position_value + 1e-4;
 
         net_ok && cost_ok && value_ok
@@ -265,7 +274,13 @@ impl InventoryManager {
         let cost_ok = self.state.portfolio_cost < self.cfg.max_portfolio_cost
             || self.state.portfolio_cost == 0.0;
 
-        let projected_no_value = (self.state.no_qty + self.cfg.bid_size) * self.state.no_avg_cost;
+        // ISSUE 7 FIX: Same worst-case price estimate for NO side.
+        let price_est = if self.state.no_avg_cost > f64::EPSILON {
+            self.state.no_avg_cost
+        } else {
+            1.0 // Worst-case: binary option pays at most $1 per share
+        };
+        let projected_no_value = (self.state.no_qty + self.cfg.bid_size) * price_est;
         let value_ok = projected_no_value <= self.cfg.max_position_value + 1e-4;
 
         net_ok && cost_ok && value_ok

@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -25,6 +25,9 @@ pub struct SideTracker {
     /// The physical state tracking the Executor's lifecycle.
     pub state: OrderState,
     pub last_action: Instant,
+    /// BUG 2 FIX: Respect the cooldown sent by Executor on balance/allowance errors.
+    /// Pump is a no-op until this instant passes.
+    pub cooldown_until: Option<Instant>,
 }
 
 impl SideTracker {
@@ -34,6 +37,7 @@ impl SideTracker {
             desired: None,
             state: OrderState::Idle,
             last_action: Instant::now(),
+            cooldown_until: None,
         }
     }
 }
@@ -85,8 +89,8 @@ impl OrderManager {
                 }
                 result = self.result_rx.recv() => {
                     match result {
-                        Some(OrderResult::OrderFailed { side, .. }) => {
-                            self.handle_failed(side).await;
+                        Some(OrderResult::OrderFailed { side, cooldown_ms }) => {
+                            self.handle_failed(side, cooldown_ms).await;
                         }
                         Some(OrderResult::OrderFilled { side }) => {
                             self.handle_filled(side).await;
@@ -115,13 +119,25 @@ impl OrderManager {
         }
     }
 
-    async fn handle_failed(&mut self, side: Side) {
+    async fn handle_failed(&mut self, side: Side, cooldown_ms: u64) {
         let tracker = match side {
             Side::Yes => &mut self.yes,
             Side::No => &mut self.no,
         };
-        warn!("⚠️ OMS: {:?} OrderFailed -> Resetting state to Idle", side);
         tracker.state = OrderState::Idle;
+        // BUG 2 FIX: Honor the cooldown from Executor (e.g. 30s for balance errors).
+        // Previously this field was silently discarded, causing dense retries on hard rejects.
+        if cooldown_ms > 0 {
+            let until = Instant::now() + Duration::from_millis(cooldown_ms);
+            tracker.cooldown_until = Some(until);
+            warn!(
+                "⏳ OMS: {:?} OrderFailed — cooldown {}s (balance/allowance reject)",
+                side,
+                cooldown_ms / 1000,
+            );
+        } else {
+            warn!("⚠️ OMS: {:?} OrderFailed -> Resetting state to Idle", side);
+        }
         self.pump(side).await;
     }
 
@@ -153,6 +169,14 @@ impl OrderManager {
             Side::Yes => &mut self.yes,
             Side::No => &mut self.no,
         };
+
+        // BUG 2 FIX: Respect cooldown window set on balance/allowance errors.
+        if let Some(until) = tracker.cooldown_until {
+            if Instant::now() < until {
+                return; // Still cooling down — do not retry.
+            }
+            tracker.cooldown_until = None; // Cooldown expired; resume normal operation.
+        }
 
         let current_state = tracker.state.clone();
         

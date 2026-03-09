@@ -334,6 +334,8 @@ impl Executor {
             .unwrap_or_default();
 
         if order_ids.is_empty() {
+            // No tracked orders — still send CancelAck to unblock OMS state machine.
+            let _ = self.result_tx.send(OrderResult::CancelAck { side }).await;
             return;
         }
 
@@ -344,8 +346,23 @@ impl Executor {
             reason,
         );
 
+        // ISSUE 6 FIX: Track failures. On partial failure the failed orders remain
+        // in open_orders (handle_cancel_order keeps them), which prevents Executor
+        // from placing a replacement until they are resolved. CancelAck is always
+        // sent to unblock OMS — the open_orders guard in handle_place_bid acts as
+        // the safety net against double-placement on stuck orders.
+        let mut failed_count = 0usize;
         for id in &order_ids {
-            let _ = self.handle_cancel_order(id, reason).await;
+            if !self.handle_cancel_order(id, reason).await {
+                failed_count += 1;
+            }
+        }
+
+        if failed_count > 0 {
+            warn!(
+                "⚠️ CancelSide {:?}: {}/{} cancel(s) failed — those orders remain tracked in open_orders (placement guard active)",
+                side, failed_count, order_ids.len(),
+            );
         }
 
         let _ = self.result_tx.send(OrderResult::CancelAck { side }).await;

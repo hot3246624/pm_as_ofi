@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
-use super::messages::{MarketDataMsg, OfiSnapshot, SideOfi, TakerSide};
+use super::messages::{KillSwitchSignal, MarketDataMsg, OfiSnapshot, SideOfi, TakerSide};
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -33,6 +33,24 @@ pub struct OfiConfig {
     /// Heartbeat interval in milliseconds for evicting expired trades
     /// even when no new trades arrive. Default: 200.
     pub heartbeat_ms: u64,
+
+    // ── Opt-2: Adaptive threshold ──────────────────────────────
+    /// Enable adaptive toxicity threshold (mean + k*σ over rolling history).
+    /// When true, `toxicity_threshold` serves only as the initial fallback.
+    /// Default: false (static threshold for predictability).
+    pub adaptive_threshold: bool,
+    /// Number of standard deviations above the rolling mean for toxicity.
+    /// Default: 3.0 (flags the top ~0.1% of flow imbalance events).
+    pub adaptive_k: f64,
+    /// Floor for the adaptive threshold. Prevents false-positives on thin markets.
+    /// Default: 50.0.
+    pub adaptive_min: f64,
+    /// Ceiling for the adaptive threshold. Ensures kills happen even in huge-spike markets.
+    /// Default: 1000.0.
+    pub adaptive_max: f64,
+    /// Rolling window size (number of per-heartbeat OFI observations) for statistics.
+    /// Default: 200 (≈ 40 seconds at 200ms heartbeat).
+    pub adaptive_window: usize,
 }
 
 impl Default for OfiConfig {
@@ -41,6 +59,11 @@ impl Default for OfiConfig {
             window_duration: Duration::from_secs(3),
             toxicity_threshold: 200.0,
             heartbeat_ms: 200,
+            adaptive_threshold: false,
+            adaptive_k: 3.0,
+            adaptive_min: 50.0,
+            adaptive_max: 1000.0,
+            adaptive_window: 200,
         }
     }
 }
@@ -64,6 +87,29 @@ impl OfiConfig {
                 cfg.heartbeat_ms = ms;
             }
         }
+        if let Ok(v) = std::env::var("PM_OFI_ADAPTIVE") {
+            cfg.adaptive_threshold = v != "0" && v.to_lowercase() != "false";
+        }
+        if let Ok(v) = std::env::var("PM_OFI_ADAPTIVE_K") {
+            if let Ok(f) = v.parse::<f64>() {
+                cfg.adaptive_k = f.max(0.5);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_OFI_ADAPTIVE_MIN") {
+            if let Ok(f) = v.parse::<f64>() {
+                cfg.adaptive_min = f.max(1.0);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_OFI_ADAPTIVE_MAX") {
+            if let Ok(f) = v.parse::<f64>() {
+                cfg.adaptive_max = f.max(cfg.adaptive_min);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_OFI_ADAPTIVE_WINDOW") {
+            if let Ok(n) = v.parse::<usize>() {
+                cfg.adaptive_window = n.max(10);
+            }
+        }
         cfg
     }
 }
@@ -79,6 +125,12 @@ struct TradeTick {
     ts: Instant,
 }
 
+/// Hard cap on ticks per side window.
+/// Prevents unbounded memory growth in high-frequency markets where thousands
+/// of trades can arrive within the 3-second sliding window.
+/// 4 096 ticks ≈ ~1 300 trades/s sustained — well above any realistic load.
+const MAX_WINDOW_TICKS: usize = 4096;
+
 /// Per-side sliding window.
 #[derive(Debug)]
 struct SideWindow {
@@ -93,6 +145,12 @@ impl SideWindow {
     }
 
     fn push(&mut self, taker_side: TakerSide, size: f64, ts: Instant) {
+        // ISSUE 9 FIX: Enforce capacity cap before inserting.
+        // Previously the VecDeque could grow without bound in active markets,
+        // making each heartbeat O(n) on a potentially huge collection.
+        if self.ticks.len() >= MAX_WINDOW_TICKS {
+            self.ticks.pop_front(); // Drop oldest tick to stay within budget.
+        }
         self.ticks.push_back(TradeTick {
             taker_side,
             size,
@@ -145,6 +203,14 @@ pub struct OfiEngine {
     no_window: SideWindow,
     md_rx: mpsc::Receiver<MarketDataMsg>,
     snapshot_tx: watch::Sender<OfiSnapshot>,
+    /// Opt-2: Rolling history of |ofi_score| observations (both sides combined)
+    /// used for adaptive threshold computation.
+    score_history: VecDeque<f64>,
+    /// Opt-2: Current effective threshold (starts at cfg.toxicity_threshold).
+    effective_threshold: f64,
+    /// Opt-4: High-priority kill channel to the Coordinator (edge-triggered on toxicity onset).
+    /// None when running without kill channel wiring (backward-compatible).
+    kill_tx: Option<mpsc::Sender<KillSwitchSignal>>,
 }
 
 impl OfiEngine {
@@ -153,22 +219,62 @@ impl OfiEngine {
         md_rx: mpsc::Receiver<MarketDataMsg>,
         snapshot_tx: watch::Sender<OfiSnapshot>,
     ) -> Self {
+        let initial_threshold = cfg.toxicity_threshold;
         Self {
             cfg,
             yes_window: SideWindow::new(),
             no_window: SideWindow::new(),
             md_rx,
             snapshot_tx,
+            score_history: VecDeque::new(),
+            effective_threshold: initial_threshold,
+            kill_tx: None,
         }
+    }
+
+    /// Opt-4: Wire a direct kill channel to the Coordinator.
+    /// When toxicity is first detected (edge-triggered), sends a KillSwitchSignal
+    /// so the Coordinator can act immediately without waiting for the next book tick.
+    pub fn with_kill_tx(mut self, kill_tx: mpsc::Sender<KillSwitchSignal>) -> Self {
+        self.kill_tx = Some(kill_tx);
+        self
+    }
+
+    /// Opt-2: Update rolling score history and recompute adaptive threshold.
+    /// Pushes the max absolute OFI score seen this tick (per-side combined).
+    /// Threshold = clamp(mean + k * std_dev, adaptive_min, adaptive_max).
+    fn update_adaptive_threshold(&mut self, yes_score: f64, no_score: f64) {
+        if !self.cfg.adaptive_threshold {
+            return;
+        }
+        // Record the larger of the two absolute scores each heartbeat.
+        let obs = yes_score.abs().max(no_score.abs());
+        if self.score_history.len() >= self.cfg.adaptive_window {
+            self.score_history.pop_front();
+        }
+        self.score_history.push_back(obs);
+
+        let n = self.score_history.len();
+        if n < 10 {
+            // Not enough data yet — keep the static initial threshold.
+            return;
+        }
+        let mean = self.score_history.iter().sum::<f64>() / n as f64;
+        let variance = self.score_history.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+        let std_dev = variance.sqrt();
+        let adaptive = (mean + self.cfg.adaptive_k * std_dev)
+            .clamp(self.cfg.adaptive_min, self.cfg.adaptive_max);
+        self.effective_threshold = adaptive;
     }
 
     /// Actor main loop.
     pub async fn run(mut self) {
         info!(
-            "🔬 OFI Engine started | window={}ms threshold={:.1} heartbeat={}ms",
+            "🔬 OFI Engine started | window={}ms threshold={:.1} heartbeat={}ms adaptive={}",
             self.cfg.window_duration.as_millis(),
             self.cfg.toxicity_threshold,
             self.cfg.heartbeat_ms,
+            self.cfg.adaptive_threshold,
         );
 
         let mut ticker = tokio::time::interval(Duration::from_millis(self.cfg.heartbeat_ms));
@@ -200,9 +306,12 @@ impl OfiEngine {
             self.yes_window.evict_expired(now, self.cfg.window_duration);
             self.no_window.evict_expired(now, self.cfg.window_duration);
 
-            // Compute per-side snapshots
-            let yes_ofi = self.yes_window.compute(self.cfg.toxicity_threshold);
-            let no_ofi = self.no_window.compute(self.cfg.toxicity_threshold);
+            // Compute per-side snapshots using current effective threshold.
+            let yes_ofi = self.yes_window.compute(self.effective_threshold);
+            let no_ofi = self.no_window.compute(self.effective_threshold);
+
+            // Opt-2: Update rolling history and potentially adjust the threshold.
+            self.update_adaptive_threshold(yes_ofi.ofi_score, no_ofi.ofi_score);
 
             let snapshot = OfiSnapshot {
                 yes: yes_ofi,
@@ -212,12 +321,21 @@ impl OfiEngine {
 
             let _ = self.snapshot_tx.send(snapshot);
 
-            // Edge-triggered logging for toxicity (prevent spam on 200ms tick)
+            // Edge-triggered logging and Opt-4 kill signals on toxicity onset.
             if yes_ofi.is_toxic && !was_yes_toxic {
                 warn!(
-                    "☠️ YES entered toxicity! OFI={:.1} (buy={:.1} sell={:.1})",
+                    "☠️ YES entered toxicity! OFI={:.1} (buy={:.1} sell={:.1}) threshold={:.1}",
                     yes_ofi.ofi_score, yes_ofi.buy_volume, yes_ofi.sell_volume,
+                    self.effective_threshold,
                 );
+                // Opt-4: Notify coordinator immediately without waiting for next book tick.
+                if let Some(ref tx) = self.kill_tx {
+                    let _ = tx.try_send(KillSwitchSignal {
+                        side: Side::Yes,
+                        ofi_score: yes_ofi.ofi_score,
+                        ts: now,
+                    });
+                }
             } else if !yes_ofi.is_toxic && was_yes_toxic {
                 info!("✅ YES flow recovered (OFI={:.1})", yes_ofi.ofi_score);
             }
@@ -225,9 +343,18 @@ impl OfiEngine {
 
             if no_ofi.is_toxic && !was_no_toxic {
                 warn!(
-                    "☠️ NO entered toxicity! OFI={:.1} (buy={:.1} sell={:.1})",
+                    "☠️ NO entered toxicity! OFI={:.1} (buy={:.1} sell={:.1}) threshold={:.1}",
                     no_ofi.ofi_score, no_ofi.buy_volume, no_ofi.sell_volume,
+                    self.effective_threshold,
                 );
+                // Opt-4: Notify coordinator immediately without waiting for next book tick.
+                if let Some(ref tx) = self.kill_tx {
+                    let _ = tx.try_send(KillSwitchSignal {
+                        side: Side::No,
+                        ofi_score: no_ofi.ofi_score,
+                        ts: now,
+                    });
+                }
             } else if !no_ofi.is_toxic && was_no_toxic {
                 info!("✅ NO flow recovered (OFI={:.1})", no_ofi.ofi_score);
             }
@@ -251,6 +378,7 @@ mod tests {
             window_duration: Duration::from_secs(3),
             toxicity_threshold: 10.0,
             heartbeat_ms: 200,
+            ..OfiConfig::default()
         };
         let (_tx, rx) = mpsc::channel(16);
         let (snap_tx, _snap_rx) = watch::channel(OfiSnapshot::default());
@@ -351,6 +479,7 @@ mod tests {
             window_duration: Duration::from_millis(50),
             toxicity_threshold: 10.0,
             heartbeat_ms: 10,
+            ..OfiConfig::default()
         };
         let (tx, rx) = mpsc::channel(16);
         let (snap_tx, snap_rx) = watch::channel(OfiSnapshot::default());

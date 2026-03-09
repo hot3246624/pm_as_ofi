@@ -272,14 +272,18 @@ fn classify_side(asset_id: &str, settings: &Settings) -> Option<Side> {
     }
 }
 
+// ISSUE 11 FIX: Tighten price range to strict (0.0, 1.0).
+// The old upper bound of 100.0 would silently accept percentage-format prices
+// (e.g. 51.0 meaning $0.51), which would corrupt the pricing engine.
+// Polymarket CLOB prices are always decimal in (0, 1).
 fn parse_price_str(raw: &str) -> Option<f64> {
-    raw.parse::<f64>().ok().filter(|v| *v > 0.0 && *v < 100.0)
+    raw.trim().parse::<f64>().ok().filter(|v| *v > 0.0 && *v < 1.0)
 }
 
 fn parse_price_value(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_str().and_then(parse_price_str))
-        .filter(|p| *p > 0.0 && *p < 100.0)
+        .filter(|p| *p > 0.0 && *p < 1.0)
 }
 
 /// Parse a WS message into MarketDataMsg events.
@@ -511,8 +515,6 @@ async fn run_market_ws(
     coord_tx: mpsc::Sender<MarketDataMsg>,
     end_ts: u64,
 ) -> MarketEnd {
-    let mut book_asm = BookAssembler::default();
-
     // Compute wall-clock deadline
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -534,6 +536,12 @@ async fn run_market_ws(
             info!("🏁 Market expired (wall-clock)");
             return MarketEnd::Expired;
         }
+
+        // ISSUE 4 FIX: Reset BookAssembler on every reconnect.
+        // Previously it was declared outside the loop, causing stale data from the
+        // previous session to be mixed with fresh data on reconnect. E.g., old NO
+        // price combined with new YES price would produce a wrong BookTick.
+        let mut book_asm = BookAssembler::default();
 
         let url = settings.ws_url("market");
         info!(%url, "📡 connecting market WS");
@@ -1168,6 +1176,8 @@ async fn main() -> anyhow::Result<()> {
         settings.no_asset_id = no_asset_id.clone();
 
         let mut coord_cfg = coord_cfg_base.clone();
+        // Opt-1: Pass market expiry timestamp so coordinator can apply A-S time decay.
+        coord_cfg.market_end_ts = Some(effective_end_ts);
         let inv_cfg = inv_cfg_base.clone();
 
         // ── Step 2.5: Dynamic Sizing ──
@@ -1239,18 +1249,24 @@ async fn main() -> anyhow::Result<()> {
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
 
+        // Opt-4: Direct kill channel from OFI Engine → Coordinator.
+        // Capacity 4: at most one kill per side (YES/NO) queued without blocking OFI heartbeat.
+        let (kill_tx, kill_rx) = mpsc::channel::<KillSwitchSignal>(4);
+
         let inv = InventoryManager::new(inv_cfg.clone(), inv_fill_rx, inv_watch_tx);
         session_handles.push(tokio::spawn(inv.run()));
 
-        let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx);
+        let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx)
+            .with_kill_tx(kill_tx);
         session_handles.push(tokio::spawn(ofi.run()));
 
-        let coord = StrategyCoordinator::new(
+        let coord = StrategyCoordinator::with_kill_rx(
             coord_cfg.clone(),
             ofi_watch_rx,
             inv_watch_rx,
             coord_md_rx,
             om_tx.clone(),
+            kill_rx,
         );
         session_handles.push(tokio::spawn(coord.run()));
 

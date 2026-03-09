@@ -13,7 +13,7 @@
 //!   3. Subscribe with API key auth + market condition IDs
 //!   4. Listen for trade events and split maker/taker fills
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 use futures::{SinkExt, StreamExt};
@@ -59,19 +59,29 @@ pub struct UserWsListener {
 
 /// Cross-reconnect dedup cache for fill events.
 ///
-/// We keep a bounded TTL cache instead of per-connection HashSet so replayed
-/// trade events after reconnect won't be counted twice.
+/// Keeps a bounded TTL cache so replayed trade events after reconnect won't be
+/// counted twice. Uses an insertion-order VecDeque for O(1) LRU eviction instead
+/// of the previous O(n) HashMap scan.
+///
+/// ISSUE 10 FIX: The old `evict_oldest_if_needed` called `HashMap::iter().min_by_key`
+/// on every insert — O(n) at max_entries=50_000. Now a `VecDeque<String>` tracks
+/// insertion order and the oldest key is popped in O(1).
 #[derive(Debug)]
 struct DedupCache {
+    /// Lookup map: key → insertion instant.
     seen_at: HashMap<String, Instant>,
+    /// Insertion-ordered queue for O(1) LRU eviction.
+    order: VecDeque<String>,
     ttl: Duration,
     max_entries: usize,
 }
 
 impl DedupCache {
     fn new(ttl: Duration, max_entries: usize) -> Self {
+        let cap = max_entries.min(4096);
         Self {
-            seen_at: HashMap::with_capacity(max_entries.min(4096)),
+            seen_at: HashMap::with_capacity(cap),
+            order: VecDeque::with_capacity(cap),
             ttl,
             max_entries,
         }
@@ -84,6 +94,7 @@ impl DedupCache {
         if self.seen_at.contains_key(&key) {
             return false;
         }
+        self.order.push_back(key.clone());
         self.seen_at.insert(key, now);
         self.evict_oldest_if_needed();
         true
@@ -91,18 +102,27 @@ impl DedupCache {
 
     fn evict_expired(&mut self, now: Instant) {
         let cutoff = now.checked_sub(self.ttl).unwrap_or(now);
-        self.seen_at.retain(|_, ts| *ts >= cutoff);
+        // Remove from the front of the queue while they are expired.
+        while let Some(front_key) = self.order.front() {
+            if let Some(&ts) = self.seen_at.get(front_key) {
+                if ts < cutoff {
+                    let k = self.order.pop_front().unwrap();
+                    self.seen_at.remove(&k);
+                } else {
+                    break;
+                }
+            } else {
+                // Key not in map (shouldn't happen but be safe).
+                self.order.pop_front();
+            }
+        }
     }
 
+    /// O(1) LRU eviction using the insertion-order queue.
     fn evict_oldest_if_needed(&mut self) {
         while self.seen_at.len() > self.max_entries {
-            let oldest = self
-                .seen_at
-                .iter()
-                .min_by_key(|(_, ts)| *ts)
-                .map(|(k, _)| k.clone());
-            if let Some(key) = oldest {
-                self.seen_at.remove(&key);
+            if let Some(oldest_key) = self.order.pop_front() {
+                self.seen_at.remove(&oldest_key);
             } else {
                 break;
             }

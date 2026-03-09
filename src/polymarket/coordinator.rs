@@ -21,6 +21,7 @@ use tracing::{debug, info, warn};
 use super::messages::*;
 use super::types::Side;
 
+
 // ─────────────────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────────────────
@@ -41,6 +42,14 @@ pub struct CoordinatorConfig {
     pub debounce_ms: u64,
     /// A-S Skew penalty factor. 0.03 = pure conservative A-S. 0.00 = pure Gabagool grid.
     pub as_skew_factor: f64,
+    /// Time-decay amplifier k. Effective skew_factor = as_skew_factor * (1 + k * elapsed_frac).
+    /// 0.0 disables decay. Default: 2.0 (up to 3× at expiry).
+    pub as_time_decay_k: f64,
+    /// Unix timestamp (seconds) when the market expires. None = no decay.
+    pub market_end_ts: Option<u64>,
+    /// Opt-3: Faster debounce for hedge orders (urgent, shouldn't wait 500ms).
+    /// Default: 100ms. Set PM_HEDGE_DEBOUNCE_MS to override.
+    pub hedge_debounce_ms: u64,
     /// DRY-RUN mode.
     pub dry_run: bool,
 }
@@ -55,6 +64,9 @@ impl Default for CoordinatorConfig {
             reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
             debounce_ms: 500,         // Increased to reduce churn (half second)
             as_skew_factor: 0.03,     // Original strictly conservative A-S
+            as_time_decay_k: 2.0,     // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
+            market_end_ts: None,
+            hedge_debounce_ms: 100,   // Hedge orders bypass normal 500ms debounce
             dry_run: true,
         }
     }
@@ -103,6 +115,16 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_AS_SKEW_FACTOR") {
             if let Ok(f) = v.parse() {
                 c.as_skew_factor = f;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_AS_TIME_DECAY_K") {
+            if let Ok(f) = v.parse::<f64>() {
+                c.as_time_decay_k = f.max(0.0);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_HEDGE_DEBOUNCE_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                c.hedge_debounce_ms = ms;
             }
         }
         if let Ok(v) = std::env::var("PM_DRY_RUN") {
@@ -160,17 +182,24 @@ pub struct StrategyCoordinator {
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
-    last_valid_ts: Instant,
+    /// P5 FIX: Per-side timestamps to catch single-side staleness.
+    last_valid_ts_yes: Instant,
+    last_valid_ts_no: Instant,
     yes_target: Option<DesiredTarget>,
     no_target: Option<DesiredTarget>,
     yes_last_ts: Instant,
     no_last_ts: Instant,
+    /// Opt-1: Track session start for A-S time decay calculation.
+    market_start: Instant,
     stats: Stats,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
     inv_rx: watch::Receiver<InventoryState>,
     md_rx: mpsc::Receiver<MarketDataMsg>,
     om_tx: mpsc::Sender<OrderManagerCmd>,
+    /// Opt-4: Direct high-priority kill channel from OFI Engine.
+    /// Fires on toxicity onset without waiting for the next book tick.
+    kill_rx: mpsc::Receiver<KillSwitchSignal>,
 }
 
 impl StrategyCoordinator {
@@ -181,20 +210,39 @@ impl StrategyCoordinator {
         md_rx: mpsc::Receiver<MarketDataMsg>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
     ) -> Self {
+        // Create a kill_rx that is immediately closed (sender dropped).
+        // The biased select uses `Some(x) = recv()` which skips a closed channel,
+        // so this is safe — the md_rx arm will handle all messages normally.
+        let (_dead_tx, dead_rx) = mpsc::channel(1);
+        Self::with_kill_rx(cfg, ofi_rx, inv_rx, md_rx, om_tx, dead_rx)
+    }
+
+    /// Opt-4: Construct with a direct OFI→Coordinator kill channel.
+    pub fn with_kill_rx(
+        cfg: CoordinatorConfig,
+        ofi_rx: watch::Receiver<OfiSnapshot>,
+        inv_rx: watch::Receiver<InventoryState>,
+        md_rx: mpsc::Receiver<MarketDataMsg>,
+        om_tx: mpsc::Sender<OrderManagerCmd>,
+        kill_rx: mpsc::Receiver<KillSwitchSignal>,
+    ) -> Self {
         Self {
             cfg,
             book: Book::default(),
             last_valid_book: Book::default(),
-            last_valid_ts: Instant::now(),
+            last_valid_ts_yes: Instant::now(),
+            last_valid_ts_no: Instant::now(),
             yes_target: None,
             no_target: None,
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
             no_last_ts: Instant::now() - std::time::Duration::from_secs(60),
+            market_start: Instant::now(),
             stats: Stats::default(),
             ofi_rx,
             inv_rx,
             md_rx,
             om_tx,
+            kill_rx,
         }
     }
 
@@ -207,6 +255,27 @@ impl StrategyCoordinator {
 
         loop {
             tokio::select! {
+                // Opt-4: biased gives kill_rx absolute priority over book ticks.
+                // OFI toxicity onset fires this path immediately without waiting
+                // for the next market data tick (which could be hundreds of ms away).
+                //
+                // Using `Some(sig) = recv()` pattern: if the kill_rx channel is
+                // closed (returns None), this arm is skipped and the md_rx arm runs.
+                // This avoids busy-loops on channels that were never wired.
+                biased;
+
+                Some(sig) = self.kill_rx.recv() => {
+                    warn!(
+                        "⚡ DIRECT KILL from OFI | side={:?} ofi={:.1} — immediate re-eval",
+                        sig.side, sig.ofi_score,
+                    );
+                    // Re-use the full tick() logic which reads latest OFI watch state
+                    // and applies global_kill_switch / selective_kill_with_hedge.
+                    if self.book.yes_bid > 0.0 || self.last_valid_book.yes_bid > 0.0 {
+                        self.tick().await;
+                    }
+                }
+
                 // Market data tick (primary driver)
                 msg = self.md_rx.recv() => {
                     match msg {
@@ -243,22 +312,25 @@ impl StrategyCoordinator {
             no_ask: na,
         };
 
-        // Update last_valid_book only if we have real data
+        // P5 FIX: Update per-side timestamps independently.
+        // Shared timestamp caused YES updates to mask NO staleness.
         if yb > 0.0 && ya > 0.0 {
             self.last_valid_book.yes_bid = yb;
             self.last_valid_book.yes_ask = ya;
-            self.last_valid_ts = Instant::now();
+            self.last_valid_ts_yes = Instant::now();
         }
         if nb > 0.0 && na > 0.0 {
             self.last_valid_book.no_bid = nb;
             self.last_valid_book.no_ask = na;
-            self.last_valid_ts = Instant::now();
+            self.last_valid_ts_no = Instant::now();
         }
     }
 
-    /// P2 FIX: Check if last_valid_book is stale (>30s without fresh data).
+    /// P5 FIX: Check if either side's book data is stale (>30s without fresh data).
+    /// Uses per-side timestamps so YES updates don't mask NO staleness.
     fn is_book_stale(&self) -> bool {
-        self.last_valid_ts.elapsed() > std::time::Duration::from_secs(30)
+        let limit = std::time::Duration::from_secs(30);
+        self.last_valid_ts_yes.elapsed() > limit || self.last_valid_ts_no.elapsed() > limit
     }
 
     /// Get usable book (current if valid, otherwise last_valid fallback).
@@ -447,8 +519,10 @@ impl StrategyCoordinator {
         };
 
         // A-S linear shift based on inventory.
+        // Opt-1: Apply time-decay multiplier — skew urgency grows as market approaches expiry.
         // Holding YES (skew>0) shifts YES down and NO up.
-        let skew_shift = skew * self.cfg.as_skew_factor;
+        let effective_skew_factor = self.cfg.as_skew_factor * self.compute_time_decay_factor();
+        let skew_shift = skew * effective_skew_factor;
 
         let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
         let mut raw_no = mid_no - (excess / 2.0) + skew_shift;
@@ -475,6 +549,13 @@ impl StrategyCoordinator {
         if !inv.can_buy_yes && !inv.can_buy_no {
             self.stats.skipped_inv_limit += 1;
         }
+
+        // BUG 1 FIX: Track whether each side was dispatched by the hedge path.
+        // The bottom "cleanup" block must NOT cancel a bid that was just placed as a hedge.
+        // Previously: bid_no = 0.0 after hedge dispatch, then `else if no_target.is_some()`
+        // triggered a cancel of the freshly-placed hedge order in the same tick.
+        let mut hedge_dispatched_yes = false;
+        let mut hedge_dispatched_no = false;
 
         if net_diff > f64::EPSILON {
             if !inv.can_buy_yes {
@@ -506,9 +587,11 @@ impl StrategyCoordinator {
                 } else {
                     None
                 };
-                self.place_or_reprice(Side::No, bid_no, BidReason::Provide, log_msg)
+                self.place_or_reprice(Side::No, bid_no, BidReason::Hedge, log_msg)
                     .await;
-                bid_no = 0.0; // Consumed
+                // Mark consumed so the bottom cleanup block skips the cancel check.
+                hedge_dispatched_no = true;
+                bid_no = 0.0;
             }
         } else if net_diff < -f64::EPSILON {
             if !inv.can_buy_no {
@@ -540,9 +623,11 @@ impl StrategyCoordinator {
                 } else {
                     None
                 };
-                self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide, log_msg)
+                self.place_or_reprice(Side::Yes, bid_yes, BidReason::Hedge, log_msg)
                     .await;
-                bid_yes = 0.0; // Consumed
+                // Mark consumed so the bottom cleanup block skips the cancel check.
+                hedge_dispatched_yes = true;
+                bid_yes = 0.0;
             }
         } else {
             if !inv.can_buy_yes {
@@ -559,17 +644,19 @@ impl StrategyCoordinator {
             }
         }
 
+        // Dispatch remaining bids, or cancel stale targets.
+        // CRITICAL: skip cancel if the hedge path already dispatched for that side.
         if bid_yes > 0.0 {
             self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide, None)
                 .await;
-        } else if self.yes_target.is_some() {
+        } else if !hedge_dispatched_yes && self.yes_target.is_some() {
             self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
         }
 
         if bid_no > 0.0 {
             self.place_or_reprice(Side::No, bid_no, BidReason::Provide, None)
                 .await;
-        } else if self.no_target.is_some() {
+        } else if !hedge_dispatched_no && self.no_target.is_some() {
             self.cancel(Side::No, CancelReason::InventoryLimit).await;
         }
     }
@@ -577,6 +664,46 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
     // Pricing engine
     // ═════════════════════════════════════════════════
+
+    // ═════════════════════════════════════════════════
+    // Opt-1: A-S Time Decay Factor
+    // ═════════════════════════════════════════════════
+
+    /// Returns a multiplier for `as_skew_factor` that grows linearly from 1.0
+    /// at market open to `(1 + as_time_decay_k)` at market close.
+    ///
+    /// Formula: `1.0 + k * elapsed_fraction`
+    /// where `elapsed_fraction = elapsed / total_duration`, clamped to [0, 1].
+    ///
+    /// With default k=2.0: the factor ranges from 1× at open to 3× at close.
+    /// This matches the A-S model's γσ²(T-t) term — as T-t → 0 the urgency to
+    /// close inventory increases, expressed here as a growing skew penalty.
+    fn compute_time_decay_factor(&self) -> f64 {
+        let k = self.cfg.as_time_decay_k;
+        if k <= 0.0 {
+            return 1.0;
+        }
+        let Some(end_ts) = self.cfg.market_end_ts else {
+            return 1.0;
+        };
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now_secs >= end_ts {
+            return 1.0 + k; // Market over — max urgency
+        }
+        // Total window = from bot start (market_start) to end_ts.
+        // Use wall-clock elapsed since we need absolute time to end_ts.
+        let elapsed = self.market_start.elapsed().as_secs_f64();
+        let remaining = (end_ts - now_secs) as f64;
+        let total = elapsed + remaining;
+        if total <= 0.0 {
+            return 1.0;
+        }
+        let elapsed_frac = (elapsed / total).clamp(0.0, 1.0);
+        1.0 + k * elapsed_frac
+    }
 
     /// Aggressive Maker price: min(ceiling, best_ask − tick).
     ///
@@ -647,8 +774,14 @@ impl StrategyCoordinator {
         let active = current_target.is_some();
         let slot_price = current_target.map(|t| t.price).unwrap_or(0.0);
 
+        // Opt-3: Hedge orders use a shorter debounce — they are urgent unwind actions
+        // and should not wait behind the normal 500ms anti-thrash window.
+        let debounce_ms = match reason {
+            BidReason::Hedge => self.cfg.hedge_debounce_ms,
+            BidReason::Provide => self.cfg.debounce_ms,
+        };
         let elapsed = last_ts.elapsed();
-        let debounce = std::time::Duration::from_millis(self.cfg.debounce_ms);
+        let debounce = std::time::Duration::from_millis(debounce_ms);
         if elapsed < debounce {
             self.stats.skipped_debounce += 1;
             return;
@@ -741,6 +874,7 @@ mod tests {
             debounce_ms: 0, // disable for tests
             as_skew_factor: 0.03,
             dry_run: false,
+            ..CoordinatorConfig::default()
         }
     }
 

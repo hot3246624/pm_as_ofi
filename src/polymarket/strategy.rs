@@ -5,7 +5,7 @@ pub struct StrategyConfig {
     // 风控约束（核心指标）
     pub max_pair_cost: f64,      // 最大 Pair Cost（平均成本和），默认 1.0112
     pub max_diff_value: f64,     // 最大 Diff Value（净头寸美元值），默认 5.0
-    
+
     // 订单参数
     pub tick: f64,               // 价格步长，默认 0.001（0.1美分）
     pub levels: usize,           // 挂单层数，默认 3
@@ -13,7 +13,7 @@ pub struct StrategyConfig {
     pub qty_cap: f64,            // 单笔最大数量，默认 10.0
     pub min_order_size: f64,     // 最小订单数量，默认 1.0（建议≥5）
     pub ttl_secs: u64,           // GTD 订单 TTL（秒），默认 60
-    
+
     // Kelly 仓位管理
     pub kelly_enabled: bool,     // 是否启用 Kelly，默认 true
     pub kelly_fraction: f64,     // Kelly 比例（0-1），默认 0.5（半凯利）
@@ -86,7 +86,7 @@ impl Position {
                 let old_qty = self.yes_qty;
                 let old_avg = self.yes_avg;
                 self.yes_qty += qty;
-                
+
                 if self.yes_qty > 0.0 {
                     self.yes_avg = (old_qty * old_avg + qty * price) / self.yes_qty;
                 } else {
@@ -97,7 +97,7 @@ impl Position {
                 let old_qty = self.no_qty;
                 let old_avg = self.no_avg;
                 self.no_qty += qty;
-                
+
                 if self.no_qty > 0.0 {
                     self.no_avg = (old_qty * old_avg + qty * price) / self.no_qty;
                 } else {
@@ -109,8 +109,8 @@ impl Position {
 
     /// 模拟成交后的新状态（用于风控预检查）
     pub fn simulate_fill(&self, side: Side, qty: f64, price: f64) -> Position {
-        let mut new_pos = *self; // Start with a copy of the current position
-        new_pos.apply_fill(side, qty, price); // Apply the fill to the copy
+        let mut new_pos = *self;
+        new_pos.apply_fill(side, qty, price);
         new_pos
     }
 }
@@ -174,15 +174,15 @@ impl Strategy {
         pos: &Position,
         book: &OrderBook,
     ) -> Option<f64> {
-        // 基础数量（可能使用 Kelly 调整）
-        let base_qty = self.calc_kelly_qty(price, book);
+        // BUG 3 FIX: 传入 side 参数，按侧选择正确的盘口中价
+        let base_qty = self.calc_kelly_qty(side, price, book);
 
         // 模拟成交后的状态
         let future_pos = pos.simulate_fill(side, base_qty, price);
 
         // 1. 检查 Pair Cost 约束
         if future_pos.pair_cost() > self.cfg.max_pair_cost {
-            return None; // Pair Cost 会超标，不下单
+            return None;
         }
 
         // 2. 检查 Diff Value 约束（使用 bid 价格）
@@ -191,38 +191,47 @@ impl Strategy {
             // 尝试减半数量
             let half_qty = base_qty / 2.0;
             if half_qty < self.cfg.min_order_size {
-                return None; // 数量太小，放弃
+                return None;
             }
 
             let future_pos_half = pos.simulate_fill(side, half_qty, price);
             let future_diff_half = future_pos_half.diff_value(book.yes_bid, book.no_bid);
 
             if future_diff_half > self.cfg.max_diff_value {
-                return None; // 还是超标，不下单
+                return None;
             }
 
-            // 减半后可以，返回一半数量
             return Some(half_qty.min(self.cfg.qty_cap));
         }
 
         // 3. 检查最小订单约束
         if base_qty < self.cfg.min_order_size {
-            return None; // 不满足最小订单要求
+            return None;
         }
 
-        // 所有检查通过，返回完整数量
         Some(base_qty.min(self.cfg.qty_cap))
     }
 
-    /// 使用 Kelly 公式计算下单数量（可选）
-    fn calc_kelly_qty(&self, price: f64, book: &OrderBook) -> f64 {
+    /// BUG 3 FIX: 使用 Kelly 公式计算下单数量。
+    ///
+    /// 原实现对所有侧都用 `yes_bid/yes_ask` 计算 mid_price，导致 NO 侧
+    /// edge 计算使用了错误的参考价格。现在根据 `side` 选择对应侧的盘口。
+    fn calc_kelly_qty(&self, side: Side, price: f64, book: &OrderBook) -> f64 {
         if !self.cfg.kelly_enabled {
             return self.cfg.qty_per_level;
         }
 
-        // 计算 edge（价格优势）
-        // 如果我们的 bid 价比市场中间价低，说明有优势
-        let mid_price = (book.yes_bid + book.yes_ask) / 2.0;
+        // 按侧选择正确盘口计算 mid_price
+        let (bid, ask) = match side {
+            Side::Yes => (book.yes_bid, book.yes_ask),
+            Side::No => (book.no_bid, book.no_ask),
+        };
+
+        if bid <= 0.0 || ask <= 0.0 || ask <= bid {
+            return self.cfg.qty_per_level;
+        }
+
+        let mid_price = (bid + ask) / 2.0;
         let edge = (mid_price - price).abs() / mid_price;
 
         // Kelly 公式: qty = base * edge/edge_ref * kelly_fraction
@@ -231,53 +240,6 @@ impl Strategy {
 
         // 限制在合理范围
         kelly_qty.max(self.cfg.qty_per_level * 0.5).min(self.cfg.qty_cap)
-    }
-
-    // 计算 YES 的最高可挂价格，确保 pair_cost 不破上限
-    fn max_price_yes(&self, pos: &Position, q: f64) -> f64 {
-        if q <= 0.0 {
-            return 0.0;
-        }
-        let c = self.cfg.max_pair_cost; // Changed from pair_cost_max
-        ((c - pos.no_avg) * (pos.yes_qty + q) - pos.yes_qty * pos.yes_avg) / q
-    }
-
-    // 计算 NO 的最高可挂价格，确保 pair_cost 不破上限
-    fn max_price_no(&self, pos: &Position, q: f64) -> f64 {
-        if q <= 0.0 {
-            return 0.0;
-        }
-        let c = self.cfg.max_pair_cost; // Changed from pair_cost_max
-        ((c - pos.yes_avg) * (pos.no_qty + q) - pos.no_qty * pos.no_avg) / q
-    }
-
-    fn risk_ok_after_yes(&self, pos: &Position, q: f64, price: f64) -> bool {
-        let new_qty = pos.yes_qty + q;
-        if new_qty <= 0.0 {
-            return false;
-        }
-        let new_avg = (pos.yes_avg * pos.yes_qty + price * q) / new_qty;
-        let net = new_qty - pos.no_qty;
-        let diff_value = if net > 0.0 { net * new_avg } else { (-net) * pos.no_avg };
-        diff_value <= self.cfg.max_diff_value + 1e-9 // Changed from diff_value_max
-    }
-
-    fn risk_ok_after_no(&self, pos: &Position, q: f64, price: f64) -> bool {
-        let new_qty = pos.no_qty + q;
-        if new_qty <= 0.0 {
-            return false;
-        }
-        let new_avg = (pos.no_avg * pos.no_qty + price * q) / new_qty;
-        let net = pos.yes_qty - new_qty;
-        let diff_value = if net > 0.0 { net * pos.yes_avg } else { (-net) * new_avg };
-        diff_value <= self.cfg.max_diff_value + 1e-9 // Changed from diff_value_max
-    }
-
-    fn increases_net(&self, side: Side, net: f64) -> bool {
-        match side {
-            Side::Yes => net >= 0.0,
-            Side::No => net <= 0.0,
-        }
     }
 
     fn floor_to_tick(&self, p: f64) -> f64 {

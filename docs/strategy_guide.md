@@ -45,9 +45,12 @@
 ## 4. OFI 毒性引擎
 
 - **独立双窗口**：YES 和 NO 各自维护一个 3 秒滑窗
-- **OFI Score**：`|buy_volume - sell_volume|` 超阈值 → toxic
+- **OFI Score**：`buy_volume - sell_volume` 绝对值超阈值 → toxic
 - **Heartbeat**：每 200ms 强制驱逐过期 tick，即使无新 trade 到达
 - **edge-triggered 日志**：只在 toxic 边沿触发日志，避免刷屏
+- **容量保护**：每侧最多保留 4 096 个 tick，超出时自动淘汰最旧数据
+- **自适应阈值（可选）**：`PM_OFI_ADAPTIVE=true` 启用。基于 200 次滚动均值 + 3σ 自动计算阈值，自动适配高/低流动性市场，范围钳位 [50, 1000]
+- **直通 Kill 信道**：OFI → Coordinator 独立 mpsc 信道，边沿触发（首次变 toxic 时）。Coordinator 的 `biased select!` 优先处理，绕过等待下一个 book tick 的延迟
 
 ## 5. Fill Ledger（VWAP 零漂移）
 
@@ -70,13 +73,23 @@ Every change → recompute_from_ledger():
 | 启动 CancelAll | polymarket_v2.rs | 清除历史残单 |
 | 关机 CancelAll | polymarket_v2.rs | MarketExpired 触发 |
 | Owner 地址匹配 | user_ws.rs | 只处理自己钱包的 fill |
-| 陈旧盘口 TTL | coordinator.rs | 30s 无数据 → 全撤 |
+| **per-side 盘口 TTL** | coordinator.rs | **YES/NO 各自独立 30s 过期检测（已修复双侧共享问题）** |
 | Confirmed 幂等 | inventory.rs | 防止库存翻倍 |
 | OrderFilled 反馈 | executor→coordinator | 成交后释放 slot |
-| 3重 can_open | inventory.rs | 净仓 + 成本 + 敞口 |
-| Cancel fallback | executor.rs | CancelAll 失败 → 逐单撤 |
+| **3重 can_open（修复版）** | inventory.rs | 净仓 + 成本 + 敞口（初次买入现用保守估价 1.0） |
+| Cancel fallback | executor.rs | CancelAll 失败 → 逐单撤（失败计数明确日志） |
 | Price clamp | coordinator.rs | 0.001 ≤ price ≤ 0.999 |
 | OFI global kill | coordinator.rs | 双侧联动撤单 |
+| **对冲单保护标志** | coordinator.rs | **hedge_dispatched 防止对冲单被底部清理代码立即取消** |
+| **OMS Cooldown** | order_manager.rs | **余额不足后遵守 Executor 发送的冷却时间（30s）** |
+| **OFI 窗口容量限制** | ofi.rs | **SideWindow 最大 4096 tick，防止高频市场内存无限增长** |
+| **O(1) Dedup 淘汰** | user_ws.rs | **DedupCache 改用 VecDeque 实现 O(1) LRU，替换原 O(n) 扫描** |
+| **价格范围收窄** | polymarket_v2.rs | **parse_price_value 限制 (0,1)，杜绝百分制价格污染** |
+| **WS 重连盘口重置** | polymarket_v2.rs | **BookAssembler 每次重连归零，防止旧数据跨连接污染** |
+| **A-S 时间衰减** | coordinator.rs | **skew_factor 随市场临期线性增大（默认最高 3×），加速临期清仓** |
+| **OFI 自适应阈值** | ofi.rs | **滚动均值+3σ 自动计算毒性阈值，PM_OFI_ADAPTIVE=true 启用** |
+| **Hedge 防抖绕过** | coordinator.rs | **对冲单使用独立 100ms 防抖，不受正常 500ms 防抖限制** |
+| **OFI 直通 Kill 信道** | ofi.rs + coordinator.rs | **毒性首次触发时立即通知 Coordinator，biased select! 零等待响应** |
 
 ## 7. $100 资金参数计算
 
