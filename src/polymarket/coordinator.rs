@@ -50,6 +50,8 @@ pub struct CoordinatorConfig {
     /// Opt-3: Faster debounce for hedge orders (urgent, shouldn't wait 500ms).
     /// Default: 100ms. Set PM_HEDGE_DEBOUNCE_MS to override.
     pub hedge_debounce_ms: u64,
+    /// Emergency ceiling for hedge orders when net_diff >= max_net_diff.
+    pub max_portfolio_cost: f64,
     /// DRY-RUN mode.
     pub dry_run: bool,
 }
@@ -67,6 +69,7 @@ impl Default for CoordinatorConfig {
             as_time_decay_k: 2.0,     // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
             market_end_ts: None,
             hedge_debounce_ms: 100,   // Hedge orders bypass normal 500ms debounce
+            max_portfolio_cost: 1.02, // Emergency hedge ceiling
             dry_run: true,
         }
     }
@@ -125,6 +128,11 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_HEDGE_DEBOUNCE_MS") {
             if let Ok(ms) = v.parse::<u64>() {
                 c.hedge_debounce_ms = ms;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_MAX_PORTFOLIO_COST") {
+            if let Ok(f) = v.parse() {
+                c.max_portfolio_cost = f;
             }
         }
         if let Ok(v) = std::env::var("PM_DRY_RUN") {
@@ -567,7 +575,15 @@ impl StrategyCoordinator {
                 }
             }
 
-            let ceiling_no = self.cfg.pair_target - inv.yes_avg_cost;
+            // If net_diff >= max_net_diff, we are desperate to hedge.
+            // Move ceiling from pair_target to max_portfolio_cost to allow "expensive" hedge.
+            let hedge_target = if net_diff >= self.cfg.max_net_diff - f64::EPSILON {
+                self.cfg.max_portfolio_cost
+            } else {
+                self.cfg.pair_target
+            };
+
+            let ceiling_no = hedge_target - inv.yes_avg_cost;
             let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
 
             if agg_no > 0.0 {
@@ -603,7 +619,14 @@ impl StrategyCoordinator {
                 }
             }
 
-            let ceiling_yes = self.cfg.pair_target - inv.no_avg_cost;
+            // If net_diff <= -max_net_diff, move ceiling to max_portfolio_cost.
+            let hedge_target = if net_diff <= -self.cfg.max_net_diff + f64::EPSILON {
+                self.cfg.max_portfolio_cost
+            } else {
+                self.cfg.pair_target
+            };
+
+            let ceiling_yes = hedge_target - inv.no_avg_cost;
             let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
 
             if agg_yes > 0.0 {

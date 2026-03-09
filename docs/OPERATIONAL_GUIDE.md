@@ -89,27 +89,28 @@ bid_yes, bid_no ∈ [tick, 1-2*tick]      # 边界安全钳位
 #### Gabagool22 对冲公式
 
 ```
-# YES 仓位过重（net_diff > 0）时，对冲目标：
-no_ceiling  = pair_target - yes_avg_cost      # 利润保底线（来自 pair_target，不是 max_portfolio_cost）
-bid_no      = min(no_ceiling, no_ask - tick)  # 贴近卖一，提高成交率，但绝不超过天花板
+#### Gabagool22 对冲公式 (含紧急救火模式)
 
-# 二元期权到期收益（无论 YES 或 NO 结果）：
-# 持有 1 股 YES + 1 股 NO → 必有一方付 $1.00，另一方付 $0
-total_revenue  = $1.00  (确定)
-total_cost     = yes_avg_cost + no_fill_price
+```
+# 1. 确定对冲天花板 (Opt-5)
+# 如果库存未达上限 (net_diff < max_net_diff)：盈利模式
+# 如果库存已达上限 (net_diff >= max_net_diff)：救火模式 (使用 max_portfolio_cost)
+hedge_target = (net_diff.abs() >= max_net_diff) ? max_portfolio_cost : pair_target
 
-# 正确的利润公式：
-profit per pair = 1.0 - (yes_avg_cost + no_fill_price)
+# 2. 计算具体下单价格
+no_ceiling  = hedge_target - yes_avg_cost
+bid_no      = min(no_ceiling, no_ask - tick)  # 贴近卖一，提高成交率
 
-# 由于 no_fill_price ≤ no_ceiling = pair_target - yes_avg_cost：
-profit ≥ 1.0 - pair_target = 1.0 - 0.99 = $0.01 per share（最低保证利润）
+# 3. 盈亏评估：
+# 盈利模式 (target=0.99)：profit ≥ 1.0 - 0.99 = +$0.01/股 (保证盈利)
+# 救火模式 (target=1.02)：profit ≥ 1.0 - 1.02 = -$0.02/股 (允许微亏以平仓)
 ```
 
-> **注意**：`pair_target`（定价上限，默认 0.99）≠ `max_portfolio_cost`（仓位风控门槛，默认 1.02）。
-> 前者决定"以什么价格对冲能盈利"，后者决定"当前成本超过多少就停止开新仓"。
-> 若错误地用 `max_portfolio_cost=1.02` 作为 ceiling，则 `yes_avg + no_fill` 可超过 $1.00，**必然亏损**。
+> **注意**：`pair_target`（默认 0.99）是正常状态下的利润线。
+> `max_portfolio_cost`（默认 1.02）是库存满载时的紧急救火线下。
+> 这种设计保证了：在正常波动中我们只做赚钱的买卖；在极端行情中，我们愿意付出极小代价 (2%) 来关掉面临 100% 归零风险的大额单边敞口。
 
-**核心洞察**：A-S 网格一路摊薄 `yes_avg_cost`，越低则 `no_ceiling = pair_target - yes_avg_cost` 越高（越贴近市价），对冲单成交概率越大，同时单对利润也越大。
+**核心洞察**：A-S 网格一路摊薄 `yes_avg_cost`，越低则 `no_ceiling` 越高（越贴近市价），即便在救火模式下，由于成本已被摊薄，往往最终依然能实现保本或微利离场。
 
 ### 1.3 OFI 引擎分析
 

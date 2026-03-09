@@ -476,9 +476,30 @@ tokio::select! {
 
 | 文件 | 改动类型 | 涉及 Opt |
 |------|----------|----------|
-| `coordinator.rs` | 功能扩展 | Opt 1, Opt 3, Opt 4 |
+| `coordinator.rs` | 功能扩展 | Opt 1, Opt 3, Opt 4, Emergency Hedge |
 | `ofi.rs` | 功能扩展 | Opt 2, Opt 4 |
 | `polymarket_v2.rs` | 配置注入 | Opt 1, Opt 4 |
+
+---
+
+### Opt 5：紧急对冲价格天花板 (Emergency Hedge Ceiling)
+
+**文件**: `src/polymarket/coordinator.rs`
+
+**实现**：新增 `max_portfolio_cost` 到 `CoordinatorConfig`。在 `state_unified()` 中判断库存状态。
+
+```rust
+// state_unified():
+let hedge_target = if net_diff.abs() >= self.cfg.max_net_diff {
+    self.cfg.max_portfolio_cost // 救火模式：允许微亏平掉单边敞口
+} else {
+    self.cfg.pair_target        // 盈利模式：死守利润线
+};
+let ceiling = hedge_target - avg_cost;
+```
+
+- 解决了"跳空后无法平仓"的僵局，确保即便不赚钱也要先关掉风险。
+- `PM_MAX_PORTFOLIO_COST` 默认 1.02，允许 2% 的亏损缓冲区。
 
 ## ✅ 第二轮测试验证
 
