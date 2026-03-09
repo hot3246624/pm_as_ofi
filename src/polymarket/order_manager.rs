@@ -1,158 +1,214 @@
-use crate::polymarket::types::{DesiredOrder, Order, OrderAction, OrderBook, OrderEvent, OrderStatus, Side};
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
-use uuid::Uuid;
+use std::time::Instant;
+use tokio::sync::mpsc;
+use tracing::{debug, info, warn};
+
+use super::messages::{BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult};
+use super::types::Side;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum OrderState {
+    /// No target, no live orders, no pending ops.
+    Idle,
+    /// We have sent a PlacePostOnlyBid to Executor, waiting for it to land.
+    PendingSubmit(DesiredTarget),
+    /// Order is confirmed placed on the network.
+    Live(DesiredTarget),
+    /// We have sent a CancelSide to Executor, waiting for CancelAck or failure.
+    PendingCancel(Option<DesiredTarget>),
+}
+
+#[derive(Debug)]
+pub struct SideTracker {
+    pub side: Side,
+    /// The state the Coordinator requested. If None, it means no order desired.
+    pub desired: Option<DesiredTarget>,
+    /// The physical state tracking the Executor's lifecycle.
+    pub state: OrderState,
+    pub last_action: Instant,
+}
+
+impl SideTracker {
+    pub fn new(side: Side) -> Self {
+        Self {
+            side,
+            desired: None,
+            state: OrderState::Idle,
+            last_action: Instant::now(),
+        }
+    }
+}
 
 pub struct OrderManager {
-    open: HashMap<String, Order>,
-    default_ttl: Duration,
+    yes: SideTracker,
+    no: SideTracker,
+
+    cmd_rx: mpsc::Receiver<OrderManagerCmd>,
+    exec_tx: mpsc::Sender<ExecutionCmd>,
+    /// Receive order failure/success/ack from Executor
+    result_rx: mpsc::Receiver<OrderResult>,
 }
 
 impl OrderManager {
-    pub fn new(default_ttl: Duration) -> Self {
+    pub fn new(
+        cmd_rx: mpsc::Receiver<OrderManagerCmd>,
+        exec_tx: mpsc::Sender<ExecutionCmd>,
+        result_rx: mpsc::Receiver<OrderResult>,
+    ) -> Self {
         Self {
-            open: HashMap::new(),
-            default_ttl,
+            yes: SideTracker::new(Side::Yes),
+            no: SideTracker::new(Side::No),
+            cmd_rx,
+            exec_tx,
+            result_rx,
         }
     }
 
-    pub fn has_pending(&self) -> bool {
-        self.open
-            .values()
-            .any(|o| o.status == OrderStatus::PendingNew || o.status == OrderStatus::PendingCancel)
-    }
-
-    pub fn open_orders(&self) -> Vec<Order> {
-        self.open.values().cloned().collect()
-    }
-
-    pub fn on_order_event(&mut self, event: OrderEvent) {
-        if let Some(order) = self.open.get_mut(&event.id) {
-            match event.status {
-                OrderStatus::Open => {
-                    order.status = OrderStatus::Open;
-                }
-                OrderStatus::PartiallyFilled => {
-                    order.status = OrderStatus::PartiallyFilled;
-                    if let Some(rem) = event.remaining_qty {
-                        order.remaining_qty = rem;
+    pub async fn run(mut self) {
+        info!("🚦 OrderManager [OMS] started");
+        loop {
+            tokio::select! {
+                cmd = self.cmd_rx.recv() => {
+                    match cmd {
+                        Some(OrderManagerCmd::SetTarget(t)) => {
+                            let side = t.side;
+                            self.handle_target(t).await;
+                            self.pump(side).await;
+                        }
+                        Some(OrderManagerCmd::CancelAll) => {
+                            self.yes.desired = None;
+                            self.no.desired = None;
+                            self.pump(Side::Yes).await;
+                            self.pump(Side::No).await;
+                        }
+                        None => break, // Channel closed
                     }
                 }
-                OrderStatus::Filled => {
-                    order.status = OrderStatus::Filled;
-                    order.remaining_qty = 0.0;
-                }
-                OrderStatus::Canceled => {
-                    order.status = OrderStatus::Canceled;
-                    order.remaining_qty = 0.0;
-                }
-                OrderStatus::Rejected => {
-                    order.status = OrderStatus::Rejected;
-                    order.remaining_qty = 0.0;
-                }
-                OrderStatus::PendingCancel => {
-                    order.status = OrderStatus::PendingCancel;
-                }
-                OrderStatus::PendingNew => {
-                    order.status = OrderStatus::PendingNew;
+                result = self.result_rx.recv() => {
+                    match result {
+                        Some(OrderResult::OrderFailed { side, .. }) => {
+                            self.handle_failed(side).await;
+                        }
+                        Some(OrderResult::OrderFilled { side }) => {
+                            self.handle_filled(side).await;
+                        }
+                        Some(OrderResult::CancelAck { side }) => {
+                            self.handle_cancel_ack(side).await;
+                        }
+                        None => break, // Ignore
+                    }
                 }
             }
         }
+        info!("🚦 OrderManager shutting down");
+    }
 
-        if matches!(
-            event.status,
-            OrderStatus::Filled | OrderStatus::Canceled | OrderStatus::Rejected
-        ) {
-            self.open.remove(&event.id);
+    async fn handle_target(&mut self, target: DesiredTarget) {
+        let tracker = match target.side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+
+        if target.price <= 0.0 || target.size <= 0.0 {
+            tracker.desired = None;
+        } else {
+            tracker.desired = Some(target);
         }
     }
 
-    pub fn sync(
-        &mut self,
-        desired: &[DesiredOrder],
-        now: Instant,
-        book: &OrderBook,
-    ) -> Vec<OrderAction> {
-        // 有 pending 状态时不再发新单，避免竞态
-        if self.has_pending() {
-            return Vec::new();
-        }
-
-        let mut actions = Vec::new();
-
-        // 取消：过期、已不需要、或将变成 taker 的订单
-        let mut to_cancel = Vec::new();
-        for (id, order) in &self.open {
-            if order.status != OrderStatus::Open && order.status != OrderStatus::PartiallyFilled {
-                continue;
-            }
-
-            if order.is_expired(now) {
-                to_cancel.push(id.clone());
-                continue;
-            }
-
-            if !self.is_still_desired(order, desired) {
-                to_cancel.push(id.clone());
-                continue;
-            }
-
-            if !self.is_maker(order, book) {
-                to_cancel.push(id.clone());
-            }
-        }
-
-        for id in to_cancel {
-            if let Some(order) = self.open.get_mut(&id) {
-                order.status = OrderStatus::PendingCancel;
-            }
-            actions.push(OrderAction::Cancel { id });
-        }
-
-        // 下发缺失的目标订单
-        for desired in desired {
-            if self.find_matching(desired).is_none() {
-                let client_id = Uuid::new_v4().to_string();
-                let order = Order {
-                    id: client_id.clone(),
-                    side: desired.side,
-                    price: desired.price,
-                    qty: desired.qty,
-                    remaining_qty: desired.qty,
-                    status: OrderStatus::PendingNew,
-                    created_at: now,
-                    ttl: self.default_ttl,
-                };
-                self.open.insert(client_id.clone(), order);
-                actions.push(OrderAction::Place {
-                    client_id,
-                    order: desired.clone(),
-                });
-            }
-        }
-
-        actions
+    async fn handle_failed(&mut self, side: Side) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        warn!("⚠️ OMS: {:?} OrderFailed -> Resetting state to Idle", side);
+        tracker.state = OrderState::Idle;
+        self.pump(side).await;
     }
 
-    fn is_still_desired(&self, order: &Order, desired: &[DesiredOrder]) -> bool {
-        desired.iter().any(|d| self.matches(order, d))
+    async fn handle_filled(&mut self, side: Side) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        info!("✅ OMS: {:?} OrderFilled -> Slot freed", side);
+        tracker.state = OrderState::Idle;
+        // Coordinator must re-issue Target if needed on next tick
+        tracker.desired = None; 
+        self.pump(side).await;
     }
 
-    fn find_matching(&self, desired: &DesiredOrder) -> Option<&Order> {
-        self.open.values().find(|o| self.matches(o, desired))
+    async fn handle_cancel_ack(&mut self, side: Side) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        debug!("🗑️ OMS: {:?} CancelAck -> State Idle", side);
+        tracker.state = OrderState::Idle;
+        self.pump(side).await;
     }
 
-    fn matches(&self, order: &Order, desired: &DesiredOrder) -> bool {
-        order.side == desired.side
-            && (order.price - desired.price).abs() < 1e-9
-            && (order.qty - desired.qty).abs() < 1e-9
-            && (order.status == OrderStatus::Open || order.status == OrderStatus::PartiallyFilled)
-    }
+    /// Evaluates `desired` vs `state` and emits diff commands to `Executor` if safe.
+    async fn pump(&mut self, side: Side) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
 
-    fn is_maker(&self, order: &Order, book: &OrderBook) -> bool {
-        match order.side {
-            Side::Yes => order.price < book.yes_ask,
-            Side::No => order.price < book.no_ask,
+        let current_state = tracker.state.clone();
+        
+        match current_state {
+            OrderState::Idle => {
+                if let Some(desired) = &tracker.desired {
+                    let cmd = ExecutionCmd::PlacePostOnlyBid {
+                        side: desired.side,
+                        price: desired.price,
+                        size: desired.size,
+                        reason: BidReason::Provide,
+                    };
+                    tracker.state = OrderState::PendingSubmit(desired.clone());
+                    tracker.last_action = Instant::now();
+                    let _ = self.exec_tx.send(cmd).await;
+                }
+            }
+            OrderState::PendingSubmit(pending) => {
+                if let Some(desired) = &tracker.desired {
+                    if pending == *desired {
+                        // Already submitting what we want. Wait.
+                    } else {
+                        // We are submitting A, but now want B.
+                        // Network logic: Wait until A is Live, or fails, before we cancel A and send B.
+                        // OrderManager buffers `desired=B` and executes it on the next valid state transition.
+                    }
+                } else {
+                    // Submitting A, but want None. Need to wait for Live/Failed to Cancel.
+                }
+            }
+            OrderState::Live(live) => {
+                if let Some(desired) = &tracker.desired {
+                    if live == *desired {
+                        // Perfect, our live order matches what we want.
+                    } else {
+                        // Mismatch! Must cancel `live` first.
+                        let _ = self.exec_tx.send(ExecutionCmd::CancelSide { 
+                            side, 
+                            reason: CancelReason::Reprice 
+                        }).await;
+                        tracker.state = OrderState::PendingCancel(Some(live));
+                        tracker.last_action = Instant::now();
+                    }
+                } else {
+                    // We have a live order, but want None.
+                    let _ = self.exec_tx.send(ExecutionCmd::CancelSide { 
+                        side, 
+                        reason: CancelReason::InventoryLimit 
+                    }).await;
+                    tracker.state = OrderState::PendingCancel(Some(live));
+                    tracker.last_action = Instant::now();
+                }
+            }
+            OrderState::PendingCancel(_) => {
+                // Wait for CancelAck. Do nothing. If `desired` changed, we'll pick it up when Idle.
+            }
         }
     }
 }

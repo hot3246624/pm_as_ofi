@@ -347,6 +347,8 @@ impl Executor {
         for id in &order_ids {
             let _ = self.handle_cancel_order(id, reason).await;
         }
+
+        let _ = self.result_tx.send(OrderResult::CancelAck { side }).await;
     }
 
     async fn handle_cancel_all(&mut self, reason: CancelReason) {

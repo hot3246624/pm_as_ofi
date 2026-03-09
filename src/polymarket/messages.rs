@@ -118,7 +118,27 @@ impl Default for InventoryState {
 }
 
 // ─────────────────────────────────────────────────────────
-// Execution Commands (Coordinator → Executor)
+// Order Management Commands (Coordinator → OMS)
+// ─────────────────────────────────────────────────────────
+
+/// A snapshot of the strategy's desired order state for a specific side.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DesiredTarget {
+    pub side: Side,
+    pub price: f64,
+    pub size: f64,
+}
+
+#[derive(Debug, Clone)]
+pub enum OrderManagerCmd {
+    /// Update the desired target for a side. If price/size is 0, the target is cleared (cancel).
+    SetTarget(DesiredTarget),
+    /// Emergency cancel all targets & orders globally.
+    CancelAll,
+}
+
+// ─────────────────────────────────────────────────────────
+// Execution Commands (OMS → Executor)
 // ─────────────────────────────────────────────────────────
 
 /// Execution instructions — Maker-Only model.
@@ -182,6 +202,8 @@ pub enum OrderResult {
     OrderFailed { side: Side, cooldown_ms: u64 },
     /// Order fully filled — Coordinator should release the slot for new orders.
     OrderFilled { side: Side },
+    /// Cancel operation for a side completed.
+    CancelAck { side: Side },
 }
 
 // ─────────────────────────────────────────────────────────

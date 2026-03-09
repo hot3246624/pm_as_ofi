@@ -3,6 +3,7 @@ pub mod coordinator;
 pub mod claims;
 pub mod executor;
 pub mod inventory;
+pub mod order_manager;
 pub mod messages;
 pub mod ofi;
 pub mod user_ws;

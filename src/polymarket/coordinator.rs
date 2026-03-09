@@ -116,32 +116,6 @@ impl CoordinatorConfig {
 // State
 // ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-struct BidSlot {
-    active: bool,
-    price: f64,
-    /// When was the last bid placed (for debounce).
-    last_placed: Instant,
-    /// Do not place before this instant (failure backoff).
-    retry_after: Instant,
-    /// Pending an outcome (OrderFilled or OrderFailed) from the Executor. 
-    /// Blocks new placements on this side.
-    inflight: bool,
-}
-
-impl Default for BidSlot {
-    fn default() -> Self {
-        Self {
-            active: false,
-            price: 0.0,
-            // Start far in the past so first bid isn't debounced
-            last_placed: Instant::now() - std::time::Duration::from_secs(60),
-            retry_after: Instant::now() - std::time::Duration::from_secs(60),
-            inflight: false,
-        }
-    }
-}
-
 /// Last known valid book prices (fallback for empty orderbook).
 #[derive(Debug, Clone, Copy)]
 struct Book {
@@ -187,16 +161,16 @@ pub struct StrategyCoordinator {
     last_valid_book: Book,
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
     last_valid_ts: Instant,
-    yes_bid: BidSlot,
-    no_bid: BidSlot,
+    yes_target: Option<DesiredTarget>,
+    no_target: Option<DesiredTarget>,
+    yes_last_ts: Instant,
+    no_last_ts: Instant,
     stats: Stats,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
     inv_rx: watch::Receiver<InventoryState>,
     md_rx: mpsc::Receiver<MarketDataMsg>,
-    exec_tx: mpsc::Sender<ExecutionCmd>,
-    /// Receive order failure notifications from Executor.
-    result_rx: mpsc::Receiver<OrderResult>,
+    om_tx: mpsc::Sender<OrderManagerCmd>,
 }
 
 impl StrategyCoordinator {
@@ -205,22 +179,22 @@ impl StrategyCoordinator {
         ofi_rx: watch::Receiver<OfiSnapshot>,
         inv_rx: watch::Receiver<InventoryState>,
         md_rx: mpsc::Receiver<MarketDataMsg>,
-        exec_tx: mpsc::Sender<ExecutionCmd>,
-        result_rx: mpsc::Receiver<OrderResult>,
+        om_tx: mpsc::Sender<OrderManagerCmd>,
     ) -> Self {
         Self {
             cfg,
             book: Book::default(),
             last_valid_book: Book::default(),
             last_valid_ts: Instant::now(),
-            yes_bid: BidSlot::default(),
-            no_bid: BidSlot::default(),
+            yes_target: None,
+            no_target: None,
+            yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
+            no_last_ts: Instant::now() - std::time::Duration::from_secs(60),
             stats: Stats::default(),
             ofi_rx,
             inv_rx,
             md_rx,
-            exec_tx,
-            result_rx,
+            om_tx,
         }
     }
 
@@ -243,48 +217,6 @@ impl StrategyCoordinator {
                         }
                         None => break, // Channel closed
                         _ => {}
-                    }
-                }
-                // FIX #4: Executor order failure/fill feedback
-                result = self.result_rx.recv() => {
-                    match result {
-                        Some(OrderResult::OrderFailed { side, cooldown_ms }) => {
-                            let slot = match side {
-                                Side::Yes => &mut self.yes_bid,
-                                Side::No => &mut self.no_bid,
-                            };
-                            slot.active = false;
-                            slot.price = 0.0;
-                            slot.inflight = false;
-                            if cooldown_ms > 0 {
-                                let cooldown = std::time::Duration::from_millis(cooldown_ms);
-                                slot.retry_after = Instant::now() + cooldown;
-                                warn!(
-                                    "⚠️ OrderFailed {:?} — resetting ghost slot, cooldown={}ms",
-                                    side, cooldown_ms
-                                );
-                            } else {
-                                warn!("⚠️ OrderFailed {:?} — resetting ghost slot", side);
-                            }
-                        }
-                        Some(OrderResult::OrderFilled { side }) => {
-                            // AUDIT FIX: Order fully filled — release the slot so
-                            // Coordinator can place a new order on next tick.
-                            info!("✅ OrderFilled {:?} — releasing slot for new quotes", side);
-                            let slot = match side {
-                                Side::Yes => &mut self.yes_bid,
-                                Side::No => &mut self.no_bid,
-                            };
-                            slot.active = false;
-                            slot.price = 0.0;
-                            slot.inflight = false;
-
-                            // FIX: Prevent inventory-sync race conditions.
-                            // Force the slot to pause so InventoryManager can process the fill and push the new InventoryState
-                            // before we evaluate state_unified and accidentally double-buy (which caused net_diff=20).
-                            slot.retry_after = Instant::now() + std::time::Duration::from_millis(self.cfg.debounce_ms);
-                        }
-                        None => {} // Channel closed, ignore
                     }
                 }
             }
@@ -385,11 +317,11 @@ impl StrategyCoordinator {
 
         // P2 FIX: If last_valid_book is stale (>30s), cancel everything and refuse to open.
         if self.is_book_stale() {
-            if self.yes_bid.active {
+            if self.yes_target.is_some() {
                 warn!("⚠️ Stale book (>30s) — canceling YES bid");
                 self.cancel(Side::Yes, CancelReason::Shutdown).await;
             }
-            if self.no_bid.active {
+            if self.no_target.is_some() {
                 warn!("⚠️ Stale book (>30s) — canceling NO bid");
                 self.cancel(Side::No, CancelReason::Shutdown).await;
             }
@@ -406,7 +338,7 @@ impl StrategyCoordinator {
 
     async fn global_kill_switch(&mut self, ofi: &OfiSnapshot) {
         // Cancel BOTH sides when ANY side is toxic
-        if self.yes_bid.active {
+        if self.yes_target.is_some() {
             warn!(
                 "☠️ GLOBAL KILL Bid_YES | yes_ofi={:.1} no_ofi={:.1}",
                 ofi.yes.ofi_score, ofi.no.ofi_score,
@@ -414,7 +346,7 @@ impl StrategyCoordinator {
             self.cancel(Side::Yes, CancelReason::ToxicFlow).await;
             self.stats.cancel_toxic += 1;
         }
-        if self.no_bid.active {
+        if self.no_target.is_some() {
             warn!(
                 "☠️ GLOBAL KILL Bid_NO | yes_ofi={:.1} no_ofi={:.1}",
                 ofi.yes.ofi_score, ofi.no.ofi_score,
@@ -434,8 +366,8 @@ impl StrategyCoordinator {
         };
 
         let risky_active = match risky_side {
-            Side::Yes => self.yes_bid.active,
-            Side::No => self.no_bid.active,
+            Side::Yes => self.yes_target.is_some(),
+            Side::No => self.no_target.is_some(),
         };
         if risky_active {
             warn!(
@@ -462,8 +394,9 @@ impl StrategyCoordinator {
             let ceiling = self.cfg.pair_target - inv.yes_avg_cost;
             let price = self.aggressive_price(ceiling, ub.no_ask);
             if price > 0.0 {
-                let log_msg = if !self.no_bid.active
-                    || (self.no_bid.price - price).abs() > self.cfg.reprice_threshold
+                let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                let log_msg = if current_no == 0.0
+                    || (current_no - price).abs() > self.cfg.reprice_threshold
                 {
                     Some(format!(
                         "🔧 TOXIC HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
@@ -479,8 +412,9 @@ impl StrategyCoordinator {
             let ceiling = self.cfg.pair_target - inv.no_avg_cost;
             let price = self.aggressive_price(ceiling, ub.yes_ask);
             if price > 0.0 {
-                let log_msg = if !self.yes_bid.active
-                    || (self.yes_bid.price - price).abs() > self.cfg.reprice_threshold
+                let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                let log_msg = if current_yes == 0.0
+                    || (current_yes - price).abs() > self.cfg.reprice_threshold
                 {
                     Some(format!(
                         "🔧 TOXIC HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
@@ -545,7 +479,7 @@ impl StrategyCoordinator {
         if net_diff > f64::EPSILON {
             if !inv.can_buy_yes {
                 bid_yes = 0.0;
-                if self.yes_bid.active {
+                if self.yes_target.is_some() {
                     debug!("🚫 YES maxed out (net={:.1}) → stop buying YES", net_diff);
                     self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
                     self.stats.cancel_inv += 1;
@@ -561,8 +495,9 @@ impl StrategyCoordinator {
                     bid_no = self.safe_price(ceiling_no);
                 }
 
-                let log_msg = if !self.no_bid.active
-                    || (self.no_bid.price - bid_no).abs() > self.cfg.reprice_threshold
+                let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                let log_msg = if current_no == 0.0
+                    || (current_no - bid_no).abs() > self.cfg.reprice_threshold
                 {
                     Some(format!(
                         "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
@@ -578,7 +513,7 @@ impl StrategyCoordinator {
         } else if net_diff < -f64::EPSILON {
             if !inv.can_buy_no {
                 bid_no = 0.0;
-                if self.no_bid.active {
+                if self.no_target.is_some() {
                     debug!("🚫 NO maxed out (net={:.1}) → stop buying NO", net_diff);
                     self.cancel(Side::No, CancelReason::InventoryLimit).await;
                     self.stats.cancel_inv += 1;
@@ -594,8 +529,9 @@ impl StrategyCoordinator {
                     bid_yes = self.safe_price(ceiling_yes);
                 }
 
-                let log_msg = if !self.yes_bid.active
-                    || (self.yes_bid.price - bid_yes).abs() > self.cfg.reprice_threshold
+                let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                let log_msg = if current_yes == 0.0
+                    || (current_yes - bid_yes).abs() > self.cfg.reprice_threshold
                 {
                     Some(format!(
                         "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
@@ -611,13 +547,13 @@ impl StrategyCoordinator {
         } else {
             if !inv.can_buy_yes {
                 bid_yes = 0.0;
-                if self.yes_bid.active {
+                if self.yes_target.is_some() {
                     self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
                 }
             }
             if !inv.can_buy_no {
                 bid_no = 0.0;
-                if self.no_bid.active {
+                if self.no_target.is_some() {
                     self.cancel(Side::No, CancelReason::InventoryLimit).await;
                 }
             }
@@ -626,14 +562,14 @@ impl StrategyCoordinator {
         if bid_yes > 0.0 {
             self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide, None)
                 .await;
-        } else if self.yes_bid.active {
+        } else if self.yes_target.is_some() {
             self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
         }
 
         if bid_no > 0.0 {
             self.place_or_reprice(Side::No, bid_no, BidReason::Provide, None)
                 .await;
-        } else if self.no_bid.active {
+        } else if self.no_target.is_some() {
             self.cancel(Side::No, CancelReason::InventoryLimit).await;
         }
     }
@@ -703,28 +639,15 @@ impl StrategyCoordinator {
         reason: BidReason,
         log_msg: Option<String>,
     ) {
-        let slot = match side {
-            Side::Yes => &self.yes_bid,
-            Side::No => &self.no_bid,
+        let (current_target, last_ts) = match side {
+            Side::Yes => (self.yes_target.as_ref(), self.yes_last_ts),
+            Side::No => (self.no_target.as_ref(), self.no_last_ts),
         };
 
-        // Failure backoff: temporarily suppress new placements after hard rejects.
-        if Instant::now() < slot.retry_after {
-            self.stats.skipped_backoff += 1;
-            return;
-        }
+        let active = current_target.is_some();
+        let slot_price = current_target.map(|t| t.price).unwrap_or(0.0);
 
-        // Coordinator level inflight queue check
-        if slot.inflight {
-            debug!(
-                "⏳ Skipping {:?}@{:.3} — previous order still inflight",
-                side, price
-            );
-            return;
-        }
-
-        // FIX #3: Debounce — skip if last place was too recent
-        let elapsed = slot.last_placed.elapsed();
+        let elapsed = last_ts.elapsed();
         let debounce = std::time::Duration::from_millis(self.cfg.debounce_ms);
         if elapsed < debounce {
             self.stats.skipped_debounce += 1;
@@ -735,11 +658,10 @@ impl StrategyCoordinator {
             info!("{}", msg);
         }
 
-        if !slot.active {
+        if !active {
             self.place(side, price, reason).await;
-        } else if (slot.price - price).abs() > self.cfg.reprice_threshold {
-            debug!("🔄 reprice {:?} {:.3}→{:.3}", side, slot.price, price);
-            self.cancel(side, CancelReason::Reprice).await;
+        } else if (slot_price - price).abs() > self.cfg.reprice_threshold {
+            debug!("🔄 reprice {:?} {:.3}→{:.3}", side, slot_price, price);
             self.stats.cancel_reprice += 1;
             self.place(side, price, reason).await;
         }
@@ -750,14 +672,23 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     async fn place(&mut self, side: Side, price: f64, reason: BidReason) {
-        let slot = match side {
-            Side::Yes => &mut self.yes_bid,
-            Side::No => &mut self.no_bid,
+        let target = DesiredTarget {
+            side,
+            price,
+            size: self.cfg.bid_size,
         };
-        slot.active = true;
-        slot.price = price;
-        slot.last_placed = Instant::now();
-        slot.inflight = true;
+
+        match side {
+            Side::Yes => {
+                self.yes_target = Some(target.clone());
+                self.yes_last_ts = Instant::now();
+            }
+            Side::No => {
+                self.no_target = Some(target.clone());
+                self.no_last_ts = Instant::now();
+            }
+        };
+
         self.stats.placed += 1;
 
         if self.cfg.dry_run {
@@ -767,35 +698,28 @@ impl StrategyCoordinator {
             );
             return;
         }
-        let _ = self
-            .exec_tx
-            .send(ExecutionCmd::PlacePostOnlyBid {
-                side,
-                price,
-                size: self.cfg.bid_size,
-                reason,
-            })
-            .await;
+
+        let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
     }
 
     async fn cancel(&mut self, side: Side, reason: CancelReason) {
-        let slot = match side {
-            Side::Yes => &mut self.yes_bid,
-            Side::No => &mut self.no_bid,
+        match side {
+            Side::Yes => self.yes_target = None,
+            Side::No => self.no_target = None,
         };
-        slot.active = false;
-        slot.price = 0.0;
-        slot.inflight = false;
 
         debug!("🗑️ Cancel {:?} ({:?})", side, reason);
         if self.cfg.dry_run {
             info!("📝 DRY cancel {:?} ({:?})", side, reason);
             return;
         }
-        let _ = self
-            .exec_tx
-            .send(ExecutionCmd::CancelSide { side, reason })
-            .await;
+
+        let target = DesiredTarget {
+            side,
+            price: 0.0,
+            size: 0.0,
+        };
+        let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
     }
 }
 
@@ -826,15 +750,14 @@ mod tests {
         watch::Sender<OfiSnapshot>,
         watch::Sender<InventoryState>,
         mpsc::Sender<MarketDataMsg>,
-        mpsc::Receiver<ExecutionCmd>,
+        mpsc::Receiver<OrderManagerCmd>,
         StrategyCoordinator,
     ) {
         let (o, or) = watch::channel(OfiSnapshot::default());
         let (i, ir) = watch::channel(InventoryState::default());
         let (m, mr) = mpsc::channel(16);
         let (e, er) = mpsc::channel(16);
-        let (_rt, rr) = mpsc::channel(16);
-        (o, i, m, er, StrategyCoordinator::new(c, or, ir, mr, e, rr))
+        (o, i, m, er, StrategyCoordinator::new(c, or, ir, mr, e))
     }
 
     fn bt(yb: f64, ya: f64, nb: f64, na: f64) -> MarketDataMsg {
@@ -886,16 +809,12 @@ mod tests {
     #[tokio::test]
     async fn test_global_kill_cancels_both_sides() {
         let (o, _i, m, mut e, mut coord) = make(cfg());
-        coord.yes_bid = BidSlot {
-            active: true,
-            price: 0.45,
-            ..BidSlot::default()
-        };
-        coord.no_bid = BidSlot {
-            active: true,
-            price: 0.50,
-            ..BidSlot::default()
-        };
+        coord.yes_target = Some(DesiredTarget {
+            side: Side::Yes, price: 0.45, size: 2.0
+        });
+        coord.no_target = Some(DesiredTarget {
+            side: Side::No, price: 0.50, size: 2.0
+        });
 
         // Only YES is toxic — but BOTH should be canceled (Lead-Lag)
         let _ = o.send(OfiSnapshot {
@@ -918,13 +837,15 @@ mod tests {
         assert!(c1.is_ok() && c2.is_ok());
 
         let mut canceled = Vec::new();
-        if let Ok(Some(ExecutionCmd::CancelSide { side, reason })) = c1 {
-            canceled.push(side);
-            assert_eq!(reason, CancelReason::ToxicFlow);
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c1 {
+            if target.price == 0.0 {
+                canceled.push(target.side);
+            }
         }
-        if let Ok(Some(ExecutionCmd::CancelSide { side, reason })) = c2 {
-            canceled.push(side);
-            assert_eq!(reason, CancelReason::ToxicFlow);
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
+            if target.price == 0.0 {
+                canceled.push(target.side);
+            }
         }
         assert!(canceled.contains(&Side::Yes));
         assert!(canceled.contains(&Side::No));
@@ -971,11 +892,11 @@ mod tests {
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
 
         let mut prices = std::collections::HashMap::new();
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c1 {
-            prices.insert(side, price);
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c1 {
+            prices.insert(target.side, target.price);
         }
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c2 {
-            prices.insert(side, price);
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
+            prices.insert(target.side, target.price);
         }
         assert!((prices[&Side::Yes] - 0.45).abs() < 1e-9);
         assert!((prices[&Side::No] - 0.50).abs() < 1e-9);
@@ -993,11 +914,11 @@ mod tests {
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let mut prices = std::collections::HashMap::new();
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c1 {
-            prices.insert(side, price);
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c1 {
+            prices.insert(target.side, target.price);
         }
-        if let Ok(Some(ExecutionCmd::PlacePostOnlyBid { side, price, .. })) = c2 {
-            prices.insert(side, price);
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
+            prices.insert(target.side, target.price);
         }
         assert!(prices[&Side::Yes] + prices[&Side::No] <= 0.98 + 1e-9);
 

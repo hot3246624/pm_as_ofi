@@ -23,6 +23,7 @@ use pm_as_ofi::polymarket::executor::{init_clob_client, Executor, ExecutorConfig
 use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
+use pm_as_ofi::polymarket::order_manager::OrderManager;
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -1187,6 +1188,7 @@ async fn main() -> anyhow::Result<()> {
 
         let (exec_tx, exec_rx) = mpsc::channel::<ExecutionCmd>(32);
         let (result_tx, result_rx) = mpsc::channel::<OrderResult>(32);
+        let (om_tx, om_rx) = mpsc::channel::<OrderManagerCmd>(64);
         let (ofi_md_tx, ofi_md_rx) = mpsc::channel::<MarketDataMsg>(512);
         let (coord_md_tx, coord_md_rx) = mpsc::channel::<MarketDataMsg>(512);
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
@@ -1203,10 +1205,12 @@ async fn main() -> anyhow::Result<()> {
             ofi_watch_rx,
             inv_watch_rx,
             coord_md_rx,
-            exec_tx.clone(),
-            result_rx,
+            om_tx.clone(),
         );
         session_handles.push(tokio::spawn(coord.run()));
+
+        let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx);
+        session_handles.push(tokio::spawn(om.run()));
 
         let executor = Executor::new(
             ExecutorConfig {
@@ -1269,6 +1273,10 @@ async fn main() -> anyhow::Result<()> {
         let reason = run_market_ws(settings, ofi_md_tx, coord_md_tx, effective_end_ts).await;
         info!("🏁 Market ended: {:?}", reason);
 
+        let _ = om_tx.send(OrderManagerCmd::CancelAll).await;
+        // Drop om_tx so the OrderManager channel closes
+        drop(om_tx);
+        
         // ── Step 4: Cleanup ──
         let _ = exec_tx
             .send(ExecutionCmd::CancelAll {
