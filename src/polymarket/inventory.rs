@@ -248,8 +248,9 @@ impl InventoryManager {
         let projected_net = self.state.net_diff + self.cfg.bid_size;
         let net_ok = projected_net <= self.cfg.max_net_diff + 1e-4;
 
-        let cost_ok = self.state.portfolio_cost < self.cfg.max_portfolio_cost
-            || self.state.portfolio_cost == 0.0;
+        // InventoryManager should only block directional risk accumulation (net_diff),
+        // but never block a "rescue" hedge even if cost is high.
+        // Pricing policy is handled by Coordinator (pair_target vs max_portfolio_cost).
 
         // ISSUE 7 FIX: When yes_avg_cost == 0 (no position yet), the old formula
         // projected_value = (qty + bid_size) * 0 = 0, which always passed the cap check.
@@ -263,7 +264,7 @@ impl InventoryManager {
         let projected_yes_value = (self.state.yes_qty + self.cfg.bid_size) * price_est;
         let value_ok = projected_yes_value <= self.cfg.max_position_value + 1e-4;
 
-        net_ok && cost_ok && value_ok
+        net_ok && value_ok
     }
 
     /// Check whether current inventory allows opening a new NO position.
@@ -271,8 +272,7 @@ impl InventoryManager {
         let projected_net = self.state.net_diff - self.cfg.bid_size;
         let net_ok = projected_net >= -self.cfg.max_net_diff - 1e-4;
 
-        let cost_ok = self.state.portfolio_cost < self.cfg.max_portfolio_cost
-            || self.state.portfolio_cost == 0.0;
+        // Pricing policy is handled by Coordinator.
 
         // ISSUE 7 FIX: Same worst-case price estimate for NO side.
         let price_est = if self.state.no_avg_cost > f64::EPSILON {
@@ -283,7 +283,7 @@ impl InventoryManager {
         let projected_no_value = (self.state.no_qty + self.cfg.bid_size) * price_est;
         let value_ok = projected_no_value <= self.cfg.max_position_value + 1e-4;
 
-        net_ok && cost_ok && value_ok
+        net_ok && value_ok
     }
 }
 

@@ -266,16 +266,24 @@ impl Executor {
                 }
 
                 warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
-                let cooldown_ms = if Self::is_balance_or_allowance_error(&final_err) {
-                    30_000
+                let is_429 = Self::is_rate_limit_error(&final_err);
+                let is_balance = Self::is_balance_or_allowance_error(&final_err);
+                
+                let cooldown_ms = if is_429 {
+                    10_000 // 10s backoff for rate limiting
+                } else if is_balance {
+                    30_000 // 30s for balance issues
                 } else {
                     0
                 };
+
                 if cooldown_ms > 0 {
+                    let reason = if is_429 { "rate limit" } else { "balance/allowance" };
                     warn!(
-                        "⛔ Hard reject on {:?}: pausing new placements for {}s (balance/allowance)",
+                        "⛔ Hard reject on {:?}: pausing new placements for {}s ({})",
                         side,
-                        cooldown_ms / 1000
+                        cooldown_ms / 1000,
+                        reason
                     );
                 }
                 // FIX #4: Notify Coordinator the order failed so it can reset the slot
@@ -526,6 +534,11 @@ impl Executor {
     fn is_balance_or_allowance_error(err: &anyhow::Error) -> bool {
         let lower = format!("{:#}", err).to_ascii_lowercase();
         lower.contains("not enough balance") || lower.contains("allowance")
+    }
+
+    fn is_rate_limit_error(err: &anyhow::Error) -> bool {
+        let lower = format!("{:#}", err).to_ascii_lowercase();
+        lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit")
     }
 
     /// Get count of open orders for a side.
