@@ -692,19 +692,20 @@ async fn main() -> anyhow::Result<()> {
         info!("📌 FIXED mode: '{}' — single market", raw_slug);
     }
 
-    let inv_cfg = InventoryConfig::from_env();
+    let inv_cfg_base = InventoryConfig::from_env();
     let ofi_cfg = OfiConfig::from_env();
-    let coord_cfg = CoordinatorConfig::from_env();
+    let coord_cfg_base = CoordinatorConfig::from_env();
     let auto_claim_cfg = AutoClaimConfig::from_env();
     let mut auto_claim_state = AutoClaimState::default();
-    let dry_run = coord_cfg.dry_run;
+
+    let dry_run = coord_cfg_base.dry_run;
 
     info!(
-        "📊 Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
-        coord_cfg.pair_target,
-        coord_cfg.bid_size,
-        coord_cfg.tick_size,
-        coord_cfg.max_net_diff,
+        "📊 Base Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
+        coord_cfg_base.pair_target,
+        coord_cfg_base.bid_size,
+        coord_cfg_base.tick_size,
+        coord_cfg_base.max_net_diff,
         ofi_cfg.toxicity_threshold,
         dry_run
     );
@@ -1165,6 +1166,39 @@ async fn main() -> anyhow::Result<()> {
         settings.market_id = market_id.clone();
         settings.yes_asset_id = yes_asset_id.clone();
         settings.no_asset_id = no_asset_id.clone();
+
+        let mut coord_cfg = coord_cfg_base.clone();
+        let inv_cfg = inv_cfg_base.clone();
+
+        // ── Step 2.5: Dynamic Sizing ──
+        if !dry_run {
+            if let Some(client) = clob_client.as_ref() {
+                use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+                use polymarket_client_sdk::clob::types::AssetType;
+                
+                let req = BalanceAllowanceRequest::builder()
+                    .asset_type(AssetType::Collateral)
+                    .build();
+                
+                if let Ok(resp) = client.balance_allowance(req).await {
+                    let balance_f64 = rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
+                    
+                    let dyn_bid_size = 5.0f64.max(balance_f64 * 0.05).round(); // Floor: 5.0
+                    let dyn_net_diff = 10.0f64.max(balance_f64 * 0.20).round(); // Floor: 10.0
+                    // Inventory limit can stay static or be derived from max_net_diff:
+                    // Here we override the coordinate system bounds:
+                    coord_cfg.bid_size = dyn_bid_size;
+                    coord_cfg.max_net_diff = dyn_net_diff;
+
+                    info!(
+                        "💡 [DYNAMIC SIZING] Account balance: {:.2} USDC -> Setting BID_SIZE={:.1}, MAX_NET_DIFF={:.1}",
+                        balance_f64, dyn_bid_size, dyn_net_diff
+                    );
+                } else {
+                    warn!("⚠️ Failed to fetch balance for dynamic sizing. Falling back to env defaults.");
+                }
+            }
+        }
 
         info!("🎯 Market: {}", market_id);
         info!("   YES: {}...", &yes_asset_id[..16.min(yes_asset_id.len())]);
