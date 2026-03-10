@@ -1178,7 +1178,7 @@ async fn main() -> anyhow::Result<()> {
         let mut coord_cfg = coord_cfg_base.clone();
         // Opt-1: Pass market expiry timestamp so coordinator can apply A-S time decay.
         coord_cfg.market_end_ts = Some(effective_end_ts);
-        let inv_cfg = inv_cfg_base.clone();
+        let mut inv_cfg = inv_cfg_base.clone();
 
         // ── Step 2.5: Dynamic Sizing ──
         if !dry_run {
@@ -1205,11 +1205,19 @@ async fn main() -> anyhow::Result<()> {
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.10); // Default 10%
                     
-                    let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round(); // Floor: 5.0
-                    let dyn_net_diff = 10.0f64.max(balance_f64 * net_diff_pct).round(); // Floor: 10.0
+                    // Respect .env as the manual override if it's set higher than dynamic calculation.
+                    // Lower the floor from 10.0 to 5.0 for better flexibility.
+                    let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round();
+                    let dyn_net_diff = 5.0f64.max(balance_f64 * net_diff_pct).round();
                     
-                    coord_cfg.bid_size = dyn_bid_size;
-                    coord_cfg.max_net_diff = dyn_net_diff;
+                    // Use max(env, dynamic) to ensure we don't accidentally lower a user's intentional threshold
+                    // unless they haven't set one.
+                    coord_cfg.bid_size = coord_cfg.bid_size.max(dyn_bid_size);
+                    coord_cfg.max_net_diff = coord_cfg.max_net_diff.max(dyn_net_diff);
+                    
+                    // CRITICAL: Sync InventoryConfig with the new dynamic values
+                    inv_cfg.bid_size = coord_cfg.bid_size;
+                    inv_cfg.max_net_diff = coord_cfg.max_net_diff;
 
                     info!(
                         "💡 [DYNAMIC SIZING] Account balance: {:.2} USDC -> Setting BID_SIZE={:.1}, MAX_NET_DIFF={:.1} (bid_pct={}, net_pct={})",

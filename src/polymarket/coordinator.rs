@@ -470,9 +470,25 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     async fn quote_hedge_only(&mut self, inv: &InventoryState, ub: &Book) {
-        if inv.net_diff > 0.0 {
-            let ceiling = self.cfg.pair_target - inv.yes_avg_cost;
+        if inv.net_diff > f64::EPSILON {
+            // If imbalanced, check if we need "Emergency" rescue pricing
+            let hedge_target = if inv.net_diff >= self.cfg.max_net_diff - f64::EPSILON {
+                self.cfg.max_portfolio_cost
+            } else {
+                self.cfg.pair_target
+            };
+            let ceiling = hedge_target - inv.yes_avg_cost;
             let price = self.aggressive_price(ceiling, ub.no_ask);
+
+            // Stale Book Guard
+            let now = Instant::now();
+            if now.duration_since(self.last_valid_ts_no) > std::time::Duration::from_secs(5) {
+                if price > 0.0 {
+                    warn!("⚠️ [STALE BOOK HEDGE] NO age={:?}s - skipping hedge", now.duration_since(self.last_valid_ts_no).as_secs());
+                }
+                return;
+            }
+
             if price > 0.0 {
                 let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
                 let log_msg = if current_no == 0.0
@@ -488,9 +504,25 @@ impl StrategyCoordinator {
                 self.place_or_reprice(Side::No, price, BidReason::Hedge, log_msg)
                     .await;
             }
-        } else {
-            let ceiling = self.cfg.pair_target - inv.no_avg_cost;
+        } else if inv.net_diff < -f64::EPSILON {
+            // Emergency rescue pricing for YES side
+            let hedge_target = if inv.net_diff <= -self.cfg.max_net_diff + f64::EPSILON {
+                self.cfg.max_portfolio_cost
+            } else {
+                self.cfg.pair_target
+            };
+            let ceiling = hedge_target - inv.no_avg_cost;
             let price = self.aggressive_price(ceiling, ub.yes_ask);
+
+            // Stale Book Guard
+            let now = Instant::now();
+            if now.duration_since(self.last_valid_ts_yes) > std::time::Duration::from_secs(5) {
+                if price > 0.0 {
+                    warn!("⚠️ [STALE BOOK HEDGE] YES age={:?}s - skipping hedge", now.duration_since(self.last_valid_ts_yes).as_secs());
+                }
+                return;
+            }
+
             if price > 0.0 {
                 let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
                 let log_msg = if current_yes == 0.0
@@ -551,6 +583,24 @@ impl StrategyCoordinator {
 
         let mut bid_yes = self.safe_price(raw_yes);
         let mut bid_no = self.safe_price(raw_no);
+
+        // P5 Hardening: Stale Book Guard (5s TTL)
+        // If we haven't seen a valid update for a side, refuse to bid on that side.
+        let now = Instant::now();
+        let ttl = std::time::Duration::from_secs(5);
+
+        if now.duration_since(self.last_valid_ts_yes) > ttl {
+            if bid_yes > 0.0 {
+                warn!("⚠️ [STALE BOOK] YES age={:?}s - skipping bid", now.duration_since(self.last_valid_ts_yes).as_secs());
+            }
+            bid_yes = 0.0;
+        }
+        if now.duration_since(self.last_valid_ts_no) > ttl {
+            if bid_no > 0.0 {
+                warn!("⚠️ [STALE BOOK] NO age={:?}s - skipping bid", now.duration_since(self.last_valid_ts_no).as_secs());
+            }
+            bid_no = 0.0;
+        }
 
         let net_diff = inv.net_diff;
 
@@ -739,9 +789,18 @@ impl StrategyCoordinator {
         }
         if best_ask <= 0.0 {
             // No sell-side liquidity — refuse to bid.
-            // We cannot determine a safe price without an ask.
+            // This prevents "Blind Crossing" where we bid into a stale/empty book.
             return 0.0;
         }
+        
+        if ceiling >= best_ask - 1e-9 {
+            // The ceiling is at or above the current best ask. 
+            // b/c we are Post-Only, this order would be REJECTED.
+            // We clamp it to 1 tick below ask, but if the ask is already very low,
+            // we should be aware of this.
+            debug!("⚠️ aggressive_price: ceiling ({:.3}) >= best_ask ({:.3}) | Bidding 1 tick below ask", ceiling, best_ask);
+        }
+
         let one_tick_below = best_ask - self.cfg.tick_size;
         if one_tick_below <= 0.0 {
             return 0.0;
@@ -886,6 +945,9 @@ impl StrategyCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+    use tokio::time::timeout;
+    use std::time::Duration;
 
     fn cfg() -> CoordinatorConfig {
         CoordinatorConfig {
@@ -907,6 +969,7 @@ mod tests {
         watch::Sender<OfiSnapshot>,
         watch::Sender<InventoryState>,
         mpsc::Sender<MarketDataMsg>,
+        mpsc::Sender<KillSwitchSignal>,
         mpsc::Receiver<OrderManagerCmd>,
         StrategyCoordinator,
     ) {
@@ -914,7 +977,8 @@ mod tests {
         let (i, ir) = watch::channel(InventoryState::default());
         let (m, mr) = mpsc::channel(16);
         let (e, er) = mpsc::channel(16);
-        (o, i, m, er, StrategyCoordinator::new(c, or, ir, mr, e))
+        let (k, kr) = mpsc::channel(16);
+        (o, i, m, k, er, StrategyCoordinator::with_kill_rx(c, or, ir, mr, e, kr))
     }
 
     fn bt(yb: f64, ya: f64, nb: f64, na: f64) -> MarketDataMsg {
@@ -931,19 +995,19 @@ mod tests {
 
     #[test]
     fn test_safe_price_clamps_negative() {
-        let (_, _, _, _, c) = make(cfg());
+        let (_, _, _, _, _, c) = make(cfg());
         assert!((c.safe_price(-0.5) - 0.01).abs() < 1e-9);
     }
 
     #[test]
     fn test_safe_price_clamps_over_one() {
-        let (_, _, _, _, c) = make(cfg());
+        let (_, _, _, _, _, c) = make(cfg());
         assert!((c.safe_price(1.5) - 0.99).abs() < 1e-9);
     }
 
     #[test]
     fn test_safe_price_normal() {
-        let (_, _, _, _, c) = make(cfg());
+        let (_, _, _, _, _, c) = make(cfg());
         assert!((c.safe_price(0.45) - 0.45).abs() < 1e-9);
     }
 
@@ -951,13 +1015,13 @@ mod tests {
 
     #[test]
     fn test_aggressive_ceiling_wins() {
-        let (_, _, _, _, c) = make(cfg());
+        let (_, _, _, _, _, c) = make(cfg());
         assert!((c.aggressive_price(0.50, 0.55) - 0.50).abs() < 1e-9);
     }
 
     #[test]
     fn test_aggressive_ask_wins() {
-        let (_, _, _, _, c) = make(cfg());
+        let (_, _, _, _, _, c) = make(cfg());
         assert!((c.aggressive_price(0.60, 0.52) - 0.51).abs() < 1e-9);
     }
 
@@ -965,7 +1029,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_global_kill_cancels_both_sides() {
-        let (o, _i, m, mut e, mut coord) = make(cfg());
+        let (o, _i, m, _k, mut e, mut coord) = make(cfg());
         coord.yes_target = Some(DesiredTarget {
             side: Side::Yes, price: 0.45, size: 2.0
         });
@@ -1013,7 +1077,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_global_kill_blocks_new_orders() {
-        let (o, _i, m, mut e, coord) = make(cfg());
+        let (o, _i, m, _k, mut e, coord) = make(cfg());
 
         // NO is toxic (even though balanced) → should NOT place any bids
         let _ = o.send(OfiSnapshot {
@@ -1041,7 +1105,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_balanced_mid_pricing() {
-        let (_o, _i, m, mut e, coord) = make(cfg());
+        let (_o, _i, m, _k, mut e, coord) = make(cfg());
         let h = tokio::spawn(coord.run());
         let _ = m.send(bt(0.44, 0.46, 0.48, 0.52)).await;
 
@@ -1064,7 +1128,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_balanced_excess_mid_capped() {
-        let (_o, _i, m, mut e, coord) = make(cfg());
+        let (_o, _i, m, _k, mut e, coord) = make(cfg());
         let h = tokio::spawn(coord.run());
         // mid_yes=0.52, mid_no=0.50, sum=1.02 > 0.98
         let _ = m.send(bt(0.50, 0.54, 0.48, 0.52)).await;
@@ -1089,7 +1153,7 @@ mod tests {
     async fn test_debounce_skips_rapid_reprice() {
         let mut cfg = cfg();
         cfg.debounce_ms = 5000; // 5 seconds - will definitely block
-        let (_o, _i, m, mut e, coord) = make(cfg);
+        let (_o, _i, m, _k, mut e, coord) = make(cfg);
         let h = tokio::spawn(coord.run());
 
         // First tick: places bids
@@ -1112,12 +1176,92 @@ mod tests {
 
     #[tokio::test]
     async fn test_empty_book_skipped() {
-        let (_o, _i, m, mut e, coord) = make(cfg());
+        let (_o, _i, m, _k, mut e, coord) = make(cfg());
         let h = tokio::spawn(coord.run());
         // All zeros — no valid book
         let _ = m.send(bt(0.0, 0.0, 0.0, 0.0)).await;
         let c = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c.is_err()); // No commands
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_hedge_emergency_ceiling_toxic_flow() {
+        let mut cfg = cfg();
+        cfg.max_net_diff = 10.0;
+        cfg.pair_target = 0.985;
+        cfg.max_portfolio_cost = 1.02;
+
+        let (mut o, i, m, _k, mut e, mut coord) = make(cfg);
+        
+        // 1. Setup inventory: heavily imbalanced (net = -10.0)
+        let inv = InventoryState {
+            net_diff: -10.0,
+            yes_qty: 5.0,
+            no_qty: 15.0,
+            yes_avg_cost: 0.45,
+            no_avg_cost: 0.45,
+            portfolio_cost: 0.90,
+            can_buy_yes: true,
+            can_buy_no: false,
+        };
+        let _ = i.send(inv); // watch::Sender::send is not async
+
+        // 2. Trigger Toxic Flow kill
+        let _ = o.send(OfiSnapshot {
+            yes: SideOfi { ofi_score: 5000.0, is_toxic: true, ..Default::default() },
+            no: SideOfi::default(),
+            ts: Instant::now(),
+        });
+
+        // 3. Hear the kill signal
+        let h = tokio::spawn(async move {
+            coord.run().await
+        });
+
+        // 4. Send a book update to trigger pricing
+        let _ = m.send(bt(0.30, 0.70, 0.40, 0.60)).await;
+
+        let cmd = timeout(Duration::from_millis(100), e.recv()).await;
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = cmd {
+            assert_eq!(target.side, Side::Yes);
+            // Emergency ceiling = 1.02 - 0.45 = 0.570
+            assert!((target.price - 0.57).abs() < 1e-9);
+        } else {
+            panic!("Expected SetTarget hedge command, got {:?}", cmd);
+        }
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_stale_book_protection() {
+        let (o, _i, m, k, mut e, mut coord) = make(cfg());
+        
+        // 1. Send an initial valid update to populate last_valid_book
+        coord.update_book(0.44, 0.46, 0.48, 0.52);
+        
+        // 2. Artificially backdate the timestamps to 6 seconds ago
+        coord.last_valid_ts_yes = Instant::now() - Duration::from_secs(6);
+        coord.last_valid_ts_no = Instant::now() - Duration::from_secs(6);
+
+        let h = tokio::spawn(async move {
+            coord.run().await
+        });
+
+        // 3. Trigger a pricing attempt via KillSwitchSignal (Direct Kill channel)
+        // This calls tick() WITHOUT calling update_book(), so timestamps remain stale.
+        let _ = k.send(KillSwitchSignal {
+            side: Side::Yes,
+            ofi_score: 1.0,
+            ts: Instant::now(),
+        }).await;
+
+        // 4. Command should NOT be sent due to staleness
+        let cmd = timeout(Duration::from_millis(200), e.recv()).await;
+        assert!(cmd.is_err(), "Expected timeout (no bid) due to stale book, but got {:?}", cmd);
+
         drop(m);
         let _ = h.await;
     }

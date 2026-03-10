@@ -20,10 +20,10 @@
 ## 2. 架构
 
 ```text
-Market WS ──→ BookAssembler ──→ Coordinator ──→ Executor ──→ CLOB REST
-         ├──→ OFI Engine ──watch──→ Coordinator
-User WS  ──→ FillSplitter ──→ InventoryManager (watch→ Coordinator)
-                           └──→ Executor (OrderFilled→ Coordinator)
+Market WS  ──→ BookAssembler ──→ Coordinator ──→ OrderManager ──→ Executor ──→ CLOB REST
+          ├──→ OFI Engine ──watch──→ Coordinator
+          └──→ (Kill Switch) ──────→ Executor (Bypassing Decision Loop)
+User WS   ──→ FillSplitter ──→ InventoryManager ──watch──→ Coordinator
 ```
 
 ### 核心不变量
@@ -173,7 +173,7 @@ PM_ENTRY_GRACE_SECONDS=30
 | 文档 | 位置 | 内容 |
 |------|------|------|
 | **实盘检查单** | `PRODUCTION_READY.md` | 上线 preflight checklist |
-| **策略细节** | `docs/strategy_guide.md` | 状态机、生命周期、参数公式 |
+| **策略核心** | `docs/STRATEGY_V2_CORE.md` | 状态机、定价公式、对冲与救火逻辑 |
 | **测试指南** | `docs/TESTING.md` | 完整测试清单 |
 | **API限频** | `docs/API_RATE_LIMITS.md` | 请求频率建议 |
 | **价格精度** | `docs/PRICE_PRECISION.md` | 价格/数量精度与舍入 |

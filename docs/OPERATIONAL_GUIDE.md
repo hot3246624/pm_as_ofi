@@ -29,7 +29,7 @@ OrderManager (OMS) ──► Executor ──► Polymarket REST API
                            │ FillEvent (fan-out)
                ┌───────────┴───────────┐
                ▼                       ▼
-       InventoryManager         (Executor state)
+       InventoryManager         (User WS / Executor state)
        InventoryState (watch)
 ```
 
@@ -48,7 +48,7 @@ OrderManager (OMS) ──► Executor ──► Polymarket REST API
 │ Layer 1: Emergency (最高优先级)                               │
 │  - OFI 毒性全局 Kill → 双侧撤单 (无仓位)                      │
 │  - OFI 毒性选择性 Kill → 撤风险侧，维持对冲侧 (有仓位)         │
-│  - 盘口过期 (>30s) → 全部撤单                                │
+│  - 盘口过期 (>5s) → 停止对该侧出价 (Stale Book Guard)         │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 2: Inventory Control                                   │
 │  net_diff ≥ max_net_diff → 停买 YES，用 Gabagool22 对冲 NO   │
@@ -150,7 +150,7 @@ OFI_YES < -threshold (-200) → 大量抛售 YES → 价格下跌信号
 | 单侧库存积累 | A-S 推价不足 | max_net_diff 强制对冲 + Gabagool22 | 低流动性无法对冲 |
 | 配对成本超 $1 | 极端价格波动 | max_portfolio_cost 检查 | 报价错误时 |
 | API 超限 | 余额不足密集重试 | OMS cooldown_until (30s) | 无 |
-| 盲目报价 | 盘口数据过期 | per-side 30s TTL | WS 断连期间 |
+| 盲目报价 | 盘口数据过期 | per-side 5s TTL | WS 断连或流动性枯竭期间 |
 | 重连重放填单 | WS 断线重连 | DedupCache TTL 去重 | TTL 外的极端延迟 |
 
 ### 2.2 最坏情况分析
