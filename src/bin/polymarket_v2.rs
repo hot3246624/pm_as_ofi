@@ -1207,6 +1207,8 @@ async fn main() -> anyhow::Result<()> {
                     
                     // Respect .env as the manual override if it's set higher than dynamic calculation.
                     // Lower the floor from 10.0 to 5.0 for better flexibility.
+                    // Unit Clarification: In Polymarket, 1 Share = $1 Max Potential Risk.
+                    // dyn_bid_size is calculated in USD Notional, which maps 1:1 to Shares for risk sizing.
                     let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round();
                     let dyn_net_diff = 5.0f64.max(balance_f64 * net_diff_pct).round();
                     
@@ -1220,7 +1222,7 @@ async fn main() -> anyhow::Result<()> {
                     inv_cfg.max_net_diff = coord_cfg.max_net_diff;
 
                     info!(
-                        "💡 [DYNAMIC SIZING] Account balance: {:.2} USDC -> Setting BID_SIZE={:.1}, MAX_NET_DIFF={:.1} (bid_pct={}, net_pct={})",
+                        "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> Setting BID_SIZE={:.1} Shares, MAX_NET_DIFF={:.1} Shares (bid_pct={}, net_pct={})",
                         balance_f64, dyn_bid_size, dyn_net_diff, bid_pct, net_diff_pct
                     );
                 } else {

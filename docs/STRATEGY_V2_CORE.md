@@ -4,8 +4,15 @@ This document serves as the single source of truth for the `pm_as_ofi` trading e
 
 ---
 
-## 1. Core Architecture: The decision Loop
+## 1. Core Architecture & Unit Definition
 
+### Unit Definition (Units)
+In the Polymarket binary option market, **1 Share = $1 of Max Potential Risk**.
+- **PM_BID_SIZE** (Shares): Determines the maximum risk per transaction.
+- **PM_MAX_NET_DIFF** (Shares): Determines the maximum directional net risk allowed by the system.
+- **Dynamic Sizing**: Dynamic amounts ($) calculated from your balance are automatically mapped 1:1 to **Shares**. This ensures your risk-to-equity ratio remains constant across different price points.
+
+### The Decision Loop
 The bot operates on a high-frequency event loop. Every order book update or trade execution triggers a re-evaluation of the strategy's desired state.
 
 ```mermaid
