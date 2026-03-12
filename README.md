@@ -6,13 +6,15 @@
 
 ### 核心特性
 - 仅挂单（`post_only=true`），永不主动吃单
-- OFI Toxicity Detection → Strategy-First Kill Switch (Selective or Global)
+- OFI Toxicity Detection → Strategy-First Kill Switch (Global Provide Kill)
 - Inventory Hedging State Machine (Balanced → Hedge → Emergency Rescue)
+- Inventory Gate (`can_buy_*`) applies to all orders (Provide + Hedge)
 - Certified User WS for exclusive Fill confirmation
 - OrderFilled feedback loop for immediate slot release
 - Fill Ledger VWAP recalculation for zero drift
 - Automated market rotation for `btc-updown-5m/15m`
-- Configurable Stale Book Protection (default 3s TTL)
+- Configurable Stale Book Protection (per-side 3s TTL + 30s hard expiry)
+- Dynamic hedge sizing updates on size-only changes
 
 主入口：`src/bin/polymarket_v2.rs`
 
@@ -29,7 +31,7 @@ User WS   ──→ FillSplitter ──→ InventoryManager ──watch──→
 2. 库存唯一来源是认证 `User WS` 的 `FillEvent`
 3. `Confirmed` 事件幂等处理，不重复入账
 4. 下单失败回传 `OrderFailed`，成交回传 `OrderFilled`，Coordinator 即时释放 slot
-5. `can_open` 为硬门控：三重限制（净仓差/组合成本/单侧敞口）
+5. `can_buy_*` 为硬门控：仅基于净仓差与单侧持仓价值进行投影限制（定价策略由 Coordinator 控制）
 6. User WS `maker_orders.owner` 是 API key UUID，不是钱包地址
 
 ## 3. 快速开始
@@ -147,10 +149,11 @@ PM_ENTRY_GRACE_SECONDS=30
 
 | 状态 | 条件 | 行为 |
 |------|------|------|
-| **Balanced** | `net_diff ≈ 0` + Health OK | Place YES+NO bids with A-S Skew |
-| **Hedge / Rescue** | `net_diff ≠ 0` | Place dynamic hedge order (`size = net_diff.abs()`) |
-| **Kill (Toxicity)** | Side X is toxic | Set prices on unhealthy sides to 0.0 (Global Lead-Lag) |
-| **Stale Protection** | Data older than TTL | Set price to 0.0 for that side |
+| **Balanced** | `net_diff ≈ 0` + Health OK + `can_buy_*` | Place YES+NO bids with A-S Skew |
+| **Hedge / Rescue** | `net_diff ≠ 0` + hedge side healthy + `can_buy_*` | Place dynamic hedge order (`size = net_diff.abs()`) |
+| **Kill (Toxicity)** | Side X is toxic | Provide prices set to 0.0; hedges only if healthy + `can_buy_*` |
+| **Stale Protection** | Data older than TTL | Set price to 0.0 for that side; 30s expiry clears both |
+| **Empty Book** | No usable book data | No new orders; if unhealthy then clear targets |
 
 ## 7. 调参指南
 

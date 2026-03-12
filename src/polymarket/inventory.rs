@@ -248,9 +248,8 @@ impl InventoryManager {
         let projected_net = self.state.net_diff + self.cfg.bid_size;
         let net_ok = projected_net <= self.cfg.max_net_diff + 1e-4;
 
-        // InventoryManager should only block directional risk accumulation (net_diff),
-        // but never block a "rescue" hedge even if cost is high.
-        // Pricing policy is handled by Coordinator (pair_target vs max_portfolio_cost).
+        // InventoryManager enforces net/value limits only.
+        // Pricing policy (pair_target vs max_portfolio_cost) is handled by Coordinator.
 
         // ISSUE 7 FIX: When yes_avg_cost == 0 (no position yet), the old formula
         // projected_value = (qty + bid_size) * 0 = 0, which always passed the cap check.

@@ -46,13 +46,14 @@ OrderManager (OMS) ──► Executor ──► Polymarket REST API
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │ Layer 1: Environmental Health Check (Sequential in V2)        │
-│  - Stale Book Guard (Configurable TTL, e.g. 3s)               │
-│  - OFI Toxicity (Selective or Global Lead-Lag)                │
+│  - Stale Book Guard (per-side TTL, default 3s; 30s clears all)│
+│  - OFI Toxicity (Lead-Lag: provide both sides = 0.0)          │
 │  - ACTION: If unhealthy, set target price to 0.0 (Cancel)     │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 2: Inventory & Hedge Control (state_unified)            │
 │  - net_diff != 0 -> Calculate dynamic hedge (size=abs_net)    │
 │  - Apply Pair Target or Emergency Max Cost ceilings           │
+│  - Inventory gate: can_buy_* applies to hedge and provide     │
 ├─────────────────────────────────────────────────────────────┤
 │ Layer 3: Passive Liquidity (Provide)                          │
 │  - Apply A-S Skew + Gabagool Cost Averaging                   │
@@ -129,7 +130,7 @@ OFI_YES > threshold (+200) → 大量买入 YES → 市场预期价格上涨
 
 OFI_YES < -threshold (-200) → 大量抛售 YES → 价格下跌信号
     若无仓位：撤单防空接飞刀
-    若有 YES 仓位：立即挂最高 NO 对冲单，争取在下跌中脱身
+    若有 YES 仓位：仅当 NO 侧健康且 can_buy_no=true 时挂对冲单；否则清空提供单并等待恢复
 ```
 
 **Lead-Lag 逻辑**：YES 和 NO 是互补的（YES + NO = $1），两者并非独立市场。YES 的毒性流必然预示 NO 的反方向压力，因此任何一侧毒性触发全局 Kill。
@@ -151,7 +152,7 @@ OFI_YES < -threshold (-200) → 大量抛售 YES → 价格下跌信号
 | 风险类型 | 触发条件 | 保护机制 | 残余风险 |
 |---------|---------|---------|---------|
 | 知情交易 | 大户掌握非公开信息 | OFI Strategy-First Kill Switch | 毫秒级延迟内 |
-| 单侧库存积累 | 市场单向波动 | A-S Skew + abs_net 对冲 | 流动性枯竭时 |
+| 单侧库存积累 | 市场单向波动 | A-S Skew + abs_net 对冲（受 can_buy_* 约束） | 流动性枯竭时 |
 | 盘口数据过期 | WS 断连或流动性极低 | Configurable TTL (default 3s) | 频繁重连期间 |
 | 重连重放填单 | WS 断线重连 | DedupCache TTL 去重 | TTL 外的极端延迟 |
 
@@ -413,6 +414,7 @@ PM_AS_TIME_DECAY_K=2.0        # 时间衰减系数（0=禁用）
 PM_DEBOUNCE_MS=500            # 正常防抖时间
 PM_HEDGE_DEBOUNCE_MS=100      # 对冲防抖时间（建议 ≤ 200ms）
 PM_REPRICE_THRESHOLD=0.010    # 触发重新报价的价格偏差阈值
+PM_STALE_TTL_MS=3000          # 盘口数据 TTL（毫秒，单侧）
 
 # 动态规模（基于账户余额自动计算）
 PM_BID_PCT=0.02               # bid_size = balance * 2%
