@@ -45,18 +45,19 @@ OrderManager (OMS) ──► Executor ──► Polymarket REST API
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│ Layer 1: Emergency (最高优先级)                               │
-│  - OFI 毒性全局 Kill → 双侧撤单 (无仓位)                      │
-│  - OFI 毒性选择性 Kill → 撤风险侧，维持对冲侧 (有仓位)         │
-│  - 盘口过期 (>5s) → 停止对该侧出价 (Stale Book Guard)         │
+│ Layer 1: Environmental Health Check (Sequential in V2)        │
+│  - Stale Book Guard (Configurable TTL, e.g. 3s)               │
+│  - OFI Toxicity (Selective or Global Lead-Lag)                │
+│  - ACTION: If unhealthy, set target price to 0.0 (Cancel)     │
 ├─────────────────────────────────────────────────────────────┤
-│ Layer 2: Inventory Control                                   │
-│  net_diff ≥ max_net_diff → 停买 YES，用 Gabagool22 对冲 NO   │
-│  net_diff ≤ -max_net_diff → 停买 NO，用 Gabagool22 对冲 YES  │
+│ Layer 2: Inventory & Hedge Control (state_unified)            │
+│  - net_diff != 0 -> Calculate dynamic hedge (size=abs_net)    │
+│  - Apply Pair Target or Emergency Max Cost ceilings           │
 ├─────────────────────────────────────────────────────────────┤
-│ Layer 3: Normal Market Making (A-S 双边报价)                  │
-│  bid_yes = mid_yes - excess/2 - skew_shift * decay_factor   │
-│  bid_no  = mid_no  - excess/2 + skew_shift * decay_factor   │
+│ Layer 3: Passive Liquidity (Provide)                          │
+│  - Apply A-S Skew + Gabagool Cost Averaging                   │
+│  - bid_yes = mid_yes - excess/2 - skew_shift                  │
+│  - bid_no  = mid_no  - excess/2 + skew_shift                  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -92,14 +93,17 @@ bid_yes, bid_no ∈ [tick, 1-2*tick]      # 边界安全钳位
 #### Gabagool22 对冲公式 (含紧急救火模式)
 
 ```
-# 1. 确定对冲天花板 (Opt-5)
-# 如果库存未达上限 (net_diff < max_net_diff)：盈利模式
-# 如果库存已达上限 (net_diff >= max_net_diff)：救火模式 (使用 max_portfolio_cost)
+# 1. 确定对冲天花板 (Hedge/Rescue)
+# 如果库存未达上限 (net_diff < max_net_diff)：盈利对冲 (target = 0.985)
+# 如果库存已达上限 (net_diff >= max_net_diff)：救火模式 (target = 1.02)
 hedge_target = (net_diff.abs() >= max_net_diff) ? max_portfolio_cost : pair_target
 
-# 2. 计算具体下单价格
+# 2. 动态下单规模 (Hedge Sizing)
+size = net_diff.abs()
+
+# 3. 计算对冲价格
 no_ceiling  = hedge_target - yes_avg_cost
-bid_no      = min(no_ceiling, no_ask - tick)  # 贴近卖一，提高成交率
+bid_no      = min(no_ceiling, no_ask - tick) 
 
 # 3. 盈亏评估：
 # 盈利模式 (target=0.99)：profit ≥ 1.0 - 0.99 = +$0.01/股 (保证盈利)
@@ -146,11 +150,9 @@ OFI_YES < -threshold (-200) → 大量抛售 YES → 价格下跌信号
 
 | 风险类型 | 触发条件 | 保护机制 | 残余风险 |
 |---------|---------|---------|---------|
-| 知情交易 | 大户提前获知结果 | OFI Kill Switch (200ms 直通) | 极端事件 (<100ms 冲击) |
-| 单侧库存积累 | A-S 推价不足 | max_net_diff 强制对冲 + Gabagool22 | 低流动性无法对冲 |
-| 配对成本超 $1 | 极端价格波动 | max_portfolio_cost 检查 | 报价错误时 |
-| API 超限 | 余额不足密集重试 | OMS cooldown_until (30s) | 无 |
-| 盲目报价 | 盘口数据过期 | per-side 5s TTL | WS 断连或流动性枯竭期间 |
+| 知情交易 | 大户掌握非公开信息 | OFI Strategy-First Kill Switch | 毫秒级延迟内 |
+| 单侧库存积累 | 市场单向波动 | A-S Skew + abs_net 对冲 | 流动性枯竭时 |
+| 盘口数据过期 | WS 断连或流动性极低 | Configurable TTL (default 3s) | 频繁重连期间 |
 | 重连重放填单 | WS 断线重连 | DedupCache TTL 去重 | TTL 外的极端延迟 |
 
 ### 2.2 最坏情况分析
@@ -204,10 +206,10 @@ OFI_YES < -threshold (-200) → 大量抛售 YES → 价格下跌信号
 
 | 资金规模 | BID_SIZE | MAX_NET_DIFF | MAX_POSITION_VALUE | PAIR_TARGET |
 |--------|----------|-------------|-------------------|-------------|
-| $50    | $2       | 5           | $20               | 0.98        |
-| $100   | $5       | 10          | $50               | 0.98        |
-| $500   | $10      | 20          | $250              | 0.985       |
-| $2000  | $20      | 40          | $1000             | 0.99        |
+| $50    | 2           | 5           | $20               | 0.98        |
+| $100   | 5           | 10          | $50               | 0.98        |
+| $500   | 10          | 20          | $250              | 0.985       |
+| $2000  | 20          | 40          | $1000             | 0.99        |
 
 > 注：动态计算公式 `BID_SIZE = balance * PM_BID_PCT (default 2%)`, `MAX_NET_DIFF = balance * PM_NET_DIFF_PCT (default 10%)`
 
@@ -403,7 +405,7 @@ PM_AUTO_CLAIM=true            # 自动领取结算仓位
 
 # 核心策略参数
 PM_PAIR_TARGET=0.98           # 配对成本上限（利润空间 = 1 - pair_target）
-PM_BID_SIZE=5.0               # 每笔下单大小（USDC）
+PM_BID_SIZE=5.0               # Size per bid (Shares)
 PM_MAX_NET_DIFF=10.0          # 最大净仓量（单股）
 PM_MAX_POSITION_VALUE=50.0    # 单侧最大仓位价值
 PM_AS_SKEW_FACTOR=0.03        # A-S 库存倾斜系数（0=纯 Gabagool22）

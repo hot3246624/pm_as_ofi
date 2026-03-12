@@ -6,14 +6,13 @@
 
 ### 核心特性
 - 仅挂单（`post_only=true`），永不主动吃单
-- OFI 毒性检测 → 全局 Kill Switch，毫秒级撤单避险
-- 库存对冲状态机（Balanced → Hedge → Kill）
-- 认证 User WS 独占确认成交，防止幻影库存
-- 成交后自动释放 slot（`OrderFilled` 反馈闭环）
-- Fill Ledger VWAP 精确重算，零漂移
-- 支持 `*-updown-5m/15m` 前缀自动轮转
-- 启动时自动 `CancelAll(Startup)` 清除历史残单
-- 陈旧盘口 30 秒 TTL 保护
+- OFI Toxicity Detection → Strategy-First Kill Switch (Selective or Global)
+- Inventory Hedging State Machine (Balanced → Hedge → Emergency Rescue)
+- Certified User WS for exclusive Fill confirmation
+- OrderFilled feedback loop for immediate slot release
+- Fill Ledger VWAP recalculation for zero drift
+- Automated market rotation for `btc-updown-5m/15m`
+- Configurable Stale Book Protection (default 3s TTL)
 
 主入口：`src/bin/polymarket_v2.rs`
 
@@ -21,8 +20,7 @@
 
 ```text
 Market WS  ──→ BookAssembler ──→ Coordinator ──→ OrderManager ──→ Executor ──→ CLOB REST
-          ├──→ OFI Engine ──watch──→ Coordinator
-          └──→ (Kill Switch) ──────→ Executor (Bypassing Decision Loop)
+          ├──→ OFI Engine ──watch──→ Coordinator (Decision)
 User WS   ──→ FillSplitter ──→ InventoryManager ──watch──→ Coordinator
 ```
 
@@ -73,17 +71,18 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 |------|------|------|
 | `PM_DRY_RUN` | `true` | 模拟模式开关 |
 | `PM_PAIR_TARGET` | `0.99` | YES+NO 出价上限。越低越安全利润越高，但成交率下降 |
-| `PM_BID_SIZE` | `2.0` | 每次挂单股数（美元） |
-| `PM_TICK_SIZE` | `0.01` | 最小价格步长 |
-| `PM_REPRICE_THRESHOLD` | `0.010` | 价差偏移多少才触发重报价 |
-| `PM_DEBOUNCE_MS` | `500` | 同侧挂单最小间隔（毫秒） |
-| `PM_ENTRY_GRACE_SECONDS` | `30` | 开盘后允许入场窗口（秒） |
+| `PM_BID_SIZE` | `5.0` | Size per bid in **Shares** (1 Share = $1 Max Risk) |
+| `PM_TICK_SIZE` | `0.01` | Minimum price increment |
+| `PM_REPRICE_THRESHOLD` | `0.010` | Price drift required to trigger re-quote |
+| `PM_DEBOUNCE_MS` | `500` | Minimum interval between Provide orders (ms) |
+| `PM_STALE_TTL_MS` | `3000` | Stale Book TTL in milliseconds |
+| `PM_ENTRY_GRACE_SECONDS` | `30` | Time window after market start to enter (seconds) |
 
 ### 4.3 风控参数
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `PM_MAX_NET_DIFF` | `5.0` | 最大单边净仓差（股） |
+| `PM_MAX_NET_DIFF` | `10.0` | Max net directional inventory difference (**Shares**) |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 最大组合成本和（> 1.0 = 套利失败） |
 | `PM_MAX_POSITION_VALUE` | `5.0` | 单侧最大美元暴露 |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
@@ -148,10 +147,10 @@ PM_ENTRY_GRACE_SECONDS=30
 
 | 状态 | 条件 | 行为 |
 |------|------|------|
-| **Balanced** | `net_diff≈0` + `can_open` | YES+NO 双边中间价挂单 |
-| **Hedge** | `net_diff≠0` | 撤多余侧，aggressive 补缺腿 |
-| **Global Kill** | 任一侧 OFI toxic | 双边全撤 |
-| **Inv Limit** | `!can_open` | 撤风险侧，保留对冲侧 |
+| **Balanced** | `net_diff ≈ 0` + Health OK | Place YES+NO bids with A-S Skew |
+| **Hedge / Rescue** | `net_diff ≠ 0` | Place dynamic hedge order (`size = net_diff.abs()`) |
+| **Kill (Toxicity)** | Side X is toxic | Set prices on unhealthy sides to 0.0 (Global Lead-Lag) |
+| **Stale Protection** | Data older than TTL | Set price to 0.0 for that side |
 
 ## 7. 调参指南
 

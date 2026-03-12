@@ -13,7 +13,7 @@
 //! 3. **Anti-Thrashing**: 200ms debounce per side after placing a bid.
 //!    Empty book → refuse to bid (return 0.0). Never use ceiling as fallback.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
@@ -54,6 +54,8 @@ pub struct CoordinatorConfig {
     pub max_portfolio_cost: f64,
     /// DRY-RUN mode.
     pub dry_run: bool,
+    /// Configurable TTL for stale book data (ms). Default 3000ms.
+    pub stale_ttl_ms: u64,
 }
 
 impl Default for CoordinatorConfig {
@@ -71,6 +73,7 @@ impl Default for CoordinatorConfig {
             hedge_debounce_ms: 100,   // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
             dry_run: true,
+            stale_ttl_ms: 3000,
         }
     }
 }
@@ -137,6 +140,11 @@ impl CoordinatorConfig {
         }
         if let Ok(v) = std::env::var("PM_DRY_RUN") {
             c.dry_run = v != "0" && v.to_lowercase() != "false";
+        }
+        if let Ok(v) = std::env::var("PM_STALE_TTL_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                c.stale_ttl_ms = ms;
+            }
         }
         c
     }
@@ -375,192 +383,73 @@ impl StrategyCoordinator {
         let ofi = *self.ofi_rx.borrow();
         let inv = *self.inv_rx.borrow();
 
-        // ── Priority 1: Lead-Lag Global Kill Switch ──
-        let global_toxic = ofi.yes.is_toxic || ofi.no.is_toxic;
-        if global_toxic {
-            if inv.net_diff.abs() > f64::EPSILON {
-                // P0 FIX: When we have open inventory, only kill the risky side
-                // and PRESERVE the hedge side — it's more important during toxic flow.
-                self.selective_kill_with_hedge(&ofi, &inv).await;
-            } else {
-                self.global_kill_switch(&ofi).await;
-            }
-            return;
-        }
+        // ── Environmental Health Check ──
+        let now = Instant::now();
+        let ttl = Duration::from_millis(self.cfg.stale_ttl_ms);
+        
+        let yes_stale = now.duration_since(self.last_valid_ts_yes) > ttl;
+        let no_stale = now.duration_since(self.last_valid_ts_no) > ttl;
+        let is_toxic_yes = ofi.yes.is_toxic;
+        let is_toxic_no = ofi.no.is_toxic;
 
-        // ── Priority 2: Inventory-driven state machine ──
-        let ub = self.usable_book();
-        if ub.yes_bid <= 0.0 || ub.no_bid <= 0.0 {
-            self.stats.skipped_empty_book += 1;
-            return; // No valid book data at all
-        }
-
-        // P2 FIX: If last_valid_book is stale (>30s), cancel everything and refuse to open.
+        // Priority 1: 30s Staleness Guard (Critical Shutdown)
         if self.is_book_stale() {
             if self.yes_target.is_some() {
-                warn!("⚠️ Stale book (>30s) — canceling YES bid");
-                self.cancel(Side::Yes, CancelReason::Shutdown).await;
+                warn!("⚠️ Book expired (>30s) — clearing YES");
+                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None).await;
             }
             if self.no_target.is_some() {
-                warn!("⚠️ Stale book (>30s) — canceling NO bid");
-                self.cancel(Side::No, CancelReason::Shutdown).await;
+                warn!("⚠️ Book expired (>30s) — clearing NO");
+                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None).await;
+            }
+            return;
+        }
+
+        // Priority 2: Market data availability
+        let ub = self.usable_book();
+        if ub.yes_bid <= 0.0 || ub.no_bid <= 0.0 {
+            let global_toxic = is_toxic_yes || is_toxic_no;
+            if (global_toxic || yes_stale) && self.yes_target.is_some() {
+                warn!("⚠️ Unhealthy/empty book — clearing YES");
+                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None).await;
+            }
+            if (global_toxic || no_stale) && self.no_target.is_some() {
+                warn!("⚠️ Unhealthy/empty book — clearing NO");
+                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None).await;
             }
             self.stats.skipped_empty_book += 1;
             return;
         }
 
-        self.state_unified(&inv, &ub).await;
+        // Priority 3: Toxic or Stale (3s TTL) → Selective Shutdown
+        // If a side is unhealthy, its price will be 0.0 in the unified state logic below.
+        self.state_unified(&inv, &ub, yes_stale, no_stale, is_toxic_yes, is_toxic_no).await;
     }
 
-    // ═════════════════════════════════════════════════
-    // Lead-Lag Global Kill Switch
-    // ═════════════════════════════════════════════════
-
-    async fn global_kill_switch(&mut self, ofi: &OfiSnapshot) {
-        // Cancel BOTH sides when ANY side is toxic
-        if self.yes_target.is_some() {
-            warn!(
-                "☠️ GLOBAL KILL Bid_YES | yes_ofi={:.1} no_ofi={:.1}",
-                ofi.yes.ofi_score, ofi.no.ofi_score,
-            );
-            self.cancel(Side::Yes, CancelReason::ToxicFlow).await;
-            self.stats.cancel_toxic += 1;
-        }
-        if self.no_target.is_some() {
-            warn!(
-                "☠️ GLOBAL KILL Bid_NO | yes_ofi={:.1} no_ofi={:.1}",
-                ofi.yes.ofi_score, ofi.no.ofi_score,
-            );
-            self.cancel(Side::No, CancelReason::ToxicFlow).await;
-            self.stats.cancel_toxic += 1;
-        }
-    }
-
-    /// Selective kill: cancel only the side that would ADD risk, preserve the hedge side.
-    /// Then immediately run state_hedge() to maintain/place the counterleg.
-    async fn selective_kill_with_hedge(&mut self, ofi: &OfiSnapshot, inv: &InventoryState) {
-        let (risky_side, hedge_side) = if inv.net_diff > 0.0 {
-            (Side::Yes, Side::No) // excess YES → kill YES bids, keep NO hedge
-        } else {
-            (Side::No, Side::Yes) // excess NO → kill NO bids, keep YES hedge
-        };
-
-        let risky_active = match risky_side {
-            Side::Yes => self.yes_target.is_some(),
-            Side::No => self.no_target.is_some(),
-        };
-        if risky_active {
-            warn!(
-                "☠️ SELECTIVE KILL {:?} (risky) | yes_ofi={:.1} no_ofi={:.1} net={:.1} — keeping {:?} hedge",
-                risky_side, ofi.yes.ofi_score, ofi.no.ofi_score, inv.net_diff, hedge_side,
-            );
-            self.cancel(risky_side, CancelReason::ToxicFlow).await;
-            self.stats.cancel_toxic += 1;
-        }
-
-        // Maintain the hedge order even during toxic flow
-        let ub = self.usable_book();
-        if ub.yes_bid > 0.0 && ub.no_bid > 0.0 {
-            self.quote_hedge_only(inv, &ub).await;
-        }
-    }
-
-    // ═════════════════════════════════════════════════
-    // Toxic Flow Hedge Override
-    // ═════════════════════════════════════════════════
-
-    async fn quote_hedge_only(&mut self, inv: &InventoryState, ub: &Book) {
-        if inv.net_diff > f64::EPSILON {
-            // If imbalanced, check if we need "Emergency" rescue pricing
-            let hedge_target = if inv.net_diff >= self.cfg.max_net_diff - f64::EPSILON {
-                self.cfg.max_portfolio_cost
-            } else {
-                self.cfg.pair_target
-            };
-            let ceiling = hedge_target - inv.yes_avg_cost;
-            let price = self.aggressive_price(ceiling, ub.no_ask);
-
-            // Stale Book Guard
-            let now = Instant::now();
-            if now.duration_since(self.last_valid_ts_no) > std::time::Duration::from_secs(5) {
-                if price > 0.0 {
-                    warn!("⚠️ [STALE BOOK HEDGE] NO age={:?}s - skipping hedge", now.duration_since(self.last_valid_ts_no).as_secs());
-                }
-                return;
-            }
-
-            if price > 0.0 {
-                let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                let log_msg = if current_no == 0.0
-                    || (current_no - price).abs() > self.cfg.reprice_threshold
-                {
-                    Some(format!(
-                        "🔧 TOXIC HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        price, ceiling, ub.no_ask, inv.net_diff
-                    ))
-                } else {
-                    None
-                };
-                self.place_or_reprice(Side::No, price, BidReason::Hedge, log_msg)
-                    .await;
-            }
-        } else if inv.net_diff < -f64::EPSILON {
-            // Emergency rescue pricing for YES side
-            let hedge_target = if inv.net_diff <= -self.cfg.max_net_diff + f64::EPSILON {
-                self.cfg.max_portfolio_cost
-            } else {
-                self.cfg.pair_target
-            };
-            let ceiling = hedge_target - inv.no_avg_cost;
-            let price = self.aggressive_price(ceiling, ub.yes_ask);
-
-            // Stale Book Guard
-            let now = Instant::now();
-            if now.duration_since(self.last_valid_ts_yes) > std::time::Duration::from_secs(5) {
-                if price > 0.0 {
-                    warn!("⚠️ [STALE BOOK HEDGE] YES age={:?}s - skipping hedge", now.duration_since(self.last_valid_ts_yes).as_secs());
-                }
-                return;
-            }
-
-            if price > 0.0 {
-                let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                let log_msg = if current_yes == 0.0
-                    || (current_yes - price).abs() > self.cfg.reprice_threshold
-                {
-                    Some(format!(
-                        "🔧 TOXIC HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        price, ceiling, ub.yes_ask, inv.net_diff
-                    ))
-                } else {
-                    None
-                };
-                self.place_or_reprice(Side::Yes, price, BidReason::Hedge, log_msg)
-                    .await;
-            }
-        }
-    }
 
     // ═════════════════════════════════════════════════
     // State Unified: A-S Skew + Gabagool22 Cost Averaging
     // ═════════════════════════════════════════════════
 
-    async fn state_unified(&mut self, inv: &InventoryState, ub: &Book) {
+    async fn state_unified(
+        &mut self,
+        inv: &InventoryState,
+        ub: &Book,
+        yes_stale: bool,
+        no_stale: bool,
+        is_toxic_yes: bool,
+        is_toxic_no: bool,
+    ) {
         let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
         let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
 
-        // Base required profit margin based on pair_target limits
+        // 1. Calculate base pricing via A-S + Gabagool
         let excess = f64::max(0.0, (mid_yes + mid_no) - self.cfg.pair_target);
-
         let skew = if self.cfg.max_net_diff > 0.0 {
             (inv.net_diff / self.cfg.max_net_diff).clamp(-1.0, 1.0)
         } else {
             0.0
         };
-
-        // A-S linear shift based on inventory.
-        // Opt-1: Apply time-decay multiplier — skew urgency grows as market approaches expiry.
-        // Holding YES (skew>0) shifts YES down and NO up.
         let effective_skew_factor = self.cfg.as_skew_factor * self.compute_time_decay_factor();
         let skew_shift = skew * effective_skew_factor;
 
@@ -573,7 +462,7 @@ impl StrategyCoordinator {
             raw_no -= overflow / 2.0;
         }
 
-        // 1. Strict Maker Clamp: base quotes must never cross the spread
+        // 2. Strict Maker Clamp
         if ub.yes_ask > 0.0 {
             raw_yes = f64::min(raw_yes, ub.yes_ask - self.cfg.tick_size);
         }
@@ -584,49 +473,33 @@ impl StrategyCoordinator {
         let mut bid_yes = self.safe_price(raw_yes);
         let mut bid_no = self.safe_price(raw_no);
 
-        // P5 Hardening: Stale Book Guard (5s TTL)
-        // If we haven't seen a valid update for a side, refuse to bid on that side.
-        let now = Instant::now();
-        let ttl = std::time::Duration::from_secs(5);
-
-        if now.duration_since(self.last_valid_ts_yes) > ttl {
+        // 3. Health Overrides (Toxicity / Staleness)
+        let global_toxic = is_toxic_yes || is_toxic_no;
+        if yes_stale || global_toxic {
             if bid_yes > 0.0 {
-                warn!("⚠️ [STALE BOOK] YES age={:?}s - skipping bid", now.duration_since(self.last_valid_ts_yes).as_secs());
+                debug!("🚫 YES {} -> skip bid", if yes_stale { "stale" } else { "toxic" });
             }
             bid_yes = 0.0;
         }
-        if now.duration_since(self.last_valid_ts_no) > ttl {
+        if no_stale || global_toxic {
             if bid_no > 0.0 {
-                warn!("⚠️ [STALE BOOK] NO age={:?}s - skipping bid", now.duration_since(self.last_valid_ts_no).as_secs());
+                debug!("🚫 NO {} -> skip bid", if no_stale { "stale" } else { "toxic" });
             }
             bid_no = 0.0;
         }
 
+        // 4. Hedge / Rescue Overrides
         let net_diff = inv.net_diff;
-
-        if !inv.can_buy_yes && !inv.can_buy_no {
-            self.stats.skipped_inv_limit += 1;
-        }
-
-        // BUG 1 FIX: Track whether each side was dispatched by the hedge path.
-        // The bottom "cleanup" block must NOT cancel a bid that was just placed as a hedge.
-        // Previously: bid_no = 0.0 after hedge dispatch, then `else if no_target.is_some()`
-        // triggered a cancel of the freshly-placed hedge order in the same tick.
         let mut hedge_dispatched_yes = false;
         let mut hedge_dispatched_no = false;
 
-        if net_diff > f64::EPSILON {
-            if !inv.can_buy_yes {
-                bid_yes = 0.0;
-                if self.yes_target.is_some() {
-                    debug!("🚫 YES maxed out (net={:.1}) → stop buying YES", net_diff);
-                    self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
-                    self.stats.cancel_inv += 1;
-                }
-            }
+        // Global inventory gating (no special-case privilege).
+        let allow_yes = inv.can_buy_yes;
+        let allow_no = inv.can_buy_no;
 
-            // If net_diff >= max_net_diff, we are desperate to hedge.
-            // Move ceiling from pair_target to max_portfolio_cost to allow "expensive" hedge.
+        if net_diff > f64::EPSILON {
+            // We have YES, want to hedge by buying NO.
+            // Move ceiling to max_portfolio_cost if at limit.
             let hedge_target = if net_diff >= self.cfg.max_net_diff - f64::EPSILON {
                 self.cfg.max_portfolio_cost
             } else {
@@ -636,40 +509,28 @@ impl StrategyCoordinator {
             let ceiling_no = hedge_target - inv.yes_avg_cost;
             let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
 
-            if agg_no > 0.0 {
-                bid_no = f64::max(bid_no, agg_no);
-                if bid_no > ceiling_no {
-                    bid_no = self.safe_price(ceiling_no);
-                }
+            if agg_no > 0.0 && allow_no && !no_stale && !is_toxic_no {
+                let hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
+                let hedge_no = self.safe_price(hedge_no);
+                let hedge_size = net_diff.abs();
 
                 let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                let log_msg = if current_no == 0.0
-                    || (current_no - bid_no).abs() > self.cfg.reprice_threshold
-                {
-                    Some(format!(
-                        "🔧 HEDGE NO@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        bid_no, ceiling_no, ub.no_ask, inv.net_diff
-                    ))
+                let current_sz = self.no_target.as_ref().map(|t| t.size).unwrap_or(0.0);
+                
+                let log_msg = if current_no <= 0.0 || (current_no - hedge_no).abs() > self.cfg.reprice_threshold || (current_sz - hedge_size).abs() > 0.1 {
+                    Some(format!("🔧 HEDGE NO@{:.3} sz={:.1} | net={:.1}", hedge_no, hedge_size, net_diff))
                 } else {
                     None
                 };
-                self.place_or_reprice(Side::No, bid_no, BidReason::Hedge, log_msg)
-                    .await;
-                // Mark consumed so the bottom cleanup block skips the cancel check.
+                
+                self.place_or_reprice(Side::No, hedge_no, hedge_size, BidReason::Hedge, log_msg).await;
                 hedge_dispatched_no = true;
                 bid_no = 0.0;
             }
-        } else if net_diff < -f64::EPSILON {
-            if !inv.can_buy_no {
-                bid_no = 0.0;
-                if self.no_target.is_some() {
-                    debug!("🚫 NO maxed out (net={:.1}) → stop buying NO", net_diff);
-                    self.cancel(Side::No, CancelReason::InventoryLimit).await;
-                    self.stats.cancel_inv += 1;
-                }
-            }
 
-            // If net_diff <= -max_net_diff, move ceiling to max_portfolio_cost.
+            if !allow_yes { bid_yes = 0.0; }
+        } else if net_diff < -f64::EPSILON {
+            // We have NO, want to hedge by buying YES.
             let hedge_target = if net_diff <= -self.cfg.max_net_diff + f64::EPSILON {
                 self.cfg.max_portfolio_cost
             } else {
@@ -679,58 +540,34 @@ impl StrategyCoordinator {
             let ceiling_yes = hedge_target - inv.no_avg_cost;
             let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
 
-            if agg_yes > 0.0 {
-                bid_yes = f64::max(bid_yes, agg_yes);
-                if bid_yes > ceiling_yes {
-                    bid_yes = self.safe_price(ceiling_yes);
-                }
+            if agg_yes > 0.0 && allow_yes && !yes_stale && !is_toxic_yes {
+                let hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
+                let hedge_yes = self.safe_price(hedge_yes);
+                let hedge_size = net_diff.abs();
 
                 let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                let log_msg = if current_yes == 0.0
-                    || (current_yes - bid_yes).abs() > self.cfg.reprice_threshold
-                {
-                    Some(format!(
-                        "🔧 HEDGE YES@{:.3} | ceiling={:.3} ask={:.3} net={:.1}",
-                        bid_yes, ceiling_yes, ub.yes_ask, inv.net_diff
-                    ))
+                let current_sz = self.yes_target.as_ref().map(|t| t.size).unwrap_or(0.0);
+
+                let log_msg = if current_yes <= 0.0 || (current_yes - hedge_yes).abs() > self.cfg.reprice_threshold || (current_sz - hedge_size).abs() > 0.1 {
+                    Some(format!("🔧 HEDGE YES@{:.3} sz={:.1} | net={:.1}", hedge_yes, hedge_size, net_diff))
                 } else {
                     None
                 };
-                self.place_or_reprice(Side::Yes, bid_yes, BidReason::Hedge, log_msg)
-                    .await;
-                // Mark consumed so the bottom cleanup block skips the cancel check.
+
+                self.place_or_reprice(Side::Yes, hedge_yes, hedge_size, BidReason::Hedge, log_msg).await;
                 hedge_dispatched_yes = true;
                 bid_yes = 0.0;
             }
-        } else {
-            if !inv.can_buy_yes {
-                bid_yes = 0.0;
-                if self.yes_target.is_some() {
-                    self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
-                }
-            }
-            if !inv.can_buy_no {
-                bid_no = 0.0;
-                if self.no_target.is_some() {
-                    self.cancel(Side::No, CancelReason::InventoryLimit).await;
-                }
-            }
         }
 
-        // Dispatch remaining bids, or cancel stale targets.
-        // CRITICAL: skip cancel if the hedge path already dispatched for that side.
-        if bid_yes > 0.0 {
-            self.place_or_reprice(Side::Yes, bid_yes, BidReason::Provide, None)
-                .await;
-        } else if !hedge_dispatched_yes && self.yes_target.is_some() {
-            self.cancel(Side::Yes, CancelReason::InventoryLimit).await;
+        // 5. Final Dispatch (Provide orders)
+        if !hedge_dispatched_yes {
+            let price = if allow_yes { bid_yes } else { 0.0 };
+            self.place_or_reprice(Side::Yes, price, self.cfg.bid_size, BidReason::Provide, None).await;
         }
-
-        if bid_no > 0.0 {
-            self.place_or_reprice(Side::No, bid_no, BidReason::Provide, None)
-                .await;
-        } else if !hedge_dispatched_no && self.no_target.is_some() {
-            self.cancel(Side::No, CancelReason::InventoryLimit).await;
+        if !hedge_dispatched_no {
+            let price = if allow_no { bid_no } else { 0.0 };
+            self.place_or_reprice(Side::No, price, self.cfg.bid_size, BidReason::Provide, None).await;
         }
     }
 
@@ -845,6 +682,7 @@ impl StrategyCoordinator {
         &mut self,
         side: Side,
         price: f64,
+        size: f64,
         reason: BidReason,
         log_msg: Option<String>,
     ) {
@@ -855,9 +693,18 @@ impl StrategyCoordinator {
 
         let active = current_target.is_some();
         let slot_price = current_target.map(|t| t.price).unwrap_or(0.0);
+        let slot_size = current_target.map(|t| t.size).unwrap_or(0.0);
 
-        // Opt-3: Hedge orders use a shorter debounce — they are urgent unwind actions
-        // and should not wait behind the normal 500ms anti-thrash window.
+        // OPTIMIZATION: Bypassing debounce for 0.0 price (Cancellation).
+        // If we want to cancel, we should do it immediately, especially during toxic/stale events.
+        // Also, skip redundant SetTarget(0.0) if no order is active.
+        if price <= 0.0 {
+            if active {
+                self.place(side, 0.0, 0.0, reason).await;
+            }
+            return;
+        }
+
         let debounce_ms = match reason {
             BidReason::Hedge => self.cfg.hedge_debounce_ms,
             BidReason::Provide => self.cfg.debounce_ms,
@@ -874,11 +721,11 @@ impl StrategyCoordinator {
         }
 
         if !active {
-            self.place(side, price, reason).await;
-        } else if (slot_price - price).abs() > self.cfg.reprice_threshold {
-            debug!("🔄 reprice {:?} {:.3}→{:.3}", side, slot_price, price);
+            self.place(side, price, size, reason).await;
+        } else if (slot_price - price).abs() > self.cfg.reprice_threshold || (slot_size - size).abs() > 0.1 {
+            debug!("🔄 reprice {:?} {:.3}→{:.3} sz={:.1}", side, slot_price, price, size);
             self.stats.cancel_reprice += 1;
-            self.place(side, price, reason).await;
+            self.place(side, price, size, reason).await;
         }
     }
 
@@ -886,11 +733,32 @@ impl StrategyCoordinator {
     // Plumbing
     // ═════════════════════════════════════════════════
 
-    async fn place(&mut self, side: Side, price: f64, reason: BidReason) {
+    async fn place(&mut self, side: Side, price: f64, size: f64, reason: BidReason) {
+        if price <= 0.0 {
+            match side {
+                Side::Yes => self.yes_target = None,
+                Side::No => self.no_target = None,
+            };
+
+            debug!("🗑️ Cancel {:?} ({:?})", side, reason);
+            if self.cfg.dry_run {
+                info!("📝 DRY cancel {:?} ({:?})", side, reason);
+                return;
+            }
+
+            let target = DesiredTarget {
+                side,
+                price: 0.0,
+                size: 0.0,
+            };
+            let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
+            return;
+        }
+
         let target = DesiredTarget {
             side,
             price,
-            size: self.cfg.bid_size,
+            size,
         };
 
         match side {
@@ -909,7 +777,7 @@ impl StrategyCoordinator {
         if self.cfg.dry_run {
             info!(
                 "📝 DRY {:?} {:?}@{:.3} sz={:.1}",
-                reason, side, price, self.cfg.bid_size
+                reason, side, price, size
             );
             return;
         }
@@ -917,25 +785,7 @@ impl StrategyCoordinator {
         let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
     }
 
-    async fn cancel(&mut self, side: Side, reason: CancelReason) {
-        match side {
-            Side::Yes => self.yes_target = None,
-            Side::No => self.no_target = None,
-        };
-
-        debug!("🗑️ Cancel {:?} ({:?})", side, reason);
-        if self.cfg.dry_run {
-            info!("📝 DRY cancel {:?} ({:?})", side, reason);
-            return;
-        }
-
-        let target = DesiredTarget {
-            side,
-            price: 0.0,
-            size: 0.0,
-        };
-        let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
-    }
+    // cancel method removed as place_or_reprice(0.0) handles cancellation.
 }
 
 // ─────────────────────────────────────────────────────────
@@ -945,7 +795,6 @@ impl StrategyCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use tokio::time::timeout;
     use std::time::Duration;
 
@@ -1193,7 +1042,7 @@ mod tests {
         cfg.pair_target = 0.985;
         cfg.max_portfolio_cost = 1.02;
 
-        let (mut o, i, m, _k, mut e, mut coord) = make(cfg);
+        let (o, i, m, _k, mut e, mut coord) = make(cfg);
         
         // 1. Setup inventory: heavily imbalanced (net = -10.0)
         let inv = InventoryState {
@@ -1208,10 +1057,11 @@ mod tests {
         };
         let _ = i.send(inv); // watch::Sender::send is not async
 
-        // 2. Trigger Toxic Flow kill
+        // 2. Trigger Toxic Flow kill on the OTHER side (NO)
+        // This ensures the risky side is toxic, but the hedge side (YES) is healthy.
         let _ = o.send(OfiSnapshot {
-            yes: SideOfi { ofi_score: 5000.0, is_toxic: true, ..Default::default() },
-            no: SideOfi::default(),
+            yes: SideOfi::default(),
+            no: SideOfi { ofi_score: 5000.0, is_toxic: true, ..Default::default() },
             ts: Instant::now(),
         });
 
@@ -1237,7 +1087,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_stale_book_protection() {
-        let (o, _i, m, k, mut e, mut coord) = make(cfg());
+        let (_o, _i, m, k, mut e, mut coord) = make(cfg());
         
         // 1. Send an initial valid update to populate last_valid_book
         coord.update_book(0.44, 0.46, 0.48, 0.52);
@@ -1259,8 +1109,114 @@ mod tests {
         }).await;
 
         // 4. Command should NOT be sent due to staleness
+        // Note: we check both sides in the new tick() logic.
         let cmd = timeout(Duration::from_millis(200), e.recv()).await;
         assert!(cmd.is_err(), "Expected timeout (no bid) due to stale book, but got {:?}", cmd);
+
+        drop(m);
+        let _ = h.await;
+    }
+    #[tokio::test]
+    async fn test_dynamic_hedge_sizing_shares() {
+        let mut cfg = cfg();
+        cfg.bid_size = 5.0;
+        let (_o, i, m, _k, mut e, coord) = make(cfg);
+        let h = tokio::spawn(coord.run());
+
+        // Setup imbalance of 12.0 shares (YES excess)
+        let _ = i.send(InventoryState {
+            net_diff: 12.0,
+            yes_qty: 12.0,
+            no_qty: 0.0,
+            yes_avg_cost: 0.50,
+            ..Default::default()
+        });
+
+        // Trigger pricing with a valid book update
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+
+        // Should see a HEDGE order on NO with size = 12.0
+        let mut found_hedge = false;
+        while let Ok(Some(OrderManagerCmd::SetTarget(target))) = timeout(Duration::from_millis(200), e.recv()).await {
+            if target.side == Side::No && (target.size - 12.0).abs() < 0.1 {
+                found_hedge = true;
+                break;
+            }
+        }
+        assert!(found_hedge, "Expected hedge order of size 12.0 on NO");
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_inventory_limits_block_orders() {
+        let mut cfg = cfg();
+        cfg.as_skew_factor = 0.0;
+        cfg.hedge_debounce_ms = 0;
+        let (_o, i, m, _k, mut e, coord) = make(cfg);
+        let h = tokio::spawn(coord.run());
+
+        let _ = i.send(InventoryState {
+            net_diff: 5.0,
+            yes_avg_cost: 0.50,
+            can_buy_yes: false,
+            can_buy_no: false,
+            ..Default::default()
+        });
+
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+        let c = timeout(Duration::from_millis(100), e.recv()).await;
+        assert!(c.is_err(), "Expected no orders when inventory limits block buys");
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_hedge_size_change_reprices() {
+        let mut cfg = cfg();
+        cfg.as_skew_factor = 0.0;
+        cfg.max_net_diff = 100.0;
+        cfg.hedge_debounce_ms = 0;
+        let (_o, i, m, _k, mut e, coord) = make(cfg);
+        let h = tokio::spawn(coord.run());
+
+        let _ = i.send(InventoryState {
+            net_diff: 5.0,
+            yes_qty: 5.0,
+            no_qty: 0.0,
+            yes_avg_cost: 0.50,
+            ..Default::default()
+        });
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+
+        let mut first_size = None;
+        while let Ok(Some(OrderManagerCmd::SetTarget(target))) = timeout(Duration::from_millis(200), e.recv()).await {
+            if target.side == Side::No && (target.size - 5.0).abs() < 0.1 {
+                first_size = Some(target.size);
+                break;
+            }
+        }
+        assert!(first_size.is_some(), "Expected initial hedge size of 5.0 on NO");
+
+        let _ = i.send(InventoryState {
+            net_diff: 8.0,
+            yes_qty: 8.0,
+            no_qty: 0.0,
+            yes_avg_cost: 0.50,
+            ..Default::default()
+        });
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+
+        let mut updated = false;
+        while let Ok(Some(OrderManagerCmd::SetTarget(target))) = timeout(Duration::from_millis(200), e.recv()).await {
+            if target.side == Side::No && (target.size - 8.0).abs() < 0.1 {
+                updated = true;
+                break;
+            }
+        }
+        assert!(updated, "Expected hedge size update to 8.0 on NO");
 
         drop(m);
         let _ = h.await;

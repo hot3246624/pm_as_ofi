@@ -17,19 +17,18 @@ The bot operates on a high-frequency event loop. Every order book update or trad
 
 ```mermaid
 graph TD
-    A[Market Data Update] --> B{OFI Score > Threshold?}
-    B -- Yes (Toxic) --> C[Toxic Flow Mode]
-    B -- No (Normal) --> D[Unified State Mode]
+    A[Market Data Update] --> B{Sequential Health Check}
+    B -- Toxic/Stale/Expired --> C[Health Override]
+    B -- Healthy --> D[Unified Pricing Mode]
     
-    C --> E[quote_hedge_only]
-    E --> F{Inventory Imbalanced?}
-    F -- Yes --> G[Place Emergency Hedge]
-    F -- No --> H[Cancel All & Wait]
+    C --> G[Set Price to 0.0]
+    G --> H[Auto-Trigger Cancellation]
     
     D --> I[state_unified]
-    I --> J[Apply A-S Skew]
-    J --> K[Apply Gabagool22 Cost Averaging]
-    K --> L[Provide Market + Hedge if needed]
+    I --> J[Apply A-S Skew + Gabagool Averaging]
+    J --> K{Inventory Gap?}
+    K -- Yes --> L[Place Dynamic Hedge sz=abs_net]
+    K -- No --> M[Place Standard Provide sz=bid_size]
 ```
 
 ---
@@ -58,13 +57,14 @@ When inventory reaches the hard limit (`net_diff >= max_net_diff`), the bot ente
 
 ## 3. Risk Hardening & Protection
 
-### Toxic Flow Protection (OFI Engine)
-The bot monitors the Order Flow Imbalance (OFI) on a 3-second sliding window. If a "toxic" burst of taker activity is detected, the bot immediately cancels its orders to avoid "catching falling knives."
-- **Adaptive Threshold**: Optionally enabled via `PM_OFI_ADAPTIVE`, which uses a rolling average + 3σ calculation.
+### Toxic Flow Protection (Lead-Lag Kill Switch)
+The bot monitors the Order Flow Imbalance (OFI) on a 3-second sliding window.
+- **Lead-Lag Logic**: If YES or NO becomes toxic, the system sets "Provide" prices on BOTH sides to 0.0 to flush out risk.
+- **Hedge Exception**: If we need a hedge and the hedge side is healthy, the system **preserves** the hedge order while killing the risky side.
 
-### Stale Book Guard (5s TTL)
-To prevent "Blind Crossing" (placing a Post-Only order based on old prices that would result in an immediate rejection or bad fill), the bot enforces a **5-second Time-To-Live (TTL)** on order book data.
-- **Action**: If a side's data is > 5s old, quoting on that side is suspended.
+### Stale Book Protection (Configurable TTL)
+To prevent "Blind Crossing" based on stale data, the system enforces a strict lifecyle check.
+- **PM_STALE_TTL_MS**: Default 3000ms. If data is older than this threshold, the side is shut down and canceled.
 
 ### "Blind Cross" Prevention
 Even with fresh data, the bot detects if its calculated Bid would cross the current Ask. Since the bot is **Maker-Only**, it will automatically clamp the price to **one tick below the Ask** instead of crossing.
@@ -79,3 +79,11 @@ Even with fresh data, the bot detects if its calculated Bid would cross the curr
 | `PM_PAIR_TARGET` | Target cost for a Y+N pair. | Directly controls your profit margin. |
 | `PM_AS_SKEW_FACTOR` | Aggressiveness of inventory-based pricing. | 0.00 = pure grid; 0.03 = standard A-S skew. |
 | `PM_MAX_PORTFOLIO_COST`| Absolute survival cost ceiling. | Used ONLY for emergency inventory rescue. |
+| `PM_STALE_TTL_MS` | Data Freshness Threshold | Default 3000ms. Shutdown if exceeded. |
+
+## 5. Hedge Logic & Dynamic Sizing
+
+In V2, hedging and rescue operations have the highest priority.
+- **Dynamic Sizing**: `size = net_diff.abs()`.
+- **Principle**: We no longer use a fixed `PM_BID_SIZE` for rescue. We neutralize the exact inventory gap in a single step to return to neutral as quickly as possible.
+- **Polymarket Constraint**: Minimum order size still applies (typically $1-$5 nominal value).
