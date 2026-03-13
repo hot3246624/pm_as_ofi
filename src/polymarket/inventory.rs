@@ -238,52 +238,8 @@ impl InventoryManager {
         } else {
             0.0 // Not a complete pair yet
         };
-
-        self.state.can_buy_yes = self.can_buy_yes();
-        self.state.can_buy_no = self.can_buy_no();
     }
 
-    /// Check whether current inventory allows opening a new YES position.
-    pub fn can_buy_yes(&self) -> bool {
-        let projected_net = self.state.net_diff + self.cfg.bid_size;
-        let net_ok = projected_net <= self.cfg.max_net_diff + 1e-4;
-
-        // InventoryManager enforces net/value limits only.
-        // Pricing policy (pair_target vs max_portfolio_cost) is handled by Coordinator.
-
-        // ISSUE 7 FIX: When yes_avg_cost == 0 (no position yet), the old formula
-        // projected_value = (qty + bid_size) * 0 = 0, which always passed the cap check.
-        // Use a conservative worst-case price of 1.0 for the initial purchase so the
-        // size limit is enforced from the very first buy.
-        let price_est = if self.state.yes_avg_cost > f64::EPSILON {
-            self.state.yes_avg_cost
-        } else {
-            1.0 // Worst-case: binary option pays at most $1 per share
-        };
-        let projected_yes_value = (self.state.yes_qty + self.cfg.bid_size) * price_est;
-        let value_ok = projected_yes_value <= self.cfg.max_position_value + 1e-4;
-
-        net_ok && value_ok
-    }
-
-    /// Check whether current inventory allows opening a new NO position.
-    pub fn can_buy_no(&self) -> bool {
-        let projected_net = self.state.net_diff - self.cfg.bid_size;
-        let net_ok = projected_net >= -self.cfg.max_net_diff - 1e-4;
-
-        // Pricing policy is handled by Coordinator.
-
-        // ISSUE 7 FIX: Same worst-case price estimate for NO side.
-        let price_est = if self.state.no_avg_cost > f64::EPSILON {
-            self.state.no_avg_cost
-        } else {
-            1.0 // Worst-case: binary option pays at most $1 per share
-        };
-        let projected_no_value = (self.state.no_qty + self.cfg.bid_size) * price_est;
-        let value_ok = projected_no_value <= self.cfg.max_position_value + 1e-4;
-
-        net_ok && value_ok
-    }
 }
 
 #[cfg(test)]
@@ -320,15 +276,15 @@ mod tests {
     fn test_pair_fill() {
         let (state_tx, _state_rx) = watch::channel(InventoryState::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+        let mut cfg = InventoryConfig::default();
+        cfg.max_position_value = 10.0; // Large enough for conservative check
+        let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
 
         im.apply_fill(&make_fill(Side::Yes, 5.0, 0.48));
         im.apply_fill(&make_fill(Side::No, 5.0, 0.49));
 
         assert!((im.state.net_diff - 0.0).abs() < 1e-9);
         assert!((im.state.portfolio_cost - 0.97).abs() < 1e-9); // 0.48+0.49
-        assert!(im.can_buy_yes());
-        assert!(im.can_buy_no());
     }
 
     #[test]
@@ -356,7 +312,8 @@ mod tests {
         let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
 
         im.apply_fill(&make_fill(Side::Yes, 5.0, 0.50));
-        assert!(!im.can_buy_yes()); // 5.0 + 5.0 (bid_size) = 10 > 5
+        // Gating now happens in Coordinator, not InventoryManager.
+        assert!((im.state.net_diff - 5.0).abs() < 1e-9);
     }
 
     #[test]
