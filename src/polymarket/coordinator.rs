@@ -38,6 +38,7 @@ pub struct CoordinatorConfig {
     pub bid_size: f64,
     /// CLOB minimum tick.
     pub tick_size: f64,
+    /// Reprice threshold ($). Default: 0.010.
     pub reprice_threshold: f64,
     /// Minimum time between place/reprice on same side (anti-thrashing).
     pub debounce_ms: u64,
@@ -536,28 +537,16 @@ impl StrategyCoordinator {
         let mut bid_no = self.safe_price(raw_no);
 
         // 3. Health Overrides (Toxicity / Staleness)
+        // NOTE: Stats (cancel_toxic/cancel_stale) are counted in tick() Priority 2,
+        // not here, to prevent double-counting when both paths execute.
         let global_toxic = is_toxic_yes || is_toxic_no;
         if yes_stale || global_toxic {
-            if self.yes_target.is_some() {
-                if global_toxic {
-                    self.stats.cancel_toxic += 1;
-                } else {
-                    self.stats.cancel_stale += 1;
-                }
-            }
             if bid_yes > 0.0 {
                 debug!("🚫 YES {} -> skip bid", if yes_stale { "stale" } else { "toxic" });
             }
             bid_yes = 0.0;
         }
         if no_stale || global_toxic {
-            if self.no_target.is_some() {
-                if global_toxic {
-                    self.stats.cancel_toxic += 1;
-                } else {
-                    self.stats.cancel_stale += 1;
-                }
-            }
             if bid_no > 0.0 {
                 debug!("🚫 NO {} -> skip bid", if no_stale { "stale" } else { "toxic" });
             }

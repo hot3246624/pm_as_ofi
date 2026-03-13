@@ -50,29 +50,10 @@ impl InventoryConfig {
         }
         if let Ok(v) = std::env::var("PM_MAX_PORTFOLIO_COST") {
             if let Ok(f) = v.parse::<f64>() {
+                // Note: max_portfolio_cost in InventoryConfig is informational only.
+                // Risk clamping via PM_MAX_LOSS_PCT is enforced in CoordinatorConfig.
                 cfg.max_portfolio_cost = f;
             }
-        }
-        let mut max_loss_pct = 0.02;
-        if let Ok(v) = std::env::var("PM_MAX_LOSS_PCT") {
-            if let Ok(f) = v.parse::<f64>() {
-                if (0.0..1.0).contains(&f) {
-                    max_loss_pct = f;
-                } else {
-                    warn!(
-                        "⚠️ Ignoring invalid PM_MAX_LOSS_PCT={} (must satisfy 0 <= pct < 1), using {}",
-                        f, max_loss_pct
-                    );
-                }
-            }
-        }
-        let max_cost_cap = 1.0 + max_loss_pct;
-        if cfg.max_portfolio_cost > max_cost_cap {
-            warn!(
-                "⚠️ Clamping PM_MAX_PORTFOLIO_COST from {:.4} to {:.4} (max_loss_pct={:.3})",
-                cfg.max_portfolio_cost, max_cost_cap, max_loss_pct
-            );
-            cfg.max_portfolio_cost = max_cost_cap;
         }
         if let Ok(v) = std::env::var("PM_BID_SIZE") {
             if let Ok(f) = v.parse::<f64>() {

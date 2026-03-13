@@ -10,107 +10,128 @@
 在 Polymarket 二元期权市场中，**1 股 (Share) = $1 的最大潜在风险**。
 - **PM_BID_SIZE** (Shares): 决定了单笔交易的风险上限。
 - **PM_MAX_NET_DIFF** (Shares): 决定了系统允许持有的最大方向性净风险。
-- **动态算力**：系统计算出的动态金额（如余额的 2%）会自动映射为等量的**股数**。这意味着你的资金风险比率在不同价格点是恒定的。
+- **PM_MAX_SIDE_SHARES** (Shares): 单侧绝对总持仓量上限（独立于净差约束）。
+- **动态算力**：系统根据账户余额（2% 余额 = bid_size，10% 余额 = max_net_diff）自动映射为股数。
 
-### 决策循环
-机器人运行在一个高频事件循环中。每一次订单簿更新或成交执行都会触发对策略期望状态的重新评估。
+### 频道架构 (Channel Architecture)
+
+| 频道 | 类型 | 作用 |
+|:---|:---|:---|
+| 市场数据 → Coordinator | `watch::channel` | 仅保留最新 tick，自动消除积压，零延迟 |
+| 市场数据 → OFI | `mpsc(512)` | OFI 需要完整交易序列，不能丢弃 |
+| Coordinator → OMS | `mpsc(64)` | 每 tick 最多 2 条指令，容量充裕 |
+| OFI Kill → Coordinator | `mpsc(4)` | `biased` 优先级，毒性发现即刻处理 |
+| Fill → IM/Executor | `mpsc(64)` | 成交扇出，双路分发 |
+
+### 决策循环（优先级顺序）
+
+```
+tick() 入口:
+  P1: 30s 极端失效保护  → 清空双边并 return
+  P2: Toxic/Stale 预抢先撤单 → 即使盘口为空也立即撤单（统计计数于此，无重复）
+  P3: 空盘口           → 不报新单并 return
+  P4: state_unified()  → 定价 + 对冲 + 最终分发
+```
 
 ```mermaid
 graph TD
-    A[市场数据更新] --> B{环境自检}
-    B -- 有毒/过期/异常 --> C[Health Override]
-    B -- 正常健康 --> D[统一状态模式]
-
-    C --> G[报价置为 0.0]
-    G --> H[自动触发撤单]
-
-    D --> I[state_unified]
-    I --> J[应用 A-S 偏移 + Gabagool 摊薄]
-    J --> K{存在库存缺口?}
-    K -- 是 --> L[下达动态对冲单 sz=abs_net]
-    K -- 否 --> M[下达标准提供单 sz=bid_size]
-    L --> N{库存闸门}
-    M --> N
-    N -- can_buy=false --> G
-    N -- can_buy=true --> O[发送 SetTarget]
+    A["市场数据 watch.changed()"] --> B{P1: 30s 极端失效?}
+    B -- 是 --> C[清空双边 return]
+    B -- 否 --> D{P2: Toxic or 3s Stale?}
+    D -- 是 --> E[预抢先撤单该侧 — 立即执行]
+    D -- 否或继续 --> F{P3: 空盘口?}
+    F -- 是 --> G[Skip return]
+    F -- 否 --> H[state_unified P4]
+    H --> I[A-S Skew + Gabagool22 定价]
+    I --> J{库存缺口 net_diff != 0?}
+    J -- 是 --> K["动态对冲单 size=|net_diff|"]
+    J -- 否 --> L[标准提供单 size=bid_size]
+    K --> M{"can_buy_*(size)?"}
+    L --> M
+    M -- false --> N[price=0 撤单/阻止]
+    M -- true --> O[SetTarget → OMS]
 ```
 
 ---
 
 ## 2. 动态定价引擎
 
-机器人使用三种不同的定价机制来平衡利润、库存和安全。
-
 ### A. "Provide" 机制 (平衡做市)
-当库存处于限制范围内 (`net_diff < max_net_diff`) 时，机器人提供双边市场。
-- **基础价格**: `中间价 - 利润空间`。
-- **库存偏移 (A-S 模型)**：根据 `PM_AS_SKEW_FACTOR`，买单价格会向持有过重的一侧向下偏移，或者向持有不足的一侧向上偏移。
+当库存处于限制范围内时，机器人提供双边市场。
+- **基础价格**: `中间价 - 利润空间（excess / 2）`。
+- **库存偏移 (A-S 模型)**：根据 `PM_AS_SKEW_FACTOR` 和持仓方向，买单价格被偏移。
 - **时间衰减**：随着市场临近到期，偏移的紧迫性线性增加（默认最高 3 倍）。
-- **库存闸门**：仅当该侧 `can_buy_* = true` 时才会下达提供单。
+- **库存闸门**：仅当 `can_buy_yes/no = true` 时才下达提供单。
 
 ### B. "Hedge" 机制 (利润挂钩平仓)
-当存在失衡时，机器人优先填补配对的“缺失侧”以锁定利润。
-- **价格天花板**: `hedge_target - 当前平均成本`，其中 `hedge_target` 在 `|net_diff| < PM_MAX_NET_DIFF` 时为 `PM_PAIR_TARGET`，超限后直接切换到 `PM_MAX_PORTFOLIO_COST`。
-- **目标**：在保持目标成本（如 $0.985）的前提下完成配对。
-- **库存闸门**：对冲同样受 `can_buy_*` 限制，不存在特殊特权路径。
+当存在失衡时，机器人优先填补配对的"缺失侧"以锁定利润。
+- **价格天花板**: `hedge_target - 当前平均成本`。
+- **天花板阶跃**:
+  - `|net_diff| < max_net_diff` → `hedge_target = pair_target`（正常利润线）
+  - `|net_diff| >= max_net_diff` → `hedge_target = max_portfolio_cost`（救火线）
+- **库存闸门**：对冲同样受 `can_buy_*` 限制，**不存在特殊特权路径**。
 
 ### C. "Emergency Rescue" 救火机制 (风险最小化)
-当库存达到硬件限制 (`net_diff >= max_net_diff`) 时，机器人进入“救火”模式。
-- **价格天花板**: `PM_MAX_PORTFOLIO_COST - 当前平均成本`（仅在超限时触发）。
-- **目标**：即使以保本或轻微损失（如 $1.02）的价格，也要关闭方向性风险，防止在单边暴跌中被套死。
+仅在库存超出 `max_net_diff` 时触发。
+- **目标**：即使以保本或轻微损失（≤ `PM_MAX_LOSS_PCT` = 2%）的价格，也要关闭方向性风险。
+- **硬性约束**：`max_portfolio_cost ≤ 1 + PM_MAX_LOSS_PCT`（由 `CoordinatorConfig::from_env` 执行钳制）。
 
-### D. 库存闸门 (系统级、无特权)
-Provide 与 Hedge 均受 `can_buy_*` 约束。
-- **规则**：若 `can_buy_* = false`，该侧报价强制置为 `0.0` 并清空目标。
-- **原因**：避免任何“特权路径”绕过风控上限。
+### D. 库存闸门 (系统级、无特权，双重联锁)
+
+```rust
+// 两个条件必须同时满足才允许下单
+net_ok  = inv.net_diff + size <=  max_net_diff     // 净仓限制（方向性风险）
+side_ok = inv.yes_qty  + size <=  max_side_shares  // 单侧总量限制（绝对暴露）
+allow   = net_ok && side_ok
+```
+
+Provide 与 Hedge 共用同一套 `can_buy_*` 门禁，无任何绕过路径。
 
 ---
 
 ## 3. 风险硬化与保护
 
 ### 有毒流保护 (Lead-Lag 熔断)
-机器人监控 3 秒滑动窗口的订单流不平衡 (OFI)。采用 **Lead-Lag** 机制：如果 YES 或 NO 任意一侧出现“有毒”猛增，系统将立即将双边“提供单 (Provide)”的价格设为 0.0 以触发撤单。
-- **对冲允许（非特权）**：仅当对冲侧本身健康且 `can_buy_* = true` 时才允许对冲下单。
+OFI 引擎监控 3s 滑动窗口的订单流不平衡。任意一侧触发毒性：
+- P2 预抢先撤单（**无需等待盘口更新**，即使空盘口也执行）。
+- Kill 信号通过 `mpsc(4)` 直通 Coordinator，`biased select!` 绝对优先。
 
-### 盘口失效保护 (Configurable TTL)
-防止基于陈旧数据下达 Post-Only 订单，系统执行强制性的生命周期检查。
-- **PM_STALE_TTL_MS**: 默认为 3000ms。如果某侧数据超过此时间未更新，该侧报价将自动归零并撤单。
-- **临界过期**：任一侧 30 秒无有效更新时，系统会清空双边并停止报价。
+### 盘口失效保护
+- **3s TTL（PM_STALE_TTL_MS）**：数据超过此阈值，该侧报价归零撤单。
+- **30s 极端失效**：任一侧 30s 无有效盘口，清空双边停止报价。
 
-### 空盘口处理
-若可用盘口数据不存在，系统不会下新单；若此时处于有毒或过期状态，则会清空已有目标以避免挂单悬空。
-
-### “盲目跨期”拦截 (Blind Cross Prevention)
-即使数据新鲜，机器人也会检测其计算的买价是否会跨过当前的卖价 (Ask)。由于机器人是 **Maker-Only**，它会自动将价格钳位在 **Ask 价格下方 1 个 tick**，而不是直接去吃掉挂单。
+### Maker-Only 防护
+机器人永远不会成为 Taker。计算价格后自动钳位在 `best_ask - tick_size` 以下，防止 Post-Only 订单被拒绝。
 
 ---
 
 ## 4. 关键配置参考
 
-| 参数 | 用途 | 关键交互 |
-| :--- | :--- | :--- |
-| `PM_MAX_NET_DIFF` | 允许的最大 YES/NO 持仓差额 | **动态算力** 可能会针对小额账户下调此值。 |
-| `PM_MAX_SIDE_SHARES` | 单侧最大持仓股数上限 | 作为独立总量上限，防止双边总暴露过大。 |
-| `PM_PAIR_TARGET` | 一对 Y+N 的目标成本 | 直接控制你的利润空间。 |
-| `PM_AS_SKEW_FACTOR`| 库存定价的攻击性 | 0.00 = 纯网格；0.03 = 标准 A-S 偏移。 |
-| `PM_MAX_PORTFOLIO_COST`| 绝对生存成本天花板 | 仅用于紧急库存抢救。 |
-| `PM_MAX_LOSS_PCT`| 最大可接受亏损比例 | 将 `PM_MAX_PORTFOLIO_COST` 钳制到 `1 + max_loss_pct`。 |
-| `PM_STALE_TTL_MS` | 数据新鲜度阈值 | 默认为 3000ms。超过此值即熔断该侧。 |
+| 参数 | 单位 | 用途 | 关键交互 |
+| :--- | :--- | :--- | :--- |
+| `PM_BID_SIZE` | Shares | 单次提供单规模 | 动态算力 = balance × PM_BID_PCT |
+| `PM_MAX_NET_DIFF` | Shares | 最大净方向性风险 | 动态算力 = balance × PM_NET_DIFF_PCT |
+| `PM_MAX_SIDE_SHARES` | Shares | 单侧总持仓上限 | 未设置时默认等于 max_net_diff |
+| `PM_PAIR_TARGET` | 成本 | 一对 Y+N 的目标成本 | 利润 = 1.00 - pair_target |
+| `PM_AS_SKEW_FACTOR` | 系数 | A-S 库存定价攻击性 | 0.00=纯网格 0.03=标准 A-S |
+| `PM_AS_TIME_DECAY_K` | 系数 | 时间衰减放大倍数 | 0.0=禁用 2.0=到期时 3× skew |
+| `PM_MAX_PORTFOLIO_COST` | 成本 | 絶对生存成本天花板 | 仅用于救火模式 |
+| `PM_MAX_LOSS_PCT` | 小数 | 救火模式最大亏损比例 | 钳制 max_portfolio_cost ≤ 1+pct |
+| `PM_STALE_TTL_MS` | ms | 数据新鲜度熔断阈值 | 单侧超时即撤单该侧 |
+| `PM_DEBOUNCE_MS` | ms | 提供单防抖间隔 | 避免高频重复报价 |
+| `PM_HEDGE_DEBOUNCE_MS` | ms | 对冲单防抖间隔 | 对冲更紧急，默认 100ms |
 
 ## 5. 对冲逻辑与动态数量 (Hedge Sizing)
 
-在本系统设计中，对冲（Hedge/Rescue）下单的数量具有最高优先级。
-- **逻辑**：下单数量 = `net_diff.abs()`。
-- **数量更新**：仅数量变化也视为重定价，会触发 `SetTarget`。
-- **原则**：不再使用固定的 `PM_BID_SIZE` 来对冲，而是根据实际的库存缺口进行 1:1 的精确对冲，以求最快速度回归中性。
-- **最小门槛**：受限于 Polymarket API，单笔订单需满足其最小名义金额（通常为 $1-$5）。
+- **数量**：`size = net_diff.abs()`（精确 1:1 对冲缺口）。
+- **原则**：不使用固定 `PM_BID_SIZE` 对冲，最快回归中性。
 
 对冲天花板阶跃公式：
 ```
 hedge_target = if abs(net_diff) >= max_net_diff {
-                 max_portfolio_cost
+                 max_portfolio_cost   // 救火线（≤ 1 + PM_MAX_LOSS_PCT）
                } else {
-                 pair_target
+                 pair_target          // 正常利润线
                }
+ceiling = hedge_target - avg_cost_held_side
 ```
-`max_portfolio_cost` 会被 `PM_MAX_LOSS_PCT`（默认 0.02）钳制。
