@@ -95,9 +95,12 @@ bid_yes, bid_no ∈ [tick, 1-2*tick]      # 边界安全钳位
 
 ```
 # 1. 确定对冲天花板 (Hedge/Rescue)
-# 如果库存未达上限 (net_diff < max_net_diff)：盈利对冲 (target = 0.985)
-# 如果库存已达上限 (net_diff >= max_net_diff)：救火模式 (target = 1.02)
-hedge_target = (net_diff.abs() >= max_net_diff) ? max_portfolio_cost : pair_target
+# 正常风险区间内不引入损失；超出最大净仓差时直接进入救火线
+hedge_target = if abs(net_diff) >= max_net_diff {
+                 max_portfolio_cost
+               } else {
+                 pair_target
+               }
 
 # 2. 动态下单规模 (Hedge Sizing)
 size = net_diff.abs()
@@ -113,6 +116,7 @@ bid_no      = min(no_ceiling, no_ask - tick)
 
 > **注意**：`pair_target`（默认 0.99）是正常状态下的利润线。
 > `max_portfolio_cost`（默认 1.02）是库存满载时的紧急救火线下。
+> `max_portfolio_cost` 会被 `PM_MAX_LOSS_PCT`（默认 0.02）自动钳制。
 > 这种设计保证了：在正常波动中我们只做赚钱的买卖；在极端行情中，我们愿意付出极小代价 (2%) 来关掉面临 100% 归零风险的大额单边敞口。
 
 **核心洞察**：A-S 网格一路摊薄 `yes_avg_cost`，越低则 `no_ceiling` 越高（越贴近市价），即便在救火模式下，由于成本已被摊薄，往往最终依然能实现保本或微利离场。
@@ -205,7 +209,7 @@ OFI_YES < -threshold (-200) → 大量抛售 YES → 价格下跌信号
 
 #### 资金规模对应配置
 
-| 资金规模 | BID_SIZE | MAX_NET_DIFF | MAX_POSITION_VALUE | PAIR_TARGET |
+| 资金规模 | BID_SIZE | MAX_NET_DIFF | MAX_SIDE_SHARES | PAIR_TARGET |
 |--------|----------|-------------|-------------------|-------------|
 | $50    | 2           | 5           | $20               | 0.98        |
 | $100   | 5           | 10          | $50               | 0.98        |
@@ -408,13 +412,17 @@ PM_AUTO_CLAIM=true            # 自动领取结算仓位
 PM_PAIR_TARGET=0.98           # 配对成本上限（利润空间 = 1 - pair_target）
 PM_BID_SIZE=5.0               # Size per bid (Shares)
 PM_MAX_NET_DIFF=10.0          # 最大净仓量（单股）
-PM_MAX_POSITION_VALUE=50.0    # 单侧最大仓位价值
+PM_MAX_SIDE_SHARES=50.0       # 单侧最大持仓股数上限
+PM_MAX_PORTFOLIO_COST=1.02    # 组合成本上限
+PM_MAX_LOSS_PCT=0.02          # 最大可接受亏损比例（2%）
 PM_AS_SKEW_FACTOR=0.03        # A-S 库存倾斜系数（0=纯 Gabagool22）
 PM_AS_TIME_DECAY_K=2.0        # 时间衰减系数（0=禁用）
 PM_DEBOUNCE_MS=500            # 正常防抖时间
 PM_HEDGE_DEBOUNCE_MS=100      # 对冲防抖时间（建议 ≤ 200ms）
 PM_REPRICE_THRESHOLD=0.010    # 触发重新报价的价格偏差阈值
 PM_STALE_TTL_MS=3000          # 盘口数据 TTL（毫秒，单侧）
+
+> 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
 
 # 动态规模（基于账户余额自动计算）
 PM_BID_PCT=0.02               # bid_size = balance * 2%

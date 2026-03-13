@@ -73,6 +73,114 @@ impl Settings {
     }
 }
 
+fn log_config_self_check(
+    coord: &CoordinatorConfig,
+    inv: &InventoryConfig,
+    ofi: &OfiConfig,
+    balance_opt: Option<f64>,
+) {
+    info!("🔎 Config self-check (consistency + risk thresholds)");
+    info!(
+        "   pair_target={:.4} max_portfolio_cost={:.4} max_loss_pct={:.3}",
+        coord.pair_target, coord.max_portfolio_cost, coord.max_loss_pct
+    );
+    info!(
+        "   bid_size={:.1} max_net_diff={:.1} max_side_shares={:.1}",
+        coord.bid_size, coord.max_net_diff, coord.max_side_shares
+    );
+    info!(
+        "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms",
+        coord.tick_size,
+        coord.reprice_threshold,
+        coord.debounce_ms,
+        coord.hedge_debounce_ms,
+        coord.stale_ttl_ms
+    );
+    info!(
+        "   ofi_window={}ms ofi_thresh={:.1} adaptive={} heartbeat={}ms",
+        ofi.window_duration.as_millis(),
+        ofi.toxicity_threshold,
+        ofi.adaptive_threshold,
+        ofi.heartbeat_ms
+    );
+
+    if (inv.max_net_diff - coord.max_net_diff).abs() > 1e-6 {
+        warn!(
+            "⚠️ Inconsistent max_net_diff: inv={:.1} coord={:.1}",
+            inv.max_net_diff, coord.max_net_diff
+        );
+    }
+    if (inv.bid_size - coord.bid_size).abs() > 1e-6 {
+        warn!(
+            "⚠️ Inconsistent bid_size: inv={:.1} coord={:.1}",
+            inv.bid_size, coord.bid_size
+        );
+    }
+    if (inv.max_portfolio_cost - coord.max_portfolio_cost).abs() > 1e-6 {
+        warn!(
+            "⚠️ Inconsistent max_portfolio_cost: inv={:.4} coord={:.4}",
+            inv.max_portfolio_cost, coord.max_portfolio_cost
+        );
+    }
+
+    if coord.max_side_shares <= 0.0 {
+        warn!("⚠️ max_side_shares <= 0 disables gross exposure guard");
+    }
+    if coord.max_side_shares < coord.bid_size {
+        warn!(
+            "⚠️ max_side_shares ({:.1}) < bid_size ({:.1}) → Provide orders will be blocked",
+            coord.max_side_shares, coord.bid_size
+        );
+    }
+    if coord.max_side_shares < coord.max_net_diff {
+        warn!(
+            "⚠️ max_side_shares ({:.1}) < max_net_diff ({:.1}) → net limit is unreachable",
+            coord.max_side_shares, coord.max_net_diff
+        );
+    }
+    if coord.bid_size > coord.max_net_diff {
+        warn!(
+            "⚠️ bid_size ({:.1}) > max_net_diff ({:.1}) → net gate blocks normal provides",
+            coord.bid_size, coord.max_net_diff
+        );
+    }
+    if coord.pair_target >= 1.0 {
+        warn!(
+            "⚠️ pair_target >= 1.0 → no guaranteed arbitrage margin (pair_target={:.4})",
+            coord.pair_target
+        );
+    }
+    if coord.max_portfolio_cost < coord.pair_target {
+        warn!(
+            "⚠️ max_portfolio_cost ({:.4}) < pair_target ({:.4}) → rescue ceiling below profit line",
+            coord.max_portfolio_cost, coord.pair_target
+        );
+    }
+
+    if let Some(balance) = balance_opt {
+        if balance > 0.0 {
+            let max_balanced = coord.max_side_shares * coord.pair_target;
+            let max_single_side = coord.max_side_shares * 1.0;
+            let util_balanced = max_balanced / balance;
+            let util_single = max_single_side / balance;
+            info!(
+                "   balance={:.2} → est balanced deploy ≈ ${:.2} ({:.0}%), single-side cap ≈ ${:.2} ({:.0}%)",
+                balance,
+                max_balanced,
+                util_balanced * 100.0,
+                max_single_side,
+                util_single * 100.0
+            );
+            if util_balanced < 0.30 {
+                warn!("⚠️ max_side_shares implies low capital utilization (<30%) in balanced mode");
+            }
+            if util_single > 1.20 {
+                warn!("⚠️ single-side cap exceeds balance by >20% — consider reducing max_side_shares");
+            }
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────
 // Market Discovery — prefix → current live slug
 // ─────────────────────────────────────────────────────────
@@ -512,7 +620,7 @@ enum MarketEnd {
 async fn run_market_ws(
     settings: Settings,
     ofi_tx: mpsc::Sender<MarketDataMsg>,
-    coord_tx: mpsc::Sender<MarketDataMsg>,
+    coord_tx: watch::Sender<MarketDataMsg>,
     end_ts: u64,
 ) -> MarketEnd {
     // Compute wall-clock deadline
@@ -611,7 +719,7 @@ async fn run_market_ws(
                                                     }
                                                     MarketDataMsg::BookTick { .. } => {
                                                         if let Some(full) = book_asm.update(&md_msg) {
-                                                            let _ = coord_tx.send(full).await;
+                                                            let _ = coord_tx.send(full);
                                                         }
                                                     }
                                                 }
@@ -1180,6 +1288,8 @@ async fn main() -> anyhow::Result<()> {
         coord_cfg.market_end_ts = Some(effective_end_ts);
         let mut inv_cfg = inv_cfg_base.clone();
 
+        let mut balance_opt: Option<f64> = None;
+
         // ── Step 2.5: Dynamic Sizing ──
         if !dry_run {
             if let Some(client) = clob_client.as_ref() {
@@ -1194,6 +1304,7 @@ async fn main() -> anyhow::Result<()> {
                     // Polymarket returns collateral balance in 6 decimals (1 USDC = 1,000,000)
                     let raw_balance = rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
                     let balance_f64 = raw_balance / 1_000_000.0;
+                    balance_opt = Some(balance_f64);
                     
                     let bid_pct: f64 = std::env::var("PM_BID_PCT")
                         .ok()
@@ -1234,6 +1345,7 @@ async fn main() -> anyhow::Result<()> {
         info!("🎯 Market: {}", market_id);
         info!("   YES: {}...", &yes_asset_id[..16.min(yes_asset_id.len())]);
         info!("   NO:  {}...", &no_asset_id[..16.min(no_asset_id.len())]);
+        log_config_self_check(&coord_cfg, &inv_cfg, &ofi_cfg, balance_opt);
 
         // P0-2: Track all session spawns for cleanup on rotation
         let mut session_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -1255,7 +1367,13 @@ async fn main() -> anyhow::Result<()> {
         let (result_tx, result_rx) = mpsc::channel::<OrderResult>(32);
         let (om_tx, om_rx) = mpsc::channel::<OrderManagerCmd>(64);
         let (ofi_md_tx, ofi_md_rx) = mpsc::channel::<MarketDataMsg>(512);
-        let (coord_md_tx, coord_md_rx) = mpsc::channel::<MarketDataMsg>(512);
+        let (coord_md_tx, coord_md_rx) = watch::channel::<MarketDataMsg>(MarketDataMsg::BookTick {
+            yes_bid: 0.0,
+            yes_ask: 0.0,
+            no_bid: 0.0,
+            no_ask: 0.0,
+            ts: Instant::now(),
+        });
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
 

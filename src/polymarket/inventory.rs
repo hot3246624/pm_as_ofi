@@ -53,6 +53,27 @@ impl InventoryConfig {
                 cfg.max_portfolio_cost = f;
             }
         }
+        let mut max_loss_pct = 0.02;
+        if let Ok(v) = std::env::var("PM_MAX_LOSS_PCT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    max_loss_pct = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_MAX_LOSS_PCT={} (must satisfy 0 <= pct < 1), using {}",
+                        f, max_loss_pct
+                    );
+                }
+            }
+        }
+        let max_cost_cap = 1.0 + max_loss_pct;
+        if cfg.max_portfolio_cost > max_cost_cap {
+            warn!(
+                "⚠️ Clamping PM_MAX_PORTFOLIO_COST from {:.4} to {:.4} (max_loss_pct={:.3})",
+                cfg.max_portfolio_cost, max_cost_cap, max_loss_pct
+            );
+            cfg.max_portfolio_cost = max_cost_cap;
+        }
         if let Ok(v) = std::env::var("PM_BID_SIZE") {
             if let Ok(f) = v.parse::<f64>() {
                 cfg.bid_size = f;
@@ -266,7 +287,7 @@ mod tests {
     fn test_pair_fill() {
         let (state_tx, _state_rx) = watch::channel(InventoryState::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut cfg = InventoryConfig::default();
+        let cfg = InventoryConfig::default();
         let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
 
         im.apply_fill(&make_fill(Side::Yes, 5.0, 0.48));

@@ -50,13 +50,13 @@ When inventory is within limits (`net_diff < max_net_diff`), the bot provides a 
 
 ### B. The "Hedge" Regime (Profit-Linked Unwinding)
 When an imbalance exists, the bot prioritizes filling the "missing" side of a pair to lock in profit.
-- **Ceiling**: `PM_PAIR_TARGET - current_avg_cost`.
+- **Ceiling**: `hedge_target - current_avg_cost`, where `hedge_target` ramps from `PM_PAIR_TARGET` to `PM_MAX_PORTFOLIO_COST` as `|net_diff|` approaches `PM_MAX_NET_DIFF`.
 - **Goal**: Complete a pair while staying within the target cost (e.g., $0.985).
 - **Inventory Gate**: Hedge orders are also subject to `can_buy_*`. There is no special privilege.
 
 ### C. The "Emergency Rescue" Regime (Risk Minimization)
 When inventory reaches the hard limit (`net_diff >= max_net_diff`), the bot enters "rescue" mode.
-- **Ceiling**: `PM_MAX_PORTFOLIO_COST - current_avg_cost`.
+- **Ceiling**: `PM_MAX_PORTFOLIO_COST - current_avg_cost` (only triggered once `|net_diff| >= PM_MAX_NET_DIFF`).
 - **Goal**: Close directional risk even at a breakeven or slight loss (e.g., $1.02) to prevent being stuck in a directional crash.
 
 ### D. Inventory Gate (System-Wide, Non-Privileged)
@@ -91,9 +91,11 @@ Even with fresh data, the bot detects if its calculated Bid would cross the curr
 | Parameter | Purpose | Critical Interaction |
 | :--- | :--- | :--- |
 | `PM_MAX_NET_DIFF` | Max allowed difference between Yes/No qty. | **Dynamic Sizing** may lower this for small accounts. |
+| `PM_MAX_SIDE_SHARES` | Max per-side gross exposure (shares). | Independent cap to prevent large gross positions. |
 | `PM_PAIR_TARGET` | Target cost for a Y+N pair. | Directly controls your profit margin. |
 | `PM_AS_SKEW_FACTOR` | Aggressiveness of inventory-based pricing. | 0.00 = pure grid; 0.03 = standard A-S skew. |
 | `PM_MAX_PORTFOLIO_COST`| Absolute survival cost ceiling. | Used ONLY for emergency inventory rescue. |
+| `PM_MAX_LOSS_PCT`| Max allowable loss percent. | Clamps `PM_MAX_PORTFOLIO_COST` to `1 + max_loss_pct`. |
 | `PM_STALE_TTL_MS` | Data Freshness Threshold | Default 3000ms. Shutdown if exceeded. |
 
 ## 5. Hedge Logic & Dynamic Sizing
@@ -103,3 +105,13 @@ In V2, hedging and rescue operations have the highest priority.
 - **Size Updates**: A size-only change is treated as a reprice and triggers `SetTarget`.
 - **Principle**: We no longer use a fixed `PM_BID_SIZE` for rescue. We neutralize the exact inventory gap in a single step to return to neutral as quickly as possible.
 - **Polymarket Constraint**: Minimum order size still applies (typically $1-$5 nominal value).
+
+Hedge ceiling step:
+```
+hedge_target = if abs(net_diff) >= max_net_diff {
+                 max_portfolio_cost
+               } else {
+                 pair_target
+               }
+```
+`max_portfolio_cost` is clamped by `PM_MAX_LOSS_PCT` (default 0.02).

@@ -11,8 +11,9 @@
 - [ ] `PM_PAIR_TARGET=0.985` — 保守让利，每对锁利 $0.015
 - [ ] `PM_BID_SIZE=5.0` — 每侧 $5 挂单
 - [ ] `PM_MAX_NET_DIFF=10.0` — 最大净仓差 10 股
-- [ ] `PM_MAX_POSITION_VALUE=50.0` — 单侧最多 $50
+- [ ] `PM_MAX_SIDE_SHARES=50.0` — 单侧最多 50 股
 - [ ] `PM_MAX_PORTFOLIO_COST=1.02` — 组合成本上限
+- [ ] `PM_MAX_LOSS_PCT=0.02` — 最大可接受亏损比例
 - [ ] `PM_REPRICE_THRESHOLD=0.010` — 1 分钱漂移才换单
 - [ ] `PM_DEBOUNCE_MS=500` — 半秒防抖
 - [ ] `PM_OFI_WINDOW_MS=3000` — OFI 判定滑窗

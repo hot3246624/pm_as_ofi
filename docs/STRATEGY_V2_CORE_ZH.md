@@ -50,13 +50,13 @@ graph TD
 
 ### B. "Hedge" 机制 (利润挂钩平仓)
 当存在失衡时，机器人优先填补配对的“缺失侧”以锁定利润。
-- **价格天花板**: `PM_PAIR_TARGET - 当前平均成本`。
+- **价格天花板**: `hedge_target - 当前平均成本`，其中 `hedge_target` 在 `|net_diff| < PM_MAX_NET_DIFF` 时为 `PM_PAIR_TARGET`，超限后直接切换到 `PM_MAX_PORTFOLIO_COST`。
 - **目标**：在保持目标成本（如 $0.985）的前提下完成配对。
 - **库存闸门**：对冲同样受 `can_buy_*` 限制，不存在特殊特权路径。
 
 ### C. "Emergency Rescue" 救火机制 (风险最小化)
 当库存达到硬件限制 (`net_diff >= max_net_diff`) 时，机器人进入“救火”模式。
-- **价格天花板**: `PM_MAX_PORTFOLIO_COST - 当前平均成本`。
+- **价格天花板**: `PM_MAX_PORTFOLIO_COST - 当前平均成本`（仅在超限时触发）。
 - **目标**：即使以保本或轻微损失（如 $1.02）的价格，也要关闭方向性风险，防止在单边暴跌中被套死。
 
 ### D. 库存闸门 (系统级、无特权)
@@ -90,9 +90,11 @@ Provide 与 Hedge 均受 `can_buy_*` 约束。
 | 参数 | 用途 | 关键交互 |
 | :--- | :--- | :--- |
 | `PM_MAX_NET_DIFF` | 允许的最大 YES/NO 持仓差额 | **动态算力** 可能会针对小额账户下调此值。 |
+| `PM_MAX_SIDE_SHARES` | 单侧最大持仓股数上限 | 作为独立总量上限，防止双边总暴露过大。 |
 | `PM_PAIR_TARGET` | 一对 Y+N 的目标成本 | 直接控制你的利润空间。 |
 | `PM_AS_SKEW_FACTOR`| 库存定价的攻击性 | 0.00 = 纯网格；0.03 = 标准 A-S 偏移。 |
 | `PM_MAX_PORTFOLIO_COST`| 绝对生存成本天花板 | 仅用于紧急库存抢救。 |
+| `PM_MAX_LOSS_PCT`| 最大可接受亏损比例 | 将 `PM_MAX_PORTFOLIO_COST` 钳制到 `1 + max_loss_pct`。 |
 | `PM_STALE_TTL_MS` | 数据新鲜度阈值 | 默认为 3000ms。超过此值即熔断该侧。 |
 
 ## 5. 对冲逻辑与动态数量 (Hedge Sizing)
@@ -102,3 +104,13 @@ Provide 与 Hedge 均受 `can_buy_*` 约束。
 - **数量更新**：仅数量变化也视为重定价，会触发 `SetTarget`。
 - **原则**：不再使用固定的 `PM_BID_SIZE` 来对冲，而是根据实际的库存缺口进行 1:1 的精确对冲，以求最快速度回归中性。
 - **最小门槛**：受限于 Polymarket API，单笔订单需满足其最小名义金额（通常为 $1-$5）。
+
+对冲天花板阶跃公式：
+```
+hedge_target = if abs(net_diff) >= max_net_diff {
+                 max_portfolio_cost
+               } else {
+                 pair_target
+               }
+```
+`max_portfolio_cost` 会被 `PM_MAX_LOSS_PCT`（默认 0.02）钳制。

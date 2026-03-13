@@ -32,6 +32,8 @@ pub struct CoordinatorConfig {
     pub pair_target: f64,
     /// Maximum absolute inventory imbalance.
     pub max_net_diff: f64,
+    /// Maximum per-side gross exposure (shares). 0 = disabled.
+    pub max_side_shares: f64,
     /// Order size per bid.
     pub bid_size: f64,
     /// CLOB minimum tick.
@@ -51,6 +53,8 @@ pub struct CoordinatorConfig {
     pub hedge_debounce_ms: u64,
     /// Emergency ceiling for hedge orders when net_diff >= max_net_diff.
     pub max_portfolio_cost: f64,
+    /// Max allowable loss percent for emergency hedging (clamps max_portfolio_cost).
+    pub max_loss_pct: f64,
     /// DRY-RUN mode.
     pub dry_run: bool,
     /// Configurable TTL for stale book data (ms). Default 3000ms.
@@ -62,6 +66,7 @@ impl Default for CoordinatorConfig {
         Self {
             pair_target: 0.99,
             max_net_diff: 5.0,
+            max_side_shares: 5.0,
             bid_size: 2.0,
             tick_size: 0.01,
             reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
@@ -71,6 +76,7 @@ impl Default for CoordinatorConfig {
             market_end_ts: None,
             hedge_debounce_ms: 100,   // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
+            max_loss_pct: 0.02,       // Hard loss cap (2%)
             dry_run: true,
             stale_ttl_ms: 3000,
         }
@@ -89,6 +95,27 @@ impl CoordinatorConfig {
             if let Ok(f) = v.parse() {
                 c.max_net_diff = f;
             }
+        }
+        let mut max_side_set = false;
+        if let Ok(v) = std::env::var("PM_MAX_SIDE_SHARES") {
+            if let Ok(f) = v.parse() {
+                c.max_side_shares = f;
+                max_side_set = true;
+            }
+        }
+        if !max_side_set {
+            if let Ok(v) = std::env::var("PM_MAX_POSITION_VALUE") {
+                if let Ok(f) = v.parse() {
+                    c.max_side_shares = f;
+                    max_side_set = true;
+                    warn!(
+                        "PM_MAX_POSITION_VALUE is deprecated; use PM_MAX_SIDE_SHARES (units: shares)"
+                    );
+                }
+            }
+        }
+        if !max_side_set {
+            c.max_side_shares = c.max_net_diff;
         }
         if let Ok(v) = std::env::var("PM_BID_SIZE") {
             if let Ok(f) = v.parse() {
@@ -137,6 +164,26 @@ impl CoordinatorConfig {
                 c.max_portfolio_cost = f;
             }
         }
+        if let Ok(v) = std::env::var("PM_MAX_LOSS_PCT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    c.max_loss_pct = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_MAX_LOSS_PCT={} (must satisfy 0 <= pct < 1), using {}",
+                        f, c.max_loss_pct
+                    );
+                }
+            }
+        }
+        let max_cost_cap = 1.0 + c.max_loss_pct;
+        if c.max_portfolio_cost > max_cost_cap {
+            warn!(
+                "⚠️ Clamping PM_MAX_PORTFOLIO_COST from {:.4} to {:.4} (max_loss_pct={:.3})",
+                c.max_portfolio_cost, max_cost_cap, c.max_loss_pct
+            );
+            c.max_portfolio_cost = max_cost_cap;
+        }
         if let Ok(v) = std::env::var("PM_DRY_RUN") {
             c.dry_run = v != "0" && v.to_lowercase() != "false";
         }
@@ -178,6 +225,7 @@ struct Stats {
     ticks: u64,
     placed: u64,
     cancel_toxic: u64,
+    cancel_stale: u64,
     cancel_inv: u64,
     cancel_reprice: u64,
     skipped_debounce: u64,
@@ -210,7 +258,7 @@ pub struct StrategyCoordinator {
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
     inv_rx: watch::Receiver<InventoryState>,
-    md_rx: mpsc::Receiver<MarketDataMsg>,
+    md_rx: watch::Receiver<MarketDataMsg>,
     om_tx: mpsc::Sender<OrderManagerCmd>,
     /// Opt-4: Direct high-priority kill channel from OFI Engine.
     /// Fires on toxicity onset without waiting for the next book tick.
@@ -222,7 +270,7 @@ impl StrategyCoordinator {
         cfg: CoordinatorConfig,
         ofi_rx: watch::Receiver<OfiSnapshot>,
         inv_rx: watch::Receiver<InventoryState>,
-        md_rx: mpsc::Receiver<MarketDataMsg>,
+        md_rx: watch::Receiver<MarketDataMsg>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
     ) -> Self {
         // Create a kill_rx that is immediately closed (sender dropped).
@@ -237,7 +285,7 @@ impl StrategyCoordinator {
         cfg: CoordinatorConfig,
         ofi_rx: watch::Receiver<OfiSnapshot>,
         inv_rx: watch::Receiver<InventoryState>,
-        md_rx: mpsc::Receiver<MarketDataMsg>,
+        md_rx: watch::Receiver<MarketDataMsg>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
         kill_rx: mpsc::Receiver<KillSwitchSignal>,
     ) -> Self {
@@ -284,40 +332,26 @@ impl StrategyCoordinator {
                         "⚡ DIRECT KILL from OFI | side={:?} ofi={:.1} — immediate re-eval",
                         sig.side, sig.ofi_score,
                     );
-                    // Re-use the full tick() logic which reads latest OFI watch state
-                    // and applies global_kill_switch / selective_kill_with_hedge.
-                    if self.book.yes_bid > 0.0 || self.last_valid_book.yes_bid > 0.0 {
-                        self.tick().await;
-                    }
+                    // Re-use the full tick() logic which reads latest OFI watch state.
+                    self.tick().await;
                 }
 
-                // Market data tick (primary driver)
-                msg = self.md_rx.recv() => {
-                    match msg {
-                        Some(msg) => {
-                            // Latency Optimization: Drain backlog to process only the latest tick.
-                            let mut latest = msg;
-                            let mut drained = 0;
-                            while let Ok(next) = self.md_rx.try_recv() {
-                                latest = next;
-                                drained += 1;
-                            }
-                            if drained > 0 {
-                                debug!("🚀 Drained {} backlog ticks", drained);
-                            }
-                            self.handle_market_data(latest).await;
-                            self.tick().await;
-                        }
-                        None => break, // Channel closed
+                // Market data tick (watch/coalescing)
+                changed = self.md_rx.changed() => {
+                    if changed.is_err() {
+                        break; // Sender dropped
                     }
+                    let msg = self.md_rx.borrow().clone();
+                    self.handle_market_data(msg).await;
+                    self.tick().await;
                 }
             }
         }
 
         info!(
-            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} inv={} reprice={}) skip(debounce={} backoff={} empty={} inv_limit={}) clamped={}",
+            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} stale={} inv={} reprice={}) skip(debounce={} backoff={} empty={} inv_limit={}) clamped={}",
             self.stats.ticks, self.stats.placed,
-            self.stats.cancel_toxic, self.stats.cancel_inv, self.stats.cancel_reprice,
+            self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
             self.stats.price_clamped,
         );
@@ -403,34 +437,55 @@ impl StrategyCoordinator {
         if self.is_book_stale() {
             if self.yes_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing YES");
-                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None).await;
+                self.stats.cancel_stale += 1;
+                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None)
+                    .await;
             }
             if self.no_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing NO");
-                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None).await;
+                self.stats.cancel_stale += 1;
+                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None)
+                    .await;
             }
             return;
         }
 
-        // Priority 2: Market data availability
+        // Priority 2: Toxic/Stale guard (independent of book availability)
+        let global_toxic = is_toxic_yes || is_toxic_no;
+        if global_toxic || yes_stale {
+            if self.yes_target.is_some() {
+                if global_toxic {
+                    self.stats.cancel_toxic += 1;
+                } else {
+                    self.stats.cancel_stale += 1;
+                }
+                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None)
+                    .await;
+            }
+        }
+        if global_toxic || no_stale {
+            if self.no_target.is_some() {
+                if global_toxic {
+                    self.stats.cancel_toxic += 1;
+                } else {
+                    self.stats.cancel_stale += 1;
+                }
+                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None)
+                    .await;
+            }
+        }
+
+        // Priority 3: Market data availability
         let ub = self.usable_book();
         if ub.yes_bid <= 0.0 || ub.no_bid <= 0.0 {
-            let global_toxic = is_toxic_yes || is_toxic_no;
-            if (global_toxic || yes_stale) && self.yes_target.is_some() {
-                warn!("⚠️ Unhealthy/empty book — clearing YES");
-                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None).await;
-            }
-            if (global_toxic || no_stale) && self.no_target.is_some() {
-                warn!("⚠️ Unhealthy/empty book — clearing NO");
-                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None).await;
-            }
             self.stats.skipped_empty_book += 1;
             return;
         }
 
-        // Priority 3: Toxic or Stale (3s TTL) → Selective Shutdown
+        // Priority 4: Toxic or Stale (3s TTL) → Selective Shutdown
         // If a side is unhealthy, its price will be 0.0 in the unified state logic below.
-        self.state_unified(&inv, &ub, yes_stale, no_stale, is_toxic_yes, is_toxic_no).await;
+        self.state_unified(&inv, &ub, yes_stale, no_stale, is_toxic_yes, is_toxic_no)
+            .await;
     }
 
 
@@ -483,12 +538,26 @@ impl StrategyCoordinator {
         // 3. Health Overrides (Toxicity / Staleness)
         let global_toxic = is_toxic_yes || is_toxic_no;
         if yes_stale || global_toxic {
+            if self.yes_target.is_some() {
+                if global_toxic {
+                    self.stats.cancel_toxic += 1;
+                } else {
+                    self.stats.cancel_stale += 1;
+                }
+            }
             if bid_yes > 0.0 {
                 debug!("🚫 YES {} -> skip bid", if yes_stale { "stale" } else { "toxic" });
             }
             bid_yes = 0.0;
         }
         if no_stale || global_toxic {
+            if self.no_target.is_some() {
+                if global_toxic {
+                    self.stats.cancel_toxic += 1;
+                } else {
+                    self.stats.cancel_stale += 1;
+                }
+            }
             if bid_no > 0.0 {
                 debug!("🚫 NO {} -> skip bid", if no_stale { "stale" } else { "toxic" });
             }
@@ -500,29 +569,28 @@ impl StrategyCoordinator {
         let mut hedge_dispatched_yes = false;
         let mut hedge_dispatched_no = false;
 
-        // Global inventory gating (Shares Limit)
-        let projected_yes_shares = inv.net_diff + self.cfg.bid_size;
-        let allow_yes = projected_yes_shares <= self.cfg.max_net_diff + 1e-4;
-
-        let projected_no_shares = inv.net_diff - self.cfg.bid_size;
-        let allow_no = projected_no_shares >= -self.cfg.max_net_diff - 1e-4;
+        // Provide gating (size = bid_size)
+        let mut allow_yes_provide = self.can_buy_yes(inv, self.cfg.bid_size);
+        let mut allow_no_provide = self.can_buy_no(inv, self.cfg.bid_size);
+        let mut block_yes_provide = false;
+        let mut block_no_provide = false;
 
         if net_diff > f64::EPSILON {
             // We have YES, want to hedge by buying NO.
-            // Move ceiling to max_portfolio_cost if at limit.
-            let hedge_target = if net_diff >= self.cfg.max_net_diff - f64::EPSILON {
-                self.cfg.max_portfolio_cost
-            } else {
-                self.cfg.pair_target
-            };
+            let hedge_target = self.hedge_target(net_diff);
 
             let ceiling_no = hedge_target - inv.yes_avg_cost;
             let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
+            let hedge_size = net_diff.abs();
+            let allow_no_hedge = self.can_buy_no(inv, hedge_size);
 
-            if agg_no > 0.0 && !no_stale && !is_toxic_no {
+            if !allow_no_hedge {
+                block_no_provide = true;
+            }
+
+            if agg_no > 0.0 && allow_no_hedge && !no_stale && !is_toxic_no {
                 let hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
                 let hedge_no = self.safe_price(hedge_no);
-                let hedge_size = net_diff.abs();
 
                 let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
                 let current_sz = self.no_target.as_ref().map(|t| t.size).unwrap_or(0.0);
@@ -533,27 +601,28 @@ impl StrategyCoordinator {
                     None
                 };
                 
-                self.place_or_reprice(Side::No, hedge_no, hedge_size, BidReason::Hedge, log_msg).await;
+                self.place_or_reprice(Side::No, hedge_no, hedge_size, BidReason::Hedge, log_msg)
+                    .await;
                 hedge_dispatched_no = true;
                 bid_no = 0.0;
             }
 
-            if !allow_yes { bid_yes = 0.0; }
         } else if net_diff < -f64::EPSILON {
             // We have NO, want to hedge by buying YES.
-            let hedge_target = if net_diff <= -self.cfg.max_net_diff + f64::EPSILON {
-                self.cfg.max_portfolio_cost
-            } else {
-                self.cfg.pair_target
-            };
+            let hedge_target = self.hedge_target(net_diff);
 
             let ceiling_yes = hedge_target - inv.no_avg_cost;
             let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
+            let hedge_size = net_diff.abs();
+            let allow_yes_hedge = self.can_buy_yes(inv, hedge_size);
 
-            if agg_yes > 0.0 && !yes_stale && !is_toxic_yes {
+            if !allow_yes_hedge {
+                block_yes_provide = true;
+            }
+
+            if agg_yes > 0.0 && allow_yes_hedge && !yes_stale && !is_toxic_yes {
                 let hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
                 let hedge_yes = self.safe_price(hedge_yes);
-                let hedge_size = net_diff.abs();
 
                 let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
                 let current_sz = self.yes_target.as_ref().map(|t| t.size).unwrap_or(0.0);
@@ -564,20 +633,38 @@ impl StrategyCoordinator {
                     None
                 };
 
-                self.place_or_reprice(Side::Yes, hedge_yes, hedge_size, BidReason::Hedge, log_msg).await;
+                self.place_or_reprice(Side::Yes, hedge_yes, hedge_size, BidReason::Hedge, log_msg)
+                    .await;
                 hedge_dispatched_yes = true;
                 bid_yes = 0.0;
             }
         }
 
         // 5. Final Dispatch (Provide orders)
+        if block_yes_provide {
+            allow_yes_provide = false;
+        }
+        if block_no_provide {
+            allow_no_provide = false;
+        }
+
         if !hedge_dispatched_yes {
-            let price = if allow_yes { bid_yes } else { 0.0 };
-            self.place_or_reprice(Side::Yes, price, self.cfg.bid_size, BidReason::Provide, None).await;
+            let price = if allow_yes_provide { bid_yes } else { 0.0 };
+            if !allow_yes_provide && self.yes_target.is_some() {
+                self.stats.cancel_inv += 1;
+                self.stats.skipped_inv_limit += 1;
+            }
+            self.place_or_reprice(Side::Yes, price, self.cfg.bid_size, BidReason::Provide, None)
+                .await;
         }
         if !hedge_dispatched_no {
-            let price = if allow_no { bid_no } else { 0.0 };
-            self.place_or_reprice(Side::No, price, self.cfg.bid_size, BidReason::Provide, None).await;
+            let price = if allow_no_provide { bid_no } else { 0.0 };
+            if !allow_no_provide && self.no_target.is_some() {
+                self.stats.cancel_inv += 1;
+                self.stats.skipped_inv_limit += 1;
+            }
+            self.place_or_reprice(Side::No, price, self.cfg.bid_size, BidReason::Provide, None)
+                .await;
         }
     }
 
@@ -623,6 +710,40 @@ impl StrategyCoordinator {
         }
         let elapsed_frac = (elapsed / total).clamp(0.0, 1.0);
         1.0 + k * elapsed_frac
+    }
+
+    /// Step hedge ceiling: pair_target within normal risk, max_portfolio_cost only at/over max_net_diff.
+    fn hedge_target(&self, net_diff: f64) -> f64 {
+        let pair = self.cfg.pair_target;
+        let max_cost = self.cfg.max_portfolio_cost;
+        if max_cost <= pair || self.cfg.max_net_diff <= f64::EPSILON {
+            return pair;
+        }
+        if net_diff.abs() >= self.cfg.max_net_diff {
+            max_cost
+        } else {
+            pair
+        }
+    }
+
+    fn max_side_shares(&self) -> f64 {
+        if self.cfg.max_side_shares > 0.0 {
+            self.cfg.max_side_shares
+        } else {
+            f64::INFINITY
+        }
+    }
+
+    fn can_buy_yes(&self, inv: &InventoryState, size: f64) -> bool {
+        let net_ok = inv.net_diff + size <= self.cfg.max_net_diff + 1e-4;
+        let side_ok = inv.yes_qty + size <= self.max_side_shares() + 1e-4;
+        net_ok && side_ok
+    }
+
+    fn can_buy_no(&self, inv: &InventoryState, size: f64) -> bool {
+        let net_ok = inv.net_diff - size >= -self.cfg.max_net_diff - 1e-4;
+        let side_ok = inv.no_qty + size <= self.max_side_shares() + 1e-4;
+        net_ok && side_ok
     }
 
     /// Aggressive Maker price: min(ceiling, best_ask − tick).
@@ -822,6 +943,7 @@ mod tests {
         CoordinatorConfig {
             pair_target: 0.98,
             max_net_diff: 10.0,
+            max_side_shares: 10.0,
             bid_size: 2.0,
             tick_size: 0.01,
             reprice_threshold: 0.001,
@@ -837,14 +959,20 @@ mod tests {
     ) -> (
         watch::Sender<OfiSnapshot>,
         watch::Sender<InventoryState>,
-        mpsc::Sender<MarketDataMsg>,
+        watch::Sender<MarketDataMsg>,
         mpsc::Sender<KillSwitchSignal>,
         mpsc::Receiver<OrderManagerCmd>,
         StrategyCoordinator,
     ) {
         let (o, or) = watch::channel(OfiSnapshot::default());
         let (i, ir) = watch::channel(InventoryState::default());
-        let (m, mr) = mpsc::channel(16);
+        let (m, mr) = watch::channel(MarketDataMsg::BookTick {
+            yes_bid: 0.0,
+            yes_ask: 0.0,
+            no_bid: 0.0,
+            no_ask: 0.0,
+            ts: Instant::now(),
+        });
         let (e, er) = mpsc::channel(16);
         let (k, kr) = mpsc::channel(16);
         (o, i, m, k, er, StrategyCoordinator::with_kill_rx(c, or, ir, mr, e, kr))
@@ -919,7 +1047,7 @@ mod tests {
         });
 
         let h = tokio::spawn(coord.run());
-        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
         // Should receive TWO CancelSide commands (YES + NO)
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
@@ -961,10 +1089,56 @@ mod tests {
         });
 
         let h = tokio::spawn(coord.run());
-        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
         let c = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c.is_err()); // No commands = blocked
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_toxic_cancel_with_empty_book() {
+        let (o, _i, m, _k, mut e, mut coord) = make(cfg());
+        coord.yes_target = Some(DesiredTarget {
+            side: Side::Yes, price: 0.45, size: 2.0
+        });
+        coord.no_target = Some(DesiredTarget {
+            side: Side::No, price: 0.50, size: 2.0
+        });
+
+        let _ = o.send(OfiSnapshot {
+            yes: SideOfi {
+                ofi_score: 200.0,
+                buy_volume: 200.0,
+                sell_volume: 0.0,
+                is_toxic: true,
+            },
+            no: SideOfi::default(),
+            ts: Instant::now(),
+        });
+
+        let h = tokio::spawn(coord.run());
+        let _ = m.send(bt(0.0, 0.0, 0.0, 0.0));
+
+        let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
+        let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
+        assert!(c1.is_ok() && c2.is_ok());
+
+        let mut canceled = Vec::new();
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c1 {
+            if target.price == 0.0 {
+                canceled.push(target.side);
+            }
+        }
+        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
+            if target.price == 0.0 {
+                canceled.push(target.side);
+            }
+        }
+        assert!(canceled.contains(&Side::Yes));
+        assert!(canceled.contains(&Side::No));
 
         drop(m);
         let _ = h.await;
@@ -976,7 +1150,7 @@ mod tests {
     async fn test_balanced_mid_pricing() {
         let (_o, _i, m, _k, mut e, coord) = make(cfg());
         let h = tokio::spawn(coord.run());
-        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
@@ -1000,7 +1174,7 @@ mod tests {
         let (_o, _i, m, _k, mut e, coord) = make(cfg());
         let h = tokio::spawn(coord.run());
         // mid_yes=0.52, mid_no=0.50, sum=1.02 > 0.98
-        let _ = m.send(bt(0.50, 0.54, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.50, 0.54, 0.48, 0.52));
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         let mut prices = std::collections::HashMap::new();
@@ -1026,14 +1200,14 @@ mod tests {
         let h = tokio::spawn(coord.run());
 
         // First tick: places bids
-        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         assert!(c1.is_ok());
         let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
         assert!(c2.is_ok());
 
         // Second tick with different prices — should be debounced
-        let _ = m.send(bt(0.30, 0.32, 0.60, 0.62)).await;
+        let _ = m.send(bt(0.30, 0.32, 0.60, 0.62));
         let c3 = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c3.is_err()); // No commands = debounced
 
@@ -1048,7 +1222,7 @@ mod tests {
         let (_o, _i, m, _k, mut e, coord) = make(cfg());
         let h = tokio::spawn(coord.run());
         // All zeros — no valid book
-        let _ = m.send(bt(0.0, 0.0, 0.0, 0.0)).await;
+        let _ = m.send(bt(0.0, 0.0, 0.0, 0.0));
         let c = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
         assert!(c.is_err()); // No commands
         drop(m);
@@ -1059,10 +1233,11 @@ mod tests {
     async fn test_hedge_emergency_ceiling_toxic_flow() {
         let mut cfg = cfg();
         cfg.max_net_diff = 10.0;
+        cfg.max_side_shares = 20.0;
         cfg.pair_target = 0.985;
         cfg.max_portfolio_cost = 1.02;
 
-        let (o, i, m, _k, mut e, mut coord) = make(cfg);
+        let (o, i, m, _k, mut e, coord) = make(cfg);
         
         // 1. Setup inventory: heavily imbalanced (net = -10.0)
         let inv = InventoryState {
@@ -1089,7 +1264,7 @@ mod tests {
         });
 
         // 4. Send a book update to trigger pricing
-        let _ = m.send(bt(0.30, 0.70, 0.40, 0.60)).await;
+        let _ = m.send(bt(0.30, 0.70, 0.40, 0.60));
 
         let cmd = timeout(Duration::from_millis(100), e.recv()).await;
         if let Ok(Some(OrderManagerCmd::SetTarget(target))) = cmd {
@@ -1124,7 +1299,7 @@ mod tests {
             side: Side::Yes,
             ofi_score: 1.0,
             ts: Instant::now(),
-        }).await;
+        });
 
         // 4. Command should NOT be sent due to staleness
         // Note: we check both sides in the new tick() logic.
@@ -1138,6 +1313,7 @@ mod tests {
     async fn test_dynamic_hedge_sizing_shares() {
         let mut cfg = cfg();
         cfg.bid_size = 5.0;
+        cfg.max_side_shares = 20.0;
         let (_o, i, m, _k, mut e, coord) = make(cfg);
         let h = tokio::spawn(coord.run());
 
@@ -1150,7 +1326,7 @@ mod tests {
         });
 
         // Trigger pricing with a valid book update
-        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52));
 
         // Should see a HEDGE order on NO with size = 12.0
         let mut found_hedge = false;
@@ -1181,7 +1357,7 @@ mod tests {
             ..Default::default()
         });
 
-        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52));
         
         // It might send a Cancel command if it thinks there's a target to clear.
         // We check that NO 'Place' command with size 50 is sent.
@@ -1205,6 +1381,7 @@ mod tests {
         let mut cfg = cfg();
         cfg.as_skew_factor = 0.0;
         cfg.max_net_diff = 100.0;
+        cfg.max_side_shares = 100.0;
         cfg.hedge_debounce_ms = 0;
         let (_o, i, m, _k, mut e, coord) = make(cfg);
         let h = tokio::spawn(coord.run());
@@ -1213,7 +1390,7 @@ mod tests {
             net_diff: 5.0,
             ..Default::default()
         });
-        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52));
 
         let mut first_size = None;
         while let Ok(Some(OrderManagerCmd::SetTarget(target))) = timeout(Duration::from_millis(200), e.recv()).await {
@@ -1231,7 +1408,7 @@ mod tests {
             yes_avg_cost: 0.50,
             ..Default::default()
         });
-        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52)).await;
+        let _ = m.send(bt(0.48, 0.52, 0.48, 0.52));
 
         let mut updated = false;
         while let Ok(Some(OrderManagerCmd::SetTarget(target))) = timeout(Duration::from_millis(200), e.recv()).await {

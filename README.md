@@ -86,10 +86,14 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 |------|------|------|
 | `PM_MAX_NET_DIFF` | `10.0` | Max net directional inventory difference (**Shares**) |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 最大组合成本和（> 1.0 = 套利失败） |
-| `PM_MAX_POSITION_VALUE` | `5.0` | 单侧最大美元暴露 |
+| `PM_MAX_LOSS_PCT` | `0.02` | 最大可接受组合亏损比例（用于钳制 `PM_MAX_PORTFOLIO_COST`） |
+| `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限 |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 强制刷新心跳 |
+
+> 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
+> `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。
 
 ### 4.4 Claim 参数
 
@@ -123,7 +127,8 @@ PM_DEBOUNCE_MS=500            # 半秒防抖
 # 风控（$100 资金匹配）
 PM_MAX_NET_DIFF=10.0          # 最大单侧 10 股偏差
 PM_MAX_PORTFOLIO_COST=1.02    # 组合成本上限
-PM_MAX_POSITION_VALUE=50.0    # 单侧最多 $50（总 $100 的一半）
+PM_MAX_LOSS_PCT=0.02          # 最大可接受亏损比例（2%）
+PM_MAX_SIDE_SHARES=50.0       # 单侧最多 50 股（总仓位上限）
 
 # OFI
 PM_OFI_WINDOW_MS=3000
@@ -141,7 +146,7 @@ PM_ENTRY_GRACE_SECONDS=30
 | `PAIR_TARGET=0.985` | 保守 | 每配对锁利 $0.015。先验证流程再追利润 |
 | `BID_SIZE=5.0` | 适中 | 每侧 $5，一轮最多双侧 $10 暴露 |
 | `MAX_NET_DIFF=10.0` | 安全 | 允许 2 轮未对冲偏差 |
-| `MAX_POSITION_VALUE=50.0` | $100 一半 | 单侧最多占用总资金 50%，留足对冲余地 |
+| `MAX_SIDE_SHARES=50.0` | $100 一半 | 单侧最多 50 股，留足对冲余地 |
 | `REPRICE_THRESHOLD=0.010` | 防抖 | 避免高频撤补消耗API限额 |
 | `OFI_THRESHOLD=50.0` | 标准 | 首跑先用默认，观察日志再微调 |
 
@@ -168,7 +173,7 @@ PM_ENTRY_GRACE_SECONDS=30
 
 **放大仓位**（验证稳定后）：
 - `PM_BID_SIZE`: `5` → `10` → `20`
-- `PM_MAX_POSITION_VALUE`: `50` → `80`
+- `PM_MAX_SIDE_SHARES`: `50` → `80`
 
 ## 8. 文档索引
 
