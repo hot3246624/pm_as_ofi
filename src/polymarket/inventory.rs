@@ -25,10 +25,6 @@ pub struct InventoryConfig {
     /// Default: 1.02 (2% slack for fees).
     pub max_portfolio_cost: f64,
 
-    /// Maximum dollar value of position on a single side.
-    /// Default: $5.
-    pub max_position_value: f64,
-
     /// Order size to project capacity (fetched from env).
     pub bid_size: f64,
 }
@@ -38,7 +34,6 @@ impl Default for InventoryConfig {
         Self {
             max_net_diff: 10.0,
             max_portfolio_cost: 1.02,
-            max_position_value: 5.0,
             bid_size: 5.0,
         }
     }
@@ -56,11 +51,6 @@ impl InventoryConfig {
         if let Ok(v) = std::env::var("PM_MAX_PORTFOLIO_COST") {
             if let Ok(f) = v.parse::<f64>() {
                 cfg.max_portfolio_cost = f;
-            }
-        }
-        if let Ok(v) = std::env::var("PM_MAX_POSITION_VALUE") {
-            if let Ok(f) = v.parse::<f64>() {
-                cfg.max_position_value = f;
             }
         }
         if let Ok(v) = std::env::var("PM_BID_SIZE") {
@@ -118,8 +108,8 @@ impl InventoryManager {
     /// Actor main loop. Runs until the fill channel is closed.
     pub async fn run(mut self) {
         info!(
-            "📦 InventoryManager started | max_net_diff={:.0} max_cost={:.3} max_val=${:.0}",
-            self.cfg.max_net_diff, self.cfg.max_portfolio_cost, self.cfg.max_position_value,
+            "📦 InventoryManager started | max_net_diff={:.0} max_cost={:.3}",
+            self.cfg.max_net_diff, self.cfg.max_portfolio_cost,
         );
 
         while let Some(fill) = self.fill_rx.recv().await {
@@ -277,7 +267,6 @@ mod tests {
         let (state_tx, _state_rx) = watch::channel(InventoryState::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
         let mut cfg = InventoryConfig::default();
-        cfg.max_position_value = 10.0; // Large enough for conservative check
         let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
 
         im.apply_fill(&make_fill(Side::Yes, 5.0, 0.48));

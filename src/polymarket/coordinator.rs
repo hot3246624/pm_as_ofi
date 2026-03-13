@@ -36,10 +36,7 @@ pub struct CoordinatorConfig {
     pub bid_size: f64,
     /// CLOB minimum tick.
     pub tick_size: f64,
-    /// Reprice threshold ($). Default: 0.001.
     pub reprice_threshold: f64,
-    /// Maximum dollar value allowed per side.
-    pub max_position_value: f64,
     /// Minimum time between place/reprice on same side (anti-thrashing).
     pub debounce_ms: u64,
     /// A-S Skew penalty factor. 0.03 = pure conservative A-S. 0.00 = pure Gabagool grid.
@@ -68,7 +65,6 @@ impl Default for CoordinatorConfig {
             bid_size: 2.0,
             tick_size: 0.01,
             reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
-            max_position_value: 50.0, // Default $50
             debounce_ms: 500,         // Increased to reduce churn (half second)
             as_skew_factor: 0.03,     // Original strictly conservative A-S
             as_time_decay_k: 2.0,     // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
@@ -114,11 +110,6 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_REPRICE_THRESHOLD") {
             if let Ok(f) = v.parse() {
                 c.reprice_threshold = f;
-            }
-        }
-        if let Ok(v) = std::env::var("PM_MAX_POSITION_VALUE") {
-            if let Ok(f) = v.parse() {
-                c.max_position_value = f;
             }
         }
         if let Ok(v) = std::env::var("PM_DEBOUNCE_MS") {
@@ -509,18 +500,12 @@ impl StrategyCoordinator {
         let mut hedge_dispatched_yes = false;
         let mut hedge_dispatched_no = false;
 
-        // Global inventory gating (Price-Aware Budget + Shares Limit)
+        // Global inventory gating (Shares Limit)
         let projected_yes_shares = inv.net_diff + self.cfg.bid_size;
-        let yes_shares_ok = projected_yes_shares <= self.cfg.max_net_diff + 1e-4;
-        let projected_yes_val = (inv.yes_qty * inv.yes_avg_cost) + (self.cfg.bid_size * raw_yes);
-        let yes_val_ok = projected_yes_val <= self.cfg.max_position_value + 1e-4;
-        let allow_yes = yes_shares_ok && yes_val_ok;
+        let allow_yes = projected_yes_shares <= self.cfg.max_net_diff + 1e-4;
 
         let projected_no_shares = inv.net_diff - self.cfg.bid_size;
-        let no_shares_ok = projected_no_shares >= -self.cfg.max_net_diff - 1e-4;
-        let projected_no_val = (inv.no_qty * inv.no_avg_cost) + (self.cfg.bid_size * raw_no);
-        let no_val_ok = projected_no_val <= self.cfg.max_position_value + 1e-4;
-        let allow_no = no_shares_ok && no_val_ok;
+        let allow_no = projected_no_shares >= -self.cfg.max_net_diff - 1e-4;
 
         if net_diff > f64::EPSILON {
             // We have YES, want to hedge by buying NO.
@@ -534,12 +519,7 @@ impl StrategyCoordinator {
             let ceiling_no = hedge_target - inv.yes_avg_cost;
             let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
 
-            // Re-verify budget for the specific hedge size
-            let hedge_size = net_diff.abs();
-            let hedge_val = (inv.no_qty * inv.no_avg_cost) + (hedge_size * agg_no);
-            let hedge_val_ok = hedge_val <= self.cfg.max_position_value + 1e-4;
-
-            if agg_no > 0.0 && hedge_val_ok && !no_stale && !is_toxic_no {
+            if agg_no > 0.0 && !no_stale && !is_toxic_no {
                 let hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
                 let hedge_no = self.safe_price(hedge_no);
                 let hedge_size = net_diff.abs();
@@ -570,12 +550,7 @@ impl StrategyCoordinator {
             let ceiling_yes = hedge_target - inv.no_avg_cost;
             let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
 
-            // Re-verify budget for the specific hedge size
-            let hedge_size = net_diff.abs();
-            let hedge_val = (inv.yes_qty * inv.yes_avg_cost) + (hedge_size * agg_yes);
-            let hedge_val_ok = hedge_val <= self.cfg.max_position_value + 1e-4;
-
-            if agg_yes > 0.0 && hedge_val_ok && !yes_stale && !is_toxic_yes {
+            if agg_yes > 0.0 && !yes_stale && !is_toxic_yes {
                 let hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
                 let hedge_yes = self.safe_price(hedge_yes);
                 let hedge_size = net_diff.abs();
@@ -850,7 +825,6 @@ mod tests {
             bid_size: 2.0,
             tick_size: 0.01,
             reprice_threshold: 0.001,
-            max_position_value: 50.0, // Default $50
             debounce_ms: 0, // disable for tests
             as_skew_factor: 0.03,
             dry_run: false,
@@ -1197,8 +1171,8 @@ mod tests {
         let mut cfg = cfg();
         cfg.as_skew_factor = 0.0;
         cfg.hedge_debounce_ms = 0;
-        cfg.max_position_value = 10.0; // Small budget
-        cfg.bid_size = 50.0; // Ordering 50 shares @ ~0.50 = $25 > $10 limit.
+        cfg.max_net_diff = 10.0; 
+        cfg.bid_size = 15.0; // Ordering 15 shares while limit is 10.
         let (_o, i, m, _k, mut e, coord) = make(cfg);
         let h = tokio::spawn(coord.run());
 
