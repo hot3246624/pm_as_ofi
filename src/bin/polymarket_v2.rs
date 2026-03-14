@@ -78,6 +78,7 @@ fn log_config_self_check(
     inv: &InventoryConfig,
     ofi: &OfiConfig,
     balance_opt: Option<f64>,
+    reconcile_interval_secs: u64,
 ) {
     info!("🔎 Config self-check (consistency + risk thresholds)");
     info!(
@@ -95,6 +96,10 @@ fn log_config_self_check(
         coord.debounce_ms,
         coord.hedge_debounce_ms,
         coord.stale_ttl_ms
+    );
+    info!(
+        "   reconcile_interval={}s",
+        reconcile_interval_secs
     );
     info!(
         "   ofi_window={}ms ofi_thresh={:.1} adaptive={} heartbeat={}ms",
@@ -1327,6 +1332,30 @@ async fn main() -> anyhow::Result<()> {
                     // unless they haven't set one.
                     coord_cfg.bid_size = coord_cfg.bid_size.max(dyn_bid_size);
                     coord_cfg.max_net_diff = coord_cfg.max_net_diff.max(dyn_net_diff);
+
+                    let max_pos_pct: f64 = std::env::var("PM_MAX_POS_PCT")
+                        .ok()
+                        .and_then(|v| v.parse().ok())
+                        .unwrap_or(0.0);
+                    if max_pos_pct > 0.0 {
+                        let denom = coord_cfg.pair_target.max(1e-6);
+                        let dyn_max_side = (balance_f64 * max_pos_pct / denom).round();
+                        if dyn_max_side.is_finite() && dyn_max_side > 0.0 {
+                            let dyn_max_side = dyn_max_side
+                                .max(coord_cfg.max_net_diff)
+                                .max(coord_cfg.bid_size);
+                            coord_cfg.max_side_shares = coord_cfg.max_side_shares.max(dyn_max_side);
+                            info!(
+                                "💡 [DYNAMIC GROSS] Balance: {:.2} USDC -> MAX_SIDE_SHARES={:.1} (max_pos_pct={}, pair_target={})",
+                                balance_f64, dyn_max_side, max_pos_pct, coord_cfg.pair_target
+                            );
+                        } else {
+                            warn!(
+                                "⚠️ Invalid PM_MAX_POS_PCT-derived max_side_shares (pct={}, pair_target={})",
+                                max_pos_pct, coord_cfg.pair_target
+                            );
+                        }
+                    }
                     
                     // CRITICAL: Sync InventoryConfig with the new dynamic values
                     inv_cfg.bid_size = coord_cfg.bid_size;
@@ -1345,7 +1374,17 @@ async fn main() -> anyhow::Result<()> {
         info!("🎯 Market: {}", market_id);
         info!("   YES: {}...", &yes_asset_id[..16.min(yes_asset_id.len())]);
         info!("   NO:  {}...", &no_asset_id[..16.min(no_asset_id.len())]);
-        log_config_self_check(&coord_cfg, &inv_cfg, &ofi_cfg, balance_opt);
+        let reconcile_interval_secs = std::env::var("PM_RECONCILE_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+        log_config_self_check(
+            &coord_cfg,
+            &inv_cfg,
+            &ofi_cfg,
+            balance_opt,
+            reconcile_interval_secs,
+        );
 
         // P0-2: Track all session spawns for cleanup on rotation
         let mut session_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
@@ -1407,6 +1446,7 @@ async fn main() -> anyhow::Result<()> {
                 yes_asset_id: yes_asset_id.clone(),
                 no_asset_id: no_asset_id.clone(),
                 tick_size: coord_cfg.tick_size,
+                reconcile_interval_secs,
                 dry_run,
             },
             clob_client.clone(),

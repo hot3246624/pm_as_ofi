@@ -421,6 +421,8 @@ PM_DEBOUNCE_MS=500            # 正常防抖时间
 PM_HEDGE_DEBOUNCE_MS=100      # 对冲防抖时间（建议 ≤ 200ms）
 PM_REPRICE_THRESHOLD=0.010    # 触发重新报价的价格偏差阈值
 PM_STALE_TTL_MS=3000          # 盘口数据 TTL（毫秒，单侧）
+PM_RECONCILE_INTERVAL_SECS=30 # 订单对账周期（秒）
+PM_MAX_POS_PCT=0.70           # 总仓位占比上限（用于动态推导 max_side_shares）
 
 > 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
 

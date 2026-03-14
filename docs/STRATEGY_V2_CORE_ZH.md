@@ -112,6 +112,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。任意一侧触发毒性
 | `PM_BID_SIZE` | Shares | 单次提供单规模 | 动态算力 = balance × PM_BID_PCT |
 | `PM_MAX_NET_DIFF` | Shares | 最大净方向性风险 | 动态算力 = balance × PM_NET_DIFF_PCT |
 | `PM_MAX_SIDE_SHARES` | Shares | 单侧总持仓上限 | 未设置时默认等于 max_net_diff |
+| `PM_MAX_POS_PCT` | 小数 | 总仓位占比目标 | 动态推导：`balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | 成本 | 一对 Y+N 的目标成本 | 利润 = 1.00 - pair_target |
 | `PM_AS_SKEW_FACTOR` | 系数 | A-S 库存定价攻击性 | 0.00=纯网格 0.03=标准 A-S |
 | `PM_AS_TIME_DECAY_K` | 系数 | 时间衰减放大倍数 | 0.0=禁用 2.0=到期时 3× skew |
@@ -120,6 +121,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。任意一侧触发毒性
 | `PM_STALE_TTL_MS` | ms | 数据新鲜度熔断阈值 | 单侧超时即撤单该侧 |
 | `PM_DEBOUNCE_MS` | ms | 提供单防抖间隔 | 避免高频重复报价 |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | 对冲单防抖间隔 | 对冲更紧急，默认 100ms |
+| `PM_RECONCILE_INTERVAL_SECS` | sec | 订单对账周期 | REST 定期对账修复 WS 盲区 |
 
 ## 5. 对冲逻辑与动态数量 (Hedge Sizing)
 

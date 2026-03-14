@@ -88,6 +88,8 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 最大组合成本和（> 1.0 = 套利失败） |
 | `PM_MAX_LOSS_PCT` | `0.02` | 最大可接受组合亏损比例（用于钳制 `PM_MAX_PORTFOLIO_COST`） |
 | `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限 |
+| `PM_RECONCILE_INTERVAL_SECS` | `30` | 订单对账周期（秒），用于修复 WS 断连盲区 |
+| `PM_MAX_POS_PCT` | `0.70` | 总仓位占比上限（用于动态推导 `PM_MAX_SIDE_SHARES`） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 强制刷新心跳 |
@@ -129,6 +131,8 @@ PM_MAX_NET_DIFF=10.0          # 最大单侧 10 股偏差
 PM_MAX_PORTFOLIO_COST=1.02    # 组合成本上限
 PM_MAX_LOSS_PCT=0.02          # 最大可接受亏损比例（2%）
 PM_MAX_SIDE_SHARES=50.0       # 单侧最多 50 股（总仓位上限）
+PM_RECONCILE_INTERVAL_SECS=30 # 订单对账周期（秒）
+PM_MAX_POS_PCT=0.70           # 总仓位占比上限（建议 0.6~0.9）
 
 # OFI
 PM_OFI_WINDOW_MS=3000

@@ -10,7 +10,7 @@
 //! to prevent ghost slot states.
 
 use std::collections::HashMap;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use tokio::sync::mpsc;
@@ -36,6 +36,7 @@ pub struct ExecutorConfig {
     pub yes_asset_id: String,
     pub no_asset_id: String,
     pub tick_size: f64,
+    pub reconcile_interval_secs: u64,
     pub dry_run: bool,
 }
 
@@ -88,6 +89,11 @@ impl Executor {
             self.cfg.dry_run,
             self.client.is_some(),
         );
+        let reconcile_enabled =
+            self.cfg.reconcile_interval_secs > 0 && !self.cfg.dry_run && self.client.is_some();
+        let mut reconcile_tick = tokio::time::interval(Duration::from_secs(
+            self.cfg.reconcile_interval_secs.max(1),
+        ));
 
         loop {
             tokio::select! {
@@ -115,10 +121,116 @@ impl Executor {
                         self.handle_fill_notification(&fill).await;
                     }
                 }
+                _ = reconcile_tick.tick(), if reconcile_enabled => {
+                    self.reconcile_open_orders().await;
+                }
             }
         }
 
         info!("⚡ Executor shutting down");
+    }
+
+    // ─────────────────────────────────────────────────
+    // Reconciliation Loop (REST)
+    // ─────────────────────────────────────────────────
+
+    async fn reconcile_open_orders(&mut self) {
+        use polymarket_client_sdk::clob::types::OrderStatusType;
+        use polymarket_client_sdk::clob::types::request::OrdersRequest;
+        use rust_decimal::prelude::ToPrimitive;
+
+        let client = match self.client.as_ref() {
+            Some(c) => c,
+            None => return,
+        };
+
+        let yes_id = match alloy::primitives::U256::from_str_radix(&self.cfg.yes_asset_id, 10) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "⚠️ Reconcile: invalid YES asset_id '{}': {:?}",
+                    self.cfg.yes_asset_id, e
+                );
+                return;
+            }
+        };
+        let no_id = match alloy::primitives::U256::from_str_radix(&self.cfg.no_asset_id, 10) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "⚠️ Reconcile: invalid NO asset_id '{}': {:?}",
+                    self.cfg.no_asset_id, e
+                );
+                return;
+            }
+        };
+
+        let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
+        for (side, asset_id) in [(Side::Yes, yes_id), (Side::No, no_id)] {
+            let mut req = OrdersRequest::default();
+            req.asset_id = Some(asset_id);
+            let mut cursor: Option<String> = None;
+            loop {
+                let page = match client.orders(&req, cursor.clone()).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        warn!("⚠️ Reconcile: orders fetch failed for {:?}: {:?}", side, e);
+                        break;
+                    }
+                };
+                for ord in page.data {
+                    if matches!(ord.status, OrderStatusType::Canceled) {
+                        continue;
+                    }
+                    let orig = ord.original_size.to_f64().unwrap_or(0.0);
+                    let matched = ord.size_matched.to_f64().unwrap_or(0.0);
+                    let remaining = (orig - matched).max(0.0);
+                    if remaining > 1e-9 {
+                        remote_by_side
+                            .entry(side)
+                            .or_default()
+                            .insert(ord.id.clone(), remaining);
+                    }
+                }
+                if page.next_cursor.is_empty() {
+                    break;
+                }
+                cursor = Some(page.next_cursor);
+            }
+        }
+
+        for side in [Side::Yes, Side::No] {
+            let remote = remote_by_side.remove(&side).unwrap_or_default();
+            let local = self.open_orders.entry(side).or_default();
+
+            let mut removed = Vec::new();
+            for id in local.keys() {
+                if !remote.contains_key(id) {
+                    removed.push(id.clone());
+                }
+            }
+            for id in removed {
+                local.remove(&id);
+                warn!(
+                    "🧭 Reconcile: {:?} order {}… missing on exchange — releasing slot",
+                    side,
+                    &id[..8.min(id.len())],
+                );
+                let _ = self.result_tx.send(OrderResult::OrderFilled { side }).await;
+            }
+
+            for (id, rem) in remote {
+                if !local.contains_key(&id) {
+                    warn!(
+                        "🧭 Reconcile: {:?} order {}… exists on exchange but not tracked (remaining={:.4})",
+                        side,
+                        &id[..8.min(id.len())],
+                        rem
+                    );
+                }
+                local.insert(id, rem);
+            }
+        }
     }
 
     // ─────────────────────────────────────────────────

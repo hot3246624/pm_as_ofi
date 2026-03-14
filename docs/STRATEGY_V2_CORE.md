@@ -90,6 +90,7 @@ All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused i
 | `PM_BID_SIZE` | Shares | Provide order size | Dynamic: `balance × PM_BID_PCT` |
 | `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamic: `balance × PM_NET_DIFF_PCT` |
 | `PM_MAX_SIDE_SHARES` | Shares | Max per-side gross exposure | Default = max_net_diff if unset |
+| `PM_MAX_POS_PCT` | Decimal | Target gross utilization | Dynamic: `balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | Cost | Target Y+N pair cost | Profit margin = `1.00 - pair_target` |
 | `PM_AS_SKEW_FACTOR` | Factor | A-S skew aggressiveness | 0.00 = pure grid; 0.03 = standard A-S |
 | `PM_AS_TIME_DECAY_K` | Factor | Time decay amplifier | 0.0 = disabled; 2.0 = 3x skew at expiry |
@@ -98,6 +99,7 @@ All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused i
 | `PM_STALE_TTL_MS` | ms | Per-side freshness TTL | Side shutdown if exceeded |
 | `PM_DEBOUNCE_MS` | ms | Provide order anti-thrash | Prevents rapid re-quoting |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | Hedge order anti-thrash | Lower (100ms) for urgency |
+| `PM_RECONCILE_INTERVAL_SECS` | sec | REST order reconciliation | Detects WS blind spots |
 
 ## 5. Hedge Logic & Sizing
 
