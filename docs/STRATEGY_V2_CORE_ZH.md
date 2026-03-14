@@ -110,6 +110,9 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。任意一侧触发毒性
 | 参数 | 单位 | 用途 | 关键交互 |
 | :--- | :--- | :--- | :--- |
 | `PM_BID_SIZE` | Shares | 单次提供单规模 | 动态算力 = balance × PM_BID_PCT |
+| `PM_MIN_ORDER_SIZE` | Shares | 最小订单数量 | 未设置时自动从 order_book 探测；小于该值的订单跳过 |
+| `PM_MIN_HEDGE_SIZE` | Shares | 对冲触发最小阈值 | 小于该值的对冲跳过 |
+| `PM_HEDGE_ROUND_UP` | bool | 对冲向上取整 | 小额对冲是否取整到最小订单 |
 | `PM_MAX_NET_DIFF` | Shares | 最大净方向性风险 | 动态算力 = balance × PM_NET_DIFF_PCT |
 | `PM_MAX_SIDE_SHARES` | Shares | 单侧总持仓上限 | 未设置时默认等于 max_net_diff |
 | `PM_MAX_POS_PCT` | 小数 | 总仓位占比目标 | 动态推导：`balance × pct / pair_target` |

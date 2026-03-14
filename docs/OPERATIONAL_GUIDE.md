@@ -411,6 +411,9 @@ PM_AUTO_CLAIM=true            # 自动领取结算仓位
 # 核心策略参数
 PM_PAIR_TARGET=0.98           # 配对成本上限（利润空间 = 1 - pair_target）
 PM_BID_SIZE=5.0               # Size per bid (Shares)
+PM_MIN_ORDER_SIZE=5.0         # 最小订单数量（不配置则自动从 order_book 探测）
+PM_MIN_HEDGE_SIZE=0.0         # 对冲触发最小阈值（0=禁用）
+PM_HEDGE_ROUND_UP=false       # 对冲不足最小订单时是否向上取整
 PM_MAX_NET_DIFF=10.0          # 最大净仓量（单股）
 PM_MAX_SIDE_SHARES=50.0       # 单侧最大持仓股数上限
 PM_MAX_PORTFOLIO_COST=1.02    # 组合成本上限

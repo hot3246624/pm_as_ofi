@@ -54,6 +54,12 @@ pub struct CoordinatorConfig {
     pub hedge_debounce_ms: u64,
     /// Emergency ceiling for hedge orders when net_diff >= max_net_diff.
     pub max_portfolio_cost: f64,
+    /// Minimum order size (shares). Orders below this are skipped unless hedges are rounded up.
+    pub min_order_size: f64,
+    /// Minimum hedge trigger size (shares). Hedges below this are skipped.
+    pub min_hedge_size: f64,
+    /// If true, hedges smaller than min_order_size are rounded up to min_order_size.
+    pub hedge_round_up: bool,
     /// Max allowable loss percent for emergency hedging (clamps max_portfolio_cost).
     pub max_loss_pct: f64,
     /// DRY-RUN mode.
@@ -77,6 +83,9 @@ impl Default for CoordinatorConfig {
             market_end_ts: None,
             hedge_debounce_ms: 100,   // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
+            min_order_size: 1.0,
+            min_hedge_size: 0.0,
+            hedge_round_up: false,
             max_loss_pct: 0.02,       // Hard loss cap (2%)
             dry_run: true,
             stale_ttl_ms: 3000,
@@ -164,6 +173,23 @@ impl CoordinatorConfig {
             if let Ok(f) = v.parse() {
                 c.max_portfolio_cost = f;
             }
+        }
+        if let Ok(v) = std::env::var("PM_MIN_ORDER_SIZE") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    c.min_order_size = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_MIN_HEDGE_SIZE") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    c.min_hedge_size = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_HEDGE_ROUND_UP") {
+            c.hedge_round_up = v == "1" || v.to_lowercase() == "true";
         }
         if let Ok(v) = std::env::var("PM_MAX_LOSS_PCT") {
             if let Ok(f) = v.parse::<f64>() {
@@ -570,30 +596,37 @@ impl StrategyCoordinator {
 
             let ceiling_no = hedge_target - inv.yes_avg_cost;
             let agg_no = self.aggressive_price(ceiling_no, ub.no_ask);
-            let hedge_size = net_diff.abs();
-            let allow_no_hedge = self.can_buy_no(inv, hedge_size);
+            if let Some(hedge_size) = self.hedge_size_from_net(net_diff) {
+                let allow_no_hedge = self.can_buy_no(inv, hedge_size);
+                if !allow_no_hedge {
+                    block_no_provide = true;
+                }
 
-            if !allow_no_hedge {
-                block_no_provide = true;
-            }
+                if agg_no > 0.0 && allow_no_hedge && !no_stale && !is_toxic_no {
+                    let hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
+                    let hedge_no = self.safe_price(hedge_no);
 
-            if agg_no > 0.0 && allow_no_hedge && !no_stale && !is_toxic_no {
-                let hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
-                let hedge_no = self.safe_price(hedge_no);
-
-                let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                let current_sz = self.no_target.as_ref().map(|t| t.size).unwrap_or(0.0);
-                
-                let log_msg = if current_no <= 0.0 || (current_no - hedge_no).abs() > self.cfg.reprice_threshold || (current_sz - hedge_size).abs() > 0.1 {
-                    Some(format!("🔧 HEDGE NO@{:.3} sz={:.1} | net={:.1}", hedge_no, hedge_size, net_diff))
-                } else {
-                    None
-                };
-                
-                self.place_or_reprice(Side::No, hedge_no, hedge_size, BidReason::Hedge, log_msg)
-                    .await;
-                hedge_dispatched_no = true;
-                bid_no = 0.0;
+                    let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                    let current_sz = self.no_target.as_ref().map(|t| t.size).unwrap_or(0.0);
+                    
+                    let log_msg = if current_no <= 0.0 || (current_no - hedge_no).abs() > self.cfg.reprice_threshold || (current_sz - hedge_size).abs() > 0.1 {
+                        Some(format!("🔧 HEDGE NO@{:.3} sz={:.1} | net={:.1}", hedge_no, hedge_size, net_diff))
+                    } else {
+                        None
+                    };
+                    
+                    self.place_or_reprice(Side::No, hedge_no, hedge_size, BidReason::Hedge, log_msg)
+                        .await;
+                    hedge_dispatched_no = true;
+                    bid_no = 0.0;
+                }
+            } else {
+                debug!(
+                    "🧩 Hedge skip NO: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
+                    net_diff,
+                    self.cfg.min_order_size,
+                    self.cfg.min_hedge_size,
+                );
             }
 
         } else if net_diff < -f64::EPSILON {
@@ -602,30 +635,37 @@ impl StrategyCoordinator {
 
             let ceiling_yes = hedge_target - inv.no_avg_cost;
             let agg_yes = self.aggressive_price(ceiling_yes, ub.yes_ask);
-            let hedge_size = net_diff.abs();
-            let allow_yes_hedge = self.can_buy_yes(inv, hedge_size);
+            if let Some(hedge_size) = self.hedge_size_from_net(net_diff) {
+                let allow_yes_hedge = self.can_buy_yes(inv, hedge_size);
+                if !allow_yes_hedge {
+                    block_yes_provide = true;
+                }
 
-            if !allow_yes_hedge {
-                block_yes_provide = true;
-            }
+                if agg_yes > 0.0 && allow_yes_hedge && !yes_stale && !is_toxic_yes {
+                    let hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
+                    let hedge_yes = self.safe_price(hedge_yes);
 
-            if agg_yes > 0.0 && allow_yes_hedge && !yes_stale && !is_toxic_yes {
-                let hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
-                let hedge_yes = self.safe_price(hedge_yes);
+                    let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                    let current_sz = self.yes_target.as_ref().map(|t| t.size).unwrap_or(0.0);
 
-                let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                let current_sz = self.yes_target.as_ref().map(|t| t.size).unwrap_or(0.0);
+                    let log_msg = if current_yes <= 0.0 || (current_yes - hedge_yes).abs() > self.cfg.reprice_threshold || (current_sz - hedge_size).abs() > 0.1 {
+                        Some(format!("🔧 HEDGE YES@{:.3} sz={:.1} | net={:.1}", hedge_yes, hedge_size, net_diff))
+                    } else {
+                        None
+                    };
 
-                let log_msg = if current_yes <= 0.0 || (current_yes - hedge_yes).abs() > self.cfg.reprice_threshold || (current_sz - hedge_size).abs() > 0.1 {
-                    Some(format!("🔧 HEDGE YES@{:.3} sz={:.1} | net={:.1}", hedge_yes, hedge_size, net_diff))
-                } else {
-                    None
-                };
-
-                self.place_or_reprice(Side::Yes, hedge_yes, hedge_size, BidReason::Hedge, log_msg)
-                    .await;
-                hedge_dispatched_yes = true;
-                bid_yes = 0.0;
+                    self.place_or_reprice(Side::Yes, hedge_yes, hedge_size, BidReason::Hedge, log_msg)
+                        .await;
+                    hedge_dispatched_yes = true;
+                    bid_yes = 0.0;
+                }
+            } else {
+                debug!(
+                    "🧩 Hedge skip YES: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
+                    net_diff,
+                    self.cfg.min_order_size,
+                    self.cfg.min_hedge_size,
+                );
             }
         }
 
@@ -713,6 +753,27 @@ impl StrategyCoordinator {
         } else {
             pair
         }
+    }
+
+    /// Determine hedge size with minimum size constraints.
+    /// Returns None if hedge should be skipped.
+    fn hedge_size_from_net(&self, net_diff: f64) -> Option<f64> {
+        let raw = net_diff.abs();
+        if raw <= f64::EPSILON {
+            return None;
+        }
+        let min_hedge = self.cfg.min_hedge_size.max(0.0);
+        if min_hedge > 0.0 && raw + 1e-9 < min_hedge {
+            return None;
+        }
+        let min_order = self.cfg.min_order_size.max(0.0);
+        if min_order > 0.0 && raw + 1e-9 < min_order {
+            if self.cfg.hedge_round_up {
+                return Some(min_order);
+            }
+            return None;
+        }
+        Some(raw)
     }
 
     fn max_side_shares(&self) -> f64 {

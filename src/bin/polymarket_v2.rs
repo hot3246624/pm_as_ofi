@@ -90,6 +90,10 @@ fn log_config_self_check(
         coord.bid_size, coord.max_net_diff, coord.max_side_shares
     );
     info!(
+        "   min_order_size={:.2} min_hedge_size={:.2} hedge_round_up={}",
+        coord.min_order_size, coord.min_hedge_size, coord.hedge_round_up
+    );
+    info!(
         "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms",
         coord.tick_size,
         coord.reprice_threshold,
@@ -148,6 +152,15 @@ fn log_config_self_check(
             "⚠️ bid_size ({:.1}) > max_net_diff ({:.1}) → net gate blocks normal provides",
             coord.bid_size, coord.max_net_diff
         );
+    }
+    if coord.min_order_size > 0.0 && coord.min_order_size > coord.bid_size {
+        warn!(
+            "⚠️ min_order_size ({:.2}) > bid_size ({:.2}) → provide orders may be skipped",
+            coord.min_order_size, coord.bid_size
+        );
+    }
+    if coord.hedge_round_up {
+        warn!("⚠️ hedge_round_up enabled — small imbalances may be over-hedged");
     }
     if coord.pair_target >= 1.0 {
         warn!(
@@ -301,6 +314,46 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
         }
     }
     anyhow::bail!("Failed to resolve market from slug: {}", slug);
+}
+
+/// Fetch minimum order size for the current market outcomes via CLOB order book.
+/// Returns the max(min_order_size) across YES/NO to avoid rejections.
+async fn fetch_min_order_size(rest_url: &str, yes_asset_id: &str, no_asset_id: &str) -> anyhow::Result<f64> {
+    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
+    use polymarket_client_sdk::clob::types::request::OrderBookSummaryRequest;
+    use rust_decimal::prelude::ToPrimitive;
+
+    let parse_u256 = |raw: &str| -> anyhow::Result<alloy::primitives::U256> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("empty token_id");
+        }
+        if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+            alloy::primitives::U256::from_str_radix(hex, 16)
+                .map_err(|e| anyhow::anyhow!("invalid token_id hex '{}': {:?}", raw, e))
+        } else {
+            alloy::primitives::U256::from_str_radix(trimmed, 10)
+                .map_err(|e| anyhow::anyhow!("invalid token_id '{}': {:?}", raw, e))
+        }
+    };
+
+    let client = ClobClient::new(rest_url, ClobConfig::default())?;
+    let yes_id = parse_u256(yes_asset_id)?;
+    let no_id = parse_u256(no_asset_id)?;
+
+    let req_yes = OrderBookSummaryRequest::builder().token_id(yes_id).build();
+    let req_no = OrderBookSummaryRequest::builder().token_id(no_id).build();
+    let requests = [req_yes, req_no];
+    let books = client.order_books(&requests).await?;
+
+    let mut min_size: Option<f64> = None;
+    for book in books {
+        let v = book.min_order_size.to_f64().unwrap_or(0.0);
+        if v > 0.0 {
+            min_size = Some(min_size.map_or(v, |m| m.max(v)));
+        }
+    }
+    min_size.ok_or_else(|| anyhow::anyhow!("min_order_size unavailable from order_books"))
 }
 
 async fn maybe_log_claimable_positions(funder_address: Option<&str>, signer_address: Option<&str>) {
@@ -820,6 +873,20 @@ async fn main() -> anyhow::Result<()> {
     let mut auto_claim_state = AutoClaimState::default();
 
     let dry_run = coord_cfg_base.dry_run;
+    let min_order_size_env_raw = env::var("PM_MIN_ORDER_SIZE")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let min_order_size_env_val = min_order_size_env_raw
+        .as_ref()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| *v >= 0.0);
+    let min_order_size_auto = min_order_size_env_val.is_none();
+    if min_order_size_env_raw.is_some() && min_order_size_env_val.is_none() {
+        warn!(
+            "⚠️ Invalid PM_MIN_ORDER_SIZE='{}' — will attempt order book auto-detection",
+            min_order_size_env_raw.as_deref().unwrap_or_default()
+        );
+    }
 
     info!(
         "📊 Base Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
@@ -1367,6 +1434,32 @@ async fn main() -> anyhow::Result<()> {
                     );
                 } else {
                     warn!("⚠️ Failed to fetch balance for dynamic sizing. Falling back to env defaults.");
+                }
+            }
+        }
+
+        if min_order_size_auto {
+            match fetch_min_order_size(&base_settings.rest_url, &yes_asset_id, &no_asset_id).await {
+                Ok(auto_min) if auto_min > 0.0 => {
+                    let prev = coord_cfg.min_order_size;
+                    if auto_min > prev {
+                        coord_cfg.min_order_size = auto_min;
+                        info!(
+                            "🧭 Auto min_order_size from order book: {:.2} (prev {:.2})",
+                            auto_min, prev
+                        );
+                    } else {
+                        info!(
+                            "🧭 Order book min_order_size {:.2} <= configured {:.2} — keeping configured",
+                            auto_min, prev
+                        );
+                    }
+                }
+                Ok(_) => {
+                    warn!("⚠️ Order book reported non-positive min_order_size; keeping configured value");
+                }
+                Err(e) => {
+                    warn!("⚠️ Failed to auto-detect min_order_size from order book: {:?}", e);
                 }
             }
         }

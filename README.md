@@ -74,6 +74,9 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_DRY_RUN` | `true` | 模拟模式开关 |
 | `PM_PAIR_TARGET` | `0.99` | YES+NO 出价上限。越低越安全利润越高，但成交率下降 |
 | `PM_BID_SIZE` | `5.0` | Size per bid in **Shares** (1 Share = $1 Max Risk) |
+| `PM_MIN_ORDER_SIZE` | `1.0 (auto)` | 最小订单数量（未设置时自动从 order_book 探测并向上调整；小于该值的订单会被跳过） |
+| `PM_MIN_HEDGE_SIZE` | `0.0` | 对冲触发最小阈值（0=禁用） |
+| `PM_HEDGE_ROUND_UP` | `false` | 对冲不足最小订单时是否向上取整 |
 | `PM_TICK_SIZE` | `0.01` | Minimum price increment |
 | `PM_REPRICE_THRESHOLD` | `0.010` | Price drift required to trigger re-quote |
 | `PM_DEBOUNCE_MS` | `500` | Minimum interval between Provide orders (ms) |
@@ -122,6 +125,9 @@ POLYMARKET_MARKET_SLUG="btc-updown-5m"
 # 策略核心
 PM_PAIR_TARGET=0.985          # 保守让利 1.5%，每对锁利 $0.015
 PM_BID_SIZE=5.0               # 每侧 $5 挂单
+PM_MIN_ORDER_SIZE=5.0         # 最小订单数量（不配置则自动从 order_book 探测）
+PM_MIN_HEDGE_SIZE=0.0         # 对冲触发最小阈值（0=禁用）
+PM_HEDGE_ROUND_UP=false       # 对冲不足最小订单时是否向上取整
 PM_TICK_SIZE=0.01
 PM_REPRICE_THRESHOLD=0.010    # 1分钱漂移才换单，防撤单风暴
 PM_DEBOUNCE_MS=500            # 半秒防抖

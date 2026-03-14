@@ -88,6 +88,9 @@ All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused i
 | Parameter | Unit | Purpose | Key Interaction |
 | :--- | :--- | :--- | :--- |
 | `PM_BID_SIZE` | Shares | Provide order size | Dynamic: `balance × PM_BID_PCT` |
+| `PM_MIN_ORDER_SIZE` | Shares | Minimum order size | Auto-detected from order_book if unset; orders below are skipped |
+| `PM_MIN_HEDGE_SIZE` | Shares | Hedge trigger threshold | Hedges below are skipped |
+| `PM_HEDGE_ROUND_UP` | bool | Hedge rounding | Round up small hedges to min size |
 | `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamic: `balance × PM_NET_DIFF_PCT` |
 | `PM_MAX_SIDE_SHARES` | Shares | Max per-side gross exposure | Default = max_net_diff if unset |
 | `PM_MAX_POS_PCT` | Decimal | Target gross utilization | Dynamic: `balance × pct / pair_target` |
