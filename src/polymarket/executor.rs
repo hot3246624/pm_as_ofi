@@ -176,7 +176,7 @@ impl Executor {
 
         let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
         let mut req = OrdersRequest::default();
-        req.market = Some(market_id);
+        // req.market = Some(market_id); // Polymarket returns 400 if both market and asset_id are set in some cases
         let mut fetch_ok = true;
         
         for (side, asset_id) in [(Side::Yes, yes_id), (Side::No, no_id)] {

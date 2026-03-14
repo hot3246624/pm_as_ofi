@@ -399,11 +399,11 @@ impl UserWsListener {
             } else if owner != our_api_key {
                 owner_mismatch = true;
                 info!(
-                    "👤 Skipping maker_order: owner={}… ours={}…",
+                    "👤 Owner mismatch on maker_order (accepted anyway): owner={}… ours={}…",
                     &owner[..8.min(owner.len())],
                     &our_api_key[..8.min(our_api_key.len())],
                 );
-                continue;
+                // Removed: continue; // Do NOT skip the fill!
             }
 
             // Map asset_id to Side — Polymarket asset_ids are large decimal numbers
