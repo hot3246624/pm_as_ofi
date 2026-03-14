@@ -175,9 +175,9 @@ impl Executor {
         };
 
         let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
-        // Option 1: Filter by market if supported by the endpoint
         let mut req = OrdersRequest::default();
         req.market = Some(market_id);
+        let mut fetch_ok = true;
         
         for (side, asset_id) in [(Side::Yes, yes_id), (Side::No, no_id)] {
             req.asset_id = Some(asset_id);
@@ -187,6 +187,7 @@ impl Executor {
                     Ok(p) => p,
                     Err(e) => {
                         warn!("⚠️ Reconcile: orders fetch failed for {:?}: {:?}", side, e);
+                        fetch_ok = false;
                         break;
                     }
                 };
@@ -209,6 +210,12 @@ impl Executor {
                 }
                 cursor = Some(page.next_cursor);
             }
+        }
+
+        // P1 FIX: If either side failed to fetch, do NOT touch local state.
+        if !fetch_ok {
+            warn!("⚠️ Reconcile aborted: one or more sides failed to fetch — local state preserved");
+            return;
         }
 
         for side in [Side::Yes, Side::No] {
@@ -392,17 +399,26 @@ impl Executor {
                 warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
                 let is_429 = Self::is_rate_limit_error(&final_err);
                 let is_balance = Self::is_balance_or_allowance_error(&final_err);
+                let is_validation = Self::is_validation_error(&final_err);
                 
                 let cooldown_ms = if is_429 {
                     10_000 // 10s backoff for rate limiting
                 } else if is_balance {
                     30_000 // 30s for balance issues
+                } else if is_validation {
+                    5_000 // 5s for validation errors (size precision, lot size, etc.)
                 } else {
                     0
                 };
 
                 if cooldown_ms > 0 {
-                    let reason = if is_429 { "rate limit" } else { "balance/allowance" };
+                    let reason = if is_429 {
+                        "rate limit"
+                    } else if is_balance {
+                        "balance/allowance"
+                    } else {
+                        "validation/precision"
+                    };
                     warn!(
                         "⛔ Hard reject on {:?}: pausing new placements for {}s ({})",
                         side,
@@ -587,7 +603,11 @@ impl Executor {
         }
         // BUY maker bids must not round up to a more aggressive price.
         let price_rounded = (price * inv_tick).floor() / inv_tick;
-        let size_rounded = (size * 1_000_000.0).round() / 1_000_000.0;
+        // P0 FIX: CLOB max lot size = 2 decimal places. Truncate DOWN to avoid over-sizing.
+        let size_rounded = (size * 100.0).floor() / 100.0;
+        if size_rounded < 0.01 {
+            anyhow::bail!("size {:.6} rounds to 0 at 2dp — skipping", size);
+        }
 
         let price_decimal = rust_decimal::Decimal::from_f64(price_rounded)
             .ok_or_else(|| anyhow::anyhow!("Invalid price"))?;
@@ -663,6 +683,15 @@ impl Executor {
     fn is_rate_limit_error(err: &anyhow::Error) -> bool {
         let lower = format!("{:#}", err).to_ascii_lowercase();
         lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit")
+    }
+
+    /// P2 FIX: Detect validation/precision errors to apply cooldown and prevent retry storms.
+    fn is_validation_error(err: &anyhow::Error) -> bool {
+        let lower = format!("{:#}", err).to_ascii_lowercase();
+        lower.contains("decimal places")
+            || lower.contains("lot size")
+            || lower.contains("order crosses book")
+            || lower.contains("rounds to 0")
     }
 
     /// Get count of open orders for a side.

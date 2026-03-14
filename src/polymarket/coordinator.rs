@@ -819,11 +819,14 @@ impl StrategyCoordinator {
             debug!("⚠️ aggressive_price: ceiling ({:.3}) >= best_ask ({:.3}) | Bidding 1 tick below ask", ceiling, best_ask);
         }
 
-        let one_tick_below = best_ask - self.cfg.tick_size;
-        if one_tick_below <= 0.0 {
+        // P3 FIX: Extra tick margin to reduce post-only cross-book rejections
+        // caused by stale book data between local calculation and exchange arrival.
+        let safety_margin = 2.0 * self.cfg.tick_size;
+        let safe_below = best_ask - safety_margin;
+        if safe_below <= 0.0 {
             return 0.0;
         }
-        self.safe_price(ceiling.min(one_tick_below))
+        self.safe_price(ceiling.min(safe_below))
     }
 
     /// FIX #2: Clamp + floor to tick. Prevents negative/out-of-range prices.
@@ -1069,7 +1072,8 @@ mod tests {
     #[test]
     fn test_aggressive_ask_wins() {
         let (_, _, _, _, _, c) = make(cfg());
-        assert!((c.aggressive_price(0.60, 0.52) - 0.51).abs() < 1e-9);
+        // P3: 2-tick safety margin → best_ask 0.52 → 0.50 (not 0.51)
+        assert!((c.aggressive_price(0.60, 0.52) - 0.50).abs() < 1e-9);
     }
 
     // ── Global Kill Switch: ANY toxic → cancel BOTH ──
