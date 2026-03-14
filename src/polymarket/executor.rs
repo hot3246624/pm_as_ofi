@@ -33,6 +33,7 @@ type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>
 #[derive(Debug, Clone)]
 pub struct ExecutorConfig {
     pub rest_url: String,
+    pub market_id: String,
     pub yes_asset_id: String,
     pub no_asset_id: String,
     pub tick_size: f64,
@@ -144,6 +145,14 @@ impl Executor {
             None => return,
         };
 
+        let market_id = match self.cfg.market_id.parse::<alloy::primitives::B256>() {
+            Ok(id) => id,
+            Err(e) => {
+                warn!("⚠️ Reconcile: invalid market_id '{}': {:?}", self.cfg.market_id, e);
+                return;
+            }
+        };
+
         let yes_id = match alloy::primitives::U256::from_str_radix(&self.cfg.yes_asset_id, 10) {
             Ok(v) => v,
             Err(e) => {
@@ -166,8 +175,11 @@ impl Executor {
         };
 
         let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
+        // Option 1: Filter by market if supported by the endpoint
+        let mut req = OrdersRequest::default();
+        req.market = Some(market_id);
+        
         for (side, asset_id) in [(Side::Yes, yes_id), (Side::No, no_id)] {
-            let mut req = OrdersRequest::default();
             req.asset_id = Some(asset_id);
             let mut cursor: Option<String> = None;
             loop {

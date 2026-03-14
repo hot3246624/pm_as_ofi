@@ -1536,6 +1536,7 @@ async fn main() -> anyhow::Result<()> {
         let executor = Executor::new(
             ExecutorConfig {
                 rest_url: settings.rest_url.clone(),
+                market_id: market_id.clone(),
                 yes_asset_id: yes_asset_id.clone(),
                 no_asset_id: no_asset_id.clone(),
                 tick_size: coord_cfg.tick_size,
