@@ -1,9 +1,14 @@
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use super::messages::{BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult};
+use super::messages::{
+    BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult,
+};
 use super::types::Side;
+
+const PENDING_SUBMIT_TIMEOUT: Duration = Duration::from_secs(8);
+const PENDING_CANCEL_TIMEOUT: Duration = Duration::from_secs(8);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderState {
@@ -132,8 +137,10 @@ impl OrderManager {
         // but typically OrderPlaced follows PendingSubmit.
         if let OrderState::PendingSubmit(_) = tracker.state {
             tracker.state = OrderState::Live(target);
+            info!("✅ OMS: {:?} OrderPlaced -> Live", side);
         } else if let OrderState::Idle = tracker.state {
-             tracker.state = OrderState::Live(target);
+            tracker.state = OrderState::Live(target);
+            info!("✅ OMS: {:?} OrderPlaced (late) -> Live", side);
         }
         self.pump(side).await;
     }
@@ -150,7 +157,7 @@ impl OrderManager {
             let until = Instant::now() + Duration::from_millis(cooldown_ms);
             tracker.cooldown_until = Some(until);
             warn!(
-                "⏳ OMS: {:?} OrderFailed — cooldown {}s (balance/allowance reject)",
+                "⏳ OMS: {:?} OrderFailed — cooldown {}s (hard reject)",
                 side,
                 cooldown_ms / 1000,
             );
@@ -168,7 +175,7 @@ impl OrderManager {
         info!("✅ OMS: {:?} OrderFilled -> Slot freed", side);
         tracker.state = OrderState::Idle;
         // Coordinator must re-issue Target if needed on next tick
-        tracker.desired = None; 
+        tracker.desired = None;
         self.pump(side).await;
     }
 
@@ -177,7 +184,7 @@ impl OrderManager {
             Side::Yes => &mut self.yes,
             Side::No => &mut self.no,
         };
-        debug!("🗑️ OMS: {:?} CancelAck -> State Idle", side);
+        info!("🗑️ OMS: {:?} CancelAck -> Idle", side);
         tracker.state = OrderState::Idle;
         self.pump(side).await;
     }
@@ -197,8 +204,44 @@ impl OrderManager {
             tracker.cooldown_until = None; // Cooldown expired; resume normal operation.
         }
 
+        // Watchdog: prevent permanent deadlock if Executor feedback is dropped.
+        // Safety is preserved by Executor's open_orders guard (no double placement).
+        let submit_timed_out = matches!(tracker.state, OrderState::PendingSubmit(_))
+            && tracker.last_action.elapsed() > PENDING_SUBMIT_TIMEOUT;
+        if submit_timed_out {
+            warn!(
+                "⚠️ OMS: {:?} PendingSubmit timeout (>{}s) — forcing progress",
+                side,
+                PENDING_SUBMIT_TIMEOUT.as_secs()
+            );
+            if tracker.desired.is_none() {
+                let _ = self
+                    .exec_tx
+                    .send(ExecutionCmd::CancelSide {
+                        side,
+                        reason: CancelReason::Reprice,
+                    })
+                    .await;
+                tracker.state = OrderState::PendingCancel(None);
+                tracker.last_action = Instant::now();
+            } else {
+                tracker.state = OrderState::Idle;
+            }
+        }
+
+        let cancel_timed_out = matches!(tracker.state, OrderState::PendingCancel(_))
+            && tracker.last_action.elapsed() > PENDING_CANCEL_TIMEOUT;
+        if cancel_timed_out {
+            warn!(
+                "⚠️ OMS: {:?} PendingCancel timeout (>{}s) — resetting to Idle",
+                side,
+                PENDING_CANCEL_TIMEOUT.as_secs()
+            );
+            tracker.state = OrderState::Idle;
+        }
+
         let current_state = tracker.state.clone();
-        
+
         match current_state {
             OrderState::Idle => {
                 if let Some(desired) = &tracker.desired {
@@ -232,19 +275,25 @@ impl OrderManager {
                         // Perfect, our live order matches what we want.
                     } else {
                         // Mismatch! Must cancel `live` first.
-                        let _ = self.exec_tx.send(ExecutionCmd::CancelSide { 
-                            side, 
-                            reason: CancelReason::Reprice 
-                        }).await;
+                        let _ = self
+                            .exec_tx
+                            .send(ExecutionCmd::CancelSide {
+                                side,
+                                reason: CancelReason::Reprice,
+                            })
+                            .await;
                         tracker.state = OrderState::PendingCancel(Some(live));
                         tracker.last_action = Instant::now();
                     }
                 } else {
                     // We have a live order, but want None.
-                    let _ = self.exec_tx.send(ExecutionCmd::CancelSide { 
-                        side, 
-                        reason: CancelReason::InventoryLimit 
-                    }).await;
+                    let _ = self
+                        .exec_tx
+                        .send(ExecutionCmd::CancelSide {
+                            side,
+                            reason: CancelReason::InventoryLimit,
+                        })
+                        .await;
                     tracker.state = OrderState::PendingCancel(Some(live));
                     tracker.last_action = Instant::now();
                 }

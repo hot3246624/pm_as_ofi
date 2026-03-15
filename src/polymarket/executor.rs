@@ -92,9 +92,8 @@ impl Executor {
         );
         let reconcile_enabled =
             self.cfg.reconcile_interval_secs > 0 && !self.cfg.dry_run && self.client.is_some();
-        let mut reconcile_tick = tokio::time::interval(Duration::from_secs(
-            self.cfg.reconcile_interval_secs.max(1),
-        ));
+        let mut reconcile_tick =
+            tokio::time::interval(Duration::from_secs(self.cfg.reconcile_interval_secs.max(1)));
 
         loop {
             tokio::select! {
@@ -136,8 +135,8 @@ impl Executor {
     // ─────────────────────────────────────────────────
 
     async fn reconcile_open_orders(&mut self) {
-        use polymarket_client_sdk::clob::types::OrderStatusType;
         use polymarket_client_sdk::clob::types::request::OrdersRequest;
+        use polymarket_client_sdk::clob::types::OrderStatusType;
         use rust_decimal::prelude::ToPrimitive;
 
         let client = match self.client.as_ref() {
@@ -148,7 +147,10 @@ impl Executor {
         let market_id = match self.cfg.market_id.parse::<alloy::primitives::B256>() {
             Ok(id) => id,
             Err(e) => {
-                warn!("⚠️ Reconcile: invalid market_id '{}': {:?}", self.cfg.market_id, e);
+                warn!(
+                    "⚠️ Reconcile: invalid market_id '{}': {:?}",
+                    self.cfg.market_id, e
+                );
                 return;
             }
         };
@@ -175,47 +177,56 @@ impl Executor {
         };
 
         let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
-        let mut req = OrdersRequest::default();
-        // req.market = Some(market_id); // Polymarket returns 400 if both market and asset_id are set in some cases
-        let mut fetch_ok = true;
-        
-        for (side, asset_id) in [(Side::Yes, yes_id), (Side::No, no_id)] {
-            req.asset_id = Some(asset_id);
-            let mut cursor: Option<String> = None;
-            loop {
-                let page = match client.orders(&req, cursor.clone()).await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        warn!("⚠️ Reconcile: orders fetch failed for {:?}: {:?}", side, e);
-                        fetch_ok = false;
-                        break;
-                    }
-                };
-                for ord in page.data {
-                    if matches!(ord.status, OrderStatusType::Canceled) {
-                        continue;
-                    }
-                    let orig = ord.original_size.to_f64().unwrap_or(0.0);
-                    let matched = ord.size_matched.to_f64().unwrap_or(0.0);
-                    let remaining = (orig - matched).max(0.0);
-                    if remaining > 1e-9 {
-                        remote_by_side
-                            .entry(side)
-                            .or_default()
-                            .insert(ord.id.clone(), remaining);
-                    }
+        // NOTE:
+        // - `/data/orders` can reject some filtered payloads with 400 (`invalid order params payload`).
+        // - Fetch unfiltered pages, then filter by (market, asset_id) locally.
+        // This keeps reconciliation alive instead of hard-failing on query-shape changes.
+        let req = OrdersRequest::default();
+        let mut cursor: Option<String> = None;
+        loop {
+            let page = match client.orders(&req, cursor.clone()).await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(
+                        "⚠️ Reconcile: orders fetch failed (unfiltered): {:?} — local state preserved",
+                        e
+                    );
+                    return;
                 }
-                if page.next_cursor.is_empty() {
-                    break;
-                }
-                cursor = Some(page.next_cursor);
-            }
-        }
+            };
 
-        // P1 FIX: If either side failed to fetch, do NOT touch local state.
-        if !fetch_ok {
-            warn!("⚠️ Reconcile aborted: one or more sides failed to fetch — local state preserved");
-            return;
+            for ord in page.data {
+                if ord.market != market_id {
+                    continue;
+                }
+
+                let side = if ord.asset_id == yes_id {
+                    Side::Yes
+                } else if ord.asset_id == no_id {
+                    Side::No
+                } else {
+                    continue;
+                };
+
+                if matches!(ord.status, OrderStatusType::Canceled) {
+                    continue;
+                }
+
+                let orig = ord.original_size.to_f64().unwrap_or(0.0);
+                let matched = ord.size_matched.to_f64().unwrap_or(0.0);
+                let remaining = (orig - matched).max(0.0);
+                if remaining > 1e-9 {
+                    remote_by_side
+                        .entry(side)
+                        .or_default()
+                        .insert(ord.id.clone(), remaining);
+                }
+            }
+
+            if page.next_cursor.is_empty() {
+                break;
+            }
+            cursor = Some(page.next_cursor);
         }
 
         for side in [Side::Yes, Side::No] {
@@ -349,7 +360,9 @@ impl Executor {
                     .result_tx
                     .send(OrderResult::OrderFailed {
                         side,
-                        cooldown_ms: 0,
+                        // Short backoff to avoid tight retry loops when OMS and
+                        // executor are temporarily out-of-sync on live orders.
+                        cooldown_ms: 1_000,
                     })
                     .await;
                 return;
@@ -363,10 +376,13 @@ impl Executor {
                     orders.insert(order_id, size);
                 }
                 // Notify OrderManager that state can transition to Live
-                let _ = self.result_tx.send(OrderResult::OrderPlaced {
-                    side,
-                    target: DesiredTarget { side, price, size },
-                }).await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderPlaced {
+                        side,
+                        target: DesiredTarget { side, price, size },
+                    })
+                    .await;
                 // NO FillEvent here. Fills come from User WS only.
             }
             Err(e) => {
@@ -393,10 +409,13 @@ impl Executor {
                             if let Some(orders) = self.open_orders.get_mut(&side) {
                                 orders.insert(order_id, size);
                             }
-                            let _ = self.result_tx.send(OrderResult::OrderPlaced {
-                                side,
-                                target: DesiredTarget { side, price, size },
-                            }).await;
+                            let _ = self
+                                .result_tx
+                                .send(OrderResult::OrderPlaced {
+                                    side,
+                                    target: DesiredTarget { side, price, size },
+                                })
+                                .await;
                             return;
                         }
                         Err(retry_err) => {
@@ -409,7 +428,7 @@ impl Executor {
                 let is_429 = Self::is_rate_limit_error(&final_err);
                 let is_balance = Self::is_balance_or_allowance_error(&final_err);
                 let is_validation = Self::is_validation_error(&final_err);
-                
+
                 let cooldown_ms = if is_429 {
                     10_000 // 10s backoff for rate limiting
                 } else if is_balance {
@@ -763,7 +782,7 @@ pub async fn init_clob_client(
 
     let explicit_api_creds = api_credentials.clone();
     use polymarket_client_sdk::clob::types::SignatureType;
-    
+
     let default_sig_type = if funder_address == derived_safe {
         SignatureType::GnosisSafe
     } else if funder_address == Some(signer_addr) {
@@ -781,7 +800,7 @@ pub async fn init_clob_client(
         Some(0) => SignatureType::Eoa,
         _ => default_sig_type,
     };
-    
+
     if funder_address.is_some() {
         info!(
             "🔐 Auth mode | signature_type={} (0=EOA,1=Proxy,2=GnosisSafe)",
