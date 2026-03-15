@@ -869,10 +869,13 @@ async fn main() -> anyhow::Result<()> {
     let inv_cfg_base = InventoryConfig::from_env();
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg_base = CoordinatorConfig::from_env();
-    let auto_claim_cfg = AutoClaimConfig::from_env();
+    let mut auto_claim_cfg = AutoClaimConfig::from_env();
     let mut auto_claim_state = AutoClaimState::default();
 
     let dry_run = coord_cfg_base.dry_run;
+    if dry_run {
+        auto_claim_cfg.dry_run = true;
+    }
     let min_order_size_env_raw = env::var("PM_MIN_ORDER_SIZE")
         .ok()
         .filter(|s| !s.trim().is_empty());
