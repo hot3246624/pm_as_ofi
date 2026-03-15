@@ -214,13 +214,23 @@ fn is_prefix_slug(slug: &str) -> bool {
         .unwrap_or(true)
 }
 
-/// Detect interval from prefix: "...-5m" → 300, "...-15m" → 900.
+/// Detect interval from prefix: "...-5m" → 300, "...-15m" → 900, "...-1h" → 3600.
 fn detect_interval(prefix: &str) -> u64 {
-    if prefix.contains("-5m") {
+    if prefix.contains("-1m") {
+        60
+    } else if prefix.contains("-5m") {
         300
-    } else {
+    } else if prefix.contains("-15m") {
         900
-    } // default 15min
+    } else if prefix.contains("-30m") {
+        1800
+    } else if prefix.contains("-1h") {
+        3600
+    } else if prefix.contains("-1d") || prefix.contains("-daily") {
+        86400
+    } else {
+        900 // default 15min
+    }
 }
 
 fn should_skip_entry_window(now_unix: u64, end_ts: u64, interval: u64, grace: u64) -> bool {
