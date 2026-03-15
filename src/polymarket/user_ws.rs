@@ -398,12 +398,13 @@ impl UserWsListener {
                 // scoped to our market/subscription, so it's likely ours.
             } else if owner != our_api_key {
                 owner_mismatch = true;
-                info!(
-                    "👤 Owner mismatch on maker_order (accepted anyway): owner={}… ours={}…",
+                // Only log at debug level so we don't spam the console when other people's orders arrive in the feed.
+                debug!(
+                    "👤 Skipping maker_order: owner={}… ours={}…",
                     &owner[..8.min(owner.len())],
                     &our_api_key[..8.min(our_api_key.len())],
                 );
-                // Removed: continue; // Do NOT skip the fill!
+                continue; // CRITICAL: Skip other people's fills!
             }
 
             // Map asset_id to Side — Polymarket asset_ids are large decimal numbers
@@ -491,8 +492,8 @@ impl UserWsListener {
 
         if fills.is_empty() {
             if owner_mismatch {
-                warn!(
-                    "👤 maker_orders owner mismatch — User WS auth API key may not match order-owner API key"
+                debug!(
+                    "👤 Ignored trades: maker_orders belong to other users (expected behavior in shared feeds)"
                 );
             } else if owner_missing {
                 warn!("👤 maker_orders owner missing — accepted only by market-scope filtering");

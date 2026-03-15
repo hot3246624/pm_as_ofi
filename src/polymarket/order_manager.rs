@@ -89,6 +89,9 @@ impl OrderManager {
                 }
                 result = self.result_rx.recv() => {
                     match result {
+                        Some(OrderResult::OrderPlaced { side, target }) => {
+                            self.handle_placed(side, target).await;
+                        }
                         Some(OrderResult::OrderFailed { side, cooldown_ms }) => {
                             self.handle_failed(side, cooldown_ms).await;
                         }
@@ -117,6 +120,22 @@ impl OrderManager {
         } else {
             tracker.desired = Some(target);
         }
+    }
+
+    async fn handle_placed(&mut self, side: Side, target: DesiredTarget) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        // Transition from PendingSubmit to Live.
+        // If we are already in some other state (like PendingCancel), do not overwrite blindly,
+        // but typically OrderPlaced follows PendingSubmit.
+        if let OrderState::PendingSubmit(_) = tracker.state {
+            tracker.state = OrderState::Live(target);
+        } else if let OrderState::Idle = tracker.state {
+             tracker.state = OrderState::Live(target);
+        }
+        self.pump(side).await;
     }
 
     async fn handle_failed(&mut self, side: Side, cooldown_ms: u64) {

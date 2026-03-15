@@ -192,6 +192,8 @@ pub enum CancelReason {
 /// Allows Coordinator to reset ghost slots when orders fail or fill completely.
 #[derive(Debug, Clone)]
 pub enum OrderResult {
+    /// Order successfully placed — OrderManager can transition to Live state.
+    OrderPlaced { side: Side, target: DesiredTarget },
     /// Order placement failed — Coordinator should reset the slot.
     OrderFailed { side: Side, cooldown_ms: u64 },
     /// Order fully filled — Coordinator should release the slot for new orders.

@@ -362,6 +362,11 @@ impl Executor {
                 if let Some(orders) = self.open_orders.get_mut(&side) {
                     orders.insert(order_id, size);
                 }
+                // Notify OrderManager that state can transition to Live
+                let _ = self.result_tx.send(OrderResult::OrderPlaced {
+                    side,
+                    target: DesiredTarget { side, price, size },
+                }).await;
                 // NO FillEvent here. Fills come from User WS only.
             }
             Err(e) => {
@@ -388,6 +393,10 @@ impl Executor {
                             if let Some(orders) = self.open_orders.get_mut(&side) {
                                 orders.insert(order_id, size);
                             }
+                            let _ = self.result_tx.send(OrderResult::OrderPlaced {
+                                side,
+                                target: DesiredTarget { side, price, size },
+                            }).await;
                             return;
                         }
                         Err(retry_err) => {
