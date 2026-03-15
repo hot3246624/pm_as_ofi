@@ -1,16 +1,15 @@
-//! Strategy Coordinator — Occam's Razor with Lead-Lag Global Kill Switch.
+//! Strategy Coordinator — Occam's Razor with per-side toxicity controls.
 //!
 //! # Three DRY-RUN fixes applied:
 //!
-//! 1. **Lead-Lag Global Kill Switch**: If ANY side's |OFI| > threshold,
-//!    cancel BOTH sides immediately. Arbitrageurs transmit imbalance
-//!    across YES/NO books — toxic flow on one side predicts the other.
+//! 1. **Per-Side Toxicity Guard**: If one side is toxic/stale, only that side
+//!    is paused. The opposite side can still quote/hedge if healthy.
 //!
 //! 2. **Price Boundary Clamping**: all bid prices are tick-aligned and
 //!    clamped into `(tick, 1 - tick)`.
 //!    Prevents negative or >1.0 prices from math edge cases.
 //!
-//! 3. **Anti-Thrashing**: 200ms debounce per side after placing a bid.
+//! 3. **Anti-Thrashing**: debounce plus toxicity recovery hold-down.
 //!    Empty book → refuse to bid (return 0.0). Never use ceiling as fallback.
 
 use std::time::{Duration, Instant};
@@ -66,6 +65,8 @@ pub struct CoordinatorConfig {
     pub dry_run: bool,
     /// Configurable TTL for stale book data (ms). Default 3000ms.
     pub stale_ttl_ms: u64,
+    /// Hold-down window after toxicity recovers to prevent rapid cancel/place oscillation.
+    pub toxic_recovery_hold_ms: u64,
 }
 
 impl Default for CoordinatorConfig {
@@ -89,6 +90,7 @@ impl Default for CoordinatorConfig {
             max_loss_pct: 0.02,       // Hard loss cap (2%)
             dry_run: true,
             stale_ttl_ms: 3000,
+            toxic_recovery_hold_ms: 1200,
         }
     }
 }
@@ -219,6 +221,11 @@ impl CoordinatorConfig {
                 c.stale_ttl_ms = ms;
             }
         }
+        if let Ok(v) = std::env::var("PM_TOXIC_RECOVERY_HOLD_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                c.toxic_recovery_hold_ms = ms;
+            }
+        }
         c
     }
 }
@@ -281,6 +288,12 @@ pub struct StrategyCoordinator {
     no_last_ts: Instant,
     /// Opt-1: Track session start for A-S time decay calculation.
     market_start: Instant,
+    /// Per-side hold-down deadline after toxicity recovers.
+    yes_toxic_hold_until: Instant,
+    no_toxic_hold_until: Instant,
+    /// Last observed toxicity state (edge detection).
+    was_toxic_yes: bool,
+    was_toxic_no: bool,
     stats: Stats,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
@@ -327,6 +340,10 @@ impl StrategyCoordinator {
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
             no_last_ts: Instant::now() - std::time::Duration::from_secs(60),
             market_start: Instant::now(),
+            yes_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
+            no_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
+            was_toxic_yes: false,
+            was_toxic_no: false,
             stats: Stats::default(),
             ofi_rx,
             inv_rx,
@@ -454,51 +471,64 @@ impl StrategyCoordinator {
         // ── Environmental Health Check ──
         let now = Instant::now();
         let ttl = Duration::from_millis(self.cfg.stale_ttl_ms);
-        
+
         let yes_stale = now.duration_since(self.last_valid_ts_yes) > ttl;
         let no_stale = now.duration_since(self.last_valid_ts_no) > ttl;
         let is_toxic_yes = ofi.yes.is_toxic;
         let is_toxic_no = ofi.no.is_toxic;
+
+        // Toxicity recovery hold-down: avoid immediate re-entry around threshold boundary.
+        let hold = Duration::from_millis(self.cfg.toxic_recovery_hold_ms);
+        if self.was_toxic_yes && !is_toxic_yes {
+            self.yes_toxic_hold_until = now + hold;
+        }
+        if self.was_toxic_no && !is_toxic_no {
+            self.no_toxic_hold_until = now + hold;
+        }
+        self.was_toxic_yes = is_toxic_yes;
+        self.was_toxic_no = is_toxic_no;
+
+        let yes_toxic_hold = now < self.yes_toxic_hold_until;
+        let no_toxic_hold = now < self.no_toxic_hold_until;
+        let yes_toxic_blocked = is_toxic_yes || yes_toxic_hold;
+        let no_toxic_blocked = is_toxic_no || no_toxic_hold;
 
         // Priority 1: 30s Staleness Guard (Critical Shutdown)
         if self.is_book_stale() {
             if self.yes_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing YES");
                 self.stats.cancel_stale += 1;
-                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None)
-                    .await;
+                self.clear_target(Side::Yes, CancelReason::StaleData).await;
             }
             if self.no_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing NO");
                 self.stats.cancel_stale += 1;
-                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None)
-                    .await;
+                self.clear_target(Side::No, CancelReason::StaleData).await;
             }
             return;
         }
 
-        // Priority 2: Toxic/Stale guard (independent of book availability)
-        let global_toxic = is_toxic_yes || is_toxic_no;
-        if global_toxic || yes_stale {
+        // Priority 2: Per-side Toxic/Stale guard (independent of book availability)
+        if yes_toxic_blocked || yes_stale {
             if self.yes_target.is_some() {
-                if global_toxic {
+                if yes_toxic_blocked {
                     self.stats.cancel_toxic += 1;
+                    self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
                 } else {
                     self.stats.cancel_stale += 1;
+                    self.clear_target(Side::Yes, CancelReason::StaleData).await;
                 }
-                self.place_or_reprice(Side::Yes, 0.0, 0.0, BidReason::Provide, None)
-                    .await;
             }
         }
-        if global_toxic || no_stale {
+        if no_toxic_blocked || no_stale {
             if self.no_target.is_some() {
-                if global_toxic {
+                if no_toxic_blocked {
                     self.stats.cancel_toxic += 1;
+                    self.clear_target(Side::No, CancelReason::ToxicFlow).await;
                 } else {
                     self.stats.cancel_stale += 1;
+                    self.clear_target(Side::No, CancelReason::StaleData).await;
                 }
-                self.place_or_reprice(Side::No, 0.0, 0.0, BidReason::Provide, None)
-                    .await;
             }
         }
 
@@ -511,7 +541,14 @@ impl StrategyCoordinator {
 
         // Priority 4: Toxic or Stale (3s TTL) → Selective Shutdown
         // If a side is unhealthy, its price will be 0.0 in the unified state logic below.
-        self.state_unified(&inv, &ub, yes_stale, no_stale, is_toxic_yes, is_toxic_no)
+        self.state_unified(
+            &inv,
+            &ub,
+            yes_stale,
+            no_stale,
+            yes_toxic_blocked,
+            no_toxic_blocked,
+        )
             .await;
     }
 
@@ -526,8 +563,8 @@ impl StrategyCoordinator {
         ub: &Book,
         yes_stale: bool,
         no_stale: bool,
-        is_toxic_yes: bool,
-        is_toxic_no: bool,
+        yes_toxic_blocked: bool,
+        no_toxic_blocked: bool,
     ) {
         let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
         let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
@@ -565,14 +602,13 @@ impl StrategyCoordinator {
         // 3. Health Overrides (Toxicity / Staleness)
         // NOTE: Stats (cancel_toxic/cancel_stale) are counted in tick() Priority 2,
         // not here, to prevent double-counting when both paths execute.
-        let global_toxic = is_toxic_yes || is_toxic_no;
-        if yes_stale || global_toxic {
+        if yes_stale || yes_toxic_blocked {
             if bid_yes > 0.0 {
                 debug!("🚫 YES {} -> skip bid", if yes_stale { "stale" } else { "toxic" });
             }
             bid_yes = 0.0;
         }
-        if no_stale || global_toxic {
+        if no_stale || no_toxic_blocked {
             if bid_no > 0.0 {
                 debug!("🚫 NO {} -> skip bid", if no_stale { "stale" } else { "toxic" });
             }
@@ -602,7 +638,7 @@ impl StrategyCoordinator {
                     block_no_provide = true;
                 }
 
-                if agg_no > 0.0 && allow_no_hedge && !no_stale && !is_toxic_no {
+                if agg_no > 0.0 && allow_no_hedge && !no_stale && !no_toxic_blocked {
                     let hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
                     let hedge_no = self.safe_price(hedge_no);
 
@@ -641,7 +677,7 @@ impl StrategyCoordinator {
                     block_yes_provide = true;
                 }
 
-                if agg_yes > 0.0 && allow_yes_hedge && !yes_stale && !is_toxic_yes {
+                if agg_yes > 0.0 && allow_yes_hedge && !yes_stale && !yes_toxic_blocked {
                     let hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
                     let hedge_yes = self.safe_price(hedge_yes);
 
@@ -678,22 +714,36 @@ impl StrategyCoordinator {
         }
 
         if !hedge_dispatched_yes {
-            let price = if allow_yes_provide { bid_yes } else { 0.0 };
             if !allow_yes_provide && self.yes_target.is_some() {
                 self.stats.cancel_inv += 1;
                 self.stats.skipped_inv_limit += 1;
             }
-            self.place_or_reprice(Side::Yes, price, self.cfg.bid_size, BidReason::Provide, None)
-                .await;
+            if !allow_yes_provide {
+                self.clear_target(Side::Yes, CancelReason::InventoryLimit).await;
+            } else if bid_yes > 0.0 {
+                self.place_or_reprice(Side::Yes, bid_yes, self.cfg.bid_size, BidReason::Provide, None)
+                    .await;
+            } else if yes_toxic_blocked {
+                self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
+            } else if yes_stale {
+                self.clear_target(Side::Yes, CancelReason::StaleData).await;
+            }
         }
         if !hedge_dispatched_no {
-            let price = if allow_no_provide { bid_no } else { 0.0 };
             if !allow_no_provide && self.no_target.is_some() {
                 self.stats.cancel_inv += 1;
                 self.stats.skipped_inv_limit += 1;
             }
-            self.place_or_reprice(Side::No, price, self.cfg.bid_size, BidReason::Provide, None)
-                .await;
+            if !allow_no_provide {
+                self.clear_target(Side::No, CancelReason::InventoryLimit).await;
+            } else if bid_no > 0.0 {
+                self.place_or_reprice(Side::No, bid_no, self.cfg.bid_size, BidReason::Provide, None)
+                    .await;
+            } else if no_toxic_blocked {
+                self.clear_target(Side::No, CancelReason::ToxicFlow).await;
+            } else if no_stale {
+                self.clear_target(Side::No, CancelReason::StaleData).await;
+            }
         }
     }
 
@@ -881,10 +931,10 @@ impl StrategyCoordinator {
 
         // OPTIMIZATION: Bypassing debounce for 0.0 price (Cancellation).
         // If we want to cancel, we should do it immediately, especially during toxic/stale events.
-        // Also, skip redundant SetTarget(0.0) if no order is active.
+        // Also, skip redundant ClearTarget if no order is active.
         if price <= 0.0 {
             if active {
-                self.place(side, 0.0, 0.0, reason).await;
+                self.clear_target(side, CancelReason::InventoryLimit).await;
             }
             return;
         }
@@ -913,6 +963,29 @@ impl StrategyCoordinator {
         }
     }
 
+    async fn clear_target(&mut self, side: Side, reason: CancelReason) {
+        let active = match side {
+            Side::Yes => self.yes_target.is_some(),
+            Side::No => self.no_target.is_some(),
+        };
+        if !active {
+            return;
+        }
+
+        match side {
+            Side::Yes => self.yes_target = None,
+            Side::No => self.no_target = None,
+        };
+
+        debug!("🗑️ Cancel {:?} ({:?})", side, reason);
+        if self.cfg.dry_run {
+            info!("📝 DRY cancel {:?} ({:?})", side, reason);
+            return;
+        }
+
+        let _ = self.om_tx.send(OrderManagerCmd::ClearTarget { side, reason }).await;
+    }
+
     // ═════════════════════════════════════════════════
     async fn handle_market_data(&mut self, msg: MarketDataMsg) {
         match msg {
@@ -929,23 +1002,11 @@ impl StrategyCoordinator {
 
     async fn place(&mut self, side: Side, price: f64, size: f64, reason: BidReason) {
         if price <= 0.0 {
-            match side {
-                Side::Yes => self.yes_target = None,
-                Side::No => self.no_target = None,
+            let cancel_reason = match reason {
+                BidReason::Hedge => CancelReason::Reprice,
+                BidReason::Provide => CancelReason::InventoryLimit,
             };
-
-            debug!("🗑️ Cancel {:?} ({:?})", side, reason);
-            if self.cfg.dry_run {
-                info!("📝 DRY cancel {:?} ({:?})", side, reason);
-                return;
-            }
-
-            let target = DesiredTarget {
-                side,
-                price: 0.0,
-                size: 0.0,
-            };
-            let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
+            self.clear_target(side, cancel_reason).await;
             return;
         }
 
@@ -979,7 +1040,7 @@ impl StrategyCoordinator {
         let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;
     }
 
-    // cancel method removed as place_or_reprice(0.0) handles cancellation.
+    // clear_target() handles explicit cancellation with reason routing.
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1076,10 +1137,10 @@ mod tests {
         assert!((c.aggressive_price(0.60, 0.52) - 0.50).abs() < 1e-9);
     }
 
-    // ── Global Kill Switch: ANY toxic → cancel BOTH ──
+    // ── Per-side toxicity guard ──
 
     #[tokio::test]
-    async fn test_global_kill_cancels_both_sides() {
+    async fn test_toxic_cancels_only_toxic_side() {
         let (o, _i, m, _k, mut e, mut coord) = make(cfg());
         coord.yes_target = Some(DesiredTarget {
             side: Side::Yes, price: 0.45, size: 2.0
@@ -1088,7 +1149,7 @@ mod tests {
             side: Side::No, price: 0.50, size: 2.0
         });
 
-        // Only YES is toxic — but BOTH should be canceled (Lead-Lag)
+        // Only YES is toxic — only YES should be canceled.
         let _ = o.send(OfiSnapshot {
             yes: SideOfi {
                 ofi_score: 100.0,
@@ -1103,34 +1164,25 @@ mod tests {
         let h = tokio::spawn(coord.run());
         let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
-        // Should receive TWO CancelSide commands (YES + NO)
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
-        let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
-        assert!(c1.is_ok() && c2.is_ok());
-
-        let mut canceled = Vec::new();
-        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c1 {
-            if target.price == 0.0 {
-                canceled.push(target.side);
+        assert!(c1.is_ok());
+        match c1.unwrap() {
+            Some(OrderManagerCmd::ClearTarget { side, reason }) => {
+                assert_eq!(side, Side::Yes);
+                assert_eq!(reason, CancelReason::ToxicFlow);
             }
+            _ => panic!("expected YES clear on toxic side"),
         }
-        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
-            if target.price == 0.0 {
-                canceled.push(target.side);
-            }
-        }
-        assert!(canceled.contains(&Side::Yes));
-        assert!(canceled.contains(&Side::No));
 
         drop(m);
         let _ = h.await;
     }
 
     #[tokio::test]
-    async fn test_global_kill_blocks_new_orders() {
+    async fn test_other_side_can_still_quote_when_one_side_toxic() {
         let (o, _i, m, _k, mut e, coord) = make(cfg());
 
-        // NO is toxic (even though balanced) → should NOT place any bids
+        // NO is toxic, YES is healthy: coordinator should still place YES bid.
         let _ = o.send(OfiSnapshot {
             yes: SideOfi::default(),
             no: SideOfi {
@@ -1145,8 +1197,15 @@ mod tests {
         let h = tokio::spawn(coord.run());
         let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
-        let c = tokio::time::timeout(std::time::Duration::from_millis(50), e.recv()).await;
-        assert!(c.is_err()); // No commands = blocked
+        let c = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
+        assert!(c.is_ok());
+        match c.unwrap() {
+            Some(OrderManagerCmd::SetTarget(target)) => {
+                assert_eq!(target.side, Side::Yes);
+                assert!(target.price > 0.0);
+            }
+            _ => panic!("expected YES target while NO side is toxic"),
+        }
 
         drop(m);
         let _ = h.await;
@@ -1177,22 +1236,14 @@ mod tests {
         let _ = m.send(bt(0.0, 0.0, 0.0, 0.0));
 
         let c1 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
-        let c2 = tokio::time::timeout(std::time::Duration::from_millis(100), e.recv()).await;
-        assert!(c1.is_ok() && c2.is_ok());
-
-        let mut canceled = Vec::new();
-        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c1 {
-            if target.price == 0.0 {
-                canceled.push(target.side);
+        assert!(c1.is_ok());
+        match c1.unwrap() {
+            Some(OrderManagerCmd::ClearTarget { side, reason }) => {
+                assert_eq!(side, Side::Yes);
+                assert_eq!(reason, CancelReason::ToxicFlow);
             }
+            _ => panic!("expected YES clear even when book is empty"),
         }
-        if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
-            if target.price == 0.0 {
-                canceled.push(target.side);
-            }
-        }
-        assert!(canceled.contains(&Side::Yes));
-        assert!(canceled.contains(&Side::No));
 
         drop(m);
         let _ = h.await;

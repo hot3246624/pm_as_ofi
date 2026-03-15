@@ -52,13 +52,32 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 
 > ⚠️ Live 模式需要 `POLYMARKET_PRIVATE_KEY` 有效且已授权 CTF Token Approvals。
 
+### 3.1 快速切换市场（BTC/ETH/XRP/SOL + 1h/4h/1d）
+
+```bash
+# BTC 4h
+POLYMARKET_MARKET_SYMBOL=btc POLYMARKET_MARKET_TIMEFRAME=4h PM_DRY_RUN=true cargo run --bin polymarket_v2
+
+# ETH 1h
+POLYMARKET_MARKET_SYMBOL=eth POLYMARKET_MARKET_TIMEFRAME=1h PM_DRY_RUN=true cargo run --bin polymarket_v2
+
+# SOL Daily
+POLYMARKET_MARKET_SYMBOL=sol POLYMARKET_MARKET_TIMEFRAME=1d PM_DRY_RUN=true cargo run --bin polymarket_v2
+
+# 也可直接指定前缀
+POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarket_v2
+```
+
 ## 4. 环境变量完整参考
 
 ### 4.1 连接与认证
 
 | 变量 | 必填 | 说明 |
 |------|------|------|
-| `POLYMARKET_MARKET_SLUG` | ✅ | 市场前缀 (如 `btc-updown-5m`) 或完整 slug |
+| `POLYMARKET_MARKET_SLUG` | 推荐 | 市场前缀 (如 `btc-updown-5m`) 或完整 slug（优先级最高） |
+| `POLYMARKET_MARKET_PREFIX` | ❌ | 前缀模式别名（如 `eth-updown-1h`），用于自动轮转 |
+| `POLYMARKET_MARKET_SYMBOL` | ❌ | 与 `POLYMARKET_MARKET_TIMEFRAME` 组合，自动拼接 `<symbol>-updown-<tf>`，支持 `btc/eth/xrp/sol` |
+| `POLYMARKET_MARKET_TIMEFRAME` | ❌ | 与 `POLYMARKET_MARKET_SYMBOL` 组合，支持 `1m/5m/15m/30m/1h/4h/1d` |
 | `POLYMARKET_PRIVATE_KEY` | 实盘 | 钱包私钥（不带 0x 前缀） |
 | `POLYMARKET_FUNDER_ADDRESS` | 实盘 | 资金钱包地址（用于 Proxy/Safe CLOB 认证与余额/授权读取） |
 | `POLYMARKET_WS_BASE_URL` | ❌ | 默认 `wss://ws-subscriptions-clob.polymarket.com/ws` |
@@ -81,6 +100,7 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_REPRICE_THRESHOLD` | `0.010` | Price drift required to trigger re-quote |
 | `PM_DEBOUNCE_MS` | `500` | Minimum interval between Provide orders (ms) |
 | `PM_STALE_TTL_MS` | `3000` | Stale Book TTL in milliseconds |
+| `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | 毒性恢复后保持冷却窗口，防止“撤-挂-撤-挂”抖动 |
 | `PM_ENTRY_GRACE_SECONDS` | `30` | Time window after market start to enter (seconds) |
 
 ### 4.3 风控参数
@@ -96,6 +116,8 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 强制刷新心跳 |
+| `PM_OFI_EXIT_RATIO` | `0.85` | OFI 退出滞回阈值比例（低于该比例才退出 toxic） |
+| `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短保持时间，抑制阈值抖动 |
 
 > 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
 > `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。

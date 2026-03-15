@@ -51,6 +51,13 @@ pub struct OfiConfig {
     /// Rolling window size (number of per-heartbeat OFI observations) for statistics.
     /// Default: 200 (≈ 40 seconds at 200ms heartbeat).
     pub adaptive_window: usize,
+    /// Exit threshold ratio for hysteresis when currently toxic.
+    /// Side leaves toxic only when |OFI| <= threshold * exit_ratio.
+    /// Default: 0.85.
+    pub toxicity_exit_ratio: f64,
+    /// Minimum toxic hold duration before allowing recovery (ms).
+    /// Default: 800ms.
+    pub min_toxic_ms: u64,
 }
 
 impl Default for OfiConfig {
@@ -64,6 +71,8 @@ impl Default for OfiConfig {
             adaptive_min: 50.0,
             adaptive_max: 1000.0,
             adaptive_window: 200,
+            toxicity_exit_ratio: 0.85,
+            min_toxic_ms: 800,
         }
     }
 }
@@ -108,6 +117,16 @@ impl OfiConfig {
         if let Ok(v) = std::env::var("PM_OFI_ADAPTIVE_WINDOW") {
             if let Ok(n) = v.parse::<usize>() {
                 cfg.adaptive_window = n.max(10);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_OFI_EXIT_RATIO") {
+            if let Ok(f) = v.parse::<f64>() {
+                cfg.toxicity_exit_ratio = f.clamp(0.05, 0.99);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_OFI_MIN_TOXIC_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                cfg.min_toxic_ms = ms;
             }
         }
         cfg
@@ -280,6 +299,8 @@ impl OfiEngine {
         let mut ticker = tokio::time::interval(Duration::from_millis(self.cfg.heartbeat_ms));
         let mut was_yes_toxic = false;
         let mut was_no_toxic = false;
+        let mut yes_toxic_since: Option<Instant> = None;
+        let mut no_toxic_since: Option<Instant> = None;
 
         loop {
             tokio::select! {
@@ -307,11 +328,41 @@ impl OfiEngine {
             self.no_window.evict_expired(now, self.cfg.window_duration);
 
             // Compute per-side snapshots using current effective threshold.
-            let yes_ofi = self.yes_window.compute(self.effective_threshold);
-            let no_ofi = self.no_window.compute(self.effective_threshold);
+            let mut yes_ofi = self.yes_window.compute(self.effective_threshold);
+            let mut no_ofi = self.no_window.compute(self.effective_threshold);
 
             // Opt-2: Update rolling history and potentially adjust the threshold.
             self.update_adaptive_threshold(yes_ofi.ofi_score, no_ofi.ofi_score);
+
+            // Hysteresis + minimum toxic hold:
+            // - Enter toxic at abs(score) > enter_threshold.
+            // - Exit toxic only after min_toxic_ms AND abs(score) <= exit_threshold.
+            let enter_threshold = self.effective_threshold.max(1.0);
+            let exit_threshold = (enter_threshold * self.cfg.toxicity_exit_ratio).max(1.0);
+            let min_toxic_hold = Duration::from_millis(self.cfg.min_toxic_ms);
+
+            let yes_abs = yes_ofi.ofi_score.abs();
+            let yes_is_toxic = if was_yes_toxic {
+                let held_long_enough = yes_toxic_since
+                    .map(|t| now.duration_since(t) >= min_toxic_hold)
+                    .unwrap_or(true);
+                !(held_long_enough && yes_abs <= exit_threshold)
+            } else {
+                yes_abs > enter_threshold
+            };
+
+            let no_abs = no_ofi.ofi_score.abs();
+            let no_is_toxic = if was_no_toxic {
+                let held_long_enough = no_toxic_since
+                    .map(|t| now.duration_since(t) >= min_toxic_hold)
+                    .unwrap_or(true);
+                !(held_long_enough && no_abs <= exit_threshold)
+            } else {
+                no_abs > enter_threshold
+            };
+
+            yes_ofi.is_toxic = yes_is_toxic;
+            no_ofi.is_toxic = no_is_toxic;
 
             let snapshot = OfiSnapshot {
                 yes: yes_ofi,
@@ -322,7 +373,8 @@ impl OfiEngine {
             let _ = self.snapshot_tx.send(snapshot);
 
             // Edge-triggered logging and Opt-4 kill signals on toxicity onset.
-            if yes_ofi.is_toxic && !was_yes_toxic {
+            if yes_is_toxic && !was_yes_toxic {
+                yes_toxic_since = Some(now);
                 warn!(
                     "☠️ YES entered toxicity! OFI={:.1} (buy={:.1} sell={:.1}) threshold={:.1}",
                     yes_ofi.ofi_score, yes_ofi.buy_volume, yes_ofi.sell_volume,
@@ -336,12 +388,14 @@ impl OfiEngine {
                         ts: now,
                     });
                 }
-            } else if !yes_ofi.is_toxic && was_yes_toxic {
+            } else if !yes_is_toxic && was_yes_toxic {
+                yes_toxic_since = None;
                 info!("✅ YES flow recovered (OFI={:.1})", yes_ofi.ofi_score);
             }
-            was_yes_toxic = yes_ofi.is_toxic;
+            was_yes_toxic = yes_is_toxic;
 
-            if no_ofi.is_toxic && !was_no_toxic {
+            if no_is_toxic && !was_no_toxic {
+                no_toxic_since = Some(now);
                 warn!(
                     "☠️ NO entered toxicity! OFI={:.1} (buy={:.1} sell={:.1}) threshold={:.1}",
                     no_ofi.ofi_score, no_ofi.buy_volume, no_ofi.sell_volume,
@@ -355,10 +409,11 @@ impl OfiEngine {
                         ts: now,
                     });
                 }
-            } else if !no_ofi.is_toxic && was_no_toxic {
+            } else if !no_is_toxic && was_no_toxic {
+                no_toxic_since = None;
                 info!("✅ NO flow recovered (OFI={:.1})", no_ofi.ofi_score);
             }
-            was_no_toxic = no_ofi.is_toxic;
+            was_no_toxic = no_is_toxic;
         }
 
         info!("🔬 OFI Engine shutting down");
@@ -479,6 +534,7 @@ mod tests {
             window_duration: Duration::from_millis(50),
             toxicity_threshold: 10.0,
             heartbeat_ms: 10,
+            min_toxic_ms: 0,
             ..OfiConfig::default()
         };
         let (tx, rx) = mpsc::channel(16);

@@ -45,10 +45,64 @@ struct Settings {
     custom_feature: bool,
 }
 
+fn normalize_market_timeframe(raw: &str) -> String {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "1m" => "1m".to_string(),
+        "5m" => "5m".to_string(),
+        "15m" => "15m".to_string(),
+        "30m" => "30m".to_string(),
+        "1h" => "1h".to_string(),
+        "4h" => "4h".to_string(),
+        "d" | "1d" | "daily" => "1d".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn derive_market_prefix_from_env() -> Option<String> {
+    if let Ok(prefix) = env::var("POLYMARKET_MARKET_PREFIX") {
+        let trimmed = prefix.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+
+    let symbol = env::var("POLYMARKET_MARKET_SYMBOL")
+        .ok()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let timeframe = env::var("POLYMARKET_MARKET_TIMEFRAME")
+        .or_else(|_| env::var("POLYMARKET_MARKET_INTERVAL"))
+        .ok()
+        .map(|s| normalize_market_timeframe(&s));
+
+    if symbol.is_none() && timeframe.is_none() {
+        return None;
+    }
+
+    let symbol = symbol.unwrap_or_else(|| "btc".to_string());
+    let timeframe = timeframe.unwrap_or_else(|| "15m".to_string());
+    if symbol.contains("-updown") {
+        Some(format!("{}-{}", symbol, timeframe))
+    } else {
+        Some(format!("{}-updown-{}", symbol, timeframe))
+    }
+}
+
 impl Settings {
     fn from_env() -> anyhow::Result<Self> {
+        let market_slug = env::var("POLYMARKET_MARKET_SLUG")
+            .ok()
+            .and_then(|s| {
+                let trimmed = s.trim().to_string();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed)
+                }
+            })
+            .or_else(derive_market_prefix_from_env);
         Ok(Self {
-            market_slug: env::var("POLYMARKET_MARKET_SLUG").ok(),
+            market_slug,
             market_id: env::var("POLYMARKET_MARKET_ID").unwrap_or_default(),
             yes_asset_id: env::var("POLYMARKET_YES_ASSET_ID").unwrap_or_default(),
             no_asset_id: env::var("POLYMARKET_NO_ASSET_ID").unwrap_or_default(),
@@ -94,23 +148,26 @@ fn log_config_self_check(
         coord.min_order_size, coord.min_hedge_size, coord.hedge_round_up
     );
     info!(
-        "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms",
+        "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms toxic_hold={}ms",
         coord.tick_size,
         coord.reprice_threshold,
         coord.debounce_ms,
         coord.hedge_debounce_ms,
-        coord.stale_ttl_ms
+        coord.stale_ttl_ms,
+        coord.toxic_recovery_hold_ms
     );
     info!(
         "   reconcile_interval={}s",
         reconcile_interval_secs
     );
     info!(
-        "   ofi_window={}ms ofi_thresh={:.1} adaptive={} heartbeat={}ms",
+        "   ofi_window={}ms ofi_thresh={:.1} adaptive={} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
         ofi.window_duration.as_millis(),
         ofi.toxicity_threshold,
         ofi.adaptive_threshold,
-        ofi.heartbeat_ms
+        ofi.heartbeat_ms,
+        ofi.toxicity_exit_ratio,
+        ofi.min_toxic_ms
     );
 
     if (inv.max_net_diff - coord.max_net_diff).abs() > 1e-6 {
@@ -216,17 +273,20 @@ fn is_prefix_slug(slug: &str) -> bool {
 
 /// Detect interval from prefix: "...-5m" → 300, "...-15m" → 900, "...-1h" → 3600.
 fn detect_interval(prefix: &str) -> u64 {
-    if prefix.contains("-1m") {
+    let lower = prefix.to_ascii_lowercase();
+    if lower.contains("-1m") {
         60
-    } else if prefix.contains("-5m") {
+    } else if lower.contains("-5m") {
         300
-    } else if prefix.contains("-15m") {
+    } else if lower.contains("-15m") {
         900
-    } else if prefix.contains("-30m") {
+    } else if lower.contains("-30m") {
         1800
-    } else if prefix.contains("-1h") {
+    } else if lower.contains("-1h") {
         3600
-    } else if prefix.contains("-1d") || prefix.contains("-daily") {
+    } else if lower.contains("-4h") {
+        14400
+    } else if lower.contains("-1d") || lower.ends_with("-d") || lower.contains("-daily") {
         86400
     } else {
         900 // default 15min
@@ -1726,6 +1786,20 @@ mod tests {
         assert!(should_skip_entry_window(735, 1000, interval, grace));
         // We are at 1001 (already past)
         assert!(should_skip_entry_window(1001, 1000, interval, grace));
+    }
+
+    #[test]
+    fn test_detect_interval_supports_4h_and_daily_alias() {
+        assert_eq!(detect_interval("btc-updown-4h"), 14_400);
+        assert_eq!(detect_interval("sol-updown-1d"), 86_400);
+        assert_eq!(detect_interval("eth-updown-d"), 86_400);
+    }
+
+    #[test]
+    fn test_normalize_market_timeframe_aliases() {
+        assert_eq!(normalize_market_timeframe("4H"), "4h");
+        assert_eq!(normalize_market_timeframe("daily"), "1d");
+        assert_eq!(normalize_market_timeframe("d"), "1d");
     }
 
     #[test]

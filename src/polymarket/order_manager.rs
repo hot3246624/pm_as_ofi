@@ -27,6 +27,8 @@ pub struct SideTracker {
     pub side: Side,
     /// The state the Coordinator requested. If None, it means no order desired.
     pub desired: Option<DesiredTarget>,
+    /// Why current side should be cleared when desired=None.
+    pub clear_reason: CancelReason,
     /// The physical state tracking the Executor's lifecycle.
     pub state: OrderState,
     pub last_action: Instant,
@@ -40,6 +42,7 @@ impl SideTracker {
         Self {
             side,
             desired: None,
+            clear_reason: CancelReason::InventoryLimit,
             state: OrderState::Idle,
             last_action: Instant::now(),
             cooldown_until: None,
@@ -83,9 +86,15 @@ impl OrderManager {
                             self.handle_target(t).await;
                             self.pump(side).await;
                         }
+                        Some(OrderManagerCmd::ClearTarget { side, reason }) => {
+                            self.handle_clear(side, reason).await;
+                            self.pump(side).await;
+                        }
                         Some(OrderManagerCmd::CancelAll) => {
                             self.yes.desired = None;
+                            self.yes.clear_reason = CancelReason::Shutdown;
                             self.no.desired = None;
+                            self.no.clear_reason = CancelReason::Shutdown;
                             self.pump(Side::Yes).await;
                             self.pump(Side::No).await;
                         }
@@ -125,6 +134,15 @@ impl OrderManager {
         } else {
             tracker.desired = Some(target);
         }
+    }
+
+    async fn handle_clear(&mut self, side: Side, reason: CancelReason) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        tracker.desired = None;
+        tracker.clear_reason = reason;
     }
 
     async fn handle_placed(&mut self, side: Side, target: DesiredTarget) {
@@ -291,7 +309,7 @@ impl OrderManager {
                         .exec_tx
                         .send(ExecutionCmd::CancelSide {
                             side,
-                            reason: CancelReason::InventoryLimit,
+                            reason: tracker.clear_reason,
                         })
                         .await;
                     tracker.state = OrderState::PendingCancel(Some(live));

@@ -127,6 +127,8 @@ pub struct DesiredTarget {
 pub enum OrderManagerCmd {
     /// Update the desired target for a side. If price/size is 0, the target is cleared (cancel).
     SetTarget(DesiredTarget),
+    /// Clear desired target for a side and preserve cancel reason.
+    ClearTarget { side: Side, reason: CancelReason },
     /// Emergency cancel all targets & orders globally.
     CancelAll,
 }
@@ -172,6 +174,8 @@ pub enum BidReason {
 pub enum CancelReason {
     /// OFI Kill Switch detected toxic flow.
     ToxicFlow,
+    /// Book/feed stale guard.
+    StaleData,
     /// Inventory imbalance — stop accumulating the excess side.
     InventoryLimit,
     /// Price moved — stale order needs repricing.

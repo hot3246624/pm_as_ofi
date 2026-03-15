@@ -91,10 +91,12 @@ Provide 与 Hedge 共用同一套 `can_buy_*` 门禁，无任何绕过路径。
 
 ## 3. 风险硬化与保护
 
-### 有毒流保护 (Lead-Lag 熔断)
-OFI 引擎监控 3s 滑动窗口的订单流不平衡。任意一侧触发毒性：
-- P2 预抢先撤单（**无需等待盘口更新**，即使空盘口也执行）。
+### 有毒流保护（按侧熔断 + 去抖）
+OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时：
+- 只暂停该侧报价/对冲，另一侧可继续工作（不再全局双侧一刀切）。
 - Kill 信号通过 `mpsc(4)` 直通 Coordinator，`biased select!` 绝对优先。
+- OFI 采用进入/退出滞回（`PM_OFI_EXIT_RATIO`）+ 最小 toxic 持续时间（`PM_OFI_MIN_TOXIC_MS`）。
+- Coordinator 侧增加恢复冷却（`PM_TOXIC_RECOVERY_HOLD_MS`），避免阈值边缘的撤挂振荡。
 
 ### 盘口失效保护
 - **3s TTL（PM_STALE_TTL_MS）**：数据超过此阈值，该侧报价归零撤单。
@@ -118,6 +120,9 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。任意一侧触发毒性
 | `PM_MAX_POS_PCT` | 小数 | 总仓位占比目标 | 动态推导：`balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | 成本 | 一对 Y+N 的目标成本 | 利润 = 1.00 - pair_target |
 | `PM_AS_SKEW_FACTOR` | 系数 | A-S 库存定价攻击性 | 0.00=纯网格 0.03=标准 A-S |
+| `PM_OFI_EXIT_RATIO` | 小数 | OFI 退出滞回比例 | 低于 `threshold × ratio` 才允许退出 toxic |
+| `PM_OFI_MIN_TOXIC_MS` | ms | OFI 毒性最短保持时间 | 抑制阈值边缘快速翻转 |
+| `PM_TOXIC_RECOVERY_HOLD_MS` | ms | Coordinator 恢复冷却窗口 | 防止“撤-挂-撤-挂”抖动 |
 | `PM_AS_TIME_DECAY_K` | 系数 | 时间衰减放大倍数 | 0.0=禁用 2.0=到期时 3× skew |
 | `PM_MAX_PORTFOLIO_COST` | 成本 | 絶对生存成本天花板 | 仅用于救火模式 |
 | `PM_MAX_LOSS_PCT` | 小数 | 救火模式最大亏损比例 | 钳制 max_portfolio_cost ≤ 1+pct |
