@@ -678,26 +678,9 @@ impl StrategyCoordinator {
             raw_no -= overflow / 2.0;
         }
 
-        // 2. Strict Maker Clamp
-        // P3 FIX: Extra tick margin to reduce post-only cross-book rejections
-        let mut margin_ticks = self.cfg.post_only_safety_ticks.max(0.5);
-        if ub.yes_bid > 0.0 && ub.yes_ask > ub.yes_bid {
-            let spread_ticks = (ub.yes_ask - ub.yes_bid) / self.cfg.tick_size.max(1e-9);
-            if spread_ticks <= self.cfg.post_only_tight_spread_ticks {
-                margin_ticks += self.cfg.post_only_extra_tight_ticks.max(0.0);
-            }
-        }
-        let yes_safety_margin = margin_ticks * self.cfg.tick_size;
-
-        let mut margin_ticks_no = self.cfg.post_only_safety_ticks.max(0.5);
-        if ub.no_bid > 0.0 && ub.no_ask > ub.no_bid {
-            let spread_ticks = (ub.no_ask - ub.no_bid) / self.cfg.tick_size.max(1e-9);
-            if spread_ticks <= self.cfg.post_only_tight_spread_ticks {
-                margin_ticks_no += self.cfg.post_only_extra_tight_ticks.max(0.0);
-            }
-        }
-        let no_safety_margin = margin_ticks_no * self.cfg.tick_size;
-
+        // 2. Strict Maker Clamp (same safety-margin logic as aggressive_price)
+        let yes_safety_margin = self.post_only_safety_margin(ub.yes_bid, ub.yes_ask);
+        let no_safety_margin = self.post_only_safety_margin(ub.no_bid, ub.no_ask);
 
         if ub.yes_ask > 0.0 {
             raw_yes = f64::min(raw_yes, ub.yes_ask - yes_safety_margin);
@@ -1173,7 +1156,18 @@ impl StrategyCoordinator {
         net_ok && side_ok
     }
 
-    /// Aggressive Maker price: min(ceiling, best_ask − tick).
+    fn post_only_safety_margin(&self, best_bid: f64, best_ask: f64) -> f64 {
+        let mut margin_ticks = self.cfg.post_only_safety_ticks.max(0.5);
+        if best_bid > 0.0 && best_ask > best_bid {
+            let spread_ticks = (best_ask - best_bid) / self.cfg.tick_size.max(1e-9);
+            if spread_ticks <= self.cfg.post_only_tight_spread_ticks {
+                margin_ticks += self.cfg.post_only_extra_tight_ticks.max(0.0);
+            }
+        }
+        margin_ticks * self.cfg.tick_size.max(1e-9)
+    }
+
+    /// Aggressive Maker price: min(ceiling, best_ask - safety_margin).
     ///
     /// CRITICAL: If best_ask is unavailable (empty book), return 0.0.
     /// NEVER fall back to ceiling — that caused the phantom 0.490 oscillation.
@@ -1193,19 +1187,14 @@ impl StrategyCoordinator {
             // b/c we are Post-Only, this order would be REJECTED.
             // We clamp it to 1 tick below ask, but if the ask is already very low,
             // we should be aware of this.
-            debug!("⚠️ aggressive_price: ceiling ({:.3}) >= best_ask ({:.3}) | Bidding 1 tick below ask", ceiling, best_ask);
+            debug!(
+                "⚠️ aggressive_price: ceiling ({:.3}) >= best_ask ({:.3}) | applying maker safety margin",
+                ceiling, best_ask
+            );
         }
 
-        // P3 FIX: Extra tick margin to reduce post-only cross-book rejections
-        // caused by stale book data between local calculation and exchange arrival.
-        let mut margin_ticks = self.cfg.post_only_safety_ticks.max(0.5);
-        if best_bid > 0.0 && best_ask > best_bid {
-            let spread_ticks = (best_ask - best_bid) / self.cfg.tick_size.max(1e-9);
-            if spread_ticks <= self.cfg.post_only_tight_spread_ticks {
-                margin_ticks += self.cfg.post_only_extra_tight_ticks.max(0.0);
-            }
-        }
-        let safety_margin = margin_ticks * self.cfg.tick_size;
+        // Shared margin policy with Strict Maker Clamp in state_unified.
+        let safety_margin = self.post_only_safety_margin(best_bid, best_ask);
         let safe_below = best_ask - safety_margin;
         if safe_below <= 0.0 {
             return 0.0;
@@ -1677,7 +1666,9 @@ mod tests {
         if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
             prices.insert(target.side, target.price);
         }
-        assert!((prices[&Side::Yes] - 0.45).abs() < 1e-9);
+        // Tight spread (2 ticks) triggers extra maker safety margin:
+        // ask=0.46, margin=(2+1)*0.01 => strict clamp to 0.43.
+        assert!((prices[&Side::Yes] - 0.43).abs() < 1e-9);
         assert!((prices[&Side::No] - 0.50).abs() < 1e-9);
 
         drop(m);

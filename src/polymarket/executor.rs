@@ -22,9 +22,40 @@ use super::types::Side;
 use alloy::signers::local::LocalSigner;
 use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
-use rust_decimal::prelude::FromPrimitive;
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 pub type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReconcileFetchMode {
+    Market,
+    AssetSplit,
+    LocalById,
+}
+
+impl ReconcileFetchMode {
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Market => Some(Self::AssetSplit),
+            Self::AssetSplit => Some(Self::LocalById),
+            Self::LocalById => None,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Market => "market",
+            Self::AssetSplit => "asset-split",
+            Self::LocalById => "local-order-id",
+        }
+    }
+}
+
+#[derive(Debug)]
+enum ReconcileFetchError {
+    InvalidParams(polymarket_client_sdk::error::Error),
+    Failed(polymarket_client_sdk::error::Error),
+}
 
 // ─────────────────────────────────────────────────────────
 // Configuration
@@ -65,6 +96,9 @@ pub struct Executor {
     /// Active open orders tracked per side: order_id → remaining_size.
     /// Enables partial fill tracking — only removes when fully filled.
     open_orders: HashMap<Side, HashMap<String, f64>>,
+
+    /// Runtime-selected query mode for REST reconciliation.
+    reconcile_fetch_mode: ReconcileFetchMode,
 }
 
 impl Executor {
@@ -99,6 +133,7 @@ impl Executor {
                     .unwrap_or(2000),
             ),
             open_orders,
+            reconcile_fetch_mode: ReconcileFetchMode::Market,
         }
     }
 
@@ -153,10 +188,6 @@ impl Executor {
     // ─────────────────────────────────────────────────
 
     async fn reconcile_open_orders(&mut self) {
-        use polymarket_client_sdk::clob::types::request::OrdersRequest;
-        use polymarket_client_sdk::clob::types::OrderStatusType;
-        use rust_decimal::prelude::ToPrimitive;
-
         let client = match self.client.as_ref() {
             Some(c) => c,
             None => return,
@@ -194,58 +225,46 @@ impl Executor {
             }
         };
 
-        let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
-        // NOTE:
-        // - `/data/orders` can reject some filtered payloads with 400 (`invalid order params payload`).
-        // - Fetch unfiltered pages, then filter by (market, asset_id) locally.
-        // This keeps reconciliation alive instead of hard-failing on query-shape changes.
-        let req = OrdersRequest::default();
-        let mut cursor: Option<String> = None;
-        loop {
-            let page = match client.orders(&req, cursor.clone()).await {
-                Ok(p) => p,
-                Err(e) => {
+        let mut mode = self.reconcile_fetch_mode;
+        let mut remote_by_side = loop {
+            match self
+                .fetch_remote_open_orders(client, mode, market_id, yes_id, no_id)
+                .await
+            {
+                Ok(orders) => {
+                    if self.reconcile_fetch_mode != mode {
+                        info!("🧭 Reconcile: query mode switched to {}", mode.as_str());
+                    }
+                    self.reconcile_fetch_mode = mode;
+                    break orders;
+                }
+                Err(ReconcileFetchError::InvalidParams(e)) => {
+                    let Some(next_mode) = mode.next() else {
+                        warn!(
+                            "⚠️ Reconcile: query mode {} rejected and no fallback left: {:?} — local state preserved",
+                            mode.as_str(),
+                            e
+                        );
+                        return;
+                    };
                     warn!(
-                        "⚠️ Reconcile: orders fetch failed (unfiltered): {:?} — local state preserved",
+                        "⚠️ Reconcile: query mode {} rejected: {:?} — fallback to {}",
+                        mode.as_str(),
+                        e,
+                        next_mode.as_str()
+                    );
+                    mode = next_mode;
+                }
+                Err(ReconcileFetchError::Failed(e)) => {
+                    warn!(
+                        "⚠️ Reconcile: query mode {} failed: {:?} — local state preserved",
+                        mode.as_str(),
                         e
                     );
                     return;
                 }
-            };
-
-            for ord in page.data {
-                if ord.market != market_id {
-                    continue;
-                }
-
-                let side = if ord.asset_id == yes_id {
-                    Side::Yes
-                } else if ord.asset_id == no_id {
-                    Side::No
-                } else {
-                    continue;
-                };
-
-                if matches!(ord.status, OrderStatusType::Canceled) {
-                    continue;
-                }
-
-                let orig = ord.original_size.to_f64().unwrap_or(0.0);
-                let matched = ord.size_matched.to_f64().unwrap_or(0.0);
-                let remaining = (orig - matched).max(0.0);
-                if remaining > 1e-9 {
-                    remote_by_side
-                        .entry(side)
-                        .or_default()
-                        .insert(ord.id.clone(), remaining);
-                }
             }
-
-            if page.next_cursor.is_empty() {
-                break;
-            }
-            cursor = Some(page.next_cursor);
-        }
+        };
 
         for side in [Side::Yes, Side::No] {
             let remote = remote_by_side.remove(&side).unwrap_or_default();
@@ -279,6 +298,154 @@ impl Executor {
                 local.insert(id, rem);
             }
         }
+    }
+
+    async fn fetch_remote_open_orders(
+        &self,
+        client: &AuthClient,
+        mode: ReconcileFetchMode,
+        market_id: alloy::primitives::B256,
+        yes_id: alloy::primitives::U256,
+        no_id: alloy::primitives::U256,
+    ) -> Result<HashMap<Side, HashMap<String, f64>>, ReconcileFetchError> {
+        use polymarket_client_sdk::clob::types::request::OrdersRequest;
+
+        let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
+
+        match mode {
+            ReconcileFetchMode::Market => {
+                let req = OrdersRequest::builder().market(market_id).build();
+                let orders = self.fetch_orders_pagewise(client, &req).await?;
+                for order in orders {
+                    Self::insert_remote_order(&mut remote_by_side, order, market_id, yes_id, no_id);
+                }
+            }
+            ReconcileFetchMode::AssetSplit => {
+                for asset_id in [yes_id, no_id] {
+                    let req = OrdersRequest::builder().asset_id(asset_id).build();
+                    let orders = self.fetch_orders_pagewise(client, &req).await?;
+                    for order in orders {
+                        Self::insert_remote_order(
+                            &mut remote_by_side,
+                            order,
+                            market_id,
+                            yes_id,
+                            no_id,
+                        );
+                    }
+                }
+            }
+            ReconcileFetchMode::LocalById => {
+                // Last-resort mode when `/data/orders` query shapes are rejected.
+                // It keeps local lifecycle healthy but cannot discover unknown remote orders.
+                let mut ids = Vec::new();
+                for side in [Side::Yes, Side::No] {
+                    if let Some(local) = self.open_orders.get(&side) {
+                        ids.extend(local.keys().cloned());
+                    }
+                }
+
+                for order_id in ids {
+                    let order = match client.order(&order_id).await {
+                        Ok(order) => order,
+                        Err(e) => {
+                            if Self::is_not_found_error(&e) {
+                                continue;
+                            }
+                            return Err(ReconcileFetchError::Failed(e));
+                        }
+                    };
+                    Self::insert_remote_order(&mut remote_by_side, order, market_id, yes_id, no_id);
+                }
+            }
+        }
+
+        Ok(remote_by_side)
+    }
+
+    async fn fetch_orders_pagewise(
+        &self,
+        client: &AuthClient,
+        req: &polymarket_client_sdk::clob::types::request::OrdersRequest,
+    ) -> Result<
+        Vec<polymarket_client_sdk::clob::types::response::OpenOrderResponse>,
+        ReconcileFetchError,
+    > {
+        let mut cursor: Option<String> = None;
+        let mut orders = Vec::new();
+
+        loop {
+            let page = match client.orders(req, cursor.clone()).await {
+                Ok(p) => p,
+                Err(e) => {
+                    if Self::is_invalid_order_params_error(&e) {
+                        return Err(ReconcileFetchError::InvalidParams(e));
+                    }
+                    return Err(ReconcileFetchError::Failed(e));
+                }
+            };
+            orders.extend(page.data);
+
+            if page.next_cursor.is_empty() {
+                break;
+            }
+            cursor = Some(page.next_cursor);
+        }
+
+        Ok(orders)
+    }
+
+    fn insert_remote_order(
+        remote_by_side: &mut HashMap<Side, HashMap<String, f64>>,
+        ord: polymarket_client_sdk::clob::types::response::OpenOrderResponse,
+        market_id: alloy::primitives::B256,
+        yes_id: alloy::primitives::U256,
+        no_id: alloy::primitives::U256,
+    ) {
+        use polymarket_client_sdk::clob::types::OrderStatusType;
+
+        if ord.market != market_id {
+            return;
+        }
+
+        let side = if ord.asset_id == yes_id {
+            Side::Yes
+        } else if ord.asset_id == no_id {
+            Side::No
+        } else {
+            return;
+        };
+
+        if matches!(ord.status, OrderStatusType::Canceled) {
+            return;
+        }
+
+        let orig = ord.original_size.to_f64().unwrap_or(0.0);
+        let matched = ord.size_matched.to_f64().unwrap_or(0.0);
+        let remaining = (orig - matched).max(0.0);
+        if remaining > 1e-9 {
+            remote_by_side
+                .entry(side)
+                .or_default()
+                .insert(ord.id.clone(), remaining);
+        }
+    }
+
+    fn is_invalid_order_params_error(err: &polymarket_client_sdk::error::Error) -> bool {
+        use polymarket_client_sdk::error::Status;
+
+        err.downcast_ref::<Status>().is_some_and(|status| {
+            status.status_code.as_u16() == 400
+                && status.path.contains("/data/orders")
+                && status.message.contains("invalid order params payload")
+        })
+    }
+
+    fn is_not_found_error(err: &polymarket_client_sdk::error::Error) -> bool {
+        use polymarket_client_sdk::error::Status;
+
+        err.downcast_ref::<Status>()
+            .is_some_and(|status| status.status_code.as_u16() == 404)
     }
 
     // ─────────────────────────────────────────────────
