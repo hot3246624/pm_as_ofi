@@ -518,11 +518,27 @@ fn log_config_self_check(
         coord.toxic_recovery_hold_ms
     );
     info!("   reconcile_interval={}s", reconcile_interval_secs);
+    let adaptive_max_text = if ofi.adaptive_max > 0.0 {
+        format!("{:.1}", ofi.adaptive_max)
+    } else {
+        "off".to_string()
+    };
+    let adaptive_rise_cap_text = if ofi.adaptive_rise_cap_pct > 0.0 {
+        format!("{:.0}%", ofi.adaptive_rise_cap_pct * 100.0)
+    } else {
+        "off".to_string()
+    };
     info!(
-        "   ofi_window={}ms ofi_thresh={:.1} adaptive={} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
+        "   ofi_window={}ms ofi_thresh={:.1} adaptive={} k={:.2} min/max=[{:.1}, {}] rise_cap={} ratio_enter/exit={:.2}/{:.2} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
         ofi.window_duration.as_millis(),
         ofi.toxicity_threshold,
         ofi.adaptive_threshold,
+        ofi.adaptive_k,
+        ofi.adaptive_min,
+        adaptive_max_text,
+        adaptive_rise_cap_text,
+        ofi.toxicity_ratio_enter,
+        ofi.toxicity_ratio_exit,
         ofi.heartbeat_ms,
         ofi.toxicity_exit_ratio,
         ofi.min_toxic_ms

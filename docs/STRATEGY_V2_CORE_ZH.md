@@ -103,6 +103,8 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 - 只暂停该侧报价/对冲，另一侧可继续工作（不再全局双侧一刀切）。
 - Kill 信号通过 `mpsc(4)` 直通 Coordinator，`biased select!` 绝对优先。
 - OFI 采用进入/退出滞回（`PM_OFI_EXIT_RATIO`）+ 最小 toxic 持续时间（`PM_OFI_MIN_TOXIC_MS`）。
+- toxic 退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值上抬导致误恢复。
+- `PM_OFI_ADAPTIVE_RISE_CAP_PCT` 限制每个心跳周期的阈值上升幅度，抑制 moving-target 漂移。
 - Coordinator 侧增加恢复冷却（`PM_TOXIC_RECOVERY_HOLD_MS`），避免阈值边缘的撤挂振荡。
 
 ### 盘口失效保护
@@ -152,6 +154,13 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_MAX_POS_PCT` | 小数 | 总仓位占比目标 | 动态推导：`balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | 成本 | 一对 Y+N 的目标成本 | 利润 = 1.00 - pair_target |
 | `PM_AS_SKEW_FACTOR` | 系数 | A-S 库存定价攻击性 | 0.00=纯网格 0.03=标准 A-S |
+| `PM_OFI_ADAPTIVE` | bool | 启用 OFI 自适应阈值 | 关闭时使用固定阈值 |
+| `PM_OFI_ADAPTIVE_K` | 系数 | 自适应阈值放大系数 | `threshold = mean + k*sigma` |
+| `PM_OFI_ADAPTIVE_MIN` | shares | 自适应阈值下限 | 防低流动性误触发 |
+| `PM_OFI_ADAPTIVE_MAX` | shares | 自适应阈值硬上限 | `0=关闭硬上限`，避免结构性放量被锁死 |
+| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | 小数 | 每个 OFI 心跳阈值最大上升比例 | `0=关闭`，默认 `0.20` |
+| `PM_OFI_RATIO_ENTER` | 小数 | 毒性进入比例门槛 | `|buy-sell|/(buy+sell)` |
+| `PM_OFI_RATIO_EXIT` | 小数 | 毒性退出比例门槛 | 应 ≤ `PM_OFI_RATIO_ENTER` |
 | `PM_OFI_EXIT_RATIO` | 小数 | OFI 退出滞回比例 | 低于 `threshold × ratio` 才允许退出 toxic |
 | `PM_OFI_MIN_TOXIC_MS` | ms | OFI 毒性最短保持时间 | 抑制阈值边缘快速翻转 |
 | `PM_TOXIC_RECOVERY_HOLD_MS` | ms | Coordinator 恢复冷却窗口 | 防止“撤-挂-撤-挂”抖动 |

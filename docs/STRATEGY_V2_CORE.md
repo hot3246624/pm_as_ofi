@@ -80,6 +80,8 @@ allow   = net_ok && side_ok
 OFI engine monitors a 3s sliding window. On toxicity:
 - **P2 pre-emptive cancel**: Fires immediately via `biased select!` even on empty book.
 - Kill signal bypasses md_rx latency via dedicated `mpsc(4)` channel.
+- Toxic exit threshold is **frozen at entry threshold** (`entry_threshold * PM_OFI_EXIT_RATIO`) to avoid premature recovery when adaptive threshold rises.
+- `PM_OFI_ADAPTIVE_RISE_CAP_PCT` limits per-heartbeat adaptive threshold growth to prevent moving-target drift.
 
 ### Stale Book Protection
 - **PM_STALE_TTL_MS** (default 3000ms): Per-side TTL. Exceeded → cancel that side.
@@ -128,6 +130,13 @@ Notes:
 | `PM_MAX_POS_PCT` | Decimal | Target gross utilization | Dynamic: `balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | Cost | Target Y+N pair cost | Profit margin = `1.00 - pair_target` |
 | `PM_AS_SKEW_FACTOR` | Factor | A-S skew aggressiveness | 0.00 = pure grid; 0.03 = standard A-S |
+| `PM_OFI_ADAPTIVE` | bool | Enable adaptive OFI threshold | Off = static threshold |
+| `PM_OFI_ADAPTIVE_K` | Factor | Adaptive threshold amplifier | `threshold = mean + k*sigma` |
+| `PM_OFI_ADAPTIVE_MIN` | Shares | Adaptive floor | Avoid false positives in thin flow |
+| `PM_OFI_ADAPTIVE_MAX` | Shares | Adaptive hard cap | `0` disables hard upper cap |
+| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | Decimal | Adaptive threshold rise cap per heartbeat | `0` disables; default `0.20` |
+| `PM_OFI_RATIO_ENTER` | Decimal | Toxicity entry ratio gate | `|buy-sell|/(buy+sell)` |
+| `PM_OFI_RATIO_EXIT` | Decimal | Toxicity exit ratio gate | Should be <= entry ratio |
 | `PM_AS_TIME_DECAY_K` | Factor | Time decay amplifier | 0.0 = disabled; 2.0 = 3x skew at expiry |
 | `PM_MAX_PORTFOLIO_COST` | Cost | Emergency rescue ceiling | Clamped to `1 + PM_MAX_LOSS_PCT` |
 | `PM_MAX_LOSS_PCT` | Decimal | Max acceptable loss in rescue | Clamps max_portfolio_cost at startup |

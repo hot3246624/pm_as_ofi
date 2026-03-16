@@ -118,6 +118,13 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_MAX_POS_PCT` | `0.70` | 总仓位占比上限（用于动态推导 `PM_MAX_SIDE_SHARES`） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
+| `PM_OFI_ADAPTIVE` | `true/false` | 是否开启自适应阈值（`mean + k*sigma`） |
+| `PM_OFI_ADAPTIVE_K` | `3.0` | 自适应阈值放大系数 |
+| `PM_OFI_ADAPTIVE_MIN` | `120.0` | 自适应阈值下限 |
+| `PM_OFI_ADAPTIVE_MAX` | `0.0` | 自适应阈值硬上限（`0`=关闭硬上限） |
+| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | `0.20` | 每个 OFI 心跳阈值最大上升比例（`0`=关闭） |
+| `PM_OFI_RATIO_ENTER` | `0.45` | 毒性进入比例门槛：`|buy-sell|/(buy+sell)` |
+| `PM_OFI_RATIO_EXIT` | `0.30` | 毒性退出比例门槛（应 ≤ enter） |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 强制刷新心跳 |
 | `PM_OFI_EXIT_RATIO` | `0.85` | OFI 退出滞回阈值比例（低于该比例才退出 toxic） |
 | `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短保持时间，抑制阈值抖动 |
@@ -133,6 +140,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 
 > 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
 > `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。
+> OFI 毒性退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值瞬时抬升导致的误恢复。
 > 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。
 > 若日志频繁出现 `not enough balance / allowance`，应优先下调 `PM_MAX_SIDE_SHARES` / `PM_MAX_POS_PCT` / `PM_BID_SIZE`，否则对冲会因冷却窗口延迟执行。
 > 回收器采用“低水位触发 + 高水位回补 + 冷却 + 单轮上限”，默认是低频批量回收，不是每次拒单都小额 merge。
