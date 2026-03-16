@@ -86,6 +86,7 @@ OFI engine monitors a 3s sliding window. On toxicity:
 ### Stale Book Protection
 - **PM_STALE_TTL_MS** (default 3000ms): Per-side TTL. Exceeded → cancel that side.
 - **30s global guard**: Either side stale >30s → clear both sides, stop quoting.
+- **PM_COORD_WATCHDOG_MS**: coordinator periodic watchdog tick; stale/toxic guards still run when WS stream goes silent.
 
 ### Maker-Only Enforcement
 All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused if book is empty or crossed.
@@ -141,9 +142,13 @@ Notes:
 | `PM_MAX_PORTFOLIO_COST` | Cost | Emergency rescue ceiling | Clamped to `1 + PM_MAX_LOSS_PCT` |
 | `PM_MAX_LOSS_PCT` | Decimal | Max acceptable loss in rescue | Clamps max_portfolio_cost at startup |
 | `PM_STALE_TTL_MS` | ms | Per-side freshness TTL | Side shutdown if exceeded |
+| `PM_COORD_WATCHDOG_MS` | ms | Coordinator watchdog tick | Enforces stale/toxic checks without new md events |
 | `PM_DEBOUNCE_MS` | ms | Provide order anti-thrash | Prevents rapid re-quoting |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | Hedge order anti-thrash | Lower (100ms) for urgency |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | REST order reconciliation | Detects WS blind spots |
+| `PM_WS_CONNECT_TIMEOUT_MS` | ms | Market WS connect timeout | Fail-fast reconnect on TLS/network stalls |
+| `PM_RESOLVE_TIMEOUT_MS` | ms | Gamma resolve request timeout | Limits single resolve stall impact |
+| `PM_RESOLVE_RETRY_ATTEMPTS` | count | Resolve retries per round | Exponential backoff before giving up |
 | `PM_RECYCLE_TRIGGER_REJECTS` | count | Reject threshold for recycle trigger | Used with `PM_RECYCLE_TRIGGER_WINDOW_SECS` |
 | `PM_RECYCLE_LOW_WATER_USDC` | USDC | Recycle low-water gate | No recycle above this free balance |
 | `PM_RECYCLE_TARGET_FREE_USDC` | USDC | Recycle high-water target | Batch refill objective |

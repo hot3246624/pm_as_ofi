@@ -77,6 +77,8 @@ pub struct CoordinatorConfig {
     pub dry_run: bool,
     /// Configurable TTL for stale book data (ms). Default 3000ms.
     pub stale_ttl_ms: u64,
+    /// Periodic watchdog tick (ms) to enforce stale/toxic cancels even when md stream is silent.
+    pub watchdog_tick_ms: u64,
     /// Hold-down window after toxicity recovers to prevent rapid cancel/place oscillation.
     pub toxic_recovery_hold_ms: u64,
 }
@@ -108,6 +110,7 @@ impl Default for CoordinatorConfig {
             max_loss_pct: 0.02, // Hard loss cap (2%)
             dry_run: true,
             stale_ttl_ms: 3000,
+            watchdog_tick_ms: 500,
             toxic_recovery_hold_ms: 1200,
         }
     }
@@ -281,6 +284,11 @@ impl CoordinatorConfig {
                 c.stale_ttl_ms = ms;
             }
         }
+        if let Ok(v) = std::env::var("PM_COORD_WATCHDOG_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                c.watchdog_tick_ms = ms.max(50);
+            }
+        }
         if let Ok(v) = std::env::var("PM_TOXIC_RECOVERY_HOLD_MS") {
             if let Ok(ms) = v.parse::<u64>() {
                 c.toxic_recovery_hold_ms = ms;
@@ -415,10 +423,11 @@ impl StrategyCoordinator {
 
     pub async fn run(mut self) {
         info!(
-            "🎯 Coordinator [OCCAM+LEADLAG] pair={:.2} bid={:.1} tick={:.3} net={:.0} reprice={:.3} debounce={}ms dry={}",
+            "🎯 Coordinator [OCCAM+LEADLAG] pair={:.2} bid={:.1} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms dry={}",
             self.cfg.pair_target, self.cfg.bid_size, self.cfg.tick_size,
-            self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.dry_run,
+            self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms, self.cfg.dry_run,
         );
+        let mut watchdog = tokio::time::interval(Duration::from_millis(self.cfg.watchdog_tick_ms));
 
         loop {
             tokio::select! {
@@ -447,6 +456,11 @@ impl StrategyCoordinator {
                     }
                     let msg = self.md_rx.borrow().clone();
                     self.handle_market_data(msg).await;
+                    self.tick().await;
+                }
+
+                // Watchdog tick: enforce stale/toxic risk checks even when market WS is temporarily silent.
+                _ = watchdog.tick() => {
                     self.tick().await;
                 }
             }

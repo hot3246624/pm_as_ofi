@@ -115,6 +115,10 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_MAX_LOSS_PCT` | `0.02` | 最大可接受组合亏损比例（用于钳制 `PM_MAX_PORTFOLIO_COST`） |
 | `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限（同时受 `PM_MAX_POS_PCT` 动态约束） |
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | 订单对账周期（秒），用于修复 WS 断连盲区 |
+| `PM_COORD_WATCHDOG_MS` | `500` | Coordinator 风控看门狗心跳（无行情也执行 stale/toxic 检查） |
+| `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 单次连接超时（毫秒） |
+| `PM_RESOLVE_TIMEOUT_MS` | `4000` | Gamma 市场解析请求超时（毫秒） |
+| `PM_RESOLVE_RETRY_ATTEMPTS` | `4` | 每轮市场解析重试次数（指数退避） |
 | `PM_MAX_POS_PCT` | `0.70` | 总仓位占比上限（用于动态推导 `PM_MAX_SIDE_SHARES`） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
@@ -141,6 +145,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 > 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
 > `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。
 > OFI 毒性退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值瞬时抬升导致的误恢复。
+> `PM_COORD_WATCHDOG_MS` 用于在 WS 暂时断流时继续触发风控 tick，避免 stale 熔断依赖行情事件。
 > 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。
 > 若日志频繁出现 `not enough balance / allowance`，应优先下调 `PM_MAX_SIDE_SHARES` / `PM_MAX_POS_PCT` / `PM_BID_SIZE`，否则对冲会因冷却窗口延迟执行。
 > 回收器采用“低水位触发 + 高水位回补 + 冷却 + 单轮上限”，默认是低频批量回收，不是每次拒单都小额 merge。

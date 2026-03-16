@@ -110,6 +110,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 ### 盘口失效保护
 - **3s TTL（PM_STALE_TTL_MS）**：数据超过此阈值，该侧报价归零撤单。
 - **30s 极端失效**：任一侧 30s 无有效盘口，清空双边停止报价。
+- **PM_COORD_WATCHDOG_MS**：Coordinator 周期看门狗；即使 WS 暂时静默，也会持续执行 stale/toxic 风控检查。
 
 ### Maker-Only 防护
 机器人永远不会成为 Taker。计算价格后自动钳位在 `best_ask - tick_size` 以下，防止 Post-Only 订单被拒绝。
@@ -168,9 +169,13 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_MAX_PORTFOLIO_COST` | 成本 | 絶对生存成本天花板 | 仅用于救火模式 |
 | `PM_MAX_LOSS_PCT` | 小数 | 救火模式最大亏损比例 | 钳制 max_portfolio_cost ≤ 1+pct |
 | `PM_STALE_TTL_MS` | ms | 数据新鲜度熔断阈值 | 单侧超时即撤单该侧 |
+| `PM_COORD_WATCHDOG_MS` | ms | Coordinator 看门狗心跳 | 无新行情事件时仍执行 stale/toxic 检查 |
 | `PM_DEBOUNCE_MS` | ms | 提供单防抖间隔 | 避免高频重复报价 |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | 对冲单防抖间隔 | 对冲更紧急，默认 100ms |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | 订单对账周期 | REST 定期对账修复 WS 盲区 |
+| `PM_WS_CONNECT_TIMEOUT_MS` | ms | Market WS 连接超时 | 网络/TLS 抖动时快速失败并重连 |
+| `PM_RESOLVE_TIMEOUT_MS` | ms | Gamma 市场解析超时 | 限制单次解析阻塞时长 |
+| `PM_RESOLVE_RETRY_ATTEMPTS` | 次 | 每轮解析重试次数 | 指数退避后再判定失败 |
 | `PM_RECYCLE_TRIGGER_REJECTS` | 次 | 触发回收的余额拒单次数 | 与窗口 `PM_RECYCLE_TRIGGER_WINDOW_SECS` 配合 |
 | `PM_RECYCLE_LOW_WATER_USDC` | USDC | 回收低水位门槛 | 余额高于该值不回收 |
 | `PM_RECYCLE_TARGET_FREE_USDC` | USDC | 回收高水位目标 | 批量回收后期望可用余额 |

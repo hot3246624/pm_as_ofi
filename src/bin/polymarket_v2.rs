@@ -9,7 +9,7 @@ use futures::{SinkExt, StreamExt};
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
@@ -509,12 +509,13 @@ fn log_config_self_check(
         coord.hedge_min_marketable_max_extra_pct * 100.0
     );
     info!(
-        "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms toxic_hold={}ms",
+        "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms watchdog={}ms toxic_hold={}ms",
         coord.tick_size,
         coord.reprice_threshold,
         coord.debounce_ms,
         coord.hedge_debounce_ms,
         coord.stale_ttl_ms,
+        coord.watchdog_tick_ms,
         coord.toxic_recovery_hold_ms
     );
     info!("   reconcile_interval={}s", reconcile_interval_secs);
@@ -697,6 +698,32 @@ fn rotation_wait_duration(now_unix: u64, end_ts: u64) -> Duration {
     }
 }
 
+type ResolvedMarket = (String, String, String, Option<u64>);
+
+fn resolve_timeout_ms() -> u64 {
+    env::var("PM_RESOLVE_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(1000, 30000))
+        .unwrap_or(4000)
+}
+
+fn resolve_retry_attempts() -> usize {
+    env::var("PM_RESOLVE_RETRY_ATTEMPTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(1, 10))
+        .unwrap_or(4)
+}
+
+fn ws_connect_timeout_ms() -> u64 {
+    env::var("PM_WS_CONNECT_TIMEOUT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(1000, 30000))
+        .unwrap_or(6000)
+}
+
 /// Compute the slug and end-timestamp for the CURRENTLY ACTIVE market.
 ///
 /// "btc-updown-15m" + now=03:36 UTC → ("btc-updown-15m-1771904700", 1771904700)
@@ -716,14 +743,12 @@ fn compute_current_slug(prefix: &str) -> (String, u64, u64) {
 }
 
 /// Resolve a market by exact slug via Gamma API.
-/// P2 FIX: 10s timeout + explicit error on network stall.
-async fn resolve_market_by_slug(
-    slug: &str,
-) -> anyhow::Result<(String, String, String, Option<u64>)> {
+async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<ResolvedMarket> {
     info!("🔍 Resolving market: {}", slug);
     let url = format!("https://gamma-api.polymarket.com/markets?slug={}", slug);
+    let timeout_ms = resolve_timeout_ms();
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_millis(timeout_ms))
         .build()?;
     let resp: Value = client.get(&url).send().await?.json().await?;
 
@@ -773,6 +798,30 @@ async fn resolve_market_by_slug(
         }
     }
     anyhow::bail!("Failed to resolve market from slug: {}", slug);
+}
+
+async fn resolve_market_with_retry(slug: &str) -> anyhow::Result<ResolvedMarket> {
+    let attempts = resolve_retry_attempts();
+    let mut backoff = Duration::from_millis(300);
+    let max_backoff = Duration::from_secs(2);
+    let mut last_err: Option<anyhow::Error> = None;
+    for attempt in 1..=attempts {
+        match resolve_market_by_slug(slug).await {
+            Ok(m) => return Ok(m),
+            Err(e) => {
+                warn!(
+                    "❌ Resolve attempt {}/{} failed for '{}': {}",
+                    attempt, attempts, slug, e
+                );
+                last_err = Some(e);
+                if attempt < attempts {
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(max_backoff);
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("resolve failed: {}", slug)))
 }
 
 /// Fetch minimum order size for the current market outcomes via CLOB order book.
@@ -1157,6 +1206,7 @@ async fn run_market_ws(
         .as_secs();
     let secs_remaining = end_ts.saturating_sub(now_unix);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs_remaining);
+    let ws_connect_timeout = ws_connect_timeout_ms();
     info!(
         "⏰ Market deadline in {}s (end_ts={})",
         secs_remaining, end_ts
@@ -1181,8 +1231,11 @@ async fn run_market_ws(
         let url = settings.ws_url("market");
         info!(%url, "📡 connecting market WS");
 
-        let connect_result =
-            tokio::time::timeout(Duration::from_secs(10), connect_async(&url)).await;
+        let connect_result = tokio::time::timeout(
+            Duration::from_millis(ws_connect_timeout),
+            connect_async(&url),
+        )
+        .await;
 
         match connect_result {
             Ok(Ok((ws, response))) => {
@@ -1369,6 +1422,12 @@ async fn main() -> anyhow::Result<()> {
         coord_cfg_base.max_net_diff,
         ofi_cfg.toxicity_threshold,
         dry_run
+    );
+    info!(
+        "🌐 Net Resilience: ws_connect_timeout={}ms resolve_timeout={}ms resolve_retries={}",
+        ws_connect_timeout_ms(),
+        resolve_timeout_ms(),
+        resolve_retry_attempts()
     );
     if auto_claim_cfg.enabled {
         info!(
@@ -1721,16 +1780,9 @@ async fn main() -> anyhow::Result<()> {
     // ═══════════════════════════════════════════════════
 
     // Channel for pre-resolved next markets to eliminate 7-8s rotation latency
-    #[allow(clippy::type_complexity)]
-    let (preload_tx, mut preload_rx) = mpsc::channel::<(
-        String,
-        anyhow::Result<(String, String, String, Option<u64>)>,
-    )>(2);
-    #[allow(clippy::type_complexity)]
-    let mut preloaded_market: Option<(
-        String,
-        anyhow::Result<(String, String, String, Option<u64>)>,
-    )> = None;
+    let (preload_tx, mut preload_rx) = mpsc::channel::<(String, anyhow::Result<ResolvedMarket>)>(2);
+    let mut preloaded_market: Option<(String, anyhow::Result<ResolvedMarket>)> = None;
+    let mut market_cache: HashMap<String, ResolvedMarket> = HashMap::new();
 
     let mut round = 0u64;
     loop {
@@ -1789,7 +1841,7 @@ async fn main() -> anyhow::Result<()> {
                         "⏳ Pre-resolving next market in background during skip delay: {}",
                         next_slug
                     );
-                    let res = resolve_market_by_slug(&next_slug).await;
+                    let res = resolve_market_with_retry(&next_slug).await;
                     let _ = p_tx.send((next_slug, res)).await;
                 });
 
@@ -1810,19 +1862,39 @@ async fn main() -> anyhow::Result<()> {
         let resolved = if let Some((pre_slug, pre_res)) = preloaded_market.take() {
             if pre_slug == slug {
                 info!("⚡ Using pre-resolved market data for {}", slug);
-                pre_res
+                match pre_res {
+                    Ok(ids) => Ok(ids),
+                    Err(e) => {
+                        warn!(
+                            "⚠️ Pre-resolved data for '{}' failed: {} — falling back to direct resolve",
+                            slug, e
+                        );
+                        resolve_market_with_retry(&slug).await
+                    }
+                }
             } else {
-                resolve_market_by_slug(&slug).await
+                resolve_market_with_retry(&slug).await
             }
         } else {
-            resolve_market_by_slug(&slug).await
+            resolve_market_with_retry(&slug).await
         };
         let (market_id, yes_asset_id, no_asset_id, api_end_date) = match resolved {
-            Ok(ids) => ids,
+            Ok(ids) => {
+                market_cache.insert(slug.clone(), ids.clone());
+                ids
+            }
             Err(err) => {
-                warn!("❌ Failed to resolve '{}': {} — retrying in 10s", slug, err);
-                sleep(Duration::from_secs(10)).await;
-                continue;
+                if let Some(cached) = market_cache.get(&slug).cloned() {
+                    warn!(
+                        "⚠️ Resolve failed for '{}': {} — using cached market ids for continuity",
+                        slug, err
+                    );
+                    cached
+                } else {
+                    warn!("❌ Failed to resolve '{}': {} — retrying in 2s", slug, err);
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
             }
         };
 
@@ -2199,7 +2271,7 @@ async fn main() -> anyhow::Result<()> {
                 }
                 info!("⏳ Pre-resolving next market in background: {}", next_slug);
 
-                let res = resolve_market_by_slug(&next_slug).await;
+                let res = resolve_market_with_retry(&next_slug).await;
                 let _ = p_tx.send((next_slug, res)).await;
             });
         }
