@@ -285,12 +285,18 @@ impl InventoryManager {
             no_cost_sum = 0.0;
         }
         if yes_qty < 0.0 {
-            warn!("📦 YES qty drifted negative ({:.8}) after ledger rebuild; clamping to 0", yes_qty);
+            warn!(
+                "📦 YES qty drifted negative ({:.8}) after ledger rebuild; clamping to 0",
+                yes_qty
+            );
             yes_qty = 0.0;
             yes_cost_sum = 0.0;
         }
         if no_qty < 0.0 {
-            warn!("📦 NO qty drifted negative ({:.8}) after ledger rebuild; clamping to 0", no_qty);
+            warn!(
+                "📦 NO qty drifted negative ({:.8}) after ledger rebuild; clamping to 0",
+                no_qty
+            );
             no_qty = 0.0;
             no_cost_sum = 0.0;
         }

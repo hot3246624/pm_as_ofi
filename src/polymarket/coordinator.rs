@@ -343,6 +343,9 @@ struct Stats {
 
 pub struct StrategyCoordinator {
     cfg: CoordinatorConfig,
+    /// Runtime-overridable gross exposure cap (shares).
+    /// Defaults to cfg.max_side_shares and can be updated via watch channel.
+    max_side_shares_live: f64,
     book: Book,
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
@@ -371,6 +374,8 @@ pub struct StrategyCoordinator {
     /// Opt-4: Direct high-priority kill channel from OFI Engine.
     /// Fires on toxicity onset without waiting for the next book tick.
     kill_rx: mpsc::Receiver<KillSwitchSignal>,
+    /// Optional runtime max-side-cap updates (balance-driven).
+    max_side_rx: Option<watch::Receiver<f64>>,
 }
 
 impl StrategyCoordinator {
@@ -398,6 +403,7 @@ impl StrategyCoordinator {
         kill_rx: mpsc::Receiver<KillSwitchSignal>,
     ) -> Self {
         Self {
+            max_side_shares_live: cfg.max_side_shares,
             cfg,
             book: Book::default(),
             last_valid_book: Book::default(),
@@ -418,7 +424,16 @@ impl StrategyCoordinator {
             md_rx,
             om_tx,
             kill_rx,
+            max_side_rx: None,
         }
+    }
+
+    /// Wire optional runtime updates for max_side_shares.
+    pub fn with_dynamic_max_side_rx(mut self, rx: watch::Receiver<f64>) -> Self {
+        let initial = (*rx.borrow()).max(0.0);
+        self.max_side_shares_live = initial;
+        self.max_side_rx = Some(rx);
+        self
     }
 
     pub async fn run(mut self) {
@@ -539,6 +554,8 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     async fn tick(&mut self) {
+        self.refresh_dynamic_caps();
+
         let ofi = *self.ofi_rx.borrow();
         let inv = *self.inv_rx.borrow();
 
@@ -662,11 +679,31 @@ impl StrategyCoordinator {
         }
 
         // 2. Strict Maker Clamp
+        // P3 FIX: Extra tick margin to reduce post-only cross-book rejections
+        let mut margin_ticks = self.cfg.post_only_safety_ticks.max(0.5);
+        if ub.yes_bid > 0.0 && ub.yes_ask > ub.yes_bid {
+            let spread_ticks = (ub.yes_ask - ub.yes_bid) / self.cfg.tick_size.max(1e-9);
+            if spread_ticks <= self.cfg.post_only_tight_spread_ticks {
+                margin_ticks += self.cfg.post_only_extra_tight_ticks.max(0.0);
+            }
+        }
+        let yes_safety_margin = margin_ticks * self.cfg.tick_size;
+
+        let mut margin_ticks_no = self.cfg.post_only_safety_ticks.max(0.5);
+        if ub.no_bid > 0.0 && ub.no_ask > ub.no_bid {
+            let spread_ticks = (ub.no_ask - ub.no_bid) / self.cfg.tick_size.max(1e-9);
+            if spread_ticks <= self.cfg.post_only_tight_spread_ticks {
+                margin_ticks_no += self.cfg.post_only_extra_tight_ticks.max(0.0);
+            }
+        }
+        let no_safety_margin = margin_ticks_no * self.cfg.tick_size;
+
+
         if ub.yes_ask > 0.0 {
-            raw_yes = f64::min(raw_yes, ub.yes_ask - self.cfg.tick_size);
+            raw_yes = f64::min(raw_yes, ub.yes_ask - yes_safety_margin);
         }
         if ub.no_ask > 0.0 {
-            raw_no = f64::min(raw_no, ub.no_ask - self.cfg.tick_size);
+            raw_no = f64::min(raw_no, ub.no_ask - no_safety_margin);
         }
 
         let mut bid_yes = self.safe_price(raw_yes);
@@ -722,7 +759,8 @@ impl StrategyCoordinator {
                     let mut hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
                     hedge_no = self.safe_price(hedge_no);
 
-                    if let Some(bumped) = self.bump_hedge_size_for_marketable_floor(hedge_no, hedge_size)
+                    if let Some(bumped) =
+                        self.bump_hedge_size_for_marketable_floor(hedge_no, hedge_size)
                     {
                         if bumped > hedge_size + 1e-9 {
                             if self.can_buy_no(inv, bumped) {
@@ -815,7 +853,8 @@ impl StrategyCoordinator {
                                     hedge_size,
                                     hedge_target,
                                 );
-                                agg_yes = self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
+                                agg_yes =
+                                    self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
                                 if agg_yes > 0.0 {
                                     hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
                                     hedge_yes = self.safe_price(hedge_yes);
@@ -1090,10 +1129,35 @@ impl StrategyCoordinator {
     }
 
     fn max_side_shares(&self) -> f64 {
-        if self.cfg.max_side_shares > 0.0 {
-            self.cfg.max_side_shares
+        if self.max_side_shares_live > 0.0 {
+            self.max_side_shares_live
         } else {
             f64::INFINITY
+        }
+    }
+
+    fn refresh_dynamic_caps(&mut self) {
+        let Some(rx) = self.max_side_rx.as_mut() else {
+            return;
+        };
+
+        loop {
+            let changed = match rx.has_changed() {
+                Ok(v) => v,
+                Err(_) => break, // sender dropped; keep last known cap
+            };
+            if !changed {
+                break;
+            }
+
+            let next = (*rx.borrow_and_update()).max(0.0);
+            if (next - self.max_side_shares_live).abs() > 0.5 {
+                info!(
+                    "💡 Runtime max_side_shares update: {:.1} -> {:.1}",
+                    self.max_side_shares_live, next
+                );
+            }
+            self.max_side_shares_live = next;
         }
     }
 

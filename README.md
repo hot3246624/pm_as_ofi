@@ -120,6 +120,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_RESOLVE_TIMEOUT_MS` | `4000` | Gamma 市场解析请求超时（毫秒） |
 | `PM_RESOLVE_RETRY_ATTEMPTS` | `4` | 每轮市场解析重试次数（指数退避） |
 | `PM_MAX_POS_PCT` | `0.70` | 总仓位占比上限（用于动态推导 `PM_MAX_SIDE_SHARES`） |
+| `PM_DYNAMIC_GROSS_REFRESH_SECS` | `10` | 轮中动态刷新 `max_side_shares` 的周期（秒） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
 | `PM_OFI_ADAPTIVE` | `true/false` | 是否开启自适应阈值（`mean + k*sigma`） |
@@ -135,6 +136,8 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_RECYCLE_ENABLED` | `true` | 启用余额压力回收器（余额拒单触发批量 merge） |
 | `PM_RECYCLE_TRIGGER_REJECTS` | `2` | 触发阈值：窗口内余额拒单次数 |
 | `PM_RECYCLE_TRIGGER_WINDOW_SECS` | `90` | 拒单统计窗口（秒） |
+| `PM_RECYCLE_PROACTIVE` | `true` | 主动 headroom 探测：即使无拒单，也会在低水位时尝试回收 |
+| `PM_RECYCLE_POLL_SECS` | `5` | 主动 headroom 探测周期（秒） |
 | `PM_RECYCLE_COOLDOWN_SECS` | `120` | 两次回收最小间隔（秒） |
 | `PM_RECYCLE_LOW_WATER_USDC` | `6` | 低水位：低于该余额才允许回收 |
 | `PM_RECYCLE_TARGET_FREE_USDC` | `18` | 回收目标余额（高水位） |

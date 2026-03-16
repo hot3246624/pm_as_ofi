@@ -1047,6 +1047,11 @@ pub async fn maybe_auto_claim(
     }
     if let Some(last) = state.last_run {
         if last.elapsed() < cfg.run_interval {
+            let remain = cfg.run_interval.saturating_sub(last.elapsed()).as_secs();
+            tracing::info!(
+                "💸 AUTO-CLAIM skipped: run interval not elapsed (remaining {}s)",
+                remain
+            );
             return Ok(());
         }
     }
@@ -1125,11 +1130,16 @@ pub async fn maybe_auto_claim(
 
     let summary = scan_claimable_positions(&cfg.data_api_url, funder).await?;
     if summary.positions == 0 {
+        tracing::info!("💸 AUTO-CLAIM skipped: no claimable positions");
         return Ok(());
     }
 
     let candidates = make_candidates(summary, cfg);
     if candidates.is_empty() {
+        tracing::info!(
+            "💸 AUTO-CLAIM skipped: no candidates above min_value=${}",
+            cfg.min_condition_value
+        );
         return Ok(());
     }
 

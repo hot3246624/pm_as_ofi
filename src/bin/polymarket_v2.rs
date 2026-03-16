@@ -137,6 +137,8 @@ struct CapitalRecycleConfig {
     only_hedge_rejects: bool,
     trigger_rejects: usize,
     trigger_window: Duration,
+    proactive_headroom: bool,
+    headroom_poll: Duration,
     cooldown: Duration,
     max_merges_per_round: usize,
     low_water_usdc: f64,
@@ -166,6 +168,16 @@ impl CapitalRecycleConfig {
                 .and_then(|v| v.parse::<u64>().ok())
                 .filter(|v| *v > 0)
                 .unwrap_or(90),
+        );
+        let proactive_headroom = env::var("PM_RECYCLE_PROACTIVE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true);
+        let headroom_poll = Duration::from_secs(
+            env::var("PM_RECYCLE_POLL_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(5),
         );
         let cooldown = Duration::from_secs(
             env::var("PM_RECYCLE_COOLDOWN_SECS")
@@ -214,6 +226,8 @@ impl CapitalRecycleConfig {
             only_hedge_rejects,
             trigger_rejects,
             trigger_window,
+            proactive_headroom,
+            headroom_poll,
             cooldown,
             max_merges_per_round,
             low_water_usdc,
@@ -231,6 +245,84 @@ struct CapitalRecycleState {
     recent_rejects: VecDeque<Instant>,
     last_merge_ts: Option<Instant>,
     merges_done: usize,
+}
+
+#[derive(Debug, Clone)]
+struct DynamicGrossContext {
+    tx: watch::Sender<f64>,
+    max_pos_pct: f64,
+    pair_target: f64,
+    floor_shares: f64,
+    configured_cap: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum RecycleTrigger {
+    Reject,
+    Headroom,
+}
+
+impl RecycleTrigger {
+    fn label(self) -> &'static str {
+        match self {
+            RecycleTrigger::Reject => "reject",
+            RecycleTrigger::Headroom => "headroom",
+        }
+    }
+}
+
+fn dynamic_gross_refresh_secs() -> u64 {
+    env::var("PM_DYNAMIC_GROSS_REFRESH_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(10)
+}
+
+fn compute_effective_max_side_shares(
+    balance_usdc: f64,
+    max_pos_pct: f64,
+    pair_target: f64,
+    floor_shares: f64,
+    configured_cap: f64,
+) -> Option<f64> {
+    if max_pos_pct <= 0.0 || !balance_usdc.is_finite() || balance_usdc <= 0.0 {
+        return None;
+    }
+
+    let denom = pair_target.max(1e-6);
+    let dyn_max_side = (balance_usdc * max_pos_pct / denom).round();
+    if !dyn_max_side.is_finite() || dyn_max_side <= 0.0 {
+        return None;
+    }
+
+    let floored = dyn_max_side.max(floor_shares.max(0.0));
+    let effective = if configured_cap > 0.0 {
+        floored.min(configured_cap)
+    } else {
+        floored
+    };
+    Some(effective.max(floor_shares.max(0.0)))
+}
+
+fn publish_dynamic_max_side(ctx: &DynamicGrossContext, free_balance_usdc: f64, source: &str) {
+    let Some(next) = compute_effective_max_side_shares(
+        free_balance_usdc,
+        ctx.max_pos_pct,
+        ctx.pair_target,
+        ctx.floor_shares,
+        ctx.configured_cap,
+    ) else {
+        return;
+    };
+    let current = *ctx.tx.borrow();
+    if (next - current).abs() > 0.5 {
+        let _ = ctx.tx.send(next);
+        info!(
+            "💡 [DYNAMIC GROSS:{}] free={:.2} -> max_side_shares={:.1} (prev {:.1})",
+            source, free_balance_usdc, next, current
+        );
+    }
 }
 
 fn plan_merge_batch_usdc(
@@ -276,6 +368,196 @@ async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<(f64, bo
     Ok((free_balance, allowance_ok))
 }
 
+async fn run_dynamic_gross_refresher(
+    client: AuthClient,
+    refresh_every: Duration,
+    ctx: DynamicGrossContext,
+) {
+    if refresh_every.as_secs() == 0 {
+        return;
+    }
+    let mut ticker = tokio::time::interval(refresh_every);
+    loop {
+        ticker.tick().await;
+        match fetch_free_collateral_usdc(&client).await {
+            Ok(free) => publish_dynamic_max_side(&ctx, free, "periodic"),
+            Err(e) => debug!("dynamic gross refresh skipped: {:?}", e),
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn try_recycle_merge(
+    cfg: &CapitalRecycleConfig,
+    state: &mut CapitalRecycleState,
+    trigger: RecycleTrigger,
+    reject_event: Option<&PlacementRejectEvent>,
+    reject_count: usize,
+    auto_claim_cfg: &AutoClaimConfig,
+    client: &AuthClient,
+    inventory_tx: &mpsc::Sender<InventoryEvent>,
+    condition_id: alloy::primitives::B256,
+    funder: alloy::primitives::Address,
+    funder_address: Option<&str>,
+    signer_address: Option<&str>,
+    private_key: Option<&str>,
+    dry_run: bool,
+    dynamic_gross_ctx: Option<&DynamicGrossContext>,
+) {
+    if state.merges_done >= cfg.max_merges_per_round {
+        if matches!(trigger, RecycleTrigger::Reject) {
+            warn!(
+                "⚠️ Recycler suppressed: reached per-round merge cap ({})",
+                cfg.max_merges_per_round
+            );
+        }
+        return;
+    }
+    if let Some(last) = state.last_merge_ts {
+        if last.elapsed() < cfg.cooldown {
+            return;
+        }
+    }
+
+    let (free_balance, allowance_ok) = match fetch_collateral_status(client).await {
+        Ok(v) => v,
+        Err(e) => {
+            if matches!(trigger, RecycleTrigger::Reject) {
+                warn!("⚠️ Recycler balance fetch failed: {:?}", e);
+            } else {
+                debug!("Recycler proactive balance fetch failed: {:?}", e);
+            }
+            return;
+        }
+    };
+    if let Some(ctx) = dynamic_gross_ctx {
+        publish_dynamic_max_side(ctx, free_balance, "recycler_probe");
+    }
+    if !allowance_ok {
+        if matches!(trigger, RecycleTrigger::Reject) {
+            warn!(
+                "⚠️ Recycler skipped: collateral allowance appears zero; merge cannot fix allowance issues"
+            );
+        }
+        return;
+    }
+    if free_balance >= cfg.low_water_usdc {
+        if matches!(trigger, RecycleTrigger::Reject) {
+            state.recent_rejects.clear();
+        }
+        return;
+    }
+
+    let mergeable = match scan_mergeable_full_set_usdc(
+        &auto_claim_cfg.data_api_url,
+        funder,
+        condition_id,
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(e) => {
+            if matches!(trigger, RecycleTrigger::Reject) {
+                warn!("⚠️ Recycler mergeable scan failed: {:?}", e);
+            } else {
+                debug!("Recycler proactive mergeable scan failed: {:?}", e);
+            }
+            return;
+        }
+    };
+    let mergeable_f64 = mergeable.to_f64().unwrap_or(0.0).max(0.0);
+    if mergeable_f64 <= 0.0 {
+        if matches!(trigger, RecycleTrigger::Reject) {
+            warn!(
+                "⚠️ Recycler: no mergeable full sets available for condition={}",
+                condition_id
+            );
+        }
+        return;
+    }
+
+    let batch_usdc = plan_merge_batch_usdc(cfg, free_balance, mergeable_f64);
+    if batch_usdc < cfg.min_executable_usdc {
+        if matches!(trigger, RecycleTrigger::Reject) {
+            warn!(
+                "⚠️ Recycler planned batch too small ({:.2} < {:.2}) — skip",
+                batch_usdc, cfg.min_executable_usdc
+            );
+        }
+        return;
+    }
+    let Some(amount_dec) = Decimal::from_f64(batch_usdc) else {
+        if matches!(trigger, RecycleTrigger::Reject) {
+            warn!(
+                "⚠️ Recycler failed to convert batch amount to Decimal: {:.6}",
+                batch_usdc
+            );
+        }
+        return;
+    };
+
+    let evt_text = if let Some(evt) = reject_event {
+        format!(
+            "side={:?} reason={:?} price={:.3} size={:.1}",
+            evt.side, evt.reason, evt.price, evt.size
+        )
+    } else {
+        "proactive headroom".to_string()
+    };
+    info!(
+        "♻️ Recycler trigger[{}]: rejects={} free={:.2} mergeable={:.2} -> merge {:.2} USDC ({})",
+        trigger.label(),
+        reject_count,
+        free_balance,
+        mergeable_f64,
+        batch_usdc,
+        evt_text
+    );
+
+    match execute_market_merge(
+        auto_claim_cfg,
+        funder_address,
+        signer_address,
+        private_key,
+        condition_id,
+        amount_dec,
+        dry_run,
+    )
+    .await
+    {
+        Ok(_) => {
+            let merge_id = format!("{}-{}", condition_id, state.merges_done + 1);
+            let _ = inventory_tx
+                .send(InventoryEvent::Merge {
+                    full_set_size: batch_usdc,
+                    merge_id,
+                    ts: Instant::now(),
+                })
+                .await;
+            state.last_merge_ts = Some(Instant::now());
+            state.merges_done += 1;
+            state.recent_rejects.clear();
+            match fetch_free_collateral_usdc(client).await {
+                Ok(after) => {
+                    info!(
+                        "♻️ Recycler post-merge balance: before={:.2} after={:.2}",
+                        free_balance, after
+                    );
+                    if let Some(ctx) = dynamic_gross_ctx {
+                        publish_dynamic_max_side(ctx, after, "recycler_post_merge");
+                    }
+                }
+                Err(e) => warn!("⚠️ Recycler post-merge balance refresh failed: {:?}", e),
+            }
+        }
+        Err(e) => {
+            // Failure is also cooled down to avoid hammering relayer/rpc.
+            state.last_merge_ts = Some(Instant::now());
+            warn!("⚠️ Recycler merge execution failed: {:?}", e);
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run_capital_recycler(
     cfg: CapitalRecycleConfig,
@@ -287,6 +569,7 @@ async fn run_capital_recycler(
     funder_address: Option<String>,
     signer_address: Option<String>,
     private_key: Option<String>,
+    dynamic_gross_ctx: Option<DynamicGrossContext>,
     dry_run: bool,
 ) {
     if !cfg.enabled {
@@ -326,151 +609,85 @@ async fn run_capital_recycler(
     };
 
     info!(
-        "♻️ Capital recycler active | trigger={} in {}s cooldown={}s low={} target={} batch=[{}, {}]",
+        "♻️ Capital recycler active | trigger={} in {}s cooldown={}s low={} target={} batch=[{}, {}] proactive={} poll={}s",
         cfg.trigger_rejects,
         cfg.trigger_window.as_secs(),
         cfg.cooldown.as_secs(),
         cfg.low_water_usdc,
         cfg.target_free_usdc,
         cfg.min_batch_usdc,
-        cfg.max_batch_usdc
+        cfg.max_batch_usdc,
+        cfg.proactive_headroom,
+        cfg.headroom_poll.as_secs()
     );
 
     let mut state = CapitalRecycleState::default();
-    while let Some(evt) = rx.recv().await {
-        if evt.kind != RejectKind::BalanceOrAllowance {
-            continue;
-        }
-        if cfg.only_hedge_rejects && evt.reason != BidReason::Hedge {
-            continue;
-        }
-
-        let now = Instant::now();
-        state.recent_rejects.push_back(now);
-        while let Some(front) = state.recent_rejects.front() {
-            if now.duration_since(*front) > cfg.trigger_window {
-                state.recent_rejects.pop_front();
-            } else {
-                break;
-            }
-        }
-
-        if state.recent_rejects.len() < cfg.trigger_rejects {
-            continue;
-        }
-        if state.merges_done >= cfg.max_merges_per_round {
-            warn!(
-                "⚠️ Recycler suppressed: reached per-round merge cap ({})",
-                cfg.max_merges_per_round
-            );
-            continue;
-        }
-        if let Some(last) = state.last_merge_ts {
-            if last.elapsed() < cfg.cooldown {
-                continue;
-            }
-        }
-
-        let (free_balance, allowance_ok) = match fetch_collateral_status(&client).await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("⚠️ Recycler balance fetch failed: {:?}", e);
-                continue;
-            }
-        };
-        if !allowance_ok {
-            warn!(
-                "⚠️ Recycler skipped: collateral allowance appears zero; merge cannot fix allowance issues"
-            );
-            continue;
-        }
-        if free_balance >= cfg.low_water_usdc {
-            state.recent_rejects.clear();
-            continue;
-        }
-
-        let mergeable =
-            match scan_mergeable_full_set_usdc(&auto_claim_cfg.data_api_url, funder, condition_id)
-                .await
-            {
-                Ok(v) => v,
-                Err(e) => {
-                    warn!("⚠️ Recycler mergeable scan failed: {:?}", e);
+    let mut headroom_ticker = tokio::time::interval(cfg.headroom_poll);
+    loop {
+        tokio::select! {
+            maybe_evt = rx.recv() => {
+                let Some(evt) = maybe_evt else {
+                    break;
+                };
+                if evt.kind != RejectKind::BalanceOrAllowance {
                     continue;
                 }
-            };
-        let mergeable_f64 = mergeable.to_f64().unwrap_or(0.0).max(0.0);
-        if mergeable_f64 <= 0.0 {
-            warn!(
-                "⚠️ Recycler: no mergeable full sets available for condition={}",
-                condition_id
-            );
-            continue;
-        }
-
-        let batch_usdc = plan_merge_batch_usdc(&cfg, free_balance, mergeable_f64);
-        if batch_usdc < cfg.min_executable_usdc {
-            warn!(
-                "⚠️ Recycler planned batch too small ({:.2} < {:.2}) — skip",
-                batch_usdc, cfg.min_executable_usdc
-            );
-            continue;
-        }
-        let Some(amount_dec) = Decimal::from_f64(batch_usdc) else {
-            warn!(
-                "⚠️ Recycler failed to convert batch amount to Decimal: {:.6}",
-                batch_usdc
-            );
-            continue;
-        };
-
-        info!(
-            "♻️ Recycler trigger: rejects={} free={:.2} mergeable={:.2} -> merge {:.2} USDC (side={:?} reason={:?} price={:.3} size={:.1})",
-            state.recent_rejects.len(),
-            free_balance,
-            mergeable_f64,
-            batch_usdc,
-            evt.side,
-            evt.reason,
-            evt.price,
-            evt.size
-        );
-
-        match execute_market_merge(
-            &auto_claim_cfg,
-            funder_address.as_deref(),
-            signer_address.as_deref(),
-            private_key.as_deref(),
-            condition_id,
-            amount_dec,
-            dry_run,
-        )
-        .await
-        {
-            Ok(_) => {
-                let merge_id = format!("{}-{}", condition_id, state.merges_done + 1);
-                let _ = inventory_tx
-                    .send(InventoryEvent::Merge {
-                        full_set_size: batch_usdc,
-                        merge_id,
-                        ts: Instant::now(),
-                    })
-                    .await;
-                state.last_merge_ts = Some(Instant::now());
-                state.merges_done += 1;
-                state.recent_rejects.clear();
-                match fetch_free_collateral_usdc(&client).await {
-                    Ok(after) => info!(
-                        "♻️ Recycler post-merge balance: before={:.2} after={:.2}",
-                        free_balance, after
-                    ),
-                    Err(e) => warn!("⚠️ Recycler post-merge balance refresh failed: {:?}", e),
+                if cfg.only_hedge_rejects && evt.reason != BidReason::Hedge {
+                    continue;
                 }
+
+                let now = Instant::now();
+                state.recent_rejects.push_back(now);
+                while let Some(front) = state.recent_rejects.front() {
+                    if now.duration_since(*front) > cfg.trigger_window {
+                        state.recent_rejects.pop_front();
+                    } else {
+                        break;
+                    }
+                }
+
+                if state.recent_rejects.len() < cfg.trigger_rejects {
+                    continue;
+                }
+                let reject_count = state.recent_rejects.len();
+                try_recycle_merge(
+                    &cfg,
+                    &mut state,
+                    RecycleTrigger::Reject,
+                    Some(&evt),
+                    reject_count,
+                    &auto_claim_cfg,
+                    &client,
+                    &inventory_tx,
+                    condition_id,
+                    funder,
+                    funder_address.as_deref(),
+                    signer_address.as_deref(),
+                    private_key.as_deref(),
+                    dry_run,
+                    dynamic_gross_ctx.as_ref(),
+                )
+                .await;
             }
-            Err(e) => {
-                // Failure is also cooled down to avoid hammering relayer/rpc.
-                state.last_merge_ts = Some(Instant::now());
-                warn!("⚠️ Recycler merge execution failed: {:?}", e);
+            _ = headroom_ticker.tick(), if cfg.proactive_headroom => {
+                try_recycle_merge(
+                    &cfg,
+                    &mut state,
+                    RecycleTrigger::Headroom,
+                    None,
+                    0,
+                    &auto_claim_cfg,
+                    &client,
+                    &inventory_tx,
+                    condition_id,
+                    funder,
+                    funder_address.as_deref(),
+                    signer_address.as_deref(),
+                    private_key.as_deref(),
+                    dry_run,
+                    dynamic_gross_ctx.as_ref(),
+                )
+                .await;
             }
         }
     }
@@ -1924,6 +2141,11 @@ async fn main() -> anyhow::Result<()> {
         // Opt-1: Pass market expiry timestamp so coordinator can apply A-S time decay.
         coord_cfg.market_end_ts = Some(effective_end_ts);
         let mut inv_cfg = inv_cfg_base.clone();
+        let configured_max_side_cap = coord_cfg.max_side_shares;
+        let max_pos_pct: f64 = std::env::var("PM_MAX_POS_PCT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0.0);
 
         let mut balance_opt: Option<f64> = None;
 
@@ -1971,21 +2193,19 @@ async fn main() -> anyhow::Result<()> {
                         .min(dyn_net_diff)
                         .max(coord_cfg.bid_size);
 
-                    let max_pos_pct: f64 = std::env::var("PM_MAX_POS_PCT")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0.0);
                     if max_pos_pct > 0.0 {
-                        let denom = coord_cfg.pair_target.max(1e-6);
-                        let dyn_max_side = (balance_f64 * max_pos_pct / denom).round();
-                        if dyn_max_side.is_finite() && dyn_max_side > 0.0 {
-                            let dyn_max_side = dyn_max_side
-                                .max(coord_cfg.max_net_diff)
-                                .max(coord_cfg.bid_size);
-                            coord_cfg.max_side_shares = coord_cfg.max_side_shares.min(dyn_max_side);
+                        let floor = coord_cfg.max_net_diff.max(coord_cfg.bid_size);
+                        if let Some(next_cap) = compute_effective_max_side_shares(
+                            balance_f64,
+                            max_pos_pct,
+                            coord_cfg.pair_target,
+                            floor,
+                            configured_max_side_cap,
+                        ) {
+                            coord_cfg.max_side_shares = next_cap;
                             info!(
                                 "💡 [DYNAMIC GROSS] Balance: {:.2} USDC -> cap MAX_SIDE_SHARES to {:.1} (effective {:.1}, max_pos_pct={}, pair_target={})",
-                                balance_f64, dyn_max_side, coord_cfg.max_side_shares, max_pos_pct, coord_cfg.pair_target
+                                balance_f64, next_cap, coord_cfg.max_side_shares, max_pos_pct, coord_cfg.pair_target
                             );
                         } else {
                             warn!(
@@ -2092,6 +2312,19 @@ async fn main() -> anyhow::Result<()> {
         });
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
+        let (max_side_tx, max_side_rx) = watch::channel(coord_cfg.max_side_shares);
+
+        let dynamic_gross_ctx = if max_pos_pct > 0.0 {
+            Some(DynamicGrossContext {
+                tx: max_side_tx.clone(),
+                max_pos_pct,
+                pair_target: coord_cfg.pair_target,
+                floor_shares: coord_cfg.max_net_diff.max(coord_cfg.bid_size),
+                configured_cap: configured_max_side_cap,
+            })
+        } else {
+            None
+        };
 
         // Opt-4: Direct kill channel from OFI Engine → Coordinator.
         // Capacity 4: at most one kill per side (YES/NO) queued without blocking OFI heartbeat.
@@ -2110,11 +2343,22 @@ async fn main() -> anyhow::Result<()> {
             coord_md_rx,
             om_tx.clone(),
             kill_rx,
-        );
+        )
+        .with_dynamic_max_side_rx(max_side_rx);
         session_handles.push(tokio::spawn(coord.run()));
 
         let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx);
         session_handles.push(tokio::spawn(om.run()));
+
+        if !dry_run {
+            if let (Some(client), Some(ctx)) = (clob_client.clone(), dynamic_gross_ctx.clone()) {
+                session_handles.push(tokio::spawn(run_dynamic_gross_refresher(
+                    client,
+                    Duration::from_secs(dynamic_gross_refresh_secs()),
+                    ctx,
+                )));
+            }
+        }
 
         if !dry_run && recycle_cfg.enabled {
             session_handles.push(tokio::spawn(run_capital_recycler(
@@ -2127,6 +2371,7 @@ async fn main() -> anyhow::Result<()> {
                 funder_address.clone(),
                 signer_address.clone(),
                 base_settings.private_key.clone(),
+                dynamic_gross_ctx.clone(),
                 dry_run,
             )));
         }
