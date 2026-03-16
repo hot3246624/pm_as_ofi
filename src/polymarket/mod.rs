@@ -1,11 +1,11 @@
 // ─── V2: Toxicity-Aware StatArb Actor Architecture ───
-pub mod coordinator;
 pub mod claims;
+pub mod coordinator;
 pub mod executor;
 pub mod inventory;
-pub mod order_manager;
 pub mod messages;
 pub mod ofi;
+pub mod order_manager;
 pub mod user_ws;
 
 // ─── Shared types (kept from V1, used by both old and new) ───

@@ -279,7 +279,12 @@ impl OfiEngine {
             return;
         }
         let mean = self.score_history.iter().sum::<f64>() / n as f64;
-        let variance = self.score_history.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n as f64;
+        let variance = self
+            .score_history
+            .iter()
+            .map(|x| (x - mean).powi(2))
+            .sum::<f64>()
+            / n as f64;
         let std_dev = variance.sqrt();
         let adaptive = (mean + self.cfg.adaptive_k * std_dev)
             .clamp(self.cfg.adaptive_min, self.cfg.adaptive_max);
@@ -377,7 +382,9 @@ impl OfiEngine {
                 yes_toxic_since = Some(now);
                 warn!(
                     "☠️ YES entered toxicity! OFI={:.1} (buy={:.1} sell={:.1}) threshold={:.1}",
-                    yes_ofi.ofi_score, yes_ofi.buy_volume, yes_ofi.sell_volume,
+                    yes_ofi.ofi_score,
+                    yes_ofi.buy_volume,
+                    yes_ofi.sell_volume,
                     self.effective_threshold,
                 );
                 // Opt-4: Notify coordinator immediately without waiting for next book tick.
@@ -398,7 +405,9 @@ impl OfiEngine {
                 no_toxic_since = Some(now);
                 warn!(
                     "☠️ NO entered toxicity! OFI={:.1} (buy={:.1} sell={:.1}) threshold={:.1}",
-                    no_ofi.ofi_score, no_ofi.buy_volume, no_ofi.sell_volume,
+                    no_ofi.ofi_score,
+                    no_ofi.buy_volume,
+                    no_ofi.sell_volume,
                     self.effective_threshold,
                 );
                 // Opt-4: Notify coordinator immediately without waiting for next book tick.

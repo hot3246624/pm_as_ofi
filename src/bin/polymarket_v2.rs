@@ -6,7 +6,10 @@
 //! Lifecycle: auto-discover market from prefix → run → wall-clock expiry → CancelAll → rotate.
 
 use futures::{SinkExt, StreamExt};
+use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
+use std::collections::VecDeque;
 use std::env;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, watch};
@@ -16,10 +19,11 @@ use tracing::{debug, info, warn};
 
 // V2 Actor modules
 use pm_as_ofi::polymarket::claims::{
-    maybe_auto_claim, scan_claimable_positions, AutoClaimConfig, AutoClaimState,
+    execute_market_merge, maybe_auto_claim, scan_claimable_positions, scan_mergeable_full_set_usdc,
+    AutoClaimConfig, AutoClaimState,
 };
 use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
-use pm_as_ofi::polymarket::executor::{init_clob_client, Executor, ExecutorConfig};
+use pm_as_ofi::polymarket::executor::{init_clob_client, AuthClient, Executor, ExecutorConfig};
 use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
@@ -127,6 +131,351 @@ impl Settings {
     }
 }
 
+#[derive(Debug, Clone)]
+struct CapitalRecycleConfig {
+    enabled: bool,
+    only_hedge_rejects: bool,
+    trigger_rejects: usize,
+    trigger_window: Duration,
+    cooldown: Duration,
+    max_merges_per_round: usize,
+    low_water_usdc: f64,
+    target_free_usdc: f64,
+    min_batch_usdc: f64,
+    max_batch_usdc: f64,
+    shortfall_multiplier: f64,
+    min_executable_usdc: f64,
+}
+
+impl CapitalRecycleConfig {
+    fn from_env() -> Self {
+        let enabled = env::var("PM_RECYCLE_ENABLED")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true);
+        let only_hedge_rejects = env::var("PM_RECYCLE_ONLY_HEDGE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(true);
+        let trigger_rejects = env::var("PM_RECYCLE_TRIGGER_REJECTS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(2);
+        let trigger_window = Duration::from_secs(
+            env::var("PM_RECYCLE_TRIGGER_WINDOW_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(90),
+        );
+        let cooldown = Duration::from_secs(
+            env::var("PM_RECYCLE_COOLDOWN_SECS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(120),
+        );
+        let max_merges_per_round = env::var("PM_RECYCLE_MAX_MERGES_PER_ROUND")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(2);
+        let low_water_usdc = env::var("PM_RECYCLE_LOW_WATER_USDC")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(6.0);
+        let target_free_usdc = env::var("PM_RECYCLE_TARGET_FREE_USDC")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > low_water_usdc)
+            .unwrap_or(18.0);
+        let min_batch_usdc = env::var("PM_RECYCLE_MIN_BATCH_USDC")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(10.0);
+        let max_batch_usdc = env::var("PM_RECYCLE_MAX_BATCH_USDC")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= min_batch_usdc)
+            .unwrap_or(30.0);
+        let shortfall_multiplier = env::var("PM_RECYCLE_SHORTFALL_MULT")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(1.2);
+        let min_executable_usdc = env::var("PM_RECYCLE_MIN_EXECUTABLE_USDC")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .unwrap_or(5.0);
+        Self {
+            enabled,
+            only_hedge_rejects,
+            trigger_rejects,
+            trigger_window,
+            cooldown,
+            max_merges_per_round,
+            low_water_usdc,
+            target_free_usdc,
+            min_batch_usdc,
+            max_batch_usdc,
+            shortfall_multiplier,
+            min_executable_usdc,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct CapitalRecycleState {
+    recent_rejects: VecDeque<Instant>,
+    last_merge_ts: Option<Instant>,
+    merges_done: usize,
+}
+
+fn plan_merge_batch_usdc(
+    cfg: &CapitalRecycleConfig,
+    free_balance: f64,
+    mergeable_full_set_usdc: f64,
+) -> f64 {
+    if mergeable_full_set_usdc <= 0.0 {
+        return 0.0;
+    }
+    let shortage = (cfg.target_free_usdc - free_balance).max(0.0);
+    let desired = (shortage * cfg.shortfall_multiplier).max(cfg.min_batch_usdc);
+    desired.min(cfg.max_batch_usdc).min(mergeable_full_set_usdc)
+}
+
+async fn fetch_free_collateral_usdc(client: &AuthClient) -> anyhow::Result<f64> {
+    use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+    use polymarket_client_sdk::clob::types::AssetType;
+
+    let req = BalanceAllowanceRequest::builder()
+        .asset_type(AssetType::Collateral)
+        .build();
+    let resp = client.balance_allowance(req).await?;
+    let raw = resp.balance.to_f64().unwrap_or(0.0);
+    Ok((raw / 1_000_000.0).max(0.0))
+}
+
+async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<(f64, bool)> {
+    use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+    use polymarket_client_sdk::clob::types::AssetType;
+
+    let req = BalanceAllowanceRequest::builder()
+        .asset_type(AssetType::Collateral)
+        .build();
+    let resp = client.balance_allowance(req).await?;
+    let raw_balance = resp.balance.to_f64().unwrap_or(0.0);
+    let free_balance = (raw_balance / 1_000_000.0).max(0.0);
+    let allowance_ok = resp.allowances.values().any(|v| {
+        v.parse::<Decimal>()
+            .map(|d| d > Decimal::ZERO)
+            .unwrap_or(false)
+    });
+    Ok((free_balance, allowance_ok))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_capital_recycler(
+    cfg: CapitalRecycleConfig,
+    auto_claim_cfg: AutoClaimConfig,
+    mut rx: mpsc::Receiver<PlacementRejectEvent>,
+    inventory_tx: mpsc::Sender<InventoryEvent>,
+    clob_client: Option<AuthClient>,
+    market_id: String,
+    funder_address: Option<String>,
+    signer_address: Option<String>,
+    private_key: Option<String>,
+    dry_run: bool,
+) {
+    if !cfg.enabled {
+        info!("♻️ Capital recycler disabled by PM_RECYCLE_ENABLED");
+        return;
+    }
+
+    let condition_id = match market_id.parse::<alloy::primitives::B256>() {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "⚠️ Capital recycler disabled: invalid market_id '{}' for condition_id parse: {:?}",
+                market_id, e
+            );
+            return;
+        }
+    };
+
+    let Some(client) = clob_client else {
+        warn!("⚠️ Capital recycler disabled: no authenticated CLOB client");
+        return;
+    };
+
+    let Some(funder_raw) = funder_address.as_deref() else {
+        warn!("⚠️ Capital recycler disabled: missing funder address");
+        return;
+    };
+    let funder = match funder_raw.parse::<alloy::primitives::Address>() {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(
+                "⚠️ Capital recycler disabled: invalid funder address '{}': {:?}",
+                funder_raw, e
+            );
+            return;
+        }
+    };
+
+    info!(
+        "♻️ Capital recycler active | trigger={} in {}s cooldown={}s low={} target={} batch=[{}, {}]",
+        cfg.trigger_rejects,
+        cfg.trigger_window.as_secs(),
+        cfg.cooldown.as_secs(),
+        cfg.low_water_usdc,
+        cfg.target_free_usdc,
+        cfg.min_batch_usdc,
+        cfg.max_batch_usdc
+    );
+
+    let mut state = CapitalRecycleState::default();
+    while let Some(evt) = rx.recv().await {
+        if evt.kind != RejectKind::BalanceOrAllowance {
+            continue;
+        }
+        if cfg.only_hedge_rejects && evt.reason != BidReason::Hedge {
+            continue;
+        }
+
+        let now = Instant::now();
+        state.recent_rejects.push_back(now);
+        while let Some(front) = state.recent_rejects.front() {
+            if now.duration_since(*front) > cfg.trigger_window {
+                state.recent_rejects.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if state.recent_rejects.len() < cfg.trigger_rejects {
+            continue;
+        }
+        if state.merges_done >= cfg.max_merges_per_round {
+            warn!(
+                "⚠️ Recycler suppressed: reached per-round merge cap ({})",
+                cfg.max_merges_per_round
+            );
+            continue;
+        }
+        if let Some(last) = state.last_merge_ts {
+            if last.elapsed() < cfg.cooldown {
+                continue;
+            }
+        }
+
+        let (free_balance, allowance_ok) = match fetch_collateral_status(&client).await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("⚠️ Recycler balance fetch failed: {:?}", e);
+                continue;
+            }
+        };
+        if !allowance_ok {
+            warn!(
+                "⚠️ Recycler skipped: collateral allowance appears zero; merge cannot fix allowance issues"
+            );
+            continue;
+        }
+        if free_balance >= cfg.low_water_usdc {
+            state.recent_rejects.clear();
+            continue;
+        }
+
+        let mergeable =
+            match scan_mergeable_full_set_usdc(&auto_claim_cfg.data_api_url, funder, condition_id)
+                .await
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("⚠️ Recycler mergeable scan failed: {:?}", e);
+                    continue;
+                }
+            };
+        let mergeable_f64 = mergeable.to_f64().unwrap_or(0.0).max(0.0);
+        if mergeable_f64 <= 0.0 {
+            warn!(
+                "⚠️ Recycler: no mergeable full sets available for condition={}",
+                condition_id
+            );
+            continue;
+        }
+
+        let batch_usdc = plan_merge_batch_usdc(&cfg, free_balance, mergeable_f64);
+        if batch_usdc < cfg.min_executable_usdc {
+            warn!(
+                "⚠️ Recycler planned batch too small ({:.2} < {:.2}) — skip",
+                batch_usdc, cfg.min_executable_usdc
+            );
+            continue;
+        }
+        let Some(amount_dec) = Decimal::from_f64(batch_usdc) else {
+            warn!(
+                "⚠️ Recycler failed to convert batch amount to Decimal: {:.6}",
+                batch_usdc
+            );
+            continue;
+        };
+
+        info!(
+            "♻️ Recycler trigger: rejects={} free={:.2} mergeable={:.2} -> merge {:.2} USDC (side={:?} reason={:?} price={:.3} size={:.1})",
+            state.recent_rejects.len(),
+            free_balance,
+            mergeable_f64,
+            batch_usdc,
+            evt.side,
+            evt.reason,
+            evt.price,
+            evt.size
+        );
+
+        match execute_market_merge(
+            &auto_claim_cfg,
+            funder_address.as_deref(),
+            signer_address.as_deref(),
+            private_key.as_deref(),
+            condition_id,
+            amount_dec,
+            dry_run,
+        )
+        .await
+        {
+            Ok(_) => {
+                let merge_id = format!("{}-{}", condition_id, state.merges_done + 1);
+                let _ = inventory_tx
+                    .send(InventoryEvent::Merge {
+                        full_set_size: batch_usdc,
+                        merge_id,
+                        ts: Instant::now(),
+                    })
+                    .await;
+                state.last_merge_ts = Some(Instant::now());
+                state.merges_done += 1;
+                state.recent_rejects.clear();
+                match fetch_free_collateral_usdc(&client).await {
+                    Ok(after) => info!(
+                        "♻️ Recycler post-merge balance: before={:.2} after={:.2}",
+                        free_balance, after
+                    ),
+                    Err(e) => warn!("⚠️ Recycler post-merge balance refresh failed: {:?}", e),
+                }
+            }
+            Err(e) => {
+                // Failure is also cooled down to avoid hammering relayer/rpc.
+                state.last_merge_ts = Some(Instant::now());
+                warn!("⚠️ Recycler merge execution failed: {:?}", e);
+            }
+        }
+    }
+}
+
 fn log_config_self_check(
     coord: &CoordinatorConfig,
     inv: &InventoryConfig,
@@ -148,6 +497,18 @@ fn log_config_self_check(
         coord.min_order_size, coord.min_hedge_size, coord.hedge_round_up
     );
     info!(
+        "   post_only_safety_ticks={:.1} tight_spread_ticks={:.1} extra_tight_ticks={:.1}",
+        coord.post_only_safety_ticks,
+        coord.post_only_tight_spread_ticks,
+        coord.post_only_extra_tight_ticks
+    );
+    info!(
+        "   hedge_marketable_floor=${:.2} max_extra={:.2} max_extra_pct={:.0}%",
+        coord.hedge_min_marketable_notional,
+        coord.hedge_min_marketable_max_extra,
+        coord.hedge_min_marketable_max_extra_pct * 100.0
+    );
+    info!(
         "   tick={:.3} reprice={:.3} debounce={}ms hedge_debounce={}ms stale_ttl={}ms toxic_hold={}ms",
         coord.tick_size,
         coord.reprice_threshold,
@@ -156,10 +517,7 @@ fn log_config_self_check(
         coord.stale_ttl_ms,
         coord.toxic_recovery_hold_ms
     );
-    info!(
-        "   reconcile_interval={}s",
-        reconcile_interval_secs
-    );
+    info!("   reconcile_interval={}s", reconcile_interval_secs);
     info!(
         "   ofi_window={}ms ofi_thresh={:.1} adaptive={} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
         ofi.window_duration.as_millis(),
@@ -218,6 +576,15 @@ fn log_config_self_check(
     }
     if coord.hedge_round_up {
         warn!("⚠️ hedge_round_up enabled — small imbalances may be over-hedged");
+    }
+    if coord.hedge_min_marketable_notional > 0.0
+        && (coord.hedge_min_marketable_max_extra <= 0.0
+            || coord.hedge_min_marketable_max_extra_pct <= 0.0)
+    {
+        warn!(
+            "⚠️ hedge marketable floor is enabled but extra-size cap is 0 (abs={:.2}, pct={:.2})",
+            coord.hedge_min_marketable_max_extra, coord.hedge_min_marketable_max_extra_pct
+        );
     }
     if coord.pair_target >= 1.0 {
         warn!(
@@ -325,12 +692,18 @@ fn compute_current_slug(prefix: &str) -> (String, u64, u64) {
         .as_secs();
     let start_ts = (now / interval) * interval;
     let expected_end_ts = start_ts + interval;
-    (format!("{}-{}", prefix, start_ts), start_ts, expected_end_ts)
+    (
+        format!("{}-{}", prefix, start_ts),
+        start_ts,
+        expected_end_ts,
+    )
 }
 
 /// Resolve a market by exact slug via Gamma API.
 /// P2 FIX: 10s timeout + explicit error on network stall.
-async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, String, Option<u64>)> {
+async fn resolve_market_by_slug(
+    slug: &str,
+) -> anyhow::Result<(String, String, String, Option<u64>)> {
     info!("🔍 Resolving market: {}", slug);
     let url = format!("https://gamma-api.polymarket.com/markets?slug={}", slug);
     let client = reqwest::Client::builder()
@@ -388,9 +761,13 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<(String, String, S
 
 /// Fetch minimum order size for the current market outcomes via CLOB order book.
 /// Returns the max(min_order_size) across YES/NO to avoid rejections.
-async fn fetch_min_order_size(rest_url: &str, yes_asset_id: &str, no_asset_id: &str) -> anyhow::Result<f64> {
-    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
+async fn fetch_min_order_size(
+    rest_url: &str,
+    yes_asset_id: &str,
+    no_asset_id: &str,
+) -> anyhow::Result<f64> {
     use polymarket_client_sdk::clob::types::request::OrderBookSummaryRequest;
+    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
     use rust_decimal::prelude::ToPrimitive;
 
     let parse_u256 = |raw: &str| -> anyhow::Result<alloy::primitives::U256> {
@@ -398,7 +775,10 @@ async fn fetch_min_order_size(rest_url: &str, yes_asset_id: &str, no_asset_id: &
         if trimmed.is_empty() {
             anyhow::bail!("empty token_id");
         }
-        if let Some(hex) = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")) {
+        if let Some(hex) = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+        {
             alloy::primitives::U256::from_str_radix(hex, 16)
                 .map_err(|e| anyhow::anyhow!("invalid token_id hex '{}': {:?}", raw, e))
         } else {
@@ -513,7 +893,10 @@ fn classify_side(asset_id: &str, settings: &Settings) -> Option<Side> {
 // (e.g. 51.0 meaning $0.51), which would corrupt the pricing engine.
 // Polymarket CLOB prices are always decimal in (0, 1).
 fn parse_price_str(raw: &str) -> Option<f64> {
-    raw.trim().parse::<f64>().ok().filter(|v| *v > 0.0 && *v < 1.0)
+    raw.trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|v| *v > 0.0 && *v < 1.0)
 }
 
 fn parse_price_value(v: &Value) -> Option<f64> {
@@ -940,6 +1323,7 @@ async fn main() -> anyhow::Result<()> {
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg_base = CoordinatorConfig::from_env();
     let mut auto_claim_cfg = AutoClaimConfig::from_env();
+    let recycle_cfg = CapitalRecycleConfig::from_env();
     let mut auto_claim_state = AutoClaimState::default();
 
     let dry_run = coord_cfg_base.dry_run;
@@ -979,6 +1363,20 @@ async fn main() -> anyhow::Result<()> {
             auto_claim_cfg.dry_run,
             auto_claim_cfg.relayer_wait_confirm,
             auto_claim_cfg.relayer_wait_timeout.as_secs()
+        );
+    }
+    if recycle_cfg.enabled {
+        info!(
+            "♻️ Recycle enabled: trigger={} in {}s cooldown={}s low={} target={} batch=[{}, {}] only_hedge={} max_round_merges={}",
+            recycle_cfg.trigger_rejects,
+            recycle_cfg.trigger_window.as_secs(),
+            recycle_cfg.cooldown.as_secs(),
+            recycle_cfg.low_water_usdc,
+            recycle_cfg.target_free_usdc,
+            recycle_cfg.min_batch_usdc,
+            recycle_cfg.max_batch_usdc,
+            recycle_cfg.only_hedge_rejects,
+            recycle_cfg.max_merges_per_round
         );
     }
 
@@ -1308,10 +1706,15 @@ async fn main() -> anyhow::Result<()> {
 
     // Channel for pre-resolved next markets to eliminate 7-8s rotation latency
     #[allow(clippy::type_complexity)]
-    let (preload_tx, mut preload_rx) =
-        mpsc::channel::<(String, anyhow::Result<(String, String, String, Option<u64>)>)>(2);
+    let (preload_tx, mut preload_rx) = mpsc::channel::<(
+        String,
+        anyhow::Result<(String, String, String, Option<u64>)>,
+    )>(2);
     #[allow(clippy::type_complexity)]
-    let mut preloaded_market: Option<(String, anyhow::Result<(String, String, String, Option<u64>)>)> = None;
+    let mut preloaded_market: Option<(
+        String,
+        anyhow::Result<(String, String, String, Option<u64>)>,
+    )> = None;
 
     let mut round = 0u64;
     loop {
@@ -1339,7 +1742,8 @@ async fn main() -> anyhow::Result<()> {
                 .as_secs();
 
             // Secondary Entry Gate: if API resolution took too long and pushed us past grace, abort.
-            if should_skip_entry_window(now_unix, expected_end_ts, interval_secs, entry_grace_secs) {
+            if should_skip_entry_window(now_unix, expected_end_ts, interval_secs, entry_grace_secs)
+            {
                 let start_ts = expected_end_ts.saturating_sub(interval_secs);
                 let age_secs = now_unix.saturating_sub(start_ts);
                 let wait_secs = expected_end_ts.saturating_sub(now_unix).saturating_add(1);
@@ -1440,38 +1844,44 @@ async fn main() -> anyhow::Result<()> {
             if let Some(client) = clob_client.as_ref() {
                 use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
                 use polymarket_client_sdk::clob::types::AssetType;
-                
+
                 let req = BalanceAllowanceRequest::builder()
                     .asset_type(AssetType::Collateral)
                     .build();
-                
+
                 if let Ok(resp) = client.balance_allowance(req).await {
                     // Polymarket returns collateral balance in 6 decimals (1 USDC = 1,000,000)
-                    let raw_balance = rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
+                    let raw_balance =
+                        rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
                     let balance_f64 = raw_balance / 1_000_000.0;
                     balance_opt = Some(balance_f64);
-                    
+
                     let bid_pct: f64 = std::env::var("PM_BID_PCT")
                         .ok()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.02); // Default 2%
-                        
+
                     let net_diff_pct: f64 = std::env::var("PM_NET_DIFF_PCT")
                         .ok()
                         .and_then(|v| v.parse().ok())
                         .unwrap_or(0.10); // Default 10%
-                    
-                    // Respect .env as the manual override if it's set higher than dynamic calculation.
-                    // Lower the floor from 10.0 to 5.0 for better flexibility.
-                    // Unit Clarification: In Polymarket, 1 Share = $1 Max Potential Risk.
-                    // dyn_bid_size is calculated in 1:1 Shares for risk sizing.
+
+                    // Dynamic sizing produces live risk caps from current free collateral.
+                    // We treat dynamic values as runtime UPPER BOUNDS to avoid oversizing
+                    // after balance drops (e.g., after unsettled fills / pending collateral).
+                    // Unit: 1 Share = $1 max potential risk.
                     let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round();
                     let dyn_net_diff = 5.0f64.max(balance_f64 * net_diff_pct).round();
-                    
-                    // Use max(env, dynamic) to ensure we don't accidentally lower a user's intentional threshold
-                    // unless they haven't set one.
-                    coord_cfg.bid_size = coord_cfg.bid_size.max(dyn_bid_size);
-                    coord_cfg.max_net_diff = coord_cfg.max_net_diff.max(dyn_net_diff);
+
+                    // Runtime effective settings:
+                    // - Keep user config as a hard cap (never exceed it)
+                    // - Also cap by dynamic values from current balance
+                    // - Enforce venue floor at 5 shares
+                    coord_cfg.bid_size = coord_cfg.bid_size.min(dyn_bid_size).max(5.0);
+                    coord_cfg.max_net_diff = coord_cfg
+                        .max_net_diff
+                        .min(dyn_net_diff)
+                        .max(coord_cfg.bid_size);
 
                     let max_pos_pct: f64 = std::env::var("PM_MAX_POS_PCT")
                         .ok()
@@ -1484,10 +1894,10 @@ async fn main() -> anyhow::Result<()> {
                             let dyn_max_side = dyn_max_side
                                 .max(coord_cfg.max_net_diff)
                                 .max(coord_cfg.bid_size);
-                            coord_cfg.max_side_shares = coord_cfg.max_side_shares.max(dyn_max_side);
+                            coord_cfg.max_side_shares = coord_cfg.max_side_shares.min(dyn_max_side);
                             info!(
-                                "💡 [DYNAMIC GROSS] Balance: {:.2} USDC -> MAX_SIDE_SHARES={:.1} (max_pos_pct={}, pair_target={})",
-                                balance_f64, dyn_max_side, max_pos_pct, coord_cfg.pair_target
+                                "💡 [DYNAMIC GROSS] Balance: {:.2} USDC -> cap MAX_SIDE_SHARES to {:.1} (effective {:.1}, max_pos_pct={}, pair_target={})",
+                                balance_f64, dyn_max_side, coord_cfg.max_side_shares, max_pos_pct, coord_cfg.pair_target
                             );
                         } else {
                             warn!(
@@ -1496,14 +1906,20 @@ async fn main() -> anyhow::Result<()> {
                             );
                         }
                     }
-                    
+
                     // CRITICAL: Sync InventoryConfig with the new dynamic values
                     inv_cfg.bid_size = coord_cfg.bid_size;
                     inv_cfg.max_net_diff = coord_cfg.max_net_diff;
 
                     info!(
-                        "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> Setting BID_SIZE={:.1} Shares, MAX_NET_DIFF={:.1} Shares (bid_pct={}, net_pct={})",
-                        balance_f64, dyn_bid_size, dyn_net_diff, bid_pct, net_diff_pct
+                        "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> cap BID_SIZE={:.1} MAX_NET_DIFF={:.1} (effective BID_SIZE={:.1}, MAX_NET_DIFF={:.1}, bid_pct={}, net_pct={})",
+                        balance_f64,
+                        dyn_bid_size,
+                        dyn_net_diff,
+                        coord_cfg.bid_size,
+                        coord_cfg.max_net_diff,
+                        bid_pct,
+                        net_diff_pct
                     );
                 } else {
                     warn!("⚠️ Failed to fetch balance for dynamic sizing. Falling back to env defaults.");
@@ -1532,7 +1948,10 @@ async fn main() -> anyhow::Result<()> {
                     warn!("⚠️ Order book reported non-positive min_order_size; keeping configured value");
                 }
                 Err(e) => {
-                    warn!("⚠️ Failed to auto-detect min_order_size from order book: {:?}", e);
+                    warn!(
+                        "⚠️ Failed to auto-detect min_order_size from order book: {:?}",
+                        e
+                    );
                 }
             }
         }
@@ -1557,19 +1976,23 @@ async fn main() -> anyhow::Result<()> {
 
         // Fill fanout: UserWS → fill_tx → splitter → (InventoryManager, Executor)
         let (fill_tx, mut fill_rx) = mpsc::channel::<FillEvent>(64);
-        let (inv_fill_tx, inv_fill_rx) = mpsc::channel::<FillEvent>(64);
+        let (inv_event_tx, inv_event_rx) = mpsc::channel::<InventoryEvent>(64);
         let (exec_fill_tx, exec_fill_rx) = mpsc::channel::<FillEvent>(64);
+        let inv_event_tx_split = inv_event_tx.clone();
 
         // Splitter task: fan-out fills to both InventoryManager and Executor
         session_handles.push(tokio::spawn(async move {
             while let Some(fill) = fill_rx.recv().await {
-                let _ = inv_fill_tx.send(fill.clone()).await;
+                let _ = inv_event_tx_split
+                    .send(InventoryEvent::Fill(fill.clone()))
+                    .await;
                 let _ = exec_fill_tx.send(fill).await;
             }
         }));
 
         let (exec_tx, exec_rx) = mpsc::channel::<ExecutionCmd>(32);
         let (result_tx, result_rx) = mpsc::channel::<OrderResult>(32);
+        let (capital_tx, capital_rx) = mpsc::channel::<PlacementRejectEvent>(64);
         let (om_tx, om_rx) = mpsc::channel::<OrderManagerCmd>(64);
         let (ofi_md_tx, ofi_md_rx) = mpsc::channel::<MarketDataMsg>(512);
         let (coord_md_tx, coord_md_rx) = watch::channel::<MarketDataMsg>(MarketDataMsg::BookTick {
@@ -1586,11 +2009,10 @@ async fn main() -> anyhow::Result<()> {
         // Capacity 4: at most one kill per side (YES/NO) queued without blocking OFI heartbeat.
         let (kill_tx, kill_rx) = mpsc::channel::<KillSwitchSignal>(4);
 
-        let inv = InventoryManager::new(inv_cfg.clone(), inv_fill_rx, inv_watch_tx);
+        let inv = InventoryManager::new(inv_cfg.clone(), inv_event_rx, inv_watch_tx);
         session_handles.push(tokio::spawn(inv.run()));
 
-        let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx)
-            .with_kill_tx(kill_tx);
+        let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx).with_kill_tx(kill_tx);
         session_handles.push(tokio::spawn(ofi.run()));
 
         let coord = StrategyCoordinator::with_kill_rx(
@@ -1605,6 +2027,21 @@ async fn main() -> anyhow::Result<()> {
 
         let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx);
         session_handles.push(tokio::spawn(om.run()));
+
+        if !dry_run && recycle_cfg.enabled {
+            session_handles.push(tokio::spawn(run_capital_recycler(
+                recycle_cfg.clone(),
+                auto_claim_cfg.clone(),
+                capital_rx,
+                inv_event_tx.clone(),
+                clob_client.clone(),
+                market_id.clone(),
+                funder_address.clone(),
+                signer_address.clone(),
+                base_settings.private_key.clone(),
+                dry_run,
+            )));
+        }
 
         let executor = Executor::new(
             ExecutorConfig {
@@ -1621,6 +2058,7 @@ async fn main() -> anyhow::Result<()> {
             exec_rx,
             result_tx,
             exec_fill_rx,
+            Some(capital_tx),
         );
         let executor_handle = tokio::spawn(executor.run());
         let executor_abort = executor_handle.abort_handle();
@@ -1672,7 +2110,7 @@ async fn main() -> anyhow::Result<()> {
         let _ = om_tx.send(OrderManagerCmd::CancelAll).await;
         // Drop om_tx so the OrderManager channel closes
         drop(om_tx);
-        
+
         // ── Step 4: Cleanup ──
         let _ = exec_tx
             .send(ExecutionCmd::CancelAll {
@@ -1779,8 +2217,8 @@ mod tests {
     fn test_should_skip_entry_window() {
         let interval = 300; // 5 min
         let grace = 30; // 30 sec grace
-        // Suppose current block ends at timestamp 1000. Start corresponds to 700.
-        // We are at 715 (15 seconds after open) -> within grace.
+                        // Suppose current block ends at timestamp 1000. Start corresponds to 700.
+                        // We are at 715 (15 seconds after open) -> within grace.
         assert!(!should_skip_entry_window(715, 1000, interval, grace));
         // We are at 735 (35 seconds after open) -> outside grace, we should skip!
         assert!(should_skip_entry_window(735, 1000, interval, grace));

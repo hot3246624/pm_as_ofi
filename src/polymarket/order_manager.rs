@@ -2,9 +2,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::messages::{
-    BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult,
-};
+use super::messages::{CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult};
 use super::types::Side;
 
 const PENDING_SUBMIT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -267,7 +265,7 @@ impl OrderManager {
                         side: desired.side,
                         price: desired.price,
                         size: desired.size,
-                        reason: BidReason::Provide,
+                        reason: desired.reason,
                     };
                     tracker.state = OrderState::PendingSubmit(desired.clone());
                     tracker.last_action = Instant::now();

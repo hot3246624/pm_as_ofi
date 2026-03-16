@@ -105,9 +105,16 @@ hedge_target = if abs(net_diff) >= max_net_diff {
 # 2. 动态下单规模 (Hedge Sizing)
 size = net_diff.abs()
 
-# 3. 计算对冲价格
-no_ceiling  = hedge_target - yes_avg_cost
-bid_no      = min(no_ceiling, no_ask - tick) 
+# 3. 计算对冲价格（增量预算）
+# net_diff > 0: 买 NO 对冲
+target_no_avg = hedge_target - yes_avg_cost
+no_ceiling    = (target_no_avg * (no_qty + size) - no_qty * no_avg_cost) / size
+bid_no        = min(no_ceiling, no_ask - tick)
+
+# net_diff < 0: 买 YES 对冲（对称）
+target_yes_avg = hedge_target - no_avg_cost
+yes_ceiling    = (target_yes_avg * (yes_qty + size) - yes_qty * yes_avg_cost) / size
+bid_yes        = min(yes_ceiling, yes_ask - tick)
 
 # 3. 盈亏评估：
 # 盈利模式 (target=0.99)：profit ≥ 1.0 - 0.99 = +$0.01/股 (保证盈利)
@@ -118,6 +125,8 @@ bid_no      = min(no_ceiling, no_ask - tick)
 > `max_portfolio_cost`（默认 1.02）是库存满载时的紧急救火线下。
 > `max_portfolio_cost` 会被 `PM_MAX_LOSS_PCT`（默认 0.02）自动钳制。
 > 这种设计保证了：在正常波动中我们只做赚钱的买卖；在极端行情中，我们愿意付出极小代价 (2%) 来关掉面临 100% 归零风险的大额单边敞口。
+> 若出现 `not enough balance / allowance`，OMS 会进入冷却窗口，对冲不会立刻落单；这属于资金约束而非公式失效。
+> 新增资金回收器会在“余额拒单连续触发 + 低水位”时执行批量 merge，一次回补到高水位附近，避免频繁小额 merge。
 
 **核心洞察**：A-S 网格一路摊薄 `yes_avg_cost`，越低则 `no_ceiling` 越高（越贴近市价），即便在救火模式下，由于成本已被摊薄，往往最终依然能实现保本或微利离场。
 
@@ -432,6 +441,20 @@ PM_MAX_POS_PCT=0.70           # 总仓位占比上限（用于动态推导 max_s
 # 动态规模（基于账户余额自动计算）
 PM_BID_PCT=0.02               # bid_size = balance * 2%
 PM_NET_DIFF_PCT=0.10          # max_net_diff = balance * 10%
+
+# 余额压力回收（Batch Merge）
+PM_RECYCLE_ENABLED=true
+PM_RECYCLE_TRIGGER_REJECTS=2
+PM_RECYCLE_TRIGGER_WINDOW_SECS=90
+PM_RECYCLE_COOLDOWN_SECS=120
+PM_RECYCLE_MAX_MERGES_PER_ROUND=2
+PM_RECYCLE_LOW_WATER_USDC=6.0
+PM_RECYCLE_TARGET_FREE_USDC=18.0
+PM_RECYCLE_MIN_BATCH_USDC=10.0
+PM_RECYCLE_MAX_BATCH_USDC=30.0
+PM_RECYCLE_SHORTFALL_MULT=1.2
+PM_RECYCLE_MIN_EXECUTABLE_USDC=5.0
+PM_BALANCE_CACHE_TTL_MS=2000
 
 # OFI 参数
 PM_OFI_WINDOW_MS=3000         # 滑动窗口长度（毫秒）

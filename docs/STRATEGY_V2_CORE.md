@@ -11,7 +11,7 @@ In Polymarket binary option markets, **1 Share = $1 Max Potential Risk**.
 - **PM_BID_SIZE** (Shares): Maximum risk per provide order.
 - **PM_MAX_NET_DIFF** (Shares): Maximum directional net risk (|YES_qty - NO_qty|).
 - **PM_MAX_SIDE_SHARES** (Shares): Max per-side gross exposure (independent cap).
-- **Dynamic Sizing**: Balance × PCT auto-maps to Shares, keeping risk-to-equity constant.
+- **Dynamic Sizing**: Balance × PCT computes live risk caps (`PM_BID_PCT`, `PM_NET_DIFF_PCT`) and runtime parameters are clamped under those caps.
 
 ### Channel Architecture
 
@@ -45,7 +45,14 @@ When `|net_diff| < max_net_diff`, the bot provides a two-sided market.
 
 ### B. "Hedge" Regime (Profit-Linked Unwinding)
 With existing imbalance, prioritizes filling the missing pair side.
-- **Ceiling**: `hedge_target - avg_cost_held_side`.
+- **Ceiling (incremental budget)**:
+  - `net_diff > 0` (buy NO hedge):
+    - `target_no_avg = hedge_target - yes_avg_cost`
+    - `no_ceiling = (target_no_avg * (no_qty + size) - no_qty * no_avg_cost) / size`
+  - `net_diff < 0` (buy YES hedge):
+    - `target_yes_avg = hedge_target - no_avg_cost`
+    - `yes_ceiling = (target_yes_avg * (yes_qty + size) - yes_qty * yes_avg_cost) / size`
+  - If hedge-side qty is zero, this collapses to the old static form `ceiling = hedge_target - held_avg`.
 - **Step function**:
   - `|net_diff| < max_net_diff` → `hedge_target = pair_target`
   - `|net_diff| >= max_net_diff` → `hedge_target = max_portfolio_cost`
@@ -81,6 +88,28 @@ OFI engine monitors a 3s sliding window. On toxicity:
 ### Maker-Only Enforcement
 All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused if book is empty or crossed.
 
+### Marketable-BUY Minimum Notional (Optional)
+Some venue-side validations can reject very small **marketable BUY** orders (< `$1` notional), while passive maker fills at low prices can still happen. These two facts are not contradictory.
+- Optional hedge-only guard:
+  - `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` (default `0`, disabled)
+  - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA`
+  - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT`
+- Behavior: when enabled, hedge size can be bumped just enough to pass the notional floor, but only within strict extra-size caps and still under `can_buy_*` inventory gates.
+
+### Balance-Stress Recycle (Batch Merge)
+When placement rejects indicate collateral stress, the bot uses **batch recycle** instead of frequent tiny merges:
+- **Trigger**: balance/allowance rejects within `PM_RECYCLE_TRIGGER_WINDOW_SECS` reach `PM_RECYCLE_TRIGGER_REJECTS`.
+- **Low-water gate**: run only when `free_balance < PM_RECYCLE_LOW_WATER_USDC`.
+- **High-water refill target**:
+  - `shortage = max(0, target_free - free_balance)`
+  - `batch = clamp(max(shortage * shortfall_mult, min_batch), min_batch, max_batch)`
+- **Anti-thrash**: `PM_RECYCLE_COOLDOWN_SECS` + `PM_RECYCLE_MAX_MERGES_PER_ROUND`.
+- **Affordability precheck**: Executor checks free collateral before submit and locally rejects clearly unaffordable orders.
+
+Notes:
+- `allowance=0` is an auth/approval issue; merge cannot fix it.
+- SAFE mode uses relayer merge (requires `POLYMARKET_BUILDER_*`), EOA mode uses direct on-chain merge.
+
 ---
 
 ## 4. Key Configuration Reference
@@ -91,6 +120,9 @@ All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused i
 | `PM_MIN_ORDER_SIZE` | Shares | Minimum order size | Auto-detected from order_book if unset; orders below are skipped |
 | `PM_MIN_HEDGE_SIZE` | Shares | Hedge trigger threshold | Hedges below are skipped |
 | `PM_HEDGE_ROUND_UP` | bool | Hedge rounding | Round up small hedges to min size |
+| `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` | USDC | Optional marketable-BUY floor for hedges | `0` disables; avoids tiny-notional reject bursts |
+| `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | Shares | Absolute extra-size cap for hedge bump | Limits risk increase when floor is enabled |
+| `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | Decimal | Relative extra-size cap for hedge bump | `extra <= size * pct` must hold |
 | `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamic: `balance × PM_NET_DIFF_PCT` |
 | `PM_MAX_SIDE_SHARES` | Shares | Max per-side gross exposure | Default = max_net_diff if unset |
 | `PM_MAX_POS_PCT` | Decimal | Target gross utilization | Dynamic: `balance × pct / pair_target` |
@@ -103,6 +135,12 @@ All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused i
 | `PM_DEBOUNCE_MS` | ms | Provide order anti-thrash | Prevents rapid re-quoting |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | Hedge order anti-thrash | Lower (100ms) for urgency |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | REST order reconciliation | Detects WS blind spots |
+| `PM_RECYCLE_TRIGGER_REJECTS` | count | Reject threshold for recycle trigger | Used with `PM_RECYCLE_TRIGGER_WINDOW_SECS` |
+| `PM_RECYCLE_LOW_WATER_USDC` | USDC | Recycle low-water gate | No recycle above this free balance |
+| `PM_RECYCLE_TARGET_FREE_USDC` | USDC | Recycle high-water target | Batch refill objective |
+| `PM_RECYCLE_MIN_BATCH_USDC` | USDC | Minimum recycle batch | Avoid tiny frequent merges |
+| `PM_RECYCLE_MAX_BATCH_USDC` | USDC | Maximum recycle batch | Caps single-merge gas/risk |
+| `PM_BALANCE_CACHE_TTL_MS` | ms | Precheck balance cache TTL | Reduces repeated balance RPC calls |
 
 ## 5. Hedge Logic & Sizing
 
@@ -115,5 +153,16 @@ hedge_target = if abs(net_diff) >= max_net_diff {
                } else {
                  pair_target          // normal profit line
                }
-ceiling = hedge_target - avg_cost_of_imbalanced_side
+
+if net_diff > 0 { // buy NO
+  target_no_avg = hedge_target - yes_avg_cost
+  ceiling_no = (target_no_avg * (no_qty + size) - no_qty * no_avg_cost) / size
+}
+if net_diff < 0 { // buy YES
+  target_yes_avg = hedge_target - no_avg_cost
+  ceiling_yes = (target_yes_avg * (yes_qty + size) - yes_qty * yes_avg_cost) / size
+}
 ```
+
+Live debugging note:
+- If logs show `not enough balance / allowance`, that side enters OMS cooldown (default 30s). Hedge intent may continue to be computed, but placements are suppressed until cooldown expiry.

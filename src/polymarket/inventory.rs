@@ -6,7 +6,7 @@
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
-use super::messages::{FillEvent, FillStatus, InventoryState};
+use super::messages::{FillEvent, FillStatus, InventoryEvent, InventoryState};
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ struct FillRecord {
 pub struct InventoryManager {
     cfg: InventoryConfig,
     state: InventoryState,
-    fill_rx: mpsc::Receiver<FillEvent>,
+    fill_rx: mpsc::Receiver<InventoryEvent>,
     state_tx: watch::Sender<InventoryState>,
     /// P1 FIX: Ledger of all active (non-reversed) fills for exact VWAP.
     ledger: Vec<FillRecord>,
@@ -94,7 +94,7 @@ pub struct InventoryManager {
 impl InventoryManager {
     pub fn new(
         cfg: InventoryConfig,
-        fill_rx: mpsc::Receiver<FillEvent>,
+        fill_rx: mpsc::Receiver<InventoryEvent>,
         state_tx: watch::Sender<InventoryState>,
     ) -> Self {
         let state = InventoryState::default();
@@ -114,19 +114,42 @@ impl InventoryManager {
             self.cfg.max_net_diff, self.cfg.max_portfolio_cost,
         );
 
-        while let Some(fill) = self.fill_rx.recv().await {
-            self.apply_fill(&fill);
+        while let Some(event) = self.fill_rx.recv().await {
+            match event {
+                InventoryEvent::Fill(fill) => {
+                    self.apply_fill(&fill);
 
-            // Broadcast updated state (non-blocking, overwrites previous)
-            let _ = self.state_tx.send(self.state);
+                    // Broadcast updated state (non-blocking, overwrites previous)
+                    let _ = self.state_tx.send(self.state);
 
-            info!(
-                "📦 Fill: {:?} {:.2}@{:.3} status={:?} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
-                fill.side, fill.filled_size, fill.price, fill.status, &fill.order_id[..8.min(fill.order_id.len())],
-                self.state.yes_qty, self.state.yes_avg_cost,
-                self.state.no_qty, self.state.no_avg_cost,
-                self.state.net_diff, self.state.portfolio_cost,
-            );
+                    info!(
+                        "📦 Fill: {:?} {:.2}@{:.3} status={:?} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
+                        fill.side, fill.filled_size, fill.price, fill.status, &fill.order_id[..8.min(fill.order_id.len())],
+                        self.state.yes_qty, self.state.yes_avg_cost,
+                        self.state.no_qty, self.state.no_avg_cost,
+                        self.state.net_diff, self.state.portfolio_cost,
+                    );
+                }
+                InventoryEvent::Merge {
+                    full_set_size,
+                    merge_id,
+                    ..
+                } => {
+                    self.apply_merge(full_set_size, &merge_id);
+                    let _ = self.state_tx.send(self.state);
+                    info!(
+                        "📦 Merge sync: full_set={:.2} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
+                        full_set_size,
+                        &merge_id[..8.min(merge_id.len())],
+                        self.state.yes_qty,
+                        self.state.yes_avg_cost,
+                        self.state.no_qty,
+                        self.state.no_avg_cost,
+                        self.state.net_diff,
+                        self.state.portfolio_cost,
+                    );
+                }
+            }
         }
 
         info!("📦 InventoryManager shutting down (channel closed)");
@@ -186,9 +209,11 @@ impl InventoryManager {
                     self.ledger.remove(idx);
                 } else {
                     // Fallback: remove any entry with matching order_id + side
-                    if let Some(idx) = self.ledger.iter().position(|r| {
-                        r.order_id == fill.order_id && r.side == fill.side
-                    }) {
+                    if let Some(idx) = self
+                        .ledger
+                        .iter()
+                        .position(|r| r.order_id == fill.order_id && r.side == fill.side)
+                    {
                         self.ledger.remove(idx);
                     }
                 }
@@ -196,6 +221,39 @@ impl InventoryManager {
         }
 
         // Recompute everything from the ledger (zero-drift VWAP)
+        self.recompute_from_ledger();
+    }
+
+    /// Apply merge-side inventory synchronization.
+    ///
+    /// Merge consumes one YES and one NO per full-set unit. We model this as
+    /// synthetic negative ledger entries at current side VWAP so remaining
+    /// average costs stay stable.
+    fn apply_merge(&mut self, full_set_size: f64, merge_id: &str) {
+        let requested = full_set_size.max(0.0);
+        if requested <= f64::EPSILON {
+            return;
+        }
+        let available_full_set = self.state.yes_qty.min(self.state.no_qty).max(0.0);
+        let amount = requested.min(available_full_set);
+        if amount <= f64::EPSILON {
+            return;
+        }
+
+        let yes_price = self.state.yes_avg_cost.max(0.0);
+        let no_price = self.state.no_avg_cost.max(0.0);
+        self.ledger.push(FillRecord {
+            order_id: format!("merge:{}:yes", merge_id),
+            side: Side::Yes,
+            size: -amount,
+            price: yes_price,
+        });
+        self.ledger.push(FillRecord {
+            order_id: format!("merge:{}:no", merge_id),
+            side: Side::No,
+            size: -amount,
+            price: no_price,
+        });
         self.recompute_from_ledger();
     }
 
@@ -218,10 +276,37 @@ impl InventoryManager {
             }
         }
 
+        if yes_qty.abs() < 1e-9 {
+            yes_qty = 0.0;
+            yes_cost_sum = 0.0;
+        }
+        if no_qty.abs() < 1e-9 {
+            no_qty = 0.0;
+            no_cost_sum = 0.0;
+        }
+        if yes_qty < 0.0 {
+            warn!("📦 YES qty drifted negative ({:.8}) after ledger rebuild; clamping to 0", yes_qty);
+            yes_qty = 0.0;
+            yes_cost_sum = 0.0;
+        }
+        if no_qty < 0.0 {
+            warn!("📦 NO qty drifted negative ({:.8}) after ledger rebuild; clamping to 0", no_qty);
+            no_qty = 0.0;
+            no_cost_sum = 0.0;
+        }
+
         self.state.yes_qty = yes_qty;
         self.state.no_qty = no_qty;
-        self.state.yes_avg_cost = if yes_qty > f64::EPSILON { yes_cost_sum / yes_qty } else { 0.0 };
-        self.state.no_avg_cost = if no_qty > f64::EPSILON { no_cost_sum / no_qty } else { 0.0 };
+        self.state.yes_avg_cost = if yes_qty > f64::EPSILON {
+            yes_cost_sum / yes_qty
+        } else {
+            0.0
+        };
+        self.state.no_avg_cost = if no_qty > f64::EPSILON {
+            no_cost_sum / no_qty
+        } else {
+            0.0
+        };
 
         // Recompute derived fields
         self.state.net_diff = self.state.yes_qty - self.state.no_qty;
@@ -231,7 +316,6 @@ impl InventoryManager {
             0.0 // Not a complete pair yet
         };
     }
-
 }
 
 #[cfg(test)]
@@ -249,7 +333,6 @@ mod tests {
             ts: Instant::now(),
         }
     }
-
 
     #[test]
     fn test_single_side_fill() {
@@ -394,5 +477,72 @@ mod tests {
         // Still 3.0, NOT 6.0
         assert!((im.state.no_qty - 3.0).abs() < 1e-9);
         assert!((im.state.no_avg_cost - 0.45).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_sync_reduces_both_sides_and_keeps_vwap() {
+        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+        let (_fill_tx, fill_rx) = mpsc::channel(16);
+        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+
+        im.apply_fill(&FillEvent {
+            order_id: "yes-1".to_string(),
+            side: Side::Yes,
+            filled_size: 10.0,
+            price: 0.40,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+        im.apply_fill(&FillEvent {
+            order_id: "no-1".to_string(),
+            side: Side::No,
+            filled_size: 10.0,
+            price: 0.58,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+
+        im.apply_merge(4.0, "m1");
+
+        assert!((im.state.yes_qty - 6.0).abs() < 1e-9);
+        assert!((im.state.no_qty - 6.0).abs() < 1e-9);
+        assert!((im.state.yes_avg_cost - 0.40).abs() < 1e-9);
+        assert!((im.state.no_avg_cost - 0.58).abs() < 1e-9);
+        assert!(im.state.net_diff.abs() < 1e-9);
+        assert!((im.state.portfolio_cost - 0.98).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_merge_sync_is_clamped_by_available_full_set() {
+        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+        let (_fill_tx, fill_rx) = mpsc::channel(16);
+        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+
+        im.apply_fill(&FillEvent {
+            order_id: "yes-2".to_string(),
+            side: Side::Yes,
+            filled_size: 4.0,
+            price: 0.37,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+        im.apply_fill(&FillEvent {
+            order_id: "no-2".to_string(),
+            side: Side::No,
+            filled_size: 2.0,
+            price: 0.63,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+
+        // Request exceeds available full set (min(4,2)=2), should clamp to 2.
+        im.apply_merge(5.0, "m2");
+
+        assert!((im.state.yes_qty - 2.0).abs() < 1e-9);
+        assert!(im.state.no_qty.abs() < 1e-9);
+        assert!((im.state.yes_avg_cost - 0.37).abs() < 1e-9);
+        assert!(im.state.no_avg_cost.abs() < 1e-9);
+        assert!((im.state.net_diff - 2.0).abs() < 1e-9);
+        assert!(im.state.portfolio_cost.abs() < 1e-9);
     }
 }

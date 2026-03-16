@@ -20,9 +20,12 @@ use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE as B
 use base64::Engine as _;
 use hmac::{Hmac, Mac as _};
 use polymarket_client_sdk::contract_config;
-use polymarket_client_sdk::ctf::types::{RedeemNegRiskRequest, RedeemPositionsRequest};
+use polymarket_client_sdk::ctf::types::{
+    MergePositionsRequest, RedeemNegRiskRequest, RedeemPositionsRequest,
+};
 use polymarket_client_sdk::ctf::Client as CtfClient;
 use polymarket_client_sdk::data::types::request::PositionsRequest;
+use polymarket_client_sdk::data::types::MarketFilter;
 use polymarket_client_sdk::data::Client as DataClient;
 use polymarket_client_sdk::types::{Address, Decimal, B256};
 use polymarket_client_sdk::POLYGON;
@@ -48,6 +51,14 @@ sol! {
     }
 
     interface IConditionalTokensAutoClaim {
+        function mergePositions(
+            address collateralToken,
+            bytes32 parentCollectionId,
+            bytes32 conditionId,
+            uint256[] partition,
+            uint256 amount
+        );
+
         function redeemPositions(
             address collateralToken,
             bytes32 parentCollectionId,
@@ -228,6 +239,220 @@ pub async fn scan_claimable_positions(
         top_conditions,
         all_conditions,
     })
+}
+
+/// Scan currently mergeable YES/NO inventory for one market and return
+/// the maximum full-set amount that can be merged (in USDC units).
+pub async fn scan_mergeable_full_set_usdc(
+    data_api_url: &str,
+    user: Address,
+    condition_id: B256,
+) -> anyhow::Result<Decimal> {
+    let client = DataClient::new(data_api_url)
+        .with_context(|| format!("invalid data api url: {data_api_url}"))?;
+
+    let mut offset = 0_i32;
+    let page_size = 500_i32;
+    let mut yes_qty = Decimal::ZERO;
+    let mut no_qty = Decimal::ZERO;
+
+    loop {
+        let req = PositionsRequest::builder()
+            .user(user)
+            .filter(MarketFilter::markets([condition_id]))
+            .mergeable(true)
+            .limit(page_size)?
+            .offset(offset)?
+            .build();
+
+        let rows = client.positions(&req).await?;
+        if rows.is_empty() {
+            break;
+        }
+
+        let row_count = rows.len();
+        for row in rows {
+            let outcome = row.outcome.trim().to_ascii_lowercase();
+            if outcome == "yes" || row.outcome_index == 0 {
+                yes_qty += row.size;
+            } else if outcome == "no" || row.outcome_index == 1 {
+                no_qty += row.size;
+            }
+        }
+
+        if row_count < page_size as usize {
+            break;
+        }
+        offset = offset.saturating_add(page_size);
+        if offset >= 10_000 {
+            break;
+        }
+    }
+
+    Ok(if yes_qty < no_qty { yes_qty } else { no_qty })
+}
+
+/// Execute a market-level collateral merge for one condition.
+///
+/// This supports:
+/// - EOA mode: direct on-chain `merge_positions`.
+/// - SAFE mode: relayer submit with SAFE signature.
+///
+/// Proxy mode is currently unsupported.
+pub async fn execute_market_merge(
+    cfg: &AutoClaimConfig,
+    funder_address: Option<&str>,
+    signer_address: Option<&str>,
+    private_key: Option<&str>,
+    condition_id: B256,
+    amount_usdc: Decimal,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    if amount_usdc <= Decimal::ZERO {
+        return Ok(());
+    }
+
+    let Some(funder_raw) = funder_address else {
+        anyhow::bail!("missing funder address for merge execution");
+    };
+    let funder = funder_raw
+        .trim()
+        .parse::<Address>()
+        .with_context(|| format!("invalid funder address: {funder_raw}"))?;
+
+    let Some(signer_raw) = signer_address else {
+        anyhow::bail!("missing signer address for merge execution");
+    };
+    let signer = signer_raw
+        .trim()
+        .parse::<Address>()
+        .with_context(|| format!("invalid signer address: {signer_raw}"))?;
+
+    let mode = detect_claim_execution_mode(signer, funder, cfg.signature_type);
+    let amount_u256 = decimal_to_u256_6(amount_usdc)
+        .filter(|v| !v.is_zero())
+        .with_context(|| format!("invalid merge amount (usdc): {}", amount_usdc))?;
+
+    if dry_run {
+        tracing::info!(
+            "📝 [RECYCLE DRY-RUN] merge condition={} amount_usdc={} mode={:?}",
+            condition_id,
+            amount_usdc,
+            mode
+        );
+        return Ok(());
+    }
+
+    let Some(pk) = private_key else {
+        anyhow::bail!("POLYMARKET_PRIVATE_KEY is required for merge execution");
+    };
+
+    match mode {
+        ClaimExecutionMode::EoaOnchain => {
+            let signer_wallet: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> = pk.parse()?;
+            let signer_wallet = signer_wallet.with_chain_id(Some(POLYGON));
+            let provider = ProviderBuilder::new()
+                .wallet(signer_wallet)
+                .connect(&cfg.rpc_url)
+                .await
+                .with_context(|| format!("connect rpc failed: {}", cfg.rpc_url))?;
+            let standard = CtfClient::new(provider, POLYGON)?;
+            let collateral = contract_config(POLYGON, false)
+                .context("missing contract config for polygon mainnet")?
+                .collateral;
+            let req =
+                MergePositionsRequest::for_binary_market(collateral, condition_id, amount_u256);
+            let resp = standard.merge_positions(&req).await?;
+            tracing::info!(
+                "♻️ Merge success (EOA): condition={} amount_usdc={} tx={} block={}",
+                condition_id,
+                amount_usdc,
+                resp.transaction_hash,
+                resp.block_number
+            );
+            Ok(())
+        }
+        ClaimExecutionMode::SafeRelayer => {
+            let creds = cfg
+                .builder_credentials
+                .as_ref()
+                .context("POLYMARKET_BUILDER_* credentials are required for SAFE merge")?;
+            let signer_wallet: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> = pk
+                .parse()
+                .context("invalid POLYMARKET_PRIVATE_KEY for SAFE merge signing")?;
+            let standard_cfg = contract_config(POLYGON, false)
+                .context("missing standard contract config for polygon")?;
+            let to = standard_cfg.conditional_tokens;
+            let collateral = standard_cfg.collateral;
+            let call = IConditionalTokensAutoClaim::mergePositionsCall {
+                collateralToken: collateral,
+                parentCollectionId: B256::ZERO,
+                conditionId: condition_id,
+                partition: vec![U256::from(1_u8), U256::from(2_u8)],
+                amount: amount_u256,
+            };
+
+            let http = reqwest::Client::builder()
+                .timeout(Duration::from_secs(15))
+                .build()?;
+            let metadata = format!("pm_as_ofi:recycle:merge:{}", condition_id);
+            let tx_id = relayer_submit_safe_claim(
+                &http,
+                cfg,
+                creds,
+                &signer_wallet,
+                signer,
+                funder,
+                to,
+                call.abi_encode(),
+                metadata,
+            )
+            .await
+            .with_context(|| {
+                format!("relayer submit failed for merge condition {}", condition_id)
+            })?;
+
+            if !cfg.relayer_wait_confirm {
+                tracing::info!(
+                    "♻️ Merge SAFE submitted: condition={} amount_usdc={} tx_id={} (wait_confirm=false)",
+                    condition_id,
+                    amount_usdc,
+                    tx_id
+                );
+                return Ok(());
+            }
+
+            match relayer_wait_transaction(&http, cfg, &tx_id).await? {
+                Some(hash) => tracing::info!(
+                    "♻️ Merge SAFE confirmed: condition={} amount_usdc={} tx_id={} tx_hash={}",
+                    condition_id,
+                    amount_usdc,
+                    tx_id,
+                    hash
+                ),
+                None => tracing::warn!(
+                    "⚠️ Merge SAFE pending timeout after {}s: condition={} amount_usdc={} tx_id={}",
+                    cfg.relayer_wait_timeout.as_secs(),
+                    condition_id,
+                    amount_usdc,
+                    tx_id
+                ),
+            }
+            Ok(())
+        }
+        ClaimExecutionMode::ProxyRelayerUnsupported => {
+            anyhow::bail!(
+                "merge skipped: proxy execution mode unsupported (signer={} funder={})",
+                signer,
+                funder
+            )
+        }
+        ClaimExecutionMode::UnknownProxyOrSafe => {
+            anyhow::bail!(
+                "merge skipped: unknown proxy/safe mode; set PM_SIGNATURE_TYPE explicitly"
+            )
+        }
+    }
 }
 
 impl AutoClaimConfig {

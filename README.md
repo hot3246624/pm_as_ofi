@@ -92,10 +92,13 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 |------|------|------|
 | `PM_DRY_RUN` | `true` | 模拟模式开关 |
 | `PM_PAIR_TARGET` | `0.99` | YES+NO 出价上限。越低越安全利润越高，但成交率下降 |
-| `PM_BID_SIZE` | `5.0` | Size per bid in **Shares** (1 Share = $1 Max Risk) |
+| `PM_BID_SIZE` | `5.0` | 提供单规模上限（Shares）；实盘运行时会再受动态资金上限约束 |
 | `PM_MIN_ORDER_SIZE` | `1.0 (auto)` | 最小订单数量（未设置时自动从 order_book 探测并向上调整；小于该值的订单会被跳过） |
 | `PM_MIN_HEDGE_SIZE` | `0.0` | 对冲触发最小阈值（0=禁用） |
 | `PM_HEDGE_ROUND_UP` | `false` | 对冲不足最小订单时是否向上取整 |
+| `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` | `0.0` | 可选：仅对冲路径的 marketable-BUY 最小金额兜底（0=关闭） |
+| `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | `0.5` | 触发兜底时单次最多额外加仓（shares） |
+| `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | `0.15` | 触发兜底时最多额外比例（相对原对冲量） |
 | `PM_TICK_SIZE` | `0.01` | Minimum price increment |
 | `PM_REPRICE_THRESHOLD` | `0.010` | Price drift required to trigger re-quote |
 | `PM_DEBOUNCE_MS` | `500` | Minimum interval between Provide orders (ms) |
@@ -107,10 +110,10 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `PM_MAX_NET_DIFF` | `10.0` | Max net directional inventory difference (**Shares**) |
+| `PM_MAX_NET_DIFF` | `10.0` | 净仓差上限（Shares）；实盘运行时会再受动态资金上限约束 |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 最大组合成本和（> 1.0 = 套利失败） |
 | `PM_MAX_LOSS_PCT` | `0.02` | 最大可接受组合亏损比例（用于钳制 `PM_MAX_PORTFOLIO_COST`） |
-| `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限 |
+| `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限（同时受 `PM_MAX_POS_PCT` 动态约束） |
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | 订单对账周期（秒），用于修复 WS 断连盲区 |
 | `PM_MAX_POS_PCT` | `0.70` | 总仓位占比上限（用于动态推导 `PM_MAX_SIDE_SHARES`） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
@@ -118,9 +121,21 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 强制刷新心跳 |
 | `PM_OFI_EXIT_RATIO` | `0.85` | OFI 退出滞回阈值比例（低于该比例才退出 toxic） |
 | `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短保持时间，抑制阈值抖动 |
+| `PM_RECYCLE_ENABLED` | `true` | 启用余额压力回收器（余额拒单触发批量 merge） |
+| `PM_RECYCLE_TRIGGER_REJECTS` | `2` | 触发阈值：窗口内余额拒单次数 |
+| `PM_RECYCLE_TRIGGER_WINDOW_SECS` | `90` | 拒单统计窗口（秒） |
+| `PM_RECYCLE_COOLDOWN_SECS` | `120` | 两次回收最小间隔（秒） |
+| `PM_RECYCLE_LOW_WATER_USDC` | `6` | 低水位：低于该余额才允许回收 |
+| `PM_RECYCLE_TARGET_FREE_USDC` | `18` | 回收目标余额（高水位） |
+| `PM_RECYCLE_MIN_BATCH_USDC` | `10` | 单次最小回收量（USDC） |
+| `PM_RECYCLE_MAX_BATCH_USDC` | `30` | 单次最大回收量（USDC） |
+| `PM_BALANCE_CACHE_TTL_MS` | `2000` | 下单前余额可负担性检查缓存 TTL（毫秒） |
 
 > 注：`PM_MAX_POSITION_VALUE` 已弃用，若仍设置将被视为 `PM_MAX_SIDE_SHARES`（单位为 shares）。
 > `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。
+> 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。
+> 若日志频繁出现 `not enough balance / allowance`，应优先下调 `PM_MAX_SIDE_SHARES` / `PM_MAX_POS_PCT` / `PM_BID_SIZE`，否则对冲会因冷却窗口延迟执行。
+> 回收器采用“低水位触发 + 高水位回补 + 冷却 + 单轮上限”，默认是低频批量回收，不是每次拒单都小额 merge。
 
 ### 4.4 Claim 参数
 

@@ -24,7 +24,7 @@ use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
 use rust_decimal::prelude::FromPrimitive;
 
-type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>;
+pub type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>;
 
 // ─────────────────────────────────────────────────────────
 // Configuration
@@ -54,6 +54,13 @@ pub struct Executor {
     result_tx: mpsc::Sender<OrderResult>,
     /// Receive fill events to clean up open_orders lifecycle.
     fill_rx: mpsc::Receiver<FillEvent>,
+    /// Side channel for capital-recycle trigger events.
+    capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
+
+    /// Cached free collateral balance (USDC) used by pre-place affordability checks.
+    balance_cache_usdc: Option<f64>,
+    balance_cache_ts: Instant,
+    balance_cache_ttl: Duration,
 
     /// Active open orders tracked per side: order_id → remaining_size.
     /// Enables partial fill tracking — only removes when fully filled.
@@ -68,6 +75,7 @@ impl Executor {
         cmd_rx: mpsc::Receiver<ExecutionCmd>,
         result_tx: mpsc::Sender<OrderResult>,
         fill_rx: mpsc::Receiver<FillEvent>,
+        capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
     ) -> Self {
         let mut open_orders = HashMap::new();
         open_orders.insert(Side::Yes, HashMap::new());
@@ -80,6 +88,16 @@ impl Executor {
             cmd_rx,
             result_tx,
             fill_rx,
+            capital_tx,
+            balance_cache_usdc: None,
+            balance_cache_ts: Instant::now() - Duration::from_secs(60),
+            balance_cache_ttl: Duration::from_millis(
+                std::env::var("PM_BALANCE_CACHE_TTL_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .filter(|v| *v > 0)
+                    .unwrap_or(2000),
+            ),
             open_orders,
         }
     }
@@ -369,6 +387,37 @@ impl Executor {
             }
         }
 
+        // Affordability guard: avoid futile submits when free collateral is clearly insufficient.
+        // This reduces exchange-side hard rejects and cancel/place storms during low-balance windows.
+        if let Some(free_usdc) = self.cached_free_balance_usdc().await {
+            let required_usdc = (price * size).max(0.0);
+            // Keep a small cushion for transient balance/allowance lag.
+            if free_usdc + 0.05 < required_usdc {
+                warn!(
+                    "🚫 Precheck reject {:?}@{:.3} sz={:.1}: need {:.2} USDC > free {:.2} USDC",
+                    side, price, size, required_usdc, free_usdc
+                );
+                let _ = self
+                    .emit_reject_event(PlacementRejectEvent {
+                        side,
+                        reason,
+                        kind: RejectKind::BalanceOrAllowance,
+                        price,
+                        size,
+                        ts: Instant::now(),
+                    })
+                    .await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderFailed {
+                        side,
+                        cooldown_ms: 15_000,
+                    })
+                    .await;
+                return;
+            }
+        }
+
         match self.place_post_only_order(side, price, size).await {
             Ok(order_id) => {
                 info!("✅ Order placed: {:?}@{:.3} id={}", side, price, order_id);
@@ -380,7 +429,12 @@ impl Executor {
                     .result_tx
                     .send(OrderResult::OrderPlaced {
                         side,
-                        target: DesiredTarget { side, price, size },
+                        target: DesiredTarget {
+                            side,
+                            price,
+                            size,
+                            reason,
+                        },
                     })
                     .await;
                 // NO FillEvent here. Fills come from User WS only.
@@ -413,7 +467,12 @@ impl Executor {
                                 .result_tx
                                 .send(OrderResult::OrderPlaced {
                                     side,
-                                    target: DesiredTarget { side, price, size },
+                                    target: DesiredTarget {
+                                        side,
+                                        price,
+                                        size,
+                                        reason,
+                                    },
                                 })
                                 .await;
                             return;
@@ -428,6 +487,15 @@ impl Executor {
                 let is_429 = Self::is_rate_limit_error(&final_err);
                 let is_balance = Self::is_balance_or_allowance_error(&final_err);
                 let is_validation = Self::is_validation_error(&final_err);
+                let reject_kind = if is_429 {
+                    RejectKind::RateLimit
+                } else if is_balance {
+                    RejectKind::BalanceOrAllowance
+                } else if is_validation {
+                    RejectKind::Validation
+                } else {
+                    RejectKind::Other
+                };
 
                 let cooldown_ms = if is_429 {
                     10_000 // 10s backoff for rate limiting
@@ -440,7 +508,7 @@ impl Executor {
                 };
 
                 if cooldown_ms > 0 {
-                    let reason = if is_429 {
+                    let reject_kind_text = if is_429 {
                         "rate limit"
                     } else if is_balance {
                         "balance/allowance"
@@ -451,9 +519,25 @@ impl Executor {
                         "⛔ Hard reject on {:?}: pausing new placements for {}s ({})",
                         side,
                         cooldown_ms / 1000,
-                        reason
+                        reject_kind_text
                     );
+                    if is_balance && matches!(reason, BidReason::Hedge) {
+                        warn!(
+                            "🧯 Hedge blocked on {:?}: insufficient balance/allowance; inventory may remain directional until cooldown expires",
+                            side
+                        );
+                    }
                 }
+                let _ = self
+                    .emit_reject_event(PlacementRejectEvent {
+                        side,
+                        reason,
+                        kind: reject_kind,
+                        price,
+                        size,
+                        ts: Instant::now(),
+                    })
+                    .await;
                 // FIX #4: Notify Coordinator the order failed so it can reset the slot
                 let _ = self
                     .result_tx
@@ -592,6 +676,48 @@ impl Executor {
                 } else {
                     info!("✅ CancelAll fallback canceled all tracked orders");
                 }
+            }
+        }
+    }
+
+    async fn emit_reject_event(&self, evt: PlacementRejectEvent) {
+        if let Some(tx) = &self.capital_tx {
+            let _ = tx.send(evt).await;
+        }
+    }
+
+    async fn cached_free_balance_usdc(&mut self) -> Option<f64> {
+        if self.cfg.dry_run || self.client.is_none() {
+            return None;
+        }
+        if self.balance_cache_usdc.is_some()
+            && self.balance_cache_ts.elapsed() < self.balance_cache_ttl
+        {
+            return self.balance_cache_usdc;
+        }
+
+        use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
+        use polymarket_client_sdk::clob::types::AssetType;
+        use rust_decimal::prelude::ToPrimitive;
+
+        let client = self.client.as_ref()?;
+        let req = BalanceAllowanceRequest::builder()
+            .asset_type(AssetType::Collateral)
+            .build();
+        match client.balance_allowance(req).await {
+            Ok(resp) => {
+                // Polymarket returns collateral in 6 decimals (1 USDC = 1_000_000).
+                let raw = resp.balance.to_f64().unwrap_or(0.0);
+                let free = (raw / 1_000_000.0).max(0.0);
+                self.balance_cache_usdc = Some(free);
+                self.balance_cache_ts = Instant::now();
+                Some(free)
+            }
+            Err(e) => {
+                warn!("⚠️ balance precheck fetch failed: {:?}", e);
+                self.balance_cache_usdc = None;
+                self.balance_cache_ts = Instant::now();
+                None
             }
         }
     }

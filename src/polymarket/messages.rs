@@ -116,11 +116,21 @@ impl Default for InventoryState {
 // ─────────────────────────────────────────────────────────
 
 /// A snapshot of the strategy's desired order state for a specific side.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct DesiredTarget {
     pub side: Side,
     pub price: f64,
     pub size: f64,
+    /// Original intent from Coordinator (Provide vs Hedge).
+    pub reason: BidReason,
+}
+
+impl PartialEq for DesiredTarget {
+    fn eq(&self, other: &Self) -> bool {
+        // Keep equality semantic focused on executable order shape to avoid
+        // unnecessary cancel/replace when only reason tag changes.
+        self.side == other.side && self.price == other.price && self.size == other.size
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -206,6 +216,26 @@ pub enum OrderResult {
     CancelAck { side: Side },
 }
 
+/// Rejection class for placement failures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectKind {
+    RateLimit,
+    BalanceOrAllowance,
+    Validation,
+    Other,
+}
+
+/// Placement rejection event for capital/risk side-channels.
+#[derive(Debug, Clone)]
+pub struct PlacementRejectEvent {
+    pub side: Side,
+    pub reason: BidReason,
+    pub kind: RejectKind,
+    pub price: f64,
+    pub size: f64,
+    pub ts: Instant,
+}
+
 // ─────────────────────────────────────────────────────────
 // Fill Events (User WS → InventoryManager)
 //
@@ -241,6 +271,20 @@ pub struct FillEvent {
     /// Fill status from the exchange.
     pub status: FillStatus,
     pub ts: Instant,
+}
+
+/// Inventory update stream consumed by InventoryManager.
+#[derive(Debug, Clone)]
+pub enum InventoryEvent {
+    /// Regular fill event from authenticated User WS.
+    Fill(FillEvent),
+    /// Local merge synchronization: shrink both YES/NO by one full-set amount.
+    /// `full_set_size` uses share units (1 share ~= $1 payout notional at resolution).
+    Merge {
+        full_set_size: f64,
+        merge_id: String,
+        ts: Instant,
+    },
 }
 
 // ─────────────────────────────────────────────────────────
