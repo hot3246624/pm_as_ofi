@@ -103,7 +103,7 @@ Some venue-side validations can reject very small **marketable BUY** orders (< `
   - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT`
 - Global anti-storm guard:
   - `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` (default `0`, disabled)
-  - `PM_MIN_MARKETABLE_AUTO_DETECT` (default `true`, learns `min size:$X` from rejects)
+  - `PM_MIN_MARKETABLE_AUTO_DETECT` (default `false`, static-first; optional learning from rejects)
   - `PM_MIN_MARKETABLE_COOLDOWN_MS` (default `10000`)
 - Behavior: when enabled, hedge size can be bumped just enough to pass the notional floor, but only within strict extra-size caps and still under hedge net gates.
 
@@ -135,7 +135,7 @@ Notes:
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | Shares | Absolute extra-size cap for hedge bump | Limits risk increase when floor is enabled |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | Decimal | Relative extra-size cap for hedge bump | `extra <= size * pct` must hold |
 | `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | USDC | Global marketable-BUY precheck floor | `0` disables |
-| `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | Auto-learn floor from exchange rejects | Recommended `true` |
+| `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | Auto-learn floor from exchange rejects | Static-first recommended `false` |
 | `PM_MIN_MARKETABLE_COOLDOWN_MS` | ms | Cooldown after min-notional reject | Suppresses reject storms |
 | `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamically reduced only when `PM_NET_DIFF_PCT` is explicitly set |
 | `PM_MAX_SIDE_SHARES` | Shares | Max per-side gross exposure | Default = max_net_diff if unset |

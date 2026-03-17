@@ -100,7 +100,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | `0.5` | 触发兜底时单次最多额外加仓（shares） |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | `0.15` | 触发兜底时最多额外比例（相对原对冲量） |
 | `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | `0.0` | 全局 marketable-BUY 最小名义预检（0=关闭） |
-| `PM_MIN_MARKETABLE_AUTO_DETECT` | `true` | 从交易所拒单自动学习 `min size:$X` 并更新预检阈值 |
+| `PM_MIN_MARKETABLE_AUTO_DETECT` | `false` | 是否从交易所拒单自动学习 `min size:$X`（静态优先建议关闭） |
 | `PM_MIN_MARKETABLE_COOLDOWN_MS` | `10000` | 触发 marketable 最小名义拒单后的侧边冷却时间 |
 | `PM_TICK_SIZE` | `0.01` | Minimum price increment |
 | `PM_REPRICE_THRESHOLD` | `0.010` | Price drift required to trigger re-quote |
@@ -186,7 +186,7 @@ PM_BID_SIZE=5.0               # 每侧 $5 挂单
 PM_MIN_ORDER_SIZE=5.0         # 最小订单数量（不配置则自动从 order_book 探测）
 PM_MIN_HEDGE_SIZE=0.0         # 对冲触发最小阈值（0=禁用）
 PM_HEDGE_ROUND_UP=false       # 对冲不足最小订单时是否向上取整
-PM_MIN_MARKETABLE_AUTO_DETECT=true   # 自动学习 marketable-BUY min size
+PM_MIN_MARKETABLE_AUTO_DETECT=false  # 默认关闭隐式学习（静态优先）
 PM_MIN_MARKETABLE_COOLDOWN_MS=10000  # 最小金额拒单冷却
 PM_TICK_SIZE=0.01
 PM_REPRICE_THRESHOLD=0.010    # 1分钱漂移才换单，防撤单风暴

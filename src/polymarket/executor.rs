@@ -718,8 +718,11 @@ impl Executor {
 
                 warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
                 let err_text = format!("{:#}", final_err);
+                let err_text_lower = err_text.to_ascii_lowercase();
                 if self.marketable_buy_autodetect {
-                    if let Some(min_notional) = Self::extract_min_marketable_notional(&err_text) {
+                    if let Some(min_notional) =
+                        Self::extract_min_marketable_notional(&err_text_lower)
+                    {
                         if min_notional > self.marketable_buy_min_notional_floor + 1e-9 {
                             warn!(
                                 "🧭 Learned marketable BUY min notional floor: ${:.2} -> ${:.2}",
@@ -729,10 +732,10 @@ impl Executor {
                         }
                     }
                 }
-                let is_429 = Self::is_rate_limit_error(&final_err);
-                let is_balance = Self::is_balance_or_allowance_error(&final_err);
-                let is_marketable_min = Self::is_marketable_min_error(&final_err);
-                let is_validation = Self::is_validation_error(&final_err);
+                let is_429 = Self::is_rate_limit_error(&err_text_lower);
+                let is_balance = Self::is_balance_or_allowance_error(&err_text_lower);
+                let is_marketable_min = Self::is_marketable_min_error(&err_text_lower);
+                let is_validation = Self::is_validation_error(&err_text_lower);
                 let reject_kind = if is_429 {
                     RejectKind::RateLimit
                 } else if is_balance {
@@ -760,6 +763,8 @@ impl Executor {
                         "rate limit"
                     } else if is_balance {
                         "balance/allowance"
+                    } else if is_marketable_min {
+                        "marketable-min"
                     } else {
                         "validation/precision"
                     };
@@ -1092,29 +1097,27 @@ impl Executor {
         num.parse::<f64>().ok().filter(|v| *v > 0.0)
     }
 
-    fn is_balance_or_allowance_error(err: &anyhow::Error) -> bool {
-        let lower = format!("{:#}", err).to_ascii_lowercase();
+    fn is_balance_or_allowance_error(lower: &str) -> bool {
         lower.contains("not enough balance") || lower.contains("allowance")
     }
 
-    fn is_rate_limit_error(err: &anyhow::Error) -> bool {
-        let lower = format!("{:#}", err).to_ascii_lowercase();
+    fn is_rate_limit_error(lower: &str) -> bool {
         lower.contains("429") || lower.contains("too many requests") || lower.contains("rate limit")
     }
 
     /// P2 FIX: Detect validation/precision errors to apply cooldown and prevent retry storms.
-    fn is_validation_error(err: &anyhow::Error) -> bool {
-        let lower = format!("{:#}", err).to_ascii_lowercase();
+    fn is_validation_error(lower: &str) -> bool {
         lower.contains("decimal places")
             || lower.contains("lot size")
             || lower.contains("order crosses book")
             || lower.contains("rounds to 0")
-            || Self::is_marketable_min_error(err)
+            || Self::is_marketable_min_error(lower)
     }
 
-    fn is_marketable_min_error(err: &anyhow::Error) -> bool {
-        let lower = format!("{:#}", err).to_ascii_lowercase();
-        lower.contains("invalid amount for a marketable buy order") || lower.contains("min size: $")
+    fn is_marketable_min_error(lower: &str) -> bool {
+        lower.contains("invalid amount for a marketable buy order")
+            || (lower.contains("marketable") && lower.contains("min size"))
+            || lower.contains("min size: $")
     }
 
     /// Get count of open orders for a side.

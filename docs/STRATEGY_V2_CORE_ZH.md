@@ -125,7 +125,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
   - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT`
 - 全局防风暴参数：
   - `PM_MIN_MARKETABLE_NOTIONAL_FLOOR`（默认 `0`，预检下限）
-  - `PM_MIN_MARKETABLE_AUTO_DETECT`（默认 `true`，从拒单自动学习 `min size:$X`）
+  - `PM_MIN_MARKETABLE_AUTO_DETECT`（默认 `false`，静态优先；可选从拒单自动学习 `min size:$X`）
   - `PM_MIN_MARKETABLE_COOLDOWN_MS`（默认 `10000`，拒单后侧边冷却）
 - 机制：仅在对冲路径按最小必要量补大下单数量；同时受“绝对/相对增量上限 + 对冲净仓闸门”双重约束，避免为通过校验而失控加仓。
 
@@ -157,7 +157,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | Shares | 触发兜底时允许的绝对额外份额上限 | 控制额外风险 |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | 小数 | 触发兜底时允许的相对额外比例上限 | 需满足 `extra <= size * pct` |
 | `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | USDC | 全局 marketable-BUY 预检下限 | `0` 为关闭，避免最小金额拒单风暴 |
-| `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | 从拒单自动学习最小金额阈值 | 建议开启 |
+| `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | 从拒单自动学习最小金额阈值 | 静态优先建议关闭 |
 | `PM_MIN_MARKETABLE_COOLDOWN_MS` | ms | 最小金额拒单后的侧边冷却 | 抑制高频重复拒单 |
 | `PM_MAX_NET_DIFF` | Shares | 最大净方向性风险 | 仅在显式配置 `PM_NET_DIFF_PCT` 时按余额下调 |
 | `PM_MAX_SIDE_SHARES` | Shares | 单侧总持仓上限 | 未设置时默认等于 max_net_diff |
