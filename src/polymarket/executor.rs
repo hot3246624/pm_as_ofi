@@ -99,6 +99,14 @@ pub struct Executor {
 
     /// Runtime-selected query mode for REST reconciliation.
     reconcile_fetch_mode: ReconcileFetchMode,
+    /// Learned/configured floor for marketable BUY minimum notional (USDC).
+    marketable_buy_min_notional_floor: f64,
+    /// Cooldown after marketable-BUY min-notional rejection (ms).
+    marketable_buy_cooldown_ms: u64,
+    /// Whether to auto-learn marketable BUY min-notional from exchange errors.
+    marketable_buy_autodetect: bool,
+    /// Guarded on-demand reconcile throttle for side-lock refusal path.
+    last_guard_reconcile_ts: Instant,
 }
 
 impl Executor {
@@ -134,6 +142,20 @@ impl Executor {
             ),
             open_orders,
             reconcile_fetch_mode: ReconcileFetchMode::Market,
+            marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| *v >= 0.0)
+                .unwrap_or(0.0),
+            marketable_buy_cooldown_ms: std::env::var("PM_MIN_MARKETABLE_COOLDOWN_MS")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(10_000),
+            marketable_buy_autodetect: std::env::var("PM_MIN_MARKETABLE_AUTO_DETECT")
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(true),
+            last_guard_reconcile_ts: Instant::now() - Duration::from_secs(60),
         }
     }
 
@@ -164,6 +186,12 @@ impl Executor {
                         }
                         Some(ExecutionCmd::CancelAll { reason }) => {
                             self.handle_cancel_all(reason).await;
+                        }
+                        Some(ExecutionCmd::ReconcileNow { reason }) => {
+                            if reconcile_enabled {
+                                info!("🧭 ReconcileNow: {}", reason);
+                                self.reconcile_open_orders().await;
+                            }
                         }
                         None => break, // Channel closed
                     }
@@ -535,23 +563,61 @@ impl Executor {
 
         // Safety: do not place a new bid on a side while we still track
         // uncanceled live orders on that side.
-        if let Some(existing) = self.open_orders.get(&side) {
-            if !existing.is_empty() {
-                warn!(
-                    "🚫 Refusing PlacePostOnlyBid {:?}@{:.3}: {} tracked order(s) still open on side",
-                    side, price, existing.len(),
-                );
-                let _ = self
-                    .result_tx
-                    .send(OrderResult::OrderFailed {
-                        side,
-                        // Short backoff to avoid tight retry loops when OMS and
-                        // executor are temporarily out-of-sync on live orders.
-                        cooldown_ms: 1_000,
-                    })
-                    .await;
-                return;
+        if let Some(existing_count) = self
+            .open_orders
+            .get(&side)
+            .map(|existing| existing.len())
+            .filter(|count| *count > 0)
+        {
+            warn!(
+                "🚫 Refusing PlacePostOnlyBid {:?}@{:.3}: {} tracked order(s) still open on side",
+                side, price, existing_count,
+            );
+            if self.last_guard_reconcile_ts.elapsed() >= Duration::from_millis(1500)
+                && !self.cfg.dry_run
+                && self.client.is_some()
+            {
+                self.last_guard_reconcile_ts = Instant::now();
+                self.reconcile_open_orders().await;
             }
+            let _ = self
+                .result_tx
+                .send(OrderResult::OrderFailed {
+                    side,
+                    // Short backoff to avoid tight retry loops when OMS and
+                    // executor are temporarily out-of-sync on live orders.
+                    cooldown_ms: 2_000,
+                })
+                .await;
+            return;
+        }
+
+        let notional = (price * size).max(0.0);
+        if self.marketable_buy_min_notional_floor > 0.0
+            && notional + 1e-9 < self.marketable_buy_min_notional_floor
+        {
+            warn!(
+                "🚫 Precheck reject {:?}@{:.3} sz={:.2}: notional ${:.2} < marketable min ${:.2}",
+                side, price, size, notional, self.marketable_buy_min_notional_floor
+            );
+            let _ = self
+                .emit_reject_event(PlacementRejectEvent {
+                    side,
+                    reason,
+                    kind: RejectKind::Validation,
+                    price,
+                    size,
+                    ts: Instant::now(),
+                })
+                .await;
+            let _ = self
+                .result_tx
+                .send(OrderResult::OrderFailed {
+                    side,
+                    cooldown_ms: self.marketable_buy_cooldown_ms,
+                })
+                .await;
+            return;
         }
 
         // Affordability guard: avoid futile submits when free collateral is clearly insufficient.
@@ -651,8 +717,21 @@ impl Executor {
                 }
 
                 warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
+                let err_text = format!("{:#}", final_err);
+                if self.marketable_buy_autodetect {
+                    if let Some(min_notional) = Self::extract_min_marketable_notional(&err_text) {
+                        if min_notional > self.marketable_buy_min_notional_floor + 1e-9 {
+                            warn!(
+                                "🧭 Learned marketable BUY min notional floor: ${:.2} -> ${:.2}",
+                                self.marketable_buy_min_notional_floor, min_notional
+                            );
+                            self.marketable_buy_min_notional_floor = min_notional;
+                        }
+                    }
+                }
                 let is_429 = Self::is_rate_limit_error(&final_err);
                 let is_balance = Self::is_balance_or_allowance_error(&final_err);
+                let is_marketable_min = Self::is_marketable_min_error(&final_err);
                 let is_validation = Self::is_validation_error(&final_err);
                 let reject_kind = if is_429 {
                     RejectKind::RateLimit
@@ -668,6 +747,8 @@ impl Executor {
                     10_000 // 10s backoff for rate limiting
                 } else if is_balance {
                     30_000 // 30s for balance issues
+                } else if is_marketable_min {
+                    self.marketable_buy_cooldown_ms // min-$1 style hard floor reject
                 } else if is_validation {
                     5_000 // 5s for validation errors (size precision, lot size, etc.)
                 } else {
@@ -996,6 +1077,21 @@ impl Executor {
         num.parse::<f64>().ok().filter(|v| *v > 0.0)
     }
 
+    fn extract_min_marketable_notional(err: &str) -> Option<f64> {
+        let lower = err.to_ascii_lowercase();
+        let marker = "min size: $";
+        let idx = lower.find(marker)?;
+        let tail = &lower[idx + marker.len()..];
+        let num: String = tail
+            .chars()
+            .take_while(|ch| ch.is_ascii_digit() || *ch == '.')
+            .collect();
+        if num.is_empty() {
+            return None;
+        }
+        num.parse::<f64>().ok().filter(|v| *v > 0.0)
+    }
+
     fn is_balance_or_allowance_error(err: &anyhow::Error) -> bool {
         let lower = format!("{:#}", err).to_ascii_lowercase();
         lower.contains("not enough balance") || lower.contains("allowance")
@@ -1013,6 +1109,12 @@ impl Executor {
             || lower.contains("lot size")
             || lower.contains("order crosses book")
             || lower.contains("rounds to 0")
+            || Self::is_marketable_min_error(err)
+    }
+
+    fn is_marketable_min_error(err: &anyhow::Error) -> bool {
+        let lower = format!("{:#}", err).to_ascii_lowercase();
+        lower.contains("invalid amount for a marketable buy order") || lower.contains("min size: $")
     }
 
     /// Get count of open orders for a side.

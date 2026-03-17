@@ -325,6 +325,39 @@ fn publish_dynamic_max_side(ctx: &DynamicGrossContext, free_balance_usdc: f64, s
     }
 }
 
+async fn sync_dynamic_gross_pre_open(
+    client: Option<&AuthClient>,
+    ctx: Option<&DynamicGrossContext>,
+    source: &str,
+) {
+    let (Some(client), Some(ctx)) = (client, ctx) else {
+        return;
+    };
+
+    // Run a short multi-probe sync to avoid carrying stale low caps from the
+    // previous round into the first quote window of the next market.
+    let mut best_free: Option<f64> = None;
+    for attempt in 0..3 {
+        if attempt > 0 {
+            sleep(Duration::from_millis(250)).await;
+        }
+        match fetch_free_collateral_usdc(client).await {
+            Ok(free) => {
+                best_free = Some(best_free.map_or(free, |curr| curr.max(free)));
+            }
+            Err(e) => debug!(
+                "dynamic gross pre-open probe {} failed: {:?}",
+                attempt + 1,
+                e
+            ),
+        }
+    }
+
+    if let Some(free) = best_free {
+        publish_dynamic_max_side(ctx, free, source);
+    }
+}
+
 fn plan_merge_batch_usdc(
     cfg: &CapitalRecycleConfig,
     free_balance: f64,
@@ -1630,6 +1663,46 @@ async fn main() -> anyhow::Result<()> {
             min_order_size_env_raw.as_deref().unwrap_or_default()
         );
     }
+    // Static-first policy:
+    // Dynamic sizing applies ONLY when explicit pct vars are configured.
+    let bid_pct_raw = env::var("PM_BID_PCT").ok().filter(|s| !s.trim().is_empty());
+    let bid_pct_opt = bid_pct_raw
+        .as_deref()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0);
+    if bid_pct_raw.is_some() && bid_pct_opt.is_none() {
+        warn!(
+            "⚠️ Invalid PM_BID_PCT='{}' — dynamic bid sizing disabled",
+            bid_pct_raw.as_deref().unwrap_or_default()
+        );
+    }
+
+    let net_diff_pct_raw = env::var("PM_NET_DIFF_PCT")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let net_diff_pct_opt = net_diff_pct_raw
+        .as_deref()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0);
+    if net_diff_pct_raw.is_some() && net_diff_pct_opt.is_none() {
+        warn!(
+            "⚠️ Invalid PM_NET_DIFF_PCT='{}' — dynamic net sizing disabled",
+            net_diff_pct_raw.as_deref().unwrap_or_default()
+        );
+    }
+    if bid_pct_opt.is_some() || net_diff_pct_opt.is_some() {
+        info!(
+            "📏 Dynamic sizing enabled: PM_BID_PCT={} PM_NET_DIFF_PCT={}",
+            bid_pct_opt
+                .map(|v| format!("{:.4}", v))
+                .unwrap_or_else(|| "off".to_string()),
+            net_diff_pct_opt
+                .map(|v| format!("{:.4}", v))
+                .unwrap_or_else(|| "off".to_string())
+        );
+    } else {
+        info!("📏 Dynamic sizing disabled: static PM_BID_SIZE / PM_MAX_NET_DIFF will be used");
+    }
 
     info!(
         "📊 Base Config: pair={:.2} bid={:.1} tick={:.3} net={:.0} ofi_thresh={:.1} dry={}",
@@ -2166,32 +2239,24 @@ async fn main() -> anyhow::Result<()> {
                     let balance_f64 = raw_balance / 1_000_000.0;
                     balance_opt = Some(balance_f64);
 
-                    let bid_pct: f64 = std::env::var("PM_BID_PCT")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0.02); // Default 2%
-
-                    let net_diff_pct: f64 = std::env::var("PM_NET_DIFF_PCT")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(0.10); // Default 10%
-
-                    // Dynamic sizing produces live risk caps from current free collateral.
-                    // We treat dynamic values as runtime UPPER BOUNDS to avoid oversizing
-                    // after balance drops (e.g., after unsettled fills / pending collateral).
-                    // Unit: 1 Share = $1 max potential risk.
-                    let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round();
-                    let dyn_net_diff = 5.0f64.max(balance_f64 * net_diff_pct).round();
-
-                    // Runtime effective settings:
-                    // - Keep user config as a hard cap (never exceed it)
-                    // - Also cap by dynamic values from current balance
-                    // - Enforce venue floor at 5 shares
-                    coord_cfg.bid_size = coord_cfg.bid_size.min(dyn_bid_size).max(5.0);
-                    coord_cfg.max_net_diff = coord_cfg
-                        .max_net_diff
-                        .min(dyn_net_diff)
-                        .max(coord_cfg.bid_size);
+                    // Dynamic sizing is explicit-opt-in via PM_BID_PCT / PM_NET_DIFF_PCT.
+                    // If vars are absent, keep static PM_BID_SIZE / PM_MAX_NET_DIFF.
+                    let mut dyn_bid_size_used: Option<f64> = None;
+                    let mut dyn_net_diff_used: Option<f64> = None;
+                    if let Some(bid_pct) = bid_pct_opt {
+                        // Unit: 1 Share = $1 max potential risk.
+                        let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round();
+                        coord_cfg.bid_size = coord_cfg.bid_size.min(dyn_bid_size).max(5.0);
+                        dyn_bid_size_used = Some(dyn_bid_size);
+                    }
+                    if let Some(net_diff_pct) = net_diff_pct_opt {
+                        let dyn_net_diff = 5.0f64.max(balance_f64 * net_diff_pct).round();
+                        coord_cfg.max_net_diff = coord_cfg
+                            .max_net_diff
+                            .min(dyn_net_diff)
+                            .max(coord_cfg.bid_size);
+                        dyn_net_diff_used = Some(dyn_net_diff);
+                    }
 
                     if max_pos_pct > 0.0 {
                         let floor = coord_cfg.max_net_diff.max(coord_cfg.bid_size);
@@ -2219,16 +2284,26 @@ async fn main() -> anyhow::Result<()> {
                     inv_cfg.bid_size = coord_cfg.bid_size;
                     inv_cfg.max_net_diff = coord_cfg.max_net_diff;
 
-                    info!(
-                        "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> cap BID_SIZE={:.1} MAX_NET_DIFF={:.1} (effective BID_SIZE={:.1}, MAX_NET_DIFF={:.1}, bid_pct={}, net_pct={})",
-                        balance_f64,
-                        dyn_bid_size,
-                        dyn_net_diff,
-                        coord_cfg.bid_size,
-                        coord_cfg.max_net_diff,
-                        bid_pct,
-                        net_diff_pct
-                    );
+                    if dyn_bid_size_used.is_some() || dyn_net_diff_used.is_some() {
+                        info!(
+                            "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> cap BID_SIZE={} MAX_NET_DIFF={} (effective BID_SIZE={:.1}, MAX_NET_DIFF={:.1}, bid_pct={}, net_pct={})",
+                            balance_f64,
+                            dyn_bid_size_used
+                                .map(|v| format!("{:.1}", v))
+                                .unwrap_or_else(|| "off".to_string()),
+                            dyn_net_diff_used
+                                .map(|v| format!("{:.1}", v))
+                                .unwrap_or_else(|| "off".to_string()),
+                            coord_cfg.bid_size,
+                            coord_cfg.max_net_diff,
+                            bid_pct_opt
+                                .map(|v| format!("{:.4}", v))
+                                .unwrap_or_else(|| "off".to_string()),
+                            net_diff_pct_opt
+                                .map(|v| format!("{:.4}", v))
+                                .unwrap_or_else(|| "off".to_string())
+                        );
+                    }
                 } else {
                     warn!("⚠️ Failed to fetch balance for dynamic sizing. Falling back to env defaults.");
                 }
@@ -2433,6 +2508,12 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await;
             info!("🧹 Startup CancelAll sent — clearing any stale orders from prior session");
+            sync_dynamic_gross_pre_open(
+                clob_client.as_ref(),
+                dynamic_gross_ctx.as_ref(),
+                "round_open_sync",
+            )
+            .await;
         }
 
         // ── Step 3: Run until market expires ──

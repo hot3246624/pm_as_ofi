@@ -733,7 +733,7 @@ impl StrategyCoordinator {
                 let mut ceiling_no =
                     self.incremental_hedge_ceiling(inv, Side::No, hedge_size, hedge_target);
                 let mut agg_no = self.aggressive_price(ceiling_no, ub.no_bid, ub.no_ask);
-                let mut allow_no_hedge = self.can_buy_no(inv, hedge_size);
+                let mut allow_no_hedge = self.can_hedge_buy_no(inv, hedge_size);
                 if !allow_no_hedge {
                     block_no_provide = true;
                 }
@@ -746,7 +746,7 @@ impl StrategyCoordinator {
                         self.bump_hedge_size_for_marketable_floor(hedge_no, hedge_size)
                     {
                         if bumped > hedge_size + 1e-9 {
-                            if self.can_buy_no(inv, bumped) {
+                            if self.can_hedge_buy_no(inv, bumped) {
                                 hedge_size = bumped;
                                 ceiling_no = self.incremental_hedge_ceiling(
                                     inv,
@@ -759,7 +759,7 @@ impl StrategyCoordinator {
                                     hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
                                     hedge_no = self.safe_price(hedge_no);
                                 }
-                                allow_no_hedge = self.can_buy_no(inv, hedge_size);
+                                allow_no_hedge = self.can_hedge_buy_no(inv, hedge_size);
                             } else {
                                 debug!(
                                     "🧩 Hedge NO notional bump skipped: size {:.2} exceeds inventory gate",
@@ -815,7 +815,7 @@ impl StrategyCoordinator {
                 let mut ceiling_yes =
                     self.incremental_hedge_ceiling(inv, Side::Yes, hedge_size, hedge_target);
                 let mut agg_yes = self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
-                let mut allow_yes_hedge = self.can_buy_yes(inv, hedge_size);
+                let mut allow_yes_hedge = self.can_hedge_buy_yes(inv, hedge_size);
                 if !allow_yes_hedge {
                     block_yes_provide = true;
                 }
@@ -828,7 +828,7 @@ impl StrategyCoordinator {
                         self.bump_hedge_size_for_marketable_floor(hedge_yes, hedge_size)
                     {
                         if bumped > hedge_size + 1e-9 {
-                            if self.can_buy_yes(inv, bumped) {
+                            if self.can_hedge_buy_yes(inv, bumped) {
                                 hedge_size = bumped;
                                 ceiling_yes = self.incremental_hedge_ceiling(
                                     inv,
@@ -842,7 +842,7 @@ impl StrategyCoordinator {
                                     hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
                                     hedge_yes = self.safe_price(hedge_yes);
                                 }
-                                allow_yes_hedge = self.can_buy_yes(inv, hedge_size);
+                                allow_yes_hedge = self.can_hedge_buy_yes(inv, hedge_size);
                             } else {
                                 debug!(
                                     "🧩 Hedge YES notional bump skipped: size {:.2} exceeds inventory gate",
@@ -1154,6 +1154,18 @@ impl StrategyCoordinator {
         let net_ok = inv.net_diff - size >= -self.cfg.max_net_diff - 1e-4;
         let side_ok = inv.no_qty + size <= self.max_side_shares() + 1e-4;
         net_ok && side_ok
+    }
+
+    /// Hedge buys are allowed to bypass per-side gross cap so the strategy can
+    /// reduce directional exposure even when dynamic gross caps have shrunk.
+    fn can_hedge_buy_yes(&self, inv: &InventoryState, size: f64) -> bool {
+        inv.net_diff + size <= self.cfg.max_net_diff + 1e-4
+    }
+
+    /// Hedge buys are allowed to bypass per-side gross cap so the strategy can
+    /// reduce directional exposure even when dynamic gross caps have shrunk.
+    fn can_hedge_buy_no(&self, inv: &InventoryState, size: f64) -> bool {
+        inv.net_diff - size >= -self.cfg.max_net_diff - 1e-4
     }
 
     fn post_only_safety_margin(&self, best_bid: f64, best_ask: f64) -> f64 {

@@ -8,7 +8,7 @@
 - 仅挂单（`post_only=true`），永不主动吃单
 - OFI Toxicity Detection → Strategy-First Kill Switch (Global Provide Kill)
 - Inventory Hedging State Machine (Balanced → Hedge → Emergency Rescue)
-- Inventory Gate (`can_buy_*`) applies to all orders (Provide + Hedge)
+- Inventory Gate split: Provide uses `can_buy_*`; Hedge uses net-only gate to prioritize de-risking
 - Certified User WS for exclusive Fill confirmation
 - OrderFilled feedback loop for immediate slot release
 - Fill Ledger VWAP recalculation for zero drift
@@ -31,7 +31,7 @@ User WS   ──→ FillSplitter ──→ InventoryManager ──watch──→
 2. 库存唯一来源是认证 `User WS` 的 `FillEvent`
 3. `Confirmed` 事件幂等处理，不重复入账
 4. 下单失败回传 `OrderFailed`，成交回传 `OrderFilled`，Coordinator 即时释放 slot
-5. `can_buy_*` 为硬门控：仅基于净仓差与单侧持仓价值进行投影限制（定价策略由 Coordinator 控制）
+5. 风控门控分层：Provide 走 `can_buy_*`（净仓 + 单侧）；Hedge 走净仓门控优先降风险（允许越过单侧上限）
 6. User WS `maker_orders.owner` 是 API key UUID，不是钱包地址
 
 ## 3. 快速开始
@@ -92,13 +92,16 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 |------|------|------|
 | `PM_DRY_RUN` | `true` | 模拟模式开关 |
 | `PM_PAIR_TARGET` | `0.99` | YES+NO 出价上限。越低越安全利润越高，但成交率下降 |
-| `PM_BID_SIZE` | `5.0` | 提供单规模上限（Shares）；实盘运行时会再受动态资金上限约束 |
+| `PM_BID_SIZE` | `5.0` | 提供单规模上限（Shares）；仅在显式配置 `PM_BID_PCT` 时才会被余额动态下调 |
 | `PM_MIN_ORDER_SIZE` | `1.0 (auto)` | 最小订单数量（未设置时自动从 order_book 探测并向上调整；小于该值的订单会被跳过） |
 | `PM_MIN_HEDGE_SIZE` | `0.0` | 对冲触发最小阈值（0=禁用） |
 | `PM_HEDGE_ROUND_UP` | `false` | 对冲不足最小订单时是否向上取整 |
 | `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` | `0.0` | 可选：仅对冲路径的 marketable-BUY 最小金额兜底（0=关闭） |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | `0.5` | 触发兜底时单次最多额外加仓（shares） |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | `0.15` | 触发兜底时最多额外比例（相对原对冲量） |
+| `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | `0.0` | 全局 marketable-BUY 最小名义预检（0=关闭） |
+| `PM_MIN_MARKETABLE_AUTO_DETECT` | `true` | 从交易所拒单自动学习 `min size:$X` 并更新预检阈值 |
+| `PM_MIN_MARKETABLE_COOLDOWN_MS` | `10000` | 触发 marketable 最小名义拒单后的侧边冷却时间 |
 | `PM_TICK_SIZE` | `0.01` | Minimum price increment |
 | `PM_REPRICE_THRESHOLD` | `0.010` | Price drift required to trigger re-quote |
 | `PM_DEBOUNCE_MS` | `500` | Minimum interval between Provide orders (ms) |
@@ -110,16 +113,18 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `PM_MAX_NET_DIFF` | `10.0` | 净仓差上限（Shares）；实盘运行时会再受动态资金上限约束 |
+| `PM_MAX_NET_DIFF` | `10.0` | 净仓差上限（Shares）；仅在显式配置 `PM_NET_DIFF_PCT` 时才会被余额动态下调 |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 最大组合成本和（> 1.0 = 套利失败） |
 | `PM_MAX_LOSS_PCT` | `0.02` | 最大可接受组合亏损比例（用于钳制 `PM_MAX_PORTFOLIO_COST`） |
-| `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限（同时受 `PM_MAX_POS_PCT` 动态约束） |
+| `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限（仅当 `PM_MAX_POS_PCT>0` 时受动态约束） |
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | 订单对账周期（秒），用于修复 WS 断连盲区 |
 | `PM_COORD_WATCHDOG_MS` | `500` | Coordinator 风控看门狗心跳（无行情也执行 stale/toxic 检查） |
 | `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 单次连接超时（毫秒） |
 | `PM_RESOLVE_TIMEOUT_MS` | `4000` | Gamma 市场解析请求超时（毫秒） |
 | `PM_RESOLVE_RETRY_ATTEMPTS` | `4` | 每轮市场解析重试次数（指数退避） |
-| `PM_MAX_POS_PCT` | `0.70` | 总仓位占比上限（用于动态推导 `PM_MAX_SIDE_SHARES`） |
+| `PM_BID_PCT` | `unset` | 可选：显式配置后按 `balance × pct` 动态下调 `PM_BID_SIZE` |
+| `PM_NET_DIFF_PCT` | `unset` | 可选：显式配置后按 `balance × pct` 动态下调 `PM_MAX_NET_DIFF` |
+| `PM_MAX_POS_PCT` | `0.0` | 总仓位占比上限（`0`=关闭动态 gross；`>0` 动态推导 `PM_MAX_SIDE_SHARES`） |
 | `PM_DYNAMIC_GROSS_REFRESH_SECS` | `10` | 轮中动态刷新 `max_side_shares` 的周期（秒） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
 | `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
@@ -149,8 +154,8 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 > `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。
 > OFI 毒性退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值瞬时抬升导致的误恢复。
 > `PM_COORD_WATCHDOG_MS` 用于在 WS 暂时断流时继续触发风控 tick，避免 stale 熔断依赖行情事件。
-> 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。
-> 若日志频繁出现 `not enough balance / allowance`，应优先下调 `PM_MAX_SIDE_SHARES` / `PM_MAX_POS_PCT` / `PM_BID_SIZE`，否则对冲会因冷却窗口延迟执行。
+> 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。系统现在支持“自动学习 + 预检 + 冷却”，用于抑制拒单风暴。
+> 若日志频繁出现 `not enough balance / allowance`，应优先下调 `PM_MAX_SIDE_SHARES` / `PM_BID_SIZE`；若已启用动态 gross（`PM_MAX_POS_PCT>0`），再下调 `PM_MAX_POS_PCT`。
 > 回收器采用“低水位触发 + 高水位回补 + 冷却 + 单轮上限”，默认是低频批量回收，不是每次拒单都小额 merge。
 
 ### 4.4 Claim 参数
@@ -181,6 +186,8 @@ PM_BID_SIZE=5.0               # 每侧 $5 挂单
 PM_MIN_ORDER_SIZE=5.0         # 最小订单数量（不配置则自动从 order_book 探测）
 PM_MIN_HEDGE_SIZE=0.0         # 对冲触发最小阈值（0=禁用）
 PM_HEDGE_ROUND_UP=false       # 对冲不足最小订单时是否向上取整
+PM_MIN_MARKETABLE_AUTO_DETECT=true   # 自动学习 marketable-BUY min size
+PM_MIN_MARKETABLE_COOLDOWN_MS=10000  # 最小金额拒单冷却
 PM_TICK_SIZE=0.01
 PM_REPRICE_THRESHOLD=0.010    # 1分钱漂移才换单，防撤单风暴
 PM_DEBOUNCE_MS=500            # 半秒防抖
@@ -191,7 +198,9 @@ PM_MAX_PORTFOLIO_COST=1.02    # 组合成本上限
 PM_MAX_LOSS_PCT=0.02          # 最大可接受亏损比例（2%）
 PM_MAX_SIDE_SHARES=50.0       # 单侧最多 50 股（总仓位上限）
 PM_RECONCILE_INTERVAL_SECS=30 # 订单对账周期（秒）
-PM_MAX_POS_PCT=0.70           # 总仓位占比上限（建议 0.6~0.9）
+PM_MAX_POS_PCT=0.0            # 静态优先：关闭动态 gross 上限
+# PM_BID_PCT=0.02             # 显式配置才启用动态 BID_SIZE 覆盖
+# PM_NET_DIFF_PCT=0.10        # 显式配置才启用动态 MAX_NET_DIFF 覆盖
 
 # OFI
 PM_OFI_WINDOW_MS=3000
@@ -218,8 +227,8 @@ PM_ENTRY_GRACE_SECONDS=30
 | 状态 | 条件 | 行为 |
 |------|------|------|
 | **Balanced** | `net_diff ≈ 0` + Health OK + `can_buy_*` | Place YES+NO bids with A-S Skew |
-| **Hedge / Rescue** | `net_diff ≠ 0` + hedge side healthy + `can_buy_*` | Place dynamic hedge order (`size = net_diff.abs()`) |
-| **Kill (Toxicity)** | Side X is toxic | Provide prices set to 0.0; hedges only if healthy + `can_buy_*` |
+| **Hedge / Rescue** | `net_diff ≠ 0` + hedge side healthy + `can_hedge_buy_*` | Place dynamic hedge order (`size = net_diff.abs()`) |
+| **Kill (Toxicity)** | Side X is toxic | Provide prices set to 0.0; hedges only if healthy + net gate |
 | **Stale Protection** | Data older than TTL | Set price to 0.0 for that side; 30s expiry clears both |
 | **Empty Book** | No usable book data | No new orders; if unhealthy then clear targets |
 

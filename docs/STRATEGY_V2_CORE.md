@@ -11,7 +11,7 @@ In Polymarket binary option markets, **1 Share = $1 Max Potential Risk**.
 - **PM_BID_SIZE** (Shares): Maximum risk per provide order.
 - **PM_MAX_NET_DIFF** (Shares): Maximum directional net risk (|YES_qty - NO_qty|).
 - **PM_MAX_SIDE_SHARES** (Shares): Max per-side gross exposure (independent cap).
-- **Dynamic Sizing**: Balance × PCT computes live risk caps (`PM_BID_PCT`, `PM_NET_DIFF_PCT`) and runtime parameters are clamped under those caps.
+- **Dynamic Sizing (Explicit Opt-In)**: Runtime balance-based clamps apply only when `PM_BID_PCT` / `PM_NET_DIFF_PCT` are explicitly configured; otherwise static values are kept.
 
 ### Channel Architecture
 
@@ -72,6 +72,10 @@ side_ok = (inv.yes/no_qty + size)       <= max_side_shares  // gross exposure
 allow   = net_ok && side_ok
 ```
 
+Provide and hedge now use split gating:
+- Provide uses `can_buy_*` (`net + side`) for gross risk control.
+- Hedge uses `can_hedge_buy_*` (`net-only`) to prioritize directional de-risking even when dynamic side caps shrink.
+
 ---
 
 ## 3. Risk Hardening & Protection
@@ -97,7 +101,11 @@ Some venue-side validations can reject very small **marketable BUY** orders (< `
   - `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` (default `0`, disabled)
   - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA`
   - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT`
-- Behavior: when enabled, hedge size can be bumped just enough to pass the notional floor, but only within strict extra-size caps and still under `can_buy_*` inventory gates.
+- Global anti-storm guard:
+  - `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` (default `0`, disabled)
+  - `PM_MIN_MARKETABLE_AUTO_DETECT` (default `true`, learns `min size:$X` from rejects)
+  - `PM_MIN_MARKETABLE_COOLDOWN_MS` (default `10000`)
+- Behavior: when enabled, hedge size can be bumped just enough to pass the notional floor, but only within strict extra-size caps and still under hedge net gates.
 
 ### Balance-Stress Recycle (Batch Merge)
 When placement rejects indicate collateral stress, the bot uses **batch recycle** instead of frequent tiny merges:
@@ -119,16 +127,19 @@ Notes:
 
 | Parameter | Unit | Purpose | Key Interaction |
 | :--- | :--- | :--- | :--- |
-| `PM_BID_SIZE` | Shares | Provide order size | Dynamic: `balance × PM_BID_PCT` |
+| `PM_BID_SIZE` | Shares | Provide order size | Dynamically reduced only when `PM_BID_PCT` is explicitly set |
 | `PM_MIN_ORDER_SIZE` | Shares | Minimum order size | Auto-detected from order_book if unset; orders below are skipped |
 | `PM_MIN_HEDGE_SIZE` | Shares | Hedge trigger threshold | Hedges below are skipped |
 | `PM_HEDGE_ROUND_UP` | bool | Hedge rounding | Round up small hedges to min size |
 | `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` | USDC | Optional marketable-BUY floor for hedges | `0` disables; avoids tiny-notional reject bursts |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | Shares | Absolute extra-size cap for hedge bump | Limits risk increase when floor is enabled |
 | `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | Decimal | Relative extra-size cap for hedge bump | `extra <= size * pct` must hold |
-| `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamic: `balance × PM_NET_DIFF_PCT` |
+| `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | USDC | Global marketable-BUY precheck floor | `0` disables |
+| `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | Auto-learn floor from exchange rejects | Recommended `true` |
+| `PM_MIN_MARKETABLE_COOLDOWN_MS` | ms | Cooldown after min-notional reject | Suppresses reject storms |
+| `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamically reduced only when `PM_NET_DIFF_PCT` is explicitly set |
 | `PM_MAX_SIDE_SHARES` | Shares | Max per-side gross exposure | Default = max_net_diff if unset |
-| `PM_MAX_POS_PCT` | Decimal | Target gross utilization | Dynamic: `balance × pct / pair_target` |
+| `PM_MAX_POS_PCT` | Decimal | Target gross utilization | `0` disables dynamic gross; `>0` enables `balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | Cost | Target Y+N pair cost | Profit margin = `1.00 - pair_target` |
 | `PM_AS_SKEW_FACTOR` | Factor | A-S skew aggressiveness | 0.00 = pure grid; 0.03 = standard A-S |
 | `PM_OFI_ADAPTIVE` | bool | Enable adaptive OFI threshold | Off = static threshold |

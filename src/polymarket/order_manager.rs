@@ -7,6 +7,7 @@ use super::types::Side;
 
 const PENDING_SUBMIT_TIMEOUT: Duration = Duration::from_secs(8);
 const PENDING_CANCEL_TIMEOUT: Duration = Duration::from_secs(8);
+const PENDING_TIMEOUT_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderState {
@@ -230,6 +231,12 @@ impl OrderManager {
                 side,
                 PENDING_SUBMIT_TIMEOUT.as_secs()
             );
+            let _ = self
+                .exec_tx
+                .send(ExecutionCmd::ReconcileNow {
+                    reason: "pending_submit_timeout",
+                })
+                .await;
             if tracker.desired.is_none() {
                 let _ = self
                     .exec_tx
@@ -243,6 +250,7 @@ impl OrderManager {
             } else {
                 tracker.state = OrderState::Idle;
             }
+            tracker.cooldown_until = Some(Instant::now() + PENDING_TIMEOUT_COOLDOWN);
         }
 
         let cancel_timed_out = matches!(tracker.state, OrderState::PendingCancel(_))
@@ -253,7 +261,14 @@ impl OrderManager {
                 side,
                 PENDING_CANCEL_TIMEOUT.as_secs()
             );
+            let _ = self
+                .exec_tx
+                .send(ExecutionCmd::ReconcileNow {
+                    reason: "pending_cancel_timeout",
+                })
+                .await;
             tracker.state = OrderState::Idle;
+            tracker.cooldown_until = Some(Instant::now() + PENDING_TIMEOUT_COOLDOWN);
         }
 
         let current_state = tracker.state.clone();

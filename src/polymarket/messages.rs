@@ -168,6 +168,8 @@ pub enum ExecutionCmd {
     CancelSide { side: Side, reason: CancelReason },
     /// Cancel all outstanding orders (full circuit breaker).
     CancelAll { reason: CancelReason },
+    /// Force an immediate REST reconciliation cycle (used by OMS timeout recovery).
+    ReconcileNow { reason: &'static str },
 }
 
 /// Why a bid is being placed.
