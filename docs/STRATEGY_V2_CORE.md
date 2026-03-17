@@ -89,9 +89,27 @@ Provide and hedge now use split gating:
 ### Toxic Flow Protection (Lead-Lag Kill Switch)
 OFI engine monitors a 3s sliding window. On toxicity:
 - **P2 pre-emptive cancel**: Fires immediately via `biased select!` even on empty book.
+- Toxic guard primarily blocks **Provide** flow on that side; existing/new **Hedge** flow is still allowed so directional risk can keep shrinking.
 - Kill signal bypasses md_rx latency via dedicated `mpsc(4)` channel.
 - Toxic exit threshold is **frozen at entry threshold** (`entry_threshold * PM_OFI_EXIT_RATIO`) to avoid premature recovery when adaptive threshold rises.
 - `PM_OFI_ADAPTIVE_RISE_CAP_PCT` limits per-heartbeat adaptive threshold growth to prevent moving-target drift.
+
+### Endgame Staged Risk Control
+To avoid close-to-expiry churn and accidental late risk expansion, coordinator applies staged gating near market end:
+- **SoftClose** (default 5m: `35s`): block provide that increases current net-direction exposure.
+- **HardClose** (default 5m: `12s`): stop all provide; hedge-only.
+- **Freeze** (default 5m: `2s`): stop new placements and clear targets; only cancel/report handling remains.
+
+Default windows are interval-aware:
+- `5m: 35/12/2`
+- `15m: 90/30/3`
+- `1h: 180/60/5`
+- `>=4h: 600/180/8`
+
+Environment overrides:
+- `PM_ENDGAME_SOFT_CLOSE_SECS`
+- `PM_ENDGAME_HARD_CLOSE_SECS`
+- `PM_ENDGAME_FREEZE_SECS`
 
 ### Stale Book Protection
 - **PM_STALE_TTL_MS** (default 3000ms): Per-side TTL. Exceeded → cancel that side.
@@ -180,6 +198,9 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 | `PM_MAX_LOSS_PCT` | Decimal | Max acceptable loss in rescue | Clamps max_portfolio_cost at startup |
 | `PM_STALE_TTL_MS` | ms | Per-side freshness TTL | Side shutdown if exceeded |
 | `PM_COORD_WATCHDOG_MS` | ms | Coordinator watchdog tick | Enforces stale/toxic checks without new md events |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | sec | SoftClose window before market end | Blocks provide that increases current net-direction exposure |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | sec | HardClose window before market end | Stops provide, hedge-only |
+| `PM_ENDGAME_FREEZE_SECS` | sec | Freeze window before market end | Stops new orders and clears targets |
 | `PM_DEBOUNCE_MS` | ms | Provide order anti-thrash | Prevents rapid re-quoting |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | Hedge order anti-thrash | Lower (100ms) for urgency |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | REST order reconciliation | Detects WS blind spots |

@@ -563,12 +563,28 @@ impl Executor {
 
         // Safety: do not place a new bid on a side while we still track
         // uncanceled live orders on that side.
-        if let Some(existing_count) = self
+        //
+        // Exception for hedge orders:
+        // If hedge arrives while provide is still live, preempt by canceling side first.
+        // This keeps directional de-risking on the critical path.
+        let mut existing_count = self
             .open_orders
             .get(&side)
             .map(|existing| existing.len())
-            .filter(|count| *count > 0)
-        {
+            .unwrap_or(0);
+        if existing_count > 0 && matches!(reason, BidReason::Hedge) {
+            info!(
+                "⚡ Hedge preemption on {:?}: canceling {} tracked order(s) before hedge place",
+                side, existing_count
+            );
+            self.handle_cancel_side(side, CancelReason::Reprice).await;
+            existing_count = self
+                .open_orders
+                .get(&side)
+                .map(|existing| existing.len())
+                .unwrap_or(0);
+        }
+        if existing_count > 0 {
             warn!(
                 "🚫 Refusing PlacePostOnlyBid {:?}@{:.3}: {} tracked order(s) still open on side",
                 side, price, existing_count,

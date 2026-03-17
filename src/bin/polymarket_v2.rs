@@ -984,6 +984,10 @@ fn log_config_self_check(
         coord.watchdog_tick_ms,
         coord.toxic_recovery_hold_ms
     );
+    info!(
+        "   endgame windows: soft={}s hard={}s freeze={}s",
+        coord.endgame_soft_close_secs, coord.endgame_hard_close_secs, coord.endgame_freeze_secs
+    );
     info!("   reconcile_interval={}s", reconcile_interval_secs);
     let adaptive_max_text = if ofi.adaptive_max > 0.0 {
         format!("{:.1}", ofi.adaptive_max)
@@ -1141,6 +1145,44 @@ fn detect_interval(prefix: &str) -> u64 {
     } else {
         900 // default 15min
     }
+}
+
+fn default_endgame_windows_secs(interval_secs: u64) -> (u64, u64, u64) {
+    if interval_secs <= 300 {
+        // 5m: soften at 35s, hard close at 12s, final freeze at 2s.
+        (35, 12, 2)
+    } else if interval_secs <= 900 {
+        // 15m: allow longer inventory convergence window.
+        (90, 30, 3)
+    } else if interval_secs <= 3600 {
+        (180, 60, 5)
+    } else {
+        (600, 180, 8)
+    }
+}
+
+fn apply_endgame_windows_for_interval(cfg: &mut CoordinatorConfig, interval_secs: u64) {
+    let soft_env = env::var("PM_ENDGAME_SOFT_CLOSE_SECS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .and_then(|v| v.parse::<u64>().ok());
+    let hard_env = env::var("PM_ENDGAME_HARD_CLOSE_SECS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .and_then(|v| v.parse::<u64>().ok());
+    let freeze_env = env::var("PM_ENDGAME_FREEZE_SECS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .and_then(|v| v.parse::<u64>().ok());
+
+    let (soft_default, hard_default, freeze_default) = default_endgame_windows_secs(interval_secs);
+    cfg.endgame_soft_close_secs = soft_env.unwrap_or(soft_default);
+    cfg.endgame_hard_close_secs = hard_env.unwrap_or(hard_default);
+    cfg.endgame_freeze_secs = freeze_env.unwrap_or(freeze_default);
+
+    // Keep windows ordered.
+    cfg.endgame_hard_close_secs = cfg.endgame_hard_close_secs.min(cfg.endgame_soft_close_secs);
+    cfg.endgame_freeze_secs = cfg.endgame_freeze_secs.min(cfg.endgame_hard_close_secs);
 }
 
 fn should_skip_entry_window(now_unix: u64, end_ts: u64, interval: u64, grace: u64) -> bool {
@@ -2547,6 +2589,8 @@ async fn main() -> anyhow::Result<()> {
         let mut coord_cfg = coord_cfg_base.clone();
         // Opt-1: Pass market expiry timestamp so coordinator can apply A-S time decay.
         coord_cfg.market_end_ts = Some(effective_end_ts);
+        let market_interval_secs = detect_interval(&slug);
+        apply_endgame_windows_for_interval(&mut coord_cfg, market_interval_secs);
         let mut inv_cfg = inv_cfg_base.clone();
         let configured_max_side_cap = coord_cfg.max_side_shares;
         let max_pos_pct: f64 = std::env::var("PM_MAX_POS_PCT")

@@ -81,6 +81,15 @@ pub struct CoordinatorConfig {
     pub watchdog_tick_ms: u64,
     /// Hold-down window after toxicity recovers to prevent rapid cancel/place oscillation.
     pub toxic_recovery_hold_ms: u64,
+    /// Soft-close window (seconds before market end).
+    /// In this phase, provide orders that increase current directional exposure are disabled.
+    pub endgame_soft_close_secs: u64,
+    /// Hard-close window (seconds before market end).
+    /// In this phase, all provide orders are disabled and only hedge orders are allowed.
+    pub endgame_hard_close_secs: u64,
+    /// Freeze window (seconds before market end).
+    /// In this phase, no new orders are placed; coordinator only clears targets.
+    pub endgame_freeze_secs: u64,
 }
 
 impl Default for CoordinatorConfig {
@@ -112,6 +121,9 @@ impl Default for CoordinatorConfig {
             stale_ttl_ms: 3000,
             watchdog_tick_ms: 500,
             toxic_recovery_hold_ms: 1200,
+            endgame_soft_close_secs: 35,
+            endgame_hard_close_secs: 12,
+            endgame_freeze_secs: 2,
         }
     }
 }
@@ -294,6 +306,36 @@ impl CoordinatorConfig {
                 c.toxic_recovery_hold_ms = ms;
             }
         }
+        if let Ok(v) = std::env::var("PM_ENDGAME_SOFT_CLOSE_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                c.endgame_soft_close_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_ENDGAME_HARD_CLOSE_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                c.endgame_hard_close_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_ENDGAME_FREEZE_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                c.endgame_freeze_secs = secs;
+            }
+        }
+        // Keep windows ordered: soft >= hard >= freeze.
+        if c.endgame_hard_close_secs > c.endgame_soft_close_secs {
+            warn!(
+                "⚠️ Clamping PM_ENDGAME_HARD_CLOSE_SECS from {} to {} (must be <= soft-close)",
+                c.endgame_hard_close_secs, c.endgame_soft_close_secs
+            );
+            c.endgame_hard_close_secs = c.endgame_soft_close_secs;
+        }
+        if c.endgame_freeze_secs > c.endgame_hard_close_secs {
+            warn!(
+                "⚠️ Clamping PM_ENDGAME_FREEZE_SECS from {} to {} (must be <= hard-close)",
+                c.endgame_freeze_secs, c.endgame_hard_close_secs
+            );
+            c.endgame_freeze_secs = c.endgame_hard_close_secs;
+        }
         c
     }
 }
@@ -320,6 +362,14 @@ impl Default for Book {
             no_ask: 0.0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum EndgamePhase {
+    Normal,
+    SoftClose,
+    HardClose,
+    Freeze,
 }
 
 #[derive(Debug, Default)]
@@ -365,6 +415,7 @@ pub struct StrategyCoordinator {
     /// Last observed toxicity state (edge detection).
     was_toxic_yes: bool,
     was_toxic_no: bool,
+    last_endgame_phase: EndgamePhase,
     stats: Stats,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
@@ -418,6 +469,7 @@ impl StrategyCoordinator {
             no_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
             was_toxic_yes: false,
             was_toxic_no: false,
+            last_endgame_phase: EndgamePhase::Normal,
             stats: Stats::default(),
             ofi_rx,
             inv_rx,
@@ -438,9 +490,11 @@ impl StrategyCoordinator {
 
     pub async fn run(mut self) {
         info!(
-            "🎯 Coordinator [OCCAM+LEADLAG] pair={:.2} bid={:.1} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms dry={}",
+            "🎯 Coordinator [OCCAM+LEADLAG] pair={:.2} bid={:.1} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms endgame(soft/hard/freeze)={}/{}/{}s dry={}",
             self.cfg.pair_target, self.cfg.bid_size, self.cfg.tick_size,
-            self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms, self.cfg.dry_run,
+            self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms,
+            self.cfg.endgame_soft_close_secs, self.cfg.endgame_hard_close_secs, self.cfg.endgame_freeze_secs,
+            self.cfg.dry_run,
         );
         let mut watchdog = tokio::time::interval(Duration::from_millis(self.cfg.watchdog_tick_ms));
 
@@ -603,8 +657,12 @@ impl StrategyCoordinator {
         if yes_toxic_blocked || yes_stale {
             if self.yes_target.is_some() {
                 if yes_toxic_blocked {
-                    self.stats.cancel_toxic += 1;
-                    self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
+                    // OFI toxicity guards provide flow. Hedge flow is allowed to continue
+                    // because it reduces directional exposure.
+                    if self.should_clear_on_toxic(Side::Yes) {
+                        self.stats.cancel_toxic += 1;
+                        self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
+                    }
                 } else {
                     self.stats.cancel_stale += 1;
                     self.clear_target(Side::Yes, CancelReason::StaleData).await;
@@ -614,8 +672,12 @@ impl StrategyCoordinator {
         if no_toxic_blocked || no_stale {
             if self.no_target.is_some() {
                 if no_toxic_blocked {
-                    self.stats.cancel_toxic += 1;
-                    self.clear_target(Side::No, CancelReason::ToxicFlow).await;
+                    // OFI toxicity guards provide flow. Hedge flow is allowed to continue
+                    // because it reduces directional exposure.
+                    if self.should_clear_on_toxic(Side::No) {
+                        self.stats.cancel_toxic += 1;
+                        self.clear_target(Side::No, CancelReason::ToxicFlow).await;
+                    }
                 } else {
                     self.stats.cancel_stale += 1;
                     self.clear_target(Side::No, CancelReason::StaleData).await;
@@ -725,6 +787,39 @@ impl StrategyCoordinator {
         let mut block_yes_provide = false;
         let mut block_no_provide = false;
 
+        let endgame_phase = self.endgame_phase();
+        if endgame_phase != self.last_endgame_phase {
+            let remaining = self.seconds_to_market_end().unwrap_or_default();
+            info!(
+                "⏱️ Endgame phase: {:?} -> {:?} (t-{}s)",
+                self.last_endgame_phase, endgame_phase, remaining
+            );
+            self.last_endgame_phase = endgame_phase;
+        }
+        if endgame_phase == EndgamePhase::Freeze {
+            if self.yes_target.is_some() {
+                self.clear_target(Side::Yes, CancelReason::InventoryLimit)
+                    .await;
+            }
+            if self.no_target.is_some() {
+                self.clear_target(Side::No, CancelReason::InventoryLimit)
+                    .await;
+            }
+            return;
+        }
+        if endgame_phase >= EndgamePhase::HardClose {
+            allow_yes_provide = false;
+            allow_no_provide = false;
+        } else if endgame_phase >= EndgamePhase::SoftClose {
+            if net_diff > f64::EPSILON {
+                // Long YES already: do not continue adding YES in soft close.
+                allow_yes_provide = false;
+            } else if net_diff < -f64::EPSILON {
+                // Long NO already: do not continue adding NO in soft close.
+                allow_no_provide = false;
+            }
+        }
+
         if net_diff > f64::EPSILON {
             // We have YES, want to hedge by buying NO.
             let hedge_target = self.hedge_target(net_diff);
@@ -738,7 +833,7 @@ impl StrategyCoordinator {
                     block_no_provide = true;
                 }
 
-                if agg_no > 0.0 && allow_no_hedge && !no_stale && !no_toxic_blocked {
+                if agg_no > 0.0 && allow_no_hedge && !no_stale {
                     let mut hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
                     hedge_no = self.safe_price(hedge_no);
 
@@ -820,7 +915,7 @@ impl StrategyCoordinator {
                     block_yes_provide = true;
                 }
 
-                if agg_yes > 0.0 && allow_yes_hedge && !yes_stale && !yes_toxic_blocked {
+                if agg_yes > 0.0 && allow_yes_hedge && !yes_stale {
                     let mut hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
                     hedge_yes = self.safe_price(hedge_yes);
 
@@ -918,7 +1013,9 @@ impl StrategyCoordinator {
                 )
                 .await;
             } else if yes_toxic_blocked {
-                self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
+                if self.should_clear_on_toxic(Side::Yes) {
+                    self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
+                }
             } else if yes_stale {
                 self.clear_target(Side::Yes, CancelReason::StaleData).await;
             }
@@ -941,7 +1038,9 @@ impl StrategyCoordinator {
                 )
                 .await;
             } else if no_toxic_blocked {
-                self.clear_target(Side::No, CancelReason::ToxicFlow).await;
+                if self.should_clear_on_toxic(Side::No) {
+                    self.clear_target(Side::No, CancelReason::ToxicFlow).await;
+                }
             } else if no_stale {
                 self.clear_target(Side::No, CancelReason::StaleData).await;
             }
@@ -1142,6 +1241,42 @@ impl StrategyCoordinator {
             }
             self.max_side_shares_live = next;
         }
+    }
+
+    fn seconds_to_market_end(&self) -> Option<u64> {
+        let end_ts = self.cfg.market_end_ts?;
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        Some(end_ts.saturating_sub(now_secs))
+    }
+
+    fn endgame_phase(&self) -> EndgamePhase {
+        let Some(remaining) = self.seconds_to_market_end() else {
+            return EndgamePhase::Normal;
+        };
+
+        if remaining <= self.cfg.endgame_freeze_secs {
+            EndgamePhase::Freeze
+        } else if remaining <= self.cfg.endgame_hard_close_secs {
+            EndgamePhase::HardClose
+        } else if remaining <= self.cfg.endgame_soft_close_secs {
+            EndgamePhase::SoftClose
+        } else {
+            EndgamePhase::Normal
+        }
+    }
+
+    fn side_target_reason(&self, side: Side) -> Option<BidReason> {
+        match side {
+            Side::Yes => self.yes_target.as_ref().map(|t| t.reason),
+            Side::No => self.no_target.as_ref().map(|t| t.reason),
+        }
+    }
+
+    fn should_clear_on_toxic(&self, side: Side) -> bool {
+        matches!(self.side_target_reason(side), Some(BidReason::Provide))
     }
 
     fn can_buy_yes(&self, inv: &InventoryState, size: f64) -> bool {
@@ -1655,6 +1790,148 @@ mod tests {
             }
             _ => panic!("expected YES clear even when book is empty"),
         }
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_toxic_does_not_clear_existing_hedge_target() {
+        let (o, _i, m, _k, mut e, mut coord) = make(cfg());
+        coord.yes_target = Some(DesiredTarget {
+            side: Side::Yes,
+            price: 0.45,
+            size: 2.0,
+            reason: BidReason::Hedge,
+        });
+
+        // YES is toxic, but existing hedge target on YES should not be force-canceled.
+        let _ = o.send(OfiSnapshot {
+            yes: SideOfi {
+                ofi_score: 120.0,
+                buy_volume: 120.0,
+                sell_volume: 0.0,
+                is_toxic: true,
+            },
+            no: SideOfi::default(),
+            ts: Instant::now(),
+        });
+
+        let h = tokio::spawn(coord.run());
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
+
+        let mut saw_bad_clear = false;
+        while let Ok(Some(cmd)) = timeout(Duration::from_millis(40), e.recv()).await {
+            if let OrderManagerCmd::ClearTarget { side, reason } = cmd {
+                if side == Side::Yes && reason == CancelReason::ToxicFlow {
+                    saw_bad_clear = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            !saw_bad_clear,
+            "Hedge target on toxic side should not be canceled by toxic guard"
+        );
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_endgame_freeze_clears_both_sides() {
+        let mut c = cfg();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        c.market_end_ts = Some(now_secs + 5);
+        c.endgame_soft_close_secs = 60;
+        c.endgame_hard_close_secs = 20;
+        c.endgame_freeze_secs = 10;
+
+        let (_o, _i, m, _k, mut e, mut coord) = make(c);
+        coord.yes_target = Some(DesiredTarget {
+            side: Side::Yes,
+            price: 0.45,
+            size: 2.0,
+            reason: BidReason::Provide,
+        });
+        coord.no_target = Some(DesiredTarget {
+            side: Side::No,
+            price: 0.50,
+            size: 2.0,
+            reason: BidReason::Provide,
+        });
+
+        let h = tokio::spawn(coord.run());
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
+
+        let mut yes_cleared = false;
+        let mut no_cleared = false;
+        while let Ok(Some(cmd)) = timeout(Duration::from_millis(120), e.recv()).await {
+            if let OrderManagerCmd::ClearTarget { side, .. } = cmd {
+                if side == Side::Yes {
+                    yes_cleared = true;
+                } else if side == Side::No {
+                    no_cleared = true;
+                }
+                if yes_cleared && no_cleared {
+                    break;
+                }
+            }
+        }
+        assert!(yes_cleared, "Freeze phase should clear YES target");
+        assert!(no_cleared, "Freeze phase should clear NO target");
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_endgame_soft_close_blocks_risk_side_provide() {
+        let mut c = cfg();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        c.market_end_ts = Some(now_secs + 40);
+        c.endgame_soft_close_secs = 60;
+        c.endgame_hard_close_secs = 20;
+        c.endgame_freeze_secs = 5;
+        // Make small net_diff hedge ineligible, so we test provide gating only.
+        c.min_order_size = 10.0;
+
+        let (_o, i, m, _k, mut e, coord) = make(c);
+        let _ = i.send(InventoryState {
+            net_diff: 2.0,
+            yes_qty: 2.0,
+            ..Default::default()
+        });
+
+        let h = tokio::spawn(coord.run());
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
+
+        let mut saw_yes_provide = false;
+        let mut saw_no_provide = false;
+        while let Ok(Some(cmd)) = timeout(Duration::from_millis(120), e.recv()).await {
+            if let OrderManagerCmd::SetTarget(target) = cmd {
+                if target.reason == BidReason::Provide && target.side == Side::Yes {
+                    saw_yes_provide = true;
+                }
+                if target.reason == BidReason::Provide && target.side == Side::No {
+                    saw_no_provide = true;
+                }
+            }
+        }
+        assert!(
+            !saw_yes_provide,
+            "SoftClose should block provide on current risk side (YES when net_diff>0)"
+        );
+        assert!(
+            saw_no_provide,
+            "SoftClose should keep opposite-side provide available"
+        );
 
         drop(m);
         let _ = h.await;

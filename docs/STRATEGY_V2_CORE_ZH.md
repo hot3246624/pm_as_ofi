@@ -111,12 +111,30 @@ allow_hedge_no  = inv.net_diff - size >= -max_net_diff
 
 ### 有毒流保护（按侧熔断 + 去抖）
 OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时：
-- 只暂停该侧报价/对冲，另一侧可继续工作（不再全局双侧一刀切）。
+- 该侧 **Provide** 暂停；若该侧当前是 **Hedge** 目标，则允许继续（以去方向风险优先）。
+- 另一侧可继续工作（不再全局双侧一刀切）。
 - Kill 信号通过 `mpsc(4)` 直通 Coordinator，`biased select!` 绝对优先。
 - OFI 采用进入/退出滞回（`PM_OFI_EXIT_RATIO`）+ 最小 toxic 持续时间（`PM_OFI_MIN_TOXIC_MS`）。
 - toxic 退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值上抬导致误恢复。
 - `PM_OFI_ADAPTIVE_RISE_CAP_PCT` 限制每个心跳周期的阈值上升幅度，抑制 moving-target 漂移。
 - Coordinator 侧增加恢复冷却（`PM_TOXIC_RECOVERY_HOLD_MS`），避免阈值边缘的撤挂振荡。
+
+### 收盘分段风控（Endgame）
+为避免临收盘“补仓-反向-再补仓”振荡，Coordinator 在市场尾段采用三段门控：
+- **SoftClose**（默认 5m 市场 `35s`）：仅禁止“继续增加当前净敞口方向”的 provide。
+- **HardClose**（默认 5m 市场 `12s`）：停止全部 provide，仅允许 hedge 去净仓。
+- **Freeze**（默认 5m 市场 `2s`）：停止发新单并清空目标，仅保留撤单/回报处理。
+
+默认值按周期自动选择：
+- `5m: 35/12/2`
+- `15m: 90/30/3`
+- `1h: 180/60/5`
+- `>=4h: 600/180/8`
+
+可通过环境变量覆盖：
+- `PM_ENDGAME_SOFT_CLOSE_SECS`
+- `PM_ENDGAME_HARD_CLOSE_SECS`
+- `PM_ENDGAME_FREEZE_SECS`
 
 ### 盘口失效保护
 - **3s TTL（PM_STALE_TTL_MS）**：数据超过此阈值，该侧报价归零撤单。
@@ -209,6 +227,9 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_MAX_LOSS_PCT` | 小数 | 救火模式最大亏损比例 | 钳制 max_portfolio_cost ≤ 1+pct |
 | `PM_STALE_TTL_MS` | ms | 数据新鲜度熔断阈值 | 单侧超时即撤单该侧 |
 | `PM_COORD_WATCHDOG_MS` | ms | Coordinator 看门狗心跳 | 无新行情事件时仍执行 stale/toxic 检查 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | sec | 收盘 SoftClose 窗口 | 禁止增加当前净敞口方向的 provide |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | sec | 收盘 HardClose 窗口 | 停止 provide，仅允许 hedge |
+| `PM_ENDGAME_FREEZE_SECS` | sec | 收盘 Freeze 窗口 | 停止发新单并清空目标 |
 | `PM_DEBOUNCE_MS` | ms | 提供单防抖间隔 | 避免高频重复报价 |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | 对冲单防抖间隔 | 对冲更紧急，默认 100ms |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | 订单对账周期 | REST 定期对账修复 WS 盲区 |

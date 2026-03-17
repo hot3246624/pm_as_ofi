@@ -72,6 +72,15 @@
 | `PM_AS_SKEW_FACTOR` | `0.03` | factor | 库存偏斜系数 |
 | `PM_AS_TIME_DECAY_K` | `2.0` | factor | 临期 skew 放大系数 |
 | `PM_STALE_TTL_MS` | `3000` | ms | 单侧 stale 熔断阈值 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | auto | sec | 收盘 SoftClose 窗口；禁止增加当前净敞口方向的 provide |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | auto | sec | 收盘 HardClose 窗口；停止 provide，仅允许 hedge |
+| `PM_ENDGAME_FREEZE_SECS` | auto | sec | 收盘 Freeze 窗口；停止发新单并清空目标 |
+
+默认按市场周期自动选择：
+- `5m: 35/12/2`
+- `15m: 90/30/3`
+- `1h: 180/60/5`
+- `>=4h: 600/180/8`
 
 ## 6. 风险约束
 
