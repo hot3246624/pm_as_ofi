@@ -19,10 +19,11 @@
 
 ## 2. 减压机制（代码已实现）
 
-- 同侧防抖：`PM_DEBOUNCE_MS`（默认 200ms）
-- 重报价阈值：`PM_REPRICE_THRESHOLD`（默认 0.005）
+- 同侧防抖：`PM_DEBOUNCE_MS`（当前模板默认 500ms）
+- 重报价阈值：`PM_REPRICE_THRESHOLD`（当前模板默认 0.010）
 - OFI 毒性熔断：毒性时先撤再等待，不盲目追单
 - 市场轮转：先 `CancelAll`，再清理 session
+- marketable-min 拒单分类 + 侧边冷却（防毫秒级重试风暴）
 
 ## 3. 实战建议阈值（内部运营）
 
@@ -34,9 +35,10 @@
 
 若触发，优先动作：
 
-1. 提高 `PM_DEBOUNCE_MS`（如 200 → 350）
-2. 提高 `PM_REPRICE_THRESHOLD`（如 0.005 → 0.008）
+1. 提高 `PM_DEBOUNCE_MS`（如 500 → 800）
+2. 提高 `PM_REPRICE_THRESHOLD`（如 0.010 → 0.015）
 3. 降低 `PM_BID_SIZE`
+4. 若极端低价区连续出现 `min size:$1` 拒单，优先确认冷却是否生效；仅在必要时显式启用 `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` 或 `PM_MIN_MARKETABLE_AUTO_DETECT`
 
 ## 4. 观测方式
 

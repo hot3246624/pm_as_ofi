@@ -56,20 +56,26 @@ With existing imbalance, prioritizes filling the missing pair side.
 - **Step function**:
   - `|net_diff| < max_net_diff` → `hedge_target = pair_target`
   - `|net_diff| >= max_net_diff` → `hedge_target = max_portfolio_cost`
-- **Gate**: Same `can_buy_*` rules. No privileged path.
+- **Gate**: Hedge path uses `can_hedge_buy_*` (net-only) to prioritize directional de-risking; provide path remains `can_buy_*` (net+side).
 
 ### C. Emergency Rescue (Risk Minimization)
 Triggered only when `|net_diff| >= max_net_diff`.
 - Accept breakeven or slight loss (≤ `PM_MAX_LOSS_PCT` = 2%) to close directional risk.
 - Hard cap: `max_portfolio_cost <= 1 + PM_MAX_LOSS_PCT` enforced at startup.
 
-### D. Inventory Gate (System-Wide, Dual-Lock)
+### D. Inventory Gate (System-Wide, Layered)
 
 ```rust
-// Both conditions must pass for any order (Provide or Hedge)
+// Provide path: net + side dual gate
 net_ok  = (inv.net_diff +/- size).abs() <= max_net_diff    // directional risk
 side_ok = (inv.yes/no_qty + size)       <= max_side_shares  // gross exposure
 allow   = net_ok && side_ok
+```
+
+```rust
+// Hedge path: net-only gate (de-risk priority)
+allow_hedge_yes = inv.net_diff + size <=  max_net_diff
+allow_hedge_no  = inv.net_diff - size >= -max_net_diff
 ```
 
 Provide and hedge now use split gating:
@@ -95,8 +101,14 @@ OFI engine monitors a 3s sliding window. On toxicity:
 ### Maker-Only Enforcement
 All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused if book is empty or crossed.
 
-### Marketable-BUY Minimum Notional (Optional)
+### Marketable-BUY Minimum Notional & Reject-Storm Control
 Some venue-side validations can reject very small **marketable BUY** orders (< `$1` notional), while passive maker fills at low prices can still happen. These two facts are not contradictory.
+
+Static-first defaults:
+- `PM_MIN_MARKETABLE_NOTIONAL_FLOOR=0`
+- `PM_MIN_MARKETABLE_AUTO_DETECT=false`
+- This means global min-notional precheck is off by default to preserve low-price opportunities.
+
 - Optional hedge-only guard:
   - `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` (default `0`, disabled)
   - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA`
@@ -105,7 +117,10 @@ Some venue-side validations can reject very small **marketable BUY** orders (< `
   - `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` (default `0`, disabled)
   - `PM_MIN_MARKETABLE_AUTO_DETECT` (default `false`, static-first; optional learning from rejects)
   - `PM_MIN_MARKETABLE_COOLDOWN_MS` (default `10000`)
-- Behavior: when enabled, hedge size can be bumped just enough to pass the notional floor, but only within strict extra-size caps and still under hedge net gates.
+- Behavior:
+  - Even with precheck disabled, executor classifies marketable-min rejects and applies side cooldown to avoid retry storms.
+  - If precheck is enabled, orders below floor are rejected locally with cooldown.
+  - Hedge bump remains minimal and bounded by absolute/relative extra-size caps plus net-only hedge gates.
 
 ### Balance-Stress Recycle (Batch Merge)
 When placement rejects indicate collateral stress, the bot uses **batch recycle** instead of frequent tiny merges:

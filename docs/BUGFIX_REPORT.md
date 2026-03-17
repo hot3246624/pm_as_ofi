@@ -331,7 +331,7 @@ fn evict_oldest_if_needed(&mut self) {
 | `executor.rs` | 可观测性改进 | Issue 6 |
 | `ofi.rs` | 性能保护 | Issue 9 |
 | `user_ws.rs` | 性能优化 | Issue 10 |
-| `docs/strategy_guide.md` | 文档更新 | 安全机制清单同步 |
+| `docs/STRATEGY_V2_CORE_ZH.md` | 文档更新 | 安全机制清单同步 |
 
 ---
 

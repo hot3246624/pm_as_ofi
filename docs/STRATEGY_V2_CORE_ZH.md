@@ -46,10 +46,12 @@ graph TD
     I --> J{库存缺口 net_diff != 0?}
     J -- 是 --> K["动态对冲单 size=|net_diff|"]
     J -- 否 --> L[标准提供单 size=bid_size]
-    K --> M{"can_buy_*(size)?"}
-    L --> M
-    M -- false --> N[price=0 撤单/阻止]
-    M -- true --> O[SetTarget → OMS]
+    K --> M{"hedge: can_hedge_* ?"}
+    L --> N{"provide: can_buy_* ?"}
+    M -- false --> O[price=0 撤单/阻止]
+    M -- true --> P[SetTarget → OMS]
+    N -- false --> O
+    N -- true --> P
 ```
 
 ---
@@ -76,25 +78,32 @@ graph TD
 - **天花板阶跃**:
   - `|net_diff| < max_net_diff` → `hedge_target = pair_target`（正常利润线）
   - `|net_diff| >= max_net_diff` → `hedge_target = max_portfolio_cost`（救火线）
-- **库存闸门**：对冲同样受 `can_buy_*` 限制，**不存在特殊特权路径**。
+- **库存闸门**：对冲走 `can_hedge_buy_*`（仅净仓门禁）优先去方向风险；Provide 仍走 `can_buy_*`（净仓+单侧）约束绝对暴露。
 
 ### C. "Emergency Rescue" 救火机制 (风险最小化)
 仅在库存超出 `max_net_diff` 时触发。
 - **目标**：即使以保本或轻微损失（≤ `PM_MAX_LOSS_PCT` = 2%）的价格，也要关闭方向性风险。
 - **硬性约束**：`max_portfolio_cost ≤ 1 + PM_MAX_LOSS_PCT`（由 `CoordinatorConfig::from_env` 执行钳制）。
 
-### D. 库存闸门 (系统级、无特权，双重联锁)
+### D. 库存闸门（系统级分层门禁）
 
 ```rust
-// 两个条件必须同时满足才允许下单
+// Provide：净仓 + 单侧双门禁
 net_ok  = inv.net_diff + size <=  max_net_diff     // 净仓限制（方向性风险）
 side_ok = inv.yes_qty  + size <=  max_side_shares  // 单侧总量限制（绝对暴露）
 allow   = net_ok && side_ok
 ```
 
-Provide 与 Hedge 现在分层门禁：
-- Provide 使用 `can_buy_*`（净仓 + 单侧）控制绝对暴露；
-- Hedge 使用 `can_hedge_buy_*`（仅净仓门禁）优先去方向风险，可在动态 `max_side_shares` 收缩时继续减仓。
+```rust
+// Hedge：仅净仓门禁（去方向风险优先）
+allow_hedge_yes = inv.net_diff + size <=  max_net_diff
+allow_hedge_no  = inv.net_diff - size >= -max_net_diff
+```
+
+设计意图：
+- Provide 使用 `can_buy_*`（净仓 + 单侧）约束绝对暴露；
+- Hedge 使用 `can_hedge_buy_*`（仅净仓门禁）优先去方向风险；
+- 因此不是“局部特权”，而是“按风险方向分层”。
 
 ---
 
@@ -117,17 +126,27 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 ### Maker-Only 防护
 机器人永远不会成为 Taker。计算价格后自动钳位在 `best_ask - tick_size` 以下，防止 Post-Only 订单被拒绝。
 
-### Marketable BUY 最小名义额（可选）
-交易所可能对极小金额的 **marketable BUY**（例如 `< $1`）做校验拒单；而低价区的被动 maker 成交依然可能发生。这两者并不矛盾。
-- 可选参数（默认关闭）：
-  - `PM_HEDGE_MIN_MARKETABLE_NOTIONAL`（默认 `0`）
-  - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA`
-  - `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT`
-- 全局防风暴参数：
+### Marketable BUY 最小名义额与防拒单风暴
+交易所可能对极小金额的 **marketable BUY**（例如 `< $1`）做校验拒单；而低价区被动 maker 成交仍可能发生，这两者并不矛盾。
+
+默认策略（静态优先）：
+- `PM_MIN_MARKETABLE_NOTIONAL_FLOOR=0`
+- `PM_MIN_MARKETABLE_AUTO_DETECT=false`
+- 即：默认不启用“全局最小名义预检”，避免误伤低价区机会。
+
+可选参数：
+- `PM_HEDGE_MIN_MARKETABLE_NOTIONAL`（默认 `0`）
+- `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA`
+- `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT`
+- 全局防风暴参数（可选启用）：
   - `PM_MIN_MARKETABLE_NOTIONAL_FLOOR`（默认 `0`，预检下限）
   - `PM_MIN_MARKETABLE_AUTO_DETECT`（默认 `false`，静态优先；可选从拒单自动学习 `min size:$X`）
   - `PM_MIN_MARKETABLE_COOLDOWN_MS`（默认 `10000`，拒单后侧边冷却）
-- 机制：仅在对冲路径按最小必要量补大下单数量；同时受“绝对/相对增量上限 + 对冲净仓闸门”双重约束，避免为通过校验而失控加仓。
+
+运行机制：
+- 即使关闭预检，执行层仍会识别 `marketable-min` 拒单并触发侧边冷却，避免毫秒级重试风暴；
+- 开启预检时，仅拦截“低于 floor 的名义金额下单”，并附带冷却；
+- 对冲侧若启用 `PM_HEDGE_MIN_MARKETABLE_NOTIONAL`，只做“最小必要增量”补量，且受绝对/相对增量上限与净仓门禁约束。
 
 ### 余额压力回收（Batch Merge）
 当执行层连续出现 `balance/allowance` 拒单时，系统启用“批处理回收”而不是每次小额 merge：

@@ -116,7 +116,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_MAX_NET_DIFF` | `10.0` | 净仓差上限（Shares）；仅在显式配置 `PM_NET_DIFF_PCT` 时才会被余额动态下调 |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 最大组合成本和（> 1.0 = 套利失败） |
 | `PM_MAX_LOSS_PCT` | `0.02` | 最大可接受组合亏损比例（用于钳制 `PM_MAX_PORTFOLIO_COST`） |
-| `PM_MAX_SIDE_SHARES` | `5.0` | 单侧最大持仓股数上限（仅当 `PM_MAX_POS_PCT>0` 时受动态约束） |
+| `PM_MAX_SIDE_SHARES` | `50.0` | 单侧最大持仓股数上限（仅当 `PM_MAX_POS_PCT>0` 时受动态约束） |
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | 订单对账周期（秒），用于修复 WS 断连盲区 |
 | `PM_COORD_WATCHDOG_MS` | `500` | Coordinator 风控看门狗心跳（无行情也执行 stale/toxic 检查） |
 | `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 单次连接超时（毫秒） |
@@ -127,7 +127,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 | `PM_MAX_POS_PCT` | `0.0` | 总仓位占比上限（`0`=关闭动态 gross；`>0` 动态推导 `PM_MAX_SIDE_SHARES`） |
 | `PM_DYNAMIC_GROSS_REFRESH_SECS` | `10` | 轮中动态刷新 `max_side_shares` 的周期（秒） |
 | `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度（毫秒） |
-| `PM_OFI_TOXICITY_THRESHOLD` | `50.0` | OFI 毒性阈值（越低越敏感） |
+| `PM_OFI_TOXICITY_THRESHOLD` | `300.0` | OFI 基准毒性阈值（adaptive=true 时作为初始/回退值） |
 | `PM_OFI_ADAPTIVE` | `true/false` | 是否开启自适应阈值（`mean + k*sigma`） |
 | `PM_OFI_ADAPTIVE_K` | `3.0` | 自适应阈值放大系数 |
 | `PM_OFI_ADAPTIVE_MIN` | `120.0` | 自适应阈值下限 |
@@ -154,7 +154,7 @@ POLYMARKET_MARKET_PREFIX=xrp-updown-4h PM_DRY_RUN=true cargo run --bin polymarke
 > `PM_MAX_PORTFOLIO_COST` 会被 `PM_MAX_LOSS_PCT` 自动钳制。
 > OFI 毒性退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值瞬时抬升导致的误恢复。
 > `PM_COORD_WATCHDOG_MS` 用于在 WS 暂时断流时继续触发风控 tick，避免 stale 熔断依赖行情事件。
-> 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。系统现在支持“自动学习 + 预检 + 冷却”，用于抑制拒单风暴。
+> 低价区出现成交不代表“无最小金额校验”：被动 maker 成交通常可成立，但极小金额 marketable BUY 仍可能被拒。默认配置采用“静态优先”（`FLOOR=0`、`AUTO_DETECT=false`），仅保留拒单分类+冷却防风暴；需要时可显式启用预检/自学习。
 > 若日志频繁出现 `not enough balance / allowance`，应优先下调 `PM_MAX_SIDE_SHARES` / `PM_BID_SIZE`；若已启用动态 gross（`PM_MAX_POS_PCT>0`），再下调 `PM_MAX_POS_PCT`。
 > 回收器采用“低水位触发 + 高水位回补 + 冷却 + 单轮上限”，默认是低频批量回收，不是每次拒单都小额 merge。
 
@@ -204,7 +204,7 @@ PM_MAX_POS_PCT=0.0            # 静态优先：关闭动态 gross 上限
 
 # OFI
 PM_OFI_WINDOW_MS=3000
-PM_OFI_TOXICITY_THRESHOLD=50.0
+PM_OFI_TOXICITY_THRESHOLD=300.0
 PM_OFI_HEARTBEAT_MS=200
 
 # 入场窗口
@@ -220,7 +220,7 @@ PM_ENTRY_GRACE_SECONDS=30
 | `MAX_NET_DIFF=10.0` | 安全 | 允许 2 轮未对冲偏差 |
 | `MAX_SIDE_SHARES=50.0` | $100 一半 | 单侧最多 50 股，留足对冲余地 |
 | `REPRICE_THRESHOLD=0.010` | 防抖 | 避免高频撤补消耗API限额 |
-| `OFI_THRESHOLD=50.0` | 标准 | 首跑先用默认，观察日志再微调 |
+| `OFI_THRESHOLD=300.0` | 稳健 | 作为自适应阈值的初始/回退基线，首跑后按日志微调 |
 
 ## 6. 策略行为
 
@@ -240,7 +240,7 @@ PM_ENTRY_GRACE_SECONDS=30
 - `PM_DEBOUNCE_MS`: `500` → `200`
 
 **加强防护**（观察到单边趋势碾压时）：
-- `PM_OFI_TOXICITY_THRESHOLD`: `50` → `30`
+- `PM_OFI_TOXICITY_THRESHOLD`: `300` → `220`
 - `PM_OFI_WINDOW_MS`: `3000` → `5000`
 
 **放大仓位**（验证稳定后）：
@@ -253,6 +253,7 @@ PM_ENTRY_GRACE_SECONDS=30
 |------|------|------|
 | **实盘检查单** | `PRODUCTION_READY.md` | 上线 preflight checklist |
 | **策略核心** | `docs/STRATEGY_V2_CORE.md` | 状态机、定价公式、对冲与救火逻辑 |
+| **参数手册** | `docs/CONFIG_REFERENCE_ZH.md` | `.env/.env.example` 全参数解释与建议 |
 | **测试指南** | `docs/TESTING.md` | 完整测试清单 |
 | **API限频** | `docs/API_RATE_LIMITS.md` | 请求频率建议 |
 | **价格精度** | `docs/PRICE_PRECISION.md` | 价格/数量精度与舍入 |
