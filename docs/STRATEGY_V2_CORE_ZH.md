@@ -11,7 +11,7 @@
 - **PM_BID_SIZE** (Shares): 决定了单笔交易的风险上限。
 - **PM_MAX_NET_DIFF** (Shares): 决定了系统允许持有的最大方向性净风险。
 - **PM_MAX_SIDE_SHARES** (Shares): 单侧绝对总持仓量上限（独立于净差约束）。
-- **动态算力（显式启用）**：仅在配置 `PM_BID_PCT` / `PM_NET_DIFF_PCT` 时，系统才会按余额下调对应风险参数；未配置时保持静态值。
+- **动态算力（显式启用）**：`PM_BID_SIZE` / `PM_MAX_NET_DIFF` 是硬下限；仅在配置 `PM_BID_PCT` / `PM_NET_DIFF_PCT` 时，系统按 `balance*pct` 生成动态目标，最终取 `max(动态目标, 静态下限)`。
 
 ### 频道架构 (Channel Architecture)
 
@@ -179,7 +179,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 
 | 参数 | 单位 | 用途 | 关键交互 |
 | :--- | :--- | :--- | :--- |
-| `PM_BID_SIZE` | Shares | 单次提供单规模 | 仅在显式配置 `PM_BID_PCT` 时按余额下调 |
+| `PM_BID_SIZE` | Shares | 单次提供单规模下限 | 未配置 `PM_BID_PCT` 时直接使用 |
 | `PM_MIN_ORDER_SIZE` | Shares | 最小订单数量 | 未设置时自动从 order_book 探测；小于该值的订单跳过 |
 | `PM_MIN_HEDGE_SIZE` | Shares | 对冲触发最小阈值 | 小于该值的对冲跳过 |
 | `PM_HEDGE_ROUND_UP` | bool | 对冲向上取整 | 小额对冲是否取整到最小订单 |
@@ -189,7 +189,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | USDC | 全局 marketable-BUY 预检下限 | `0` 为关闭，避免最小金额拒单风暴 |
 | `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | 从拒单自动学习最小金额阈值 | 静态优先建议关闭 |
 | `PM_MIN_MARKETABLE_COOLDOWN_MS` | ms | 最小金额拒单后的侧边冷却 | 抑制高频重复拒单 |
-| `PM_MAX_NET_DIFF` | Shares | 最大净方向性风险 | 仅在显式配置 `PM_NET_DIFF_PCT` 时按余额下调 |
+| `PM_MAX_NET_DIFF` | Shares | 最大净方向性风险下限 | 未配置 `PM_NET_DIFF_PCT` 时直接使用；动态模式下始终作为最小值 |
 | `PM_MAX_SIDE_SHARES` | Shares | 单侧总持仓上限 | 未设置时默认等于 max_net_diff |
 | `PM_MAX_POS_PCT` | 小数 | 总仓位占比目标 | `0`=关闭动态 gross；`>0` 时动态推导：`balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | 成本 | 一对 Y+N 的目标成本 | 利润 = 1.00 - pair_target |

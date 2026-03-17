@@ -11,7 +11,7 @@ In Polymarket binary option markets, **1 Share = $1 Max Potential Risk**.
 - **PM_BID_SIZE** (Shares): Maximum risk per provide order.
 - **PM_MAX_NET_DIFF** (Shares): Maximum directional net risk (|YES_qty - NO_qty|).
 - **PM_MAX_SIDE_SHARES** (Shares): Max per-side gross exposure (independent cap).
-- **Dynamic Sizing (Explicit Opt-In)**: Runtime balance-based clamps apply only when `PM_BID_PCT` / `PM_NET_DIFF_PCT` are explicitly configured; otherwise static values are kept.
+- **Dynamic Sizing (Explicit Opt-In)**: `PM_BID_SIZE` / `PM_MAX_NET_DIFF` are hard floors; when `PM_BID_PCT` / `PM_NET_DIFF_PCT` are configured, runtime targets are `balance*pct`, and effective values are `max(target, floor)`.
 
 ### Channel Architecture
 
@@ -153,7 +153,7 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 
 | Parameter | Unit | Purpose | Key Interaction |
 | :--- | :--- | :--- | :--- |
-| `PM_BID_SIZE` | Shares | Provide order size | Dynamically reduced only when `PM_BID_PCT` is explicitly set |
+| `PM_BID_SIZE` | Shares | Provide order size floor | Used directly when `PM_BID_PCT` is unset |
 | `PM_MIN_ORDER_SIZE` | Shares | Minimum order size | Auto-detected from order_book if unset; orders below are skipped |
 | `PM_MIN_HEDGE_SIZE` | Shares | Hedge trigger threshold | Hedges below are skipped |
 | `PM_HEDGE_ROUND_UP` | bool | Hedge rounding | Round up small hedges to min size |
@@ -163,7 +163,7 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 | `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | USDC | Global marketable-BUY precheck floor | `0` disables |
 | `PM_MIN_MARKETABLE_AUTO_DETECT` | bool | Auto-learn floor from exchange rejects | Static-first recommended `false` |
 | `PM_MIN_MARKETABLE_COOLDOWN_MS` | ms | Cooldown after min-notional reject | Suppresses reject storms |
-| `PM_MAX_NET_DIFF` | Shares | Max directional risk | Dynamically reduced only when `PM_NET_DIFF_PCT` is explicitly set |
+| `PM_MAX_NET_DIFF` | Shares | Max directional risk floor | Used directly when `PM_NET_DIFF_PCT` is unset; dynamic mode keeps this as minimum |
 | `PM_MAX_SIDE_SHARES` | Shares | Max per-side gross exposure | Default = max_net_diff if unset |
 | `PM_MAX_POS_PCT` | Decimal | Target gross utilization | `0` disables dynamic gross; `>0` enables `balance × pct / pair_target` |
 | `PM_PAIR_TARGET` | Cost | Target Y+N pair cost | Profit margin = `1.00 - pair_target` |

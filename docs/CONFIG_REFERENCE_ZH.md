@@ -58,7 +58,7 @@
 | 参数 | 默认值 | 单位 | 说明 |
 |---|---:|---|---|
 | `PM_PAIR_TARGET` | `0.985` | 成本 | 一对 `YES+NO` 目标成本；利润约为 `1-pair_target` |
-| `PM_BID_SIZE` | `5.0` | shares | Provide 单次规模 |
+| `PM_BID_SIZE` | `5.0` | shares | Provide 单次规模硬下限 |
 | `PM_MIN_ORDER_SIZE` | auto | shares | 最小订单数量；未设置时从 order_book 探测 |
 | `PM_MIN_HEDGE_SIZE` | `0.0` | shares | 对冲触发最小阈值（`0`=关闭） |
 | `PM_HEDGE_ROUND_UP` | `false` | bool | 小额对冲是否向上取整到最小订单 |
@@ -77,7 +77,7 @@
 
 | 参数 | 默认值 | 单位 | 说明 |
 |---|---:|---|---|
-| `PM_MAX_NET_DIFF` | `10.0` | shares | 最大净敞口（方向性风险） |
+| `PM_MAX_NET_DIFF` | `10.0` | shares | 最大净敞口硬下限（方向性风险） |
 | `PM_MAX_SIDE_SHARES` | `50.0` | shares | 单侧总持仓上限（绝对暴露） |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 成本 | 救火成本上限 |
 | `PM_MAX_LOSS_PCT` | `0.02` | pct | 最大容忍亏损比例；启动时钳制 `MAX_PORTFOLIO_COST` |
@@ -89,8 +89,8 @@
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
 | `PM_MAX_POS_PCT` | `0.0` | `0`=关闭动态 gross；`>0` 启用动态 side cap |
-| `PM_BID_PCT` | unset | 显式启用后，按余额下调 `PM_BID_SIZE` |
-| `PM_NET_DIFF_PCT` | unset | 显式启用后，按余额下调 `PM_MAX_NET_DIFF` |
+| `PM_BID_PCT` | unset | 显式启用后，`BID_SIZE` 动态目标=`balance*pct`，最终值取 `max(target, PM_BID_SIZE)` |
+| `PM_NET_DIFF_PCT` | unset | 显式启用后，`MAX_NET_DIFF` 动态目标=`balance*pct`，最终值取 `max(target, PM_MAX_NET_DIFF)`（且始终 `>= BID_SIZE`） |
 | `PM_DYNAMIC_GROSS_REFRESH_SECS` | `10`（建议注释） | 仅 `PM_MAX_POS_PCT>0` 时生效 |
 
 ## 8. OFI 毒性参数

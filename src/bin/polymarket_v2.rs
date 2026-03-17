@@ -466,6 +466,40 @@ fn plan_merge_batch_usdc(
     desired.min(cfg.max_batch_usdc).min(mergeable_full_set_usdc)
 }
 
+#[derive(Debug, Clone, Copy)]
+struct DynamicSizingOutcome {
+    bid_target: Option<f64>,
+    net_target: Option<f64>,
+    bid_effective: f64,
+    net_effective: f64,
+}
+
+fn apply_dynamic_sizing(
+    balance_usdc: f64,
+    bid_floor: f64,
+    net_floor: f64,
+    bid_pct: Option<f64>,
+    net_pct: Option<f64>,
+) -> DynamicSizingOutcome {
+    let bid_floor = bid_floor.max(5.0);
+    let net_floor = net_floor.max(bid_floor);
+
+    let bid_target = bid_pct.map(|pct| (balance_usdc * pct).round());
+    let net_target = net_pct.map(|pct| (balance_usdc * pct).round());
+
+    let bid_effective = bid_target.map(|v| v.max(bid_floor)).unwrap_or(bid_floor);
+    let net_effective = net_target
+        .map(|v| v.max(net_floor.max(bid_effective)))
+        .unwrap_or(net_floor.max(bid_effective));
+
+    DynamicSizingOutcome {
+        bid_target,
+        net_target,
+        bid_effective,
+        net_effective,
+    }
+}
+
 fn parse_retry_schedule_secs(raw: &str) -> Vec<u64> {
     raw.split(',')
         .filter_map(|v| v.trim().parse::<u64>().ok())
@@ -1966,7 +2000,8 @@ async fn main() -> anyhow::Result<()> {
         );
     }
     // Static-first policy:
-    // Dynamic sizing applies ONLY when explicit pct vars are configured.
+    // PM_BID_SIZE / PM_MAX_NET_DIFF are hard floors.
+    // PM_BID_PCT / PM_NET_DIFF_PCT (if set) provide dynamic targets.
     let bid_pct_raw = env::var("PM_BID_PCT").ok().filter(|s| !s.trim().is_empty());
     let bid_pct_opt = bid_pct_raw
         .as_deref()
@@ -1994,7 +2029,7 @@ async fn main() -> anyhow::Result<()> {
     }
     if bid_pct_opt.is_some() || net_diff_pct_opt.is_some() {
         info!(
-            "📏 Dynamic sizing enabled: PM_BID_PCT={} PM_NET_DIFF_PCT={}",
+            "📏 Dynamic sizing enabled: PM_BID_PCT={} PM_NET_DIFF_PCT={} (floors: PM_BID_SIZE / PM_MAX_NET_DIFF)",
             bid_pct_opt
                 .map(|v| format!("{:.4}", v))
                 .unwrap_or_else(|| "off".to_string()),
@@ -2003,7 +2038,9 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| "off".to_string())
         );
     } else {
-        info!("📏 Dynamic sizing disabled: static PM_BID_SIZE / PM_MAX_NET_DIFF will be used");
+        info!(
+            "📏 Dynamic sizing disabled: static PM_BID_SIZE / PM_MAX_NET_DIFF floors will be used"
+        );
     }
 
     info!(
@@ -2536,24 +2573,20 @@ async fn main() -> anyhow::Result<()> {
                     let balance_f64 = raw_balance / 1_000_000.0;
                     balance_opt = Some(balance_f64);
 
-                    // Dynamic sizing is explicit-opt-in via PM_BID_PCT / PM_NET_DIFF_PCT.
-                    // If vars are absent, keep static PM_BID_SIZE / PM_MAX_NET_DIFF.
-                    let mut dyn_bid_size_used: Option<f64> = None;
-                    let mut dyn_net_diff_used: Option<f64> = None;
-                    if let Some(bid_pct) = bid_pct_opt {
-                        // Unit: 1 Share = $1 max potential risk.
-                        let dyn_bid_size = 5.0f64.max(balance_f64 * bid_pct).round();
-                        coord_cfg.bid_size = coord_cfg.bid_size.min(dyn_bid_size).max(5.0);
-                        dyn_bid_size_used = Some(dyn_bid_size);
-                    }
-                    if let Some(net_diff_pct) = net_diff_pct_opt {
-                        let dyn_net_diff = 5.0f64.max(balance_f64 * net_diff_pct).round();
-                        coord_cfg.max_net_diff = coord_cfg
-                            .max_net_diff
-                            .min(dyn_net_diff)
-                            .max(coord_cfg.bid_size);
-                        dyn_net_diff_used = Some(dyn_net_diff);
-                    }
+                    // Unit policy:
+                    // - PM_BID_SIZE / PM_MAX_NET_DIFF are floors.
+                    // - PM_BID_PCT / PM_NET_DIFF_PCT are dynamic targets (opt-in).
+                    let bid_floor = coord_cfg.bid_size;
+                    let net_floor = coord_cfg.max_net_diff;
+                    let sizing = apply_dynamic_sizing(
+                        balance_f64,
+                        bid_floor,
+                        net_floor,
+                        bid_pct_opt,
+                        net_diff_pct_opt,
+                    );
+                    coord_cfg.bid_size = sizing.bid_effective;
+                    coord_cfg.max_net_diff = sizing.net_effective;
 
                     if max_pos_pct > 0.0 {
                         let floor = coord_cfg.max_net_diff.max(coord_cfg.bid_size);
@@ -2581,16 +2614,20 @@ async fn main() -> anyhow::Result<()> {
                     inv_cfg.bid_size = coord_cfg.bid_size;
                     inv_cfg.max_net_diff = coord_cfg.max_net_diff;
 
-                    if dyn_bid_size_used.is_some() || dyn_net_diff_used.is_some() {
+                    if sizing.bid_target.is_some() || sizing.net_target.is_some() {
                         info!(
-                            "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> cap BID_SIZE={} MAX_NET_DIFF={} (effective BID_SIZE={:.1}, MAX_NET_DIFF={:.1}, bid_pct={}, net_pct={})",
+                            "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> target BID_SIZE={} MAX_NET_DIFF={} | floors BID_SIZE={:.1} MAX_NET_DIFF={:.1} -> effective BID_SIZE={:.1} MAX_NET_DIFF={:.1} (bid_pct={}, net_pct={})",
                             balance_f64,
-                            dyn_bid_size_used
+                            sizing
+                                .bid_target
                                 .map(|v| format!("{:.1}", v))
                                 .unwrap_or_else(|| "off".to_string()),
-                            dyn_net_diff_used
+                            sizing
+                                .net_target
                                 .map(|v| format!("{:.1}", v))
                                 .unwrap_or_else(|| "off".to_string()),
+                            bid_floor,
+                            net_floor,
                             coord_cfg.bid_size,
                             coord_cfg.max_net_diff,
                             bid_pct_opt
@@ -3068,5 +3105,30 @@ mod tests {
         assert_eq!(parsed, vec![27, 2, 5, 9, 14, 20, 0, 40]);
         let normalized = normalize_retry_schedule_secs(parsed, 30);
         assert_eq!(normalized, vec![0, 2, 5, 9, 14, 20, 27]);
+    }
+
+    #[test]
+    fn test_dynamic_sizing_keeps_static_floors_when_target_lower() {
+        let out = apply_dynamic_sizing(80.0, 5.0, 15.0, Some(0.02), Some(0.10));
+        assert_eq!(out.bid_target, Some(2.0));
+        assert_eq!(out.net_target, Some(8.0));
+        assert_eq!(out.bid_effective, 5.0);
+        assert_eq!(out.net_effective, 15.0);
+    }
+
+    #[test]
+    fn test_dynamic_sizing_scales_up_above_floors() {
+        let out = apply_dynamic_sizing(300.0, 5.0, 15.0, Some(0.02), Some(0.10));
+        assert_eq!(out.bid_target, Some(6.0));
+        assert_eq!(out.net_target, Some(30.0));
+        assert_eq!(out.bid_effective, 6.0);
+        assert_eq!(out.net_effective, 30.0);
+    }
+
+    #[test]
+    fn test_dynamic_sizing_keeps_net_at_least_bid_when_net_pct_off() {
+        let out = apply_dynamic_sizing(300.0, 5.0, 7.0, Some(0.03), None);
+        assert_eq!(out.bid_effective, 9.0);
+        assert_eq!(out.net_effective, 9.0);
     }
 }
