@@ -128,6 +128,24 @@ pub struct AutoClaimState {
     pub warned_proxy_mode: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct AutoClaimRunResult {
+    pub positions: usize,
+    pub candidates: usize,
+    pub claimed: usize,
+}
+
+impl AutoClaimRunResult {
+    #[must_use]
+    pub fn succeeded(self, dry_run: bool) -> bool {
+        if dry_run {
+            self.candidates > 0
+        } else {
+            self.claimed > 0
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClaimExecutionMode {
     EoaOnchain,
@@ -865,7 +883,7 @@ async fn run_eoa_onchain_claims(
     cfg: &AutoClaimConfig,
     private_key: &str,
     candidates: Vec<ClaimableCondition>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let signer: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> = private_key.parse()?;
     let signer = signer.with_chain_id(Some(POLYGON));
     let provider = ProviderBuilder::new()
@@ -879,6 +897,7 @@ async fn run_eoa_onchain_claims(
     let collateral = contract_config(POLYGON, false)
         .context("missing contract config for polygon mainnet")?
         .collateral;
+    let mut claimed = 0_usize;
 
     for c in candidates {
         if c.negative_risk {
@@ -892,12 +911,15 @@ async fn run_eoa_onchain_claims(
                 .amounts(vec![yes, no])
                 .build();
             match neg_risk.redeem_neg_risk(&req).await {
-                Ok(resp) => tracing::info!(
-                    "✅ AUTO-CLAIM neg-risk success: condition={} tx={} block={}",
-                    c.condition_id,
-                    resp.transaction_hash,
-                    resp.block_number
-                ),
+                Ok(resp) => {
+                    claimed += 1;
+                    tracing::info!(
+                        "✅ AUTO-CLAIM neg-risk success: condition={} tx={} block={}",
+                        c.condition_id,
+                        resp.transaction_hash,
+                        resp.block_number
+                    )
+                }
                 Err(e) => tracing::warn!(
                     "⚠️ AUTO-CLAIM neg-risk failed: condition={} err={:?}",
                     c.condition_id,
@@ -907,12 +929,15 @@ async fn run_eoa_onchain_claims(
         } else {
             let req = RedeemPositionsRequest::for_binary_market(collateral, c.condition_id);
             match standard.redeem_positions(&req).await {
-                Ok(resp) => tracing::info!(
-                    "✅ AUTO-CLAIM success: condition={} tx={} block={}",
-                    c.condition_id,
-                    resp.transaction_hash,
-                    resp.block_number
-                ),
+                Ok(resp) => {
+                    claimed += 1;
+                    tracing::info!(
+                        "✅ AUTO-CLAIM success: condition={} tx={} block={}",
+                        c.condition_id,
+                        resp.transaction_hash,
+                        resp.block_number
+                    )
+                }
                 Err(e) => tracing::warn!(
                     "⚠️ AUTO-CLAIM failed: condition={} err={:?}",
                     c.condition_id,
@@ -922,7 +947,7 @@ async fn run_eoa_onchain_claims(
         }
     }
 
-    Ok(())
+    Ok(claimed)
 }
 
 async fn run_safe_relayer_claims(
@@ -931,7 +956,7 @@ async fn run_safe_relayer_claims(
     funder: Address,
     private_key: &str,
     candidates: Vec<ClaimableCondition>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<usize> {
     let creds = cfg
         .builder_credentials
         .as_ref()
@@ -961,9 +986,10 @@ async fn run_safe_relayer_claims(
             "⚠️ Safe relayer claim skipped: safe wallet not deployed yet (safe={:#x})",
             funder
         );
-        return Ok(());
+        return Ok(0);
     }
 
+    let mut claimed = 0_usize;
     for c in candidates {
         let (to, data, mode_tag) = if c.negative_risk {
             let yes = decimal_to_u256_6(c.yes_size).unwrap_or(U256::ZERO);
@@ -1000,6 +1026,7 @@ async fn run_safe_relayer_claims(
         )
         .await
         .with_context(|| format!("relayer submit failed for condition {}", c.condition_id))?;
+        claimed += 1;
 
         if !cfg.relayer_wait_confirm {
             tracing::info!(
@@ -1032,33 +1059,40 @@ async fn run_safe_relayer_claims(
         }
     }
 
-    Ok(())
+    Ok(claimed)
 }
 
-pub async fn maybe_auto_claim(
+#[allow(clippy::too_many_arguments)]
+pub async fn run_auto_claim_once(
     cfg: &AutoClaimConfig,
     state: &mut AutoClaimState,
     funder_address: Option<&str>,
     signer_address: Option<&str>,
     private_key: Option<&str>,
-) -> anyhow::Result<()> {
+    preferred_condition: Option<B256>,
+    fallback_global: bool,
+    bypass_interval: bool,
+) -> anyhow::Result<AutoClaimRunResult> {
+    let mut result = AutoClaimRunResult::default();
     if !cfg.enabled {
-        return Ok(());
+        return Ok(result);
     }
-    if let Some(last) = state.last_run {
-        if last.elapsed() < cfg.run_interval {
-            let remain = cfg.run_interval.saturating_sub(last.elapsed()).as_secs();
-            tracing::info!(
-                "💸 AUTO-CLAIM skipped: run interval not elapsed (remaining {}s)",
-                remain
-            );
-            return Ok(());
+    if !bypass_interval {
+        if let Some(last) = state.last_run {
+            if last.elapsed() < cfg.run_interval {
+                let remain = cfg.run_interval.saturating_sub(last.elapsed()).as_secs();
+                tracing::info!(
+                    "💸 AUTO-CLAIM skipped: run interval not elapsed (remaining {}s)",
+                    remain
+                );
+                return Ok(result);
+            }
         }
+        state.last_run = Some(Instant::now());
     }
-    state.last_run = Some(Instant::now());
 
     let Some(funder_raw) = funder_address else {
-        return Ok(());
+        return Ok(result);
     };
     let funder = funder_raw
         .trim()
@@ -1066,7 +1100,7 @@ pub async fn maybe_auto_claim(
         .with_context(|| format!("invalid funder address: {funder_raw}"))?;
 
     let Some(signer_raw) = signer_address else {
-        return Ok(());
+        return Ok(result);
     };
     let signer = signer_raw
         .trim()
@@ -1086,7 +1120,7 @@ pub async fn maybe_auto_claim(
                 funder
             );
         }
-        return Ok(());
+        return Ok(result);
     }
 
     if mode == ClaimExecutionMode::UnknownProxyOrSafe {
@@ -1099,7 +1133,7 @@ pub async fn maybe_auto_claim(
                 funder
             );
         }
-        return Ok(());
+        return Ok(result);
     }
 
     if mode == ClaimExecutionMode::SafeRelayer {
@@ -1119,19 +1153,20 @@ pub async fn maybe_auto_claim(
                      Auto-claim execution skipped."
                 );
             }
-            return Ok(());
+            return Ok(result);
         }
     }
 
     let Some(pk) = private_key else {
         tracing::warn!("⚠️ PM_AUTO_CLAIM enabled but POLYMARKET_PRIVATE_KEY is missing");
-        return Ok(());
+        return Ok(result);
     };
 
     let summary = scan_claimable_positions(&cfg.data_api_url, funder).await?;
+    result.positions = summary.positions;
     if summary.positions == 0 {
         tracing::info!("💸 AUTO-CLAIM skipped: no claimable positions");
-        return Ok(());
+        return Ok(result);
     }
 
     let candidates = make_candidates(summary, cfg);
@@ -1140,36 +1175,118 @@ pub async fn maybe_auto_claim(
             "💸 AUTO-CLAIM skipped: no candidates above min_value=${}",
             cfg.min_condition_value
         );
-        return Ok(());
+        return Ok(result);
     }
 
-    if cfg.dry_run {
-        tracing::info!(
-            "📝 [AUTO-CLAIM DRY-RUN] mode={:?} candidates={} min_value=${}",
-            mode,
-            candidates.len(),
-            cfg.min_condition_value
-        );
-        for c in &candidates {
+    let mut primary = candidates.clone();
+    let mut fallback = Vec::new();
+    if let Some(condition_id) = preferred_condition {
+        primary.retain(|c| c.condition_id == condition_id);
+        if fallback_global {
+            fallback = candidates
+                .into_iter()
+                .filter(|c| c.condition_id != condition_id)
+                .collect();
+        }
+        if primary.is_empty() {
             tracing::info!(
-                "📝 [AUTO-CLAIM DRY-RUN] condition={} est_value=${} neg_risk={} yes_size={} no_size={}",
-                c.condition_id,
-                c.total_value,
-                c.negative_risk,
-                c.yes_size,
-                c.no_size
+                "💸 AUTO-CLAIM round scope: ended condition {} has no candidates above threshold",
+                condition_id
             );
         }
-        return Ok(());
     }
 
-    match mode {
-        ClaimExecutionMode::EoaOnchain => run_eoa_onchain_claims(cfg, pk, candidates).await,
-        ClaimExecutionMode::SafeRelayer => {
-            run_safe_relayer_claims(cfg, signer, funder, pk, candidates).await
+    let execute = |run_candidates: Vec<ClaimableCondition>, scope_label: &'static str| async move {
+        if run_candidates.is_empty() {
+            return Ok(0_usize);
         }
-        ClaimExecutionMode::ProxyRelayerUnsupported | ClaimExecutionMode::UnknownProxyOrSafe => {
-            Ok(())
+        tracing::info!(
+            "💸 AUTO-CLAIM run: scope={} mode={:?} candidates={} min_value=${}",
+            scope_label,
+            mode,
+            run_candidates.len(),
+            cfg.min_condition_value
+        );
+        if cfg.dry_run {
+            for c in &run_candidates {
+                tracing::info!(
+                    "📝 [AUTO-CLAIM DRY-RUN] scope={} condition={} est_value=${} neg_risk={} yes_size={} no_size={}",
+                    scope_label,
+                    c.condition_id,
+                    c.total_value,
+                    c.negative_risk,
+                    c.yes_size,
+                    c.no_size
+                );
+            }
+            return Ok(0_usize);
         }
+        match mode {
+            ClaimExecutionMode::EoaOnchain => run_eoa_onchain_claims(cfg, pk, run_candidates).await,
+            ClaimExecutionMode::SafeRelayer => {
+                run_safe_relayer_claims(cfg, signer, funder, pk, run_candidates).await
+            }
+            ClaimExecutionMode::ProxyRelayerUnsupported
+            | ClaimExecutionMode::UnknownProxyOrSafe => Ok(0_usize),
+        }
+    };
+
+    if !primary.is_empty() {
+        result.candidates += primary.len();
+        result.claimed += execute(primary, "primary").await?;
+    }
+    if result.claimed == 0 && !fallback.is_empty() {
+        result.candidates += fallback.len();
+        result.claimed += execute(fallback, "fallback_global").await?;
+    }
+
+    Ok(result)
+}
+
+pub async fn maybe_auto_claim(
+    cfg: &AutoClaimConfig,
+    state: &mut AutoClaimState,
+    funder_address: Option<&str>,
+    signer_address: Option<&str>,
+    private_key: Option<&str>,
+) -> anyhow::Result<()> {
+    let _ = run_auto_claim_once(
+        cfg,
+        state,
+        funder_address,
+        signer_address,
+        private_key,
+        None,
+        true,
+        false,
+    )
+    .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auto_claim_run_result_success_live_mode() {
+        let outcome = AutoClaimRunResult {
+            positions: 3,
+            candidates: 2,
+            claimed: 1,
+        };
+        assert!(outcome.succeeded(false));
+        assert!(outcome.succeeded(true));
+    }
+
+    #[test]
+    fn test_auto_claim_run_result_success_dry_run_mode() {
+        let outcome = AutoClaimRunResult {
+            positions: 3,
+            candidates: 2,
+            claimed: 0,
+        };
+        assert!(!outcome.succeeded(false));
+        assert!(outcome.succeeded(true));
     }
 }

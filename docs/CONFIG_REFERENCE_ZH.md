@@ -34,6 +34,10 @@
 | `PM_AUTO_CLAIM_MIN_VALUE` | `0` | 单个 condition 最小价值阈值（美元） |
 | `PM_AUTO_CLAIM_MAX_CONDITIONS` | `5` | 单轮最多处理 condition 数量 |
 | `PM_AUTO_CLAIM_INTERVAL_SECONDS` | `300` | 两次自动领取最小间隔 |
+| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | `30` | 每轮结束后的 Claim SLA 窗口（秒） |
+| `PM_AUTO_CLAIM_ROUND_RETRY_MODE` | `exponential` | 回合 Claim 重试模式（默认指数退避） |
+| `PM_AUTO_CLAIM_ROUND_SCOPE` | `ended_then_global` | 先尝试刚结束市场，再全局兜底 |
+| `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | `0,2,5,9,14,20,27` | 回合窗口内重试偏移秒（需 ≤ window） |
 | `PM_AUTO_CLAIM_WAIT_CONFIRM` | `false` | Safe 模式是否等待 relayer confirm |
 | `PM_AUTO_CLAIM_WAIT_TIMEOUT_SECONDS` | `20` | `WAIT_CONFIRM=true` 时最大等待秒数 |
 
@@ -126,7 +130,7 @@
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
 | `PM_RECYCLE_ENABLED` | `true` | 回收器开关 |
-| `PM_RECYCLE_ONLY_HEDGE` | `true` | 仅统计 hedge 的余额拒单 |
+| `PM_RECYCLE_ONLY_HEDGE` | `false` | `false`=Hedge+Provide 都可触发；`true`=仅 Hedge |
 | `PM_RECYCLE_TRIGGER_REJECTS` | `2` | 窗口内拒单触发阈值 |
 | `PM_RECYCLE_TRIGGER_WINDOW_SECS` | `90` | 拒单统计窗口 |
 | `PM_RECYCLE_PROACTIVE` | `true` | 主动低水位探测 |

@@ -151,6 +151,8 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 ### 余额压力回收（Batch Merge）
 当执行层连续出现 `balance/allowance` 拒单时，系统启用“批处理回收”而不是每次小额 merge：
 - **触发条件**：`trigger_window` 内余额拒单次数 ≥ `PM_RECYCLE_TRIGGER_REJECTS`（默认 90s 内 2 次）。
+  - 默认 `PM_RECYCLE_ONLY_HEDGE=false`：`Hedge + Provide` 的余额拒单都计入触发。
+  - 若设为 `true`，则仅 Hedge 拒单计数。
 - **低水位门禁**：仅当 `free_balance < PM_RECYCLE_LOW_WATER_USDC` 才执行。
 - **回收目标**：一次回补到高水位附近，不做最小缺口频繁回收。
   - `shortage = max(0, target_free - free_balance)`
@@ -159,8 +161,17 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 - **可负担性前置检查**：Executor 下单前做余额预检，余额明显不足时本地拒绝，减少交易所拒单风暴。
 
 说明：
-- `allowance=0` 本质是授权问题，merge 不能修复；应优先修复授权。
+- `allowance` 判定与 preflight 统一为 `U256` 语义，避免超大授权被误判为 0。
+- 若回收被跳过，日志会明确输出 `skip_reason`、`free_balance`、`allowance_ok`。
 - SAFE 模式下 merge 走 relayer（需要 `POLYMARKET_BUILDER_*`），EOA 模式走链上直连。
+
+### 回合级 Claim 30s SLA
+每轮 `Market ended` 后立即启动 Claim runner，目标是在前 30 秒内完成快速领取：
+- **窗口**：`PM_AUTO_CLAIM_ROUND_WINDOW_SECS=30`。
+- **重试节奏**：默认 `0,2,5,9,14,20,27`（可用 `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` 覆盖）。
+- **执行顺序**：默认 `PM_AUTO_CLAIM_ROUND_SCOPE=ended_then_global`，先尝试刚结束的 condition，再全局兜底。
+- **节流关系**：回合 runner 不受 `PM_AUTO_CLAIM_INTERVAL_SECONDS` 限制；startup/常规 claim 检查仍保留。
+- **闭环日志**：每轮应看到 `start -> retry -> result -> success|SLA exhausted`。
 
 ---
 
@@ -205,11 +216,16 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_RESOLVE_TIMEOUT_MS` | ms | Gamma 市场解析超时 | 限制单次解析阻塞时长 |
 | `PM_RESOLVE_RETRY_ATTEMPTS` | 次 | 每轮解析重试次数 | 指数退避后再判定失败 |
 | `PM_RECYCLE_TRIGGER_REJECTS` | 次 | 触发回收的余额拒单次数 | 与窗口 `PM_RECYCLE_TRIGGER_WINDOW_SECS` 配合 |
+| `PM_RECYCLE_ONLY_HEDGE` | bool | 回收触发范围 | `false`=Hedge+Provide；`true`=仅 Hedge |
 | `PM_RECYCLE_LOW_WATER_USDC` | USDC | 回收低水位门槛 | 余额高于该值不回收 |
 | `PM_RECYCLE_TARGET_FREE_USDC` | USDC | 回收高水位目标 | 批量回收后期望可用余额 |
 | `PM_RECYCLE_MIN_BATCH_USDC` | USDC | 单次最小回收量 | 抑制高频碎片 merge |
 | `PM_RECYCLE_MAX_BATCH_USDC` | USDC | 单次最大回收量 | 限制单次 gas/风险 |
 | `PM_BALANCE_CACHE_TTL_MS` | ms | 余额预检缓存 TTL | 减少重复请求同时避免过期读 |
+| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | sec | 每轮结束后的 Claim SLA 窗口 | 默认 30 秒 |
+| `PM_AUTO_CLAIM_ROUND_RETRY_MODE` | 枚举 | 回合 Claim 重试模式 | 默认 `exponential` |
+| `PM_AUTO_CLAIM_ROUND_SCOPE` | 枚举 | 回合 Claim 范围 | `ended_then_global/ended_only/global_only` |
+| `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | sec 列表 | 回合 Claim 重试偏移 | 默认 `0,2,5,9,14,20,27` |
 
 ## 5. 对冲逻辑与动态数量 (Hedge Sizing)
 

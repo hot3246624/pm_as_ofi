@@ -125,6 +125,8 @@ Static-first defaults:
 ### Balance-Stress Recycle (Batch Merge)
 When placement rejects indicate collateral stress, the bot uses **batch recycle** instead of frequent tiny merges:
 - **Trigger**: balance/allowance rejects within `PM_RECYCLE_TRIGGER_WINDOW_SECS` reach `PM_RECYCLE_TRIGGER_REJECTS`.
+  - Default `PM_RECYCLE_ONLY_HEDGE=false`: both `Hedge` and `Provide` balance rejects can trigger recycle.
+  - Set `PM_RECYCLE_ONLY_HEDGE=true` to count hedge rejects only.
 - **Low-water gate**: run only when `free_balance < PM_RECYCLE_LOW_WATER_USDC`.
 - **High-water refill target**:
   - `shortage = max(0, target_free - free_balance)`
@@ -133,8 +135,17 @@ When placement rejects indicate collateral stress, the bot uses **batch recycle*
 - **Affordability precheck**: Executor checks free collateral before submit and locally rejects clearly unaffordable orders.
 
 Notes:
-- `allowance=0` is an auth/approval issue; merge cannot fix it.
+- Allowance parsing is unified with startup preflight under `U256` semantics, preventing false zero on very large allowances.
+- Recycler skip logs now include `skip_reason`, `free_balance`, and `allowance_ok`.
 - SAFE mode uses relayer merge (requires `POLYMARKET_BUILDER_*`), EOA mode uses direct on-chain merge.
+
+### Round-Scoped Claim 30s SLA
+After each `Market ended`, a dedicated claim runner executes within a 30s SLA window:
+- **Window**: `PM_AUTO_CLAIM_ROUND_WINDOW_SECS=30`.
+- **Retry cadence**: default `0,2,5,9,14,20,27` (overridable by `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE`).
+- **Scope order**: default `PM_AUTO_CLAIM_ROUND_SCOPE=ended_then_global`, i.e. ended condition first, then global fallback.
+- **Interval gate bypass**: this round runner bypasses `PM_AUTO_CLAIM_INTERVAL_SECONDS`; startup/periodic claim checks remain as fallback.
+- **Expected logs**: `start -> retry -> result -> success|SLA exhausted`.
 
 ---
 
@@ -176,11 +187,16 @@ Notes:
 | `PM_RESOLVE_TIMEOUT_MS` | ms | Gamma resolve request timeout | Limits single resolve stall impact |
 | `PM_RESOLVE_RETRY_ATTEMPTS` | count | Resolve retries per round | Exponential backoff before giving up |
 | `PM_RECYCLE_TRIGGER_REJECTS` | count | Reject threshold for recycle trigger | Used with `PM_RECYCLE_TRIGGER_WINDOW_SECS` |
+| `PM_RECYCLE_ONLY_HEDGE` | bool | Recycle trigger scope | `false`=Hedge+Provide, `true`=Hedge only |
 | `PM_RECYCLE_LOW_WATER_USDC` | USDC | Recycle low-water gate | No recycle above this free balance |
 | `PM_RECYCLE_TARGET_FREE_USDC` | USDC | Recycle high-water target | Batch refill objective |
 | `PM_RECYCLE_MIN_BATCH_USDC` | USDC | Minimum recycle batch | Avoid tiny frequent merges |
 | `PM_RECYCLE_MAX_BATCH_USDC` | USDC | Maximum recycle batch | Caps single-merge gas/risk |
 | `PM_BALANCE_CACHE_TTL_MS` | ms | Precheck balance cache TTL | Reduces repeated balance RPC calls |
+| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | sec | Per-round claim SLA window | Default 30s after market end |
+| `PM_AUTO_CLAIM_ROUND_RETRY_MODE` | enum | Round claim retry mode | Default `exponential` |
+| `PM_AUTO_CLAIM_ROUND_SCOPE` | enum | Round claim scope order | `ended_then_global/ended_only/global_only` |
+| `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | sec list | Round claim retry offsets | Default `0,2,5,9,14,20,27` |
 
 ## 5. Hedge Logic & Sizing
 

@@ -19,8 +19,8 @@ use tracing::{debug, info, warn};
 
 // V2 Actor modules
 use pm_as_ofi::polymarket::claims::{
-    execute_market_merge, maybe_auto_claim, scan_claimable_positions, scan_mergeable_full_set_usdc,
-    AutoClaimConfig, AutoClaimState,
+    execute_market_merge, maybe_auto_claim, run_auto_claim_once, scan_claimable_positions,
+    scan_mergeable_full_set_usdc, AutoClaimConfig, AutoClaimState,
 };
 use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
 use pm_as_ofi::polymarket::executor::{init_clob_client, AuthClient, Executor, ExecutorConfig};
@@ -149,6 +149,101 @@ struct CapitalRecycleConfig {
     min_executable_usdc: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoundClaimRetryMode {
+    Exponential,
+    Fixed,
+}
+
+impl RoundClaimRetryMode {
+    fn from_env() -> Self {
+        match env::var("PM_AUTO_CLAIM_ROUND_RETRY_MODE")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("fixed") => Self::Fixed,
+            _ => Self::Exponential,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Exponential => "exponential",
+            Self::Fixed => "fixed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoundClaimScope {
+    EndedThenGlobal,
+    EndedOnly,
+    GlobalOnly,
+}
+
+impl RoundClaimScope {
+    fn from_env() -> Self {
+        match env::var("PM_AUTO_CLAIM_ROUND_SCOPE")
+            .ok()
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            Some("ended_only") => Self::EndedOnly,
+            Some("global_only") => Self::GlobalOnly,
+            _ => Self::EndedThenGlobal,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::EndedThenGlobal => "ended_then_global",
+            Self::EndedOnly => "ended_only",
+            Self::GlobalOnly => "global_only",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RoundClaimRunnerConfig {
+    window: Duration,
+    retry_mode: RoundClaimRetryMode,
+    scope: RoundClaimScope,
+    retry_schedule: Vec<Duration>,
+}
+
+impl RoundClaimRunnerConfig {
+    fn from_env() -> Self {
+        const DEFAULT_SCHEDULE_SECS: [u64; 7] = [0, 2, 5, 9, 14, 20, 27];
+        let window_secs = env::var("PM_AUTO_CLAIM_ROUND_WINDOW_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v > 0)
+            .unwrap_or(30);
+        let retry_mode = RoundClaimRetryMode::from_env();
+        let scope = RoundClaimScope::from_env();
+        let schedule_raw = env::var("PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE")
+            .ok()
+            .map(|raw| parse_retry_schedule_secs(&raw))
+            .unwrap_or_else(|| DEFAULT_SCHEDULE_SECS.to_vec());
+        let schedule = normalize_retry_schedule_secs(schedule_raw, window_secs);
+        Self {
+            window: Duration::from_secs(window_secs),
+            retry_mode,
+            scope,
+            retry_schedule: schedule.into_iter().map(Duration::from_secs).collect(),
+        }
+    }
+
+    fn retry_schedule_text(&self) -> String {
+        self.retry_schedule
+            .iter()
+            .map(|d| d.as_secs().to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+}
+
 impl CapitalRecycleConfig {
     fn from_env() -> Self {
         let enabled = env::var("PM_RECYCLE_ENABLED")
@@ -156,7 +251,7 @@ impl CapitalRecycleConfig {
             .unwrap_or(true);
         let only_hedge_rejects = env::var("PM_RECYCLE_ONLY_HEDGE")
             .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(true);
+            .unwrap_or(false);
         let trigger_rejects = env::var("PM_RECYCLE_TRIGGER_REJECTS")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -371,6 +466,55 @@ fn plan_merge_batch_usdc(
     desired.min(cfg.max_batch_usdc).min(mergeable_full_set_usdc)
 }
 
+fn parse_retry_schedule_secs(raw: &str) -> Vec<u64> {
+    raw.split(',')
+        .filter_map(|v| v.trim().parse::<u64>().ok())
+        .collect()
+}
+
+fn normalize_retry_schedule_secs(mut schedule: Vec<u64>, window_secs: u64) -> Vec<u64> {
+    schedule.sort_unstable();
+    schedule.dedup();
+    if schedule.first().copied() != Some(0) {
+        schedule.insert(0, 0);
+    }
+    schedule.retain(|v| *v <= window_secs);
+    if schedule.is_empty() {
+        schedule.push(0);
+    }
+    schedule
+}
+
+fn parse_u256_allowance(raw: &str) -> Option<alloy::primitives::U256> {
+    use alloy::primitives::U256;
+
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let normalized = trimmed.split('.').next().unwrap_or(trimmed);
+    if normalized.is_empty() {
+        return None;
+    }
+    if let Some(hex) = normalized
+        .strip_prefix("0x")
+        .or_else(|| normalized.strip_prefix("0X"))
+    {
+        U256::from_str_radix(hex, 16).ok()
+    } else {
+        U256::from_str_radix(normalized, 10).ok()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CollateralStatus {
+    free_balance: f64,
+    allowance_ok: bool,
+    allowance_entries: usize,
+    allowance_parseable: usize,
+    allowance_nonzero: usize,
+}
+
 async fn fetch_free_collateral_usdc(client: &AuthClient) -> anyhow::Result<f64> {
     use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
     use polymarket_client_sdk::clob::types::AssetType;
@@ -383,7 +527,7 @@ async fn fetch_free_collateral_usdc(client: &AuthClient) -> anyhow::Result<f64> 
     Ok((raw / 1_000_000.0).max(0.0))
 }
 
-async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<(f64, bool)> {
+async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<CollateralStatus> {
     use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
     use polymarket_client_sdk::clob::types::AssetType;
 
@@ -393,12 +537,24 @@ async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<(f64, bo
     let resp = client.balance_allowance(req).await?;
     let raw_balance = resp.balance.to_f64().unwrap_or(0.0);
     let free_balance = (raw_balance / 1_000_000.0).max(0.0);
-    let allowance_ok = resp.allowances.values().any(|v| {
-        v.parse::<Decimal>()
-            .map(|d| d > Decimal::ZERO)
-            .unwrap_or(false)
-    });
-    Ok((free_balance, allowance_ok))
+    let allowance_entries = resp.allowances.len();
+    let mut allowance_parseable = 0_usize;
+    let mut allowance_nonzero = 0_usize;
+    for value in resp.allowances.values() {
+        if let Some(parsed) = parse_u256_allowance(value) {
+            allowance_parseable += 1;
+            if !parsed.is_zero() {
+                allowance_nonzero += 1;
+            }
+        }
+    }
+    Ok(CollateralStatus {
+        free_balance,
+        allowance_ok: allowance_nonzero > 0,
+        allowance_entries,
+        allowance_parseable,
+        allowance_nonzero,
+    })
 }
 
 async fn run_dynamic_gross_refresher(
@@ -417,6 +573,16 @@ async fn run_dynamic_gross_refresher(
             Err(e) => debug!("dynamic gross refresh skipped: {:?}", e),
         }
     }
+}
+
+fn should_count_recycle_reject(cfg: &CapitalRecycleConfig, evt: &PlacementRejectEvent) -> bool {
+    if evt.kind != RejectKind::BalanceOrAllowance {
+        return false;
+    }
+    if cfg.only_hedge_rejects && evt.reason != BidReason::Hedge {
+        return false;
+    }
+    true
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -452,7 +618,7 @@ async fn try_recycle_merge(
         }
     }
 
-    let (free_balance, allowance_ok) = match fetch_collateral_status(client).await {
+    let status = match fetch_collateral_status(client).await {
         Ok(v) => v,
         Err(e) => {
             if matches!(trigger, RecycleTrigger::Reject) {
@@ -464,19 +630,28 @@ async fn try_recycle_merge(
         }
     };
     if let Some(ctx) = dynamic_gross_ctx {
-        publish_dynamic_max_side(ctx, free_balance, "recycler_probe");
+        publish_dynamic_max_side(ctx, status.free_balance, "recycler_probe");
     }
-    if !allowance_ok {
-        if matches!(trigger, RecycleTrigger::Reject) {
-            warn!(
-                "⚠️ Recycler skipped: collateral allowance appears zero; merge cannot fix allowance issues"
-            );
-        }
+    if !status.allowance_ok {
+        warn!(
+            "⚠️ Recycler skipped: skip_reason=allowance_zero free_balance={:.2} allowance_ok={} allowance_nonzero={} allowance_entries={} allowance_parseable={}",
+            status.free_balance,
+            status.allowance_ok,
+            status.allowance_nonzero,
+            status.allowance_entries,
+            status.allowance_parseable
+        );
         return;
     }
-    if free_balance >= cfg.low_water_usdc {
+    if status.free_balance >= cfg.low_water_usdc {
         if matches!(trigger, RecycleTrigger::Reject) {
             state.recent_rejects.clear();
+            debug!(
+                "Recycler skipped: skip_reason=free_balance_above_low_water free_balance={:.2} low_water={:.2} allowance_ok={}",
+                status.free_balance,
+                cfg.low_water_usdc,
+                status.allowance_ok
+            );
         }
         return;
     }
@@ -509,7 +684,7 @@ async fn try_recycle_merge(
         return;
     }
 
-    let batch_usdc = plan_merge_batch_usdc(cfg, free_balance, mergeable_f64);
+    let batch_usdc = plan_merge_batch_usdc(cfg, status.free_balance, mergeable_f64);
     if batch_usdc < cfg.min_executable_usdc {
         if matches!(trigger, RecycleTrigger::Reject) {
             warn!(
@@ -529,6 +704,14 @@ async fn try_recycle_merge(
         return;
     };
 
+    let evt_reason = if let Some(evt) = reject_event {
+        match evt.reason {
+            BidReason::Hedge => "Hedge",
+            BidReason::Provide => "Provide",
+        }
+    } else {
+        "Headroom"
+    };
     let evt_text = if let Some(evt) = reject_event {
         format!(
             "side={:?} reason={:?} price={:.3} size={:.1}",
@@ -538,10 +721,12 @@ async fn try_recycle_merge(
         "proactive headroom".to_string()
     };
     info!(
-        "♻️ Recycler trigger[{}]: rejects={} free={:.2} mergeable={:.2} -> merge {:.2} USDC ({})",
+        "♻️ Recycler trigger[{}]: evt.reason={} rejects={} free={:.2} allowance_ok={} mergeable={:.2} -> merge {:.2} USDC ({})",
         trigger.label(),
+        evt_reason,
         reject_count,
-        free_balance,
+        status.free_balance,
+        status.allowance_ok,
         mergeable_f64,
         batch_usdc,
         evt_text
@@ -574,7 +759,7 @@ async fn try_recycle_merge(
                 Ok(after) => {
                     info!(
                         "♻️ Recycler post-merge balance: before={:.2} after={:.2}",
-                        free_balance, after
+                        status.free_balance, after
                     );
                     if let Some(ctx) = dynamic_gross_ctx {
                         publish_dynamic_max_side(ctx, after, "recycler_post_merge");
@@ -662,10 +847,7 @@ async fn run_capital_recycler(
                 let Some(evt) = maybe_evt else {
                     break;
                 };
-                if evt.kind != RejectKind::BalanceOrAllowance {
-                    continue;
-                }
-                if cfg.only_hedge_rejects && evt.reason != BidReason::Hedge {
+                if !should_count_recycle_reject(&cfg, &evt) {
                     continue;
                 }
 
@@ -1189,6 +1371,125 @@ async fn maybe_log_claimable_positions(funder_address: Option<&str>, signer_addr
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn run_round_claim_window(
+    cfg: &AutoClaimConfig,
+    state: &mut AutoClaimState,
+    runner_cfg: &RoundClaimRunnerConfig,
+    ended_condition: Option<alloy::primitives::B256>,
+    funder_address: Option<&str>,
+    signer_address: Option<&str>,
+    private_key: Option<&str>,
+) -> anyhow::Result<()> {
+    if !cfg.enabled {
+        return Ok(());
+    }
+    if runner_cfg.retry_schedule.is_empty() {
+        return Ok(());
+    }
+
+    let (preferred_condition, fallback_global) = match runner_cfg.scope {
+        RoundClaimScope::EndedThenGlobal => (ended_condition, true),
+        RoundClaimScope::EndedOnly => (ended_condition, false),
+        RoundClaimScope::GlobalOnly => (None, true),
+    };
+
+    if matches!(
+        runner_cfg.scope,
+        RoundClaimScope::EndedOnly | RoundClaimScope::EndedThenGlobal
+    ) && preferred_condition.is_none()
+    {
+        warn!(
+            "⚠️ Round claim scope={} but ended condition is unavailable; fallback_global={}",
+            runner_cfg.scope.as_str(),
+            fallback_global
+        );
+    }
+
+    info!(
+        "💸 Round claim runner start: window={}s mode={} scope={} schedule=[{}] ended_condition={}",
+        runner_cfg.window.as_secs(),
+        runner_cfg.retry_mode.as_str(),
+        runner_cfg.scope.as_str(),
+        runner_cfg.retry_schedule_text(),
+        preferred_condition
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".to_string())
+    );
+
+    let start = Instant::now();
+    let mut attempts = 0_usize;
+    let mut errors = 0_usize;
+    let mut last_error: Option<String> = None;
+
+    for delay in &runner_cfg.retry_schedule {
+        if *delay > runner_cfg.window {
+            continue;
+        }
+        let elapsed = start.elapsed();
+        if *delay > elapsed {
+            sleep(*delay - elapsed).await;
+        }
+        if start.elapsed() > runner_cfg.window {
+            break;
+        }
+
+        attempts += 1;
+        info!(
+            "💸 Round claim retry {}/{} at +{}s",
+            attempts,
+            runner_cfg.retry_schedule.len(),
+            start.elapsed().as_secs()
+        );
+
+        match run_auto_claim_once(
+            cfg,
+            state,
+            funder_address,
+            signer_address,
+            private_key,
+            preferred_condition,
+            fallback_global,
+            true,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                info!(
+                    "💸 Round claim result: positions={} candidates={} claimed={} dry_run={}",
+                    outcome.positions, outcome.candidates, outcome.claimed, cfg.dry_run
+                );
+                if outcome.succeeded(cfg.dry_run) {
+                    info!(
+                        "✅ Round claim runner completed within SLA (attempt={}, elapsed={}s)",
+                        attempts,
+                        start.elapsed().as_secs()
+                    );
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                errors += 1;
+                last_error = Some(format!("{:?}", e));
+                warn!(
+                    "⚠️ Round claim retry failed at +{}s: {:?}",
+                    start.elapsed().as_secs(),
+                    e
+                );
+            }
+        }
+    }
+
+    warn!(
+        "⚠️ Round claim runner SLA exhausted: window={}s attempts={} errors={} last_error={}",
+        runner_cfg.window.as_secs(),
+        attempts,
+        errors,
+        last_error.unwrap_or_else(|| "none".to_string())
+    );
+    Ok(())
+}
+
 // ─────────────────────────────────────────────────────────
 // WS Parsing helpers
 // ─────────────────────────────────────────────────────────
@@ -1642,6 +1943,7 @@ async fn main() -> anyhow::Result<()> {
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg_base = CoordinatorConfig::from_env();
     let mut auto_claim_cfg = AutoClaimConfig::from_env();
+    let round_claim_cfg = RoundClaimRunnerConfig::from_env();
     let recycle_cfg = CapitalRecycleConfig::from_env();
     let mut auto_claim_state = AutoClaimState::default();
 
@@ -1728,6 +2030,13 @@ async fn main() -> anyhow::Result<()> {
             auto_claim_cfg.dry_run,
             auto_claim_cfg.relayer_wait_confirm,
             auto_claim_cfg.relayer_wait_timeout.as_secs()
+        );
+        info!(
+            "💸 Round-claim SLA: window={}s mode={} scope={} schedule=[{}]",
+            round_claim_cfg.window.as_secs(),
+            round_claim_cfg.retry_mode.as_str(),
+            round_claim_cfg.scope.as_str(),
+            round_claim_cfg.retry_schedule_text()
         );
     }
     if recycle_cfg.enabled {
@@ -1882,22 +2191,10 @@ async fn main() -> anyhow::Result<()> {
 
             match client.balance_allowance(req).await {
                 Ok(resp) => {
-                    let parse_u256 = |raw: &str| -> Option<U256> {
-                        let s = raw.trim().split('.').next().unwrap_or(raw.trim());
-                        if s.is_empty() {
-                            return None;
-                        }
-                        if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-                            U256::from_str_radix(hex, 16).ok()
-                        } else {
-                            U256::from_str_radix(s, 10).ok()
-                        }
-                    };
-
                     let max_allowance = resp
                         .allowances
                         .values()
-                        .filter_map(|v| parse_u256(v))
+                        .filter_map(|v| parse_u256_allowance(v))
                         .max()
                         .unwrap_or(U256::ZERO);
                     let main_cfg = contract_config(POLYGON, false);
@@ -1917,7 +2214,7 @@ async fn main() -> anyhow::Result<()> {
                     for (label, maybe_addr) in expected_spenders {
                         if let Some(addr) = maybe_addr {
                             let raw = resp.allowances.get(&addr).cloned().unwrap_or_default();
-                            let parsed = parse_u256(&raw).unwrap_or(U256::ZERO);
+                            let parsed = parse_u256_allowance(&raw).unwrap_or(U256::ZERO);
                             info!(
                                 "💳 Preflight allowance[{label}] {} raw='{}' parsed={}",
                                 addr, raw, parsed
@@ -1954,7 +2251,7 @@ async fn main() -> anyhow::Result<()> {
                                 let probe_max = probe
                                     .allowances
                                     .values()
-                                    .filter_map(|v| parse_u256(v))
+                                    .filter_map(|v| parse_u256_allowance(v))
                                     .max()
                                     .unwrap_or(U256::ZERO);
                                 info!(
@@ -2558,16 +2855,19 @@ async fn main() -> anyhow::Result<()> {
         if !dry_run {
             maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref())
                 .await;
-            if let Err(e) = maybe_auto_claim(
+            let ended_condition = market_id.parse::<alloy::primitives::B256>().ok();
+            if let Err(e) = run_round_claim_window(
                 &auto_claim_cfg,
                 &mut auto_claim_state,
+                &round_claim_cfg,
+                ended_condition,
                 funder_address.as_deref(),
                 signer_address.as_deref(),
                 base_settings.private_key.as_deref(),
             )
             .await
             {
-                warn!("⚠️ Auto-claim runner failed after round cleanup: {:?}", e);
+                warn!("⚠️ Round claim runner failed after market end: {:?}", e);
             }
         }
 
@@ -2718,5 +3018,55 @@ mod tests {
             join_res.unwrap_err().is_cancelled(),
             "Ping task must be cancelled on WS exit"
         );
+    }
+
+    #[test]
+    fn test_parse_u256_allowance_supports_huge_values() {
+        let huge = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+        let parsed = parse_u256_allowance(huge).expect("must parse large allowance");
+        assert!(!parsed.is_zero(), "large allowance should be non-zero");
+    }
+
+    #[test]
+    fn test_recycler_reject_filter_accepts_provide_when_not_hedge_only() {
+        let mut cfg = CapitalRecycleConfig {
+            enabled: true,
+            only_hedge_rejects: false,
+            trigger_rejects: 2,
+            trigger_window: Duration::from_secs(90),
+            proactive_headroom: true,
+            headroom_poll: Duration::from_secs(5),
+            cooldown: Duration::from_secs(120),
+            max_merges_per_round: 2,
+            low_water_usdc: 6.0,
+            target_free_usdc: 18.0,
+            min_batch_usdc: 10.0,
+            max_batch_usdc: 30.0,
+            shortfall_multiplier: 1.2,
+            min_executable_usdc: 5.0,
+        };
+        let evt = PlacementRejectEvent {
+            side: Side::Yes,
+            reason: BidReason::Provide,
+            kind: RejectKind::BalanceOrAllowance,
+            price: 0.51,
+            size: 5.0,
+            ts: Instant::now(),
+        };
+        assert!(should_count_recycle_reject(&cfg, &evt));
+
+        cfg.only_hedge_rejects = true;
+        assert!(
+            !should_count_recycle_reject(&cfg, &evt),
+            "hedge-only mode should ignore provide rejects"
+        );
+    }
+
+    #[test]
+    fn test_round_claim_schedule_normalization() {
+        let parsed = parse_retry_schedule_secs("27,2,5,9,14,20,0,40");
+        assert_eq!(parsed, vec![27, 2, 5, 9, 14, 20, 0, 40]);
+        let normalized = normalize_retry_schedule_secs(parsed, 30);
+        assert_eq!(normalized, vec![0, 2, 5, 9, 14, 20, 27]);
     }
 }
