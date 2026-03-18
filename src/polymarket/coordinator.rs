@@ -740,7 +740,18 @@ impl StrategyCoordinator {
             raw_no -= overflow / 2.0;
         }
 
-        // 2. Strict Maker Clamp (same safety-margin logic as aggressive_price)
+        // 2. Inventory Cost Clamp (CRITICAL FIX for >1.00 pair costs)
+        // If we already hold inventory on the opposite side, we MUST NOT bid higher than
+        // what would guarantee our pair_target profit margin.
+        // E.g., if target is 0.98, and we hold YES at 0.44, we can NEVER pay more than 0.54 for NO.
+        if inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
+            raw_yes = f64::min(raw_yes, self.cfg.pair_target - inv.no_avg_cost);
+        }
+        if inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 {
+            raw_no = f64::min(raw_no, self.cfg.pair_target - inv.yes_avg_cost);
+        }
+
+        // 3. Strict Maker Clamp (same safety-margin logic as aggressive_price)
         let yes_safety_margin = self.post_only_safety_margin(ub.yes_bid, ub.yes_ask);
         let no_safety_margin = self.post_only_safety_margin(ub.no_bid, ub.no_ask);
 
