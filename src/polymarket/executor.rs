@@ -896,14 +896,17 @@ impl Executor {
                 let err_text_lower = err_text.to_ascii_lowercase();
                 let is_429 = Self::is_rate_limit_error(&err_text_lower);
                 let is_balance = Self::is_balance_or_allowance_error(&err_text_lower);
+                let is_liquidity = err_text_lower.contains("no orders found to match")
+                    || err_text_lower.contains("no opposing orders");
                 let is_validation = Self::is_validation_error(&err_text_lower);
                 let is_accuracy_precision = err_text_lower.contains("invalid amounts")
                     || err_text_lower.contains("max accuracy");
+
                 let reject_kind = if is_429 {
                     RejectKind::RateLimit
                 } else if is_balance {
                     RejectKind::BalanceOrAllowance
-                } else if is_validation {
+                } else if is_validation || is_liquidity {
                     RejectKind::Validation
                 } else {
                     RejectKind::Other
@@ -912,6 +915,8 @@ impl Executor {
                     10_000
                 } else if is_balance {
                     30_000
+                } else if is_liquidity {
+                    15_000
                 } else if is_accuracy_precision {
                     10_000
                 } else if is_validation {
@@ -1235,12 +1240,15 @@ impl Executor {
         }
         let shares = rust_decimal::Decimal::from_f64(size_rounded)
             .ok_or_else(|| anyhow::anyhow!("Invalid taker size"))?;
-        let amount = Amount::shares(shares).context("Invalid taker share amount")?;
 
+        let price_decimal = rust_decimal::Decimal::from_f64(0.99)
+            .ok_or_else(|| anyhow::anyhow!("Invalid price"))?;
+            
         let order = client
-            .market_order()
+            .limit_order()
             .token_id(token_id_uint)
-            .amount(amount)
+            .size(shares)
+            .price(price_decimal)
             .side(SdkSide::Buy)
             .order_type(OrderType::FAK)
             .build()
@@ -1317,6 +1325,8 @@ impl Executor {
             || lower.contains("rounds to 0")
             || lower.contains("invalid amounts")
             || lower.contains("max accuracy")
+            || lower.contains("no orders found to match")
+            || lower.contains("no opposing orders")
             || Self::is_marketable_min_error(lower)
     }
 
@@ -1556,6 +1566,12 @@ mod tests {
         ));
         assert!(Executor::is_validation_error(
             "taker amount a max accuracy of 4 decimals"
+        ));
+        assert!(Executor::is_validation_error(
+            "no orders found to match with fak order"
+        ));
+        assert!(Executor::is_validation_error(
+            "validation: invalid: no opposing orders"
         ));
     }
 }

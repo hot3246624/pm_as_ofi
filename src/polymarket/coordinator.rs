@@ -110,7 +110,7 @@ impl Default for CoordinatorConfig {
             post_only_extra_tight_ticks: 1.0,
             reprice_threshold: 0.010, // Increased to reduce churn (1 cent drift)
             debounce_ms: 500,         // Increased to reduce churn (half second)
-            as_skew_factor: 0.03,     // Original strictly conservative A-S
+            as_skew_factor: 0.08,     // Original strictly conservative A-S
             as_time_decay_k: 2.0,     // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
