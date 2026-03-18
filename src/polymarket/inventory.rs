@@ -51,7 +51,6 @@ impl InventoryConfig {
         if let Ok(v) = std::env::var("PM_MAX_PORTFOLIO_COST") {
             if let Ok(f) = v.parse::<f64>() {
                 // Note: max_portfolio_cost in InventoryConfig is informational only.
-                // Risk clamping via PM_MAX_LOSS_PCT is enforced in CoordinatorConfig.
                 cfg.max_portfolio_cost = f;
             }
         }

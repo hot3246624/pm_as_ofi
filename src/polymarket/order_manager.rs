@@ -15,6 +15,8 @@ pub enum OrderState {
     Idle,
     /// We have sent a PlacePostOnlyBid to Executor, waiting for it to land.
     PendingSubmit(DesiredTarget),
+    /// We have sent a one-shot taker hedge to Executor, waiting for completion.
+    PendingTaker(f64),
     /// Order is confirmed placed on the network.
     Live(DesiredTarget),
     /// We have sent a CancelSide to Executor, waiting for CancelAck or failure.
@@ -34,6 +36,8 @@ pub struct SideTracker {
     /// BUG 2 FIX: Respect the cooldown sent by Executor on balance/allowance errors.
     /// Pump is a no-op until this instant passes.
     pub cooldown_until: Option<Instant>,
+    /// Pending one-shot taker hedge size on this side.
+    pub pending_taker_size: Option<f64>,
 }
 
 impl SideTracker {
@@ -45,6 +49,7 @@ impl SideTracker {
             state: OrderState::Idle,
             last_action: Instant::now(),
             cooldown_until: None,
+            pending_taker_size: None,
         }
     }
 }
@@ -89,11 +94,17 @@ impl OrderManager {
                             self.handle_clear(side, reason).await;
                             self.pump(side).await;
                         }
+                        Some(OrderManagerCmd::OneShotTakerHedge { side, size }) => {
+                            self.handle_one_shot_taker(side, size).await;
+                            self.pump(side).await;
+                        }
                         Some(OrderManagerCmd::CancelAll) => {
                             self.yes.desired = None;
                             self.yes.clear_reason = CancelReason::Shutdown;
+                            self.yes.pending_taker_size = None;
                             self.no.desired = None;
                             self.no.clear_reason = CancelReason::Shutdown;
+                            self.no.pending_taker_size = None;
                             self.pump(Side::Yes).await;
                             self.pump(Side::No).await;
                         }
@@ -110,6 +121,9 @@ impl OrderManager {
                         }
                         Some(OrderResult::OrderFilled { side }) => {
                             self.handle_filled(side).await;
+                        }
+                        Some(OrderResult::TakerHedgeDone { side }) => {
+                            self.handle_taker_done(side).await;
                         }
                         Some(OrderResult::CancelAck { side }) => {
                             self.handle_cancel_ack(side).await;
@@ -132,6 +146,7 @@ impl OrderManager {
             tracker.desired = None;
         } else {
             tracker.desired = Some(target);
+            tracker.pending_taker_size = None;
         }
     }
 
@@ -142,6 +157,18 @@ impl OrderManager {
         };
         tracker.desired = None;
         tracker.clear_reason = reason;
+    }
+
+    async fn handle_one_shot_taker(&mut self, side: Side, size: f64) {
+        if size <= 0.0 {
+            return;
+        }
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        tracker.desired = None;
+        tracker.pending_taker_size = Some(size);
     }
 
     async fn handle_placed(&mut self, side: Side, target: DesiredTarget) {
@@ -196,6 +223,18 @@ impl OrderManager {
         self.pump(side).await;
     }
 
+    async fn handle_taker_done(&mut self, side: Side) {
+        let tracker = match side {
+            Side::Yes => &mut self.yes,
+            Side::No => &mut self.no,
+        };
+        info!("✅ OMS: {:?} Taker hedge done -> Idle", side);
+        tracker.state = OrderState::Idle;
+        tracker.pending_taker_size = None;
+        tracker.desired = None;
+        self.pump(side).await;
+    }
+
     async fn handle_cancel_ack(&mut self, side: Side) {
         let tracker = match side {
             Side::Yes => &mut self.yes,
@@ -223,8 +262,10 @@ impl OrderManager {
 
         // Watchdog: prevent permanent deadlock if Executor feedback is dropped.
         // Safety is preserved by Executor's open_orders guard (no double placement).
-        let submit_timed_out = matches!(tracker.state, OrderState::PendingSubmit(_))
-            && tracker.last_action.elapsed() > PENDING_SUBMIT_TIMEOUT;
+        let submit_timed_out = matches!(
+            tracker.state,
+            OrderState::PendingSubmit(_) | OrderState::PendingTaker(_)
+        ) && tracker.last_action.elapsed() > PENDING_SUBMIT_TIMEOUT;
         if submit_timed_out {
             warn!(
                 "⚠️ OMS: {:?} PendingSubmit timeout (>{}s) — forcing progress",
@@ -275,6 +316,13 @@ impl OrderManager {
 
         match current_state {
             OrderState::Idle => {
+                if let Some(size) = tracker.pending_taker_size {
+                    let cmd = ExecutionCmd::PlaceTakerHedge { side, size };
+                    tracker.state = OrderState::PendingTaker(size);
+                    tracker.last_action = Instant::now();
+                    let _ = self.exec_tx.send(cmd).await;
+                    return;
+                }
                 if let Some(desired) = &tracker.desired {
                     let cmd = ExecutionCmd::PlacePostOnlyBid {
                         side: desired.side,
@@ -300,7 +348,23 @@ impl OrderManager {
                     // Submitting A, but want None. Need to wait for Live/Failed to Cancel.
                 }
             }
+            OrderState::PendingTaker(_) => {
+                // Wait for TakerHedgeDone / OrderFailed.
+            }
             OrderState::Live(live) => {
+                if tracker.pending_taker_size.is_some() {
+                    // One-shot taker must preempt any resting order on the same side.
+                    let _ = self
+                        .exec_tx
+                        .send(ExecutionCmd::CancelSide {
+                            side,
+                            reason: CancelReason::Reprice,
+                        })
+                        .await;
+                    tracker.state = OrderState::PendingCancel(Some(live));
+                    tracker.last_action = Instant::now();
+                    return;
+                }
                 if let Some(desired) = &tracker.desired {
                     if live == *desired {
                         // Perfect, our live order matches what we want.
@@ -333,5 +397,132 @@ impl OrderManager {
                 // Wait for CancelAck. Do nothing. If `desired` changed, we'll pick it up when Idle.
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{timeout, Duration};
+
+    fn target(
+        side: Side,
+        price: f64,
+        size: f64,
+        reason: super::super::messages::BidReason,
+    ) -> DesiredTarget {
+        DesiredTarget {
+            side,
+            price,
+            size,
+            reason,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_one_shot_taker_dispatches_execution_cmd() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (exec_tx, mut exec_rx) = mpsc::channel(8);
+        let (result_tx, result_rx) = mpsc::channel(8);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
+        let h = tokio::spawn(om.run());
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::OneShotTakerHedge {
+                side: Side::Yes,
+                size: 2.0,
+            })
+            .await;
+
+        let cmd = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        match cmd {
+            ExecutionCmd::PlaceTakerHedge { side, size } => {
+                assert_eq!(side, Side::Yes);
+                assert!((size - 2.0).abs() < 1e-9);
+            }
+            other => panic!("expected PlaceTakerHedge, got {:?}", other),
+        }
+
+        let _ = result_tx
+            .send(OrderResult::TakerHedgeDone { side: Side::Yes })
+            .await;
+        drop(cmd_tx);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_one_shot_taker_cancels_live_then_places() {
+        use super::super::messages::BidReason;
+
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, mut exec_rx) = mpsc::channel(16);
+        let (result_tx, result_rx) = mpsc::channel(16);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
+        let h = tokio::spawn(om.run());
+
+        // Establish a live order on YES.
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                Side::Yes,
+                0.45,
+                5.0,
+                BidReason::Provide,
+            )))
+            .await;
+        let first = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(first, ExecutionCmd::PlacePostOnlyBid { .. }));
+        let _ = result_tx
+            .send(OrderResult::OrderPlaced {
+                side: Side::Yes,
+                target: target(Side::Yes, 0.45, 5.0, BidReason::Provide),
+            })
+            .await;
+
+        // Now request one-shot taker hedge on the same side.
+        let _ = cmd_tx
+            .send(OrderManagerCmd::OneShotTakerHedge {
+                side: Side::Yes,
+                size: 2.0,
+            })
+            .await;
+
+        let cancel = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(
+            cancel,
+            ExecutionCmd::CancelSide {
+                side: Side::Yes,
+                ..
+            }
+        ));
+
+        // After cancel ack, OMS should place one-shot taker hedge.
+        let _ = result_tx
+            .send(OrderResult::CancelAck { side: Side::Yes })
+            .await;
+        let taker = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        match taker {
+            ExecutionCmd::PlaceTakerHedge { side, size } => {
+                assert_eq!(side, Side::Yes);
+                assert!((size - 2.0).abs() < 1e-9);
+            }
+            other => panic!("expected PlaceTakerHedge, got {:?}", other),
+        }
+
+        drop(cmd_tx);
+        let _ = h.await;
     }
 }

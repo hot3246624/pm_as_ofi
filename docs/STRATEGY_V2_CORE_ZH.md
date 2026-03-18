@@ -1,4 +1,4 @@
-# Polymarket V2 Maker-Only 策略核心指南
+# Polymarket V2 Maker-First 策略核心指南
 
 本文档是 `pm_as_ofi` 交易引擎的唯一事实来源（Single Source of Truth）。涵盖了驱动机器人的数学模型、决策循环和风险管理系统。
 
@@ -78,12 +78,13 @@ graph TD
 - **天花板阶跃**:
   - `|net_diff| < max_net_diff` → `hedge_target = pair_target`（正常利润线）
   - `|net_diff| >= max_net_diff` → `hedge_target = max_portfolio_cost`（救火线）
+- **库存成本钳制护栏**：若 `pair_target - 对侧avg_cost <= tick_size`，该侧 Provide 直接停挂（不再降到 `0.01` 试单），避免无意义低价噪声单。
 - **库存闸门**：对冲走 `can_hedge_buy_*`（仅净仓门禁）优先去方向风险；Provide 仍走 `can_buy_*`（净仓+单侧）约束绝对暴露。
 
 ### C. "Emergency Rescue" 救火机制 (风险最小化)
 仅在库存超出 `max_net_diff` 时触发。
-- **目标**：即使以保本或轻微损失（≤ `PM_MAX_LOSS_PCT` = 2%）的价格，也要关闭方向性风险。
-- **硬性约束**：`max_portfolio_cost ≤ 1 + PM_MAX_LOSS_PCT`（由 `CoordinatorConfig::from_env` 执行钳制）。
+- **目标**：在常规 maker 对冲路径下，允许使用 `max_portfolio_cost` 作为救火天花板以优先去方向风险。
+- **说明**：`PM_MAX_LOSS_PCT` 已弃用，不再钳制 `max_portfolio_cost`。
 
 ### D. 库存闸门（系统级分层门禁）
 
@@ -118,15 +119,21 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 - toxic 退出阈值基于“进入 toxic 时的阈值”冻结计算，避免自适应阈值上抬导致误恢复。
 - `PM_OFI_ADAPTIVE_RISE_CAP_PCT` 限制每个心跳周期的阈值上升幅度，抑制 moving-target 漂移。
 - Coordinator 侧增加恢复冷却（`PM_TOXIC_RECOVERY_HOLD_MS`），避免阈值边缘的撤挂振荡。
+- 按周期调参建议（不新增参数）：
+  - `5m`：`window=3000, k=3.0, enter=0.45, exit=0.30`
+  - `15m`（推荐）：`window=4500, k=4.0, enter=0.65, exit=0.40`
+  - `1h`：`window=6000, k=4.5, enter=0.70, exit=0.45`
 
 ### 收盘分段风控（Endgame）
-为避免临收盘“补仓-反向-再补仓”振荡，Coordinator 在市场尾段采用三段门控：
-- **SoftClose**（默认 5m 市场 `35s`）：仅禁止“继续增加当前净敞口方向”的 provide。
-- **HardClose**（默认 5m 市场 `12s`）：停止全部 provide，仅允许 hedge 去净仓。
-- **Freeze**（默认 5m 市场 `2s`）：停止发新单并清空目标，仅保留撤单/回报处理。
+为避免临收盘“补仓-反向-再补仓”振荡，同时保留最后去风险机会，Coordinator 在市场尾段采用三段门控：
+- **SoftClose**（默认 5m 市场 `60s`）：停止全部 provide，进入 hedge-only。
+- **HardClose**（默认 5m 市场 `30s`）：启用 edge-aware 模式。
+  - 若主持仓侧 `best_bid / avg_cost >= PM_ENDGAME_EDGE_KEEP_MULT`（默认 `1.5`），允许保留净仓并持续监控；
+  - 监控中若跌破 `PM_ENDGAME_EDGE_EXIT_MULT`（默认 `1.25`），立即执行 one-shot taker 全量去风险（`size=abs(net_diff)`）。
+- **Freeze**（默认 5m 市场 `2s`）：风险冻结，禁止新增风险单，但继续允许去风险（含 taker hedge）。
 
 默认值按周期自动选择：
-- `5m: 35/12/2`
+- `5m: 60/30/2`
 - `15m: 90/30/3`
 - `1h: 180/60/5`
 - `>=4h: 600/180/8`
@@ -141,8 +148,8 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 - **30s 极端失效**：任一侧 30s 无有效盘口，清空双边停止报价。
 - **PM_COORD_WATCHDOG_MS**：Coordinator 周期看门狗；即使 WS 暂时静默，也会持续执行 stale/toxic 风控检查。
 
-### Maker-Only 防护
-机器人永远不会成为 Taker。计算价格后自动钳位在 `best_ask - tick_size` 以下，防止 Post-Only 订单被拒绝。
+### Maker-First 防护
+系统默认采用 Maker-First 报价（Post-Only）；仅在尾盘 HardClose/Freeze 的强制去风险路径上允许 one-shot taker hedge。
 
 ### Marketable BUY 最小名义额与防拒单风暴
 交易所可能对极小金额的 **marketable BUY**（例如 `< $1`）做校验拒单；而低价区被动 maker 成交仍可能发生，这两者并不矛盾。
@@ -223,13 +230,15 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 | `PM_OFI_MIN_TOXIC_MS` | ms | OFI 毒性最短保持时间 | 抑制阈值边缘快速翻转 |
 | `PM_TOXIC_RECOVERY_HOLD_MS` | ms | Coordinator 恢复冷却窗口 | 防止“撤-挂-撤-挂”抖动 |
 | `PM_AS_TIME_DECAY_K` | 系数 | 时间衰减放大倍数 | 0.0=禁用 2.0=到期时 3× skew |
-| `PM_MAX_PORTFOLIO_COST` | 成本 | 絶对生存成本天花板 | 仅用于救火模式 |
-| `PM_MAX_LOSS_PCT` | 小数 | 救火模式最大亏损比例 | 钳制 max_portfolio_cost ≤ 1+pct |
+| `PM_MAX_PORTFOLIO_COST` | 成本 | 絶对生存成本天花板 | 仅用于常规 maker 对冲/救火定价 |
+| `PM_MAX_LOSS_PCT` | 小数 | 已弃用参数 | 读取后仅告警，策略逻辑忽略 |
 | `PM_STALE_TTL_MS` | ms | 数据新鲜度熔断阈值 | 单侧超时即撤单该侧 |
 | `PM_COORD_WATCHDOG_MS` | ms | Coordinator 看门狗心跳 | 无新行情事件时仍执行 stale/toxic 检查 |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | sec | 收盘 SoftClose 窗口 | 禁止增加当前净敞口方向的 provide |
-| `PM_ENDGAME_HARD_CLOSE_SECS` | sec | 收盘 HardClose 窗口 | 停止 provide，仅允许 hedge |
-| `PM_ENDGAME_FREEZE_SECS` | sec | 收盘 Freeze 窗口 | 停止发新单并清空目标 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | sec | 收盘 SoftClose 窗口 | 停止 provide，进入 hedge-only |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | sec | 收盘 HardClose 窗口 | edge-aware：优势保留 / 触发 taker 全量去风险 |
+| `PM_ENDGAME_FREEZE_SECS` | sec | 收盘 Freeze 窗口 | 风险冻结：禁止新增风险，保留去风险 |
+| `PM_ENDGAME_EDGE_KEEP_MULT` | 小数 | HardClose 入场保留阈值 | `best_bid/avg_cost >= keep` 才保留净仓 |
+| `PM_ENDGAME_EDGE_EXIT_MULT` | 小数 | HardClose 退出阈值 | 跌破即触发全量去风险 |
 | `PM_DEBOUNCE_MS` | ms | 提供单防抖间隔 | 避免高频重复报价 |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | 对冲单防抖间隔 | 对冲更紧急，默认 100ms |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | 订单对账周期 | REST 定期对账修复 WS 盲区 |
@@ -256,7 +265,7 @@ OFI 引擎监控 3s 滑动窗口的订单流不平衡。某一侧触发毒性时
 对冲天花板阶跃公式：
 ```
 hedge_target = if abs(net_diff) >= max_net_diff {
-                 max_portfolio_cost   // 救火线（≤ 1 + PM_MAX_LOSS_PCT）
+                 max_portfolio_cost   // 救火线
                } else {
                  pair_target          // 正常利润线
                }

@@ -1,12 +1,13 @@
-//! Executor Actor — Maker-Only order management.
+//! Executor Actor — order management.
 //!
 //! Tracks active open orders in a `HashMap<Side, Vec<String>>`.
-//! All orders are Post-Only (maker limit bids).
+//! Default path is Post-Only maker bids, with a dedicated one-shot taker hedge
+//! path for tail-risk de-risking.
 //!
 //! CRITICAL: The Executor NEVER emits FillEvents.
 //! Fills come exclusively from the authenticated User WebSocket.
 //!
-//! On order placement failure, sends OrderResult::OrderFailed to Coordinator
+//! On order placement failure, sends OrderResult::OrderFailed to OMS
 //! to prevent ghost slot states.
 
 use std::collections::HashMap;
@@ -161,7 +162,7 @@ impl Executor {
 
     pub async fn run(mut self) {
         info!(
-            "⚡ Executor started [MAKER-ONLY] | dry_run={} has_client={}",
+            "⚡ Executor started | dry_run={} has_client={}",
             self.cfg.dry_run,
             self.client.is_some(),
         );
@@ -177,6 +178,9 @@ impl Executor {
                     match cmd {
                         Some(ExecutionCmd::PlacePostOnlyBid { side, price, size, reason }) => {
                             self.handle_place_bid(side, price, size, reason).await;
+                        }
+                        Some(ExecutionCmd::PlaceTakerHedge { side, size }) => {
+                            self.handle_place_taker_hedge(side, size).await;
                         }
                         Some(ExecutionCmd::CancelOrder { order_id, reason }) => {
                             let _ = self.handle_cancel_order(&order_id, reason).await;
@@ -817,6 +821,118 @@ impl Executor {
     }
 
     // ─────────────────────────────────────────────────
+    // One-shot Taker Hedge (FAK market order)
+    // ─────────────────────────────────────────────────
+
+    async fn handle_place_taker_hedge(&mut self, side: Side, size: f64) {
+        info!("📤 TAKER-HEDGE {:?} size={:.2}", side, size);
+
+        // CLOB lot-size floor (2dp). Skip impossible requests without retry storm.
+        if size < 0.01 {
+            warn!(
+                "🚫 Skip taker hedge {:?}: size {:.4} below executable lot floor 0.01",
+                side, size
+            );
+            let _ = self
+                .result_tx
+                .send(OrderResult::TakerHedgeDone { side })
+                .await;
+            return;
+        }
+
+        if self.cfg.dry_run || self.client.is_none() {
+            info!("📝 [DRY-RUN] Taker hedge {:?} size={:.2}", side, size);
+            let _ = self
+                .result_tx
+                .send(OrderResult::TakerHedgeDone { side })
+                .await;
+            return;
+        }
+
+        // OMS should cancel same-side rest orders before this command.
+        // Keep a hard guard here to avoid accidental mixed maker+taker on same side.
+        let existing_count = self
+            .open_orders
+            .get(&side)
+            .map(|existing| existing.len())
+            .unwrap_or(0);
+        if existing_count > 0 {
+            warn!(
+                "🚫 Refusing TakerHedge {:?}: {} tracked order(s) still open on side",
+                side, existing_count
+            );
+            if self.last_guard_reconcile_ts.elapsed() >= Duration::from_millis(1500)
+                && !self.cfg.dry_run
+                && self.client.is_some()
+            {
+                self.last_guard_reconcile_ts = Instant::now();
+                self.reconcile_open_orders().await;
+            }
+            let _ = self
+                .result_tx
+                .send(OrderResult::OrderFailed {
+                    side,
+                    cooldown_ms: 2_000,
+                })
+                .await;
+            return;
+        }
+
+        match self.place_taker_hedge_order(side, size).await {
+            Ok(order_id) => {
+                info!(
+                    "✅ Taker hedge accepted: {:?} size={:.2} id={}",
+                    side, size, order_id
+                );
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::TakerHedgeDone { side })
+                    .await;
+            }
+            Err(e) => {
+                warn!("❌ Failed taker hedge {:?}: {:?}", side, e);
+                let err_text = format!("{:#}", e);
+                let err_text_lower = err_text.to_ascii_lowercase();
+                let is_429 = Self::is_rate_limit_error(&err_text_lower);
+                let is_balance = Self::is_balance_or_allowance_error(&err_text_lower);
+                let is_validation = Self::is_validation_error(&err_text_lower);
+                let reject_kind = if is_429 {
+                    RejectKind::RateLimit
+                } else if is_balance {
+                    RejectKind::BalanceOrAllowance
+                } else if is_validation {
+                    RejectKind::Validation
+                } else {
+                    RejectKind::Other
+                };
+                let cooldown_ms = if is_429 {
+                    10_000
+                } else if is_balance {
+                    30_000
+                } else if is_validation {
+                    2_000
+                } else {
+                    0
+                };
+                let _ = self
+                    .emit_reject_event(PlacementRejectEvent {
+                        side,
+                        reason: BidReason::Hedge,
+                        kind: reject_kind,
+                        price: 0.0,
+                        size,
+                        ts: Instant::now(),
+                    })
+                    .await;
+                let _ = self
+                    .result_tx
+                    .send(OrderResult::OrderFailed { side, cooldown_ms })
+                    .await;
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────────────
     // Cancel operations
     // ─────────────────────────────────────────────────
 
@@ -1081,6 +1197,70 @@ impl Executor {
         // Fills come exclusively from the authenticated User WebSocket.
 
         Ok(order_id)
+    }
+
+    async fn place_taker_hedge_order(&self, side: Side, size: f64) -> anyhow::Result<String> {
+        use polymarket_client_sdk::clob::types::{
+            Amount, OrderStatusType, OrderType, Side as SdkSide,
+        };
+
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No authenticated client"))?;
+        let signer = self
+            .signer
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("No signer"))?;
+
+        let token_id = match side {
+            Side::Yes => &self.cfg.yes_asset_id,
+            Side::No => &self.cfg.no_asset_id,
+        };
+        let token_id_uint =
+            alloy::primitives::U256::from_str_radix(token_id, 10).context("Invalid token_id")?;
+
+        // Market/FAK path: keep share size aligned to CLOB lot precision (2dp).
+        let size_rounded = (size * 100.0).floor() / 100.0;
+        if size_rounded < 0.01 {
+            anyhow::bail!("size {:.6} rounds to 0 at 2dp — skipping", size);
+        }
+        let shares = rust_decimal::Decimal::from_f64(size_rounded)
+            .ok_or_else(|| anyhow::anyhow!("Invalid taker size"))?;
+        let amount = Amount::shares(shares).context("Invalid taker share amount")?;
+
+        let order = client
+            .market_order()
+            .token_id(token_id_uint)
+            .amount(amount)
+            .side(SdkSide::Buy)
+            .order_type(OrderType::FAK)
+            .build()
+            .await?;
+
+        let signed = client.sign(signer, order).await?;
+        let response = client.post_order(signed).await?;
+
+        if !response.success {
+            anyhow::bail!(
+                "post_order rejected: status={:?} error={:?}",
+                response.status,
+                response.error_msg.unwrap_or_default(),
+            );
+        }
+
+        if !matches!(
+            response.status,
+            OrderStatusType::Live | OrderStatusType::Matched | OrderStatusType::Delayed
+        ) {
+            anyhow::bail!(
+                "taker hedge unexpected status: {:?} error={:?}",
+                response.status,
+                response.error_msg.unwrap_or_default(),
+            );
+        }
+
+        Ok(response.order_id)
     }
 
     fn extract_min_tick_size(err: &str) -> Option<f64> {

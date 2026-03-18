@@ -72,12 +72,14 @@
 | `PM_AS_SKEW_FACTOR` | `0.03` | factor | 库存偏斜系数 |
 | `PM_AS_TIME_DECAY_K` | `2.0` | factor | 临期 skew 放大系数 |
 | `PM_STALE_TTL_MS` | `3000` | ms | 单侧 stale 熔断阈值 |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | auto | sec | 收盘 SoftClose 窗口；禁止增加当前净敞口方向的 provide |
-| `PM_ENDGAME_HARD_CLOSE_SECS` | auto | sec | 收盘 HardClose 窗口；停止 provide，仅允许 hedge |
-| `PM_ENDGAME_FREEZE_SECS` | auto | sec | 收盘 Freeze 窗口；停止发新单并清空目标 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | auto | sec | 收盘 SoftClose 窗口；停止 provide，进入 hedge-only |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | auto | sec | 收盘 HardClose 窗口；edge-aware（优势保留/触发 taker 全量去风险） |
+| `PM_ENDGAME_FREEZE_SECS` | auto | sec | 收盘 Freeze 窗口；风险冻结（禁止新增风险，保留去风险） |
+| `PM_ENDGAME_EDGE_KEEP_MULT` | `1.5` | ratio | HardClose 入场保留阈值：`best_bid/avg_cost >= keep` |
+| `PM_ENDGAME_EDGE_EXIT_MULT` | `1.25` | ratio | HardClose 退出阈值：跌破后立即全量去风险 |
 
 默认按市场周期自动选择：
-- `5m: 35/12/2`
+- `5m: 60/30/2`
 - `15m: 90/30/3`
 - `1h: 180/60/5`
 - `>=4h: 600/180/8`
@@ -89,7 +91,7 @@
 | `PM_MAX_NET_DIFF` | `10.0` | shares | 最大净敞口硬下限（方向性风险） |
 | `PM_MAX_SIDE_SHARES` | `50.0` | shares | 单侧总持仓上限（绝对暴露） |
 | `PM_MAX_PORTFOLIO_COST` | `1.02` | 成本 | 救火成本上限 |
-| `PM_MAX_LOSS_PCT` | `0.02` | pct | 最大容忍亏损比例；启动时钳制 `MAX_PORTFOLIO_COST` |
+| `PM_MAX_LOSS_PCT` | `0.02` | pct | 已弃用：读取后仅告警，策略逻辑忽略 |
 
 ## 7. 动态资金管理（显式启用）
 
@@ -120,6 +122,11 @@
 | `PM_OFI_EXIT_RATIO` | `0.85` | 滞回退出比例 |
 | `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短保持时间 |
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | 恢复后冷却，避免撤挂抖动 |
+
+按周期推荐（无需新增参数，仅覆盖现有 OFI 参数）：
+- `5m`：`window=3000, k=3.0, enter=0.45, exit=0.30`
+- `15m`（推荐）：`window=4500, k=4.0, enter=0.65, exit=0.40`
+- `1h`：`window=6000, k=4.5, enter=0.70, exit=0.45`
 
 ## 9. Marketable-BUY 防拒单参数
 

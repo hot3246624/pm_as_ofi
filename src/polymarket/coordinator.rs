@@ -71,8 +71,12 @@ pub struct CoordinatorConfig {
     pub hedge_min_marketable_max_extra: f64,
     /// Max extra percentage allowed when bumping hedge size to satisfy notional floor.
     pub hedge_min_marketable_max_extra_pct: f64,
-    /// Max allowable loss percent for emergency hedging (clamps max_portfolio_cost).
+    /// Deprecated. Kept only for compatibility; no longer used for risk clamping.
     pub max_loss_pct: f64,
+    /// Endgame edge-hold entry threshold (best_bid / avg_cost) at HardClose entry.
+    pub endgame_edge_keep_mult: f64,
+    /// Endgame edge-hold exit threshold (best_bid / avg_cost) during HardClose.
+    pub endgame_edge_exit_mult: f64,
     /// DRY-RUN mode.
     pub dry_run: bool,
     /// Configurable TTL for stale book data (ms). Default 3000ms.
@@ -88,7 +92,8 @@ pub struct CoordinatorConfig {
     /// In this phase, all provide orders are disabled and only hedge orders are allowed.
     pub endgame_hard_close_secs: u64,
     /// Freeze window (seconds before market end).
-    /// In this phase, no new orders are placed; coordinator only clears targets.
+    /// In this phase, no new risk is added (provide disabled), but de-risking
+    /// hedges are still allowed.
     pub endgame_freeze_secs: u64,
 }
 
@@ -116,7 +121,9 @@ impl Default for CoordinatorConfig {
             hedge_min_marketable_notional: 0.0,
             hedge_min_marketable_max_extra: 0.5,
             hedge_min_marketable_max_extra_pct: 0.15,
-            max_loss_pct: 0.02, // Hard loss cap (2%)
+            max_loss_pct: 0.02,
+            endgame_edge_keep_mult: 1.5,
+            endgame_edge_exit_mult: 1.25,
             dry_run: true,
             stale_ttl_ms: 3000,
             watchdog_tick_ms: 500,
@@ -272,6 +279,10 @@ impl CoordinatorConfig {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..1.0).contains(&f) {
                     c.max_loss_pct = f;
+                    warn!(
+                        "⚠️ PM_MAX_LOSS_PCT is deprecated and ignored (value={:.3})",
+                        c.max_loss_pct
+                    );
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_MAX_LOSS_PCT={} (must satisfy 0 <= pct < 1), using {}",
@@ -280,13 +291,26 @@ impl CoordinatorConfig {
                 }
             }
         }
-        let max_cost_cap = 1.0 + c.max_loss_pct;
-        if c.max_portfolio_cost > max_cost_cap {
+        if let Ok(v) = std::env::var("PM_ENDGAME_EDGE_KEEP_MULT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    c.endgame_edge_keep_mult = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_ENDGAME_EDGE_EXIT_MULT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    c.endgame_edge_exit_mult = f;
+                }
+            }
+        }
+        if c.endgame_edge_exit_mult > c.endgame_edge_keep_mult {
             warn!(
-                "⚠️ Clamping PM_MAX_PORTFOLIO_COST from {:.4} to {:.4} (max_loss_pct={:.3})",
-                c.max_portfolio_cost, max_cost_cap, c.max_loss_pct
+                "⚠️ Clamping PM_ENDGAME_EDGE_EXIT_MULT from {:.4} to {:.4} (must be <= keep_mult)",
+                c.endgame_edge_exit_mult, c.endgame_edge_keep_mult
             );
-            c.max_portfolio_cost = max_cost_cap;
+            c.endgame_edge_exit_mult = c.endgame_edge_keep_mult;
         }
         if let Ok(v) = std::env::var("PM_DRY_RUN") {
             c.dry_run = v != "0" && v.to_lowercase() != "false";
@@ -372,6 +396,28 @@ enum EndgamePhase {
     Freeze,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct EdgeHoldState {
+    side: Side,
+    keep_allowed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum HardCloseAction {
+    None,
+    Keep {
+        side: Side,
+        ratio: f64,
+        reason: &'static str,
+    },
+    ForceTaker {
+        side: Side,
+        size: f64,
+        ratio: f64,
+        reason: &'static str,
+    },
+}
+
 #[derive(Debug, Default)]
 struct Stats {
     ticks: u64,
@@ -416,6 +462,7 @@ pub struct StrategyCoordinator {
     was_toxic_yes: bool,
     was_toxic_no: bool,
     last_endgame_phase: EndgamePhase,
+    edge_hold_state: Option<EdgeHoldState>,
     stats: Stats,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
@@ -470,6 +517,7 @@ impl StrategyCoordinator {
             was_toxic_yes: false,
             was_toxic_no: false,
             last_endgame_phase: EndgamePhase::Normal,
+            edge_hold_state: None,
             stats: Stats::default(),
             ofi_rx,
             inv_rx,
@@ -490,10 +538,11 @@ impl StrategyCoordinator {
 
     pub async fn run(mut self) {
         info!(
-            "🎯 Coordinator [OCCAM+LEADLAG] pair={:.2} bid={:.1} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms endgame(soft/hard/freeze)={}/{}/{}s dry={}",
+            "🎯 Coordinator [OCCAM+LEADLAG] pair={:.2} bid={:.1} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms endgame(soft/hard/freeze)={}/{}/{}s edge(keep/exit)={:.2}/{:.2} dry={}",
             self.cfg.pair_target, self.cfg.bid_size, self.cfg.tick_size,
             self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms,
             self.cfg.endgame_soft_close_secs, self.cfg.endgame_hard_close_secs, self.cfg.endgame_freeze_secs,
+            self.cfg.endgame_edge_keep_mult, self.cfg.endgame_edge_exit_mult,
             self.cfg.dry_run,
         );
         let mut watchdog = tokio::time::interval(Duration::from_millis(self.cfg.watchdog_tick_ms));
@@ -744,11 +793,29 @@ impl StrategyCoordinator {
         // If we already hold inventory on the opposite side, we MUST NOT bid higher than
         // what would guarantee our pair_target profit margin.
         // E.g., if target is 0.98, and we hold YES at 0.44, we can NEVER pay more than 0.54 for NO.
+        let mut disable_yes_by_cost = false;
+        let mut disable_no_by_cost = false;
         if inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
-            raw_yes = f64::min(raw_yes, self.cfg.pair_target - inv.no_avg_cost);
+            let yes_ceiling = self.cfg.pair_target - inv.no_avg_cost;
+            raw_yes = f64::min(raw_yes, yes_ceiling);
+            if yes_ceiling <= self.cfg.tick_size + 1e-9 {
+                disable_yes_by_cost = true;
+                debug!(
+                    "🧱 Disable YES provide by inventory clamp: ceiling={:.4} tick={:.4}",
+                    yes_ceiling, self.cfg.tick_size
+                );
+            }
         }
         if inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 {
-            raw_no = f64::min(raw_no, self.cfg.pair_target - inv.yes_avg_cost);
+            let no_ceiling = self.cfg.pair_target - inv.yes_avg_cost;
+            raw_no = f64::min(raw_no, no_ceiling);
+            if no_ceiling <= self.cfg.tick_size + 1e-9 {
+                disable_no_by_cost = true;
+                debug!(
+                    "🧱 Disable NO provide by inventory clamp: ceiling={:.4} tick={:.4}",
+                    no_ceiling, self.cfg.tick_size
+                );
+            }
         }
 
         // 3. Strict Maker Clamp (same safety-margin logic as aggressive_price)
@@ -762,8 +829,16 @@ impl StrategyCoordinator {
             raw_no = f64::min(raw_no, ub.no_ask - no_safety_margin);
         }
 
-        let mut bid_yes = self.safe_price(raw_yes);
-        let mut bid_no = self.safe_price(raw_no);
+        let mut bid_yes = if disable_yes_by_cost {
+            0.0
+        } else {
+            self.safe_price(raw_yes)
+        };
+        let mut bid_no = if disable_no_by_cost {
+            0.0
+        } else {
+            self.safe_price(raw_no)
+        };
 
         // 3. Health Overrides (Toxicity / Staleness)
         // NOTE: Stats (cancel_toxic/cancel_stale) are counted in tick() Priority 2,
@@ -797,6 +872,9 @@ impl StrategyCoordinator {
         let mut allow_no_provide = self.can_buy_no(inv, self.cfg.bid_size);
         let mut block_yes_provide = false;
         let mut block_no_provide = false;
+        let mut force_taker_side: Option<Side> = None;
+        let mut force_taker_size: f64 = 0.0;
+        let mut block_maker_hedge = false;
 
         let endgame_phase = self.endgame_phase();
         if endgame_phase != self.last_endgame_phase {
@@ -807,194 +885,242 @@ impl StrategyCoordinator {
             );
             self.last_endgame_phase = endgame_phase;
         }
-        if endgame_phase == EndgamePhase::Freeze {
-            if self.yes_target.is_some() {
-                self.clear_target(Side::Yes, CancelReason::InventoryLimit)
-                    .await;
-            }
-            if self.no_target.is_some() {
-                self.clear_target(Side::No, CancelReason::InventoryLimit)
-                    .await;
-            }
-            return;
-        }
-        if endgame_phase >= EndgamePhase::HardClose {
+        if endgame_phase >= EndgamePhase::SoftClose {
+            // Endgame t-60: hedge-only (no new provide risk).
             allow_yes_provide = false;
             allow_no_provide = false;
-        } else if endgame_phase >= EndgamePhase::SoftClose {
-            if net_diff > f64::EPSILON {
-                // Long YES already: do not continue adding YES in soft close.
-                allow_yes_provide = false;
-            } else if net_diff < -f64::EPSILON {
-                // Long NO already: do not continue adding NO in soft close.
-                allow_no_provide = false;
+        }
+        if endgame_phase >= EndgamePhase::HardClose {
+            // Endgame t-30: edge-aware full-keep vs full de-risk (taker) regime.
+            match self.hard_close_action(inv, ub, endgame_phase) {
+                HardCloseAction::None => {}
+                HardCloseAction::Keep {
+                    side,
+                    ratio,
+                    reason,
+                } => {
+                    block_maker_hedge = true;
+                    if reason == "entry_keep" {
+                        info!(
+                            "⏱️ Endgame keep-mode: side={:?} ratio={:.3} >= keep_mult={:.3}",
+                            side, ratio, self.cfg.endgame_edge_keep_mult
+                        );
+                    }
+                }
+                HardCloseAction::ForceTaker {
+                    side,
+                    size,
+                    ratio,
+                    reason,
+                } => {
+                    force_taker_side = Some(side);
+                    force_taker_size = size;
+                    block_maker_hedge = true;
+                    if matches!(reason, "entry_below_keep" | "edge_drop_below_exit") {
+                        info!(
+                            "⚡ Endgame force taker: side={:?} size={:.2} ratio={:.3} reason={} keep={:.3} exit={:.3}",
+                            side,
+                            size,
+                            ratio,
+                            reason,
+                            self.cfg.endgame_edge_keep_mult,
+                            self.cfg.endgame_edge_exit_mult
+                        );
+                    }
+                }
             }
+        } else {
+            self.edge_hold_state = None;
         }
 
         if net_diff > f64::EPSILON {
+            if force_taker_side == Some(Side::Yes) {
+                self.dispatch_taker_hedge(Side::No, force_taker_size).await;
+                hedge_dispatched_no = true;
+                bid_no = 0.0;
+            }
+            if block_maker_hedge {
+                block_no_provide = true;
+            }
             // We have YES, want to hedge by buying NO.
             let hedge_target = self.hedge_target(net_diff);
-            if let Some(hedge_size) = self.hedge_size_from_net(net_diff) {
-                let mut hedge_size = hedge_size;
-                let mut ceiling_no =
-                    self.incremental_hedge_ceiling(inv, Side::No, hedge_size, hedge_target);
-                let mut agg_no = self.aggressive_price(ceiling_no, ub.no_bid, ub.no_ask);
-                let mut allow_no_hedge = self.can_hedge_buy_no(inv, hedge_size);
-                if !allow_no_hedge {
-                    block_no_provide = true;
-                }
-
-                if agg_no > 0.0 && allow_no_hedge && !no_stale {
-                    let mut hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
-                    hedge_no = self.safe_price(hedge_no);
-
-                    if let Some(bumped) =
-                        self.bump_hedge_size_for_marketable_floor(hedge_no, hedge_size)
-                    {
-                        if bumped > hedge_size + 1e-9 {
-                            if self.can_hedge_buy_no(inv, bumped) {
-                                hedge_size = bumped;
-                                ceiling_no = self.incremental_hedge_ceiling(
-                                    inv,
-                                    Side::No,
-                                    hedge_size,
-                                    hedge_target,
-                                );
-                                agg_no = self.aggressive_price(ceiling_no, ub.no_bid, ub.no_ask);
-                                if agg_no > 0.0 {
-                                    hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
-                                    hedge_no = self.safe_price(hedge_no);
-                                }
-                                allow_no_hedge = self.can_hedge_buy_no(inv, hedge_size);
-                            } else {
-                                debug!(
-                                    "🧩 Hedge NO notional bump skipped: size {:.2} exceeds inventory gate",
-                                    bumped
-                                );
-                            }
-                        }
-                    }
+            if !block_maker_hedge {
+                if let Some(hedge_size) = self.hedge_size_from_net(net_diff) {
+                    let mut hedge_size = hedge_size;
+                    let mut ceiling_no =
+                        self.incremental_hedge_ceiling(inv, Side::No, hedge_size, hedge_target);
+                    let mut agg_no = self.aggressive_price(ceiling_no, ub.no_bid, ub.no_ask);
+                    let mut allow_no_hedge = self.can_hedge_buy_no(inv, hedge_size);
                     if !allow_no_hedge {
                         block_no_provide = true;
                     }
-                    if agg_no > 0.0 && allow_no_hedge {
-                        let current_no = self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                        let current_sz = self.no_target.as_ref().map(|t| t.size).unwrap_or(0.0);
 
-                        let log_msg = if current_no <= 0.0
-                            || (current_no - hedge_no).abs() > self.cfg.reprice_threshold
-                            || (current_sz - hedge_size).abs() > 0.1
+                    if agg_no > 0.0 && allow_no_hedge && !no_stale {
+                        let mut hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
+                        hedge_no = self.safe_price(hedge_no);
+
+                        if let Some(bumped) =
+                            self.bump_hedge_size_for_marketable_floor(hedge_no, hedge_size)
                         {
-                            Some(format!(
-                                "🔧 HEDGE NO@{:.3} sz={:.1} | net={:.1}",
-                                hedge_no, hedge_size, net_diff
-                            ))
-                        } else {
-                            None
-                        };
-
-                        self.place_or_reprice(
-                            Side::No,
-                            hedge_no,
-                            hedge_size,
-                            BidReason::Hedge,
-                            log_msg,
-                        )
-                        .await;
-                        hedge_dispatched_no = true;
-                        bid_no = 0.0;
-                    }
-                }
-            } else {
-                debug!(
-                    "🧩 Hedge skip NO: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
-                    net_diff,
-                    self.cfg.min_order_size,
-                    self.cfg.min_hedge_size,
-                );
-            }
-        } else if net_diff < -f64::EPSILON {
-            // We have NO, want to hedge by buying YES.
-            let hedge_target = self.hedge_target(net_diff);
-            if let Some(hedge_size) = self.hedge_size_from_net(net_diff) {
-                let mut hedge_size = hedge_size;
-                let mut ceiling_yes =
-                    self.incremental_hedge_ceiling(inv, Side::Yes, hedge_size, hedge_target);
-                let mut agg_yes = self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
-                let mut allow_yes_hedge = self.can_hedge_buy_yes(inv, hedge_size);
-                if !allow_yes_hedge {
-                    block_yes_provide = true;
-                }
-
-                if agg_yes > 0.0 && allow_yes_hedge && !yes_stale {
-                    let mut hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
-                    hedge_yes = self.safe_price(hedge_yes);
-
-                    if let Some(bumped) =
-                        self.bump_hedge_size_for_marketable_floor(hedge_yes, hedge_size)
-                    {
-                        if bumped > hedge_size + 1e-9 {
-                            if self.can_hedge_buy_yes(inv, bumped) {
-                                hedge_size = bumped;
-                                ceiling_yes = self.incremental_hedge_ceiling(
-                                    inv,
-                                    Side::Yes,
-                                    hedge_size,
-                                    hedge_target,
-                                );
-                                agg_yes =
-                                    self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
-                                if agg_yes > 0.0 {
-                                    hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
-                                    hedge_yes = self.safe_price(hedge_yes);
-                                }
-                                allow_yes_hedge = self.can_hedge_buy_yes(inv, hedge_size);
-                            } else {
-                                debug!(
-                                    "🧩 Hedge YES notional bump skipped: size {:.2} exceeds inventory gate",
+                            if bumped > hedge_size + 1e-9 {
+                                if self.can_hedge_buy_no(inv, bumped) {
+                                    hedge_size = bumped;
+                                    ceiling_no = self.incremental_hedge_ceiling(
+                                        inv,
+                                        Side::No,
+                                        hedge_size,
+                                        hedge_target,
+                                    );
+                                    agg_no =
+                                        self.aggressive_price(ceiling_no, ub.no_bid, ub.no_ask);
+                                    if agg_no > 0.0 {
+                                        hedge_no = f64::max(bid_no, agg_no).min(ceiling_no);
+                                        hedge_no = self.safe_price(hedge_no);
+                                    }
+                                    allow_no_hedge = self.can_hedge_buy_no(inv, hedge_size);
+                                } else {
+                                    debug!(
+                                    "🧩 Hedge NO notional bump skipped: size {:.2} exceeds inventory gate",
                                     bumped
                                 );
+                                }
                             }
                         }
+                        if !allow_no_hedge {
+                            block_no_provide = true;
+                        }
+                        if agg_no > 0.0 && allow_no_hedge {
+                            let current_no =
+                                self.no_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                            let current_sz = self.no_target.as_ref().map(|t| t.size).unwrap_or(0.0);
+
+                            let log_msg = if current_no <= 0.0
+                                || (current_no - hedge_no).abs() > self.cfg.reprice_threshold
+                                || (current_sz - hedge_size).abs() > 0.1
+                            {
+                                Some(format!(
+                                    "🔧 HEDGE NO@{:.3} sz={:.1} | net={:.1}",
+                                    hedge_no, hedge_size, net_diff
+                                ))
+                            } else {
+                                None
+                            };
+
+                            self.place_or_reprice(
+                                Side::No,
+                                hedge_no,
+                                hedge_size,
+                                BidReason::Hedge,
+                                log_msg,
+                            )
+                            .await;
+                            hedge_dispatched_no = true;
+                            bid_no = 0.0;
+                        }
                     }
+                } else {
+                    debug!(
+                        "🧩 Hedge skip NO: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
+                        net_diff,
+                        self.cfg.min_order_size,
+                        self.cfg.min_hedge_size,
+                    );
+                }
+            }
+        } else if net_diff < -f64::EPSILON {
+            if force_taker_side == Some(Side::No) {
+                self.dispatch_taker_hedge(Side::Yes, force_taker_size).await;
+                hedge_dispatched_yes = true;
+                bid_yes = 0.0;
+            }
+            if block_maker_hedge {
+                block_yes_provide = true;
+            }
+            // We have NO, want to hedge by buying YES.
+            let hedge_target = self.hedge_target(net_diff);
+            if !block_maker_hedge {
+                if let Some(hedge_size) = self.hedge_size_from_net(net_diff) {
+                    let mut hedge_size = hedge_size;
+                    let mut ceiling_yes =
+                        self.incremental_hedge_ceiling(inv, Side::Yes, hedge_size, hedge_target);
+                    let mut agg_yes = self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
+                    let mut allow_yes_hedge = self.can_hedge_buy_yes(inv, hedge_size);
                     if !allow_yes_hedge {
                         block_yes_provide = true;
                     }
-                    if agg_yes > 0.0 && allow_yes_hedge {
-                        let current_yes = self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
-                        let current_sz = self.yes_target.as_ref().map(|t| t.size).unwrap_or(0.0);
 
-                        let log_msg = if current_yes <= 0.0
-                            || (current_yes - hedge_yes).abs() > self.cfg.reprice_threshold
-                            || (current_sz - hedge_size).abs() > 0.1
+                    if agg_yes > 0.0 && allow_yes_hedge && !yes_stale {
+                        let mut hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
+                        hedge_yes = self.safe_price(hedge_yes);
+
+                        if let Some(bumped) =
+                            self.bump_hedge_size_for_marketable_floor(hedge_yes, hedge_size)
                         {
-                            Some(format!(
-                                "🔧 HEDGE YES@{:.3} sz={:.1} | net={:.1}",
-                                hedge_yes, hedge_size, net_diff
-                            ))
-                        } else {
-                            None
-                        };
+                            if bumped > hedge_size + 1e-9 {
+                                if self.can_hedge_buy_yes(inv, bumped) {
+                                    hedge_size = bumped;
+                                    ceiling_yes = self.incremental_hedge_ceiling(
+                                        inv,
+                                        Side::Yes,
+                                        hedge_size,
+                                        hedge_target,
+                                    );
+                                    agg_yes =
+                                        self.aggressive_price(ceiling_yes, ub.yes_bid, ub.yes_ask);
+                                    if agg_yes > 0.0 {
+                                        hedge_yes = f64::max(bid_yes, agg_yes).min(ceiling_yes);
+                                        hedge_yes = self.safe_price(hedge_yes);
+                                    }
+                                    allow_yes_hedge = self.can_hedge_buy_yes(inv, hedge_size);
+                                } else {
+                                    debug!(
+                                    "🧩 Hedge YES notional bump skipped: size {:.2} exceeds inventory gate",
+                                    bumped
+                                );
+                                }
+                            }
+                        }
+                        if !allow_yes_hedge {
+                            block_yes_provide = true;
+                        }
+                        if agg_yes > 0.0 && allow_yes_hedge {
+                            let current_yes =
+                                self.yes_target.as_ref().map(|t| t.price).unwrap_or(0.0);
+                            let current_sz =
+                                self.yes_target.as_ref().map(|t| t.size).unwrap_or(0.0);
 
-                        self.place_or_reprice(
-                            Side::Yes,
-                            hedge_yes,
-                            hedge_size,
-                            BidReason::Hedge,
-                            log_msg,
-                        )
-                        .await;
-                        hedge_dispatched_yes = true;
-                        bid_yes = 0.0;
+                            let log_msg = if current_yes <= 0.0
+                                || (current_yes - hedge_yes).abs() > self.cfg.reprice_threshold
+                                || (current_sz - hedge_size).abs() > 0.1
+                            {
+                                Some(format!(
+                                    "🔧 HEDGE YES@{:.3} sz={:.1} | net={:.1}",
+                                    hedge_yes, hedge_size, net_diff
+                                ))
+                            } else {
+                                None
+                            };
+
+                            self.place_or_reprice(
+                                Side::Yes,
+                                hedge_yes,
+                                hedge_size,
+                                BidReason::Hedge,
+                                log_msg,
+                            )
+                            .await;
+                            hedge_dispatched_yes = true;
+                            bid_yes = 0.0;
+                        }
                     }
+                } else {
+                    debug!(
+                        "🧩 Hedge skip YES: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
+                        net_diff,
+                        self.cfg.min_order_size,
+                        self.cfg.min_hedge_size,
+                    );
                 }
-            } else {
-                debug!(
-                    "🧩 Hedge skip YES: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
-                    net_diff,
-                    self.cfg.min_order_size,
-                    self.cfg.min_hedge_size,
-                );
             }
         }
 
@@ -1279,6 +1405,84 @@ impl StrategyCoordinator {
         }
     }
 
+    fn hard_close_action(
+        &mut self,
+        inv: &InventoryState,
+        ub: &Book,
+        phase: EndgamePhase,
+    ) -> HardCloseAction {
+        if phase < EndgamePhase::HardClose {
+            self.edge_hold_state = None;
+            return HardCloseAction::None;
+        }
+
+        let net = inv.net_diff;
+        if net.abs() <= f64::EPSILON {
+            self.edge_hold_state = None;
+            return HardCloseAction::None;
+        }
+
+        let (side, best_bid, avg_cost) = if net > 0.0 {
+            (Side::Yes, ub.yes_bid, inv.yes_avg_cost)
+        } else {
+            (Side::No, ub.no_bid, inv.no_avg_cost)
+        };
+        let size = net.abs();
+        let ratio = if best_bid > 0.0 && avg_cost > 0.0 {
+            best_bid / avg_cost
+        } else {
+            0.0
+        };
+
+        let mut state = match self.edge_hold_state {
+            Some(s) if s.side == side => s,
+            _ => {
+                let keep_allowed = ratio >= self.cfg.endgame_edge_keep_mult;
+                let next = EdgeHoldState { side, keep_allowed };
+                self.edge_hold_state = Some(next);
+                if keep_allowed {
+                    return HardCloseAction::Keep {
+                        side,
+                        ratio,
+                        reason: "entry_keep",
+                    };
+                }
+                return HardCloseAction::ForceTaker {
+                    side,
+                    size,
+                    ratio,
+                    reason: "entry_below_keep",
+                };
+            }
+        };
+
+        if state.keep_allowed {
+            if ratio < self.cfg.endgame_edge_exit_mult {
+                state.keep_allowed = false;
+                self.edge_hold_state = Some(state);
+                return HardCloseAction::ForceTaker {
+                    side,
+                    size,
+                    ratio,
+                    reason: "edge_drop_below_exit",
+                };
+            }
+            self.edge_hold_state = Some(state);
+            HardCloseAction::Keep {
+                side,
+                ratio,
+                reason: "keep_hysteresis",
+            }
+        } else {
+            HardCloseAction::ForceTaker {
+                side,
+                size,
+                ratio,
+                reason: "de_risk_mode",
+            }
+        }
+    }
+
     fn side_target_reason(&self, side: Side) -> Option<BidReason> {
         match side {
             Side::Yes => self.yes_target.as_ref().map(|t| t.reason),
@@ -1472,6 +1676,30 @@ impl StrategyCoordinator {
         let _ = self
             .om_tx
             .send(OrderManagerCmd::ClearTarget { side, reason })
+            .await;
+    }
+
+    async fn dispatch_taker_hedge(&mut self, side: Side, size: f64) {
+        let rounded = (size * 100.0).floor() / 100.0;
+        if rounded < 0.01 {
+            debug!(
+                "🧩 Skip taker hedge {:?}: size {:.4} below lot floor 0.01",
+                side, size
+            );
+            return;
+        }
+
+        self.clear_target(side, CancelReason::Reprice).await;
+        if self.cfg.dry_run {
+            info!("📝 DRY TAKER HEDGE {:?} sz={:.2}", side, rounded);
+            return;
+        }
+        let _ = self
+            .om_tx
+            .send(OrderManagerCmd::OneShotTakerHedge {
+                side,
+                size: rounded,
+            })
             .await;
     }
 
@@ -1850,7 +2078,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_endgame_freeze_clears_both_sides() {
+    async fn test_endgame_freeze_allows_derisk_taker() {
         let mut c = cfg();
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1860,47 +2088,39 @@ mod tests {
         c.endgame_soft_close_secs = 60;
         c.endgame_hard_close_secs = 20;
         c.endgame_freeze_secs = 10;
+        c.bid_size = 5.0;
 
-        let (_o, _i, m, _k, mut e, mut coord) = make(c);
-        coord.yes_target = Some(DesiredTarget {
-            side: Side::Yes,
-            price: 0.45,
-            size: 2.0,
-            reason: BidReason::Provide,
-        });
-        coord.no_target = Some(DesiredTarget {
-            side: Side::No,
-            price: 0.50,
-            size: 2.0,
-            reason: BidReason::Provide,
+        let (_o, i, m, _k, mut e, coord) = make(c);
+        let _ = i.send(InventoryState {
+            net_diff: 2.0,
+            yes_qty: 2.0,
+            yes_avg_cost: 0.60,
+            ..Default::default()
         });
 
         let h = tokio::spawn(coord.run());
-        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
+        let _ = m.send(bt(0.50, 0.52, 0.40, 0.42));
 
-        let mut yes_cleared = false;
-        let mut no_cleared = false;
+        let mut saw_taker = false;
         while let Ok(Some(cmd)) = timeout(Duration::from_millis(120), e.recv()).await {
-            if let OrderManagerCmd::ClearTarget { side, .. } = cmd {
-                if side == Side::Yes {
-                    yes_cleared = true;
-                } else if side == Side::No {
-                    no_cleared = true;
-                }
-                if yes_cleared && no_cleared {
+            if let OrderManagerCmd::OneShotTakerHedge { side, size } = cmd {
+                if side == Side::No && (size - 2.0).abs() < 1e-9 {
+                    saw_taker = true;
                     break;
                 }
             }
         }
-        assert!(yes_cleared, "Freeze phase should clear YES target");
-        assert!(no_cleared, "Freeze phase should clear NO target");
+        assert!(
+            saw_taker,
+            "Freeze phase should still allow one-shot de-risk taker hedge"
+        );
 
         drop(m);
         let _ = h.await;
     }
 
     #[tokio::test]
-    async fn test_endgame_soft_close_blocks_risk_side_provide() {
+    async fn test_endgame_soft_close_blocks_all_provide() {
         let mut c = cfg();
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -1923,25 +2143,108 @@ mod tests {
         let h = tokio::spawn(coord.run());
         let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
-        let mut saw_yes_provide = false;
-        let mut saw_no_provide = false;
+        let mut saw_any_provide = false;
         while let Ok(Some(cmd)) = timeout(Duration::from_millis(120), e.recv()).await {
             if let OrderManagerCmd::SetTarget(target) = cmd {
-                if target.reason == BidReason::Provide && target.side == Side::Yes {
-                    saw_yes_provide = true;
-                }
-                if target.reason == BidReason::Provide && target.side == Side::No {
-                    saw_no_provide = true;
+                if target.reason == BidReason::Provide {
+                    saw_any_provide = true;
                 }
             }
         }
         assert!(
-            !saw_yes_provide,
-            "SoftClose should block provide on current risk side (YES when net_diff>0)"
+            !saw_any_provide,
+            "SoftClose should block all provide orders (hedge-only mode)"
         );
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_hard_close_entry_keep_mode_skips_taker() {
+        let mut c = cfg();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        c.market_end_ts = Some(now_secs + 20);
+        c.endgame_soft_close_secs = 60;
+        c.endgame_hard_close_secs = 30; // already in hard-close
+        c.endgame_freeze_secs = 2;
+        c.endgame_edge_keep_mult = 1.5;
+        c.endgame_edge_exit_mult = 1.25;
+
+        let (_o, i, m, _k, mut e, coord) = make(c);
+        let _ = i.send(InventoryState {
+            net_diff: 2.0,
+            yes_qty: 2.0,
+            yes_avg_cost: 0.40,
+            ..Default::default()
+        });
+
+        let h = tokio::spawn(coord.run());
+        // ratio = 0.70 / 0.40 = 1.75 => keep-mode
+        let _ = m.send(bt(0.70, 0.72, 0.20, 0.22));
+
+        let mut saw_taker = false;
+        while let Ok(Some(cmd)) = timeout(Duration::from_millis(120), e.recv()).await {
+            if matches!(cmd, OrderManagerCmd::OneShotTakerHedge { .. }) {
+                saw_taker = true;
+                break;
+            }
+        }
         assert!(
-            saw_no_provide,
-            "SoftClose should keep opposite-side provide available"
+            !saw_taker,
+            "HardClose keep-mode should preserve directional inventory and skip taker"
+        );
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_hard_close_edge_drop_triggers_full_taker_with_abs_net_size() {
+        let mut c = cfg();
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        c.market_end_ts = Some(now_secs + 20);
+        c.endgame_soft_close_secs = 60;
+        c.endgame_hard_close_secs = 30; // already in hard-close
+        c.endgame_freeze_secs = 2;
+        c.endgame_edge_keep_mult = 1.5;
+        c.endgame_edge_exit_mult = 1.25;
+        c.bid_size = 5.0;
+
+        let (_o, i, m, _k, mut e, coord) = make(c);
+        let _ = i.send(InventoryState {
+            net_diff: 2.0,
+            yes_qty: 2.0,
+            yes_avg_cost: 0.40,
+            ..Default::default()
+        });
+
+        let h = tokio::spawn(coord.run());
+        // Tick-1: enter keep-mode (ratio=1.75)
+        let _ = m.send(bt(0.70, 0.72, 0.20, 0.22));
+        let _ = timeout(Duration::from_millis(80), e.recv()).await;
+
+        // Tick-2: ratio drops below exit (0.45 / 0.40 = 1.125)
+        let _ = m.send(bt(0.45, 0.47, 0.30, 0.32));
+
+        let mut got = None;
+        while let Ok(Some(cmd)) = timeout(Duration::from_millis(160), e.recv()).await {
+            if let OrderManagerCmd::OneShotTakerHedge { side, size } = cmd {
+                got = Some((side, size));
+                break;
+            }
+        }
+        let (side, size) = got.expect("Expected OneShotTakerHedge after edge drop");
+        assert_eq!(side, Side::No);
+        assert!(
+            (size - 2.0).abs() < 1e-9,
+            "t-30 one-shot size must use abs(net_diff), not bid_size"
         );
 
         drop(m);
@@ -1970,6 +2273,39 @@ mod tests {
         // ask=0.46, margin=(2+1)*0.01 => strict clamp to 0.43.
         assert!((prices[&Side::Yes] - 0.43).abs() < 1e-9);
         assert!((prices[&Side::No] - 0.50).abs() < 1e-9);
+
+        drop(m);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_inventory_cost_clamp_disables_side_when_ceiling_below_tick() {
+        let (_o, i, m, _k, mut e, coord) = make(cfg());
+        let h = tokio::spawn(coord.run());
+        let _ = i.send(InventoryState {
+            no_qty: 5.0,
+            no_avg_cost: 0.975, // pair_target - avg = 0.005 < tick(0.01) -> disable YES provide
+            ..Default::default()
+        });
+        let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
+
+        let mut saw_yes = false;
+        let mut saw_no = false;
+        while let Ok(Some(cmd)) = timeout(Duration::from_millis(120), e.recv()).await {
+            if let OrderManagerCmd::SetTarget(target) = cmd {
+                if target.side == Side::Yes {
+                    saw_yes = true;
+                } else if target.side == Side::No {
+                    saw_no = true;
+                }
+            }
+        }
+
+        assert!(
+            !saw_yes,
+            "YES should be disabled when inventory clamp ceiling is below tick"
+        );
+        assert!(saw_no, "NO side should still be quotable");
 
         drop(m);
         let _ = h.await;

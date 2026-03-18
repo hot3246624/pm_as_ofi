@@ -1,4 +1,4 @@
-# Mastering the Polymarket V2 Maker-Only Strategy (Core Guide)
+# Mastering the Polymarket V2 Maker-First Strategy (Core Guide)
 
 This document is the single source of truth for the `pm_as_ofi` trading engine.
 
@@ -56,12 +56,13 @@ With existing imbalance, prioritizes filling the missing pair side.
 - **Step function**:
   - `|net_diff| < max_net_diff` → `hedge_target = pair_target`
   - `|net_diff| >= max_net_diff` → `hedge_target = max_portfolio_cost`
+- **Inventory-cost clamp guard**: if `pair_target - opposite_avg_cost <= tick_size`, that side's Provide quote is disabled (instead of forcing a `0.01` probe quote).
 - **Gate**: Hedge path uses `can_hedge_buy_*` (net-only) to prioritize directional de-risking; provide path remains `can_buy_*` (net+side).
 
 ### C. Emergency Rescue (Risk Minimization)
 Triggered only when `|net_diff| >= max_net_diff`.
-- Accept breakeven or slight loss (≤ `PM_MAX_LOSS_PCT` = 2%) to close directional risk.
-- Hard cap: `max_portfolio_cost <= 1 + PM_MAX_LOSS_PCT` enforced at startup.
+- Uses `max_portfolio_cost` as emergency maker-hedge ceiling to reduce directional risk.
+- `PM_MAX_LOSS_PCT` is deprecated and no longer clamps startup config.
 
 ### D. Inventory Gate (System-Wide, Layered)
 
@@ -93,15 +94,21 @@ OFI engine monitors a 3s sliding window. On toxicity:
 - Kill signal bypasses md_rx latency via dedicated `mpsc(4)` channel.
 - Toxic exit threshold is **frozen at entry threshold** (`entry_threshold * PM_OFI_EXIT_RATIO`) to avoid premature recovery when adaptive threshold rises.
 - `PM_OFI_ADAPTIVE_RISE_CAP_PCT` limits per-heartbeat adaptive threshold growth to prevent moving-target drift.
+- Interval tuning guidance (same parameters, no new mechanism):
+  - `5m`: `window=3000, k=3.0, enter=0.45, exit=0.30`
+  - `15m` (recommended): `window=4500, k=4.0, enter=0.65, exit=0.40`
+  - `1h`: `window=6000, k=4.5, enter=0.70, exit=0.45`
 
 ### Endgame Staged Risk Control
 To avoid close-to-expiry churn and accidental late risk expansion, coordinator applies staged gating near market end:
-- **SoftClose** (default 5m: `35s`): block provide that increases current net-direction exposure.
-- **HardClose** (default 5m: `12s`): stop all provide; hedge-only.
-- **Freeze** (default 5m: `2s`): stop new placements and clear targets; only cancel/report handling remains.
+- **SoftClose** (default 5m: `60s`): stop all provide; hedge-only.
+- **HardClose** (default 5m: `30s`): edge-aware mode.
+  - If holding-side `best_bid / avg_cost >= PM_ENDGAME_EDGE_KEEP_MULT` (default `1.5`), keep directional inventory.
+  - If it drops below `PM_ENDGAME_EDGE_EXIT_MULT` (default `1.25`), trigger one-shot taker full de-risk (`size=abs(net_diff)`).
+- **Freeze** (default 5m: `2s`): risk freeze (no new risk), while de-risking actions still allowed.
 
 Default windows are interval-aware:
-- `5m: 35/12/2`
+- `5m: 60/30/2`
 - `15m: 90/30/3`
 - `1h: 180/60/5`
 - `>=4h: 600/180/8`
@@ -116,8 +123,8 @@ Environment overrides:
 - **30s global guard**: Either side stale >30s → clear both sides, stop quoting.
 - **PM_COORD_WATCHDOG_MS**: coordinator periodic watchdog tick; stale/toxic guards still run when WS stream goes silent.
 
-### Maker-Only Enforcement
-All bid prices are clamped to `best_ask - tick_size`. Post-Only orders refused if book is empty or crossed.
+### Maker-First Enforcement
+System is maker-first. All routine quotes are clamped to `best_ask - tick_size`; one-shot taker hedges are used only in endgame de-risk mode.
 
 ### Marketable-BUY Minimum Notional & Reject-Storm Control
 Some venue-side validations can reject very small **marketable BUY** orders (< `$1` notional), while passive maker fills at low prices can still happen. These two facts are not contradictory.
@@ -194,13 +201,15 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 | `PM_OFI_RATIO_ENTER` | Decimal | Toxicity entry ratio gate | `|buy-sell|/(buy+sell)` |
 | `PM_OFI_RATIO_EXIT` | Decimal | Toxicity exit ratio gate | Should be <= entry ratio |
 | `PM_AS_TIME_DECAY_K` | Factor | Time decay amplifier | 0.0 = disabled; 2.0 = 3x skew at expiry |
-| `PM_MAX_PORTFOLIO_COST` | Cost | Emergency rescue ceiling | Clamped to `1 + PM_MAX_LOSS_PCT` |
-| `PM_MAX_LOSS_PCT` | Decimal | Max acceptable loss in rescue | Clamps max_portfolio_cost at startup |
+| `PM_MAX_PORTFOLIO_COST` | Cost | Emergency rescue ceiling | Used by maker hedge pricing in rescue mode |
+| `PM_MAX_LOSS_PCT` | Decimal | Deprecated | Read with warning, ignored by strategy logic |
 | `PM_STALE_TTL_MS` | ms | Per-side freshness TTL | Side shutdown if exceeded |
 | `PM_COORD_WATCHDOG_MS` | ms | Coordinator watchdog tick | Enforces stale/toxic checks without new md events |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | sec | SoftClose window before market end | Blocks provide that increases current net-direction exposure |
-| `PM_ENDGAME_HARD_CLOSE_SECS` | sec | HardClose window before market end | Stops provide, hedge-only |
-| `PM_ENDGAME_FREEZE_SECS` | sec | Freeze window before market end | Stops new orders and clears targets |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | sec | SoftClose window before market end | Stops provide, hedge-only |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | sec | HardClose window before market end | Edge-aware keep/de-risk switch |
+| `PM_ENDGAME_FREEZE_SECS` | sec | Freeze window before market end | Risk freeze: no new risk, de-risk still allowed |
+| `PM_ENDGAME_EDGE_KEEP_MULT` | Decimal | HardClose keep-entry threshold | Keep only if `best_bid/avg_cost >= keep_mult` |
+| `PM_ENDGAME_EDGE_EXIT_MULT` | Decimal | HardClose keep-exit threshold | Force de-risk when ratio falls below exit |
 | `PM_DEBOUNCE_MS` | ms | Provide order anti-thrash | Prevents rapid re-quoting |
 | `PM_HEDGE_DEBOUNCE_MS` | ms | Hedge order anti-thrash | Lower (100ms) for urgency |
 | `PM_RECONCILE_INTERVAL_SECS` | sec | REST order reconciliation | Detects WS blind spots |
@@ -226,7 +235,7 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 
 ```
 hedge_target = if abs(net_diff) >= max_net_diff {
-                 max_portfolio_cost   // rescue ceiling (capped at 1 + loss_pct)
+                 max_portfolio_cost   // rescue ceiling
                } else {
                  pair_target          // normal profit line
                }

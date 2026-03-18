@@ -1,6 +1,7 @@
-//! Channel message types for the Maker-Only Actor architecture.
+//! Channel message types for the Actor architecture.
 //!
-//! Strategy: Post passive Post-Only Bids, never take.
+//! Strategy defaults to maker-only (Post-Only bids), with explicit tail-risk
+//! escape hatches for one-shot taker hedges near market close.
 //! OFI serves as a Kill Switch to cancel bids under toxic flow.
 
 use std::time::Instant;
@@ -139,6 +140,9 @@ pub enum OrderManagerCmd {
     SetTarget(DesiredTarget),
     /// Clear desired target for a side and preserve cancel reason.
     ClearTarget { side: Side, reason: CancelReason },
+    /// Queue a one-shot taker hedge on a side.
+    /// OMS will cancel same-side resting orders first, then submit the taker order.
+    OneShotTakerHedge { side: Side, size: f64 },
     /// Emergency cancel all targets & orders globally.
     CancelAll,
 }
@@ -147,7 +151,7 @@ pub enum OrderManagerCmd {
 // Execution Commands (OMS → Executor)
 // ─────────────────────────────────────────────────────────
 
-/// Execution instructions — Maker-Only model.
+/// Execution instructions — Maker-first model with explicit taker de-risk path.
 #[derive(Debug, Clone)]
 pub enum ExecutionCmd {
     /// Place a Post-Only passive bid (maker limit order).
@@ -159,6 +163,9 @@ pub enum ExecutionCmd {
         /// Why this bid is being placed.
         reason: BidReason,
     },
+    /// Place a one-shot taker hedge (FAK market order by shares).
+    /// Used only in endgame de-risking mode.
+    PlaceTakerHedge { side: Side, size: f64 },
     /// Cancel a specific order by ID.
     CancelOrder {
         order_id: String,
@@ -214,6 +221,9 @@ pub enum OrderResult {
     OrderFailed { side: Side, cooldown_ms: u64 },
     /// Order fully filled — Coordinator should release the slot for new orders.
     OrderFilled { side: Side },
+    /// One-shot taker hedge finished submission path (accepted by venue).
+    /// OMS can release pending taker state and continue normal pumping.
+    TakerHedgeDone { side: Side },
     /// Cancel operation for a side completed.
     CancelAck { side: Side },
 }

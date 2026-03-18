@@ -123,7 +123,7 @@ bid_yes        = min(yes_ceiling, yes_ask - tick)
 
 > **注意**：`pair_target`（默认 0.99）是正常状态下的利润线。
 > `max_portfolio_cost`（默认 1.02）是库存满载时的紧急救火线下。
-> `max_portfolio_cost` 会被 `PM_MAX_LOSS_PCT`（默认 0.02）自动钳制。
+> `PM_MAX_LOSS_PCT` 已弃用，不再钳制 `max_portfolio_cost`。
 > 这种设计保证了：在正常波动中我们只做赚钱的买卖；在极端行情中，我们愿意付出极小代价 (2%) 来关掉面临 100% 归零风险的大额单边敞口。
 > 若出现 `not enough balance / allowance`，OMS 会进入冷却窗口，对冲不会立刻落单；这属于资金约束而非公式失效。
 > 新增资金回收器会在“余额拒单连续触发 + 低水位”时执行批量 merge，一次回补到高水位附近，避免频繁小额 merge。
@@ -426,7 +426,7 @@ PM_HEDGE_ROUND_UP=false       # 对冲不足最小订单时是否向上取整
 PM_MAX_NET_DIFF=10.0          # 最大净仓量（单股）
 PM_MAX_SIDE_SHARES=50.0       # 单侧最大持仓股数上限
 PM_MAX_PORTFOLIO_COST=1.02    # 组合成本上限
-PM_MAX_LOSS_PCT=0.02          # 最大可接受亏损比例（2%）
+# PM_MAX_LOSS_PCT=0.02        # deprecated：已不再参与策略约束
 PM_AS_SKEW_FACTOR=0.03        # A-S 库存倾斜系数（0=纯 Gabagool22）
 PM_AS_TIME_DECAY_K=2.0        # 时间衰减系数（0=禁用）
 PM_DEBOUNCE_MS=500            # 正常防抖时间

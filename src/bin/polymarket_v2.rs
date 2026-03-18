@@ -951,8 +951,8 @@ fn log_config_self_check(
 ) {
     info!("🔎 Config self-check (consistency + risk thresholds)");
     info!(
-        "   pair_target={:.4} max_portfolio_cost={:.4} max_loss_pct={:.3}",
-        coord.pair_target, coord.max_portfolio_cost, coord.max_loss_pct
+        "   pair_target={:.4} max_portfolio_cost={:.4} (PM_MAX_LOSS_PCT deprecated/ignored)",
+        coord.pair_target, coord.max_portfolio_cost
     );
     info!(
         "   bid_size={:.1} max_net_diff={:.1} max_side_shares={:.1}",
@@ -985,8 +985,12 @@ fn log_config_self_check(
         coord.toxic_recovery_hold_ms
     );
     info!(
-        "   endgame windows: soft={}s hard={}s freeze={}s",
-        coord.endgame_soft_close_secs, coord.endgame_hard_close_secs, coord.endgame_freeze_secs
+        "   endgame windows: soft={}s hard={}s freeze={}s edge(keep/exit)={:.2}/{:.2}",
+        coord.endgame_soft_close_secs,
+        coord.endgame_hard_close_secs,
+        coord.endgame_freeze_secs,
+        coord.endgame_edge_keep_mult,
+        coord.endgame_edge_exit_mult
     );
     info!("   reconcile_interval={}s", reconcile_interval_secs);
     let adaptive_max_text = if ofi.adaptive_max > 0.0 {
@@ -1149,8 +1153,8 @@ fn detect_interval(prefix: &str) -> u64 {
 
 fn default_endgame_windows_secs(interval_secs: u64) -> (u64, u64, u64) {
     if interval_secs <= 300 {
-        // 5m: soften at 35s, hard close at 12s, final freeze at 2s.
-        (35, 12, 2)
+        // 5m: t-60 hedge-only, t-30 edge-aware taker de-risk, final risk-freeze at 2s.
+        (60, 30, 2)
     } else if interval_secs <= 900 {
         // 15m: allow longer inventory convergence window.
         (90, 30, 3)
