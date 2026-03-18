@@ -34,7 +34,7 @@
 | `PM_AUTO_CLAIM_MIN_VALUE` | `0` | 单个 condition 最小价值阈值（美元） |
 | `PM_AUTO_CLAIM_MAX_CONDITIONS` | `5` | 单轮最多处理 condition 数量 |
 | `PM_AUTO_CLAIM_INTERVAL_SECONDS` | `300` | 两次自动领取最小间隔 |
-| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | `30` | 每轮结束后的 Claim SLA 窗口（秒） |
+| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | `30` | 每轮结束后的 Claim SLA 窗口（秒，后台非阻塞，不占用下一轮开盘入场窗口） |
 | `PM_AUTO_CLAIM_ROUND_RETRY_MODE` | `exponential` | 回合 Claim 重试模式（默认指数退避） |
 | `PM_AUTO_CLAIM_ROUND_SCOPE` | `ended_then_global` | 先尝试刚结束市场，再全局兜底 |
 | `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | `0,2,5,9,14,20,27` | 回合窗口内重试偏移秒（需 ≤ window） |
@@ -160,6 +160,15 @@
 | `PM_RECYCLE_SHORTFALL_MULT` | `1.2` | 缺口放大倍率（批处理） |
 | `PM_RECYCLE_MIN_EXECUTABLE_USDC` | `5.0` | 低于该金额不执行 |
 | `PM_BALANCE_CACHE_TTL_MS` | `2000` | 执行层余额缓存 TTL |
+
+15m 推荐（减少“多次小额 merge”）：
+- `trigger_rejects=1`
+- `trigger_window=120s`
+- `cooldown=60s`
+- `max_merges_per_round=4`
+- `low_water/target_free=12/45`
+- `min/max_batch=20/80`
+- `shortfall_mult=1.5`
 
 ## 11. 签名模式
 

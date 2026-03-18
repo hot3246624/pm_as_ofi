@@ -170,6 +170,7 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 - **Retry cadence**: default `0,2,5,9,14,20,27` (overridable by `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE`).
 - **Scope order**: default `PM_AUTO_CLAIM_ROUND_SCOPE=ended_then_global`, i.e. ended condition first, then global fallback.
 - **Interval gate bypass**: this round runner bypasses `PM_AUTO_CLAIM_INTERVAL_SECONDS`; startup/periodic claim checks remain as fallback.
+- **Scheduling**: the round runner is non-blocking (background task), so it does not consume the next market's `PM_ENTRY_GRACE_SECONDS` entry window.
 - **Expected logs**: `start -> retry -> result -> success|SLA exhausted`.
 
 ---
@@ -223,7 +224,7 @@ After each `Market ended`, a dedicated claim runner executes within a 30s SLA wi
 | `PM_RECYCLE_MIN_BATCH_USDC` | USDC | Minimum recycle batch | Avoid tiny frequent merges |
 | `PM_RECYCLE_MAX_BATCH_USDC` | USDC | Maximum recycle batch | Caps single-merge gas/risk |
 | `PM_BALANCE_CACHE_TTL_MS` | ms | Precheck balance cache TTL | Reduces repeated balance RPC calls |
-| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | sec | Per-round claim SLA window | Default 30s after market end |
+| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | sec | Per-round claim SLA window | Default 30s after market end; non-blocking vs next-round entry window |
 | `PM_AUTO_CLAIM_ROUND_RETRY_MODE` | enum | Round claim retry mode | Default `exponential` |
 | `PM_AUTO_CLAIM_ROUND_SCOPE` | enum | Round claim scope order | `ended_then_global/ended_only/global_only` |
 | `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | sec list | Round claim retry offsets | Default `0,2,5,9,14,20,27` |

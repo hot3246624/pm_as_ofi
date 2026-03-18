@@ -825,6 +825,7 @@ impl Executor {
     // ─────────────────────────────────────────────────
 
     async fn handle_place_taker_hedge(&mut self, side: Side, size: f64) {
+        let size = Self::normalize_taker_size_for_market_buy(size);
         info!("📤 TAKER-HEDGE {:?} size={:.2}", side, size);
 
         // CLOB lot-size floor (2dp). Skip impossible requests without retry storm.
@@ -896,6 +897,8 @@ impl Executor {
                 let is_429 = Self::is_rate_limit_error(&err_text_lower);
                 let is_balance = Self::is_balance_or_allowance_error(&err_text_lower);
                 let is_validation = Self::is_validation_error(&err_text_lower);
+                let is_accuracy_precision = err_text_lower.contains("invalid amounts")
+                    || err_text_lower.contains("max accuracy");
                 let reject_kind = if is_429 {
                     RejectKind::RateLimit
                 } else if is_balance {
@@ -909,6 +912,8 @@ impl Executor {
                     10_000
                 } else if is_balance {
                     30_000
+                } else if is_accuracy_precision {
+                    10_000
                 } else if is_validation {
                     2_000
                 } else {
@@ -1220,8 +1225,11 @@ impl Executor {
         let token_id_uint =
             alloy::primitives::U256::from_str_radix(token_id, 10).context("Invalid token_id")?;
 
-        // Market/FAK path: keep share size aligned to CLOB lot precision (2dp).
-        let size_rounded = (size * 100.0).floor() / 100.0;
+        // Market/FAK path:
+        // Venue-side market BUY validation can reject with "max accuracy" when
+        // maker/taker amount precision is too granular. We normalize to a robust
+        // executable share amount (whole shares for size >= 1.0).
+        let size_rounded = Self::normalize_taker_size_for_market_buy(size);
         if size_rounded < 0.01 {
             anyhow::bail!("size {:.6} rounds to 0 at 2dp — skipping", size);
         }
@@ -1307,7 +1315,32 @@ impl Executor {
             || lower.contains("lot size")
             || lower.contains("order crosses book")
             || lower.contains("rounds to 0")
+            || lower.contains("invalid amounts")
+            || lower.contains("max accuracy")
             || Self::is_marketable_min_error(lower)
+    }
+
+    /// Normalize taker market-buy share size to avoid venue precision rejects.
+    ///
+    /// Why this exists:
+    /// - We observed venue-side 400 errors with "max accuracy" on market BUYs.
+    /// - For BUY-by-shares, fractional share sizes can induce overly granular
+    ///   maker/taker amounts after price multiplication in the SDK builder path.
+    ///
+    /// Policy:
+    /// - Keep 2dp lot floor.
+    /// - For sizes >= 1 share, round down to whole shares (safer/robust).
+    /// - Never round up (do not increase risk).
+    fn normalize_taker_size_for_market_buy(size: f64) -> f64 {
+        if !size.is_finite() || size <= 0.0 {
+            return 0.0;
+        }
+        let size_2dp = (size * 100.0).floor() / 100.0;
+        if size_2dp >= 1.0 {
+            size_2dp.floor()
+        } else {
+            size_2dp
+        }
     }
 
     fn is_marketable_min_error(lower: &str) -> bool {
@@ -1496,5 +1529,33 @@ pub async fn init_clob_client(
                 (None, Some(signer))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Executor;
+
+    #[test]
+    fn taker_size_normalization_whole_share_for_size_ge_one() {
+        assert!((Executor::normalize_taker_size_for_market_buy(10.01) - 10.0).abs() < 1e-9);
+        assert!((Executor::normalize_taker_size_for_market_buy(10.99) - 10.0).abs() < 1e-9);
+        assert!((Executor::normalize_taker_size_for_market_buy(1.00) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn taker_size_normalization_keeps_sub_share_2dp() {
+        assert!((Executor::normalize_taker_size_for_market_buy(0.789) - 0.78).abs() < 1e-9);
+        assert!((Executor::normalize_taker_size_for_market_buy(0.019) - 0.01).abs() < 1e-9);
+    }
+
+    #[test]
+    fn validation_error_detects_accuracy_rejects() {
+        assert!(Executor::is_validation_error(
+            "invalid amounts, maker amount supports a max accuracy of 2 decimals"
+        ));
+        assert!(Executor::is_validation_error(
+            "taker amount a max accuracy of 4 decimals"
+        ));
     }
 }

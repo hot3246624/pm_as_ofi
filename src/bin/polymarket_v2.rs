@@ -2026,6 +2026,7 @@ async fn main() -> anyhow::Result<()> {
     let round_claim_cfg = RoundClaimRunnerConfig::from_env();
     let recycle_cfg = CapitalRecycleConfig::from_env();
     let mut auto_claim_state = AutoClaimState::default();
+    let mut round_claim_task: Option<tokio::task::JoinHandle<()>> = None;
 
     let dry_run = coord_cfg_base.dry_run;
     if dry_run {
@@ -2941,22 +2942,64 @@ async fn main() -> anyhow::Result<()> {
             maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref())
                 .await;
             let ended_condition = market_id.parse::<alloy::primitives::B256>().ok();
-            if let Err(e) = run_round_claim_window(
-                &auto_claim_cfg,
-                &mut auto_claim_state,
-                &round_claim_cfg,
-                ended_condition,
-                funder_address.as_deref(),
-                signer_address.as_deref(),
-                base_settings.private_key.as_deref(),
-            )
-            .await
-            {
-                warn!("⚠️ Round claim runner failed after market end: {:?}", e);
+            if let Some(prev) = round_claim_task.take() {
+                if prev.is_finished() {
+                    match prev.await {
+                        Ok(_) => {}
+                        Err(e) if e.is_cancelled() => {}
+                        Err(e) => warn!("⚠️ Previous round-claim task join failed: {:?}", e),
+                    }
+                } else {
+                    warn!(
+                        "⚠️ Previous round-claim task still running at new market boundary — aborting stale task"
+                    );
+                    prev.abort();
+                    let _ = prev.await;
+                }
             }
+
+            let claim_cfg = auto_claim_cfg.clone();
+            let claim_runner_cfg = round_claim_cfg.clone();
+            let claim_funder = funder_address.clone();
+            let claim_signer = signer_address.clone();
+            let claim_pk = base_settings.private_key.clone();
+            round_claim_task = Some(tokio::spawn(async move {
+                let mut round_state = AutoClaimState::default();
+                if let Err(e) = run_round_claim_window(
+                    &claim_cfg,
+                    &mut round_state,
+                    &claim_runner_cfg,
+                    ended_condition,
+                    claim_funder.as_deref(),
+                    claim_signer.as_deref(),
+                    claim_pk.as_deref(),
+                )
+                .await
+                {
+                    warn!("⚠️ Round claim runner failed after market end: {:?}", e);
+                }
+            }));
+            info!(
+                "💸 Round claim runner launched in background (non-blocking; rotation continues immediately)"
+            );
         }
 
         if !prefix_mode {
+            if let Some(handle) = round_claim_task.take() {
+                let wait_secs = round_claim_cfg.window.as_secs().saturating_add(5);
+                info!(
+                    "💸 Fixed mode: waiting up to {}s for background round-claim task before exit",
+                    wait_secs
+                );
+                match tokio::time::timeout(Duration::from_secs(wait_secs), handle).await {
+                    Ok(joined) => {
+                        if let Err(e) = joined {
+                            warn!("⚠️ Round claim background task join failed: {:?}", e);
+                        }
+                    }
+                    Err(_) => warn!("⚠️ Round claim background task timed out on fixed-mode exit"),
+                }
+            }
             info!("📌 Fixed mode — exiting");
             break;
         }
