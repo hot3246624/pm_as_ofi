@@ -1230,25 +1230,19 @@ impl Executor {
         let token_id_uint =
             alloy::primitives::U256::from_str_radix(token_id, 10).context("Invalid token_id")?;
 
-        // Market/FAK path:
-        // Venue-side market BUY validation can reject with "max accuracy" when
-        // maker/taker amount precision is too granular. We normalize to a robust
-        // executable share amount (whole shares for size >= 1.0).
-        let size_rounded = Self::normalize_taker_size_for_market_buy(size);
+        // Market/FAK path: keep share size aligned to CLOB lot precision (2dp).
+        let size_rounded = (size * 100.0).floor() / 100.0;
         if size_rounded < 0.01 {
             anyhow::bail!("size {:.6} rounds to 0 at 2dp — skipping", size);
         }
         let shares = rust_decimal::Decimal::from_f64(size_rounded)
             .ok_or_else(|| anyhow::anyhow!("Invalid taker size"))?;
+        let amount = Amount::shares(shares).expect("Valid amount");
 
-        let price_decimal = rust_decimal::Decimal::from_f64(0.99)
-            .ok_or_else(|| anyhow::anyhow!("Invalid price"))?;
-            
         let order = client
-            .limit_order()
+            .market_order()
             .token_id(token_id_uint)
-            .size(shares)
-            .price(price_decimal)
+            .amount(amount)
             .side(SdkSide::Buy)
             .order_type(OrderType::FAK)
             .build()
