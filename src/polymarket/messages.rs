@@ -41,6 +41,111 @@ pub enum TakerSide {
     Sell,
 }
 
+/// Trade direction for strategy intents and fill accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TradeDirection {
+    Buy,
+    Sell,
+}
+
+/// Unique logical order slot inside the strategy/execution graph.
+///
+/// A true two-sided market maker can keep both a bid and an ask live on the
+/// same outcome token, so `(side, direction)` must become the primary identity
+/// instead of `side` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OrderSlot {
+    pub side: Side,
+    pub direction: TradeDirection,
+}
+
+impl OrderSlot {
+    pub const YES_BUY: Self = Self {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+    };
+    pub const YES_SELL: Self = Self {
+        side: Side::Yes,
+        direction: TradeDirection::Sell,
+    };
+    pub const NO_BUY: Self = Self {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+    };
+    pub const NO_SELL: Self = Self {
+        side: Side::No,
+        direction: TradeDirection::Sell,
+    };
+    pub const ALL: [Self; 4] = [Self::YES_BUY, Self::YES_SELL, Self::NO_BUY, Self::NO_SELL];
+
+    pub const fn new(side: Side, direction: TradeDirection) -> Self {
+        Self { side, direction }
+    }
+
+    pub fn index(self) -> usize {
+        match (self.side, self.direction) {
+            (Side::Yes, TradeDirection::Buy) => 0,
+            (Side::Yes, TradeDirection::Sell) => 1,
+            (Side::No, TradeDirection::Buy) => 2,
+            (Side::No, TradeDirection::Sell) => 3,
+        }
+    }
+
+    pub fn side_slots(side: Side) -> [Self; 2] {
+        match side {
+            Side::Yes => [Self::YES_BUY, Self::YES_SELL],
+            Side::No => [Self::NO_BUY, Self::NO_SELL],
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match (self.side, self.direction) {
+            (Side::Yes, TradeDirection::Buy) => "YES_BUY",
+            (Side::Yes, TradeDirection::Sell) => "YES_SELL",
+            (Side::No, TradeDirection::Buy) => "NO_BUY",
+            (Side::No, TradeDirection::Sell) => "NO_SELL",
+        }
+    }
+}
+
+/// Execution urgency class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradeUrgency {
+    /// Passive maker order (post-only limit).
+    MakerPostOnly,
+    /// Active taker order (FAK market by shares).
+    TakerFak,
+}
+
+/// Semantic purpose of an intent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TradePurpose {
+    Provide,
+    Hedge,
+    Reduce,
+    Exit,
+}
+
+impl TradePurpose {
+    pub fn as_bid_reason(self) -> BidReason {
+        match self {
+            Self::Provide => BidReason::Provide,
+            Self::Hedge | Self::Reduce | Self::Exit => BidReason::Hedge,
+        }
+    }
+}
+
+/// Unified execution intent across strategies.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TradeIntent {
+    pub side: Side,
+    pub direction: TradeDirection,
+    pub urgency: TradeUrgency,
+    pub size: f64,
+    pub price: Option<f64>,
+    pub purpose: TradePurpose,
+}
+
 // ─────────────────────────────────────────────────────────
 // OFI Engine Output (per-side toxicity)
 // ─────────────────────────────────────────────────────────
@@ -120,6 +225,7 @@ impl Default for InventoryState {
 #[derive(Debug, Clone)]
 pub struct DesiredTarget {
     pub side: Side,
+    pub direction: TradeDirection,
     pub price: f64,
     pub size: f64,
     /// Original intent from Coordinator (Provide vs Hedge).
@@ -130,19 +236,36 @@ impl PartialEq for DesiredTarget {
     fn eq(&self, other: &Self) -> bool {
         // Keep equality semantic focused on executable order shape to avoid
         // unnecessary cancel/replace when only reason tag changes.
-        self.side == other.side && self.price == other.price && self.size == other.size
+        self.side == other.side
+            && self.direction == other.direction
+            && self.price == other.price
+            && self.size == other.size
+    }
+}
+
+impl DesiredTarget {
+    pub fn slot(&self) -> OrderSlot {
+        OrderSlot::new(self.side, self.direction)
     }
 }
 
 #[derive(Debug, Clone)]
 pub enum OrderManagerCmd {
-    /// Update the desired target for a side. If price/size is 0, the target is cleared (cancel).
+    /// Update the desired target for an order slot.
     SetTarget(DesiredTarget),
-    /// Clear desired target for a side and preserve cancel reason.
-    ClearTarget { side: Side, reason: CancelReason },
+    /// Clear desired target for a slot and preserve cancel reason.
+    ClearTarget {
+        slot: OrderSlot,
+        reason: CancelReason,
+    },
     /// Queue a one-shot taker hedge on a side.
     /// OMS will cancel same-side resting orders first, then submit the taker order.
-    OneShotTakerHedge { side: Side, size: f64 },
+    OneShotTakerHedge {
+        side: Side,
+        direction: TradeDirection,
+        size: f64,
+        purpose: TradePurpose,
+    },
     /// Emergency cancel all targets & orders globally.
     CancelAll,
 }
@@ -154,10 +277,13 @@ pub enum OrderManagerCmd {
 /// Execution instructions — Maker-first model with explicit taker de-risk path.
 #[derive(Debug, Clone)]
 pub enum ExecutionCmd {
+    /// Strategy-agnostic execution intent.
+    ExecuteIntent { intent: TradeIntent },
     /// Place a Post-Only passive bid (maker limit order).
     /// If this order would cross the spread and take, the exchange rejects it.
     PlacePostOnlyBid {
         side: Side,
+        direction: TradeDirection,
         price: f64,
         size: f64,
         /// Why this bid is being placed.
@@ -165,10 +291,19 @@ pub enum ExecutionCmd {
     },
     /// Place a one-shot taker hedge (FAK market order by shares).
     /// Used only in endgame de-risking mode.
-    PlaceTakerHedge { side: Side, size: f64 },
+    PlaceTakerHedge {
+        side: Side,
+        direction: TradeDirection,
+        size: f64,
+    },
     /// Cancel a specific order by ID.
     CancelOrder {
         order_id: String,
+        reason: CancelReason,
+    },
+    /// Cancel all outstanding orders for a specific slot.
+    CancelSlot {
+        slot: OrderSlot,
         reason: CancelReason,
     },
     /// Cancel all orders on a specific side.
@@ -197,6 +332,8 @@ pub enum CancelReason {
     StaleData,
     /// Inventory imbalance — stop accumulating the excess side.
     InventoryLimit,
+    /// Endgame risk gate blocked further risk-increasing provides.
+    EndgameRiskGate,
     /// Price moved — stale order needs repricing.
     Reprice,
     /// Shutdown / circuit breaker.
@@ -216,16 +353,35 @@ pub enum CancelReason {
 #[derive(Debug, Clone)]
 pub enum OrderResult {
     /// Order successfully placed — OrderManager can transition to Live state.
-    OrderPlaced { side: Side, target: DesiredTarget },
+    OrderPlaced {
+        slot: OrderSlot,
+        target: DesiredTarget,
+    },
     /// Order placement failed — Coordinator should reset the slot.
-    OrderFailed { side: Side, cooldown_ms: u64 },
+    OrderFailed {
+        slot: OrderSlot,
+        cooldown_ms: u64,
+    },
     /// Order fully filled — Coordinator should release the slot for new orders.
-    OrderFilled { side: Side },
+    OrderFilled { slot: OrderSlot },
     /// One-shot taker hedge finished submission path (accepted by venue).
     /// OMS can release pending taker state and continue normal pumping.
     TakerHedgeDone { side: Side },
+    /// One-shot taker hedge failed.
+    TakerHedgeFailed { side: Side, cooldown_ms: u64 },
     /// Cancel operation for a side completed.
-    CancelAck { side: Side },
+    CancelAck { slot: OrderSlot },
+}
+
+/// Lightweight execution feedback channel for Coordinator-side adaptive behavior.
+///
+/// This is intentionally separate from `OrderResult`:
+/// - `OrderResult` drives OMS lifecycle state transitions.
+/// - `ExecutionFeedback` informs pricing/risk adaptation without mutating OMS state.
+#[derive(Debug, Clone)]
+pub enum ExecutionFeedback {
+    /// Venue rejected a post-only order because it would have crossed the book.
+    PostOnlyCrossed { slot: OrderSlot, ts: Instant },
 }
 
 /// Rejection class for placement failures.
@@ -276,6 +432,8 @@ pub struct FillEvent {
     pub order_id: String,
     /// Which side was filled (YES or NO).
     pub side: Side,
+    /// Trade direction on this token side.
+    pub direction: TradeDirection,
     /// Size filled in THIS event (may be partial).
     pub filled_size: f64,
     /// Fill price.
@@ -283,6 +441,12 @@ pub struct FillEvent {
     /// Fill status from the exchange.
     pub status: FillStatus,
     pub ts: Instant,
+}
+
+impl FillEvent {
+    pub fn slot(&self) -> OrderSlot {
+        OrderSlot::new(self.side, self.direction)
+    }
 }
 
 /// Inventory update stream consumed by InventoryManager.

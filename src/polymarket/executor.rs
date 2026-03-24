@@ -1,6 +1,6 @@
 //! Executor Actor — order management.
 //!
-//! Tracks active open orders in a `HashMap<Side, Vec<String>>`.
+//! Tracks active open orders per logical order slot.
 //! Default path is Post-Only maker bids, with a dedicated one-shot taker hedge
 //! path for tail-risk de-risking.
 //!
@@ -27,6 +27,7 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 pub type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>;
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReconcileFetchMode {
     Market,
@@ -88,15 +89,17 @@ pub struct Executor {
     fill_rx: mpsc::Receiver<FillEvent>,
     /// Side channel for capital-recycle trigger events.
     capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
+    /// Side channel for Coordinator execution feedback (e.g. crossed-book reject adaptation).
+    feedback_tx: Option<mpsc::Sender<ExecutionFeedback>>,
 
     /// Cached free collateral balance (USDC) used by pre-place affordability checks.
     balance_cache_usdc: Option<f64>,
     balance_cache_ts: Instant,
     balance_cache_ttl: Duration,
 
-    /// Active open orders tracked per side: order_id → remaining_size.
+    /// Active open orders tracked per slot: order_id → remaining_size.
     /// Enables partial fill tracking — only removes when fully filled.
-    open_orders: HashMap<Side, HashMap<String, f64>>,
+    open_orders: [HashMap<String, f64>; 4],
 
     /// Runtime-selected query mode for REST reconciliation.
     reconcile_fetch_mode: ReconcileFetchMode,
@@ -119,11 +122,8 @@ impl Executor {
         result_tx: mpsc::Sender<OrderResult>,
         fill_rx: mpsc::Receiver<FillEvent>,
         capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
+        feedback_tx: Option<mpsc::Sender<ExecutionFeedback>>,
     ) -> Self {
-        let mut open_orders = HashMap::new();
-        open_orders.insert(Side::Yes, HashMap::new());
-        open_orders.insert(Side::No, HashMap::new());
-
         Self {
             cfg,
             client,
@@ -132,6 +132,7 @@ impl Executor {
             result_tx,
             fill_rx,
             capital_tx,
+            feedback_tx,
             balance_cache_usdc: None,
             balance_cache_ts: Instant::now() - Duration::from_secs(60),
             balance_cache_ttl: Duration::from_millis(
@@ -141,8 +142,8 @@ impl Executor {
                     .filter(|v| *v > 0)
                     .unwrap_or(2000),
             ),
-            open_orders,
-            reconcile_fetch_mode: ReconcileFetchMode::Market,
+            open_orders: std::array::from_fn(|_| HashMap::new()),
+            reconcile_fetch_mode: ReconcileFetchMode::LocalById,
             marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
                 .ok()
                 .and_then(|v| v.parse::<f64>().ok())
@@ -166,6 +167,10 @@ impl Executor {
             self.cfg.dry_run,
             self.client.is_some(),
         );
+        info!(
+            "🧭 Reconcile mode: {} (startup CancelAll authoritative)",
+            self.reconcile_fetch_mode.as_str()
+        );
         let reconcile_enabled =
             self.cfg.reconcile_interval_secs > 0 && !self.cfg.dry_run && self.client.is_some();
         let mut reconcile_tick =
@@ -176,14 +181,20 @@ impl Executor {
                 // Command channel (from Coordinator)
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
-                        Some(ExecutionCmd::PlacePostOnlyBid { side, price, size, reason }) => {
-                            self.handle_place_bid(side, price, size, reason).await;
+                        Some(ExecutionCmd::ExecuteIntent { intent }) => {
+                            self.handle_execute_intent(intent).await;
                         }
-                        Some(ExecutionCmd::PlaceTakerHedge { side, size }) => {
-                            self.handle_place_taker_hedge(side, size).await;
+                        Some(ExecutionCmd::PlacePostOnlyBid { side, direction, price, size, reason }) => {
+                            self.handle_place_bid(side, direction, price, size, reason).await;
+                        }
+                        Some(ExecutionCmd::PlaceTakerHedge { side, direction, size }) => {
+                            self.handle_place_taker(side, direction, size, TradePurpose::Hedge).await;
                         }
                         Some(ExecutionCmd::CancelOrder { order_id, reason }) => {
                             let _ = self.handle_cancel_order(&order_id, reason).await;
+                        }
+                        Some(ExecutionCmd::CancelSlot { slot, reason }) => {
+                            self.handle_cancel_slot(slot, reason).await;
                         }
                         Some(ExecutionCmd::CancelSide { side, reason }) => {
                             self.handle_cancel_side(side, reason).await;
@@ -213,6 +224,21 @@ impl Executor {
         }
 
         info!("⚡ Executor shutting down");
+    }
+
+    fn slot_orders(&self, slot: OrderSlot) -> &HashMap<String, f64> {
+        &self.open_orders[slot.index()]
+    }
+
+    fn slot_orders_mut(&mut self, slot: OrderSlot) -> &mut HashMap<String, f64> {
+        &mut self.open_orders[slot.index()]
+    }
+
+    fn side_order_count(&self, side: Side) -> usize {
+        OrderSlot::side_slots(side)
+            .into_iter()
+            .map(|slot| self.slot_orders(slot).len())
+            .sum()
     }
 
     // ─────────────────────────────────────────────────
@@ -258,7 +284,7 @@ impl Executor {
         };
 
         let mut mode = self.reconcile_fetch_mode;
-        let mut remote_by_side = loop {
+        let mut remote_by_slot = loop {
             match self
                 .fetch_remote_open_orders(client, mode, market_id, yes_id, no_id)
                 .await
@@ -298,36 +324,45 @@ impl Executor {
             }
         };
 
-        for side in [Side::Yes, Side::No] {
-            let remote = remote_by_side.remove(&side).unwrap_or_default();
-            let local = self.open_orders.entry(side).or_default();
+        for slot in OrderSlot::ALL {
+            let remote = remote_by_slot.remove(&slot).unwrap_or_default();
+            let mut removed: Vec<String> = Vec::new();
+            let mut newly_seen: Vec<(String, f64)> = Vec::new();
+            {
+                let local = self.slot_orders_mut(slot);
+                for id in local.keys() {
+                    if !remote.contains_key(id) {
+                        removed.push(id.clone());
+                    }
+                }
+                for id in &removed {
+                    local.remove(id);
+                }
 
-            let mut removed = Vec::new();
-            for id in local.keys() {
-                if !remote.contains_key(id) {
-                    removed.push(id.clone());
+                for (id, rem) in remote {
+                    if !local.contains_key(&id) {
+                        newly_seen.push((id.clone(), rem));
+                    }
+                    local.insert(id, rem);
                 }
             }
+
             for id in removed {
-                local.remove(&id);
                 warn!(
-                    "🧭 Reconcile: {:?} order {}… missing on exchange — releasing slot",
-                    side,
+                    "🧭 Reconcile: {} order {}… missing on exchange — releasing slot",
+                    slot.as_str(),
                     &id[..8.min(id.len())],
                 );
-                let _ = self.result_tx.send(OrderResult::OrderFilled { side }).await;
+                let _ = self.result_tx.send(OrderResult::OrderFilled { slot }).await;
             }
 
-            for (id, rem) in remote {
-                if !local.contains_key(&id) {
-                    warn!(
-                        "🧭 Reconcile: {:?} order {}… exists on exchange but not tracked (remaining={:.4})",
-                        side,
-                        &id[..8.min(id.len())],
-                        rem
-                    );
-                }
-                local.insert(id, rem);
+            for (id, rem) in newly_seen {
+                warn!(
+                    "🧭 Reconcile: {} order {}… exists on exchange but not tracked (remaining={:.4})",
+                    slot.as_str(),
+                    &id[..8.min(id.len())],
+                    rem
+                );
             }
         }
     }
@@ -339,17 +374,17 @@ impl Executor {
         market_id: alloy::primitives::B256,
         yes_id: alloy::primitives::U256,
         no_id: alloy::primitives::U256,
-    ) -> Result<HashMap<Side, HashMap<String, f64>>, ReconcileFetchError> {
+    ) -> Result<HashMap<OrderSlot, HashMap<String, f64>>, ReconcileFetchError> {
         use polymarket_client_sdk::clob::types::request::OrdersRequest;
 
-        let mut remote_by_side: HashMap<Side, HashMap<String, f64>> = HashMap::new();
+        let mut remote_by_slot: HashMap<OrderSlot, HashMap<String, f64>> = HashMap::new();
 
         match mode {
             ReconcileFetchMode::Market => {
                 let req = OrdersRequest::builder().market(market_id).build();
                 let orders = self.fetch_orders_pagewise(client, &req).await?;
                 for order in orders {
-                    Self::insert_remote_order(&mut remote_by_side, order, market_id, yes_id, no_id);
+                    Self::insert_remote_order(&mut remote_by_slot, order, market_id, yes_id, no_id);
                 }
             }
             ReconcileFetchMode::AssetSplit => {
@@ -358,7 +393,7 @@ impl Executor {
                     let orders = self.fetch_orders_pagewise(client, &req).await?;
                     for order in orders {
                         Self::insert_remote_order(
-                            &mut remote_by_side,
+                            &mut remote_by_slot,
                             order,
                             market_id,
                             yes_id,
@@ -370,11 +405,9 @@ impl Executor {
             ReconcileFetchMode::LocalById => {
                 // Last-resort mode when `/data/orders` query shapes are rejected.
                 // It keeps local lifecycle healthy but cannot discover unknown remote orders.
-                let mut ids = Vec::new();
-                for side in [Side::Yes, Side::No] {
-                    if let Some(local) = self.open_orders.get(&side) {
-                        ids.extend(local.keys().cloned());
-                    }
+                let mut ids: Vec<String> = Vec::new();
+                for slot in OrderSlot::ALL {
+                    ids.extend(self.slot_orders(slot).keys().cloned());
                 }
 
                 for order_id in ids {
@@ -387,12 +420,12 @@ impl Executor {
                             return Err(ReconcileFetchError::Failed(e));
                         }
                     };
-                    Self::insert_remote_order(&mut remote_by_side, order, market_id, yes_id, no_id);
+                    Self::insert_remote_order(&mut remote_by_slot, order, market_id, yes_id, no_id);
                 }
             }
         }
 
-        Ok(remote_by_side)
+        Ok(remote_by_slot)
     }
 
     async fn fetch_orders_pagewise(
@@ -428,13 +461,13 @@ impl Executor {
     }
 
     fn insert_remote_order(
-        remote_by_side: &mut HashMap<Side, HashMap<String, f64>>,
+        remote_by_slot: &mut HashMap<OrderSlot, HashMap<String, f64>>,
         ord: polymarket_client_sdk::clob::types::response::OpenOrderResponse,
         market_id: alloy::primitives::B256,
         yes_id: alloy::primitives::U256,
         no_id: alloy::primitives::U256,
     ) {
-        use polymarket_client_sdk::clob::types::OrderStatusType;
+        use polymarket_client_sdk::clob::types::{OrderStatusType, Side as SdkSide};
 
         if ord.market != market_id {
             return;
@@ -447,6 +480,12 @@ impl Executor {
         } else {
             return;
         };
+        let direction = match ord.side {
+            SdkSide::Buy => TradeDirection::Buy,
+            SdkSide::Sell => TradeDirection::Sell,
+            _ => return,
+        };
+        let slot = OrderSlot::new(side, direction);
 
         if matches!(ord.status, OrderStatusType::Canceled) {
             return;
@@ -456,8 +495,8 @@ impl Executor {
         let matched = ord.size_matched.to_f64().unwrap_or(0.0);
         let remaining = (orig - matched).max(0.0);
         if remaining > 1e-9 {
-            remote_by_side
-                .entry(side)
+            remote_by_slot
+                .entry(slot)
                 .or_default()
                 .insert(ord.id.clone(), remaining);
         }
@@ -489,46 +528,47 @@ impl Executor {
     /// FAILED: order is dead/reverted — remove entirely.
     /// AUDIT FIX: Sends OrderFilled back to Coordinator so it can release the slot.
     async fn handle_fill_notification(&mut self, fill: &FillEvent) {
+        let slot = fill.slot();
         // P1-3: FAILED = order terminated, remove entirely
         if fill.status == FillStatus::Failed {
-            let orders = self.open_orders.entry(fill.side).or_default();
+            let orders = self.slot_orders_mut(slot);
             if orders.remove(&fill.order_id).is_some() {
                 warn!(
-                    "📋 Lifecycle: {:?} order {}… FAILED — removed from tracking ({} remaining)",
-                    fill.side,
+                    "📋 Lifecycle: {} order {}… FAILED — removed from tracking ({} remaining)",
+                    slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
                 // Notify Coordinator: slot is now free
                 let _ = self
                     .result_tx
-                    .send(OrderResult::OrderFilled { side: fill.side })
+                    .send(OrderResult::OrderFilled { slot })
                     .await;
             }
             return;
         }
 
         // MATCHED path: decrement remaining size
-        let orders = self.open_orders.entry(fill.side).or_default();
+        let orders = self.slot_orders_mut(slot);
         if let Some(remaining) = orders.get_mut(&fill.order_id) {
             *remaining -= fill.filled_size;
             if *remaining <= 0.0 {
                 orders.remove(&fill.order_id);
                 info!(
-                    "📋 Lifecycle: {:?} order {}… fully filled — removed ({} remaining on side)",
-                    fill.side,
+                    "📋 Lifecycle: {} order {}… fully filled — removed ({} remaining on slot)",
+                    slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
                 // AUDIT FIX: Notify Coordinator that the slot is free for new orders
                 let _ = self
                     .result_tx
-                    .send(OrderResult::OrderFilled { side: fill.side })
+                    .send(OrderResult::OrderFilled { slot })
                     .await;
             } else {
                 info!(
-                    "📋 Lifecycle: {:?} order {}… partial fill {:.2}, remaining={:.2}",
-                    fill.side,
+                    "📋 Lifecycle: {} order {}… partial fill {:.2}, remaining={:.2}",
+                    slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
                     fill.filled_size,
                     remaining,
@@ -541,57 +581,81 @@ impl Executor {
     // Place Post-Only Bid
     // ─────────────────────────────────────────────────
 
-    async fn handle_place_bid(&mut self, side: Side, price: f64, size: f64, reason: BidReason) {
+    async fn handle_execute_intent(&mut self, intent: TradeIntent) {
+        let slot = OrderSlot::new(intent.side, intent.direction);
+        match intent.urgency {
+            TradeUrgency::MakerPostOnly => {
+                let Some(price) = intent.price else {
+                    warn!(
+                        "🚫 ExecuteIntent rejected: missing price for MakerPostOnly {:?} {:?}",
+                        intent.side, intent.direction
+                    );
+                    let _ = self
+                        .result_tx
+                        .send(OrderResult::OrderFailed {
+                            slot,
+                            cooldown_ms: 0,
+                        })
+                        .await;
+                    return;
+                };
+                self.handle_place_bid(
+                    intent.side,
+                    intent.direction,
+                    price,
+                    intent.size,
+                    intent.purpose.as_bid_reason(),
+                )
+                .await;
+            }
+            TradeUrgency::TakerFak => {
+                self.handle_place_taker(intent.side, intent.direction, intent.size, intent.purpose)
+                    .await;
+            }
+        }
+    }
+
+    async fn handle_place_bid(
+        &mut self,
+        side: Side,
+        direction: TradeDirection,
+        price: f64,
+        size: f64,
+        reason: BidReason,
+    ) {
+        let slot = OrderSlot::new(side, direction);
         let reason_str = match reason {
             BidReason::Provide => "PROVIDE",
             BidReason::Hedge => "HEDGE",
         };
         info!(
-            "📤 {} PostOnlyBid {:?}@{:.3} size={:.1}",
-            reason_str, side, price, size,
+            "📤 {} PostOnly {:?} {:?}@{:.3} size={:.1}",
+            reason_str, direction, side, price, size,
         );
 
         if self.cfg.dry_run || self.client.is_none() {
             info!(
-                "📝 [DRY-RUN] PostOnlyBid {:?}@{:.3} size={:.1}",
-                side, price, size,
+                "📝 [DRY-RUN] PostOnly {:?} {:?}@{:.3} size={:.1}",
+                direction, side, price, size,
             );
             // DRY-RUN: track fake order, but NO FillEvent.
             // net_diff stays 0 → always Balanced. Correct for paper trading.
-            let fake_id = format!("dry-{:?}-{}", side, Instant::now().elapsed().as_nanos());
-            if let Some(orders) = self.open_orders.get_mut(&side) {
-                orders.insert(fake_id, size);
-            }
+            let fake_id = format!(
+                "dry-{:?}-{:?}-{}",
+                direction,
+                side,
+                Instant::now().elapsed().as_nanos()
+            );
+            self.slot_orders_mut(slot).insert(fake_id, size);
             return;
         }
 
-        // Safety: do not place a new bid on a side while we still track
-        // uncanceled live orders on that side.
-        //
-        // Exception for hedge orders:
-        // If hedge arrives while provide is still live, preempt by canceling side first.
-        // This keeps directional de-risking on the critical path.
-        let mut existing_count = self
-            .open_orders
-            .get(&side)
-            .map(|existing| existing.len())
-            .unwrap_or(0);
-        if existing_count > 0 && matches!(reason, BidReason::Hedge) {
-            info!(
-                "⚡ Hedge preemption on {:?}: canceling {} tracked order(s) before hedge place",
-                side, existing_count
-            );
-            self.handle_cancel_side(side, CancelReason::Reprice).await;
-            existing_count = self
-                .open_orders
-                .get(&side)
-                .map(|existing| existing.len())
-                .unwrap_or(0);
-        }
+        // Slot-keyed maker model: only this exact slot is mutually exclusive.
+        let existing_count = self.slot_orders(slot).len();
         if existing_count > 0 {
             warn!(
-                "🚫 Refusing PlacePostOnlyBid {:?}@{:.3}: {} tracked order(s) still open on side",
-                side, price, existing_count,
+                "🚫 Refusing PlacePostOnlyBid {}@{:.3}: {} tracked order(s) still open on slot",
+                slot.as_str(), price, existing_count,
             );
             if self.last_guard_reconcile_ts.elapsed() >= Duration::from_millis(1500)
                 && !self.cfg.dry_run
@@ -603,7 +667,7 @@ impl Executor {
             let _ = self
                 .result_tx
                 .send(OrderResult::OrderFailed {
-                    side,
+                    slot,
                     // Short backoff to avoid tight retry loops when OMS and
                     // executor are temporarily out-of-sync on live orders.
                     cooldown_ms: 2_000,
@@ -613,12 +677,13 @@ impl Executor {
         }
 
         let notional = (price * size).max(0.0);
-        if self.marketable_buy_min_notional_floor > 0.0
+        if direction == TradeDirection::Buy
+            && self.marketable_buy_min_notional_floor > 0.0
             && notional + 1e-9 < self.marketable_buy_min_notional_floor
         {
             warn!(
-                "🚫 Precheck reject {:?}@{:.3} sz={:.2}: notional ${:.2} < marketable min ${:.2}",
-                side, price, size, notional, self.marketable_buy_min_notional_floor
+                "🚫 Precheck reject {:?} {:?}@{:.3} sz={:.2}: notional ${:.2} < marketable min ${:.2}",
+                direction, side, price, size, notional, self.marketable_buy_min_notional_floor
             );
             let _ = self
                 .emit_reject_event(PlacementRejectEvent {
@@ -633,7 +698,7 @@ impl Executor {
             let _ = self
                 .result_tx
                 .send(OrderResult::OrderFailed {
-                    side,
+                    slot,
                     cooldown_ms: self.marketable_buy_cooldown_ms,
                 })
                 .await;
@@ -642,48 +707,55 @@ impl Executor {
 
         // Affordability guard: avoid futile submits when free collateral is clearly insufficient.
         // This reduces exchange-side hard rejects and cancel/place storms during low-balance windows.
-        if let Some(free_usdc) = self.cached_free_balance_usdc().await {
-            let required_usdc = (price * size).max(0.0);
-            // Keep a small cushion for transient balance/allowance lag.
-            if free_usdc + 0.05 < required_usdc {
-                warn!(
-                    "🚫 Precheck reject {:?}@{:.3} sz={:.1}: need {:.2} USDC > free {:.2} USDC",
-                    side, price, size, required_usdc, free_usdc
-                );
-                let _ = self
-                    .emit_reject_event(PlacementRejectEvent {
-                        side,
-                        reason,
-                        kind: RejectKind::BalanceOrAllowance,
-                        price,
-                        size,
-                        ts: Instant::now(),
-                    })
-                    .await;
-                let _ = self
-                    .result_tx
-                    .send(OrderResult::OrderFailed {
-                        side,
-                        cooldown_ms: 15_000,
-                    })
-                    .await;
-                return;
+        if direction == TradeDirection::Buy {
+            if let Some(free_usdc) = self.cached_free_balance_usdc().await {
+                let required_usdc = (price * size).max(0.0);
+                // Keep a small cushion for transient balance/allowance lag.
+                if free_usdc + 0.05 < required_usdc {
+                    warn!(
+                        "🚫 Precheck reject {:?} {:?}@{:.3} sz={:.1}: need {:.2} USDC > free {:.2} USDC",
+                        direction, side, price, size, required_usdc, free_usdc
+                    );
+                    let _ = self
+                        .emit_reject_event(PlacementRejectEvent {
+                            side,
+                            reason,
+                            kind: RejectKind::BalanceOrAllowance,
+                            price,
+                            size,
+                            ts: Instant::now(),
+                        })
+                        .await;
+                    let _ = self
+                        .result_tx
+                        .send(OrderResult::OrderFailed {
+                            slot,
+                            cooldown_ms: 15_000,
+                        })
+                        .await;
+                    return;
+                }
             }
         }
 
-        match self.place_post_only_order(side, price, size).await {
+        match self
+            .place_post_only_order(side, direction, price, size)
+            .await
+        {
             Ok(order_id) => {
-                info!("✅ Order placed: {:?}@{:.3} id={}", side, price, order_id);
-                if let Some(orders) = self.open_orders.get_mut(&side) {
-                    orders.insert(order_id, size);
-                }
+                info!(
+                    "✅ Order placed: {:?} {:?}@{:.3} id={}",
+                    direction, side, price, order_id
+                );
+                self.slot_orders_mut(slot).insert(order_id, size);
                 // Notify OrderManager that state can transition to Live
                 let _ = self
                     .result_tx
                     .send(OrderResult::OrderPlaced {
-                        side,
+                        slot,
                         target: DesiredTarget {
                             side,
+                            direction,
                             price,
                             size,
                             reason,
@@ -707,21 +779,23 @@ impl Executor {
                         self.cfg.tick_size = min_tick;
                     }
 
-                    match self.place_post_only_order(side, price, size).await {
+                    match self
+                        .place_post_only_order(side, direction, price, size)
+                        .await
+                    {
                         Ok(order_id) => {
                             info!(
-                                "✅ Order placed after tick-size retry: {:?}@{:.3} id={}",
-                                side, price, order_id
+                                "✅ Order placed after tick-size retry: {:?} {:?}@{:.3} id={}",
+                                direction, side, price, order_id
                             );
-                            if let Some(orders) = self.open_orders.get_mut(&side) {
-                                orders.insert(order_id, size);
-                            }
+                            self.slot_orders_mut(slot).insert(order_id, size);
                             let _ = self
                                 .result_tx
                                 .send(OrderResult::OrderPlaced {
-                                    side,
+                                    slot,
                                     target: DesiredTarget {
                                         side,
+                                        direction,
                                         price,
                                         size,
                                         reason,
@@ -755,6 +829,7 @@ impl Executor {
                 let is_429 = Self::is_rate_limit_error(&err_text_lower);
                 let is_balance = Self::is_balance_or_allowance_error(&err_text_lower);
                 let is_marketable_min = Self::is_marketable_min_error(&err_text_lower);
+                let is_cross_book = Self::is_cross_book_error(&err_text_lower);
                 let is_validation = Self::is_validation_error(&err_text_lower);
                 let reject_kind = if is_429 {
                     RejectKind::RateLimit
@@ -811,28 +886,44 @@ impl Executor {
                         ts: Instant::now(),
                     })
                     .await;
+                if is_cross_book {
+                    self.emit_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
+                        slot,
+                        ts: Instant::now(),
+                    })
+                    .await;
+                }
                 // FIX #4: Notify Coordinator the order failed so it can reset the slot
                 let _ = self
                     .result_tx
-                    .send(OrderResult::OrderFailed { side, cooldown_ms })
+                    .send(OrderResult::OrderFailed { slot, cooldown_ms })
                     .await;
             }
         }
     }
 
     // ─────────────────────────────────────────────────
-    // One-shot Taker Hedge (FAK market order)
+    // One-shot Taker (FAK market order)
     // ─────────────────────────────────────────────────
 
-    async fn handle_place_taker_hedge(&mut self, side: Side, size: f64) {
+    async fn handle_place_taker(
+        &mut self,
+        side: Side,
+        direction: TradeDirection,
+        size: f64,
+        purpose: TradePurpose,
+    ) {
         let size = Self::normalize_taker_size_for_market_buy(size);
-        info!("📤 TAKER-HEDGE {:?} size={:.2}", side, size);
+        info!(
+            "📤 TAKER {:?} {:?} size={:.2} purpose={:?}",
+            direction, side, size, purpose
+        );
 
         // CLOB lot-size floor (2dp). Skip impossible requests without retry storm.
         if size < 0.01 {
             warn!(
-                "🚫 Skip taker hedge {:?}: size {:.4} below executable lot floor 0.01",
-                side, size
+                "🚫 Skip taker {:?} {:?}: size {:.4} below executable lot floor 0.01",
+                direction, side, size
             );
             let _ = self
                 .result_tx
@@ -842,7 +933,10 @@ impl Executor {
         }
 
         if self.cfg.dry_run || self.client.is_none() {
-            info!("📝 [DRY-RUN] Taker hedge {:?} size={:.2}", side, size);
+            info!(
+                "📝 [DRY-RUN] Taker {:?} {:?} size={:.2} purpose={:?}",
+                direction, side, size, purpose
+            );
             let _ = self
                 .result_tx
                 .send(OrderResult::TakerHedgeDone { side })
@@ -852,15 +946,11 @@ impl Executor {
 
         // OMS should cancel same-side rest orders before this command.
         // Keep a hard guard here to avoid accidental mixed maker+taker on same side.
-        let existing_count = self
-            .open_orders
-            .get(&side)
-            .map(|existing| existing.len())
-            .unwrap_or(0);
+        let existing_count = self.side_order_count(side);
         if existing_count > 0 {
             warn!(
-                "🚫 Refusing TakerHedge {:?}: {} tracked order(s) still open on side",
-                side, existing_count
+                "🚫 Refusing Taker {:?} {:?}: {} tracked order(s) still open on side",
+                direction, side, existing_count
             );
             if self.last_guard_reconcile_ts.elapsed() >= Duration::from_millis(1500)
                 && !self.cfg.dry_run
@@ -871,19 +961,16 @@ impl Executor {
             }
             let _ = self
                 .result_tx
-                .send(OrderResult::OrderFailed {
-                    side,
-                    cooldown_ms: 2_000,
-                })
+                .send(OrderResult::TakerHedgeFailed { side, cooldown_ms: 2_000 })
                 .await;
             return;
         }
 
-        match self.place_taker_hedge_order(side, size).await {
+        match self.place_taker_order(side, direction, size).await {
             Ok(order_id) => {
                 info!(
-                    "✅ Taker hedge accepted: {:?} size={:.2} id={}",
-                    side, size, order_id
+                    "✅ Taker accepted: {:?} {:?} size={:.2} id={}",
+                    direction, side, size, order_id
                 );
                 let _ = self
                     .result_tx
@@ -891,7 +978,7 @@ impl Executor {
                     .await;
             }
             Err(e) => {
-                warn!("❌ Failed taker hedge {:?}: {:?}", side, e);
+                warn!("❌ Failed taker {:?} {:?}: {:?}", direction, side, e);
                 let err_text = format!("{:#}", e);
                 let err_text_lower = err_text.to_ascii_lowercase();
                 let is_429 = Self::is_rate_limit_error(&err_text_lower);
@@ -927,7 +1014,7 @@ impl Executor {
                 let _ = self
                     .emit_reject_event(PlacementRejectEvent {
                         side,
-                        reason: BidReason::Hedge,
+                        reason: purpose.as_bid_reason(),
                         kind: reject_kind,
                         price: 0.0,
                         size,
@@ -936,7 +1023,7 @@ impl Executor {
                     .await;
                 let _ = self
                     .result_tx
-                    .send(OrderResult::OrderFailed { side, cooldown_ms })
+                    .send(OrderResult::TakerHedgeFailed { side, cooldown_ms })
                     .await;
             }
         }
@@ -951,7 +1038,7 @@ impl Executor {
 
         if self.cfg.dry_run || self.client.is_none() {
             // DRY-RUN: remove from tracking immediately
-            for orders in self.open_orders.values_mut() {
+            for orders in self.open_orders.iter_mut() {
                 orders.remove(order_id);
             }
             info!("📝 [DRY-RUN] CancelOrder {}", order_id);
@@ -963,7 +1050,7 @@ impl Executor {
         if let Some(client) = &self.client {
             match client.cancel_order(order_id).await {
                 Ok(_) => {
-                    for orders in self.open_orders.values_mut() {
+                    for orders in self.open_orders.iter_mut() {
                         orders.remove(order_id);
                     }
                     info!("✅ Order canceled: {}", order_id);
@@ -981,16 +1068,50 @@ impl Executor {
         false
     }
 
-    async fn handle_cancel_side(&mut self, side: Side, reason: CancelReason) {
-        let order_ids: Vec<String> = self
-            .open_orders
-            .get(&side)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
+    async fn handle_cancel_slot(&mut self, slot: OrderSlot, reason: CancelReason) {
+        let order_ids: Vec<String> = self.slot_orders(slot).keys().cloned().collect();
 
         if order_ids.is_empty() {
-            // No tracked orders — still send CancelAck to unblock OMS state machine.
-            let _ = self.result_tx.send(OrderResult::CancelAck { side }).await;
+            let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+            return;
+        }
+
+        info!(
+            "🗑️ Cancel {} {} orders (reason={:?})",
+            order_ids.len(),
+            slot.as_str(),
+            reason,
+        );
+
+        let mut failed_count = 0usize;
+        for id in &order_ids {
+            if !self.handle_cancel_order(id, reason).await {
+                failed_count += 1;
+            }
+        }
+
+        if failed_count > 0 {
+            warn!(
+                "⚠️ CancelSlot {}: {}/{} cancel(s) failed — those orders remain tracked in open_orders",
+                slot.as_str(),
+                failed_count,
+                order_ids.len(),
+            );
+        }
+
+        let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+    }
+
+    async fn handle_cancel_side(&mut self, side: Side, reason: CancelReason) {
+        let mut order_ids: Vec<String> = Vec::new();
+        for slot in OrderSlot::side_slots(side) {
+            order_ids.extend(self.slot_orders(slot).keys().cloned());
+        }
+
+        if order_ids.is_empty() {
+            for slot in OrderSlot::side_slots(side) {
+                let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+            }
             return;
         }
 
@@ -1020,16 +1141,18 @@ impl Executor {
             );
         }
 
-        let _ = self.result_tx.send(OrderResult::CancelAck { side }).await;
+        for slot in OrderSlot::side_slots(side) {
+            let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+        }
     }
 
     async fn handle_cancel_all(&mut self, reason: CancelReason) {
-        let total: usize = self.open_orders.values().map(|v| v.len()).sum();
+        let total: usize = self.open_orders.iter().map(|v| v.len()).sum();
         info!("🗑️ CancelAll: {} orders (reason={:?})", total, reason);
 
         if self.cfg.dry_run || self.client.is_none() {
             info!("📝 [DRY-RUN] CancelAll");
-            self.open_orders.values_mut().for_each(|v| v.clear());
+            self.open_orders.iter_mut().for_each(|v| v.clear());
             return;
         }
 
@@ -1045,7 +1168,7 @@ impl Executor {
         match cancel_all_result {
             Ok(_) => {
                 info!("✅ All orders canceled");
-                self.open_orders.values_mut().for_each(|v| v.clear());
+                self.open_orders.iter_mut().for_each(|v| v.clear());
             }
             Err(e) => {
                 warn!(
@@ -1053,8 +1176,8 @@ impl Executor {
                     e
                 );
 
-                let mut ids = Vec::new();
-                for side_orders in self.open_orders.values() {
+                let mut ids: Vec<String> = Vec::new();
+                for side_orders in self.open_orders.iter() {
                     ids.extend(side_orders.keys().cloned());
                 }
 
@@ -1062,7 +1185,7 @@ impl Executor {
                     let _ = self.handle_cancel_order(&id, reason).await;
                 }
 
-                let remaining: usize = self.open_orders.values().map(|v| v.len()).sum();
+                let remaining: usize = self.open_orders.iter().map(|v| v.len()).sum();
                 if remaining > 0 {
                     warn!(
                         "⚠️ CancelAll fallback completed with {} tracked order(s) still open",
@@ -1078,6 +1201,12 @@ impl Executor {
     async fn emit_reject_event(&self, evt: PlacementRejectEvent) {
         if let Some(tx) = &self.capital_tx {
             let _ = tx.send(evt).await;
+        }
+    }
+
+    async fn emit_execution_feedback(&self, feedback: ExecutionFeedback) {
+        if let Some(tx) = &self.feedback_tx {
+            let _ = tx.send(feedback).await;
         }
     }
 
@@ -1124,6 +1253,7 @@ impl Executor {
     async fn place_post_only_order(
         &self,
         side: Side,
+        direction: TradeDirection,
         price: f64,
         size: f64,
     ) -> anyhow::Result<String> {
@@ -1165,7 +1295,10 @@ impl Executor {
         let token_id_uint =
             alloy::primitives::U256::from_str_radix(token_id, 10).context("Invalid token_id")?;
 
-        // Both YES and NO are bought via BUY side on the CLOB
+        let sdk_side = match direction {
+            TradeDirection::Buy => SdkSide::Buy,
+            TradeDirection::Sell => SdkSide::Sell,
+        };
         // CRITICAL: post_only(true) ensures we NEVER cross the spread.
         // Without this, if our bid price >= best ask, we'd become a taker.
         let order = client
@@ -1173,7 +1306,7 @@ impl Executor {
             .token_id(token_id_uint)
             .size(size_decimal)
             .price(price_decimal)
-            .side(SdkSide::Buy)
+            .side(sdk_side)
             .post_only(true)
             .build()
             .await?;
@@ -1209,7 +1342,12 @@ impl Executor {
         Ok(order_id)
     }
 
-    async fn place_taker_hedge_order(&self, side: Side, size: f64) -> anyhow::Result<String> {
+    async fn place_taker_order(
+        &self,
+        side: Side,
+        direction: TradeDirection,
+        size: f64,
+    ) -> anyhow::Result<String> {
         use polymarket_client_sdk::clob::types::{
             Amount, OrderStatusType, OrderType, Side as SdkSide,
         };
@@ -1243,7 +1381,10 @@ impl Executor {
             .market_order()
             .token_id(token_id_uint)
             .amount(amount)
-            .side(SdkSide::Buy)
+            .side(match direction {
+                TradeDirection::Buy => SdkSide::Buy,
+                TradeDirection::Sell => SdkSide::Sell,
+            })
             .order_type(OrderType::FAK)
             .build()
             .await?;
@@ -1315,13 +1456,17 @@ impl Executor {
     fn is_validation_error(lower: &str) -> bool {
         lower.contains("decimal places")
             || lower.contains("lot size")
-            || lower.contains("order crosses book")
+            || Self::is_cross_book_error(lower)
             || lower.contains("rounds to 0")
             || lower.contains("invalid amounts")
             || lower.contains("max accuracy")
             || lower.contains("no orders found to match")
             || lower.contains("no opposing orders")
             || Self::is_marketable_min_error(lower)
+    }
+
+    fn is_cross_book_error(lower: &str) -> bool {
+        lower.contains("order crosses book")
     }
 
     /// Normalize taker market-buy share size to avoid venue precision rejects.
@@ -1355,7 +1500,7 @@ impl Executor {
 
     /// Get count of open orders for a side.
     pub fn open_order_count(&self, side: Side) -> usize {
-        self.open_orders.get(&side).map(|m| m.len()).unwrap_or(0)
+        self.side_order_count(side)
     }
 }
 
@@ -1538,7 +1683,9 @@ pub async fn init_clob_client(
 
 #[cfg(test)]
 mod tests {
-    use super::Executor;
+    use tokio::sync::mpsc;
+
+    use super::{ExecutionCmd, Executor, ExecutorConfig, OrderResult, ReconcileFetchMode};
 
     #[test]
     fn taker_size_normalization_whole_share_for_size_ge_one() {
@@ -1567,5 +1714,31 @@ mod tests {
         assert!(Executor::is_validation_error(
             "validation: invalid: no opposing orders"
         ));
+    }
+
+    #[test]
+    fn executor_defaults_reconcile_mode_to_local_by_id() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, _result_rx) = mpsc::channel::<OrderResult>(4);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: false,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            None,
+            None,
+        );
+        assert_eq!(exec.reconcile_fetch_mode, ReconcileFetchMode::LocalById);
     }
 }

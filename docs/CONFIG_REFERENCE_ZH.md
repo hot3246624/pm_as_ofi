@@ -1,186 +1,135 @@
-# 配置参数手册（`.env` / `.env.example`）
+# 配置参数手册
 
-本文是参数语义的统一说明，和 `docs/STRATEGY_V2_CORE_ZH.md` 配套使用。  
-默认值以当前 `.env.example` 为准。
+本文档描述当前 `.env.example` 的推荐模板值。  
+注意：代码内部 fallback 默认值仍然偏保守，但实盘建议以模板为准。
 
-## 1. 市场选择
+## 1. 市场与认证
 
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `POLYMARKET_MARKET_SLUG` | `btc-updown-5m` | 最高优先级；可填完整 slug（单场）或前缀（轮转） |
-| `POLYMARKET_MARKET_PREFIX` | unset | 前缀模式别名，和 `SLUG` 二选一 |
-| `POLYMARKET_MARKET_SYMBOL` | unset | 与 `TIMEFRAME` 组合自动拼接 `<symbol>-updown-<tf>` |
-| `POLYMARKET_MARKET_TIMEFRAME` | unset | 支持 `1m/5m/15m/30m/1h/4h/1d` |
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `POLYMARKET_MARKET_SLUG` | `btc-updown-5m` | 当前推荐主战场 |
+| `PM_BINANCE_SYMBOL_OVERRIDE` | unset | `glft_mm` 可选覆盖；默认按 slug 自动映射 |
+| `POLYMARKET_PRIVATE_KEY` | empty | 实盘必填 |
+| `POLYMARKET_FUNDER_ADDRESS` | empty | 实盘必填 |
+| `POLYMARKET_API_KEY/SECRET/PASSPHRASE` | unset | 可选，留空则尝试派生 |
+| `POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE` | unset | Safe claim / merge 需要 |
+| `PM_SIGNATURE_TYPE` | `2` | Safe 模式推荐值 |
 
-## 2. 连接与认证
+## 2. 运行控制
 
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `POLYMARKET_WS_BASE_URL` | `wss://.../ws` | 基础 WS 地址，程序自动拼接 `/market`/`/user` |
-| `POLYMARKET_REST_URL` | `https://clob.polymarket.com` | CLOB REST 基址 |
-| `POLYMARKET_PRIVATE_KEY` | empty | 实盘必填，签名私钥（不带 `0x`） |
-| `POLYMARKET_FUNDER_ADDRESS` | empty | 实盘必填，资金地址（余额/授权/代理认证） |
-| `POLYMARKET_API_KEY/SECRET/PASSPHRASE` | unset | 可选；留空会尝试自动派生 |
-| `POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE` | unset | 仅 Safe 自动 Claim/merge 需要 |
-| `POLYMARKET_RELAYER_URL` | `https://relayer-v2.polymarket.com` | Builder/Relayer 地址 |
-
-## 3. Claim（可选）
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_CLAIM_MONITOR` | `true` | 输出可领取仓位监控日志 |
-| `PM_AUTO_CLAIM` | `false` | 自动领取开关 |
-| `PM_AUTO_CLAIM_DRY_RUN` | `false` | `true` 时仅打印不执行 |
-| `PM_AUTO_CLAIM_MIN_VALUE` | `0` | 单个 condition 最小价值阈值（美元） |
-| `PM_AUTO_CLAIM_MAX_CONDITIONS` | `5` | 单轮最多处理 condition 数量 |
-| `PM_AUTO_CLAIM_INTERVAL_SECONDS` | `300` | 两次自动领取最小间隔 |
-| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | `30` | 每轮结束后的 Claim SLA 窗口（秒，后台非阻塞，不占用下一轮开盘入场窗口） |
-| `PM_AUTO_CLAIM_ROUND_RETRY_MODE` | `exponential` | 回合 Claim 重试模式（默认指数退避） |
-| `PM_AUTO_CLAIM_ROUND_SCOPE` | `ended_then_global` | 先尝试刚结束市场，再全局兜底 |
-| `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | `0,2,5,9,14,20,27` | 回合窗口内重试偏移秒（需 ≤ window） |
-| `PM_AUTO_CLAIM_WAIT_CONFIRM` | `false` | Safe 模式是否等待 relayer confirm |
-| `PM_AUTO_CLAIM_WAIT_TIMEOUT_SECONDS` | `20` | `WAIT_CONFIRM=true` 时最大等待秒数 |
-
-## 4. 运行时控制
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_DRY_RUN` | `true` | 演习模式（不真实下单） |
-| `PM_ENTRY_GRACE_SECONDS` | `30` | 新市场开盘后可入场窗口（秒） |
-| `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 单次连接超时 |
-| `PM_RESOLVE_TIMEOUT_MS` | `4000` | Gamma 市场解析超时 |
-| `PM_RESOLVE_RETRY_ATTEMPTS` | `4` | 解析重试次数（指数退避） |
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `PM_DRY_RUN` | `true` | 模板默认先演习 |
+| `PM_ENTRY_GRACE_SECONDS` | `30` | 新市场开盘后的可入场窗口 |
+| `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 连接超时 |
+| `PM_WS_DEGRADE_MAX_FAILURES` | `12` | 连续失败后提前结束本轮 |
+| `PM_RESOLVE_TIMEOUT_MS` | `4000` | Gamma 解析超时 |
+| `PM_RESOLVE_RETRY_ATTEMPTS` | `4` | 解析重试次数 |
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | REST 对账周期 |
-| `PM_COORD_WATCHDOG_MS` | `500` | 无行情事件时的风控心跳 |
+| `PM_COORD_WATCHDOG_MS` | `500` | 无行情时的风控心跳 |
+| `PM_STRATEGY_METRICS_LOG_SECS` | `15` | 指标日志周期 |
 
-## 5. 核心策略参数
+## 3. 当前推荐策略模板（5m live 基线）
 
-| 参数 | 默认值 | 单位 | 说明 |
-|---|---:|---|---|
-| `PM_PAIR_TARGET` | `0.985` | 成本 | 一对 `YES+NO` 目标成本；利润约为 `1-pair_target` |
-| `PM_BID_SIZE` | `5.0` | shares | Provide 单次规模硬下限 |
-| `PM_MIN_ORDER_SIZE` | auto | shares | 最小订单数量；未设置时从 order_book 探测 |
-| `PM_MIN_HEDGE_SIZE` | `0.0` | shares | 对冲触发最小阈值（`0`=关闭） |
-| `PM_HEDGE_ROUND_UP` | `false` | bool | 小额对冲是否向上取整到最小订单 |
-| `PM_TICK_SIZE` | `0.01` | price | 价格粒度 |
-| `PM_POST_ONLY_SAFETY_TICKS` | `2.0` | ticks | maker 安全垫基础退让 |
-| `PM_POST_ONLY_TIGHT_SPREAD_TICKS` | `3.0` | ticks | 价差小于该值时触发额外退让 |
-| `PM_POST_ONLY_EXTRA_TIGHT_TICKS` | `1.0` | ticks | 紧价差额外退让 |
-| `PM_REPRICE_THRESHOLD` | `0.010` | price | 重报价阈值 |
-| `PM_DEBOUNCE_MS` | `500` | ms | Provide 防抖 |
-| `PM_HEDGE_DEBOUNCE_MS` | `100` | ms | Hedge 防抖 |
-| `PM_AS_SKEW_FACTOR` | `0.03` | factor | 库存偏斜系数 |
-| `PM_AS_TIME_DECAY_K` | `2.0` | factor | 临期 skew 放大系数 |
-| `PM_STALE_TTL_MS` | `3000` | ms | 单侧 stale 熔断阈值 |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | auto | sec | 收盘 SoftClose 窗口；停止 provide，进入 hedge-only |
-| `PM_ENDGAME_HARD_CLOSE_SECS` | auto | sec | 收盘 HardClose 窗口；edge-aware（优势保留/触发 taker 全量去风险） |
-| `PM_ENDGAME_FREEZE_SECS` | auto | sec | 收盘 Freeze 窗口；风险冻结（禁止新增风险，保留去风险） |
-| `PM_ENDGAME_EDGE_KEEP_MULT` | `1.5` | ratio | HardClose 入场保留阈值：`best_bid/avg_cost >= keep` |
-| `PM_ENDGAME_EDGE_EXIT_MULT` | `1.25` | ratio | HardClose 退出阈值：跌破后立即全量去风险 |
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `PM_STRATEGY` | `glft_mm` | 当前唯一推荐 live 主线 |
+| `PM_BID_SIZE` | `5.0` | 单槽位 clip |
+| `PM_MAX_NET_DIFF` | `15.0` | 盘中净仓硬上限 |
+| `PM_PAIR_TARGET` | `0.985` | 共享配对/尾盘安全阀参考成本线 |
+| `PM_MAX_PORTFOLIO_COST` | `1.02` | 救火成本上限 |
+| `PM_TICK_SIZE` | `0.01` | 价格粒度 |
+| `PM_POST_ONLY_SAFETY_TICKS` | `2.0` | maker 安全垫基础退让 |
+| `PM_POST_ONLY_TIGHT_SPREAD_TICKS` | `3.0` | 紧价差额外退让触发线 |
+| `PM_POST_ONLY_EXTRA_TIGHT_TICKS` | `1.0` | 紧价差额外退让 |
+| `PM_REPRICE_THRESHOLD` | `0.020` | 更保守的重报价阈值 |
+| `PM_DEBOUNCE_MS` | `700` | provide 防抖 |
+| `PM_HEDGE_DEBOUNCE_MS` | `100` | safety-valve hedge 防抖 |
+| `PM_STALE_TTL_MS` | `3000` | 单侧 stale TTL |
+| `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 
-默认按市场周期自动选择：
-- `5m: 60/30/2`
-- `15m: 90/30/3`
-- `1h: 180/60/5`
-- `>=4h: 600/180/8`
+## 4. `glft_mm` 专属参数
 
-## 6. 风险约束
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `PM_GLFT_GAMMA` | `0.10` | inventory shift 风险厌恶系数 |
+| `PM_GLFT_XI` | `0.10` | 终端惩罚；V1 推荐与 `gamma` 相同 |
+| `PM_GLFT_OFI_ALPHA` | `0.30` | OFI 对 reservation price 的偏移系数 |
+| `PM_GLFT_OFI_SPREAD_BETA` | `1.00` | OFI 对价差扩张的非线性乘子 |
+| `PM_GLFT_INTENSITY_WINDOW_SECS` | `30` | 强度拟合窗口 |
+| `PM_GLFT_REFIT_SECS` | `10` | 强度拟合周期 |
 
-| 参数 | 默认值 | 单位 | 说明 |
-|---|---:|---|---|
-| `PM_MAX_NET_DIFF` | `10.0` | shares | 最大净敞口硬下限（方向性风险） |
-| `PM_MAX_SIDE_SHARES` | `50.0` | shares | 单侧总持仓上限（绝对暴露） |
-| `PM_MAX_PORTFOLIO_COST` | `1.02` | 成本 | 救火成本上限 |
-| `PM_MAX_LOSS_PCT` | `0.02` | pct | 已弃用：读取后仅告警，策略逻辑忽略 |
+固定实现，不额外开放参数：
+- warm-start TTL = `6h`
+- bootstrap = `A=0.20, k=0.50, sigma=0.02, basis=0.0`
+- `sigma_prob` 半衰期 = `20s`
+- `basis_prob` 半衰期 = `30s`
+- governor 步长 = `1 tick`
 
-## 7. 动态资金管理（显式启用）
+## 5. OFI 推荐值（当前 5m live 基线）
 
-默认静态优先：只有显式配置才启用动态覆盖。
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_MAX_POS_PCT` | `0.0` | `0`=关闭动态 gross；`>0` 启用动态 side cap |
-| `PM_BID_PCT` | unset | 显式启用后，`BID_SIZE` 动态目标=`balance*pct`，最终值取 `max(target, PM_BID_SIZE)` |
-| `PM_NET_DIFF_PCT` | unset | 显式启用后，`MAX_NET_DIFF` 动态目标=`balance*pct`，最终值取 `max(target, PM_MAX_NET_DIFF)`（且始终 `>= BID_SIZE`） |
-| `PM_DYNAMIC_GROSS_REFRESH_SECS` | `10`（建议注释） | 仅 `PM_MAX_POS_PCT>0` 时生效 |
-
-## 8. OFI 毒性参数
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_OFI_WINDOW_MS` | `3000` | OFI 滑窗长度 |
-| `PM_OFI_TOXICITY_THRESHOLD` | `300` | 基准阈值（adaptive=true 时作为初始/回退值） |
-| `PM_OFI_ADAPTIVE` | `true` | 自适应阈值开关 |
-| `PM_OFI_ADAPTIVE_K` | `3.0` | `mean + k*sigma` 的 `k` |
-| `PM_OFI_ADAPTIVE_MIN` | `120` | 自适应阈值下限 |
-| `PM_OFI_ADAPTIVE_MAX` | `0.0` | 自适应阈值硬上限（`0`=关闭） |
-| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | `0.20` | 每次心跳阈值最大上升比例 |
-| `PM_OFI_ADAPTIVE_WINDOW` | `200` | 自适应滚动样本窗口 |
-| `PM_OFI_RATIO_ENTER` | `0.45` | 毒性进入比例门槛 |
-| `PM_OFI_RATIO_EXIT` | `0.30` | 毒性退出比例门槛（应 ≤ enter） |
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `PM_OFI_WINDOW_MS` | `3000` | 订单流窗口 |
+| `PM_OFI_TOXICITY_THRESHOLD` | `300.0` | 自适应基准阈值 |
+| `PM_OFI_ADAPTIVE` | `true` | 开启自适应 |
+| `PM_OFI_ADAPTIVE_K` | `4.2` | `mean + k*sigma` 的 `k` |
+| `PM_OFI_ADAPTIVE_MIN` | `120.0` | 自适应下限 |
+| `PM_OFI_ADAPTIVE_MAX` | `1800.0` | 自适应上限；防阈值漂到失真区 |
+| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | `0.20` | 每次心跳最大上升比例 |
+| `PM_OFI_ADAPTIVE_WINDOW` | `200` | 自适应样本窗口 |
+| `PM_OFI_RATIO_ENTER` | `0.70` | 进入 toxic 的比例门槛 |
+| `PM_OFI_RATIO_EXIT` | `0.40` | 退出比例门槛 |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 心跳 |
-| `PM_OFI_EXIT_RATIO` | `0.85` | 滞回退出比例 |
-| `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短保持时间 |
-| `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | 恢复后冷却，避免撤挂抖动 |
+| `PM_OFI_EXIT_RATIO` | `0.85` | 滞回退出比 |
+| `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短持续时间 |
 
-按周期推荐（无需新增参数，仅覆盖现有 OFI 参数）：
-- `5m`：`window=3000, k=3.0, enter=0.45, exit=0.30`
-- `15m`（推荐）：`window=4500, k=4.0, enter=0.65, exit=0.40`
-- `1h`：`window=6000, k=4.5, enter=0.70, exit=0.45`
+## 6. Endgame
 
-## 9. Marketable-BUY 防拒单参数
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | `60` | 停风险增加型意图 |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 优先 maker repair，不足时 taker de-risk |
+| `PM_ENDGAME_FREEZE_SECS` | `2` | 禁止新增风险 |
+| `PM_ENDGAME_MAKER_REPAIR_MIN_SECS` | `8` | HardClose 内继续 maker repair 的最小时间预算 |
+| `PM_ENDGAME_EDGE_KEEP_MULT` | `1.5` | keep-mode 阈值 |
+| `PM_ENDGAME_EDGE_EXIT_MULT` | `1.25` | keep-mode 退出阈值 |
 
-默认静态优先：关闭全局最小名义预检，保留“拒单分类 + 冷却”。
+## 7. recycle / claim
 
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_MIN_MARKETABLE_NOTIONAL_FLOOR` | `0.0` | 全局最小名义预检（`0`=关闭） |
-| `PM_MIN_MARKETABLE_AUTO_DETECT` | `false` | 是否从拒单自动学习 `min size:$X` |
-| `PM_MIN_MARKETABLE_COOLDOWN_MS` | `10000` | 命中 marketable-min 后侧边冷却 |
-| `PM_HEDGE_MIN_MARKETABLE_NOTIONAL` | `0.0` | 仅对冲路径的最小名义兜底 |
-| `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA` | `0.5` | 触发兜底时的绝对额外份额上限 |
-| `PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT` | `0.15` | 触发兜底时的相对额外比例上限 |
-
-## 10. 资金回收（Batch Merge）
-
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_RECYCLE_ENABLED` | `true` | 回收器开关 |
-| `PM_RECYCLE_ONLY_HEDGE` | `false` | `false`=Hedge+Provide 都可触发；`true`=仅 Hedge |
-| `PM_RECYCLE_TRIGGER_REJECTS` | `2` | 窗口内拒单触发阈值 |
-| `PM_RECYCLE_TRIGGER_WINDOW_SECS` | `90` | 拒单统计窗口 |
-| `PM_RECYCLE_PROACTIVE` | `true` | 主动低水位探测 |
+| 参数 | 模板值 | 说明 |
+| --- | --- | --- |
+| `PM_RECYCLE_ENABLED` | `true` | 启用 batch merge |
+| `PM_RECYCLE_ONLY_HEDGE` | `false` | Hedge + Provide 拒单都可触发 |
+| `PM_RECYCLE_TRIGGER_REJECTS` | `2` | 窗口内触发阈值 |
+| `PM_RECYCLE_TRIGGER_WINDOW_SECS` | `90` | 统计窗口 |
+| `PM_RECYCLE_PROACTIVE` | `true` | 启用低水位主动探测 |
 | `PM_RECYCLE_POLL_SECS` | `5` | 主动探测周期 |
-| `PM_RECYCLE_COOLDOWN_SECS` | `120` | 两次回收最小间隔 |
+| `PM_RECYCLE_COOLDOWN_SECS` | `120` | 回收冷却 |
 | `PM_RECYCLE_MAX_MERGES_PER_ROUND` | `2` | 单轮最大 merge 次数 |
 | `PM_RECYCLE_LOW_WATER_USDC` | `6.0` | 低水位门槛 |
-| `PM_RECYCLE_TARGET_FREE_USDC` | `18.0` | 回补目标余额 |
-| `PM_RECYCLE_MIN_BATCH_USDC` | `10.0` | 单次最小回收量 |
-| `PM_RECYCLE_MAX_BATCH_USDC` | `30.0` | 单次最大回收量 |
-| `PM_RECYCLE_SHORTFALL_MULT` | `1.2` | 缺口放大倍率（批处理） |
+| `PM_RECYCLE_TARGET_FREE_USDC` | `18.0` | 回补目标 |
+| `PM_RECYCLE_MIN_BATCH_USDC` | `10.0` | 最小批量 |
+| `PM_RECYCLE_MAX_BATCH_USDC` | `30.0` | 最大批量 |
+| `PM_RECYCLE_SHORTFALL_MULT` | `1.2` | 缺口放大倍率 |
 | `PM_RECYCLE_MIN_EXECUTABLE_USDC` | `5.0` | 低于该金额不执行 |
-| `PM_BALANCE_CACHE_TTL_MS` | `2000` | 执行层余额缓存 TTL |
+| `PM_BALANCE_CACHE_TTL_MS` | `2000` | 余额缓存 TTL |
+| `PM_AUTO_CLAIM` | `true` | 开启回合 claim |
+| `PM_AUTO_CLAIM_DRY_RUN` | `false` | live 才执行 |
+| `PM_AUTO_CLAIM_ROUND_WINDOW_SECS` | `30` | claim SLA 窗口 |
+| `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | `0,2,5,9,14,20,27` | 重试节奏 |
+| `PM_AUTO_CLAIM_ROUND_SCOPE` | `ended_then_global` | 先本轮后全局 |
 
-15m 推荐（减少“多次小额 merge”）：
-- `trigger_rejects=1`
-- `trigger_window=120s`
-- `cooldown=60s`
-- `max_merges_per_round=4`
-- `low_water/target_free=12/45`
-- `min/max_batch=20/80`
-- `shortfall_mult=1.5`
+## 8. 非主线策略参数
 
-## 11. 签名模式
+以下参数仍被代码支持，但不属于当前推荐 live 主线：
+- `PM_OPEN_PAIR_BAND`
+- `PM_DIP_BUY_MAX_ENTRY_PRICE`
+- `PM_AS_SKEW_FACTOR`
+- `PM_AS_TIME_DECAY_K`
+- `PM_BID_PCT`
+- `PM_NET_DIFF_PCT`
 
-| 参数 | 默认值 | 说明 |
-|---|---:|---|
-| `PM_SIGNATURE_TYPE` | `2` | SAFE 模式（merge/claim 常用） |
-
----
-
-## 12. 建议配置原则
-
-1. 静态优先：动态覆盖项 (`PM_BID_PCT/PM_NET_DIFF_PCT/PM_MAX_POS_PCT`) 默认关闭或注释。  
-2. 分层门禁：Provide 看“净仓+单侧”，Hedge 看“净仓优先去风险”。  
-3. 防风暴优先级：先保证拒单冷却与状态自愈，再考虑开启全局名义预检。  
-4. 所有调参以日志验证为准：先 dry-run，再小仓 live。
+原则：
+- 当前先把 `glft_mm` 跑稳
+- 非主线参数默认不作为 live 模板的激活项

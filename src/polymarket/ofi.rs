@@ -14,6 +14,11 @@ use tracing::{info, warn};
 use super::messages::{KillSwitchSignal, MarketDataMsg, OfiSnapshot, SideOfi, TakerSide};
 use super::types::Side;
 
+/// Number of consecutive heartbeats required to confirm toxicity entry.
+/// Keep this small to preserve kill-switch responsiveness, but >2 to reduce
+/// single-spike/single-burst false positives on fast 5m books.
+const TOXIC_CONFIRM_HEARTBEATS: u8 = 3;
+
 // ─────────────────────────────────────────────────────────
 // Configuration
 // ─────────────────────────────────────────────────────────
@@ -326,7 +331,19 @@ impl OfiEngine {
         score: f64,
         fallback: f64,
     ) -> f64 {
-        let obs = score.abs();
+        let obs_raw = score.abs();
+        let prev = fallback.max(cfg.adaptive_min);
+
+        // Robust observation clipping:
+        // A single burst can span multiple fast loop iterations and would otherwise
+        // dominate rolling stats. Clip only for history accumulation so threshold
+        // tracking stays responsive but bounded.
+        let obs = if cfg.adaptive_rise_cap_pct > 0.0 {
+            let hist_cap = prev * (1.0 + cfg.adaptive_rise_cap_pct.max(0.05) * 5.0);
+            obs_raw.min(hist_cap.max(cfg.adaptive_min))
+        } else {
+            obs_raw
+        };
         if history.len() >= cfg.adaptive_window {
             history.pop_front();
         }
@@ -342,12 +359,19 @@ impl OfiEngine {
 
         let mut adaptive = (mean + cfg.adaptive_k * std_dev).max(cfg.adaptive_min);
         if cfg.adaptive_rise_cap_pct > 0.0 {
-            let prev = fallback.max(cfg.adaptive_min);
             let rise_cap = prev * (1.0 + cfg.adaptive_rise_cap_pct);
             adaptive = adaptive.min(rise_cap);
         }
         if cfg.adaptive_max > 0.0 {
             adaptive = adaptive.min(cfg.adaptive_max.max(cfg.adaptive_min));
+        }
+
+        // Gentle mean-reversion anchor:
+        // when current flow is calm relative to the static baseline, nudge adaptive
+        // threshold back down so one historical spike doesn't disable OFI for long.
+        let baseline = cfg.toxicity_threshold.max(cfg.adaptive_min);
+        if obs_raw < baseline {
+            adaptive = baseline + (adaptive - baseline) * 0.90;
         }
         adaptive
     }
@@ -369,14 +393,21 @@ impl OfiEngine {
         );
 
         let mut ticker = tokio::time::interval(Duration::from_millis(self.cfg.heartbeat_ms));
+        // Align the first heartbeat to `heartbeat_ms` in the future instead of
+        // consuming Tokio interval's immediate initial tick. This keeps the
+        // "N-heartbeat confirmation" semantic literal.
+        ticker.tick().await;
         let mut was_yes_toxic = false;
         let mut was_no_toxic = false;
         let mut yes_toxic_since: Option<Instant> = None;
         let mut no_toxic_since: Option<Instant> = None;
         let mut yes_toxic_entry_threshold: Option<f64> = None;
         let mut no_toxic_entry_threshold: Option<f64> = None;
+        let mut yes_pending_toxic_count: u8 = 0;
+        let mut no_pending_toxic_count: u8 = 0;
 
         loop {
+            let mut heartbeat_fired = false;
             tokio::select! {
                 msg = self.md_rx.recv() => {
                     match msg {
@@ -391,6 +422,7 @@ impl OfiEngine {
                     }
                 }
                 _ = ticker.tick() => {
+                    heartbeat_fired = true;
                     // Force time-based eviction and broadcast
                 }
             }
@@ -436,7 +468,17 @@ impl OfiEngine {
                 !(held_long_enough && (abs_recovered || ratio_recovered))
             } else {
                 let ratio_enter_ok = !ratio_gate || yes_ratio >= self.cfg.toxicity_ratio_enter;
-                yes_abs > yes_enter_threshold && ratio_enter_ok
+                let enter_candidate = yes_abs > yes_enter_threshold && ratio_enter_ok;
+                if heartbeat_fired {
+                    if enter_candidate {
+                        yes_pending_toxic_count = yes_pending_toxic_count
+                            .saturating_add(1)
+                            .min(TOXIC_CONFIRM_HEARTBEATS);
+                    } else {
+                        yes_pending_toxic_count = 0;
+                    }
+                }
+                yes_pending_toxic_count >= TOXIC_CONFIRM_HEARTBEATS
             };
 
             let no_abs = no_ofi.ofi_score.abs();
@@ -451,7 +493,17 @@ impl OfiEngine {
                 !(held_long_enough && (abs_recovered || ratio_recovered))
             } else {
                 let ratio_enter_ok = !ratio_gate || no_ratio >= self.cfg.toxicity_ratio_enter;
-                no_abs > no_enter_threshold && ratio_enter_ok
+                let enter_candidate = no_abs > no_enter_threshold && ratio_enter_ok;
+                if heartbeat_fired {
+                    if enter_candidate {
+                        no_pending_toxic_count = no_pending_toxic_count
+                            .saturating_add(1)
+                            .min(TOXIC_CONFIRM_HEARTBEATS);
+                    } else {
+                        no_pending_toxic_count = 0;
+                    }
+                }
+                no_pending_toxic_count >= TOXIC_CONFIRM_HEARTBEATS
             };
 
             yes_ofi.is_toxic = yes_is_toxic;
@@ -467,6 +519,7 @@ impl OfiEngine {
 
             // Edge-triggered logging and Opt-4 kill signals on toxicity onset.
             if yes_is_toxic && !was_yes_toxic {
+                yes_pending_toxic_count = 0;
                 yes_toxic_since = Some(now);
                 yes_toxic_entry_threshold = Some(yes_enter_threshold);
                 warn!(
@@ -487,6 +540,7 @@ impl OfiEngine {
                 }
             } else if !yes_is_toxic && was_yes_toxic {
                 yes_toxic_since = None;
+                yes_pending_toxic_count = 0;
                 let entry_threshold = yes_toxic_entry_threshold.unwrap_or(yes_enter_threshold);
                 yes_toxic_entry_threshold = None;
                 info!(
@@ -497,6 +551,7 @@ impl OfiEngine {
             was_yes_toxic = yes_is_toxic;
 
             if no_is_toxic && !was_no_toxic {
+                no_pending_toxic_count = 0;
                 no_toxic_since = Some(now);
                 no_toxic_entry_threshold = Some(no_enter_threshold);
                 warn!(
@@ -517,6 +572,7 @@ impl OfiEngine {
                 }
             } else if !no_is_toxic && was_no_toxic {
                 no_toxic_since = None;
+                no_pending_toxic_count = 0;
                 let entry_threshold = no_toxic_entry_threshold.unwrap_or(no_enter_threshold);
                 no_toxic_entry_threshold = None;
                 info!(
@@ -526,10 +582,14 @@ impl OfiEngine {
             }
             was_no_toxic = no_is_toxic;
 
-            // Update adaptive thresholds for the next decision cycle.
-            // This avoids using a threshold that was recalculated from the same tick
-            // to decide entry/exit in the current cycle.
-            self.update_adaptive_thresholds(yes_ofi.ofi_score, no_ofi.ofi_score);
+            // Update adaptive thresholds only on heartbeat boundaries.
+            // This keeps sampling frequency stable regardless of market-data burst rate.
+            if heartbeat_fired {
+                // Update thresholds for the next decision cycle.
+                // This avoids using a threshold recalculated from the same cycle to
+                // decide entry/exit in the current cycle.
+                self.update_adaptive_thresholds(yes_ofi.ofi_score, no_ofi.ofi_score);
+            }
         }
 
         info!("🔬 OFI Engine shutting down");
@@ -735,9 +795,110 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_toxicity_requires_three_heartbeats_to_confirm() {
+        let cfg = OfiConfig {
+            window_duration: Duration::from_secs(1),
+            toxicity_threshold: 10.0,
+            heartbeat_ms: 20,
+            min_toxic_ms: 0,
+            ..OfiConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(16);
+        let (snap_tx, snap_rx) = watch::channel(OfiSnapshot::default());
+        let engine = OfiEngine::new(cfg, rx, snap_tx);
+        let handle = tokio::spawn(engine.run());
+
+        let now = Instant::now();
+        let _ = tx
+            .send(MarketDataMsg::TradeTick {
+                asset_id: "".to_string(),
+                market_side: Side::Yes,
+                taker_side: TakerSide::Sell,
+                size: 50.0,
+                ts: now,
+                price: 0.5,
+            })
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let snap1 = *snap_rx.borrow();
+        assert!(
+            !snap1.yes.is_toxic,
+            "single heartbeat must not confirm toxicity"
+        );
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let snap2 = *snap_rx.borrow();
+        assert!(
+            !snap2.yes.is_toxic,
+            "two heartbeats should still be pending confirmation"
+        );
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let snap3 = *snap_rx.borrow();
+        assert!(
+            snap3.yes.is_toxic,
+            "third heartbeat should confirm toxicity"
+        );
+
+        drop(tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
+    async fn test_toxicity_pending_confirmation_resets_when_next_heartbeat_recovers() {
+        let cfg = OfiConfig {
+            window_duration: Duration::from_secs(1),
+            toxicity_threshold: 10.0,
+            heartbeat_ms: 10,
+            min_toxic_ms: 0,
+            ..OfiConfig::default()
+        };
+        let (tx, rx) = mpsc::channel(16);
+        let (snap_tx, snap_rx) = watch::channel(OfiSnapshot::default());
+        let engine = OfiEngine::new(cfg, rx, snap_tx);
+        let handle = tokio::spawn(engine.run());
+
+        let now = Instant::now();
+        let _ = tx
+            .send(MarketDataMsg::TradeTick {
+                asset_id: "".to_string(),
+                market_side: Side::Yes,
+                taker_side: TakerSide::Sell,
+                size: 50.0,
+                ts: now,
+                price: 0.5,
+            })
+            .await;
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        assert!(!snap_rx.borrow().yes.is_toxic);
+
+        let _ = tx
+            .send(MarketDataMsg::TradeTick {
+                asset_id: "".to_string(),
+                market_side: Side::Yes,
+                taker_side: TakerSide::Buy,
+                size: 60.0,
+                ts: now + Duration::from_millis(1),
+                price: 0.5,
+            })
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let snap = *snap_rx.borrow();
+        assert!(
+            !snap.yes.is_toxic,
+            "recovered heartbeat must reset pending confirmation"
+        );
+
+        drop(tx);
+        let _ = handle.await;
+    }
+
+    #[tokio::test]
     async fn test_toxicity_timeout_recovery() {
         let cfg = OfiConfig {
-            window_duration: Duration::from_millis(50),
+            window_duration: Duration::from_millis(120),
             toxicity_threshold: 10.0,
             heartbeat_ms: 10,
             min_toxic_ms: 0,
@@ -762,14 +923,14 @@ mod tests {
             })
             .await;
 
-        // Wait for it to become toxic
-        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Wait for it to become toxic (3-heartbeat confirmation + scheduling slack)
+        tokio::time::sleep(Duration::from_millis(45)).await;
         let snap1 = *snap_rx.borrow(); // Copy the snapshot
         assert!(snap1.yes.is_toxic);
         assert!((snap1.yes.ofi_score - (-50.0)).abs() < 1e-9);
 
         // Wait for window_duration to pass, toxicity should clear without new ticks (thanks to heartbeat)
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(160)).await;
         let snap2 = *snap_rx.borrow(); // Copy the snapshot
         assert!(!snap2.yes.is_toxic);
         assert!((snap2.yes.ofi_score - 0.0).abs() < 1e-9);

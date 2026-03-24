@@ -1,8 +1,12 @@
 use std::time::{Duration, Instant};
+
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use super::messages::{CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult};
+use super::messages::{
+    BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult, OrderSlot,
+    TradeDirection, TradeIntent, TradePurpose, TradeUrgency,
+};
 use super::types::Side;
 
 const PENDING_SUBMIT_TIMEOUT: Duration = Duration::from_secs(8);
@@ -11,56 +15,47 @@ const PENDING_TIMEOUT_COOLDOWN: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderState {
-    /// No target, no live orders, no pending ops.
     Idle,
-    /// We have sent a PlacePostOnlyBid to Executor, waiting for it to land.
     PendingSubmit(DesiredTarget),
-    /// We have sent a one-shot taker hedge to Executor, waiting for completion.
-    PendingTaker(f64),
-    /// Order is confirmed placed on the network.
     Live(DesiredTarget),
-    /// We have sent a CancelSide to Executor, waiting for CancelAck or failure.
     PendingCancel(Option<DesiredTarget>),
 }
 
-#[derive(Debug)]
-pub struct SideTracker {
-    pub side: Side,
-    /// The state the Coordinator requested. If None, it means no order desired.
-    pub desired: Option<DesiredTarget>,
-    /// Why current side should be cleared when desired=None.
-    pub clear_reason: CancelReason,
-    /// The physical state tracking the Executor's lifecycle.
-    pub state: OrderState,
-    pub last_action: Instant,
-    /// BUG 2 FIX: Respect the cooldown sent by Executor on balance/allowance errors.
-    /// Pump is a no-op until this instant passes.
-    pub cooldown_until: Option<Instant>,
-    /// Pending one-shot taker hedge size on this side.
-    pub pending_taker_size: Option<f64>,
+#[derive(Debug, Clone, PartialEq)]
+enum SideTakerState {
+    Idle,
+    Pending(TradeIntent),
+    PendingSubmit(TradeIntent),
 }
 
-impl SideTracker {
-    pub fn new(side: Side) -> Self {
+#[derive(Debug)]
+pub struct SlotTracker {
+    pub slot: OrderSlot,
+    pub desired: Option<DesiredTarget>,
+    pub clear_reason: CancelReason,
+    pub state: OrderState,
+    pub last_action: Instant,
+    pub cooldown_until: Option<Instant>,
+}
+
+impl SlotTracker {
+    pub fn new(slot: OrderSlot) -> Self {
         Self {
-            side,
+            slot,
             desired: None,
             clear_reason: CancelReason::InventoryLimit,
             state: OrderState::Idle,
             last_action: Instant::now(),
             cooldown_until: None,
-            pending_taker_size: None,
         }
     }
 }
 
 pub struct OrderManager {
-    yes: SideTracker,
-    no: SideTracker,
-
+    slots: [SlotTracker; 4],
+    side_takers: [SideTakerState; 2],
     cmd_rx: mpsc::Receiver<OrderManagerCmd>,
     exec_tx: mpsc::Sender<ExecutionCmd>,
-    /// Receive order failure/success/ack from Executor
     result_rx: mpsc::Receiver<OrderResult>,
 }
 
@@ -71,12 +66,34 @@ impl OrderManager {
         result_rx: mpsc::Receiver<OrderResult>,
     ) -> Self {
         Self {
-            yes: SideTracker::new(Side::Yes),
-            no: SideTracker::new(Side::No),
+            slots: std::array::from_fn(|idx| SlotTracker::new(OrderSlot::ALL[idx])),
+            side_takers: [SideTakerState::Idle, SideTakerState::Idle],
             cmd_rx,
             exec_tx,
             result_rx,
         }
+    }
+
+    fn tracker(&self, slot: OrderSlot) -> &SlotTracker {
+        &self.slots[slot.index()]
+    }
+
+    fn tracker_mut(&mut self, slot: OrderSlot) -> &mut SlotTracker {
+        &mut self.slots[slot.index()]
+    }
+
+    fn side_taker(&self, side: Side) -> &SideTakerState {
+        &self.side_takers[side.index()]
+    }
+
+    fn side_taker_mut(&mut self, side: Side) -> &mut SideTakerState {
+        &mut self.side_takers[side.index()]
+    }
+
+    fn side_slots_idle(&self, side: Side) -> bool {
+        OrderSlot::side_slots(side)
+            .into_iter()
+            .all(|slot| matches!(self.tracker(slot).state, OrderState::Idle))
     }
 
     pub async fn run(mut self) {
@@ -85,50 +102,69 @@ impl OrderManager {
             tokio::select! {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
-                        Some(OrderManagerCmd::SetTarget(t)) => {
-                            let side = t.side;
-                            self.handle_target(t).await;
-                            self.pump(side).await;
+                        Some(OrderManagerCmd::SetTarget(target)) => {
+                            let slot = target.slot();
+                            self.handle_target(target).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
                         }
-                        Some(OrderManagerCmd::ClearTarget { side, reason }) => {
-                            self.handle_clear(side, reason).await;
-                            self.pump(side).await;
+                        Some(OrderManagerCmd::ClearTarget { slot, reason }) => {
+                            self.handle_clear(slot, reason).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
                         }
-                        Some(OrderManagerCmd::OneShotTakerHedge { side, size }) => {
-                            self.handle_one_shot_taker(side, size).await;
-                            self.pump(side).await;
+                        Some(OrderManagerCmd::OneShotTakerHedge {
+                            side,
+                            direction,
+                            size,
+                            purpose,
+                        }) => {
+                            self.handle_one_shot_taker(side, direction, size, purpose).await;
+                            for slot in OrderSlot::side_slots(side) {
+                                self.pump_slot(slot).await;
+                            }
+                            self.pump_side_taker(side).await;
                         }
                         Some(OrderManagerCmd::CancelAll) => {
-                            self.yes.desired = None;
-                            self.yes.clear_reason = CancelReason::Shutdown;
-                            self.yes.pending_taker_size = None;
-                            self.no.desired = None;
-                            self.no.clear_reason = CancelReason::Shutdown;
-                            self.no.pending_taker_size = None;
-                            self.pump(Side::Yes).await;
-                            self.pump(Side::No).await;
+                            self.handle_cancel_all();
+                            for slot in OrderSlot::ALL {
+                                self.pump_slot(slot).await;
+                            }
                         }
-                        None => break, // Channel closed
+                        None => break,
                     }
                 }
                 result = self.result_rx.recv() => {
                     match result {
-                        Some(OrderResult::OrderPlaced { side, target }) => {
-                            self.handle_placed(side, target).await;
+                        Some(OrderResult::OrderPlaced { slot, target }) => {
+                            self.handle_placed(slot, target).await;
+                            self.pump_slot(slot).await;
                         }
-                        Some(OrderResult::OrderFailed { side, cooldown_ms }) => {
-                            self.handle_failed(side, cooldown_ms).await;
+                        Some(OrderResult::OrderFailed { slot, cooldown_ms }) => {
+                            self.handle_failed(slot, cooldown_ms).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
                         }
-                        Some(OrderResult::OrderFilled { side }) => {
-                            self.handle_filled(side).await;
+                        Some(OrderResult::OrderFilled { slot }) => {
+                            self.handle_filled(slot).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
                         }
                         Some(OrderResult::TakerHedgeDone { side }) => {
                             self.handle_taker_done(side).await;
+                            for slot in OrderSlot::side_slots(side) {
+                                self.pump_slot(slot).await;
+                            }
                         }
-                        Some(OrderResult::CancelAck { side }) => {
-                            self.handle_cancel_ack(side).await;
+                        Some(OrderResult::TakerHedgeFailed { side, cooldown_ms }) => {
+                            self.handle_taker_failed(side, cooldown_ms).await;
                         }
-                        None => break, // Ignore
+                        Some(OrderResult::CancelAck { slot }) => {
+                            self.handle_cancel_ack(slot).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
+                        None => break,
                     }
                 }
             }
@@ -137,139 +173,149 @@ impl OrderManager {
     }
 
     async fn handle_target(&mut self, target: DesiredTarget) {
-        let tracker = match target.side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
-
+        let tracker = self.tracker_mut(target.slot());
         if target.price <= 0.0 || target.size <= 0.0 {
             tracker.desired = None;
         } else {
             tracker.desired = Some(target);
-            tracker.pending_taker_size = None;
         }
     }
 
-    async fn handle_clear(&mut self, side: Side, reason: CancelReason) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
+    async fn handle_clear(&mut self, slot: OrderSlot, reason: CancelReason) {
+        let tracker = self.tracker_mut(slot);
         tracker.desired = None;
         tracker.clear_reason = reason;
     }
 
-    async fn handle_one_shot_taker(&mut self, side: Side, size: f64) {
+    async fn handle_one_shot_taker(
+        &mut self,
+        side: Side,
+        direction: TradeDirection,
+        size: f64,
+        purpose: TradePurpose,
+    ) {
         if size <= 0.0 {
             return;
         }
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
-        tracker.desired = None;
-        tracker.pending_taker_size = Some(size);
-    }
-
-    async fn handle_placed(&mut self, side: Side, target: DesiredTarget) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
-        // Transition from PendingSubmit to Live.
-        // If we are already in some other state (like PendingCancel), do not overwrite blindly,
-        // but typically OrderPlaced follows PendingSubmit.
-        if let OrderState::PendingSubmit(_) = tracker.state {
-            tracker.state = OrderState::Live(target);
-            info!("✅ OMS: {:?} OrderPlaced -> Live", side);
-        } else if let OrderState::Idle = tracker.state {
-            tracker.state = OrderState::Live(target);
-            info!("✅ OMS: {:?} OrderPlaced (late) -> Live", side);
+        for slot in OrderSlot::side_slots(side) {
+            let tracker = self.tracker_mut(slot);
+            tracker.desired = None;
+            tracker.clear_reason = CancelReason::Reprice;
         }
-        self.pump(side).await;
+        *self.side_taker_mut(side) = SideTakerState::Pending(TradeIntent {
+            side,
+            direction,
+            urgency: TradeUrgency::TakerFak,
+            size,
+            price: None,
+            purpose,
+        });
     }
 
-    async fn handle_failed(&mut self, side: Side, cooldown_ms: u64) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
+    fn handle_cancel_all(&mut self) {
+        for slot in OrderSlot::ALL {
+            let tracker = self.tracker_mut(slot);
+            tracker.desired = None;
+            tracker.clear_reason = CancelReason::Shutdown;
+        }
+        self.side_takers = [SideTakerState::Idle, SideTakerState::Idle];
+    }
+
+    async fn handle_placed(&mut self, slot: OrderSlot, target: DesiredTarget) {
+        let tracker = self.tracker_mut(slot);
+        match tracker.state {
+            OrderState::PendingSubmit(_) | OrderState::Idle => {
+                tracker.state = OrderState::Live(target);
+                info!("✅ OMS: {} OrderPlaced -> Live", slot.as_str());
+            }
+            _ => {}
+        }
+    }
+
+    async fn handle_failed(&mut self, slot: OrderSlot, cooldown_ms: u64) {
+        let tracker = self.tracker_mut(slot);
         tracker.state = OrderState::Idle;
-        // BUG 2 FIX: Honor the cooldown from Executor (e.g. 30s for balance errors).
-        // Previously this field was silently discarded, causing dense retries on hard rejects.
         if cooldown_ms > 0 {
             let until = Instant::now() + Duration::from_millis(cooldown_ms);
             tracker.cooldown_until = Some(until);
             warn!(
-                "⏳ OMS: {:?} OrderFailed — cooldown {}s (hard reject)",
-                side,
+                "⏳ OMS: {} OrderFailed — cooldown {}s",
+                slot.as_str(),
                 cooldown_ms / 1000,
             );
-        } else {
-            warn!("⚠️ OMS: {:?} OrderFailed -> Resetting state to Idle", side);
         }
-        self.pump(side).await;
     }
 
-    async fn handle_filled(&mut self, side: Side) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
-        info!("✅ OMS: {:?} OrderFilled -> Slot freed", side);
+    async fn handle_filled(&mut self, slot: OrderSlot) {
+        let tracker = self.tracker_mut(slot);
+        info!("✅ OMS: {} OrderFilled -> Slot freed", slot.as_str());
         tracker.state = OrderState::Idle;
-        // Coordinator must re-issue Target if needed on next tick
         tracker.desired = None;
-        self.pump(side).await;
     }
 
     async fn handle_taker_done(&mut self, side: Side) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
         info!("✅ OMS: {:?} Taker hedge done -> Idle", side);
-        tracker.state = OrderState::Idle;
-        tracker.pending_taker_size = None;
-        tracker.desired = None;
-        self.pump(side).await;
+        *self.side_taker_mut(side) = SideTakerState::Idle;
     }
 
-    async fn handle_cancel_ack(&mut self, side: Side) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
-        info!("🗑️ OMS: {:?} CancelAck -> Idle", side);
-        tracker.state = OrderState::Idle;
-        self.pump(side).await;
-    }
-
-    /// Evaluates `desired` vs `state` and emits diff commands to `Executor` if safe.
-    async fn pump(&mut self, side: Side) {
-        let tracker = match side {
-            Side::Yes => &mut self.yes,
-            Side::No => &mut self.no,
-        };
-
-        // BUG 2 FIX: Respect cooldown window set on balance/allowance errors.
-        if let Some(until) = tracker.cooldown_until {
-            if Instant::now() < until {
-                return; // Still cooling down — do not retry.
+    async fn handle_taker_failed(&mut self, side: Side, cooldown_ms: u64) {
+        warn!(
+            "⚠️ OMS: {:?} Taker hedge failed -> Idle (cooldown {}ms)",
+            side, cooldown_ms
+        );
+        *self.side_taker_mut(side) = SideTakerState::Idle;
+        if cooldown_ms > 0 {
+            let until = Instant::now() + Duration::from_millis(cooldown_ms);
+            for slot in OrderSlot::side_slots(side) {
+                self.tracker_mut(slot).cooldown_until = Some(until);
             }
-            tracker.cooldown_until = None; // Cooldown expired; resume normal operation.
+        }
+    }
+
+    async fn handle_cancel_ack(&mut self, slot: OrderSlot) {
+        let tracker = self.tracker_mut(slot);
+        info!("🗑️ OMS: {} CancelAck -> Idle", slot.as_str());
+        tracker.state = OrderState::Idle;
+    }
+
+    async fn pump_side_taker(&mut self, side: Side) {
+        let state = self.side_taker(side).clone();
+        match state {
+            SideTakerState::Idle => {}
+            SideTakerState::Pending(intent) => {
+                if !self.side_slots_idle(side) {
+                    return;
+                }
+                let cmd = ExecutionCmd::ExecuteIntent {
+                    intent: intent.clone(),
+                };
+                *self.side_taker_mut(side) = SideTakerState::PendingSubmit(intent);
+                let _ = self.exec_tx.send(cmd).await;
+            }
+            SideTakerState::PendingSubmit(_) => {}
+        }
+    }
+
+    async fn pump_slot(&mut self, slot: OrderSlot) {
+        {
+            let tracker = self.tracker_mut(slot);
+            if let Some(until) = tracker.cooldown_until {
+                if Instant::now() < until {
+                    return;
+                }
+                tracker.cooldown_until = None;
+            }
         }
 
-        // Watchdog: prevent permanent deadlock if Executor feedback is dropped.
-        // Safety is preserved by Executor's open_orders guard (no double placement).
-        let submit_timed_out = matches!(
-            tracker.state,
-            OrderState::PendingSubmit(_) | OrderState::PendingTaker(_)
-        ) && tracker.last_action.elapsed() > PENDING_SUBMIT_TIMEOUT;
+        let submit_timed_out = {
+            let tracker = self.tracker(slot);
+            matches!(tracker.state, OrderState::PendingSubmit(_))
+                && tracker.last_action.elapsed() > PENDING_SUBMIT_TIMEOUT
+        };
         if submit_timed_out {
             warn!(
-                "⚠️ OMS: {:?} PendingSubmit timeout (>{}s) — forcing progress",
-                side,
+                "⚠️ OMS: {} PendingSubmit timeout (>{}s) — forcing progress",
+                slot.as_str(),
                 PENDING_SUBMIT_TIMEOUT.as_secs()
             );
             let _ = self
@@ -278,28 +324,33 @@ impl OrderManager {
                     reason: "pending_submit_timeout",
                 })
                 .await;
-            if tracker.desired.is_none() {
+            let desired_is_none = self.tracker(slot).desired.is_none();
+            if desired_is_none {
                 let _ = self
                     .exec_tx
-                    .send(ExecutionCmd::CancelSide {
-                        side,
+                    .send(ExecutionCmd::CancelSlot {
+                        slot,
                         reason: CancelReason::Reprice,
                     })
                     .await;
+                let tracker = self.tracker_mut(slot);
                 tracker.state = OrderState::PendingCancel(None);
                 tracker.last_action = Instant::now();
             } else {
-                tracker.state = OrderState::Idle;
+                self.tracker_mut(slot).state = OrderState::Idle;
             }
-            tracker.cooldown_until = Some(Instant::now() + PENDING_TIMEOUT_COOLDOWN);
+            self.tracker_mut(slot).cooldown_until = Some(Instant::now() + PENDING_TIMEOUT_COOLDOWN);
         }
 
-        let cancel_timed_out = matches!(tracker.state, OrderState::PendingCancel(_))
-            && tracker.last_action.elapsed() > PENDING_CANCEL_TIMEOUT;
+        let cancel_timed_out = {
+            let tracker = self.tracker(slot);
+            matches!(tracker.state, OrderState::PendingCancel(_))
+                && tracker.last_action.elapsed() > PENDING_CANCEL_TIMEOUT
+        };
         if cancel_timed_out {
             warn!(
-                "⚠️ OMS: {:?} PendingCancel timeout (>{}s) — resetting to Idle",
-                side,
+                "⚠️ OMS: {} PendingCancel timeout (>{}s) — resetting to Idle",
+                slot.as_str(),
                 PENDING_CANCEL_TIMEOUT.as_secs()
             );
             let _ = self
@@ -308,94 +359,64 @@ impl OrderManager {
                     reason: "pending_cancel_timeout",
                 })
                 .await;
+            let tracker = self.tracker_mut(slot);
             tracker.state = OrderState::Idle;
             tracker.cooldown_until = Some(Instant::now() + PENDING_TIMEOUT_COOLDOWN);
         }
 
-        let current_state = tracker.state.clone();
-
+        let current_state = self.tracker(slot).state.clone();
         match current_state {
             OrderState::Idle => {
-                if let Some(size) = tracker.pending_taker_size {
-                    let cmd = ExecutionCmd::PlaceTakerHedge { side, size };
-                    tracker.state = OrderState::PendingTaker(size);
-                    tracker.last_action = Instant::now();
-                    let _ = self.exec_tx.send(cmd).await;
-                    return;
-                }
-                if let Some(desired) = &tracker.desired {
-                    let cmd = ExecutionCmd::PlacePostOnlyBid {
-                        side: desired.side,
-                        price: desired.price,
-                        size: desired.size,
-                        reason: desired.reason,
+                if let Some(desired) = self.tracker(slot).desired.clone() {
+                    let cmd = ExecutionCmd::ExecuteIntent {
+                        intent: TradeIntent {
+                            side: desired.side,
+                            direction: desired.direction,
+                            urgency: TradeUrgency::MakerPostOnly,
+                            size: desired.size,
+                            price: Some(desired.price),
+                            purpose: match desired.reason {
+                                BidReason::Provide => TradePurpose::Provide,
+                                BidReason::Hedge => TradePurpose::Hedge,
+                            },
+                        },
                     };
+                    let tracker = self.tracker_mut(slot);
                     tracker.state = OrderState::PendingSubmit(desired.clone());
                     tracker.last_action = Instant::now();
                     let _ = self.exec_tx.send(cmd).await;
                 }
             }
-            OrderState::PendingSubmit(pending) => {
-                if let Some(desired) = &tracker.desired {
-                    if pending == *desired {
-                        // Already submitting what we want. Wait.
-                    } else {
-                        // We are submitting A, but now want B.
-                        // Network logic: Wait until A is Live, or fails, before we cancel A and send B.
-                        // OrderManager buffers `desired=B` and executes it on the next valid state transition.
-                    }
-                } else {
-                    // Submitting A, but want None. Need to wait for Live/Failed to Cancel.
-                }
-            }
-            OrderState::PendingTaker(_) => {
-                // Wait for TakerHedgeDone / OrderFailed.
-            }
+            OrderState::PendingSubmit(_) => {}
             OrderState::Live(live) => {
-                if tracker.pending_taker_size.is_some() {
-                    // One-shot taker must preempt any resting order on the same side.
-                    let _ = self
-                        .exec_tx
-                        .send(ExecutionCmd::CancelSide {
-                            side,
-                            reason: CancelReason::Reprice,
-                        })
-                        .await;
-                    tracker.state = OrderState::PendingCancel(Some(live));
-                    tracker.last_action = Instant::now();
-                    return;
-                }
-                if let Some(desired) = &tracker.desired {
-                    if live == *desired {
-                        // Perfect, our live order matches what we want.
-                    } else {
-                        // Mismatch! Must cancel `live` first.
+                if let Some(desired) = self.tracker(slot).desired.clone() {
+                    if live != desired {
                         let _ = self
                             .exec_tx
-                            .send(ExecutionCmd::CancelSide {
-                                side,
+                            .send(ExecutionCmd::CancelSlot {
+                                slot,
                                 reason: CancelReason::Reprice,
                             })
                             .await;
+                        let tracker = self.tracker_mut(slot);
                         tracker.state = OrderState::PendingCancel(Some(live));
                         tracker.last_action = Instant::now();
                     }
                 } else {
-                    // We have a live order, but want None.
+                    let clear_reason = self.tracker(slot).clear_reason;
                     let _ = self
                         .exec_tx
-                        .send(ExecutionCmd::CancelSide {
-                            side,
-                            reason: tracker.clear_reason,
+                        .send(ExecutionCmd::CancelSlot {
+                            slot,
+                            reason: clear_reason,
                         })
                         .await;
+                    let tracker = self.tracker_mut(slot);
                     tracker.state = OrderState::PendingCancel(Some(live));
                     tracker.last_action = Instant::now();
                 }
             }
-            OrderState::PendingCancel(_) => {
-                // Wait for CancelAck. Do nothing. If `desired` changed, we'll pick it up when Idle.
-            }
+            OrderState::PendingCancel(_) => {}
         }
     }
 }
@@ -406,13 +427,14 @@ mod tests {
     use tokio::time::{timeout, Duration};
 
     fn target(
-        side: Side,
+        slot: OrderSlot,
         price: f64,
         size: f64,
-        reason: super::super::messages::BidReason,
+        reason: BidReason,
     ) -> DesiredTarget {
         DesiredTarget {
-            side,
+            side: slot.side,
+            direction: slot.direction,
             price,
             size,
             reason,
@@ -431,7 +453,9 @@ mod tests {
         let _ = cmd_tx
             .send(OrderManagerCmd::OneShotTakerHedge {
                 side: Side::Yes,
+                direction: TradeDirection::Buy,
                 size: 2.0,
+                purpose: TradePurpose::Hedge,
             })
             .await;
 
@@ -440,11 +464,13 @@ mod tests {
             .expect("timeout")
             .expect("cmd");
         match cmd {
-            ExecutionCmd::PlaceTakerHedge { side, size } => {
-                assert_eq!(side, Side::Yes);
-                assert!((size - 2.0).abs() < 1e-9);
+            ExecutionCmd::ExecuteIntent { intent } => {
+                assert_eq!(intent.side, Side::Yes);
+                assert_eq!(intent.direction, TradeDirection::Buy);
+                assert_eq!(intent.urgency, TradeUrgency::TakerFak);
+                assert!((intent.size - 2.0).abs() < 1e-9);
             }
-            other => panic!("expected PlaceTakerHedge, got {:?}", other),
+            other => panic!("expected ExecuteIntent(TakerFak), got {:?}", other),
         }
 
         let _ = result_tx
@@ -456,8 +482,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_one_shot_taker_cancels_live_then_places() {
-        use super::super::messages::BidReason;
-
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (exec_tx, mut exec_rx) = mpsc::channel(16);
         let (result_tx, result_rx) = mpsc::channel(16);
@@ -465,10 +489,10 @@ mod tests {
         let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
         let h = tokio::spawn(om.run());
 
-        // Establish a live order on YES.
+        let slot = OrderSlot::YES_BUY;
         let _ = cmd_tx
             .send(OrderManagerCmd::SetTarget(target(
-                Side::Yes,
+                slot,
                 0.45,
                 5.0,
                 BidReason::Provide,
@@ -478,19 +502,20 @@ mod tests {
             .await
             .expect("timeout")
             .expect("cmd");
-        assert!(matches!(first, ExecutionCmd::PlacePostOnlyBid { .. }));
+        assert!(matches!(first, ExecutionCmd::ExecuteIntent { .. }));
         let _ = result_tx
             .send(OrderResult::OrderPlaced {
-                side: Side::Yes,
-                target: target(Side::Yes, 0.45, 5.0, BidReason::Provide),
+                slot,
+                target: target(slot, 0.45, 5.0, BidReason::Provide),
             })
             .await;
 
-        // Now request one-shot taker hedge on the same side.
         let _ = cmd_tx
             .send(OrderManagerCmd::OneShotTakerHedge {
                 side: Side::Yes,
+                direction: TradeDirection::Buy,
                 size: 2.0,
+                purpose: TradePurpose::Hedge,
             })
             .await;
 
@@ -500,26 +525,25 @@ mod tests {
             .expect("cmd");
         assert!(matches!(
             cancel,
-            ExecutionCmd::CancelSide {
-                side: Side::Yes,
+            ExecutionCmd::CancelSlot {
+                slot: OrderSlot::YES_BUY,
                 ..
             }
         ));
 
-        // After cancel ack, OMS should place one-shot taker hedge.
-        let _ = result_tx
-            .send(OrderResult::CancelAck { side: Side::Yes })
-            .await;
+        let _ = result_tx.send(OrderResult::CancelAck { slot }).await;
         let taker = timeout(Duration::from_millis(100), exec_rx.recv())
             .await
             .expect("timeout")
             .expect("cmd");
         match taker {
-            ExecutionCmd::PlaceTakerHedge { side, size } => {
-                assert_eq!(side, Side::Yes);
-                assert!((size - 2.0).abs() < 1e-9);
+            ExecutionCmd::ExecuteIntent { intent } => {
+                assert_eq!(intent.side, Side::Yes);
+                assert_eq!(intent.direction, TradeDirection::Buy);
+                assert_eq!(intent.urgency, TradeUrgency::TakerFak);
+                assert!((intent.size - 2.0).abs() < 1e-9);
             }
-            other => panic!("expected PlaceTakerHedge, got {:?}", other),
+            other => panic!("expected ExecuteIntent(TakerFak), got {:?}", other),
         }
 
         drop(cmd_tx);

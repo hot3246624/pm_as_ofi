@@ -6,7 +6,7 @@
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
-use super::messages::{FillEvent, FillStatus, InventoryEvent, InventoryState};
+use super::messages::{FillEvent, FillStatus, InventoryEvent, InventoryState, TradeDirection};
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -72,6 +72,7 @@ impl InventoryConfig {
 struct FillRecord {
     order_id: String,
     side: Side,
+    direction: TradeDirection,
     size: f64,
     price: f64,
 }
@@ -158,12 +159,17 @@ impl InventoryManager {
     /// Matched → add to ledger. Confirmed → idempotent if Matched exists, else record.
     /// Failed → remove from ledger. Then recompute from scratch.
     fn apply_fill(&mut self, fill: &FillEvent) {
+        let signed_size = match fill.direction {
+            TradeDirection::Buy => fill.filled_size,
+            TradeDirection::Sell => -fill.filled_size,
+        };
         match fill.status {
             FillStatus::Matched => {
                 self.ledger.push(FillRecord {
                     order_id: fill.order_id.clone(),
                     side: fill.side,
-                    size: fill.filled_size,
+                    direction: fill.direction,
+                    size: signed_size,
                     price: fill.price,
                 });
             }
@@ -175,7 +181,8 @@ impl InventoryManager {
                 let already_tracked = self.ledger.iter().any(|r| {
                     r.order_id == fill.order_id
                         && r.side == fill.side
-                        && (r.size - fill.filled_size).abs() < 1e-6
+                        && r.direction == fill.direction
+                        && (r.size - signed_size).abs() < 1e-6
                 });
                 if already_tracked {
                     info!(
@@ -193,7 +200,8 @@ impl InventoryManager {
                     self.ledger.push(FillRecord {
                         order_id: fill.order_id.clone(),
                         side: fill.side,
-                        size: fill.filled_size,
+                        direction: fill.direction,
+                        size: signed_size,
                         price: fill.price,
                     });
                 }
@@ -203,16 +211,17 @@ impl InventoryManager {
                 if let Some(idx) = self.ledger.iter().position(|r| {
                     r.order_id == fill.order_id
                         && r.side == fill.side
-                        && (r.size - fill.filled_size).abs() < 1e-6
+                        && r.direction == fill.direction
+                        && (r.size - signed_size).abs() < 1e-6
                 }) {
                     self.ledger.remove(idx);
                 } else {
-                    // Fallback: remove any entry with matching order_id + side
-                    if let Some(idx) = self
-                        .ledger
-                        .iter()
-                        .position(|r| r.order_id == fill.order_id && r.side == fill.side)
-                    {
+                    // Fallback: remove any entry with matching order_id + side + direction
+                    if let Some(idx) = self.ledger.iter().position(|r| {
+                        r.order_id == fill.order_id
+                            && r.side == fill.side
+                            && r.direction == fill.direction
+                    }) {
                         self.ledger.remove(idx);
                     }
                 }
@@ -244,12 +253,14 @@ impl InventoryManager {
         self.ledger.push(FillRecord {
             order_id: format!("merge:{}:yes", merge_id),
             side: Side::Yes,
+            direction: TradeDirection::Sell,
             size: -amount,
             price: yes_price,
         });
         self.ledger.push(FillRecord {
             order_id: format!("merge:{}:no", merge_id),
             side: Side::No,
+            direction: TradeDirection::Sell,
             size: -amount,
             price: no_price,
         });
@@ -332,6 +343,7 @@ mod tests {
         FillEvent {
             order_id: "test-order".to_string(),
             side,
+            direction: TradeDirection::Buy,
             filled_size: size,
             price,
             status: FillStatus::Matched,
@@ -406,6 +418,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "test-order-2".to_string(),
             side: Side::Yes,
+            direction: TradeDirection::Buy,
             filled_size: 5.0,
             price: 0.50,
             status: FillStatus::Matched,
@@ -417,6 +430,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "test-order-2".to_string(),
             side: Side::Yes,
+            direction: TradeDirection::Buy,
             filled_size: 5.0,
             price: 0.50,
             status: FillStatus::Failed,
@@ -440,6 +454,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "confirmed-only".to_string(),
             side: Side::Yes,
+            direction: TradeDirection::Buy,
             filled_size: 5.0,
             price: 0.48,
             status: FillStatus::Confirmed,
@@ -463,6 +478,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "duptest".to_string(),
             side: Side::No,
+            direction: TradeDirection::Buy,
             filled_size: 3.0,
             price: 0.45,
             status: FillStatus::Matched,
@@ -474,6 +490,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "duptest".to_string(),
             side: Side::No,
+            direction: TradeDirection::Buy,
             filled_size: 3.0,
             price: 0.45,
             status: FillStatus::Confirmed,
@@ -493,6 +510,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "yes-1".to_string(),
             side: Side::Yes,
+            direction: TradeDirection::Buy,
             filled_size: 10.0,
             price: 0.40,
             status: FillStatus::Matched,
@@ -501,6 +519,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "no-1".to_string(),
             side: Side::No,
+            direction: TradeDirection::Buy,
             filled_size: 10.0,
             price: 0.58,
             status: FillStatus::Matched,
@@ -526,6 +545,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "yes-2".to_string(),
             side: Side::Yes,
+            direction: TradeDirection::Buy,
             filled_size: 4.0,
             price: 0.37,
             status: FillStatus::Matched,
@@ -534,6 +554,7 @@ mod tests {
         im.apply_fill(&FillEvent {
             order_id: "no-2".to_string(),
             side: Side::No,
+            direction: TradeDirection::Buy,
             filled_size: 2.0,
             price: 0.63,
             status: FillStatus::Matched,

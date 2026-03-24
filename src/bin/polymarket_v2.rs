@@ -24,6 +24,7 @@ use pm_as_ofi::polymarket::claims::{
 };
 use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
 use pm_as_ofi::polymarket::executor::{init_clob_client, AuthClient, Executor, ExecutorConfig};
+use pm_as_ofi::polymarket::glft::{GlftRuntimeConfig, GlftSignalEngine, GlftSignalSnapshot};
 use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
@@ -342,15 +343,6 @@ struct CapitalRecycleState {
     merges_done: usize,
 }
 
-#[derive(Debug, Clone)]
-struct DynamicGrossContext {
-    tx: watch::Sender<f64>,
-    max_pos_pct: f64,
-    pair_target: f64,
-    floor_shares: f64,
-    configured_cap: f64,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum RecycleTrigger {
     Reject,
@@ -363,93 +355,6 @@ impl RecycleTrigger {
             RecycleTrigger::Reject => "reject",
             RecycleTrigger::Headroom => "headroom",
         }
-    }
-}
-
-fn dynamic_gross_refresh_secs() -> u64 {
-    env::var("PM_DYNAMIC_GROSS_REFRESH_SECS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|v| *v > 0)
-        .unwrap_or(10)
-}
-
-fn compute_effective_max_side_shares(
-    balance_usdc: f64,
-    max_pos_pct: f64,
-    pair_target: f64,
-    floor_shares: f64,
-    configured_cap: f64,
-) -> Option<f64> {
-    if max_pos_pct <= 0.0 || !balance_usdc.is_finite() || balance_usdc <= 0.0 {
-        return None;
-    }
-
-    let denom = pair_target.max(1e-6);
-    let dyn_max_side = (balance_usdc * max_pos_pct / denom).round();
-    if !dyn_max_side.is_finite() || dyn_max_side <= 0.0 {
-        return None;
-    }
-
-    let floored = dyn_max_side.max(floor_shares.max(0.0));
-    let effective = if configured_cap > 0.0 {
-        floored.min(configured_cap)
-    } else {
-        floored
-    };
-    Some(effective.max(floor_shares.max(0.0)))
-}
-
-fn publish_dynamic_max_side(ctx: &DynamicGrossContext, free_balance_usdc: f64, source: &str) {
-    let Some(next) = compute_effective_max_side_shares(
-        free_balance_usdc,
-        ctx.max_pos_pct,
-        ctx.pair_target,
-        ctx.floor_shares,
-        ctx.configured_cap,
-    ) else {
-        return;
-    };
-    let current = *ctx.tx.borrow();
-    if (next - current).abs() > 0.5 {
-        let _ = ctx.tx.send(next);
-        info!(
-            "💡 [DYNAMIC GROSS:{}] free={:.2} -> max_side_shares={:.1} (prev {:.1})",
-            source, free_balance_usdc, next, current
-        );
-    }
-}
-
-async fn sync_dynamic_gross_pre_open(
-    client: Option<&AuthClient>,
-    ctx: Option<&DynamicGrossContext>,
-    source: &str,
-) {
-    let (Some(client), Some(ctx)) = (client, ctx) else {
-        return;
-    };
-
-    // Run a short multi-probe sync to avoid carrying stale low caps from the
-    // previous round into the first quote window of the next market.
-    let mut best_free: Option<f64> = None;
-    for attempt in 0..3 {
-        if attempt > 0 {
-            sleep(Duration::from_millis(250)).await;
-        }
-        match fetch_free_collateral_usdc(client).await {
-            Ok(free) => {
-                best_free = Some(best_free.map_or(free, |curr| curr.max(free)));
-            }
-            Err(e) => debug!(
-                "dynamic gross pre-open probe {} failed: {:?}",
-                attempt + 1,
-                e
-            ),
-        }
-    }
-
-    if let Some(free) = best_free {
-        publish_dynamic_max_side(ctx, free, source);
     }
 }
 
@@ -591,24 +496,6 @@ async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<Collater
     })
 }
 
-async fn run_dynamic_gross_refresher(
-    client: AuthClient,
-    refresh_every: Duration,
-    ctx: DynamicGrossContext,
-) {
-    if refresh_every.as_secs() == 0 {
-        return;
-    }
-    let mut ticker = tokio::time::interval(refresh_every);
-    loop {
-        ticker.tick().await;
-        match fetch_free_collateral_usdc(&client).await {
-            Ok(free) => publish_dynamic_max_side(&ctx, free, "periodic"),
-            Err(e) => debug!("dynamic gross refresh skipped: {:?}", e),
-        }
-    }
-}
-
 fn should_count_recycle_reject(cfg: &CapitalRecycleConfig, evt: &PlacementRejectEvent) -> bool {
     if evt.kind != RejectKind::BalanceOrAllowance {
         return false;
@@ -635,7 +522,6 @@ async fn try_recycle_merge(
     signer_address: Option<&str>,
     private_key: Option<&str>,
     dry_run: bool,
-    dynamic_gross_ctx: Option<&DynamicGrossContext>,
 ) {
     if state.merges_done >= cfg.max_merges_per_round {
         if matches!(trigger, RecycleTrigger::Reject) {
@@ -663,9 +549,6 @@ async fn try_recycle_merge(
             return;
         }
     };
-    if let Some(ctx) = dynamic_gross_ctx {
-        publish_dynamic_max_side(ctx, status.free_balance, "recycler_probe");
-    }
     if !status.allowance_ok {
         warn!(
             "⚠️ Recycler skipped: skip_reason=allowance_zero free_balance={:.2} allowance_ok={} allowance_nonzero={} allowance_entries={} allowance_parseable={}",
@@ -795,9 +678,6 @@ async fn try_recycle_merge(
                         "♻️ Recycler post-merge balance: before={:.2} after={:.2}",
                         status.free_balance, after
                     );
-                    if let Some(ctx) = dynamic_gross_ctx {
-                        publish_dynamic_max_side(ctx, after, "recycler_post_merge");
-                    }
                 }
                 Err(e) => warn!("⚠️ Recycler post-merge balance refresh failed: {:?}", e),
             }
@@ -821,7 +701,6 @@ async fn run_capital_recycler(
     funder_address: Option<String>,
     signer_address: Option<String>,
     private_key: Option<String>,
-    dynamic_gross_ctx: Option<DynamicGrossContext>,
     dry_run: bool,
 ) {
     if !cfg.enabled {
@@ -914,7 +793,6 @@ async fn run_capital_recycler(
                     signer_address.as_deref(),
                     private_key.as_deref(),
                     dry_run,
-                    dynamic_gross_ctx.as_ref(),
                 )
                 .await;
             }
@@ -934,7 +812,6 @@ async fn run_capital_recycler(
                     signer_address.as_deref(),
                     private_key.as_deref(),
                     dry_run,
-                    dynamic_gross_ctx.as_ref(),
                 )
                 .await;
             }
@@ -955,8 +832,8 @@ fn log_config_self_check(
         coord.pair_target, coord.max_portfolio_cost
     );
     info!(
-        "   bid_size={:.1} max_net_diff={:.1} max_side_shares={:.1}",
-        coord.bid_size, coord.max_net_diff, coord.max_side_shares
+        "   bid_size={:.1} max_net_diff={:.1}",
+        coord.bid_size, coord.max_net_diff
     );
     info!(
         "   min_order_size={:.2} min_hedge_size={:.2} hedge_round_up={}",
@@ -985,10 +862,11 @@ fn log_config_self_check(
         coord.toxic_recovery_hold_ms
     );
     info!(
-        "   endgame windows: soft={}s hard={}s freeze={}s edge(keep/exit)={:.2}/{:.2}",
+        "   endgame windows: soft={}s hard={}s freeze={}s maker_repair_min={}s edge(keep/exit)={:.2}/{:.2}",
         coord.endgame_soft_close_secs,
         coord.endgame_hard_close_secs,
         coord.endgame_freeze_secs,
+        coord.endgame_maker_repair_min_secs,
         coord.endgame_edge_keep_mult,
         coord.endgame_edge_exit_mult
     );
@@ -1038,21 +916,6 @@ fn log_config_self_check(
         );
     }
 
-    if coord.max_side_shares <= 0.0 {
-        warn!("⚠️ max_side_shares <= 0 disables gross exposure guard");
-    }
-    if coord.max_side_shares < coord.bid_size {
-        warn!(
-            "⚠️ max_side_shares ({:.1}) < bid_size ({:.1}) → Provide orders will be blocked",
-            coord.max_side_shares, coord.bid_size
-        );
-    }
-    if coord.max_side_shares < coord.max_net_diff {
-        warn!(
-            "⚠️ max_side_shares ({:.1}) < max_net_diff ({:.1}) → net limit is unreachable",
-            coord.max_side_shares, coord.max_net_diff
-        );
-    }
     if coord.bid_size > coord.max_net_diff {
         warn!(
             "⚠️ bid_size ({:.1}) > max_net_diff ({:.1}) → net gate blocks normal provides",
@@ -1089,29 +952,7 @@ fn log_config_self_check(
             coord.max_portfolio_cost, coord.pair_target
         );
     }
-
-    if let Some(balance) = balance_opt {
-        if balance > 0.0 {
-            let max_balanced = coord.max_side_shares * coord.pair_target;
-            let max_single_side = coord.max_side_shares * 1.0;
-            let util_balanced = max_balanced / balance;
-            let util_single = max_single_side / balance;
-            info!(
-                "   balance={:.2} → est balanced deploy ≈ ${:.2} ({:.0}%), single-side cap ≈ ${:.2} ({:.0}%)",
-                balance,
-                max_balanced,
-                util_balanced * 100.0,
-                max_single_side,
-                util_single * 100.0
-            );
-            if util_balanced < 0.30 {
-                warn!("⚠️ max_side_shares implies low capital utilization (<30%) in balanced mode");
-            }
-            if util_single > 1.20 {
-                warn!("⚠️ single-side cap exceeds balance by >20% — consider reducing max_side_shares");
-            }
-        }
-    }
+    let _ = balance_opt;
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1165,6 +1006,18 @@ fn default_endgame_windows_secs(interval_secs: u64) -> (u64, u64, u64) {
     }
 }
 
+fn default_endgame_maker_repair_min_secs(interval_secs: u64) -> u64 {
+    if interval_secs <= 300 {
+        8
+    } else if interval_secs <= 900 {
+        15
+    } else if interval_secs <= 3600 {
+        30
+    } else {
+        90
+    }
+}
+
 fn apply_endgame_windows_for_interval(cfg: &mut CoordinatorConfig, interval_secs: u64) {
     let soft_env = env::var("PM_ENDGAME_SOFT_CLOSE_SECS")
         .ok()
@@ -1178,15 +1031,24 @@ fn apply_endgame_windows_for_interval(cfg: &mut CoordinatorConfig, interval_secs
         .ok()
         .filter(|v| !v.trim().is_empty())
         .and_then(|v| v.parse::<u64>().ok());
+    let maker_repair_env = env::var("PM_ENDGAME_MAKER_REPAIR_MIN_SECS")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .and_then(|v| v.parse::<u64>().ok());
 
     let (soft_default, hard_default, freeze_default) = default_endgame_windows_secs(interval_secs);
     cfg.endgame_soft_close_secs = soft_env.unwrap_or(soft_default);
     cfg.endgame_hard_close_secs = hard_env.unwrap_or(hard_default);
     cfg.endgame_freeze_secs = freeze_env.unwrap_or(freeze_default);
+    cfg.endgame_maker_repair_min_secs =
+        maker_repair_env.unwrap_or(default_endgame_maker_repair_min_secs(interval_secs));
 
     // Keep windows ordered.
     cfg.endgame_hard_close_secs = cfg.endgame_hard_close_secs.min(cfg.endgame_soft_close_secs);
     cfg.endgame_freeze_secs = cfg.endgame_freeze_secs.min(cfg.endgame_hard_close_secs);
+    cfg.endgame_maker_repair_min_secs = cfg
+        .endgame_maker_repair_min_secs
+        .min(cfg.endgame_hard_close_secs);
 }
 
 fn should_skip_entry_window(now_unix: u64, end_ts: u64, interval: u64, grace: u64) -> bool {
@@ -1234,6 +1096,17 @@ fn ws_connect_timeout_ms() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v.clamp(1000, 30000))
         .unwrap_or(6000)
+}
+
+fn ws_degrade_max_failures() -> u32 {
+    env::var("PM_WS_DEGRADE_MAX_FAILURES")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(12)
+}
+
+fn should_degrade_ws(consecutive_failures: u32, max_failures: u32) -> bool {
+    max_failures > 0 && consecutive_failures >= max_failures
 }
 
 /// Compute the slug and end-timestamp for the CURRENTLY ACTIVE market.
@@ -1462,10 +1335,26 @@ async fn run_round_claim_window(
     private_key: Option<&str>,
 ) -> anyhow::Result<()> {
     if !cfg.enabled {
+        info!("💸 Round claim runner skipped: PM_AUTO_CLAIM disabled");
         return Ok(());
     }
     if runner_cfg.retry_schedule.is_empty() {
+        warn!("⚠️ Round claim runner skipped: retry schedule is empty");
         return Ok(());
+    }
+    let missing =
+        round_claim_missing_requirements(cfg, funder_address, signer_address, private_key);
+    if !missing.is_empty() {
+        warn!(
+            "⚠️ Round claim runner skipped: missing {}",
+            missing.join(", ")
+        );
+        return Ok(());
+    }
+    if cfg.dry_run && (signer_address.is_none() || private_key.is_none()) {
+        info!(
+            "💸 Round claim dry-run: signer/private not required; proceeding with preview scan only"
+        );
     }
 
     let (preferred_condition, fallback_global) = match runner_cfg.scope {
@@ -1547,6 +1436,14 @@ async fn run_round_claim_window(
                     );
                     return Ok(());
                 }
+                info!(
+                    "💸 Round claim noop: no executable claim on attempt={} (positions={} candidates={} claimed={} dry_run={})",
+                    attempts,
+                    outcome.positions,
+                    outcome.candidates,
+                    outcome.claimed,
+                    cfg.dry_run
+                );
             }
             Err(e) => {
                 errors += 1;
@@ -1568,6 +1465,28 @@ async fn run_round_claim_window(
         last_error.unwrap_or_else(|| "none".to_string())
     );
     Ok(())
+}
+
+fn round_claim_missing_requirements(
+    cfg: &AutoClaimConfig,
+    funder_address: Option<&str>,
+    signer_address: Option<&str>,
+    private_key: Option<&str>,
+) -> Vec<&'static str> {
+    let mut missing = Vec::new();
+    if funder_address.is_none() {
+        missing.push("funder_address");
+    }
+    // Dry-run should still run claim-candidate preview without signer/pk.
+    if !cfg.dry_run {
+        if signer_address.is_none() {
+            missing.push("signer_address");
+        }
+        if private_key.is_none() {
+            missing.push("private_key");
+        }
+    }
+    missing
 }
 
 // ─────────────────────────────────────────────────────────
@@ -1819,14 +1738,17 @@ impl BookAssembler {
 enum MarketEnd {
     /// Wall-clock hit the market's end timestamp.
     Expired,
-    /// WS connection error (will reconnect internally unless expired).
-    #[allow(dead_code)]
-    WsError(String),
+    /// WS degraded (consecutive reconnect/connect failures exceeded threshold).
+    WsDegraded {
+        consecutive_failures: u32,
+        remaining_secs: u64,
+    },
 }
 
 async fn run_market_ws(
     settings: Settings,
     ofi_tx: mpsc::Sender<MarketDataMsg>,
+    glft_tx: mpsc::Sender<MarketDataMsg>,
     coord_tx: watch::Sender<MarketDataMsg>,
     end_ts: u64,
 ) -> MarketEnd {
@@ -1838,6 +1760,7 @@ async fn run_market_ws(
     let secs_remaining = end_ts.saturating_sub(now_unix);
     let deadline = tokio::time::Instant::now() + Duration::from_secs(secs_remaining);
     let ws_connect_timeout = ws_connect_timeout_ms();
+    let ws_degrade_failures = ws_degrade_max_failures();
     info!(
         "⏰ Market deadline in {}s (end_ts={})",
         secs_remaining, end_ts
@@ -1845,6 +1768,7 @@ async fn run_market_ws(
 
     let mut backoff = Duration::from_millis(100);
     let max_backoff = Duration::from_secs(5);
+    let mut consecutive_failures: u32 = 0;
 
     loop {
         // Check if already expired before connecting
@@ -1873,6 +1797,7 @@ async fn run_market_ws(
                 info!("✅ WS connected (status={:?})", response.status());
                 backoff = Duration::from_millis(100); // Reset on successful connect
                 let (mut write, mut read) = ws.split();
+                let mut session_had_market_data = false;
 
                 // Subscribe
                 let asset_ids = settings.market_assets();
@@ -1888,6 +1813,20 @@ async fn run_market_ws(
 
                 if let Err(err) = write.send(Message::Text(subscribe.to_string())).await {
                     warn!("WS subscribe failed: {err:?}");
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    if should_degrade_ws(consecutive_failures, ws_degrade_failures) {
+                        let remaining_secs = deadline
+                            .saturating_duration_since(tokio::time::Instant::now())
+                            .as_secs();
+                        warn!(
+                            "🛑 WS degraded: consecutive_failures={} >= {} (remaining={}s) — ending current market early",
+                            consecutive_failures, ws_degrade_failures, remaining_secs
+                        );
+                        return MarketEnd::WsDegraded {
+                            consecutive_failures,
+                            remaining_secs,
+                        };
+                    }
                     sleep(Duration::from_secs(2)).await;
                     continue;
                 }
@@ -1926,10 +1865,14 @@ async fn run_market_ws(
                                             for md_msg in parsed {
                                                 match &md_msg {
                                                     MarketDataMsg::TradeTick { .. } => {
+                                                        session_had_market_data = true;
                                                         let _ = ofi_tx.send(md_msg.clone()).await;
+                                                        let _ = glft_tx.send(md_msg.clone()).await;
                                                     }
                                                     MarketDataMsg::BookTick { .. } => {
                                                         if let Some(full) = book_asm.update(&md_msg) {
+                                                            session_had_market_data = true;
+                                                            let _ = glft_tx.send(full.clone()).await;
                                                             let _ = coord_tx.send(full);
                                                         }
                                                     }
@@ -1962,12 +1905,19 @@ async fn run_market_ws(
                         }
                     }
                 }
+                if session_had_market_data {
+                    consecutive_failures = 0;
+                } else {
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                }
             }
             Ok(Err(err)) => {
                 warn!("WS connect error: {err:?}");
+                consecutive_failures = consecutive_failures.saturating_add(1);
             }
             Err(_) => {
                 warn!("⏱️ WS connection timeout");
+                consecutive_failures = consecutive_failures.saturating_add(1);
             }
         }
 
@@ -1977,7 +1927,24 @@ async fn run_market_ws(
             return MarketEnd::Expired;
         }
 
-        info!("🔄 Reconnecting in {:?}...", backoff);
+        if should_degrade_ws(consecutive_failures, ws_degrade_failures) {
+            let remaining_secs = deadline
+                .saturating_duration_since(tokio::time::Instant::now())
+                .as_secs();
+            warn!(
+                "🛑 WS degraded: consecutive_failures={} >= {} (remaining={}s) — ending current market early",
+                consecutive_failures, ws_degrade_failures, remaining_secs
+            );
+            return MarketEnd::WsDegraded {
+                consecutive_failures,
+                remaining_secs,
+            };
+        }
+
+        info!(
+            "🔄 Reconnecting in {:?}... (consecutive_failures={})",
+            backoff, consecutive_failures
+        );
         sleep(backoff).await;
         backoff = (backoff * 2).min(max_backoff);
     }
@@ -2100,10 +2067,11 @@ async fn main() -> anyhow::Result<()> {
         dry_run
     );
     info!(
-        "🌐 Net Resilience: ws_connect_timeout={}ms resolve_timeout={}ms resolve_retries={}",
+        "🌐 Net Resilience: ws_connect_timeout={}ms resolve_timeout={}ms resolve_retries={} ws_degrade_failures={}",
         ws_connect_timeout_ms(),
         resolve_timeout_ms(),
-        resolve_retry_attempts()
+        resolve_retry_attempts(),
+        ws_degrade_max_failures()
     );
     if auto_claim_cfg.enabled {
         info!(
@@ -2403,19 +2371,30 @@ async fn main() -> anyhow::Result<()> {
              filtered out and inventory will never update."
         );
     }
-    if !dry_run {
-        maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref()).await;
-        if let Err(e) = maybe_auto_claim(
-            &auto_claim_cfg,
-            &mut auto_claim_state,
-            funder_address.as_deref(),
-            signer_address.as_deref(),
-            base_settings.private_key.as_deref(),
-        )
-        .await
-        {
-            warn!("⚠️ Auto-claim runner failed at startup: {:?}", e);
-        }
+    if auto_claim_cfg.enabled
+        && auto_claim_cfg.signature_type == Some(2)
+        && auto_claim_cfg.builder_credentials.is_some()
+        && signer_address.is_some()
+        && funder_address.is_some()
+    {
+        info!(
+            "💸 SAFE auto-claim armed: round-window={}s schedule=[{}] wait_confirm={}",
+            round_claim_cfg.window.as_secs(),
+            round_claim_cfg.retry_schedule_text(),
+            auto_claim_cfg.relayer_wait_confirm
+        );
+    }
+    maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref()).await;
+    if let Err(e) = maybe_auto_claim(
+        &auto_claim_cfg,
+        &mut auto_claim_state,
+        funder_address.as_deref(),
+        signer_address.as_deref(),
+        base_settings.private_key.as_deref(),
+    )
+    .await
+    {
+        warn!("⚠️ Auto-claim runner failed at startup: {:?}", e);
     }
 
     // ═══ L2 API credentials for User WS (live mode only) ═══
@@ -2597,11 +2576,6 @@ async fn main() -> anyhow::Result<()> {
         let market_interval_secs = detect_interval(&slug);
         apply_endgame_windows_for_interval(&mut coord_cfg, market_interval_secs);
         let mut inv_cfg = inv_cfg_base.clone();
-        let configured_max_side_cap = coord_cfg.max_side_shares;
-        let max_pos_pct: f64 = std::env::var("PM_MAX_POS_PCT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0.0);
 
         let mut balance_opt: Option<f64> = None;
 
@@ -2636,28 +2610,6 @@ async fn main() -> anyhow::Result<()> {
                     );
                     coord_cfg.bid_size = sizing.bid_effective;
                     coord_cfg.max_net_diff = sizing.net_effective;
-
-                    if max_pos_pct > 0.0 {
-                        let floor = coord_cfg.max_net_diff.max(coord_cfg.bid_size);
-                        if let Some(next_cap) = compute_effective_max_side_shares(
-                            balance_f64,
-                            max_pos_pct,
-                            coord_cfg.pair_target,
-                            floor,
-                            configured_max_side_cap,
-                        ) {
-                            coord_cfg.max_side_shares = next_cap;
-                            info!(
-                                "💡 [DYNAMIC GROSS] Balance: {:.2} USDC -> cap MAX_SIDE_SHARES to {:.1} (effective {:.1}, max_pos_pct={}, pair_target={})",
-                                balance_f64, next_cap, coord_cfg.max_side_shares, max_pos_pct, coord_cfg.pair_target
-                            );
-                        } else {
-                            warn!(
-                                "⚠️ Invalid PM_MAX_POS_PCT-derived max_side_shares (pct={}, pair_target={})",
-                                max_pos_pct, coord_cfg.pair_target
-                            );
-                        }
-                    }
 
                     // CRITICAL: Sync InventoryConfig with the new dynamic values
                     inv_cfg.bid_size = coord_cfg.bid_size;
@@ -2759,8 +2711,10 @@ async fn main() -> anyhow::Result<()> {
         let (exec_tx, exec_rx) = mpsc::channel::<ExecutionCmd>(32);
         let (result_tx, result_rx) = mpsc::channel::<OrderResult>(32);
         let (capital_tx, capital_rx) = mpsc::channel::<PlacementRejectEvent>(64);
+        let (feedback_tx, feedback_rx) = mpsc::channel::<ExecutionFeedback>(32);
         let (om_tx, om_rx) = mpsc::channel::<OrderManagerCmd>(64);
         let (ofi_md_tx, ofi_md_rx) = mpsc::channel::<MarketDataMsg>(512);
+        let (glft_md_tx, glft_md_rx) = mpsc::channel::<MarketDataMsg>(512);
         let (coord_md_tx, coord_md_rx) = watch::channel::<MarketDataMsg>(MarketDataMsg::BookTick {
             yes_bid: 0.0,
             yes_ask: 0.0,
@@ -2770,19 +2724,7 @@ async fn main() -> anyhow::Result<()> {
         });
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
-        let (max_side_tx, max_side_rx) = watch::channel(coord_cfg.max_side_shares);
-
-        let dynamic_gross_ctx = if max_pos_pct > 0.0 {
-            Some(DynamicGrossContext {
-                tx: max_side_tx.clone(),
-                max_pos_pct,
-                pair_target: coord_cfg.pair_target,
-                floor_shares: coord_cfg.max_net_diff.max(coord_cfg.bid_size),
-                configured_cap: configured_max_side_cap,
-            })
-        } else {
-            None
-        };
+        let (glft_watch_tx, glft_watch_rx) = watch::channel(GlftSignalSnapshot::default());
 
         // Opt-4: Direct kill channel from OFI Engine → Coordinator.
         // Capacity 4: at most one kill per side (YES/NO) queued without blocking OFI heartbeat.
@@ -2794,29 +2736,41 @@ async fn main() -> anyhow::Result<()> {
         let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx).with_kill_tx(kill_tx);
         session_handles.push(tokio::spawn(ofi.run()));
 
-        let coord = StrategyCoordinator::with_kill_rx(
+        if coord_cfg.strategy == pm_as_ofi::polymarket::strategy::StrategyKind::GlftMm {
+            if let Some(glft_cfg) =
+                GlftRuntimeConfig::from_market_slug(&slug, effective_end_ts, coord_cfg.tick_size)
+            {
+                info!(
+                    "📡 GLFT signal engine active | symbol={} horizon={} refit={}s window={}s",
+                    glft_cfg.symbol,
+                    glft_cfg.horizon_key,
+                    glft_cfg.refit_interval.as_secs(),
+                    glft_cfg.intensity_window.as_secs()
+                );
+                let glft_engine = GlftSignalEngine::new(glft_cfg, glft_md_rx, glft_watch_tx);
+                session_handles.push(tokio::spawn(glft_engine.run()));
+            } else {
+                warn!(
+                    "⚠️ GLFT strategy selected but slug '{}' is not a supported crypto up/down market; strategy will stay inactive",
+                    slug
+                );
+            }
+        }
+
+        let coord = StrategyCoordinator::with_aux_rx(
             coord_cfg.clone(),
             ofi_watch_rx,
             inv_watch_rx,
             coord_md_rx,
+            glft_watch_rx,
             om_tx.clone(),
             kill_rx,
-        )
-        .with_dynamic_max_side_rx(max_side_rx);
+            feedback_rx,
+        );
         session_handles.push(tokio::spawn(coord.run()));
 
         let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx);
         session_handles.push(tokio::spawn(om.run()));
-
-        if !dry_run {
-            if let (Some(client), Some(ctx)) = (clob_client.clone(), dynamic_gross_ctx.clone()) {
-                session_handles.push(tokio::spawn(run_dynamic_gross_refresher(
-                    client,
-                    Duration::from_secs(dynamic_gross_refresh_secs()),
-                    ctx,
-                )));
-            }
-        }
 
         if !dry_run && recycle_cfg.enabled {
             session_handles.push(tokio::spawn(run_capital_recycler(
@@ -2829,7 +2783,6 @@ async fn main() -> anyhow::Result<()> {
                 funder_address.clone(),
                 signer_address.clone(),
                 base_settings.private_key.clone(),
-                dynamic_gross_ctx.clone(),
                 dry_run,
             )));
         }
@@ -2850,6 +2803,7 @@ async fn main() -> anyhow::Result<()> {
             result_tx,
             exec_fill_rx,
             Some(capital_tx),
+            Some(feedback_tx),
         );
         let executor_handle = tokio::spawn(executor.run());
         let executor_abort = executor_handle.abort_handle();
@@ -2877,6 +2831,11 @@ async fn main() -> anyhow::Result<()> {
             info!("👤 User WS Listener spawned (real fills only)");
         } else {
             info!("📝 DRY-RUN: No User WS — net_diff stays 0 (no fills)");
+            if coord_cfg.strategy.as_str() == "glft_mm" {
+                info!(
+                    "🧪 GLFT dry-run note: no fills means zero inventory, so SELL slots stay inventory-gated"
+                );
+            }
             // In DRY-RUN mode, fill_tx is unused, fill_rx sees nothing.
             // InventoryManager stays at default state → Coordinator always Balanced.
         }
@@ -2891,18 +2850,23 @@ async fn main() -> anyhow::Result<()> {
                 })
                 .await;
             info!("🧹 Startup CancelAll sent — clearing any stale orders from prior session");
-            sync_dynamic_gross_pre_open(
-                clob_client.as_ref(),
-                dynamic_gross_ctx.as_ref(),
-                "round_open_sync",
-            )
-            .await;
         }
 
         // ── Step 3: Run until market expires ──
         // P2 FIX: Use effective_end_ts to avoid overflow in fixed mode
-        let reason = run_market_ws(settings, ofi_md_tx, coord_md_tx, effective_end_ts).await;
+        let reason = run_market_ws(settings, ofi_md_tx, glft_md_tx, coord_md_tx, effective_end_ts).await;
         info!("🏁 Market ended: {:?}", reason);
+        if let MarketEnd::WsDegraded {
+            consecutive_failures,
+            remaining_secs,
+        } = reason
+        {
+            warn!(
+                "🛑 Market session degraded early: ws_failures={} remaining={}s — skipping this round and rotating",
+                consecutive_failures, remaining_secs
+            );
+        }
+        let market_settled = matches!(reason, MarketEnd::Expired);
 
         let _ = om_tx.send(OrderManagerCmd::CancelAll).await;
         // Drop om_tx so the OrderManager channel closes
@@ -2938,26 +2902,34 @@ async fn main() -> anyhow::Result<()> {
             let _ = h.await;
         }
 
-        if !dry_run {
+        let ended_condition = market_id.parse::<alloy::primitives::B256>().ok();
+        if let Some(prev) = round_claim_task.take() {
+            if prev.is_finished() {
+                match prev.await {
+                    Ok(_) => {}
+                    Err(e) if e.is_cancelled() => {}
+                    Err(e) => warn!("⚠️ Previous round-claim task join failed: {:?}", e),
+                }
+            } else {
+                warn!(
+                    "⚠️ Previous round-claim task still running at new market boundary — aborting stale task"
+                );
+                prev.abort();
+                let _ = prev.await;
+            }
+        }
+
+        if market_settled {
             maybe_log_claimable_positions(funder_address.as_deref(), signer_address.as_deref())
                 .await;
-            let ended_condition = market_id.parse::<alloy::primitives::B256>().ok();
-            if let Some(prev) = round_claim_task.take() {
-                if prev.is_finished() {
-                    match prev.await {
-                        Ok(_) => {}
-                        Err(e) if e.is_cancelled() => {}
-                        Err(e) => warn!("⚠️ Previous round-claim task join failed: {:?}", e),
-                    }
-                } else {
-                    warn!(
-                        "⚠️ Previous round-claim task still running at new market boundary — aborting stale task"
-                    );
-                    prev.abort();
-                    let _ = prev.await;
-                }
-            }
+        } else {
+            info!(
+                "💸 Round claim skipped: market session ended by {:?} (not settled)",
+                reason
+            );
+        }
 
+        if auto_claim_cfg.enabled && market_settled {
             let claim_cfg = auto_claim_cfg.clone();
             let claim_runner_cfg = round_claim_cfg.clone();
             let claim_funder = funder_address.clone();
@@ -2980,8 +2952,17 @@ async fn main() -> anyhow::Result<()> {
                 }
             }));
             info!(
-                "💸 Round claim runner launched in background (non-blocking; rotation continues immediately)"
+                "💸 Round claim runner launched in background (non-blocking; rotation continues immediately) ended_condition={} dry_run={} window={}s",
+                ended_condition
+                    .map(|v| v.to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+                auto_claim_cfg.dry_run,
+                round_claim_cfg.window.as_secs()
             );
+        } else if auto_claim_cfg.enabled {
+            debug!("Round claim runner skipped: market not settled");
+        } else {
+            debug!("Round claim runner skipped at market boundary: PM_AUTO_CLAIM disabled");
         }
 
         if !prefix_mode {
@@ -3055,6 +3036,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn claim_cfg_for_test(dry_run: bool) -> AutoClaimConfig {
+        AutoClaimConfig {
+            enabled: true,
+            dry_run,
+            min_condition_value: Decimal::ZERO,
+            max_conditions_per_run: 5,
+            run_interval: Duration::from_secs(300),
+            rpc_url: "https://polygon-rpc.com".to_string(),
+            data_api_url: "https://data-api.polymarket.com".to_string(),
+            relayer_url: "https://relayer-v2.polymarket.com".to_string(),
+            builder_credentials: None,
+            builder_credentials_partial: false,
+            signature_type: Some(2),
+            relayer_wait_confirm: false,
+            relayer_wait_timeout: Duration::from_secs(20),
+        }
+    }
+
     #[test]
     fn test_should_skip_entry_window() {
         let interval = 300; // 5 min
@@ -3066,6 +3065,14 @@ mod tests {
         assert!(should_skip_entry_window(735, 1000, interval, grace));
         // We are at 1001 (already past)
         assert!(should_skip_entry_window(1001, 1000, interval, grace));
+    }
+
+    #[test]
+    fn test_should_degrade_ws_threshold() {
+        assert!(!should_degrade_ws(0, 12));
+        assert!(!should_degrade_ws(11, 12));
+        assert!(should_degrade_ws(12, 12));
+        assert!(!should_degrade_ws(999, 0)); // 0 disables degradation
     }
 
     #[test]
@@ -3196,6 +3203,23 @@ mod tests {
         assert_eq!(parsed, vec![27, 2, 5, 9, 14, 20, 0, 40]);
         let normalized = normalize_retry_schedule_secs(parsed, 30);
         assert_eq!(normalized, vec![0, 2, 5, 9, 14, 20, 27]);
+    }
+
+    #[test]
+    fn test_round_claim_requirements_relax_signer_and_pk_in_dry_run() {
+        let cfg = claim_cfg_for_test(true);
+        let missing = round_claim_missing_requirements(&cfg, Some("0xabc"), None, None);
+        assert!(
+            missing.is_empty(),
+            "dry-run round claim should proceed without signer/private"
+        );
+    }
+
+    #[test]
+    fn test_round_claim_requirements_enforce_signer_and_pk_in_live() {
+        let cfg = claim_cfg_for_test(false);
+        let missing = round_claim_missing_requirements(&cfg, Some("0xabc"), None, None);
+        assert_eq!(missing, vec!["signer_address", "private_key"]);
     }
 
     #[test]

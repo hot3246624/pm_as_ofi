@@ -7,6 +7,15 @@ pub enum Side {
 }
 
 impl Side {
+    pub const ALL: [Side; 2] = [Side::Yes, Side::No];
+
+    pub fn index(self) -> usize {
+        match self {
+            Side::Yes => 0,
+            Side::No => 1,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Side::Yes => "YES",

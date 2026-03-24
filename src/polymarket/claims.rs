@@ -1099,67 +1099,80 @@ pub async fn run_auto_claim_once(
         .parse::<Address>()
         .with_context(|| format!("invalid funder address: {funder_raw}"))?;
 
-    let Some(signer_raw) = signer_address else {
-        return Ok(result);
+    let signer = match signer_address {
+        Some(signer_raw) => signer_raw
+            .trim()
+            .parse::<Address>()
+            .with_context(|| format!("invalid signer address: {signer_raw}"))?,
+        None if cfg.dry_run => {
+            tracing::info!(
+                "💸 AUTO-CLAIM dry-run: signer_address missing; using funder as preview signer"
+            );
+            funder
+        }
+        None => return Ok(result),
     };
-    let signer = signer_raw
-        .trim()
-        .parse::<Address>()
-        .with_context(|| format!("invalid signer address: {signer_raw}"))?;
 
     let mode = detect_claim_execution_mode(signer, funder, cfg.signature_type);
 
-    if mode == ClaimExecutionMode::ProxyRelayerUnsupported {
-        if !state.warned_proxy_mode {
-            state.warned_proxy_mode = true;
-            tracing::warn!(
-                "⚠️ PM_AUTO_CLAIM detected Proxy mode (signer={} funder={}). \
-                 Current bot only supports EOA or SAFE relayer auto-claim. \
-                 Please claim via UI for now.",
-                signer,
-                funder
-            );
-        }
-        return Ok(result);
-    }
-
-    if mode == ClaimExecutionMode::UnknownProxyOrSafe {
-        if !state.warned_safe_mode {
-            state.warned_safe_mode = true;
-            tracing::warn!(
-                "⚠️ PM_AUTO_CLAIM could not determine claim mode (signer={} funder={}). \
-                 Set PM_SIGNATURE_TYPE=2 for SAFE relayer mode, or claim via UI.",
-                signer,
-                funder
-            );
-        }
-        return Ok(result);
-    }
-
-    if mode == ClaimExecutionMode::SafeRelayer {
-        if cfg.builder_credentials_partial && !state.warned_builder_creds_partial {
-            state.warned_builder_creds_partial = true;
-            tracing::warn!(
-                "⚠️ Incomplete POLYMARKET_BUILDER_* env vars. \
-                 Set POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE together for SAFE auto-claim."
-            );
-        }
-        if cfg.builder_credentials.is_none() {
-            if !state.warned_builder_creds_missing {
-                state.warned_builder_creds_missing = true;
+    if !cfg.dry_run {
+        if mode == ClaimExecutionMode::ProxyRelayerUnsupported {
+            if !state.warned_proxy_mode {
+                state.warned_proxy_mode = true;
                 tracing::warn!(
-                    "⚠️ PM_AUTO_CLAIM SAFE mode needs POLYMARKET_BUILDER_API_KEY / \
-                     POLYMARKET_BUILDER_SECRET / POLYMARKET_BUILDER_PASSPHRASE. \
-                     Auto-claim execution skipped."
+                    "⚠️ PM_AUTO_CLAIM detected Proxy mode (signer={} funder={}). \
+                     Current bot only supports EOA or SAFE relayer auto-claim. \
+                     Please claim via UI for now.",
+                    signer,
+                    funder
                 );
             }
             return Ok(result);
         }
+
+        if mode == ClaimExecutionMode::UnknownProxyOrSafe {
+            if !state.warned_safe_mode {
+                state.warned_safe_mode = true;
+                tracing::warn!(
+                    "⚠️ PM_AUTO_CLAIM could not determine claim mode (signer={} funder={}). \
+                     Set PM_SIGNATURE_TYPE=2 for SAFE relayer mode, or claim via UI.",
+                    signer,
+                    funder
+                );
+            }
+            return Ok(result);
+        }
+
+        if mode == ClaimExecutionMode::SafeRelayer {
+            if cfg.builder_credentials_partial && !state.warned_builder_creds_partial {
+                state.warned_builder_creds_partial = true;
+                tracing::warn!(
+                    "⚠️ Incomplete POLYMARKET_BUILDER_* env vars. \
+                     Set POLYMARKET_BUILDER_API_KEY/SECRET/PASSPHRASE together for SAFE auto-claim."
+                );
+            }
+            if cfg.builder_credentials.is_none() {
+                if !state.warned_builder_creds_missing {
+                    state.warned_builder_creds_missing = true;
+                    tracing::warn!(
+                        "⚠️ PM_AUTO_CLAIM SAFE mode needs POLYMARKET_BUILDER_API_KEY / \
+                         POLYMARKET_BUILDER_SECRET / POLYMARKET_BUILDER_PASSPHRASE. \
+                         Auto-claim execution skipped."
+                    );
+                }
+                return Ok(result);
+            }
+        }
     }
 
-    let Some(pk) = private_key else {
-        tracing::warn!("⚠️ PM_AUTO_CLAIM enabled but POLYMARKET_PRIVATE_KEY is missing");
-        return Ok(result);
+    let pk = if cfg.dry_run {
+        private_key.unwrap_or_default()
+    } else {
+        let Some(pk) = private_key else {
+            tracing::warn!("⚠️ PM_AUTO_CLAIM enabled but POLYMARKET_PRIVATE_KEY is missing");
+            return Ok(result);
+        };
+        pk
     };
 
     let summary = scan_claimable_positions(&cfg.data_api_url, funder).await?;

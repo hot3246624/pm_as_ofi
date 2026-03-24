@@ -23,7 +23,7 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use super::messages::{FillEvent, FillStatus};
+use super::messages::{FillEvent, FillStatus, TradeDirection};
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -483,6 +483,7 @@ impl UserWsListener {
             fills.push(FillEvent {
                 order_id,
                 side,
+                direction: parse_trade_direction(mo).unwrap_or(TradeDirection::Buy),
                 filled_size: size,
                 price,
                 status,
@@ -562,6 +563,7 @@ impl UserWsListener {
         Some(FillEvent {
             order_id,
             side,
+            direction: parse_trade_direction(val).unwrap_or(TradeDirection::Buy),
             filled_size: size,
             price,
             status,
@@ -624,6 +626,24 @@ fn parse_f64_field(val: &Value, field: &str) -> Option<f64> {
         v.as_f64()
             .or_else(|| v.as_str().and_then(|s| s.parse::<f64>().ok()))
     })
+}
+
+/// Parse order direction from common WS fields.
+/// Defaults are applied by caller when fields are absent.
+fn parse_trade_direction(val: &Value) -> Option<TradeDirection> {
+    for key in ["side", "order_side", "maker_side", "taker_side"] {
+        let Some(raw) = val.get(key).and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let raw = raw.trim();
+        if raw.eq_ignore_ascii_case("buy") {
+            return Some(TradeDirection::Buy);
+        }
+        if raw.eq_ignore_ascii_case("sell") {
+            return Some(TradeDirection::Sell);
+        }
+    }
+    None
 }
 
 // ─────────────────────────────────────────────────────────
