@@ -44,105 +44,43 @@
 - SoftClose / HardClose / Freeze
 - recycle / claim
 
-## 3. 主策略 `glft_mm`
+## 3. 共享系统边界
 
-### 3.1 适用边界
+本手册不再承担 `glft_mm` 独立策略规格书的角色。  
+`glft_mm` 的专属说明见：
+- `docs/STRATEGY_GLFT_MM_ZH.md`
 
-`glft_mm` 只服务以下市场：
-- `btc-updown-5m`
-- `eth-updown-5m`
-- `xrp-updown-5m`
-- `sol-updown-5m`
+这里仅保留所有策略共享的系统边界。
 
-原因很直接：
-- 它强依赖 Binance `aggTrade` 外部锚
-- 需要有足够密集的 Polymarket trade-flow 才能做 `A/k` 拟合
+### 3.1 共享库存与风险单位
 
-Binance stale 时：
-- `glft_mm` 直接静默
-- 清空四槽位
-- 不回退到纯 Polymarket 内生报价
+- `PM_BID_SIZE`：单次基础下单份额
+- `PM_MAX_NET_DIFF`：盘中净仓硬上限
+- `PM_PAIR_TARGET`：共享 outcome-floor 参考线
 
-### 3.2 快变量
+说明：
+- `PM_MAX_PORTFOLIO_COST` 是旧 hedge / rescue 路径的兼容参数，不属于当前 `glft_mm` 正常盘中主逻辑。
 
-`GlftSignalEngine` 持续产出一个快照，至少包含：
-- `anchor_prob`
-- `basis_prob`
-- `alpha_flow`
-- `sigma_prob`
-- `tau_norm`
-- `fit_a`
-- `fit_k`
-- `fit_quality`
-- `stale`
+### 3.2 共享执行治理
 
-定义：
-- `anchor_prob`：Binance 相对本轮开盘价的概率锚
-- `basis_prob`：`poly_mid - anchor_prob` 的 EWMA 偏差修正
-- `alpha_flow`：Polymarket 本地 trade-flow OFI
-- `sigma_prob`：概率空间波动率慢变量
-- `tau_norm`：剩余时间占比
-
-### 3.3 慢变量拟合
-
-`IntensityEstimator` 使用市场逐笔成交代理拟合：
-- 周期：`10s`
-- 窗口：`30s`
-- bucket：`0..20` ticks
-- 模型：`lambda(delta) = A * exp(-k * delta)`
-
-质量门控：
-- 相关 trade 数 `>= 20`
-- 非空 bucket 数 `>= 3`
-- `A > 0`
-- `k > 0`
-- `R² >= 0.60`
-
-只有 `Ready` 拟合才会覆盖 `last_good_fit`。
-新拟合不合格时：
-- 继续沿用 `last_good_fit`
-- 没有历史有效值时，使用 bootstrap / warm-start
-
-### 3.4 报价数学
-
-库存先做标准化：
-- `q_norm = clamp(net_diff / max_net_diff, -1, 1)`
-
-然后用：
-- `p_anchor = clamp(anchor_prob + basis_prob, tick, 1-tick)`
-- `alpha_prob = PM_GLFT_OFI_ALPHA * alpha_flow`
-- `compute_optimal_offsets(...) -> inventory_shift + half_spread_base`
-
-最终：
-- `spread_mult = 1 + PM_GLFT_OFI_SPREAD_BETA * |alpha_flow|^2`
-- `half_spread = max(tick, half_spread_base * spread_mult)`
-- `r_yes = clamp(p_anchor + alpha_prob - inventory_shift, tick, 1-tick)`
-- `r_no = 1 - r_yes`
-
-四槽位原始中心：
-- `YesBuy = r_yes - half_spread`
-- `YesSell = r_yes + half_spread`
-- `NoBuy = r_no - half_spread`
-- `NoSell = r_no + half_spread`
-
-之后统一经过：
+所有策略统一经过：
 - tick 对齐
 - post-only 安全垫
-- keep-if-safe / governor
-- inventory gate
-- OFI / stale / endgame
+- keep-if-safe
+- reprice/cancel
+- OMS / Executor / reconcile
 
-### 3.5 Quote Governor
+### 3.3 共享风控
 
-`glft_mm` 额外加了一层专属 governor，避免参数快跳直接放大成撤改单风暴：
-- reservation price 单次最多移动 `1 tick`
-- half spread 单次最多移动 `1 tick`
-- 超出的变化要分多个 tick 逐步靠拢
+共享风控层统一处理：
+- `PM_MAX_NET_DIFF`
+- outcome floor
+- OFI slot-level / side-level 抑制
+- stale book
+- endgame phase gate
+- recycle / claim
 
-它和 keep-if-safe 配合，目标不是“反应最快”，而是“快且不抖”。
-
-## 4. OFI 的最终角色
-
+## 4. OFI 的共享角色
 OFI 现在不是主策略本身，而是共享执行保护层。
 
 它做三件事：
@@ -174,16 +112,16 @@ OFI 现在不是主策略本身，而是共享执行保护层。
 - 正常盘中靠库存偏移和价差控制风险
 - 极端情况下靠统一门禁和尾盘安全阀止血
 
-## 6. 尾盘不是主策略
+## 6. 尾盘是共享安全阀，不是主策略
 
-尾盘逻辑保留，但它只是 safety valve：
-- `SoftClose`：停风险增加型意图，允许风险不增的修复
-- `HardClose`：优先 maker repair，不足时 taker de-risk
-- `Freeze`：禁止新增风险，允许去风险
+尾盘逻辑在系统层保留，但不同执行模式接入深度不同：
+- buy-only / legacy hedge 路径：仍可进入更完整的 `Keep / MakerRepair / ForceTaker`
+- `glft_mm` 当前 slot 路径：只把 `SoftClose/HardClose/Freeze` 作为 phase gate 使用，实际效果是“非 Normal 阶段禁止风险增加型 slot 意图”
 
 因此：
 - `glft_mm` 不能靠尾盘逻辑赚钱
-- 尾盘逻辑只负责在主策略失效时收口风险
+- 当前 `glft_mm` 并没有独立的 HardClose maker-repair / taker-de-risk 数学分支
+- 若未来要做更强尾盘处理，应作为 `glft_mm` 的专门增强项，而不是继续沿用旧 hedge 叙事
 
 ## 7. 共享资本循环
 
@@ -217,5 +155,5 @@ OFI 现在不是主策略本身，而是共享执行保护层。
 
 1. 主策略选 `glft_mm`
 2. `.env.example` 直接作为模板起点
-3. 优先关注执行稳定性、OFI 阈值行为和 Binance 外锚稳定性
+3. 优先关注执行稳定性、OFI 阈值行为、Binance 外锚稳定性，以及 slot 路径尾盘行为是否满足预期
 4. 其它策略不要再和当前主线混用

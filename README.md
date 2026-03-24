@@ -58,10 +58,11 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 ## 推荐阅读顺序
 
 1. `docs/STRATEGY_V2_CORE_ZH.md`
-2. `docs/CONFIG_REFERENCE_ZH.md`
-3. `docs/GO_LIVE_5M_CHECKLIST_ZH.md`
-4. `docs/TESTING.md`
-5. `docs/ADDING_STRATEGY_ZH.md`
+2. `docs/STRATEGY_GLFT_MM_ZH.md`
+3. `docs/CONFIG_REFERENCE_ZH.md`
+4. `docs/GO_LIVE_5M_CHECKLIST_ZH.md`
+5. `docs/TESTING.md`
+6. `docs/ADDING_STRATEGY_ZH.md`
 
 ## 当前推荐 5m 参数基线
 
@@ -73,10 +74,8 @@ POLYMARKET_MARKET_SLUG="btc-updown-5m"
 PM_BID_SIZE=5.0
 PM_MAX_NET_DIFF=15.0
 PM_PAIR_TARGET=0.985
-PM_MAX_PORTFOLIO_COST=1.02
 PM_REPRICE_THRESHOLD=0.020
 PM_DEBOUNCE_MS=700
-PM_HEDGE_DEBOUNCE_MS=100
 PM_GLFT_GAMMA=0.10
 PM_GLFT_XI=0.10
 PM_GLFT_OFI_ALPHA=0.30
@@ -94,3 +93,4 @@ PM_AUTO_CLAIM=true
 - 这是当前准备实盘测试的保守配置，不是利润最大化配置。
 - 代码 fallback 默认策略仍是 `gabagool_grid`；但模板和实盘建议统一使用 `glft_mm`。
 - 如果 Binance 外锚失效，`glft_mm` 会主动静默并清空四槽位，不会回退到纯 Poly 报价。
+- `PM_MAX_PORTFOLIO_COST`、旧 hedge 参数和完整尾盘 repair/taker 阶段，不属于当前 `glft_mm` 正常盘中主逻辑。

@@ -36,15 +36,13 @@
 | `PM_STRATEGY` | `glft_mm` | 当前唯一推荐 live 主线 |
 | `PM_BID_SIZE` | `5.0` | 单槽位 clip |
 | `PM_MAX_NET_DIFF` | `15.0` | 盘中净仓硬上限 |
-| `PM_PAIR_TARGET` | `0.985` | 共享配对/尾盘安全阀参考成本线 |
-| `PM_MAX_PORTFOLIO_COST` | `1.02` | 救火成本上限 |
+| `PM_PAIR_TARGET` | `0.985` | 当前主要通过共享 outcome-floor 参与 `glft_mm` 的 buy-side 风控 |
 | `PM_TICK_SIZE` | `0.01` | 价格粒度 |
 | `PM_POST_ONLY_SAFETY_TICKS` | `2.0` | maker 安全垫基础退让 |
 | `PM_POST_ONLY_TIGHT_SPREAD_TICKS` | `3.0` | 紧价差额外退让触发线 |
 | `PM_POST_ONLY_EXTRA_TIGHT_TICKS` | `1.0` | 紧价差额外退让 |
 | `PM_REPRICE_THRESHOLD` | `0.020` | 更保守的重报价阈值 |
 | `PM_DEBOUNCE_MS` | `700` | provide 防抖 |
-| `PM_HEDGE_DEBOUNCE_MS` | `100` | safety-valve hedge 防抖 |
 | `PM_STALE_TTL_MS` | `3000` | 单侧 stale TTL |
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 
@@ -84,18 +82,32 @@
 | `PM_OFI_EXIT_RATIO` | `0.85` | 滞回退出比 |
 | `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短持续时间 |
 
-## 6. Endgame
+## 6. Endgame（当前 `glft_mm` 的真实有效范围）
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | `60` | 停风险增加型意图 |
-| `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 优先 maker repair，不足时 taker de-risk |
-| `PM_ENDGAME_FREEZE_SECS` | `2` | 禁止新增风险 |
-| `PM_ENDGAME_MAKER_REPAIR_MIN_SECS` | `8` | HardClose 内继续 maker repair 的最小时间预算 |
-| `PM_ENDGAME_EDGE_KEEP_MULT` | `1.5` | keep-mode 阈值 |
-| `PM_ENDGAME_EDGE_EXIT_MULT` | `1.25` | keep-mode 退出阈值 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | `60` | 对 `glft_mm` 有实效：进入非 `Normal` phase 后，阻止风险增加型 slot 意图 |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 当前会改变 phase 名称，但 `glft_mm` slot 路径没有更强的独立 HardClose 行为 |
+| `PM_ENDGAME_FREEZE_SECS` | `2` | 当前会改变 phase 名称，但 `glft_mm` slot 路径没有更强的独立 Freeze 行为 |
 
-## 7. recycle / claim
+当前不应视为 `glft_mm` 核心生效参数：
+- `PM_ENDGAME_MAKER_REPAIR_MIN_SECS`
+- `PM_ENDGAME_EDGE_KEEP_MULT`
+- `PM_ENDGAME_EDGE_EXIT_MULT`
+
+它们仍保留在代码里，主要服务旧执行路径或未来增强，不属于当前 `glft_mm` 主模板。
+
+## 7. 兼容保留参数（当前 `glft_mm` 正常盘中不主用）
+
+| 参数 | 模板建议 | 说明 |
+| --- | --- | --- |
+| `PM_MAX_PORTFOLIO_COST` | 注释保留 | 旧 hedge / rescue ceiling 语义；当前 `glft_mm` 正常盘中不走这条路径 |
+| `PM_HEDGE_DEBOUNCE_MS` | 注释保留 | 旧 hedge path 防抖；当前 `glft_mm` 正常盘中不发 hedge |
+| `PM_MIN_HEDGE_SIZE` | 注释保留 | 旧 hedge/taker 路径参数 |
+| `PM_HEDGE_ROUND_UP` | 注释保留 | 旧 hedge/taker 路径参数 |
+| `PM_HEDGE_MIN_MARKETABLE_*` | 注释保留 | 旧 hedge/taker 路径参数 |
+
+## 8. recycle / claim
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
@@ -120,7 +132,7 @@
 | `PM_AUTO_CLAIM_ROUND_RETRY_SCHEDULE` | `0,2,5,9,14,20,27` | 重试节奏 |
 | `PM_AUTO_CLAIM_ROUND_SCOPE` | `ended_then_global` | 先本轮后全局 |
 
-## 8. 非主线策略参数
+## 9. 非主线策略参数
 
 以下参数仍被代码支持，但不属于当前推荐 live 主线：
 - `PM_OPEN_PAIR_BAND`

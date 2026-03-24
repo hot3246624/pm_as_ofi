@@ -137,6 +137,14 @@ impl QuoteStrategy for MyStrategy {
 - `docs/CONFIG_REFERENCE_ZH.md`
 - `.env.example`
 
+如果该策略将成为 live 主线或长期维护策略，还应新增独立规格书：
+- `docs/STRATEGY_<YOUR_STRATEGY>_ZH.md`
+
+如果只是实验/回放策略：
+- 不必强行新增完整规格书
+- 但至少要在 `README.md` 里说明定位
+- 并在 `docs/CONFIG_REFERENCE_ZH.md` / `.env.example` 标清哪些参数只服务该策略
+
 ## 5. 开发原则
 
 1. 策略只表达意图，不做执行。
