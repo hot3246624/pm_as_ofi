@@ -146,11 +146,6 @@ impl StrategyKind {
                         "⚠️ PM_STRATEGY=gabagool is a deprecated alias. The parked unified-utility model now lives under gabagool_grid."
                     );
                 }
-                if kind == Self::PairArb {
-                    warn!(
-                        "⚠️ PM_STRATEGY=pair_arb is deprecated. Use gabagool_grid for the parked unified-utility model; pair_arb remains available only for legacy comparison."
-                    );
-                }
                 kind
             }
             None => {

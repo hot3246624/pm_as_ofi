@@ -137,14 +137,14 @@ OFI 现在不是主策略本身，而是共享执行保护层。
 ## 8. 其它内置策略的定位
 
 - `gabagool_grid`
-  - buy-only 基线
-  - 适合回放、对照和研究
+  - buy-only utility 基线
+  - 可直接运行，适合做 buy-only 对照
 - `gabagool_corridor`
   - corridor 变体
   - 当前仍是 research，不作为默认 live 主线
 - `pair_arb`
-  - 旧 fair-value maker
-  - 仅保留历史比较价值
+  - 当前最接近旧 `pair cost + A-S` 主线的可运行策略
+  - 可直接运行，但不是当前主线
 - `dip_buy` / `phase_builder`
   - 实验策略
   - 不纳入当前正式上线文档主线

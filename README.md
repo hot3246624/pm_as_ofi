@@ -5,7 +5,7 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 当前仓库已经收敛到一条明确主线：
 - 推荐实盘主策略：`glft_mm`
 - 推荐市场：`btc/eth/xrp/sol` 的 `*-updown-5m`
-- 其它内置策略仅保留为基线、回放或实验，不再作为默认上线方案
+- 除主线外，还保留 `pair_arb` 和 `gabagool_grid` 作为可直接运行的次级策略
 
 ## 当前主线能力
 
@@ -21,9 +21,9 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 | 策略 | 定位 | 状态 |
 | --- | --- | --- |
 | `glft_mm` | 真双边、slot-keyed、5m crypto 主线 | 推荐 |
-| `gabagool_grid` | buy-only 基线 | parked |
+| `gabagool_grid` | buy-only utility 基线 | 可用 |
 | `gabagool_corridor` | `gabagool_grid` 的 corridor 变体 | research |
-| `pair_arb` | 旧 fair-value maker | 软弃用 |
+| `pair_arb` | pair cost + A-S 风格双边买入策略 | 可用 |
 | `dip_buy` | 单边抄底 | 实验 |
 | `phase_builder` | 分阶段单边建仓 | 实验 |
 
@@ -59,10 +59,12 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 
 1. `docs/STRATEGY_V2_CORE_ZH.md`
 2. `docs/STRATEGY_GLFT_MM_ZH.md`
-3. `docs/CONFIG_REFERENCE_ZH.md`
-4. `docs/GO_LIVE_5M_CHECKLIST_ZH.md`
-5. `docs/TESTING.md`
-6. `docs/ADDING_STRATEGY_ZH.md`
+3. `docs/STRATEGY_PAIR_ARB_ZH.md`
+4. `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
+5. `docs/CONFIG_REFERENCE_ZH.md`
+6. `docs/GO_LIVE_5M_CHECKLIST_ZH.md`
+7. `docs/TESTING.md`
+8. `docs/ADDING_STRATEGY_ZH.md`
 
 ## 当前推荐 5m 参数基线
 

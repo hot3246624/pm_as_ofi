@@ -145,3 +145,7 @@
 原则：
 - 当前先把 `glft_mm` 跑稳
 - 非主线参数默认不作为 live 模板的激活项
+
+补充说明：
+- `PM_OPEN_PAIR_BAND` 主要服务 `gabagool_grid`
+- `PM_AS_SKEW_FACTOR` / `PM_AS_TIME_DECAY_K` 主要服务 `pair_arb`
