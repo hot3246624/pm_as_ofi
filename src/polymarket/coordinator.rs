@@ -732,6 +732,7 @@ pub struct StrategyCoordinator {
     slot_last_budget_refill: [Instant; 4],
     slot_realign_debt: [f64; 4],
     slot_last_debt_update: [Instant; 4],
+    slot_last_debt_realign_ts: [Instant; 4],
     slot_price_move_dir: [Option<PriceMoveDirection>; 4],
     slot_price_move_streak: [u8; 4],
     slot_price_move_since: [Option<Instant>; 4],
@@ -856,6 +857,9 @@ impl StrategyCoordinator {
             slot_last_budget_refill: std::array::from_fn(|_| Instant::now()),
             slot_realign_debt: [0.0; 4],
             slot_last_debt_update: std::array::from_fn(|_| Instant::now()),
+            slot_last_debt_realign_ts: std::array::from_fn(|_| {
+                Instant::now() - std::time::Duration::from_secs(10)
+            }),
             slot_price_move_dir: std::array::from_fn(|_| None),
             slot_price_move_streak: [0; 4],
             slot_price_move_since: std::array::from_fn(|_| None),

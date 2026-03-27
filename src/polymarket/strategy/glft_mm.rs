@@ -21,7 +21,11 @@ fn aggregated_heat_score(ofi: Option<&crate::polymarket::messages::OfiSnapshot>)
 }
 
 fn heat_spread_mult(heat_score: f64) -> f64 {
-    1.0 + 0.15 * (heat_score - 1.0).max(0.0).min(4.0)
+    // P2: Damp heat's contribution to spread multiplier.
+    // Old: 1.0 + 0.15 * (heat - 1).clamp(0, 4) → max +60% at heat=5
+    // New: softer curve via sqrt dampening → max +40% at heat=5, +20% at heat=2
+    let excess = (heat_score - 1.0).max(0.0).min(4.0);
+    1.0 + 0.10 * excess.sqrt() * excess.sqrt().min(2.0)
 }
 
 impl QuoteStrategy for GlftMmStrategy {

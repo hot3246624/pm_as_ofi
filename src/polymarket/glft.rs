@@ -407,6 +407,7 @@ pub struct GlftSignalEngine {
     bootstrap_saved_at: Option<u64>,
     last_fast_refit_at: Option<Instant>,
     hard_basis_blocked: bool,
+    hard_pause_locked_until: Option<Instant>,
     drift_mode: DriftMode,
     drift_mode_entered_at: Instant,
     drift_mode_last_switch_at: Instant,
@@ -463,6 +464,7 @@ impl GlftSignalEngine {
             bootstrap_saved_at: bootstrap.map(|s| s.saved_at),
             last_fast_refit_at: None,
             hard_basis_blocked: false,
+            hard_pause_locked_until: None,
             drift_mode: DriftMode::Normal,
             drift_mode_entered_at: Instant::now(),
             drift_mode_last_switch_at: Instant::now(),
@@ -1289,6 +1291,7 @@ impl GlftSignalEngine {
             stale: gate.blockers.await_binance,
             stale_secs,
         };
+        const HARD_PAUSE_MIN_LOCK_MS: u64 = 3000;
         if gate.hard_basis_unstable && self.live_latched && !self.hard_basis_blocked {
             warn!(
                 "⚠️ GLFT hard basis misalignment -> pause quoting | modeled_mid={:.3} synthetic_mid={:.3} basis_raw={:.3} basis_clamped={:.3} drift_ticks={:.1}",
@@ -1299,23 +1302,34 @@ impl GlftSignalEngine {
                 gate.basis_drift_ticks,
             );
             self.hard_basis_blocked = true;
+            let now_inst = Instant::now();
+            self.hard_pause_locked_until =
+                Some(now_inst + Duration::from_millis(HARD_PAUSE_MIN_LOCK_MS));
             if self.pause_entered_at.is_none() {
-                self.pause_entered_at = Some(Instant::now());
+                self.pause_entered_at = Some(now_inst);
             }
             self.pause_recover_healthy_streak = 0;
         } else if !gate.hard_basis_unstable && self.hard_basis_blocked && gate.ready {
-            info!(
-                "✅ GLFT basis alignment recovered -> resume quoting | modeled_mid={:.3} synthetic_mid={:.3} dwell_ms={} healthy_streak={}",
-                modeled_mid,
-                synthetic_mid_yes,
-                self.pause_entered_at
-                    .map(|entered_at| Instant::now().duration_since(entered_at).as_millis())
-                    .unwrap_or(0),
-                self.pause_recover_healthy_streak,
-            );
-            self.hard_basis_blocked = false;
-            self.pause_entered_at = None;
-            self.pause_recover_healthy_streak = 0;
+            // P0: enforce minimum lock window before allowing recovery
+            let lock_expired = self
+                .hard_pause_locked_until
+                .map(|until| Instant::now() >= until)
+                .unwrap_or(true);
+            if lock_expired {
+                info!(
+                    "✅ GLFT basis alignment recovered -> resume quoting | modeled_mid={:.3} synthetic_mid={:.3} dwell_ms={} healthy_streak={}",
+                    modeled_mid,
+                    synthetic_mid_yes,
+                    self.pause_entered_at
+                        .map(|entered_at| Instant::now().duration_since(entered_at).as_millis())
+                        .unwrap_or(0),
+                    self.pause_recover_healthy_streak,
+                );
+                self.hard_basis_blocked = false;
+                self.pause_entered_at = None;
+                self.hard_pause_locked_until = None;
+                self.pause_recover_healthy_streak = 0;
+            }
         }
         let _ = self.tx.send(snapshot);
         snapshot

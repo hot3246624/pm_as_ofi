@@ -380,13 +380,23 @@ impl StrategyCoordinator {
                     publish_hard_safety_exception = true;
                     Some(SlotPublishReason::ForcedRealign)
                 } else if debt_forced_realign && elapsed >= forced_realign_min_age {
-                    attempted_directional_publish = true;
-                    match Self::slot_price_move_direction(slot_price, normalized_target_price) {
-                        Some(direction) if self.confirm_slot_price_move(slot, direction) => {
-                            debt_realign_selected = true;
-                            Some(SlotPublishReason::ForcedRealign)
+                    // P1: enforce minimum interval between debt realigns per slot
+                    const DEBT_REALIGN_MIN_INTERVAL_MS: u64 = 1500;
+                    let debt_cooldown_ok = self.slot_last_debt_realign_ts[slot.index()]
+                        .elapsed()
+                        >= std::time::Duration::from_millis(DEBT_REALIGN_MIN_INTERVAL_MS);
+                    if debt_cooldown_ok {
+                        attempted_directional_publish = true;
+                        match Self::slot_price_move_direction(slot_price, normalized_target_price) {
+                            Some(direction) if self.confirm_slot_price_move(slot, direction) => {
+                                debt_realign_selected = true;
+                                self.slot_last_debt_realign_ts[slot.index()] = std::time::Instant::now();
+                                Some(SlotPublishReason::ForcedRealign)
+                            }
+                            _ => None,
                         }
-                        _ => None,
+                    } else {
+                        None
                     }
                 } else if prealign_required {
                     let can_try_prealign = prealign_escalated || elapsed >= prealign_min_age;
@@ -774,8 +784,9 @@ impl StrategyCoordinator {
                 self.cfg.max_net_diff,
                 self.cfg.tick_size,
             );
+            let heat_excess = (heat_score - 1.0).max(0.0).min(4.0);
             let spread_mult = (1.0 + self.cfg.glft_ofi_spread_beta * glft.alpha_flow.abs().powi(2))
-                * (1.0 + 0.15 * (heat_score - 1.0).max(0.0).min(4.0));
+                * (1.0 + 0.10 * heat_excess.sqrt() * heat_excess.sqrt().min(2.0));
             let half_spread = (offsets.half_spread_base * spread_mult).max(self.cfg.tick_size);
             let r_yes = (p_anchor + alpha_prob - offsets.inventory_shift)
                 .clamp(self.cfg.tick_size, 1.0 - self.cfg.tick_size);
