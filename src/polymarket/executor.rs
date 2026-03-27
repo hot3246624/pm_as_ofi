@@ -26,6 +26,7 @@ use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 pub type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>;
+const CROSS_BOOK_COOLDOWN_MS: u64 = 1_000;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +101,10 @@ pub struct Executor {
     /// Active open orders tracked per slot: order_id → remaining_size.
     /// Enables partial fill tracking — only removes when fully filled.
     open_orders: [HashMap<String, f64>; 4],
+    /// Recent same-side buy fills used to identify transient sell availability lag.
+    last_buy_fill_ts: [Option<Instant>; 2],
+    /// Recent same-side buy placements, used as a fallback when fill events lag behind submit ACKs.
+    last_buy_place_ts: [Option<Instant>; 2],
 
     /// Runtime-selected query mode for REST reconciliation.
     reconcile_fetch_mode: ReconcileFetchMode,
@@ -143,6 +148,8 @@ impl Executor {
                     .unwrap_or(2000),
             ),
             open_orders: std::array::from_fn(|_| HashMap::new()),
+            last_buy_fill_ts: [None, None],
+            last_buy_place_ts: [None, None],
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
             marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
                 .ok()
@@ -529,6 +536,9 @@ impl Executor {
     /// AUDIT FIX: Sends OrderFilled back to Coordinator so it can release the slot.
     async fn handle_fill_notification(&mut self, fill: &FillEvent) {
         let slot = fill.slot();
+        if fill.status != FillStatus::Failed && slot.direction == TradeDirection::Buy {
+            self.last_buy_fill_ts[slot.side.index()] = Some(Instant::now());
+        }
         // P1-3: FAILED = order terminated, remove entirely
         if fill.status == FillStatus::Failed {
             let orders = self.slot_orders_mut(slot);
@@ -540,10 +550,7 @@ impl Executor {
                     orders.len(),
                 );
                 // Notify Coordinator: slot is now free
-                let _ = self
-                    .result_tx
-                    .send(OrderResult::OrderFilled { slot })
-                    .await;
+                let _ = self.result_tx.send(OrderResult::OrderFilled { slot }).await;
             }
             return;
         }
@@ -561,10 +568,7 @@ impl Executor {
                     orders.len(),
                 );
                 // AUDIT FIX: Notify Coordinator that the slot is free for new orders
-                let _ = self
-                    .result_tx
-                    .send(OrderResult::OrderFilled { slot })
-                    .await;
+                let _ = self.result_tx.send(OrderResult::OrderFilled { slot }).await;
             } else {
                 info!(
                     "📋 Lifecycle: {} order {}… partial fill {:.2}, remaining={:.2}",
@@ -655,7 +659,9 @@ impl Executor {
         if existing_count > 0 {
             warn!(
                 "🚫 Refusing PlacePostOnlyBid {}@{:.3}: {} tracked order(s) still open on slot",
-                slot.as_str(), price, existing_count,
+                slot.as_str(),
+                price,
+                existing_count,
             );
             if self.last_guard_reconcile_ts.elapsed() >= Duration::from_millis(1500)
                 && !self.cfg.dry_run
@@ -747,6 +753,9 @@ impl Executor {
                     "✅ Order placed: {:?} {:?}@{:.3} id={}",
                     direction, side, price, order_id
                 );
+                if direction == TradeDirection::Buy {
+                    self.last_buy_place_ts[side.index()] = Some(Instant::now());
+                }
                 self.slot_orders_mut(slot).insert(order_id, size);
                 // Notify OrderManager that state can transition to Live
                 let _ = self
@@ -788,6 +797,9 @@ impl Executor {
                                 "✅ Order placed after tick-size retry: {:?} {:?}@{:.3} id={}",
                                 direction, side, price, order_id
                             );
+                            if direction == TradeDirection::Buy {
+                                self.last_buy_place_ts[side.index()] = Some(Instant::now());
+                            }
                             self.slot_orders_mut(slot).insert(order_id, size);
                             let _ = self
                                 .result_tx
@@ -810,7 +822,10 @@ impl Executor {
                     }
                 }
 
-                warn!("❌ Failed to place PostOnlyBid {:?}: {:?}", side, final_err);
+                warn!(
+                    "❌ Failed to place PostOnly {:?} {:?}: {:?}",
+                    direction, side, final_err
+                );
                 let err_text = format!("{:#}", final_err);
                 let err_text_lower = err_text.to_ascii_lowercase();
                 if self.marketable_buy_autodetect {
@@ -828,11 +843,18 @@ impl Executor {
                 }
                 let is_429 = Self::is_rate_limit_error(&err_text_lower);
                 let is_balance = Self::is_balance_or_allowance_error(&err_text_lower);
+                let is_position_lag = direction == TradeDirection::Sell
+                    && is_balance
+                    && self.is_recent_same_side_buy_activity(side);
                 let is_marketable_min = Self::is_marketable_min_error(&err_text_lower);
                 let is_cross_book = Self::is_cross_book_error(&err_text_lower);
                 let is_validation = Self::is_validation_error(&err_text_lower);
                 let reject_kind = if is_429 {
                     RejectKind::RateLimit
+                } else if is_position_lag {
+                    RejectKind::PositionUnavailableLag
+                } else if is_cross_book {
+                    RejectKind::CrossBookTransient
                 } else if is_balance {
                     RejectKind::BalanceOrAllowance
                 } else if is_validation {
@@ -843,6 +865,10 @@ impl Executor {
 
                 let cooldown_ms = if is_429 {
                     10_000 // 10s backoff for rate limiting
+                } else if is_position_lag {
+                    2_000 // transient venue lag right after same-side inventory fill
+                } else if is_cross_book {
+                    CROSS_BOOK_COOLDOWN_MS // short backoff; let adaptive safety margin settle
                 } else if is_balance {
                     30_000 // 30s for balance issues
                 } else if is_marketable_min {
@@ -856,6 +882,10 @@ impl Executor {
                 if cooldown_ms > 0 {
                     let reject_kind_text = if is_429 {
                         "rate limit"
+                    } else if is_position_lag {
+                        "position-unavailable-lag"
+                    } else if is_cross_book {
+                        "cross-book-transient"
                     } else if is_balance {
                         "balance/allowance"
                     } else if is_marketable_min {
@@ -869,6 +899,12 @@ impl Executor {
                         cooldown_ms / 1000,
                         reject_kind_text
                     );
+                    if is_position_lag {
+                        warn!(
+                            "⏳ Same-side {:?} inventory was just filled; venue likely has not released sellable balance yet",
+                            side
+                        );
+                    }
                     if is_balance && matches!(reason, BidReason::Hedge) {
                         warn!(
                             "🧯 Hedge blocked on {:?}: insufficient balance/allowance; inventory may remain directional until cooldown expires",
@@ -876,16 +912,18 @@ impl Executor {
                         );
                     }
                 }
-                let _ = self
-                    .emit_reject_event(PlacementRejectEvent {
-                        side,
-                        reason,
-                        kind: reject_kind,
-                        price,
-                        size,
-                        ts: Instant::now(),
-                    })
-                    .await;
+                if !is_position_lag {
+                    let _ = self
+                        .emit_reject_event(PlacementRejectEvent {
+                            side,
+                            reason,
+                            kind: reject_kind,
+                            price,
+                            size,
+                            ts: Instant::now(),
+                        })
+                        .await;
+                }
                 if is_cross_book {
                     self.emit_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
                         slot,
@@ -961,7 +999,10 @@ impl Executor {
             }
             let _ = self
                 .result_tx
-                .send(OrderResult::TakerHedgeFailed { side, cooldown_ms: 2_000 })
+                .send(OrderResult::TakerHedgeFailed {
+                    side,
+                    cooldown_ms: 2_000,
+                })
                 .await;
             return;
         }
@@ -1208,6 +1249,22 @@ impl Executor {
         if let Some(tx) = &self.feedback_tx {
             let _ = tx.send(feedback).await;
         }
+    }
+
+    fn is_recent_same_side_buy_fill(&self, side: Side) -> bool {
+        self.last_buy_fill_ts[side.index()]
+            .map(|ts| ts.elapsed() <= Duration::from_secs(5))
+            .unwrap_or(false)
+    }
+
+    fn is_recent_same_side_buy_place(&self, side: Side) -> bool {
+        self.last_buy_place_ts[side.index()]
+            .map(|ts| ts.elapsed() <= Duration::from_secs(5))
+            .unwrap_or(false)
+    }
+
+    fn is_recent_same_side_buy_activity(&self, side: Side) -> bool {
+        self.is_recent_same_side_buy_fill(side) || self.is_recent_same_side_buy_place(side)
     }
 
     async fn cached_free_balance_usdc(&mut self) -> Option<f64> {
@@ -1683,9 +1740,36 @@ pub async fn init_clob_client(
 
 #[cfg(test)]
 mod tests {
+    use std::time::{Duration, Instant};
+
     use tokio::sync::mpsc;
 
     use super::{ExecutionCmd, Executor, ExecutorConfig, OrderResult, ReconcileFetchMode};
+    use crate::polymarket::types::Side;
+
+    fn test_executor() -> Executor {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, _result_rx) = mpsc::channel::<OrderResult>(4);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: false,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            None,
+            None,
+        )
+    }
 
     #[test]
     fn taker_size_normalization_whole_share_for_size_ge_one() {
@@ -1718,27 +1802,17 @@ mod tests {
 
     #[test]
     fn executor_defaults_reconcile_mode_to_local_by_id() {
-        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
-        let (result_tx, _result_rx) = mpsc::channel::<OrderResult>(4);
-        let (_fill_tx, fill_rx) = mpsc::channel(4);
-        let exec = Executor::new(
-            ExecutorConfig {
-                rest_url: "https://example.invalid".to_string(),
-                market_id: "0x0".to_string(),
-                yes_asset_id: "1".to_string(),
-                no_asset_id: "2".to_string(),
-                tick_size: 0.01,
-                reconcile_interval_secs: 30,
-                dry_run: false,
-            },
-            None,
-            None,
-            cmd_rx,
-            result_tx,
-            fill_rx,
-            None,
-            None,
-        );
+        let exec = test_executor();
         assert_eq!(exec.reconcile_fetch_mode, ReconcileFetchMode::LocalById);
+    }
+
+    #[test]
+    fn recent_same_side_buy_fill_detects_lag_window() {
+        let mut exec = test_executor();
+        exec.last_buy_fill_ts[Side::No.index()] = Some(Instant::now());
+        assert!(exec.is_recent_same_side_buy_fill(Side::No));
+
+        exec.last_buy_fill_ts[Side::No.index()] = Some(Instant::now() - Duration::from_secs(6));
+        assert!(!exec.is_recent_same_side_buy_fill(Side::No));
     }
 }

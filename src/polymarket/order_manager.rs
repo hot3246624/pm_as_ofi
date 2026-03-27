@@ -12,6 +12,8 @@ use super::types::Side;
 const PENDING_SUBMIT_TIMEOUT: Duration = Duration::from_secs(8);
 const PENDING_CANCEL_TIMEOUT: Duration = Duration::from_secs(8);
 const PENDING_TIMEOUT_COOLDOWN: Duration = Duration::from_secs(2);
+const SLOT_PUMP_HEARTBEAT: Duration = Duration::from_millis(200);
+const SELL_AVAILABLE_WARMUP: Duration = Duration::from_millis(1_500);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderState {
@@ -54,6 +56,7 @@ impl SlotTracker {
 pub struct OrderManager {
     slots: [SlotTracker; 4],
     side_takers: [SideTakerState; 2],
+    sell_available_after: [Option<Instant>; 2],
     cmd_rx: mpsc::Receiver<OrderManagerCmd>,
     exec_tx: mpsc::Sender<ExecutionCmd>,
     result_rx: mpsc::Receiver<OrderResult>,
@@ -68,6 +71,7 @@ impl OrderManager {
         Self {
             slots: std::array::from_fn(|idx| SlotTracker::new(OrderSlot::ALL[idx])),
             side_takers: [SideTakerState::Idle, SideTakerState::Idle],
+            sell_available_after: [None, None],
             cmd_rx,
             exec_tx,
             result_rx,
@@ -96,10 +100,53 @@ impl OrderManager {
             .all(|slot| matches!(self.tracker(slot).state, OrderState::Idle))
     }
 
+    fn sell_available_after(&self, side: Side) -> Option<Instant> {
+        self.sell_available_after[side.index()]
+    }
+
+    fn set_sell_available_after(&mut self, side: Side, until: Option<Instant>) {
+        self.sell_available_after[side.index()] = until;
+    }
+
     pub async fn run(mut self) {
         info!("🚦 OrderManager [OMS] started");
+        let mut heartbeat = tokio::time::interval(SLOT_PUMP_HEARTBEAT);
         loop {
             tokio::select! {
+                biased;
+                result = self.result_rx.recv() => {
+                    match result {
+                        Some(OrderResult::OrderPlaced { slot, target }) => {
+                            self.handle_placed(slot, target).await;
+                            self.pump_slot(slot).await;
+                        }
+                        Some(OrderResult::OrderFailed { slot, cooldown_ms }) => {
+                            self.handle_failed(slot, cooldown_ms).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
+                        Some(OrderResult::OrderFilled { slot }) => {
+                            self.handle_filled(slot).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
+                        Some(OrderResult::TakerHedgeDone { side }) => {
+                            self.handle_taker_done(side).await;
+                            for slot in OrderSlot::side_slots(side) {
+                                self.pump_slot(slot).await;
+                            }
+                        }
+                        Some(OrderResult::TakerHedgeFailed { side, cooldown_ms }) => {
+                            self.handle_taker_failed(side, cooldown_ms).await;
+                        }
+                        Some(OrderResult::CancelAck { slot }) => {
+                            self.handle_cancel_ack(slot).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
+                        None => break,
+                    }
+                }
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(OrderManagerCmd::SetTarget(target)) => {
@@ -134,37 +181,12 @@ impl OrderManager {
                         None => break,
                     }
                 }
-                result = self.result_rx.recv() => {
-                    match result {
-                        Some(OrderResult::OrderPlaced { slot, target }) => {
-                            self.handle_placed(slot, target).await;
-                            self.pump_slot(slot).await;
-                        }
-                        Some(OrderResult::OrderFailed { slot, cooldown_ms }) => {
-                            self.handle_failed(slot, cooldown_ms).await;
-                            self.pump_slot(slot).await;
-                            self.pump_side_taker(slot.side).await;
-                        }
-                        Some(OrderResult::OrderFilled { slot }) => {
-                            self.handle_filled(slot).await;
-                            self.pump_slot(slot).await;
-                            self.pump_side_taker(slot.side).await;
-                        }
-                        Some(OrderResult::TakerHedgeDone { side }) => {
-                            self.handle_taker_done(side).await;
-                            for slot in OrderSlot::side_slots(side) {
-                                self.pump_slot(slot).await;
-                            }
-                        }
-                        Some(OrderResult::TakerHedgeFailed { side, cooldown_ms }) => {
-                            self.handle_taker_failed(side, cooldown_ms).await;
-                        }
-                        Some(OrderResult::CancelAck { slot }) => {
-                            self.handle_cancel_ack(slot).await;
-                            self.pump_slot(slot).await;
-                            self.pump_side_taker(slot.side).await;
-                        }
-                        None => break,
+                _ = heartbeat.tick() => {
+                    for slot in OrderSlot::ALL {
+                        self.pump_slot(slot).await;
+                    }
+                    for side in [Side::Yes, Side::No] {
+                        self.pump_side_taker(side).await;
                     }
                 }
             }
@@ -251,6 +273,16 @@ impl OrderManager {
         info!("✅ OMS: {} OrderFilled -> Slot freed", slot.as_str());
         tracker.state = OrderState::Idle;
         tracker.desired = None;
+        if slot.direction == TradeDirection::Buy {
+            let until = Instant::now() + SELL_AVAILABLE_WARMUP;
+            self.set_sell_available_after(slot.side, Some(until));
+            info!(
+                "⏳ OMS: {:?} sell availability warmup {}ms after {} fill",
+                slot.side,
+                SELL_AVAILABLE_WARMUP.as_millis(),
+                slot.as_str(),
+            );
+        }
     }
 
     async fn handle_taker_done(&mut self, side: Side) {
@@ -297,6 +329,16 @@ impl OrderManager {
     }
 
     async fn pump_slot(&mut self, slot: OrderSlot) {
+        if slot.direction == TradeDirection::Sell {
+            if let Some(until) = self.sell_available_after(slot.side) {
+                if Instant::now() < until {
+                    return;
+                }
+                self.set_sell_available_after(slot.side, None);
+                info!("✅ OMS: {:?} sell availability warmup complete", slot.side);
+            }
+        }
+
         {
             let tracker = self.tracker_mut(slot);
             if let Some(until) = tracker.cooldown_until {
@@ -426,12 +468,7 @@ mod tests {
     use super::*;
     use tokio::time::{timeout, Duration};
 
-    fn target(
-        slot: OrderSlot,
-        price: f64,
-        size: f64,
-        reason: BidReason,
-    ) -> DesiredTarget {
+    fn target(slot: OrderSlot, price: f64, size: f64, reason: BidReason) -> DesiredTarget {
         DesiredTarget {
             side: slot.side,
             direction: slot.direction,
@@ -544,6 +581,75 @@ mod tests {
                 assert!((intent.size - 2.0).abs() < 1e-9);
             }
             other => panic!("expected ExecuteIntent(TakerFak), got {:?}", other),
+        }
+
+        drop(cmd_tx);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_sell_slot_waits_for_post_fill_warmup() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, mut exec_rx) = mpsc::channel(16);
+        let (result_tx, result_rx) = mpsc::channel(16);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
+        let h = tokio::spawn(om.run());
+
+        let _ = result_tx
+            .send(OrderResult::OrderFilled {
+                slot: OrderSlot::NO_BUY,
+            })
+            .await;
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                OrderSlot::NO_SELL,
+                0.55,
+                5.0,
+                BidReason::Provide,
+            )))
+            .await;
+
+        let warmup_deadline = tokio::time::Instant::now() + Duration::from_millis(300);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= warmup_deadline {
+                break;
+            }
+            let remaining = warmup_deadline - now;
+            match timeout(remaining, exec_rx.recv()).await {
+                Err(_) | Ok(None) => break,
+                Ok(Some(ExecutionCmd::ExecuteIntent { intent }))
+                    if intent.side == Side::No && intent.direction == TradeDirection::Sell =>
+                {
+                    panic!(
+                        "NO sell should stay blocked during warmup, got {:?}",
+                        intent
+                    );
+                }
+                Ok(Some(_)) => continue,
+            }
+        }
+
+        let ready_deadline = tokio::time::Instant::now() + Duration::from_millis(2_000);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= ready_deadline {
+                panic!("timed out waiting for delayed NO sell ExecuteIntent");
+            }
+            let remaining = ready_deadline - now;
+            match timeout(remaining, exec_rx.recv()).await {
+                Ok(Some(ExecutionCmd::ExecuteIntent { intent })) => {
+                    if intent.side == Side::No && intent.direction == TradeDirection::Sell {
+                        assert_eq!(intent.urgency, TradeUrgency::MakerPostOnly);
+                        assert_eq!(intent.price, Some(0.55));
+                        break;
+                    }
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => panic!("timed out waiting for delayed NO sell ExecuteIntent"),
+            }
         }
 
         drop(cmd_tx);

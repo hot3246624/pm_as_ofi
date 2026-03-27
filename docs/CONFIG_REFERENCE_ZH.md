@@ -60,27 +60,42 @@
 固定实现，不额外开放参数：
 - warm-start TTL = `6h`
 - bootstrap = `A=0.20, k=0.50, sigma=0.02, basis=0.0`
-- `sigma_prob` 半衰期 = `20s`
+- `sigma_prob` 半衰期 = `20s`（由 Polymarket 概率中价变化在线估计）
 - `basis_prob` 半衰期 = `30s`
+- cold-ramp = `8s`（basis 限幅 `±0.08`）
+- cold-ramp reservation corridor = `synthetic_mid_yes ± 15*tick`
 - governor 步长 = `1 tick`
+- post-fill sell warmup = `1500ms`
+- drift guard（Safe/Aligned）= `ColdRamp 1*tick` / `Live 2*tick`，并带 `>=1500ms` age 门控
+- post-only `crosses book` 短冷却 = `1000ms`（独立于通用 validation 冷却）
+
+运行解读：
+- `glft_mm` 允许同侧 `buy -> sell` 的 maker 回转；这不是 `pair-cost-first` 路径
+- 日志中的 `fit_source=bootstrap / warm-start / last-good-fit` 是内部状态观测，不对应新的 `.env` 参数
 
 ## 5. OFI 推荐值（当前 5m live 基线）
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
 | `PM_OFI_WINDOW_MS` | `3000` | 订单流窗口 |
-| `PM_OFI_TOXICITY_THRESHOLD` | `300.0` | 自适应基准阈值 |
+| `PM_OFI_TOXICITY_THRESHOLD` | `300.0` | 冷启动阈值；warm-up 前的回退锚点 |
 | `PM_OFI_ADAPTIVE` | `true` | 开启自适应 |
-| `PM_OFI_ADAPTIVE_K` | `4.2` | `mean + k*sigma` 的 `k` |
-| `PM_OFI_ADAPTIVE_MIN` | `120.0` | 自适应下限 |
-| `PM_OFI_ADAPTIVE_MAX` | `1800.0` | 自适应上限；防阈值漂到失真区 |
-| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | `0.20` | 每次心跳最大上升比例 |
-| `PM_OFI_ADAPTIVE_WINDOW` | `200` | 自适应样本窗口 |
+| `PM_OFI_ADAPTIVE_K` | `4.2` | 旧 mean+sigma 兼容参数；当前 regime-normalized 模式不使用 |
+| `PM_OFI_ADAPTIVE_MIN` | `120.0` | regime baseline 下限护栏 |
+| `PM_OFI_ADAPTIVE_MAX` | `1800.0` | regime baseline 上限护栏（命中会打 `saturated` 日志） |
+| `PM_OFI_ADAPTIVE_RISE_CAP_PCT` | `0.20` | 旧 rise-cap 兼容参数；当前 regime-normalized 模式不使用 |
+| `PM_OFI_ADAPTIVE_WINDOW` | `200` | 自适应样本窗口，用于 rolling Q50/Q99/Q95 |
 | `PM_OFI_RATIO_ENTER` | `0.70` | 进入 toxic 的比例门槛 |
 | `PM_OFI_RATIO_EXIT` | `0.40` | 退出比例门槛 |
 | `PM_OFI_HEARTBEAT_MS` | `200` | OFI 心跳 |
 | `PM_OFI_EXIT_RATIO` | `0.85` | 滞回退出比 |
 | `PM_OFI_MIN_TOXIC_MS` | `800` | 单次 toxic 最短持续时间 |
+
+运行解读：
+- 当前 OFI 是“连续信号 + regime-aware tail kill”双层结构
+- kill 主判定基于 `normalized_score = |OFI| / baseline`，其中 baseline 来自 rolling `Q50`
+- 进入/恢复阈值由 rolling `Q99/Q95` 映射到 score 空间，再叠加 ratio gate 与最小毒性保持时间
+- `PM_OFI_ADAPTIVE_MIN/MAX` 仅作 baseline 护栏；高热时若触及上限会输出 `saturated` 可观测日志
 
 ## 6. Endgame（当前 `glft_mm` 的真实有效范围）
 

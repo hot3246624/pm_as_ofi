@@ -2,7 +2,7 @@ use tracing::warn;
 
 use super::coordinator::{Book, StrategyCoordinator, StrategyInventoryMetrics};
 use super::glft::GlftSignalSnapshot;
-use super::messages::{BidReason, InventoryState, OrderSlot, TradeDirection};
+use super::messages::{BidReason, InventoryState, OfiSnapshot, OrderSlot, TradeDirection};
 use super::types::Side;
 
 pub mod dip_buy;
@@ -174,6 +174,7 @@ pub(crate) struct StrategyTickInput<'a> {
     pub(crate) inv: &'a InventoryState,
     pub(crate) book: &'a Book,
     pub(crate) metrics: &'a StrategyInventoryMetrics,
+    pub(crate) ofi: Option<&'a OfiSnapshot>,
     pub(crate) glft: Option<&'a GlftSignalSnapshot>,
 }
 

@@ -871,31 +871,44 @@ fn log_config_self_check(
         coord.endgame_edge_exit_mult
     );
     info!("   reconcile_interval={}s", reconcile_interval_secs);
-    let adaptive_max_text = if ofi.adaptive_max > 0.0 {
-        format!("{:.1}", ofi.adaptive_max)
+    if ofi.adaptive_threshold {
+        info!(
+            "   ofi_window={}ms adaptive=tail-quantile q_enter/q_exit=99%/95% min={:.1} ratio_enter/exit={:.2}/{:.2} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
+            ofi.window_duration.as_millis(),
+            ofi.adaptive_min,
+            ofi.toxicity_ratio_enter,
+            ofi.toxicity_ratio_exit,
+            ofi.heartbeat_ms,
+            ofi.toxicity_exit_ratio,
+            ofi.min_toxic_ms
+        );
     } else {
-        "off".to_string()
-    };
-    let adaptive_rise_cap_text = if ofi.adaptive_rise_cap_pct > 0.0 {
-        format!("{:.0}%", ofi.adaptive_rise_cap_pct * 100.0)
-    } else {
-        "off".to_string()
-    };
-    info!(
-        "   ofi_window={}ms ofi_thresh={:.1} adaptive={} k={:.2} min/max=[{:.1}, {}] rise_cap={} ratio_enter/exit={:.2}/{:.2} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
-        ofi.window_duration.as_millis(),
-        ofi.toxicity_threshold,
-        ofi.adaptive_threshold,
-        ofi.adaptive_k,
-        ofi.adaptive_min,
-        adaptive_max_text,
-        adaptive_rise_cap_text,
-        ofi.toxicity_ratio_enter,
-        ofi.toxicity_ratio_exit,
-        ofi.heartbeat_ms,
-        ofi.toxicity_exit_ratio,
-        ofi.min_toxic_ms
-    );
+        let adaptive_max_text = if ofi.adaptive_max > 0.0 {
+            format!("{:.1}", ofi.adaptive_max)
+        } else {
+            "off".to_string()
+        };
+        let adaptive_rise_cap_text = if ofi.adaptive_rise_cap_pct > 0.0 {
+            format!("{:.0}%", ofi.adaptive_rise_cap_pct * 100.0)
+        } else {
+            "off".to_string()
+        };
+        info!(
+            "   ofi_window={}ms ofi_thresh={:.1} adaptive={} k={:.2} min/max=[{:.1}, {}] rise_cap={} ratio_enter/exit={:.2}/{:.2} heartbeat={}ms exit_ratio={:.2} min_toxic={}ms",
+            ofi.window_duration.as_millis(),
+            ofi.toxicity_threshold,
+            ofi.adaptive_threshold,
+            ofi.adaptive_k,
+            ofi.adaptive_min,
+            adaptive_max_text,
+            adaptive_rise_cap_text,
+            ofi.toxicity_ratio_enter,
+            ofi.toxicity_ratio_exit,
+            ofi.heartbeat_ms,
+            ofi.toxicity_exit_ratio,
+            ofi.min_toxic_ms
+        );
+    }
 
     if (inv.max_net_diff - coord.max_net_diff).abs() > 1e-6 {
         warn!(
@@ -2007,6 +2020,12 @@ async fn main() -> anyhow::Result<()> {
         .and_then(|s| s.parse::<f64>().ok())
         .filter(|v| *v >= 0.0);
     let min_order_size_auto = min_order_size_env_val.is_none();
+    // Keep the most recent known-good min_order_size across market rotations.
+    // In auto mode, this prevents transient /books failures from dropping back
+    // to a too-small default for the next round.
+    let mut min_order_size_last_good = min_order_size_env_val
+        .filter(|v| *v > 0.0)
+        .unwrap_or_else(|| coord_cfg_base.min_order_size.max(0.0));
     if min_order_size_env_raw.is_some() && min_order_size_env_val.is_none() {
         warn!(
             "⚠️ Invalid PM_MIN_ORDER_SIZE='{}' — will attempt order book auto-detection",
@@ -2432,12 +2451,11 @@ async fn main() -> anyhow::Result<()> {
     // Channel for pre-resolved next markets to eliminate 7-8s rotation latency
     let (preload_tx, mut preload_rx) = mpsc::channel::<(String, anyhow::Result<ResolvedMarket>)>(2);
     let mut preloaded_market: Option<(String, anyhow::Result<ResolvedMarket>)> = None;
+    let mut preloading_slug: Option<String> = None;
     let mut market_cache: HashMap<String, ResolvedMarket> = HashMap::new();
 
     let mut round = 0u64;
     loop {
-        round += 1;
-
         // ── Step 1: Resolve current market ──
         let (slug, _slug_ts, mut expected_end_ts) = if prefix_mode {
             let (s, ts, e_ts) = compute_current_slug(&raw_slug);
@@ -2473,44 +2491,52 @@ async fn main() -> anyhow::Result<()> {
                 // Pre-resolve the NEXT market in the background while sleeping
                 let next_slug_ts = expected_end_ts;
                 let next_slug = format!("{}-{}", raw_slug, next_slug_ts);
-                let p_tx = preload_tx.clone();
-                tokio::spawn(async move {
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs();
-                    let sleep_time = if expected_end_ts > now + 30 {
-                        expected_end_ts - now - 30
-                    } else {
-                        0
-                    };
-                    if sleep_time > 0 {
-                        tokio::time::sleep(Duration::from_secs(sleep_time)).await;
-                    }
-                    info!(
-                        "⏳ Pre-resolving next market in background during skip delay: {}",
+                if preloading_slug.as_deref() != Some(next_slug.as_str()) {
+                    preloading_slug = Some(next_slug.clone());
+                    let p_tx = preload_tx.clone();
+                    tokio::spawn(async move {
+                        let now = SystemTime::now()
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs();
+                        let sleep_time = if expected_end_ts > now + 30 {
+                            expected_end_ts - now - 30
+                        } else {
+                            0
+                        };
+                        if sleep_time > 0 {
+                            tokio::time::sleep(Duration::from_secs(sleep_time)).await;
+                        }
+                        info!(
+                            "⏳ Pre-resolving next market in background during skip delay: {}",
+                            next_slug
+                        );
+                        let res = resolve_market_with_retry(&next_slug).await;
+                        let _ = p_tx.send((next_slug, res)).await;
+                    });
+                } else {
+                    debug!(
+                        "⏳ Skip duplicate pre-resolve spawn during skip-delay: {} already in-flight",
                         next_slug
                     );
-                    let res = resolve_market_with_retry(&next_slug).await;
-                    let _ = p_tx.send((next_slug, res)).await;
-                });
+                }
 
                 sleep(Duration::from_secs(wait_secs)).await;
                 continue;
             }
         }
 
-        info!("═══════════════════════════════════════════════════");
-        info!("  Round #{} — {}", round, slug);
-        info!("═══════════════════════════════════════════════════");
-
         // Drain any incoming preloads
         while let Ok(pre) = preload_rx.try_recv() {
+            if preloading_slug.as_deref() == Some(pre.0.as_str()) {
+                preloading_slug = None;
+            }
             preloaded_market = Some(pre);
         }
 
         let resolved = if let Some((pre_slug, pre_res)) = preloaded_market.take() {
             if pre_slug == slug {
+                preloading_slug = None;
                 info!("⚡ Using pre-resolved market data for {}", slug);
                 match pre_res {
                     Ok(ids) => Ok(ids),
@@ -2523,10 +2549,59 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
             } else {
-                resolve_market_with_retry(&slug).await
+                // Keep unrelated preloaded payload for its intended round.
+                preloaded_market = Some((pre_slug, pre_res));
+                if preloading_slug.as_deref() == Some(slug.as_str()) {
+                    match tokio::time::timeout(Duration::from_millis(700), preload_rx.recv()).await
+                    {
+                        Ok(Some((incoming_slug, incoming_res))) if incoming_slug == slug => {
+                            preloading_slug = None;
+                            incoming_res
+                        }
+                        Ok(Some(other)) => {
+                            if preloading_slug.as_deref() == Some(other.0.as_str()) {
+                                preloading_slug = None;
+                            }
+                            preloaded_market = Some(other);
+                            if preloading_slug.as_deref() == Some(slug.as_str()) {
+                                preloading_slug = None;
+                            }
+                            resolve_market_with_retry(&slug).await
+                        }
+                        _ => {
+                            preloading_slug = None;
+                            resolve_market_with_retry(&slug).await
+                        }
+                    }
+                } else {
+                    resolve_market_with_retry(&slug).await
+                }
             }
         } else {
-            resolve_market_with_retry(&slug).await
+            if preloading_slug.as_deref() == Some(slug.as_str()) {
+                match tokio::time::timeout(Duration::from_millis(700), preload_rx.recv()).await {
+                    Ok(Some((incoming_slug, incoming_res))) if incoming_slug == slug => {
+                        preloading_slug = None;
+                        incoming_res
+                    }
+                    Ok(Some(other)) => {
+                        if preloading_slug.as_deref() == Some(other.0.as_str()) {
+                            preloading_slug = None;
+                        }
+                        preloaded_market = Some(other);
+                        if preloading_slug.as_deref() == Some(slug.as_str()) {
+                            preloading_slug = None;
+                        }
+                        resolve_market_with_retry(&slug).await
+                    }
+                    _ => {
+                        preloading_slug = None;
+                        resolve_market_with_retry(&slug).await
+                    }
+                }
+            } else {
+                resolve_market_with_retry(&slug).await
+            }
         };
         let (market_id, yes_asset_id, no_asset_id, api_end_date) = match resolved {
             Ok(ids) => {
@@ -2547,6 +2622,12 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         };
+
+        // Only count/log a round after we have resolved market ids successfully.
+        round += 1;
+        info!("═══════════════════════════════════════════════════");
+        info!("  Round #{} — {}", round, slug);
+        info!("═══════════════════════════════════════════════════");
 
         // P0 FIX: Apply API verifiable endDate if present
         if let Some(actual_end_ts) = api_end_date {
@@ -2571,6 +2652,13 @@ async fn main() -> anyhow::Result<()> {
         settings.no_asset_id = no_asset_id.clone();
 
         let mut coord_cfg = coord_cfg_base.clone();
+        if min_order_size_auto && min_order_size_last_good > coord_cfg.min_order_size {
+            coord_cfg.min_order_size = min_order_size_last_good;
+            info!(
+                "🧭 Carry forward min_order_size from last good round: {:.2}",
+                coord_cfg.min_order_size
+            );
+        }
         // Opt-1: Pass market expiry timestamp so coordinator can apply A-S time decay.
         coord_cfg.market_end_ts = Some(effective_end_ts);
         let market_interval_secs = detect_interval(&slug);
@@ -2651,11 +2739,13 @@ async fn main() -> anyhow::Result<()> {
                     let prev = coord_cfg.min_order_size;
                     if auto_min > prev {
                         coord_cfg.min_order_size = auto_min;
+                        min_order_size_last_good = auto_min;
                         info!(
                             "🧭 Auto min_order_size from order book: {:.2} (prev {:.2})",
                             auto_min, prev
                         );
                     } else {
+                        min_order_size_last_good = min_order_size_last_good.max(prev);
                         info!(
                             "🧭 Order book min_order_size {:.2} <= configured {:.2} — keeping configured",
                             auto_min, prev
@@ -2663,12 +2753,18 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 Ok(_) => {
-                    warn!("⚠️ Order book reported non-positive min_order_size; keeping configured value");
+                    warn!(
+                        "⚠️ Order book reported non-positive min_order_size; keeping configured value {:.2} (last_good={:.2})",
+                        coord_cfg.min_order_size,
+                        min_order_size_last_good
+                    );
                 }
                 Err(e) => {
                     warn!(
-                        "⚠️ Failed to auto-detect min_order_size from order book: {:?}",
-                        e
+                        "⚠️ Failed to auto-detect min_order_size from order book: {:?} — keeping {:.2} (last_good={:.2})",
+                        e,
+                        coord_cfg.min_order_size,
+                        min_order_size_last_good
                     );
                 }
             }
@@ -2854,7 +2950,14 @@ async fn main() -> anyhow::Result<()> {
 
         // ── Step 3: Run until market expires ──
         // P2 FIX: Use effective_end_ts to avoid overflow in fixed mode
-        let reason = run_market_ws(settings, ofi_md_tx, glft_md_tx, coord_md_tx, effective_end_ts).await;
+        let reason = run_market_ws(
+            settings,
+            ofi_md_tx,
+            glft_md_tx,
+            coord_md_tx,
+            effective_end_ts,
+        )
+        .await;
         info!("🏁 Market ended: {:?}", reason);
         if let MarketEnd::WsDegraded {
             consecutive_failures,
@@ -2990,25 +3093,33 @@ async fn main() -> anyhow::Result<()> {
             let next_slug_ts = expected_end_ts;
             let next_slug = format!("{}-{}", raw_slug, next_slug_ts);
 
-            let p_tx = preload_tx.clone();
-            tokio::spawn(async move {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs();
-                let sleep_time = if expected_end_ts > now + 30 {
-                    expected_end_ts - now - 30
-                } else {
-                    0
-                };
-                if sleep_time > 0 {
-                    tokio::time::sleep(Duration::from_secs(sleep_time)).await;
-                }
-                info!("⏳ Pre-resolving next market in background: {}", next_slug);
+            if preloading_slug.as_deref() != Some(next_slug.as_str()) {
+                preloading_slug = Some(next_slug.clone());
+                let p_tx = preload_tx.clone();
+                tokio::spawn(async move {
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap()
+                        .as_secs();
+                    let sleep_time = if expected_end_ts > now + 30 {
+                        expected_end_ts - now - 30
+                    } else {
+                        0
+                    };
+                    if sleep_time > 0 {
+                        tokio::time::sleep(Duration::from_secs(sleep_time)).await;
+                    }
+                    info!("⏳ Pre-resolving next market in background: {}", next_slug);
 
-                let res = resolve_market_with_retry(&next_slug).await;
-                let _ = p_tx.send((next_slug, res)).await;
-            });
+                    let res = resolve_market_with_retry(&next_slug).await;
+                    let _ = p_tx.send((next_slug, res)).await;
+                });
+            } else {
+                debug!(
+                    "⏳ Skip duplicate pre-resolve spawn: {} already in-flight",
+                    next_slug
+                );
+            }
         }
 
         // Wait using precise rotation wait duration instead of fixed 3s latency

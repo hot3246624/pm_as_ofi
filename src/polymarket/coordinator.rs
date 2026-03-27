@@ -149,7 +149,7 @@ impl Default for CoordinatorConfig {
             glft_xi: 0.10,
             glft_ofi_alpha: 0.30,
             glft_ofi_spread_beta: 1.00,
-            as_time_decay_k: 2.0,     // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
+            as_time_decay_k: 2.0, // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
@@ -524,10 +524,53 @@ struct Stats {
     cancel_stale: u64,
     cancel_inv: u64,
     cancel_reprice: u64,
+    toxic_kill_signals: u64,
+    ofi_heat_events: u64,
+    ofi_toxic_events: u64,
+    ofi_kill_events: u64,
+    toxic_blocked_ticks: u64,
     skipped_debounce: u64,
     skipped_backoff: u64,
     skipped_empty_book: u64,
     skipped_inv_limit: u64,
+    shadow_suppressed_updates: u64,
+    publish_budget_suppressed: u64,
+    forced_realign_count: u64,
+    forced_realign_hard_count: u64,
+    debt_realign_triggers: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotPublishReason {
+    InitialDwell,
+    PriceMove,
+    DriftPrealign,
+    SizeMove,
+    ShadowDwell,
+    UnsafeQuote,
+    ForcedRealign,
+    CrossRejectRecovery,
+}
+
+impl SlotPublishReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::InitialDwell => "initial_dwell",
+            Self::PriceMove => "price_move",
+            Self::DriftPrealign => "drift_prealign",
+            Self::SizeMove => "size_move",
+            Self::ShadowDwell => "shadow_dwell",
+            Self::UnsafeQuote => "unsafe_quote",
+            Self::ForcedRealign => "forced_realign",
+            Self::CrossRejectRecovery => "cross_reject_recovery",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PriceMoveDirection {
+    Up,
+    Down,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -682,6 +725,16 @@ pub struct StrategyCoordinator {
     last_valid_ts_no: Instant,
     slot_targets: [Option<DesiredTarget>; 4],
     slot_last_ts: [Instant; 4],
+    slot_shadow_targets: [Option<DesiredTarget>; 4],
+    slot_shadow_since: [Option<Instant>; 4],
+    slot_last_publish_reason: [Option<SlotPublishReason>; 4],
+    slot_publish_budget: [f64; 4],
+    slot_last_budget_refill: [Instant; 4],
+    slot_realign_debt: [f64; 4],
+    slot_last_debt_update: [Instant; 4],
+    slot_price_move_dir: [Option<PriceMoveDirection>; 4],
+    slot_price_move_streak: [u8; 4],
+    slot_price_move_since: [Option<Instant>; 4],
     yes_target: Option<DesiredTarget>,
     no_target: Option<DesiredTarget>,
     yes_last_ts: Instant,
@@ -692,6 +745,8 @@ pub struct StrategyCoordinator {
     yes_toxic_hold_until: Instant,
     no_toxic_hold_until: Instant,
     /// Last observed toxicity state (edge detection).
+    was_hot_yes: bool,
+    was_hot_no: bool,
     was_toxic_yes: bool,
     was_toxic_no: bool,
     last_metrics_log_ts: Instant,
@@ -755,7 +810,16 @@ impl StrategyCoordinator {
     ) -> Self {
         let (_dead_feedback_tx, dead_feedback_rx) = mpsc::channel(1);
         let (_dead_glft_tx, dead_glft_rx) = watch::channel(GlftSignalSnapshot::default());
-        Self::with_aux_rx(cfg, ofi_rx, inv_rx, md_rx, dead_glft_rx, om_tx, kill_rx, dead_feedback_rx)
+        Self::with_aux_rx(
+            cfg,
+            ofi_rx,
+            inv_rx,
+            md_rx,
+            dead_glft_rx,
+            om_tx,
+            kill_rx,
+            dead_feedback_rx,
+        )
     }
 
     pub fn with_aux_rx(
@@ -782,7 +846,19 @@ impl StrategyCoordinator {
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
             slot_targets: std::array::from_fn(|_| None),
-            slot_last_ts: std::array::from_fn(|_| Instant::now() - std::time::Duration::from_secs(60)),
+            slot_last_ts: std::array::from_fn(|_| {
+                Instant::now() - std::time::Duration::from_secs(60)
+            }),
+            slot_shadow_targets: std::array::from_fn(|_| None),
+            slot_shadow_since: std::array::from_fn(|_| None),
+            slot_last_publish_reason: std::array::from_fn(|_| None),
+            slot_publish_budget: [2.0; 4],
+            slot_last_budget_refill: std::array::from_fn(|_| Instant::now()),
+            slot_realign_debt: [0.0; 4],
+            slot_last_debt_update: std::array::from_fn(|_| Instant::now()),
+            slot_price_move_dir: std::array::from_fn(|_| None),
+            slot_price_move_streak: [0; 4],
+            slot_price_move_since: std::array::from_fn(|_| None),
             yes_target: None,
             no_target: None,
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
@@ -790,6 +866,8 @@ impl StrategyCoordinator {
             market_start: Instant::now(),
             yes_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
             no_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
+            was_hot_yes: false,
+            was_hot_no: false,
             was_toxic_yes: false,
             was_toxic_no: false,
             last_metrics_log_ts,
@@ -837,8 +915,10 @@ impl StrategyCoordinator {
                 biased;
 
                 Some(sig) = self.kill_rx.recv() => {
+                    self.stats.toxic_kill_signals = self.stats.toxic_kill_signals.saturating_add(1);
+                    self.stats.ofi_kill_events = self.stats.ofi_kill_events.saturating_add(1);
                     warn!(
-                        "⚡ DIRECT KILL from OFI | side={:?} ofi={:.1} — immediate re-eval",
+                        "⚡ DIRECT KILL from OFI | reason=adverse_selection side={:?} ofi={:.1} — immediate re-eval",
                         sig.side, sig.ofi_score,
                     );
                     // Re-use the full tick() logic which reads latest OFI watch state.
@@ -886,9 +966,11 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} stale={} inv={} reprice={}) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={} debt={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
+            self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.toxic_blocked_ticks,
+            self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count, self.stats.debt_realign_triggers,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
     }
@@ -952,6 +1034,26 @@ impl StrategyCoordinator {
         }
     }
 
+    pub(super) fn glft_is_tradeable_snapshot(
+        &self,
+        glft: crate::polymarket::glft::GlftSignalSnapshot,
+    ) -> bool {
+        if self.cfg.strategy != StrategyKind::GlftMm {
+            return true;
+        }
+        glft.ready
+            && !glft.stale
+            && matches!(
+                glft.signal_state,
+                crate::polymarket::glft::GlftSignalState::Live
+            )
+            && !glft.hard_basis_unstable
+    }
+
+    pub(super) fn glft_is_tradeable_now(&self) -> bool {
+        self.glft_is_tradeable_snapshot(*self.glft_rx.borrow())
+    }
+
     // ═════════════════════════════════════════════════
     // Main tick
     // ═════════════════════════════════════════════════
@@ -968,8 +1070,23 @@ impl StrategyCoordinator {
 
         let yes_stale = now.duration_since(self.last_valid_ts_yes) > ttl;
         let no_stale = now.duration_since(self.last_valid_ts_no) > ttl;
+        let is_hot_yes = ofi.yes.is_hot;
+        let is_hot_no = ofi.no.is_hot;
         let is_toxic_yes = ofi.yes.is_toxic;
         let is_toxic_no = ofi.no.is_toxic;
+
+        if !self.was_hot_yes && is_hot_yes {
+            self.stats.ofi_heat_events = self.stats.ofi_heat_events.saturating_add(1);
+        }
+        if !self.was_hot_no && is_hot_no {
+            self.stats.ofi_heat_events = self.stats.ofi_heat_events.saturating_add(1);
+        }
+        if !self.was_toxic_yes && is_toxic_yes {
+            self.stats.ofi_toxic_events = self.stats.ofi_toxic_events.saturating_add(1);
+        }
+        if !self.was_toxic_no && is_toxic_no {
+            self.stats.ofi_toxic_events = self.stats.ofi_toxic_events.saturating_add(1);
+        }
 
         // Toxicity recovery hold-down: avoid immediate re-entry around threshold boundary.
         let hold = Duration::from_millis(self.cfg.toxic_recovery_hold_ms);
@@ -979,6 +1096,8 @@ impl StrategyCoordinator {
         if self.was_toxic_no && !is_toxic_no {
             self.no_toxic_hold_until = now + hold;
         }
+        self.was_hot_yes = is_hot_yes;
+        self.was_hot_no = is_hot_no;
         self.was_toxic_yes = is_toxic_yes;
         self.was_toxic_no = is_toxic_no;
 
@@ -986,17 +1105,21 @@ impl StrategyCoordinator {
         let no_toxic_hold = now < self.no_toxic_hold_until;
         let yes_toxic_blocked = is_toxic_yes || yes_toxic_hold;
         let no_toxic_blocked = is_toxic_no || no_toxic_hold;
+        if yes_toxic_blocked {
+            self.stats.toxic_blocked_ticks = self.stats.toxic_blocked_ticks.saturating_add(1);
+        }
+        if no_toxic_blocked {
+            self.stats.toxic_blocked_ticks = self.stats.toxic_blocked_ticks.saturating_add(1);
+        }
 
         // Priority 1: 30s Staleness Guard (Critical Shutdown)
         if self.is_book_stale() {
             if self.yes_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing YES");
-                self.stats.cancel_stale += 1;
                 self.clear_target(Side::Yes, CancelReason::StaleData).await;
             }
             if self.no_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing NO");
-                self.stats.cancel_stale += 1;
                 self.clear_target(Side::No, CancelReason::StaleData).await;
             }
             return;
@@ -1007,19 +1130,16 @@ impl StrategyCoordinator {
             for slot in OrderSlot::side_slots(Side::Yes) {
                 if self.slot_target_active(slot) {
                     if yes_toxic_blocked {
-                        if self.cfg.strategy.execution_mode() == StrategyExecutionMode::SlotMarketMaking {
-                            if self
-                                .slot_blocked_by_ofi(slot, &ofi)
-                            {
-                                self.stats.cancel_toxic += 1;
+                        if self.cfg.strategy.execution_mode()
+                            == StrategyExecutionMode::SlotMarketMaking
+                        {
+                            if self.slot_blocked_by_ofi(slot, &ofi) {
                                 self.clear_slot_target(slot, CancelReason::ToxicFlow).await;
                             }
                         } else if self.should_clear_on_toxic(Side::Yes) {
-                            self.stats.cancel_toxic += 1;
                             self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
                         }
                     } else {
-                        self.stats.cancel_stale += 1;
                         self.clear_slot_target(slot, CancelReason::StaleData).await;
                     }
                 }
@@ -1029,19 +1149,16 @@ impl StrategyCoordinator {
             for slot in OrderSlot::side_slots(Side::No) {
                 if self.slot_target_active(slot) {
                     if no_toxic_blocked {
-                        if self.cfg.strategy.execution_mode() == StrategyExecutionMode::SlotMarketMaking {
-                            if self
-                                .slot_blocked_by_ofi(slot, &ofi)
-                            {
-                                self.stats.cancel_toxic += 1;
+                        if self.cfg.strategy.execution_mode()
+                            == StrategyExecutionMode::SlotMarketMaking
+                        {
+                            if self.slot_blocked_by_ofi(slot, &ofi) {
                                 self.clear_slot_target(slot, CancelReason::ToxicFlow).await;
                             }
                         } else if self.should_clear_on_toxic(Side::No) {
-                            self.stats.cancel_toxic += 1;
                             self.clear_target(Side::No, CancelReason::ToxicFlow).await;
                         }
                     } else {
-                        self.stats.cancel_stale += 1;
                         self.clear_slot_target(slot, CancelReason::StaleData).await;
                     }
                 }
@@ -1066,6 +1183,7 @@ impl StrategyCoordinator {
             inv: &inv,
             book: &ub,
             metrics: &metrics,
+            ofi: Some(&ofi),
             glft: glft_snapshot.as_ref(),
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
@@ -1108,12 +1226,8 @@ impl StrategyCoordinator {
             yes_stale,
             yes_toxic_blocked,
         );
-        let no_allowed = self.flow_risk_allows_intent(
-            inv,
-            quotes.buy_for(Side::No),
-            no_stale,
-            no_toxic_blocked,
-        );
+        let no_allowed =
+            self.flow_risk_allows_intent(inv, quotes.buy_for(Side::No), no_stale, no_toxic_blocked);
 
         // NOTE: Stats (cancel_toxic/cancel_stale) are counted in tick() Priority 2,
         // not here, to prevent double-counting when both paths execute.
@@ -1198,6 +1312,13 @@ impl StrategyCoordinator {
         }
     }
 
+    pub(super) fn recent_cross_reject(&self, side: Side, within: Duration) -> bool {
+        self.maker_friction(side)
+            .last_cross_reject_ts
+            .map(|ts| ts.elapsed() <= within)
+            .unwrap_or(false)
+    }
+
     fn maker_friction_mut(&mut self, side: Side) -> &mut MakerFriction {
         match side {
             Side::Yes => &mut self.yes_maker_friction,
@@ -1220,6 +1341,9 @@ impl StrategyCoordinator {
                 friction.extra_safety_ticks -= 1;
                 if friction.extra_safety_ticks == 0 {
                     friction.last_cross_reject_ts = None;
+                } else {
+                    // Decay at most one tick per 3s window.
+                    friction.last_cross_reject_ts = Some(now);
                 }
             }
         }

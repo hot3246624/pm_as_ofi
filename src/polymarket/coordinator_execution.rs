@@ -309,9 +309,7 @@ impl StrategyCoordinator {
             return;
         }
 
-        let target_active = self.side_target_active(side);
-        if intent.is_some() && !allow_provide && target_active {
-            self.stats.cancel_inv += 1;
+        if intent.is_some() && !allow_provide {
             self.stats.skipped_inv_limit += 1;
         }
 
@@ -326,10 +324,6 @@ impl StrategyCoordinator {
         self.apply_provide_side_action(inv, ub, side, action).await;
     }
 
-    pub(super) fn side_target_active(&self, side: Side) -> bool {
-        self.slot_target_active(OrderSlot::new(side, TradeDirection::Buy))
-    }
-
     pub(super) async fn execute_slot_market_making(
         &mut self,
         inv: &InventoryState,
@@ -340,6 +334,18 @@ impl StrategyCoordinator {
         yes_toxic_blocked: bool,
         no_toxic_blocked: bool,
     ) {
+        if self.cfg.strategy == StrategyKind::GlftMm {
+            let glft = *self.glft_rx.borrow();
+            if !self.glft_is_tradeable_snapshot(glft) {
+                for slot in OrderSlot::ALL {
+                    if self.slot_target_active(slot) {
+                        self.clear_slot_target(slot, CancelReason::StaleData).await;
+                    }
+                }
+                return;
+            }
+        }
+
         let phase = self.endgame_phase();
         let ofi = *self.ofi_rx.borrow();
         let remaining_secs = self.seconds_to_market_end().unwrap_or(0);
@@ -357,6 +363,11 @@ impl StrategyCoordinator {
 
             let allowed = self.slot_quote_allowed(inv, slot, intent, stale, toxic, phase, &ofi);
             if !allowed {
+                let reject_reason =
+                    self.slot_reject_reason(inv, slot, intent, stale, toxic, phase, &ofi);
+                if intent.is_some() && matches!(reject_reason, CancelReason::InventoryLimit) {
+                    self.stats.skipped_inv_limit = self.stats.skipped_inv_limit.saturating_add(1);
+                }
                 if self.slot_target_active(slot) {
                     // Keep-if-safe must be evaluated against the latest usable book to avoid
                     // cancel/place thrash when strategy output jitters around slot boundaries.
@@ -367,12 +378,10 @@ impl StrategyCoordinator {
                         continue;
                     }
 
-                    let reason =
-                        self.slot_reject_reason(inv, slot, intent, stale, toxic, phase, &ofi);
                     debug!(
                         "🧭 slot gate clear {} reason={:?} phase={:?} remaining={}s stale={} toxic={} intent_present={} net_diff={:.2}",
                         slot.as_str(),
-                        reason,
+                        reject_reason,
                         phase,
                         remaining_secs,
                         stale,
@@ -380,7 +389,7 @@ impl StrategyCoordinator {
                         intent.is_some(),
                         inv.net_diff,
                     );
-                    self.clear_slot_target(slot, reason).await;
+                    self.clear_slot_target(slot, reject_reason).await;
                 }
                 continue;
             }
@@ -534,16 +543,7 @@ impl StrategyCoordinator {
             Side::Yes => ofi.yes,
             Side::No => ofi.no,
         };
-        if !side_ofi.is_toxic {
-            return false;
-        }
-        if side_ofi.ofi_score > 0.0 {
-            slot.direction == TradeDirection::Sell
-        } else if side_ofi.ofi_score < 0.0 {
-            slot.direction == TradeDirection::Buy
-        } else {
-            true
-        }
+        side_ofi.blocks(slot.direction)
     }
 
     pub(super) fn decide_provide_side_action(

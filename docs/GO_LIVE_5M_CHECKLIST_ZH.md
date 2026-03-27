@@ -44,6 +44,8 @@ PM_OFI_EXIT_RATIO=0.85
 PM_OFI_MIN_TOXIC_MS=800
 PM_TOXIC_RECOVERY_HOLD_MS=1200
 
+说明：当前 OFI 主判定是 regime-normalized 模型（baseline=`Q50`，enter/exit=`Q99/Q95` 映射）；`PM_OFI_ADAPTIVE_MAX` 作为 baseline 护栏保留，并会输出 `saturated` 可观测日志。
+
 PM_ENDGAME_SOFT_CLOSE_SECS=60
 PM_ENDGAME_HARD_CLOSE_SECS=30
 PM_ENDGAME_FREEZE_SECS=2
@@ -88,15 +90,16 @@ PM_AUTO_CLAIM_WAIT_CONFIRM=false
 
 必须看到：
 - Binance 外锚连接日志
-- `GLFT signal engine active`
+- `GLFT cold-start guard`（含 source / basis_raw / basis_clamped / signal_state）
 - `fit_quality=Warm/Ready` 的正常推进
 - 没有持续 cancel/place 风暴
-- OFI threshold 不再无限飘升
+- OFI 日志包含 `raw_ofi / baseline / normalized_score / saturated`
 - 市场轮转后仍能继续初始化 GLFT
 
 重点看：
 - `reprice` 是否显著低于旧版本
 - `crosses book` 是否不再连发
+- `raw_target -> normalized_target -> action_price` 是否可解释（避免低价旧单长期滞留）
 - `No User WS — net_diff stays 0` 仅出现在 dry-run
 
 ## 4. 首轮实盘验收

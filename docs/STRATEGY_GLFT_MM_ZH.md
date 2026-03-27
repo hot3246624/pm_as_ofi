@@ -30,17 +30,27 @@
 
 来自 `GlftSignalEngine` / `IntensityEstimator`：
 - `basis_prob`
-- `sigma_prob`
+- `basis_raw`
+- `basis_clamped`
+- `signal_state`（`ColdRamp` / `Live`）
+- `sigma_prob`（由 Polymarket 概率中价变化在线估计，不再直接用 Binance log-return 方差）
 - `tau_norm`
 - `fit_a`
 - `fit_k`
 - `fit_quality`
+- `fit_source`（`bootstrap / warm-start / last_good_fit`）
 
 拟合节奏：
 - `10s refit`
 - `30s window`
 
 只有 `Ready` 拟合才会覆盖 `last_good_fit`。
+
+冷启动完整性（Signal Integrity）：
+- 启动后前 `8s` 进入 `ColdRamp`
+- warm-start 读到的 `basis` 先限幅到 `±0.08`
+- 仅在 `fit=Ready` 且稳定窗口满足时写回快照
+- `ColdRamp` 期间 `r_yes` 还会被限制在 `synthetic_mid_yes ± 15*tick`，避免冷启动污染直接打出极端深挂单
 
 ### 2.3 本地 OFI
 
@@ -110,6 +120,12 @@
 
 没有旧的 directional hedge overlay。
 
+这意味着它允许：
+- 先买到某一侧
+- 再在同侧挂 maker 卖单退出
+
+所以它不是 pair-cost-first 策略，而是允许同侧 buy→sell 的 maker 回转。
+
 ### 4.2 净仓门
 
 硬约束仍是：
@@ -128,6 +144,33 @@
 这就是为什么 `PM_PAIR_TARGET` 仍然有效：
 - 它不再代表旧 hedge ceiling
 - 但仍影响共享 outcome-floor
+
+### 4.4 刚成交仓位的卖出 warmup
+
+当前实现里，某侧 `BUY` 刚成交后：
+- OMS 会给该侧 `SELL` 一个固定 `1500ms` warmup
+- warmup 期间保留 `SELL` 目标，但不会立刻发单
+
+目的不是调策略，而是规避实盘里“本地已记账、远端暂时仍不可卖”的短暂时序差。
+
+### 4.5 GLFT drift guard
+
+`glft_mm` 的保留策略是 `Safe && Aligned` 双条件：
+- `Safe`：post-only / outcome-floor / 风险门禁仍满足
+- `Aligned`：与最新目标价偏离不超过漂移上限
+
+漂移上限分层：
+- `ColdRamp`：`1*tick`
+- `Live`：`2*tick`
+
+并带 age 门控：
+- 若旧单存活超过短宽限（当前固定 `1500ms`）
+- 且与新目标偏离超过 `1*tick`
+- 即使仍“安全”，也不再允许长期滞留
+
+目的：
+- 避免像 `YES@0.17` 这种旧低价单被整轮“安全地错误保留”
+- 同时继续保留 `±1 tick` 抖动下的 anti-churn
 
 ## 5. 尾盘真实行为
 
@@ -195,6 +238,20 @@
 - `PM_OFI_MIN_TOXIC_MS`
 - `PM_TOXIC_RECOVERY_HOLD_MS`
 
+当前 OFI 的真实语义是：
+- 连续信号层：持续进入 `alpha_prob` 和 `spread_mult`
+- kill-switch 层：当前是 regime-normalized kill（不是固定绝对阈值）
+
+也就是说，它会跟着高流量 regime 往上漂。
+当前核心触发基于：
+- `baseline = rolling Q50(|OFI|)`
+- `normalized_score = |OFI| / baseline`
+- 进入/恢复由 rolling `Q99/Q95` 映射出的 score 门限 + ratio gate 共同决定
+
+`PM_OFI_ADAPTIVE_MIN/MAX` 现在是护栏：
+- `adaptive_min` 防止冷清期过敏
+- `adaptive_max` 限制 baseline 过度上漂（并输出 saturated 状态日志）
+
 ### 6.5 共享运营参数
 
 - `PM_STALE_TTL_MS`
@@ -239,13 +296,14 @@
 下面是当前 `glft_mm` 的真实决策顺序（正常盘中）：
 
 1. 拉取最新信号快照：`anchor_prob / basis_prob / sigma_prob / fit / alpha_flow / tau_norm`
-2. 若 Binance stale：策略静默并清空四槽位
-3. 用 GLFT 公式计算 `r_yes/r_no` 与 `half_spread`
-4. 生成四个槽位候选：`YesBuy / YesSell / NoBuy / NoSell`
-5. 统一执行治理：tick 对齐 + post-only 安全垫 + governor
-6. 统一风控门禁：`max_net_diff`、outcome floor（Buy）、OFI gate、stale gate
-7. 进入 OMS：仅对需要变更的槽位发 `SetTarget/ClearTarget`，其余走 keep-if-safe 保留
-8. Executor 执行挂撤改并回传结果，驱动下一轮状态
+2. 若处于 `ColdRamp`：先做 basis 限幅与中枢走廊约束
+3. 若 Binance stale：策略静默并清空四槽位
+4. 用 GLFT 公式计算 `r_yes/r_no` 与 `half_spread`
+5. 生成四个槽位候选：`YesBuy / YesSell / NoBuy / NoSell`
+6. 统一执行治理：`raw_target -> normalized_target -> action_price`（方向化量化 + governor）
+7. 统一风控门禁：`max_net_diff`、outcome floor（Buy）、OFI gate、stale gate
+8. 进入 OMS：仅对需要变更的槽位发 `SetTarget/ClearTarget`，其余走 `Safe && Aligned` 保留
+9. Executor 执行挂撤改并回传结果，驱动下一轮状态
 
 ```mermaid
 flowchart TD
@@ -388,15 +446,17 @@ flowchart TD
 
 看 `glft_mm`，建议重点看这几类日志：
 
-1. `GLFT signal engine active`
-   这说明外锚与慢变量链路已经启动。
+1. `GLFT cold-start guard`
+   这说明本轮用了哪种启动来源（bootstrap/warm-start/last-good-fit），以及 basis 原始值、限幅值、当前 `signal_state`。
 2. `fit_quality=Warm/Ready`
    这说明 `(A, k)` 拟合正在从 bootstrap 进入真实拟合。
 3. `DIRECT KILL from OFI`
    这说明 OFI kill-switch 在 slot/side 层面介入。
-4. `placed/cancel/reprice`
+4. `raw_target / normalized_target / action_price`
+   这说明当前单子是“模型目标、量化目标、实际动作价”中的哪一步导致变化。
+5. `placed/cancel/reprice`
    这说明执行层是否稳定，是否仍存在撤改单风暴。
-5. Binance stale 相关日志
+6. Binance stale 相关日志
    这说明策略是否在外锚失效时正确静默。
 
 如果你要问“这轮到底是不是按 `glft_mm` 在跑”，最简单的判断不是看是否成交，而是看：

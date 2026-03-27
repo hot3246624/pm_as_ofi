@@ -156,7 +156,12 @@ pub struct SideOfi {
     pub ofi_score: f64,
     pub buy_volume: f64,
     pub sell_volume: f64,
+    pub heat_score: f64,
+    pub is_hot: bool,
     pub is_toxic: bool,
+    pub toxic_buy: bool,
+    pub toxic_sell: bool,
+    pub saturated: bool,
 }
 
 impl Default for SideOfi {
@@ -165,7 +170,21 @@ impl Default for SideOfi {
             ofi_score: 0.0,
             buy_volume: 0.0,
             sell_volume: 0.0,
+            heat_score: 0.0,
+            is_hot: false,
             is_toxic: false,
+            toxic_buy: false,
+            toxic_sell: false,
+            saturated: false,
+        }
+    }
+}
+
+impl SideOfi {
+    pub fn blocks(self, direction: TradeDirection) -> bool {
+        match direction {
+            TradeDirection::Buy => self.toxic_buy,
+            TradeDirection::Sell => self.toxic_sell,
         }
     }
 }
@@ -175,6 +194,7 @@ impl Default for SideOfi {
 pub struct OfiSnapshot {
     pub yes: SideOfi,
     pub no: SideOfi,
+    pub reference_mid_yes: f64,
     pub ts: Instant,
 }
 
@@ -183,6 +203,7 @@ impl Default for OfiSnapshot {
         Self {
             yes: SideOfi::default(),
             no: SideOfi::default(),
+            reference_mid_yes: 0.5,
             ts: Instant::now(),
         }
     }
@@ -358,10 +379,7 @@ pub enum OrderResult {
         target: DesiredTarget,
     },
     /// Order placement failed — Coordinator should reset the slot.
-    OrderFailed {
-        slot: OrderSlot,
-        cooldown_ms: u64,
-    },
+    OrderFailed { slot: OrderSlot, cooldown_ms: u64 },
     /// Order fully filled — Coordinator should release the slot for new orders.
     OrderFilled { slot: OrderSlot },
     /// One-shot taker hedge finished submission path (accepted by venue).
@@ -389,6 +407,8 @@ pub enum ExecutionFeedback {
 pub enum RejectKind {
     RateLimit,
     BalanceOrAllowance,
+    PositionUnavailableLag,
+    CrossBookTransient,
     Validation,
     Other,
 }

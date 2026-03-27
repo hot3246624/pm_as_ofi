@@ -1,4 +1,7 @@
 use super::*;
+use crate::polymarket::glft::{
+    DriftMode, FitQuality, GlftFitStatus, GlftSignalState, WarmStartStatus,
+};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -54,6 +57,41 @@ fn make(
     )
 }
 
+fn make_with_glft(
+    c: CoordinatorConfig,
+) -> (
+    watch::Sender<OfiSnapshot>,
+    watch::Sender<InventoryState>,
+    watch::Sender<MarketDataMsg>,
+    watch::Sender<GlftSignalSnapshot>,
+    mpsc::Sender<KillSwitchSignal>,
+    mpsc::Receiver<OrderManagerCmd>,
+    StrategyCoordinator,
+) {
+    let (o, or) = watch::channel(OfiSnapshot::default());
+    let (i, ir) = watch::channel(InventoryState::default());
+    let (m, mr) = watch::channel(MarketDataMsg::BookTick {
+        yes_bid: 0.0,
+        yes_ask: 0.0,
+        no_bid: 0.0,
+        no_ask: 0.0,
+        ts: Instant::now(),
+    });
+    let (g, gr) = watch::channel(GlftSignalSnapshot::default());
+    let (e, er) = mpsc::channel(16);
+    let (k, kr) = mpsc::channel(16);
+    let (_f, fr) = mpsc::channel(16);
+    (
+        o,
+        i,
+        m,
+        g,
+        k,
+        er,
+        StrategyCoordinator::with_aux_rx(c, or, ir, mr, gr, e, kr, fr),
+    )
+}
+
 fn bt(yb: f64, ya: f64, nb: f64, na: f64) -> MarketDataMsg {
     MarketDataMsg::BookTick {
         yes_bid: yb,
@@ -82,6 +120,7 @@ fn phase_builder_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
             inv: &inv,
             book: &book,
             metrics: &metrics,
+            ofi: None,
             glft: None,
         },
     )
@@ -96,6 +135,7 @@ fn gabagool_grid_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
             inv: &inv,
             book: &book,
             metrics: &metrics,
+            ofi: None,
             glft: None,
         },
     )
@@ -114,6 +154,7 @@ fn gabagool_corridor_quotes(
             inv: &inv,
             book: &book,
             metrics: &metrics,
+            ofi: None,
             glft: None,
         },
     )
@@ -137,6 +178,47 @@ fn test_safe_price_clamps_over_one() {
 fn test_safe_price_normal() {
     let (_, _, _, _, _, c) = make(cfg());
     assert!((c.safe_price(0.45) - 0.45).abs() < 1e-9);
+}
+
+#[test]
+fn test_quantize_toward_target_advances_on_float_boundary() {
+    let (_, _, _, _, _, c) = make(cfg());
+    let current = 0.09;
+    let target = 0.09 + 0.01; // can become 0.099999999...
+    let next = c.quantize_toward_target(current, target);
+    assert!(
+        next >= 0.10 - 1e-9,
+        "expected monotonic advance to next tick, got {:.5}",
+        next
+    );
+}
+
+#[test]
+fn test_glft_governor_step_ticks_scales_with_gap() {
+    let (_, _, _, _, _, c) = make(cfg());
+    assert!((c.glft_governor_step_ticks(1.0) - 1.0).abs() < 1e-9);
+    assert!((c.glft_governor_step_ticks(3.0) - 2.0).abs() < 1e-9);
+    assert!((c.glft_governor_step_ticks(6.0) - 3.0).abs() < 1e-9);
+    assert!((c.glft_governor_step_ticks(12.0) - 4.0).abs() < 1e-9);
+}
+
+#[test]
+fn test_glft_governed_price_moves_faster_without_overshoot() {
+    let (_, _, _, _, _, c) = make(cfg());
+    let up = c.glft_governed_price(0.20, 0.60, 4.0);
+    assert!((up - 0.24).abs() < 1e-9, "unexpected up-step: {up:.5}");
+
+    let up_small = c.glft_governed_price(0.24, 0.25, 4.0);
+    assert!(
+        (up_small - 0.25).abs() < 1e-9,
+        "overshot small up target: {up_small:.5}"
+    );
+
+    let down = c.glft_governed_price(0.40, 0.10, 3.0);
+    assert!(
+        (down - 0.37).abs() < 1e-9,
+        "unexpected down-step: {down:.5}"
+    );
 }
 
 // ── Aggressive pricing ──
@@ -170,21 +252,109 @@ fn test_cross_book_feedback_increases_side_specific_margin() {
 #[test]
 fn test_cross_book_feedback_caps_and_decays() {
     let (_, _, _, _, _, mut c) = make(cfg());
+    let t0 = Instant::now();
     for _ in 0..5 {
         c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
             slot: OrderSlot::NO_BUY,
-            ts: Instant::now(),
+            ts: t0,
         });
     }
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 3);
 
-    c.no_maker_friction.last_cross_reject_ts = Some(Instant::now() - Duration::from_secs(4));
-    c.decay_maker_friction(Instant::now());
+    c.no_maker_friction.last_cross_reject_ts = Some(t0);
+    c.decay_maker_friction(t0 + Duration::from_secs(4));
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 2);
-    c.decay_maker_friction(Instant::now());
+    c.decay_maker_friction(t0 + Duration::from_secs(8));
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 1);
-    c.decay_maker_friction(Instant::now());
+    c.decay_maker_friction(t0 + Duration::from_secs(12));
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 0);
+}
+
+#[test]
+fn test_recent_cross_reject_disables_glft_keep_band() {
+    let (_, _, _, _, _, mut c) = make(with_strategy(cfg(), StrategyKind::GlftMm));
+    let slot = OrderSlot::NO_BUY;
+    let now = Instant::now();
+    let target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.46,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    c.slot_targets[slot.index()] = Some(target.clone());
+    c.no_target = Some(target);
+    c.slot_last_ts[slot.index()] = now - Duration::from_secs(3);
+    c.no_last_ts = now - Duration::from_secs(3);
+    c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed { slot, ts: now });
+
+    let inv = InventoryState::default();
+    assert!(!c.keep_existing_maker_if_safe(
+        &inv,
+        Side::No,
+        TradeDirection::Buy,
+        0.45,
+        5.0,
+        0.45,
+        0.44,
+        0.47,
+        BidReason::Provide,
+    ));
+}
+
+#[test]
+fn test_glft_keep_alignment_uses_cold_vs_live_drift_caps() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, glft_tx, _k, _er, mut c) = make_with_glft(config);
+
+    let slot = OrderSlot::YES_BUY;
+    let now = Instant::now();
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.17,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    c.slot_targets[slot.index()] = Some(target.clone());
+    c.yes_target = Some(target);
+    c.slot_last_ts[slot.index()] = now - Duration::from_secs(2);
+    c.yes_last_ts = now - Duration::from_secs(2);
+
+    let inv = InventoryState::default();
+    // Pre-live assimilation: 1 tick drift cap => 0.17 -> desired 0.19 should not keep.
+    assert!(!c.keep_existing_maker_if_safe(
+        &inv,
+        Side::Yes,
+        TradeDirection::Buy,
+        0.19,
+        5.0,
+        0.19,
+        0.18,
+        0.30,
+        BidReason::Provide,
+    ));
+
+    let mut live = GlftSignalSnapshot::default();
+    live.signal_state = crate::polymarket::glft::GlftSignalState::Live;
+    live.ready = true;
+    let _ = glft_tx.send(live);
+    c.slot_last_ts[slot.index()] = Instant::now();
+    c.yes_last_ts = Instant::now();
+
+    // Live: 2 tick drift cap => same order is still aligned and can be kept.
+    assert!(c.keep_existing_maker_if_safe(
+        &inv,
+        Side::Yes,
+        TradeDirection::Buy,
+        0.19,
+        5.0,
+        0.19,
+        0.18,
+        0.30,
+        BidReason::Provide,
+    ));
 }
 
 #[test]
@@ -403,6 +573,606 @@ async fn test_fast_plus_minus_one_tick_oscillation_keeps_existing_order() {
     assert!(timeout(Duration::from_millis(20), er.recv()).await.is_err());
 }
 
+#[tokio::test]
+async fn test_glft_buy_drift_guard_reprices_stale_low_bid() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+    coord.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.17,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+
+    let ub = book(0.18, 0.30, 0.69, 0.72);
+    let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
+    coord
+        .apply_provide_side_action(
+            &InventoryState::default(),
+            &ub,
+            Side::Yes,
+            ProvideSideAction::Place {
+                intent: StrategyIntent {
+                    side: Side::Yes,
+                    direction: TradeDirection::Buy,
+                    price: 0.21,
+                    size: 5.0,
+                    reason: BidReason::Provide,
+                },
+            },
+        )
+        .await;
+
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.side, Side::Yes);
+            assert!((target.price - 0.18).abs() <= 0.03);
+        }
+        other => panic!("expected SetTarget after GLFT drift guard, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, _m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+
+    let target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(target.clone());
+    coord.slot_last_ts[OrderSlot::NO_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_target = Some(target);
+    coord.slot_publish_budget[OrderSlot::NO_BUY.index()] = 0.0;
+    coord.slot_last_budget_refill[OrderSlot::NO_BUY.index()] = Instant::now();
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.50, 6.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "budget exhausted should suppress non-emergency reprice"
+    );
+    assert_eq!(coord.stats.publish_budget_suppressed, 1);
+}
+
+#[tokio::test]
+async fn test_glft_hard_forced_realign_bypasses_budget() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.48, 0.49, 0.51, 0.52));
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        trusted_mid: 0.55,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.20,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(target);
+    coord.slot_publish_budget[slot.index()] = 0.0;
+    coord.slot_last_budget_refill[slot.index()] = Instant::now();
+
+    coord
+        .slot_place_or_reprice(slot, 0.52, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.side, Side::Yes);
+            assert!(target.price > 0.20);
+        }
+        other => panic!(
+            "hard safety forced-realign should bypass budget, got {:?}",
+            other
+        ),
+    }
+    assert_eq!(coord.stats.forced_realign_count, 1);
+    assert_eq!(coord.stats.forced_realign_hard_count, 1);
+    assert_eq!(coord.stats.debt_realign_triggers, 0);
+}
+
+#[tokio::test]
+async fn test_glft_debt_forced_realign_is_budget_governed() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        trusted_mid: 0.50,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(target);
+    coord.slot_publish_budget[slot.index()] = 0.0;
+    coord.slot_last_budget_refill[slot.index()] = Instant::now();
+    coord.slot_realign_debt[slot.index()] = 20.0;
+    coord.slot_last_debt_update[slot.index()] = Instant::now();
+
+    let t0 = Instant::now() - Duration::from_secs(2);
+    assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
+    assert!(!coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(300),
+    ));
+    assert!(coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(900),
+    ));
+
+    coord
+        .slot_place_or_reprice(slot, 0.52, 5.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "budget exhausted should suppress debt-driven forced realign"
+    );
+    assert_eq!(coord.stats.publish_budget_suppressed, 1);
+}
+
+#[tokio::test]
+async fn test_glft_debt_forced_realign_tracks_debt_counter_when_published() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        trusted_mid: 0.50,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(target);
+    coord.slot_realign_debt[slot.index()] = 20.0;
+    coord.slot_last_debt_update[slot.index()] = Instant::now();
+
+    let t0 = Instant::now() - Duration::from_secs(2);
+    assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
+    assert!(!coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(300),
+    ));
+    assert!(coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(900),
+    ));
+
+    coord
+        .slot_place_or_reprice(slot, 0.52, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.side, Side::Yes);
+            assert!(target.price > 0.45);
+        }
+        other => panic!(
+            "expected debt-driven forced realign publish, got {:?}",
+            other
+        ),
+    }
+    assert_eq!(coord.stats.forced_realign_count, 1);
+    assert_eq!(coord.stats.forced_realign_hard_count, 0);
+    assert_eq!(coord.stats.debt_realign_triggers, 1);
+}
+
+#[test]
+fn test_glft_realign_debt_triggers_and_resets() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_, _, _, _, _, _, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let now = Instant::now();
+    coord.slot_last_debt_update[slot.index()] = now - Duration::from_secs(1);
+
+    let debt = coord.update_slot_realign_debt(slot, 14.0, 9.0, Some(DriftMode::Frozen), 2.0, now);
+    assert!(
+        StrategyCoordinator::glft_realign_debt_trigger(debt, Some(DriftMode::Frozen), 2.0),
+        "persistent misalignment should accumulate enough debt to trigger realign"
+    );
+
+    coord.reset_slot_realign_debt(slot);
+    assert!(coord.slot_realign_debt[slot.index()] <= 1e-9);
+}
+
+#[tokio::test]
+async fn test_glft_not_ready_clears_active_slots_before_execution() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+
+    let live = GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    };
+    let _ = g.send(live);
+
+    let yes_target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    let no_target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.54,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(yes_target.clone());
+    coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(no_target.clone());
+    coord.slot_last_ts[OrderSlot::YES_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord.slot_last_ts[OrderSlot::NO_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord.yes_target = Some(yes_target);
+    coord.no_target = Some(no_target);
+
+    let mut not_ready = live;
+    not_ready.signal_state = GlftSignalState::Assimilating;
+    not_ready.fit_status = GlftFitStatus::Bootstrap;
+    not_ready.ready = false;
+    not_ready.stale = true;
+    let _ = g.send(not_ready);
+
+    coord
+        .execute_slot_market_making(
+            &InventoryState::default(),
+            &book(0.45, 0.46, 0.54, 0.55),
+            StrategyQuotes::default(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    let mut cleared_yes = false;
+    let mut cleared_no = false;
+    for _ in 0..2 {
+        match timeout(Duration::from_millis(100), er.recv()).await {
+            Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+                assert_eq!(reason, CancelReason::StaleData);
+                if slot == OrderSlot::YES_BUY {
+                    cleared_yes = true;
+                }
+                if slot == OrderSlot::NO_BUY {
+                    cleared_no = true;
+                }
+            }
+            other => panic!("expected stale ClearTarget, got {:?}", other),
+        }
+    }
+    assert!(
+        cleared_yes && cleared_no,
+        "both buy slots should be cleared"
+    );
+    assert!(coord.slot_target(OrderSlot::YES_BUY).is_none());
+    assert!(coord.slot_target(OrderSlot::NO_BUY).is_none());
+}
+
+#[tokio::test]
+async fn test_glft_paused_clears_active_slots_before_execution() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+
+    let paused = GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        drift_mode: DriftMode::Paused,
+        basis_drift_ticks: 12.5,
+        hard_basis_unstable: true,
+        ..GlftSignalSnapshot::default()
+    };
+    let _ = g.send(paused);
+
+    let yes_target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    let no_target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.54,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(yes_target.clone());
+    coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(no_target.clone());
+    coord.slot_last_ts[OrderSlot::YES_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord.slot_last_ts[OrderSlot::NO_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord.yes_target = Some(yes_target);
+    coord.no_target = Some(no_target);
+
+    coord
+        .execute_slot_market_making(
+            &InventoryState::default(),
+            &book(0.45, 0.46, 0.54, 0.55),
+            StrategyQuotes::default(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    let mut cleared_yes = false;
+    let mut cleared_no = false;
+    for _ in 0..2 {
+        match timeout(Duration::from_millis(100), er.recv()).await {
+            Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+                assert_eq!(reason, CancelReason::StaleData);
+                if slot == OrderSlot::YES_BUY {
+                    cleared_yes = true;
+                }
+                if slot == OrderSlot::NO_BUY {
+                    cleared_no = true;
+                }
+            }
+            other => panic!("expected stale ClearTarget, got {:?}", other),
+        }
+    }
+    assert!(
+        cleared_yes && cleared_no,
+        "both buy slots should be cleared"
+    );
+    assert!(coord.slot_target(OrderSlot::YES_BUY).is_none());
+    assert!(coord.slot_target(OrderSlot::NO_BUY).is_none());
+}
+
+#[tokio::test]
+async fn test_glft_high_drift_blocks_new_slot_place() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        drift_mode: DriftMode::Frozen,
+        basis_drift_ticks: 13.0,
+        hard_basis_unstable: true,
+        ..GlftSignalSnapshot::default()
+    });
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.52, 5.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "glft high drift should block new place commands"
+    );
+}
+
+#[tokio::test]
+async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.49, 0.50, 0.50, 0.51));
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+
+    let target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(target.clone());
+    coord.slot_last_ts[OrderSlot::NO_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_target = Some(target);
+
+    // Small move (2 ticks) within first 1.5s should be throttled.
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.52, 5.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "expected no reprice for early small jitter"
+    );
+
+    // Large move now requires directional hold confirmation before publish.
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "expected no immediate publish before price-move hold confirmation"
+    );
+    tokio::time::sleep(Duration::from_millis(650)).await;
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "expected no publish until third same-direction confirmation"
+    );
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(t))) => {
+            assert_eq!(t.side, Side::No);
+            assert_eq!(t.direction, TradeDirection::Buy);
+            assert!(
+                t.price > 0.50,
+                "expected governed upward reprice, got {}",
+                t.price
+            );
+        }
+        other => panic!("expected SetTarget after large move, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_glft_slot_rejects_increment_inv_limit_skip_counter() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, g, _k, _er, mut coord) = make_with_glft(config);
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
+    });
+
+    let inv = InventoryState {
+        net_diff: coord.cfg.max_net_diff,
+        ..Default::default()
+    };
+    let mut quotes = StrategyQuotes::default();
+    quotes.set(StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.40,
+        size: coord.cfg.bid_size,
+        reason: BidReason::Provide,
+    });
+
+    coord
+        .execute_slot_market_making(
+            &inv,
+            &book(0.39, 0.41, 0.59, 0.61),
+            quotes,
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    assert_eq!(
+        coord.stats.skipped_inv_limit, 1,
+        "slot inventory-limit rejects should be counted for shutdown observability"
+    );
+}
+
 #[test]
 fn test_incremental_hedge_ceiling_uses_existing_inventory_budget() {
     let (_, _, _, _, _, c) = make(cfg());
@@ -554,12 +1324,18 @@ async fn test_toxic_cancels_only_toxic_side() {
     // Only YES is toxic — only YES should be canceled.
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
-            ofi_score: 100.0,
-            buy_volume: 100.0,
-            sell_volume: 0.0,
+            ofi_score: -100.0,
+            buy_volume: 0.0,
+            sell_volume: 100.0,
+            heat_score: 2.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_buy: true,
+            saturated: false,
+            ..Default::default()
         },
         no: SideOfi::default(),
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
 
@@ -581,6 +1357,78 @@ async fn test_toxic_cancels_only_toxic_side() {
 }
 
 #[tokio::test]
+async fn test_cancel_stats_track_toxic_and_inventory_reasons() {
+    let mut c = cfg();
+    c.dry_run = true;
+    let (_o, _i, _m, _k, _er, mut coord) = make(c);
+
+    coord.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 2.0,
+        reason: BidReason::Provide,
+    });
+    coord
+        .clear_slot_target(OrderSlot::YES_BUY, CancelReason::ToxicFlow)
+        .await;
+    assert_eq!(coord.stats.cancel_toxic, 1);
+
+    coord.no_target = Some(DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.52,
+        size: 2.0,
+        reason: BidReason::Provide,
+    });
+    coord
+        .clear_slot_target(OrderSlot::NO_BUY, CancelReason::InventoryLimit)
+        .await;
+    assert_eq!(coord.stats.cancel_inv, 1);
+}
+
+#[test]
+fn test_glft_price_move_publish_requires_two_same_direction_heartbeats_and_hold() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::GlftMm;
+    c.dry_run = true;
+    let (_o, _i, _m, _k, _er, mut coord) = make(c);
+    let slot = OrderSlot::YES_BUY;
+
+    let t0 = Instant::now();
+    assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
+    assert!(!coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Down,
+        t0 + Duration::from_millis(150),
+    ));
+    assert!(!coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(250),
+    ));
+    // Direction changed recently, so streak is still building.
+    assert!(!coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(500),
+    ));
+    // Third same-direction heartbeat after minimum hold allows publish.
+    assert!(coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(900),
+    ));
+
+    coord.reset_slot_price_move_confirmation(slot);
+    assert!(!coord.confirm_slot_price_move_at(
+        slot,
+        PriceMoveDirection::Up,
+        t0 + Duration::from_millis(950),
+    ));
+}
+
+#[tokio::test]
 async fn test_other_side_can_still_quote_when_one_side_toxic() {
     let (o, _i, m, _k, mut e, coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
 
@@ -591,8 +1439,14 @@ async fn test_other_side_can_still_quote_when_one_side_toxic() {
             ofi_score: -80.0,
             buy_volume: 0.0,
             sell_volume: 80.0,
+            heat_score: 2.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_buy: true,
+            saturated: false,
+            ..Default::default()
         },
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
 
@@ -634,12 +1488,18 @@ async fn test_toxic_cancel_with_empty_book() {
 
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
-            ofi_score: 200.0,
-            buy_volume: 200.0,
-            sell_volume: 0.0,
+            ofi_score: -200.0,
+            buy_volume: 0.0,
+            sell_volume: 200.0,
+            heat_score: 2.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_buy: true,
+            saturated: false,
+            ..Default::default()
         },
         no: SideOfi::default(),
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
 
@@ -674,12 +1534,18 @@ async fn test_toxic_does_not_clear_existing_hedge_target() {
     // YES is toxic, but existing hedge target on YES should not be force-canceled.
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
-            ofi_score: 120.0,
-            buy_volume: 120.0,
-            sell_volume: 0.0,
+            ofi_score: -120.0,
+            buy_volume: 0.0,
+            sell_volume: 120.0,
+            heat_score: 2.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_buy: true,
+            saturated: false,
+            ..Default::default()
         },
         no: SideOfi::default(),
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
 
@@ -1551,12 +2417,18 @@ async fn test_phase_builder_ofi_toxic_suppresses_provide() {
     let (o, _i, m, _k, mut e, coord) = make(c);
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
-            ofi_score: 150.0,
-            buy_volume: 150.0,
-            sell_volume: 0.0,
+            ofi_score: -150.0,
+            buy_volume: 0.0,
+            sell_volume: 150.0,
+            heat_score: 2.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_buy: true,
+            saturated: false,
+            ..Default::default()
         },
         no: SideOfi::default(),
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
 
@@ -1617,12 +2489,18 @@ async fn test_gabagool_ofi_toxic_does_not_block_risk_reducing_unified_buy() {
     let (o, i, m, _k, mut e, coord) = make(c);
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
-            ofi_score: 200.0,
-            buy_volume: 200.0,
-            sell_volume: 0.0,
+            ofi_score: -200.0,
+            buy_volume: 0.0,
+            sell_volume: 200.0,
+            heat_score: 2.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_buy: true,
+            saturated: false,
+            ..Default::default()
         },
         no: SideOfi::default(),
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
     let _ = i.send(InventoryState {
@@ -1812,9 +2690,13 @@ async fn test_hedge_emergency_ceiling_toxic_flow() {
         yes: SideOfi::default(),
         no: SideOfi {
             ofi_score: 5000.0,
+            heat_score: 5.0,
+            is_hot: true,
             is_toxic: true,
+            toxic_sell: true,
             ..Default::default()
         },
+        reference_mid_yes: 0.45,
         ts: Instant::now(),
     });
 
