@@ -1292,17 +1292,39 @@ impl GlftSignalEngine {
             stale_secs,
         };
         const HARD_PAUSE_MIN_LOCK_MS: u64 = 3000;
-        const HARD_PAUSE_POST_RECOVER_COOLDOWN_MS: u64 = 5000;
+        const HARD_PAUSE_POST_RECOVER_COOLDOWN_MS: u64 = 8000;
+        const HARD_PAUSE_ESCALATED_COOLDOWN_MS: u64 = 12000;
+        const HARD_PAUSE_MAX_DURATION_MS: u64 = 30000;
+        const HARD_PAUSE_RECENT_CYCLE_WINDOW_MS: u64 = 15000;
         // Check if we're in a post-recovery cooldown — don't allow re-pause
         let in_post_recover_cooldown = self
             .hard_pause_locked_until
             .map(|until| {
-                // Reuse locked_until for post-recovery cooldown:
-                // after recovery, we set locked_until to now + 5s
                 !self.hard_basis_blocked && Instant::now() < until
             })
             .unwrap_or(false);
-        if gate.hard_basis_unstable && self.live_latched && !self.hard_basis_blocked && !in_post_recover_cooldown {
+        // Max-pause auto-recovery: force recover after 30s regardless of drift
+        let max_pause_expired = self.hard_basis_blocked
+            && self
+                .pause_entered_at
+                .map(|entered_at| Instant::now().duration_since(entered_at).as_millis() >= HARD_PAUSE_MAX_DURATION_MS as u128)
+                .unwrap_or(false);
+        if max_pause_expired {
+            let dwell = self
+                .pause_entered_at
+                .map(|entered_at| Instant::now().duration_since(entered_at).as_millis())
+                .unwrap_or(0);
+            warn!(
+                "⚠️ GLFT hard pause max-duration exceeded -> force resume | modeled_mid={:.3} synthetic_mid={:.3} dwell_ms={} drift_ticks={:.1}",
+                modeled_mid, synthetic_mid_yes, dwell, gate.basis_drift_ticks,
+            );
+            self.hard_basis_blocked = false;
+            self.pause_entered_at = None;
+            // Use escalated cooldown after forced max-duration recovery
+            self.hard_pause_locked_until =
+                Some(Instant::now() + Duration::from_millis(HARD_PAUSE_ESCALATED_COOLDOWN_MS));
+            self.pause_recover_healthy_streak = 0;
+        } else if gate.hard_basis_unstable && self.live_latched && !self.hard_basis_blocked && !in_post_recover_cooldown {
             warn!(
                 "⚠️ GLFT hard basis misalignment -> pause quoting | modeled_mid={:.3} synthetic_mid={:.3} basis_raw={:.3} basis_clamped={:.3} drift_ticks={:.1}",
                 modeled_mid,
@@ -1326,20 +1348,26 @@ impl GlftSignalEngine {
                 .map(|until| Instant::now() >= until)
                 .unwrap_or(true);
             if lock_expired {
+                let dwell = self
+                    .pause_entered_at
+                    .map(|entered_at| Instant::now().duration_since(entered_at).as_millis())
+                    .unwrap_or(0);
                 info!(
                     "✅ GLFT basis alignment recovered -> resume quoting | modeled_mid={:.3} synthetic_mid={:.3} dwell_ms={} healthy_streak={}",
-                    modeled_mid,
-                    synthetic_mid_yes,
-                    self.pause_entered_at
-                        .map(|entered_at| Instant::now().duration_since(entered_at).as_millis())
-                        .unwrap_or(0),
-                    self.pause_recover_healthy_streak,
+                    modeled_mid, synthetic_mid_yes, dwell, self.pause_recover_healthy_streak,
                 );
                 self.hard_basis_blocked = false;
+                // Escalating cooldown: if we recently cycled (paused within 15s of last recovery),
+                // use longer cooldown to break the oscillation loop
+                let recently_cycled = dwell <= HARD_PAUSE_RECENT_CYCLE_WINDOW_MS as u128;
+                let cooldown = if recently_cycled {
+                    HARD_PAUSE_ESCALATED_COOLDOWN_MS
+                } else {
+                    HARD_PAUSE_POST_RECOVER_COOLDOWN_MS
+                };
                 self.pause_entered_at = None;
-                // Set post-recovery cooldown: block re-pause for 5s
                 self.hard_pause_locked_until =
-                    Some(Instant::now() + Duration::from_millis(HARD_PAUSE_POST_RECOVER_COOLDOWN_MS));
+                    Some(Instant::now() + Duration::from_millis(cooldown));
                 self.pause_recover_healthy_streak = 0;
             }
         }
