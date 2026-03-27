@@ -1292,7 +1292,17 @@ impl GlftSignalEngine {
             stale_secs,
         };
         const HARD_PAUSE_MIN_LOCK_MS: u64 = 3000;
-        if gate.hard_basis_unstable && self.live_latched && !self.hard_basis_blocked {
+        const HARD_PAUSE_POST_RECOVER_COOLDOWN_MS: u64 = 5000;
+        // Check if we're in a post-recovery cooldown — don't allow re-pause
+        let in_post_recover_cooldown = self
+            .hard_pause_locked_until
+            .map(|until| {
+                // Reuse locked_until for post-recovery cooldown:
+                // after recovery, we set locked_until to now + 5s
+                !self.hard_basis_blocked && Instant::now() < until
+            })
+            .unwrap_or(false);
+        if gate.hard_basis_unstable && self.live_latched && !self.hard_basis_blocked && !in_post_recover_cooldown {
             warn!(
                 "⚠️ GLFT hard basis misalignment -> pause quoting | modeled_mid={:.3} synthetic_mid={:.3} basis_raw={:.3} basis_clamped={:.3} drift_ticks={:.1}",
                 modeled_mid,
@@ -1327,7 +1337,9 @@ impl GlftSignalEngine {
                 );
                 self.hard_basis_blocked = false;
                 self.pause_entered_at = None;
-                self.hard_pause_locked_until = None;
+                // Set post-recovery cooldown: block re-pause for 5s
+                self.hard_pause_locked_until =
+                    Some(Instant::now() + Duration::from_millis(HARD_PAUSE_POST_RECOVER_COOLDOWN_MS));
                 self.pause_recover_healthy_streak = 0;
             }
         }
