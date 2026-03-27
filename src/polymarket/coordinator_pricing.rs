@@ -230,8 +230,10 @@ impl StrategyCoordinator {
         }
         let lambda = Self::glft_realign_debt_decay_lambda();
         let decay = (-lambda * dt).exp();
-        let trusted_excess = (dist_trusted_ticks - 4.0).max(0.0);
-        let target_excess = (dist_target_ticks - 2.0).max(0.0);
+        // Raise free-zone: moderate drifts (< 6 ticks) don't accrue debt at all,
+        // letting shadow_dwell handle them naturally.
+        let trusted_excess = (dist_trusted_ticks - 6.0).max(0.0);
+        let target_excess = (dist_target_ticks - 3.0).max(0.0);
         let drift_mult = match drift_mode {
             Some(crate::polymarket::glft::DriftMode::Damped) => 1.10,
             Some(crate::polymarket::glft::DriftMode::Frozen) => 1.20,
@@ -367,25 +369,29 @@ impl StrategyCoordinator {
     }
 
     fn glft_realign_debt_decay_lambda() -> f64 {
-        std::f64::consts::LN_2 / 1.4
+        // Increase half-life from 1.4s → 2.0s so transient spikes decay more
+        // before crossing the trigger threshold.
+        std::f64::consts::LN_2 / 2.0
     }
 
     fn glft_realign_debt_threshold(
         drift_mode: Option<crate::polymarket::glft::DriftMode>,
         heat_score: f64,
     ) -> f64 {
+        // Raise thresholds: Normal 8→12 so only sustained large drifts trigger.
+        // Proportionally relax other modes.
         let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 7.5,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 7.0,
-            Some(crate::polymarket::glft::DriftMode::Paused) => 6.5,
-            _ => 8.0,
+            Some(crate::polymarket::glft::DriftMode::Damped) => 10.0,
+            Some(crate::polymarket::glft::DriftMode::Frozen) => 9.0,
+            Some(crate::polymarket::glft::DriftMode::Paused) => 8.0,
+            _ => 12.0,
         };
         let heat_adj = if heat_score.is_finite() {
-            (0.4 * (heat_score - 1.0).max(0.0)).min(2.0)
+            (0.4 * (heat_score - 1.0).max(0.0)).min(2.5)
         } else {
             0.0
         };
-        (base + heat_adj).max(5.0)
+        (base + heat_adj).max(6.0)
     }
 
     pub(super) fn side_target_reason(&self, side: Side) -> Option<BidReason> {
