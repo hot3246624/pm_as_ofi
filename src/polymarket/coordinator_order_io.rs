@@ -170,15 +170,11 @@ impl StrategyCoordinator {
                 .map(|ts| ts.elapsed())
                 .unwrap_or_default();
             if active {
-                if let Some((trusted_dist, target_dist, force_realign)) =
+                if let Some((trusted_dist, target_dist, _force_realign)) =
                     self.slot_relative_misalignment(slot, slot_price, normalized_target_price)
                 {
                     distance_to_trusted_mid_ticks = Some(trusted_dist);
                     distance_to_normalized_target_ticks = Some(target_dist);
-                    if force_realign {
-                        publish_reason = Some(SlotPublishReason::ForcedRealign);
-                        publish_hard_safety_exception = true;
-                    }
                     let debt = self.update_slot_realign_debt(
                         slot,
                         trusted_dist,
@@ -331,30 +327,22 @@ impl StrategyCoordinator {
                     })
                     .unwrap_or(false);
                 let tick = self.cfg.tick_size.max(1e-9);
-                let (prealign_trusted_ticks, prealign_target_ticks) = match glft_drift_mode {
-                    Some(crate::polymarket::glft::DriftMode::Damped) => (7.0, 4.0),
-                    Some(crate::polymarket::glft::DriftMode::Frozen) => (6.0, 4.0),
-                    Some(crate::polymarket::glft::DriftMode::Paused) => (5.0, 3.0),
-                    _ => (8.0, 4.0),
-                };
-                let prealign_extra_ticks = Self::glft_heat_prealign_extra_ticks(glft_heat_score);
-                let prealign_trusted_ticks = prealign_trusted_ticks + prealign_extra_ticks;
-                let prealign_target_ticks = prealign_target_ticks + prealign_extra_ticks;
                 let hard_forced_realign = distance_to_trusted_mid_ticks
                     .zip(distance_to_normalized_target_ticks)
-                    .map(|(trusted_dist, target_dist)| trusted_dist > 16.0 && target_dist > 10.0)
+                    .map(|(trusted_dist, target_dist)| trusted_dist > 20.0 && target_dist > 14.0)
                     .unwrap_or(false);
-                let prealign_required = distance_to_trusted_mid_ticks
+                // EnvelopeEscort is a narrow publish accelerator:
+                // it is only allowed in Normal/Damped when quote drift is clearly lagging.
+                let escort_mode_allowed = matches!(
+                    glft_drift_mode,
+                    None
+                        | Some(crate::polymarket::glft::DriftMode::Normal)
+                        | Some(crate::polymarket::glft::DriftMode::Damped)
+                );
+                let escort_required = distance_to_trusted_mid_ticks
                     .zip(distance_to_normalized_target_ticks)
                     .map(|(trusted_dist, target_dist)| {
-                        trusted_dist > prealign_trusted_ticks && target_dist > prealign_target_ticks
-                    })
-                    .unwrap_or(false);
-                let prealign_escalated = distance_to_trusted_mid_ticks
-                    .zip(distance_to_normalized_target_ticks)
-                    .map(|(trusted_dist, target_dist)| {
-                        trusted_dist > prealign_trusted_ticks + 2.0
-                            || target_dist > prealign_target_ticks + 2.0
+                        trusted_dist >= 8.0 && target_dist >= 4.0
                     })
                     .unwrap_or(false);
                 let price_move_ticks = match glft_drift_mode {
@@ -366,7 +354,7 @@ impl StrategyCoordinator {
                 let price_move_threshold = price_move_ticks * tick;
                 let price_move_min_age =
                     Self::glft_price_move_min_age(glft_drift_mode, glft_heat_score);
-                let prealign_min_age = Self::glft_prealign_min_age(glft_drift_mode);
+                let escort_min_age = Self::glft_envelope_escort_min_age(glft_drift_mode);
                 let unsafe_min_age = Self::glft_unsafe_publish_min_age(glft_drift_mode);
                 let forced_realign_min_age =
                     Self::glft_forced_realign_min_age(glft_drift_mode, glft_heat_score);
@@ -377,8 +365,15 @@ impl StrategyCoordinator {
                     publish_hard_safety_exception = true;
                     Some(SlotPublishReason::CrossRejectRecovery)
                 } else if hard_forced_realign {
-                    publish_hard_safety_exception = true;
-                    Some(SlotPublishReason::ForcedRealign)
+                    // Hard forced realign is now budget-governed (not exempt)
+                    // to prevent unchecked churn. Only CrossRejectRecovery bypasses budget.
+                    attempted_directional_publish = true;
+                    match Self::slot_price_move_direction(slot_price, normalized_target_price) {
+                        Some(direction) if self.confirm_slot_price_move(slot, direction) => {
+                            Some(SlotPublishReason::ForcedRealign)
+                        }
+                        _ => None,
+                    }
                 } else if debt_forced_realign && elapsed >= forced_realign_min_age {
                     // P1: enforce minimum interval between debt realigns per slot
                     const DEBT_REALIGN_MIN_INTERVAL_MS: u64 = 1500;
@@ -398,18 +393,13 @@ impl StrategyCoordinator {
                     } else {
                         None
                     }
-                } else if prealign_required {
-                    let can_try_prealign = prealign_escalated || elapsed >= prealign_min_age;
-                    if can_try_prealign {
-                        attempted_directional_publish = true;
-                        match Self::slot_price_move_direction(slot_price, normalized_target_price) {
-                            Some(direction) if self.confirm_slot_price_move(slot, direction) => {
-                                Some(SlotPublishReason::DriftPrealign)
-                            }
-                            _ => None,
+                } else if escort_mode_allowed && escort_required && elapsed >= escort_min_age {
+                    attempted_directional_publish = true;
+                    match Self::slot_price_move_direction(slot_price, normalized_target_price) {
+                        Some(direction) if self.confirm_slot_price_move(slot, direction) => {
+                            Some(SlotPublishReason::EnvelopeEscort)
                         }
-                    } else {
-                        None
+                        _ => None,
                     }
                 } else if unsafe_current_quote && unsafe_needs_publish {
                     let severe_unsafe = unsafe_depth_ticks
@@ -925,14 +915,6 @@ impl StrategyCoordinator {
         }
     }
 
-    fn glft_heat_prealign_extra_ticks(heat_score: f64) -> f64 {
-        match Self::glft_heat_publish_level(heat_score) {
-            0 | 1 => 0.0,
-            2 => 1.0,
-            _ => 2.0,
-        }
-    }
-
     fn glft_shadow_publish_dwell(
         drift_mode: Option<crate::polymarket::glft::DriftMode>,
         heat_score: f64,
@@ -958,20 +940,14 @@ impl StrategyCoordinator {
         base.saturating_add(extra)
     }
 
-    fn glft_prealign_min_age(
+    fn glft_envelope_escort_min_age(
         drift_mode: Option<crate::polymarket::glft::DriftMode>,
     ) -> std::time::Duration {
         match drift_mode {
             Some(crate::polymarket::glft::DriftMode::Damped) => {
-                std::time::Duration::from_millis(1400)
+                std::time::Duration::from_millis(1200)
             }
-            Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                std::time::Duration::from_millis(1700)
-            }
-            Some(crate::polymarket::glft::DriftMode::Paused) => {
-                std::time::Duration::from_millis(2000)
-            }
-            _ => std::time::Duration::from_millis(1200),
+            _ => std::time::Duration::from_millis(1000),
         }
     }
 
@@ -1023,7 +999,7 @@ impl StrategyCoordinator {
         heat_score: f64,
     ) -> std::time::Duration {
         let base = match reason {
-            SlotPublishReason::DriftPrealign => match drift_mode {
+            SlotPublishReason::EnvelopeEscort => match drift_mode {
                 Some(crate::polymarket::glft::DriftMode::Damped) => {
                     std::time::Duration::from_millis(1600)
                 }
@@ -1277,7 +1253,7 @@ impl StrategyCoordinator {
         self.slot_price_move_since[idx] = None;
     }
 
-    fn slot_relative_misalignment(
+    pub(super) fn slot_relative_misalignment(
         &self,
         slot: OrderSlot,
         quoted_price: f64,
@@ -1296,7 +1272,7 @@ impl StrategyCoordinator {
         let distance_to_normalized_target_ticks =
             ((quoted_price - normalized_target_price).abs()) / tick;
         let force_realign =
-            distance_to_trusted_mid_ticks > 16.0 && distance_to_normalized_target_ticks > 10.0;
+            distance_to_trusted_mid_ticks > 20.0 && distance_to_normalized_target_ticks > 14.0;
         Some((
             distance_to_trusted_mid_ticks,
             distance_to_normalized_target_ticks,

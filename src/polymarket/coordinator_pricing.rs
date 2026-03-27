@@ -307,7 +307,7 @@ impl StrategyCoordinator {
             SlotPublishReason::ShadowDwell => 0.90,
             SlotPublishReason::PriceMove => 1.00,
             SlotPublishReason::SizeMove => 1.10,
-            SlotPublishReason::DriftPrealign => 1.25,
+            SlotPublishReason::EnvelopeEscort => 1.25,
             SlotPublishReason::UnsafeQuote => 1.35,
             SlotPublishReason::ForcedRealign => 1.50,
             SlotPublishReason::CrossRejectRecovery => 1.60,

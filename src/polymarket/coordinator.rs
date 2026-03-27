@@ -544,7 +544,7 @@ struct Stats {
 enum SlotPublishReason {
     InitialDwell,
     PriceMove,
-    DriftPrealign,
+    EnvelopeEscort,
     SizeMove,
     ShadowDwell,
     UnsafeQuote,
@@ -557,7 +557,7 @@ impl SlotPublishReason {
         match self {
             Self::InitialDwell => "initial_dwell",
             Self::PriceMove => "price_move",
-            Self::DriftPrealign => "drift_prealign",
+            Self::EnvelopeEscort => "envelope_escort",
             Self::SizeMove => "size_move",
             Self::ShadowDwell => "shadow_dwell",
             Self::UnsafeQuote => "unsafe_quote",

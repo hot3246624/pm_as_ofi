@@ -573,56 +573,60 @@ async fn test_fast_plus_minus_one_tick_oscillation_keeps_existing_order() {
     assert!(timeout(Duration::from_millis(20), er.recv()).await.is_err());
 }
 
-#[tokio::test]
-async fn test_glft_buy_drift_guard_reprices_stale_low_bid() {
+#[test]
+fn test_glft_forced_realign_threshold_at_20_14() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
-    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
-    let _ = o.send(OfiSnapshot::default());
-    let _ = i.send(InventoryState::default());
+    let (_o, _i, _m, g, _k, _er, coord) = make_with_glft(config);
     let _ = g.send(GlftSignalSnapshot {
         signal_state: GlftSignalState::Live,
         fit_status: GlftFitStatus::LiveReady,
         fit_quality: FitQuality::Ready,
         warm_start_status: WarmStartStatus::Accepted,
+        trusted_mid: 0.50,
         ready: true,
         stale: false,
         ..GlftSignalSnapshot::default()
     });
-    coord.yes_target = Some(DesiredTarget {
-        side: Side::Yes,
-        direction: TradeDirection::Buy,
-        price: 0.17,
-        size: 5.0,
-        reason: BidReason::Provide,
+
+    // Below threshold: trusted=19 ticks, target=13 ticks => no force_realign
+    let result = coord
+        .slot_relative_misalignment(OrderSlot::YES_BUY, 0.31, 0.18)
+        .unwrap();
+    assert!(!result.2, "19/13 ticks should NOT trigger forced realign");
+
+    // Above threshold: trusted=21 ticks, target=15 ticks => force_realign
+    let result = coord
+        .slot_relative_misalignment(OrderSlot::YES_BUY, 0.29, 0.14)
+        .unwrap();
+    assert!(result.2, "21/15 ticks should trigger forced realign");
+}
+
+#[test]
+fn test_glft_forced_realign_no_longer_triggers_early_bypass() {
+    // Verify that slot_relative_misalignment with old 16/10 thresholds no longer triggers
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, g, _k, _er, coord) = make_with_glft(config);
+    let _ = g.send(GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        trusted_mid: 0.50,
+        ready: true,
+        stale: false,
+        ..GlftSignalSnapshot::default()
     });
 
-    let ub = book(0.18, 0.30, 0.69, 0.72);
-    let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
-    coord
-        .apply_provide_side_action(
-            &InventoryState::default(),
-            &ub,
-            Side::Yes,
-            ProvideSideAction::Place {
-                intent: StrategyIntent {
-                    side: Side::Yes,
-                    direction: TradeDirection::Buy,
-                    price: 0.21,
-                    size: 5.0,
-                    reason: BidReason::Provide,
-                },
-            },
-        )
-        .await;
-
-    match timeout(Duration::from_millis(100), er.recv()).await {
-        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
-            assert_eq!(target.side, Side::Yes);
-            assert!((target.price - 0.18).abs() <= 0.03);
-        }
-        other => panic!("expected SetTarget after GLFT drift guard, got {:?}", other),
-    }
+    // Old threshold would have triggered at trusted=17, target=11 — now should NOT
+    let result = coord
+        .slot_relative_misalignment(OrderSlot::YES_BUY, 0.33, 0.22)
+        .unwrap();
+    assert!(
+        !result.2,
+        "17/11 ticks should NOT trigger forced realign with new 20/14 thresholds"
+    );
 }
 
 #[tokio::test]
@@ -664,58 +668,6 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
         "budget exhausted should suppress non-emergency reprice"
     );
     assert_eq!(coord.stats.publish_budget_suppressed, 1);
-}
-
-#[tokio::test]
-async fn test_glft_hard_forced_realign_bypasses_budget() {
-    let mut config = cfg();
-    config.strategy = StrategyKind::GlftMm;
-    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
-    let _ = o.send(OfiSnapshot::default());
-    let _ = i.send(InventoryState::default());
-    let _ = m.send(bt(0.48, 0.49, 0.51, 0.52));
-    let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        trusted_mid: 0.55,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
-    });
-
-    let slot = OrderSlot::YES_BUY;
-    let target = DesiredTarget {
-        side: Side::Yes,
-        direction: TradeDirection::Buy,
-        price: 0.20,
-        size: 5.0,
-        reason: BidReason::Provide,
-    };
-    coord.slot_targets[slot.index()] = Some(target.clone());
-    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
-    coord.yes_target = Some(target);
-    coord.slot_publish_budget[slot.index()] = 0.0;
-    coord.slot_last_budget_refill[slot.index()] = Instant::now();
-
-    coord
-        .slot_place_or_reprice(slot, 0.52, 5.0, BidReason::Provide, None)
-        .await;
-
-    match timeout(Duration::from_millis(100), er.recv()).await {
-        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
-            assert_eq!(target.side, Side::Yes);
-            assert!(target.price > 0.20);
-        }
-        other => panic!(
-            "hard safety forced-realign should bypass budget, got {:?}",
-            other
-        ),
-    }
-    assert_eq!(coord.stats.forced_realign_count, 1);
-    assert_eq!(coord.stats.forced_realign_hard_count, 1);
-    assert_eq!(coord.stats.debt_realign_triggers, 0);
 }
 
 #[tokio::test]
