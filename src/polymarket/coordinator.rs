@@ -528,7 +528,8 @@ struct Stats {
     ofi_heat_events: u64,
     ofi_toxic_events: u64,
     ofi_kill_events: u64,
-    toxic_blocked_ticks: u64,
+    ofi_blocked_ticks: u64,
+    reference_blocked_ms: u64,
     skipped_debounce: u64,
     skipped_backoff: u64,
     skipped_empty_book: u64,
@@ -545,8 +546,8 @@ enum SlotPublishReason {
     InitialDwell,
     PriceMove,
     EnvelopeEscort,
+    CadenceSync,
     SizeMove,
-    ShadowDwell,
     UnsafeQuote,
     ForcedRealign,
     CrossRejectRecovery,
@@ -558,8 +559,8 @@ impl SlotPublishReason {
             Self::InitialDwell => "initial_dwell",
             Self::PriceMove => "price_move",
             Self::EnvelopeEscort => "envelope_escort",
+            Self::CadenceSync => "cadence_sync",
             Self::SizeMove => "size_move",
-            Self::ShadowDwell => "shadow_dwell",
             Self::UnsafeQuote => "unsafe_quote",
             Self::ForcedRealign => "forced_realign",
             Self::CrossRejectRecovery => "cross_reject_recovery",
@@ -730,9 +731,6 @@ pub struct StrategyCoordinator {
     slot_last_publish_reason: [Option<SlotPublishReason>; 4],
     slot_publish_budget: [f64; 4],
     slot_last_budget_refill: [Instant; 4],
-    slot_realign_debt: [f64; 4],
-    slot_last_debt_update: [Instant; 4],
-    slot_last_debt_realign_ts: [Instant; 4],
     slot_price_move_dir: [Option<PriceMoveDirection>; 4],
     slot_price_move_streak: [u8; 4],
     slot_price_move_since: [Option<Instant>; 4],
@@ -750,6 +748,7 @@ pub struct StrategyCoordinator {
     was_hot_no: bool,
     was_toxic_yes: bool,
     was_toxic_no: bool,
+    reference_blocked_since: Option<Instant>,
     last_metrics_log_ts: Instant,
     last_endgame_phase: EndgamePhase,
     edge_hold_state: Option<EdgeHoldState>,
@@ -855,11 +854,6 @@ impl StrategyCoordinator {
             slot_last_publish_reason: std::array::from_fn(|_| None),
             slot_publish_budget: [2.0; 4],
             slot_last_budget_refill: std::array::from_fn(|_| Instant::now()),
-            slot_realign_debt: [0.0; 4],
-            slot_last_debt_update: std::array::from_fn(|_| Instant::now()),
-            slot_last_debt_realign_ts: std::array::from_fn(|_| {
-                Instant::now() - std::time::Duration::from_secs(10)
-            }),
             slot_price_move_dir: std::array::from_fn(|_| None),
             slot_price_move_streak: [0; 4],
             slot_price_move_since: std::array::from_fn(|_| None),
@@ -874,6 +868,7 @@ impl StrategyCoordinator {
             was_hot_no: false,
             was_toxic_yes: false,
             was_toxic_no: false,
+            reference_blocked_since: None,
             last_metrics_log_ts,
             last_endgame_phase: EndgamePhase::Normal,
             edge_hold_state: None,
@@ -953,6 +948,7 @@ impl StrategyCoordinator {
 
         let final_inv = *self.inv_rx.borrow();
         let final_metrics = self.derive_inventory_metrics(&final_inv);
+        self.flush_reference_blocked_time(Instant::now());
         let dominant_side = match final_metrics.dominant_side {
             Some(Side::Yes) => "YES",
             Some(Side::No) => "NO",
@@ -970,10 +966,11 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={} debt={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={}) debt_sync={}) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
-            self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.toxic_blocked_ticks,
+            self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
+            self.stats.reference_blocked_ms,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count, self.stats.debt_realign_triggers,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
@@ -1051,11 +1048,36 @@ impl StrategyCoordinator {
                 glft.signal_state,
                 crate::polymarket::glft::GlftSignalState::Live
             )
-            && !glft.hard_basis_unstable
+            && !matches!(
+                glft.reference_health,
+                crate::polymarket::glft::ReferenceHealth::Blocked
+            )
     }
 
     pub(super) fn glft_is_tradeable_now(&self) -> bool {
         self.glft_is_tradeable_snapshot(*self.glft_rx.borrow())
+    }
+
+    fn update_reference_blocked_time(&mut self, blocked: bool, now: Instant) {
+        match (blocked, self.reference_blocked_since) {
+            (true, None) => {
+                self.reference_blocked_since = Some(now);
+            }
+            (false, Some(since)) => {
+                let ms = now.saturating_duration_since(since).as_millis() as u64;
+                self.stats.reference_blocked_ms =
+                    self.stats.reference_blocked_ms.saturating_add(ms);
+                self.reference_blocked_since = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn flush_reference_blocked_time(&mut self, now: Instant) {
+        if let Some(since) = self.reference_blocked_since.take() {
+            let ms = now.saturating_duration_since(since).as_millis() as u64;
+            self.stats.reference_blocked_ms = self.stats.reference_blocked_ms.saturating_add(ms);
+        }
     }
 
     // ═════════════════════════════════════════════════
@@ -1063,13 +1085,26 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     async fn tick(&mut self) {
-        self.decay_maker_friction(Instant::now());
+        let now = Instant::now();
+        self.decay_maker_friction(now);
         let ofi = *self.ofi_rx.borrow();
         let inv = *self.inv_rx.borrow();
+        let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
+            Some(*self.glft_rx.borrow())
+        } else {
+            None
+        };
+        let ref_blocked = matches!(
+            glft_snapshot,
+            Some(snapshot) if matches!(
+                snapshot.reference_health,
+                crate::polymarket::glft::ReferenceHealth::Blocked
+            )
+        );
+        self.update_reference_blocked_time(ref_blocked, now);
         self.maybe_log_inventory_metrics(&inv, &ofi);
 
         // ── Environmental Health Check ──
-        let now = Instant::now();
         let ttl = Duration::from_millis(self.cfg.stale_ttl_ms);
 
         let yes_stale = now.duration_since(self.last_valid_ts_yes) > ttl;
@@ -1109,11 +1144,8 @@ impl StrategyCoordinator {
         let no_toxic_hold = now < self.no_toxic_hold_until;
         let yes_toxic_blocked = is_toxic_yes || yes_toxic_hold;
         let no_toxic_blocked = is_toxic_no || no_toxic_hold;
-        if yes_toxic_blocked {
-            self.stats.toxic_blocked_ticks = self.stats.toxic_blocked_ticks.saturating_add(1);
-        }
-        if no_toxic_blocked {
-            self.stats.toxic_blocked_ticks = self.stats.toxic_blocked_ticks.saturating_add(1);
+        if yes_toxic_blocked || no_toxic_blocked {
+            self.stats.ofi_blocked_ticks = self.stats.ofi_blocked_ticks.saturating_add(1);
         }
 
         // Priority 1: 30s Staleness Guard (Critical Shutdown)
@@ -1178,11 +1210,6 @@ impl StrategyCoordinator {
 
         // Priority 4: Strategy quote + unified flow-risk overlay + execution.
         let metrics = self.derive_inventory_metrics(&inv);
-        let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
-            Some(*self.glft_rx.borrow())
-        } else {
-            None
-        };
         let input = StrategyTickInput {
             inv: &inv,
             book: &ub,

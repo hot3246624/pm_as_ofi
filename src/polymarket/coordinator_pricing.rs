@@ -208,47 +208,6 @@ impl StrategyCoordinator {
         let idx = slot.index();
         self.slot_publish_budget[idx] = Self::glft_publish_budget_cap();
         self.slot_last_budget_refill[idx] = std::time::Instant::now();
-        self.slot_realign_debt[idx] = 0.0;
-        self.slot_last_debt_update[idx] = std::time::Instant::now();
-    }
-
-    pub(super) fn update_slot_realign_debt(
-        &mut self,
-        slot: OrderSlot,
-        dist_trusted_ticks: f64,
-        dist_target_ticks: f64,
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-        now: std::time::Instant,
-    ) -> f64 {
-        let idx = slot.index();
-        let last = self.slot_last_debt_update[idx];
-        let dt = now.saturating_duration_since(last).as_secs_f64().max(0.0);
-        self.slot_last_debt_update[idx] = now;
-        if dt <= f64::EPSILON {
-            return self.slot_realign_debt[idx];
-        }
-        let lambda = Self::glft_realign_debt_decay_lambda();
-        let decay = (-lambda * dt).exp();
-        // Raise free-zone: moderate drifts (< 6 ticks) don't accrue debt at all,
-        // letting shadow_dwell handle them naturally.
-        let trusted_excess = (dist_trusted_ticks - 6.0).max(0.0);
-        let target_excess = (dist_target_ticks - 3.0).max(0.0);
-        let drift_mult = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 1.10,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 1.20,
-            Some(crate::polymarket::glft::DriftMode::Paused) => 1.35,
-            _ => 1.0,
-        };
-        let heat_mult = if heat_score.is_finite() {
-            (1.0 + 0.10 * (heat_score - 1.0).max(0.0)).min(1.60)
-        } else {
-            1.0
-        };
-        let accrual_rate = (0.70 * trusted_excess + 1.00 * target_excess) * drift_mult * heat_mult;
-        let debt = (self.slot_realign_debt[idx] * decay + accrual_rate * dt).max(0.0);
-        self.slot_realign_debt[idx] = debt;
-        debt
     }
 
     pub(super) fn consume_slot_publish_budget(
@@ -275,20 +234,6 @@ impl StrategyCoordinator {
         }
     }
 
-    pub(super) fn reset_slot_realign_debt(&mut self, slot: OrderSlot) {
-        let idx = slot.index();
-        self.slot_realign_debt[idx] = 0.0;
-        self.slot_last_debt_update[idx] = std::time::Instant::now();
-    }
-
-    pub(super) fn glft_realign_debt_trigger(
-        debt: f64,
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> bool {
-        debt >= Self::glft_realign_debt_threshold(drift_mode, heat_score)
-    }
-
     pub(super) fn glft_publish_reason_is_emergency(reason: SlotPublishReason) -> bool {
         // Architecture contract:
         // - Cross-book recovery is always emergency (must bypass budget).
@@ -304,9 +249,9 @@ impl StrategyCoordinator {
     ) -> f64 {
         let base = match reason {
             SlotPublishReason::InitialDwell => 0.75,
-            SlotPublishReason::ShadowDwell => 0.90,
             SlotPublishReason::PriceMove => 1.00,
             SlotPublishReason::SizeMove => 1.10,
+            SlotPublishReason::CadenceSync => 1.15,
             SlotPublishReason::EnvelopeEscort => 1.25,
             SlotPublishReason::UnsafeQuote => 1.35,
             SlotPublishReason::ForcedRealign => 1.50,
@@ -315,7 +260,6 @@ impl StrategyCoordinator {
         let drift_mult = match drift_mode {
             Some(crate::polymarket::glft::DriftMode::Damped) => 1.08,
             Some(crate::polymarket::glft::DriftMode::Frozen) => 1.14,
-            Some(crate::polymarket::glft::DriftMode::Paused) => 1.22,
             _ => 1.0,
         };
         let heat_mult = if heat_score.is_finite() {
@@ -357,7 +301,6 @@ impl StrategyCoordinator {
         let base = match drift_mode {
             Some(crate::polymarket::glft::DriftMode::Damped) => 1.05,
             Some(crate::polymarket::glft::DriftMode::Frozen) => 0.85,
-            Some(crate::polymarket::glft::DriftMode::Paused) => 0.70,
             _ => 1.25,
         };
         let heat_dampen = if heat_score.is_finite() {
@@ -366,32 +309,6 @@ impl StrategyCoordinator {
             1.0
         };
         (base / heat_dampen).max(0.20)
-    }
-
-    fn glft_realign_debt_decay_lambda() -> f64 {
-        // Increase half-life from 1.4s → 2.0s so transient spikes decay more
-        // before crossing the trigger threshold.
-        std::f64::consts::LN_2 / 2.0
-    }
-
-    fn glft_realign_debt_threshold(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> f64 {
-        // Raise thresholds: Normal 8→12 so only sustained large drifts trigger.
-        // Proportionally relax other modes.
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 10.0,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 9.0,
-            Some(crate::polymarket::glft::DriftMode::Paused) => 8.0,
-            _ => 12.0,
-        };
-        let heat_adj = if heat_score.is_finite() {
-            (0.4 * (heat_score - 1.0).max(0.0)).min(2.5)
-        } else {
-            0.0
-        };
-        (base + heat_adj).max(6.0)
     }
 
     pub(super) fn side_target_reason(&self, side: Side) -> Option<BidReason> {

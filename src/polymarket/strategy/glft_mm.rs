@@ -312,6 +312,8 @@ mod tests {
             readiness_blockers: GlftReadinessBlockers::default(),
             ready_elapsed_ms: 2_500,
             signal_state: GlftSignalState::Live,
+            reference_confidence: 1.0,
+            reference_health: crate::polymarket::glft::ReferenceHealth::Healthy,
             basis_drift_ticks: 0.0,
             drift_mode: DriftMode::Normal,
             hard_basis_unstable: false,

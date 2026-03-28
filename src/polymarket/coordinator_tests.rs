@@ -1,6 +1,6 @@
 use super::*;
 use crate::polymarket::glft::{
-    DriftMode, FitQuality, GlftFitStatus, GlftSignalState, WarmStartStatus,
+    DriftMode, FitQuality, GlftFitStatus, GlftSignalState, ReferenceHealth, WarmStartStatus,
 };
 use std::time::Duration;
 use tokio::time::timeout;
@@ -108,6 +108,20 @@ fn book(yb: f64, ya: f64, nb: f64, na: f64) -> Book {
         yes_ask: ya,
         no_bid: nb,
         no_ask: na,
+    }
+}
+
+fn live_glft_snapshot() -> GlftSignalSnapshot {
+    GlftSignalSnapshot {
+        signal_state: GlftSignalState::Live,
+        fit_status: GlftFitStatus::LiveReady,
+        fit_quality: FitQuality::Ready,
+        warm_start_status: WarmStartStatus::Accepted,
+        ready: true,
+        stale: false,
+        reference_confidence: 1.0,
+        reference_health: ReferenceHealth::Healthy,
+        ..GlftSignalSnapshot::default()
     }
 }
 
@@ -579,14 +593,8 @@ fn test_glft_forced_realign_threshold_at_20_14() {
     config.strategy = StrategyKind::GlftMm;
     let (_o, _i, _m, g, _k, _er, coord) = make_with_glft(config);
     let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
         trusted_mid: 0.50,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
+        ..live_glft_snapshot()
     });
 
     // Below threshold: trusted=19 ticks, target=13 ticks => no force_realign
@@ -609,14 +617,8 @@ fn test_glft_forced_realign_no_longer_triggers_early_bypass() {
     config.strategy = StrategyKind::GlftMm;
     let (_o, _i, _m, g, _k, _er, coord) = make_with_glft(config);
     let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
         trusted_mid: 0.50,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
+        ..live_glft_snapshot()
     });
 
     // Old threshold would have triggered at trusted=17, target=11 — now should NOT
@@ -636,15 +638,7 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
     let (o, i, _m, g, _, mut er, mut coord) = make_with_glft(config);
     let _ = o.send(OfiSnapshot::default());
     let _ = i.send(InventoryState::default());
-    let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
-    });
+    let _ = g.send(live_glft_snapshot());
 
     let target = DesiredTarget {
         side: Side::No,
@@ -671,7 +665,7 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
 }
 
 #[tokio::test]
-async fn test_glft_debt_forced_realign_is_budget_governed() {
+async fn test_glft_sync_publish_is_budget_governed() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
     let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
@@ -679,21 +673,15 @@ async fn test_glft_debt_forced_realign_is_budget_governed() {
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
     let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
         trusted_mid: 0.50,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
+        ..live_glft_snapshot()
     });
 
     let slot = OrderSlot::YES_BUY;
     let target = DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
-        price: 0.45,
+        price: 0.30,
         size: 5.0,
         reason: BidReason::Provide,
     };
@@ -702,8 +690,6 @@ async fn test_glft_debt_forced_realign_is_budget_governed() {
     coord.yes_target = Some(target);
     coord.slot_publish_budget[slot.index()] = 0.0;
     coord.slot_last_budget_refill[slot.index()] = Instant::now();
-    coord.slot_realign_debt[slot.index()] = 20.0;
-    coord.slot_last_debt_update[slot.index()] = Instant::now();
 
     let t0 = Instant::now() - Duration::from_secs(2);
     assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
@@ -719,18 +705,18 @@ async fn test_glft_debt_forced_realign_is_budget_governed() {
     ));
 
     coord
-        .slot_place_or_reprice(slot, 0.52, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
         .await;
 
     assert!(
         timeout(Duration::from_millis(30), er.recv()).await.is_err(),
-        "budget exhausted should suppress debt-driven forced realign"
+        "budget exhausted should suppress sync-driven publish"
     );
     assert_eq!(coord.stats.publish_budget_suppressed, 1);
 }
 
 #[tokio::test]
-async fn test_glft_debt_forced_realign_tracks_debt_counter_when_published() {
+async fn test_glft_sync_publish_tracks_counter_when_published() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
     let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
@@ -738,29 +724,21 @@ async fn test_glft_debt_forced_realign_tracks_debt_counter_when_published() {
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
     let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
         trusted_mid: 0.50,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
+        ..live_glft_snapshot()
     });
 
     let slot = OrderSlot::YES_BUY;
     let target = DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
-        price: 0.45,
+        price: 0.30,
         size: 5.0,
         reason: BidReason::Provide,
     };
     coord.slot_targets[slot.index()] = Some(target.clone());
     coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
     coord.yes_target = Some(target);
-    coord.slot_realign_debt[slot.index()] = 20.0;
-    coord.slot_last_debt_update[slot.index()] = Instant::now();
 
     let t0 = Instant::now() - Duration::from_secs(2);
     assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
@@ -776,41 +754,23 @@ async fn test_glft_debt_forced_realign_tracks_debt_counter_when_published() {
     ));
 
     coord
-        .slot_place_or_reprice(slot, 0.52, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
         .await;
 
     match timeout(Duration::from_millis(100), er.recv()).await {
         Ok(Some(OrderManagerCmd::SetTarget(target))) => {
             assert_eq!(target.side, Side::Yes);
-            assert!(target.price > 0.45);
+            assert!(target.price > 0.30);
         }
-        other => panic!(
-            "expected debt-driven forced realign publish, got {:?}",
-            other
-        ),
+        other => panic!("expected sync-driven cadence publish, got {:?}", other),
     }
-    assert_eq!(coord.stats.forced_realign_count, 1);
+    assert_eq!(
+        coord.slot_last_publish_reason[slot.index()],
+        Some(SlotPublishReason::CadenceSync)
+    );
+    assert_eq!(coord.stats.forced_realign_count, 0);
     assert_eq!(coord.stats.forced_realign_hard_count, 0);
     assert_eq!(coord.stats.debt_realign_triggers, 1);
-}
-
-#[test]
-fn test_glft_realign_debt_triggers_and_resets() {
-    let mut config = cfg();
-    config.strategy = StrategyKind::GlftMm;
-    let (_, _, _, _, _, _, mut coord) = make_with_glft(config);
-    let slot = OrderSlot::YES_BUY;
-    let now = Instant::now();
-    coord.slot_last_debt_update[slot.index()] = now - Duration::from_secs(1);
-
-    let debt = coord.update_slot_realign_debt(slot, 14.0, 9.0, Some(DriftMode::Frozen), 2.0, now);
-    assert!(
-        StrategyCoordinator::glft_realign_debt_trigger(debt, Some(DriftMode::Frozen), 2.0),
-        "persistent misalignment should accumulate enough debt to trigger realign"
-    );
-
-    coord.reset_slot_realign_debt(slot);
-    assert!(coord.slot_realign_debt[slot.index()] <= 1e-9);
 }
 
 #[tokio::test]
@@ -822,15 +782,7 @@ async fn test_glft_not_ready_clears_active_slots_before_execution() {
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
 
-    let live = GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
-    };
+    let live = live_glft_snapshot();
     let _ = g.send(live);
 
     let yes_target = DesiredTarget {
@@ -907,16 +859,11 @@ async fn test_glft_paused_clears_active_slots_before_execution() {
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
 
     let paused = GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        ready: true,
-        stale: false,
-        drift_mode: DriftMode::Paused,
+        drift_mode: DriftMode::Frozen,
         basis_drift_ticks: 12.5,
+        reference_health: ReferenceHealth::Blocked,
         hard_basis_unstable: true,
-        ..GlftSignalSnapshot::default()
+        ..live_glft_snapshot()
     };
     let _ = g.send(paused);
 
@@ -986,16 +933,11 @@ async fn test_glft_high_drift_blocks_new_slot_place() {
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
     let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        ready: true,
-        stale: false,
         drift_mode: DriftMode::Frozen,
         basis_drift_ticks: 13.0,
+        reference_health: ReferenceHealth::Blocked,
         hard_basis_unstable: true,
-        ..GlftSignalSnapshot::default()
+        ..live_glft_snapshot()
     });
 
     coord
@@ -1016,15 +958,7 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
     let _ = o.send(OfiSnapshot::default());
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.49, 0.50, 0.50, 0.51));
-    let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
-    });
+    let _ = g.send(live_glft_snapshot());
 
     let target = DesiredTarget {
         side: Side::No,
@@ -1046,7 +980,7 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
         "expected no reprice for early small jitter"
     );
 
-    // Large move now requires directional hold confirmation before publish.
+    // Large move now requires directional confirmation + dwell under actionable-governed targets.
     coord
         .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
         .await;
@@ -1054,29 +988,29 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
         timeout(Duration::from_millis(20), er.recv()).await.is_err(),
         "expected no immediate publish before price-move hold confirmation"
     );
-    tokio::time::sleep(Duration::from_millis(650)).await;
-    coord
-        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
-        .await;
-    assert!(
-        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
-        "expected no publish until third same-direction confirmation"
-    );
-    coord
-        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
-        .await;
-    match timeout(Duration::from_millis(100), er.recv()).await {
-        Ok(Some(OrderManagerCmd::SetTarget(t))) => {
-            assert_eq!(t.side, Side::No);
-            assert_eq!(t.direction, TradeDirection::Buy);
-            assert!(
-                t.price > 0.50,
-                "expected governed upward reprice, got {}",
-                t.price
-            );
+    tokio::time::sleep(Duration::from_millis(2200)).await;
+
+    let mut published = None;
+    for _ in 0..4 {
+        coord
+            .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
+            .await;
+        if let Ok(Some(OrderManagerCmd::SetTarget(t))) =
+            timeout(Duration::from_millis(80), er.recv()).await
+        {
+            published = Some(t);
+            break;
         }
-        other => panic!("expected SetTarget after large move, got {:?}", other),
+        tokio::time::sleep(Duration::from_millis(60)).await;
     }
+    let t = published.expect("expected eventual SetTarget after governed large move");
+    assert_eq!(t.side, Side::No);
+    assert_eq!(t.direction, TradeDirection::Buy);
+    assert!(
+        t.price > 0.50,
+        "expected governed upward reprice, got {}",
+        t.price
+    );
 }
 
 #[tokio::test]
@@ -1084,15 +1018,7 @@ async fn test_glft_slot_rejects_increment_inv_limit_skip_counter() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
     let (_o, _i, _m, g, _k, _er, mut coord) = make_with_glft(config);
-    let _ = g.send(GlftSignalSnapshot {
-        signal_state: GlftSignalState::Live,
-        fit_status: GlftFitStatus::LiveReady,
-        fit_quality: FitQuality::Ready,
-        warm_start_status: WarmStartStatus::Accepted,
-        ready: true,
-        stale: false,
-        ..GlftSignalSnapshot::default()
-    });
+    let _ = g.send(live_glft_snapshot());
 
     let inv = InventoryState {
         net_diff: coord.cfg.max_net_diff,
@@ -1369,7 +1295,7 @@ fn test_glft_price_move_publish_requires_two_same_direction_heartbeats_and_hold(
     assert!(coord.confirm_slot_price_move_at(
         slot,
         PriceMoveDirection::Up,
-        t0 + Duration::from_millis(900),
+        t0 + Duration::from_millis(1200),
     ));
 
     coord.reset_slot_price_move_confirmation(slot);
