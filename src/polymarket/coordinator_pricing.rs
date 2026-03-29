@@ -208,17 +208,20 @@ impl StrategyCoordinator {
         let idx = slot.index();
         self.slot_publish_budget[idx] = Self::glft_publish_budget_cap();
         self.slot_last_budget_refill[idx] = std::time::Instant::now();
+        self.slot_publish_debt_accum[idx] = 0.0;
+        self.slot_last_debt_refill[idx] = std::time::Instant::now();
+        self.slot_last_regime_seen[idx] = None;
+        self.slot_regime_changed_at[idx] = std::time::Instant::now();
     }
 
     pub(super) fn consume_slot_publish_budget(
         &mut self,
         slot: OrderSlot,
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
         cost: f64,
         now: std::time::Instant,
     ) -> bool {
-        self.refill_slot_publish_budget(slot, drift_mode, heat_score, now);
+        self.refill_slot_publish_budget(slot, quote_regime, now);
         let idx = slot.index();
         let normalized_cost = if cost.is_finite() {
             cost.max(0.20)
@@ -234,47 +237,36 @@ impl StrategyCoordinator {
         }
     }
 
-    pub(super) fn glft_publish_reason_is_emergency(reason: SlotPublishReason) -> bool {
-        // Architecture contract:
-        // - Cross-book recovery is always emergency (must bypass budget).
-        // - Other reasons are budget-governed by default and may become emergency
-        //   only when IO layer marks them as hard safety exceptions.
-        matches!(reason, SlotPublishReason::CrossRejectRecovery)
+    pub(super) fn glft_publish_reason_is_abnormal(reason: SlotPublishReason) -> bool {
+        matches!(
+            reason,
+            SlotPublishReason::InvalidState | SlotPublishReason::CrossRecovery
+        )
     }
 
     pub(super) fn glft_publish_reason_budget_cost(
         reason: SlotPublishReason,
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
-        let base = match reason {
-            SlotPublishReason::InitialDwell => 0.75,
-            SlotPublishReason::PriceMove => 1.00,
-            SlotPublishReason::SizeMove => 1.10,
-            SlotPublishReason::CadenceSync => 1.15,
-            SlotPublishReason::EnvelopeEscort => 1.25,
-            SlotPublishReason::UnsafeQuote => 1.35,
-            SlotPublishReason::ForcedRealign => 1.50,
-            SlotPublishReason::CrossRejectRecovery => 1.60,
+        let base: f64 = match reason {
+            SlotPublishReason::Initial => 0.75,
+            SlotPublishReason::Debt => 1.00,
+            SlotPublishReason::InvalidState => 1.35,
+            SlotPublishReason::CrossRecovery => 1.60,
         };
-        let drift_mult = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 1.08,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 1.14,
+        let regime_mult: f64 = match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.08,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 1.14,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 1.20,
             _ => 1.0,
         };
-        let heat_mult = if heat_score.is_finite() {
-            (1.0 + 0.06 * (heat_score - 1.0).max(0.0)).min(1.35)
-        } else {
-            1.0
-        };
-        (base * drift_mult * heat_mult).clamp(0.6, 2.4)
+        (base * regime_mult).clamp(0.6, 2.4)
     }
 
     fn refill_slot_publish_budget(
         &mut self,
         slot: OrderSlot,
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
         now: std::time::Instant,
     ) {
         let idx = slot.index();
@@ -284,10 +276,93 @@ impl StrategyCoordinator {
             return;
         }
         self.slot_last_budget_refill[idx] = now;
-        let refill_rate = Self::glft_publish_budget_refill_per_sec(drift_mode, heat_score);
+        let refill_rate = Self::glft_publish_budget_refill_per_sec(quote_regime);
         let cap = Self::glft_publish_budget_cap();
         let next = self.slot_publish_budget[idx] + dt * refill_rate;
         self.slot_publish_budget[idx] = next.min(cap).max(0.0);
+    }
+
+    pub(super) fn update_slot_publish_debt_accumulator(
+        &mut self,
+        slot: OrderSlot,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        target_follow_debt_ticks: f64,
+        structural_debt_ticks: f64,
+        now: std::time::Instant,
+    ) -> f64 {
+        let idx = slot.index();
+        let last = self.slot_last_debt_refill[idx];
+        let dt = now.saturating_duration_since(last).as_secs_f64().max(0.0);
+        self.slot_last_debt_refill[idx] = now;
+
+        if dt > f64::EPSILON {
+            let decay = Self::glft_publish_debt_decay_per_sec(quote_regime) * dt;
+            self.slot_publish_debt_accum[idx] =
+                (self.slot_publish_debt_accum[idx] - decay).max(0.0);
+        }
+
+        let target_threshold = Self::glft_publish_target_debt_threshold(quote_regime);
+        let structural_threshold = Self::glft_publish_structural_debt_threshold(quote_regime);
+
+        // Architecture intent:
+        // - Direct debt thresholds drive immediate publish.
+        // - Accumulator only integrates *excess above thresholds* so it represents
+        //   persistent unresolved misalignment, not normal 1-2 tick tracking noise.
+        let target_excess = (target_follow_debt_ticks.max(0.0) - target_threshold).max(0.0);
+        let structural_excess = (structural_debt_ticks.max(0.0) - structural_threshold).max(0.0);
+        if dt > f64::EPSILON && (target_excess > 0.0 || structural_excess > 0.0) {
+            let integrated = Self::glft_publish_debt_gain_per_sec()
+                * dt
+                * (0.60 * target_excess + 1.20 * structural_excess);
+            self.slot_publish_debt_accum[idx] =
+                (self.slot_publish_debt_accum[idx] + integrated).min(Self::glft_publish_debt_cap());
+        }
+
+        self.slot_publish_debt_accum[idx]
+    }
+
+    pub(super) fn consume_slot_publish_debt_release(
+        &mut self,
+        slot: OrderSlot,
+        _quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) {
+        let idx = slot.index();
+        // Publish cycle should settle accumulated debt decisively; partial subtraction
+        // tends to create repetitive near-periodic debt publishes in trends.
+        self.slot_publish_debt_accum[idx] = 0.0;
+        self.slot_last_debt_refill[idx] = std::time::Instant::now();
+    }
+
+    fn glft_publish_debt_gain_per_sec() -> f64 {
+        1.2
+    }
+
+    fn glft_publish_debt_decay_per_sec(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> f64 {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 3.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 2.2,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 1.6,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 1.0,
+            None => 3.0,
+        }
+    }
+
+    pub(super) fn glft_publish_debt_release_threshold(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> f64 {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 3.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 4.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 5.0,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
+            None => 3.0,
+        }
+    }
+
+    fn glft_publish_debt_cap() -> f64 {
+        12.0
     }
 
     fn glft_publish_budget_cap() -> f64 {
@@ -295,20 +370,16 @@ impl StrategyCoordinator {
     }
 
     fn glft_publish_budget_refill_per_sec(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 1.05,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 0.85,
-            _ => 1.25,
+        let rate: f64 = match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 1.25,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.05,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 0.85,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 0.50,
+            None => 1.25,
         };
-        let heat_dampen = if heat_score.is_finite() {
-            (1.0 + 0.18 * (heat_score - 1.0).max(0.0)).min(2.2)
-        } else {
-            1.0
-        };
-        (base / heat_dampen).max(0.20)
+        rate.max(0.20)
     }
 
     pub(super) fn side_target_reason(&self, side: Side) -> Option<BidReason> {

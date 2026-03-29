@@ -1,6 +1,7 @@
 use super::*;
 use crate::polymarket::glft::{
-    DriftMode, FitQuality, GlftFitStatus, GlftSignalState, ReferenceHealth, WarmStartStatus,
+    DriftMode, FitQuality, GlftFitStatus, GlftSignalState, QuoteRegime, ReferenceHealth,
+    WarmStartStatus,
 };
 use std::time::Duration;
 use tokio::time::timeout;
@@ -119,6 +120,7 @@ fn live_glft_snapshot() -> GlftSignalSnapshot {
         warm_start_status: WarmStartStatus::Accepted,
         ready: true,
         stale: false,
+        quote_regime: QuoteRegime::Aligned,
         reference_confidence: 1.0,
         reference_health: ReferenceHealth::Healthy,
         ..GlftSignalSnapshot::default()
@@ -650,8 +652,20 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
     coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(target.clone());
     coord.slot_last_ts[OrderSlot::NO_BUY.index()] = Instant::now() - Duration::from_secs(2);
     coord.no_target = Some(target);
+    coord.slot_shadow_targets[OrderSlot::NO_BUY.index()] = Some(DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 6.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[OrderSlot::NO_BUY.index()] =
+        Some(Instant::now() - Duration::from_secs(2));
     coord.slot_publish_budget[OrderSlot::NO_BUY.index()] = 0.0;
     coord.slot_last_budget_refill[OrderSlot::NO_BUY.index()] = Instant::now();
+    coord.slot_last_regime_seen[OrderSlot::NO_BUY.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[OrderSlot::NO_BUY.index()] =
+        Instant::now() - Duration::from_secs(5);
 
     coord
         .slot_place_or_reprice(OrderSlot::NO_BUY, 0.50, 6.0, BidReason::Provide, None)
@@ -691,19 +705,6 @@ async fn test_glft_sync_publish_is_budget_governed() {
     coord.slot_publish_budget[slot.index()] = 0.0;
     coord.slot_last_budget_refill[slot.index()] = Instant::now();
 
-    let t0 = Instant::now() - Duration::from_secs(2);
-    assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
-    assert!(!coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(300),
-    ));
-    assert!(coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(900),
-    ));
-
     coord
         .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
         .await;
@@ -740,19 +741,6 @@ async fn test_glft_sync_publish_tracks_counter_when_published() {
     coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
     coord.yes_target = Some(target);
 
-    let t0 = Instant::now() - Duration::from_secs(2);
-    assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
-    assert!(!coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(300),
-    ));
-    assert!(coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(900),
-    ));
-
     coord
         .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
         .await;
@@ -762,11 +750,11 @@ async fn test_glft_sync_publish_tracks_counter_when_published() {
             assert_eq!(target.side, Side::Yes);
             assert!(target.price > 0.30);
         }
-        other => panic!("expected sync-driven cadence publish, got {:?}", other),
+        other => panic!("expected debt-driven publish, got {:?}", other),
     }
     assert_eq!(
         coord.slot_last_publish_reason[slot.index()],
-        Some(SlotPublishReason::CadenceSync)
+        Some(SlotPublishReason::Debt)
     );
     assert_eq!(coord.stats.forced_realign_count, 0);
     assert_eq!(coord.stats.forced_realign_hard_count, 0);
@@ -859,6 +847,7 @@ async fn test_glft_paused_clears_active_slots_before_execution() {
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
 
     let paused = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Blocked,
         drift_mode: DriftMode::Frozen,
         basis_drift_ticks: 12.5,
         reference_health: ReferenceHealth::Blocked,
@@ -933,6 +922,7 @@ async fn test_glft_high_drift_blocks_new_slot_place() {
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
     let _ = g.send(GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Blocked,
         drift_mode: DriftMode::Frozen,
         basis_drift_ticks: 13.0,
         reference_health: ReferenceHealth::Blocked,
@@ -980,20 +970,65 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
         "expected no reprice for early small jitter"
     );
 
-    // Large move now requires directional confirmation + dwell under actionable-governed targets.
+    // Large move now publishes on debt once shadow/published divergence is large enough.
     coord
         .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
         .await;
+    tokio::time::sleep(Duration::from_millis(1200)).await;
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
+        .await;
+    let first = timeout(Duration::from_millis(80), er.recv()).await;
     assert!(
-        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
-        "expected no immediate publish before price-move hold confirmation"
+        matches!(first, Ok(Some(OrderManagerCmd::SetTarget(_)))),
+        "expected debt-driven publish once divergence is large enough, got {:?}",
+        first
     );
+    let t = match first {
+        Ok(Some(OrderManagerCmd::SetTarget(t))) => t,
+        other => panic!("expected debt-driven SetTarget, got {:?}", other),
+    };
+    assert_eq!(t.side, Side::No);
+    assert_eq!(t.direction, TradeDirection::Buy);
+    assert!(
+        t.price > 0.50,
+        "expected governed upward reprice, got {}",
+        t.price
+    );
+}
+
+#[tokio::test]
+async fn test_glft_confirmed_publish_settles_to_shadow_target() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.49, 0.50, 0.50, 0.51));
+    let _ = g.send(live_glft_snapshot());
+
+    let slot = OrderSlot::NO_BUY;
+    let target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_target = Some(target);
+
+    // Prime shadow and directional confirmation path.
+    coord
+        .slot_place_or_reprice(slot, 0.90, 5.0, BidReason::Provide, None)
+        .await;
     tokio::time::sleep(Duration::from_millis(2200)).await;
 
     let mut published = None;
     for _ in 0..4 {
         coord
-            .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
+            .slot_place_or_reprice(slot, 0.90, 5.0, BidReason::Provide, None)
             .await;
         if let Ok(Some(OrderManagerCmd::SetTarget(t))) =
             timeout(Duration::from_millis(80), er.recv()).await
@@ -1003,13 +1038,16 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
         }
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
-    let t = published.expect("expected eventual SetTarget after governed large move");
-    assert_eq!(t.side, Side::No);
-    assert_eq!(t.direction, TradeDirection::Buy);
+    let t = published.expect("expected eventual SetTarget");
+    let shadow_price = coord
+        .slot_shadow_target(slot)
+        .expect("shadow target should exist")
+        .price;
     assert!(
-        t.price > 0.50,
-        "expected governed upward reprice, got {}",
-        t.price
+        (t.price - shadow_price).abs() < 1e-9,
+        "confirmed publish should settle to shadow target: published={} shadow={}",
+        t.price,
+        shadow_price
     );
 }
 
@@ -1263,47 +1301,6 @@ async fn test_cancel_stats_track_toxic_and_inventory_reasons() {
         .clear_slot_target(OrderSlot::NO_BUY, CancelReason::InventoryLimit)
         .await;
     assert_eq!(coord.stats.cancel_inv, 1);
-}
-
-#[test]
-fn test_glft_price_move_publish_requires_two_same_direction_heartbeats_and_hold() {
-    let mut c = cfg();
-    c.strategy = StrategyKind::GlftMm;
-    c.dry_run = true;
-    let (_o, _i, _m, _k, _er, mut coord) = make(c);
-    let slot = OrderSlot::YES_BUY;
-
-    let t0 = Instant::now();
-    assert!(!coord.confirm_slot_price_move_at(slot, PriceMoveDirection::Up, t0));
-    assert!(!coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Down,
-        t0 + Duration::from_millis(150),
-    ));
-    assert!(!coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(250),
-    ));
-    // Direction changed recently, so streak is still building.
-    assert!(!coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(500),
-    ));
-    // Third same-direction heartbeat after minimum hold allows publish.
-    assert!(coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(1200),
-    ));
-
-    coord.reset_slot_price_move_confirmation(slot);
-    assert!(!coord.confirm_slot_price_move_at(
-        slot,
-        PriceMoveDirection::Up,
-        t0 + Duration::from_millis(950),
-    ));
 }
 
 #[tokio::test]

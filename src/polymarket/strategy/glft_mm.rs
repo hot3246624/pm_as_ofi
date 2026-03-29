@@ -12,8 +12,8 @@ pub(crate) struct GlftMmStrategy;
 
 pub(crate) static GLFT_MM_STRATEGY: GlftMmStrategy = GlftMmStrategy;
 const GLFT_DAMPED_CHEAP_BUY_MAX_DEV_TRUSTED_TICKS: f64 = 8.0;
-const GLFT_FROZEN_CHEAP_BUY_MAX_DEV_TRUSTED_TICKS: f64 = 6.0;
-const GLFT_FROZEN_CHEAP_BUY_MAX_DEV_SYNTH_TICKS: f64 = 8.0;
+const GLFT_GUARDED_CHEAP_BUY_MAX_DEV_TRUSTED_TICKS: f64 = 6.0;
+const GLFT_GUARDED_CHEAP_BUY_MAX_DEV_SYNTH_TICKS: f64 = 8.0;
 
 fn aggregated_heat_score(ofi: Option<&crate::polymarket::messages::OfiSnapshot>) -> f64 {
     ofi.map(|snapshot| snapshot.yes.heat_score.max(snapshot.no.heat_score))
@@ -88,8 +88,7 @@ impl QuoteStrategy for GlftMmStrategy {
         let shaped = shape_glft_quotes(
             r_yes,
             half_spread,
-            glft.drift_mode,
-            glft.basis_drift_ticks,
+            glft.quote_regime,
             cfg.tick_size,
             heat_score,
         );
@@ -122,7 +121,7 @@ impl QuoteStrategy for GlftMmStrategy {
         let yes_buy_guarded = !suppressed_by_drift_edge_guard(
             glft.synthetic_mid_yes,
             glft.trusted_mid,
-            glft.drift_mode,
+            glft.quote_regime,
             cfg.tick_size,
             OrderSlot::YES_BUY,
             yes_buy,
@@ -130,7 +129,7 @@ impl QuoteStrategy for GlftMmStrategy {
         let no_buy_guarded = !suppressed_by_drift_edge_guard(
             glft.synthetic_mid_yes,
             glft.trusted_mid,
-            glft.drift_mode,
+            glft.quote_regime,
             cfg.tick_size,
             OrderSlot::NO_BUY,
             no_buy,
@@ -179,7 +178,7 @@ impl QuoteStrategy for GlftMmStrategy {
 fn suppressed_by_drift_edge_guard(
     synthetic_mid_yes: f64,
     trusted_mid_yes: f64,
-    drift_mode: crate::polymarket::glft::DriftMode,
+    quote_regime: crate::polymarket::glft::QuoteRegime,
     tick_size: f64,
     slot: OrderSlot,
     price: f64,
@@ -187,12 +186,12 @@ fn suppressed_by_drift_edge_guard(
     if price <= 0.0 {
         return false;
     }
-    let trusted_dev_ticks = match drift_mode {
-        crate::polymarket::glft::DriftMode::Damped => {
+    let trusted_dev_ticks = match quote_regime {
+        crate::polymarket::glft::QuoteRegime::Tracking => {
             Some(GLFT_DAMPED_CHEAP_BUY_MAX_DEV_TRUSTED_TICKS)
         }
-        crate::polymarket::glft::DriftMode::Frozen => {
-            Some(GLFT_FROZEN_CHEAP_BUY_MAX_DEV_TRUSTED_TICKS)
+        crate::polymarket::glft::QuoteRegime::Guarded => {
+            Some(GLFT_GUARDED_CHEAP_BUY_MAX_DEV_TRUSTED_TICKS)
         }
         _ => None,
     };
@@ -222,8 +221,8 @@ fn suppressed_by_drift_edge_guard(
     if price + 1e-9 < trusted_side_mid - trusted_dev {
         return true;
     }
-    if matches!(drift_mode, crate::polymarket::glft::DriftMode::Frozen) {
-        let synth_dev = GLFT_FROZEN_CHEAP_BUY_MAX_DEV_SYNTH_TICKS * tick;
+    if matches!(quote_regime, crate::polymarket::glft::QuoteRegime::Guarded) {
+        let synth_dev = GLFT_GUARDED_CHEAP_BUY_MAX_DEV_SYNTH_TICKS * tick;
         if price + 1e-9 < synthetic_side_mid - synth_dev {
             return true;
         }
@@ -260,7 +259,7 @@ mod tests {
     use crate::polymarket::coordinator::Book;
     use crate::polymarket::glft::{
         DriftMode, FitQuality, GlftFitSource, GlftFitStatus, GlftReadinessBlockers,
-        GlftSignalSnapshot, GlftSignalState, WarmStartStatus,
+        GlftSignalSnapshot, GlftSignalState, QuoteRegime, WarmStartStatus,
     };
     use crate::polymarket::messages::{InventoryState, MarketDataMsg, OfiSnapshot};
 
@@ -299,6 +298,11 @@ mod tests {
             modeled_mid: 0.5,
             trusted_mid: 0.5,
             synthetic_mid_yes: 0.5,
+            poly_soft_stale: false,
+            basis_drift_ticks: 0.0,
+            drift_raw_ticks: 0.0,
+            drift_ewma_ticks: 0.0,
+            drift_persist_ms: 0,
             alpha_flow: 0.0,
             sigma_prob: 0.005,
             tau_norm: 0.5,
@@ -312,9 +316,9 @@ mod tests {
             readiness_blockers: GlftReadinessBlockers::default(),
             ready_elapsed_ms: 2_500,
             signal_state: GlftSignalState::Live,
+            quote_regime: QuoteRegime::Aligned,
             reference_confidence: 1.0,
             reference_health: crate::polymarket::glft::ReferenceHealth::Healthy,
-            basis_drift_ticks: 0.0,
             drift_mode: DriftMode::Normal,
             hard_basis_unstable: false,
             ready: true,
@@ -451,6 +455,7 @@ mod tests {
         snapshot.modeled_mid = 0.62;
         snapshot.synthetic_mid_yes = 0.50;
         snapshot.basis_drift_ticks = 11.0;
+        snapshot.quote_regime = QuoteRegime::Guarded;
         snapshot.drift_mode = DriftMode::Frozen;
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
@@ -538,6 +543,7 @@ mod tests {
         snapshot.anchor_prob = 0.11;
         snapshot.modeled_mid = 0.11;
         snapshot.synthetic_mid_yes = 0.35;
+        snapshot.quote_regime = QuoteRegime::Guarded;
         snapshot.drift_mode = DriftMode::Frozen;
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
@@ -574,6 +580,7 @@ mod tests {
         snapshot.anchor_prob = 0.89;
         snapshot.modeled_mid = 0.89;
         snapshot.synthetic_mid_yes = 0.65;
+        snapshot.quote_regime = QuoteRegime::Guarded;
         snapshot.drift_mode = DriftMode::Frozen;
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
@@ -610,6 +617,7 @@ mod tests {
         snapshot.anchor_prob = 0.30;
         snapshot.modeled_mid = 0.30;
         snapshot.synthetic_mid_yes = 0.25;
+        snapshot.quote_regime = QuoteRegime::Tracking;
         snapshot.drift_mode = DriftMode::Damped;
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
@@ -650,6 +658,7 @@ mod tests {
         snapshot.anchor_prob = 0.11;
         snapshot.modeled_mid = 0.11;
         snapshot.synthetic_mid_yes = 0.12;
+        snapshot.quote_regime = QuoteRegime::Aligned;
         snapshot.drift_mode = DriftMode::Normal;
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,

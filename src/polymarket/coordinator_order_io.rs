@@ -141,56 +141,63 @@ impl StrategyCoordinator {
         }
         price = action_price;
 
-        let glft_drift_mode = if self.cfg.strategy == StrategyKind::GlftMm {
-            Some(self.glft_rx.borrow().drift_mode)
+        let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
+            Some(*self.glft_rx.borrow())
         } else {
             None
         };
-        let glft_heat_score = if self.cfg.strategy == StrategyKind::GlftMm {
-            let ofi = *self.ofi_rx.borrow();
-            ofi.yes.heat_score.max(ofi.no.heat_score)
-        } else {
-            0.0
-        };
-        let shadow_publish_dwell =
-            Self::glft_shadow_publish_dwell(glft_drift_mode, glft_heat_score);
+        let glft_quote_regime = glft_snapshot.map(|s| s.quote_regime);
+        let glft_soft_stale = glft_snapshot.map(|s| s.poly_soft_stale).unwrap_or(false);
+        let regime_transition_active =
+            self.glft_update_slot_regime_state(slot, glft_quote_regime, now);
+        let mut shadow_publish_dwell = Self::glft_shadow_publish_dwell(glft_quote_regime);
+        if regime_transition_active {
+            shadow_publish_dwell += Self::glft_regime_transition_extra_dwell(glft_quote_regime);
+        }
         let mut publish_reason: Option<SlotPublishReason> = None;
         let mut distance_to_trusted_mid_ticks: Option<f64> = None;
-        let mut distance_to_normalized_target_ticks: Option<f64> = None;
-        let mut sync_selected = false;
+        let mut distance_to_action_target_ticks: Option<f64> = None;
+        let mut distance_to_shadow_target_ticks: Option<f64> = None;
+        let mut publish_debt: Option<f64> = None;
         let mut publish_hard_safety_exception = false;
+        let mut shadow_target_price = normalized_target_price;
         let glft_shadow_mode =
             self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide;
         if glft_shadow_mode {
             let shadow_target =
                 self.update_slot_shadow_target(slot, normalized_target_price, size, reason);
+            shadow_target_price = shadow_target.price;
             let shadow_age = self
                 .slot_shadow_since(slot)
                 .map(|ts| ts.elapsed())
                 .unwrap_or_default();
             if active {
-                if let Some((trusted_dist, target_dist, _force_realign)) =
+                if let Some((trusted_dist, action_target_dist, _force_realign)) =
                     self.slot_relative_misalignment(slot, slot_price, price)
                 {
                     distance_to_trusted_mid_ticks = Some(trusted_dist);
-                    distance_to_normalized_target_ticks = Some(target_dist);
+                    distance_to_action_target_ticks = Some(action_target_dist);
+                }
+                if let Some((_, shadow_target_dist, _)) =
+                    self.slot_relative_misalignment(slot, slot_price, shadow_target.price)
+                {
+                    distance_to_shadow_target_ticks = Some(shadow_target_dist);
                 }
             } else {
-                if let Some((trusted_dist, target_dist, _)) = self.slot_relative_misalignment(
-                    slot,
-                    shadow_target.price,
-                    normalized_target_price,
-                ) {
+                if let Some((trusted_dist, action_target_dist, _)) = self
+                    .slot_relative_misalignment(slot, shadow_target.price, normalized_target_price)
+                {
                     distance_to_trusted_mid_ticks = Some(trusted_dist);
-                    distance_to_normalized_target_ticks = Some(target_dist);
+                    distance_to_action_target_ticks = Some(action_target_dist);
                 }
+                distance_to_shadow_target_ticks = Some(0.0);
                 if recent_cross_reject {
-                    publish_reason = Some(SlotPublishReason::CrossRejectRecovery);
+                    publish_reason = Some(SlotPublishReason::CrossRecovery);
                     publish_hard_safety_exception = true;
                 } else if shadow_age >= shadow_publish_dwell
                     && self.glft_initial_dwell_book_healthy(slot)
                 {
-                    publish_reason = Some(SlotPublishReason::InitialDwell);
+                    publish_reason = Some(SlotPublishReason::Initial);
                 }
             }
         }
@@ -228,17 +235,13 @@ impl StrategyCoordinator {
             if glft_shadow_mode {
                 if let Some(reason_kind) = publish_reason {
                     let bypass_budget = publish_hard_safety_exception
-                        || Self::glft_publish_reason_is_emergency(reason_kind);
-                    let budget_cost = Self::glft_publish_reason_budget_cost(
-                        reason_kind,
-                        glft_drift_mode,
-                        glft_heat_score,
-                    );
+                        || Self::glft_publish_reason_is_abnormal(reason_kind);
+                    let budget_cost =
+                        Self::glft_publish_reason_budget_cost(reason_kind, glft_quote_regime);
                     if !bypass_budget
                         && !self.consume_slot_publish_budget(
                             slot,
-                            glft_drift_mode,
-                            glft_heat_score,
+                            glft_quote_regime,
                             budget_cost,
                             now,
                         )
@@ -250,7 +253,10 @@ impl StrategyCoordinator {
                     }
                 }
             }
-            self.record_publish_reason_stats(publish_reason, sync_selected);
+            if glft_shadow_mode && matches!(publish_reason, Some(SlotPublishReason::Debt)) {
+                self.consume_slot_publish_debt_release(slot, glft_quote_regime);
+            }
+            self.record_publish_reason_stats(publish_reason);
             self.emit_quote_log(
                 slot,
                 price,
@@ -260,8 +266,10 @@ impl StrategyCoordinator {
                 Some(raw_target_price),
                 Some(normalized_target_price),
                 publish_reason,
+                publish_debt,
                 distance_to_trusted_mid_ticks,
-                distance_to_normalized_target_ticks,
+                distance_to_action_target_ticks,
+                distance_to_shadow_target_ticks,
             );
             self.slot_last_publish_reason[slot.index()] = publish_reason;
             self.place_slot(slot, price, size, reason).await;
@@ -276,7 +284,7 @@ impl StrategyCoordinator {
             let cross_reprice_override = self.cfg.strategy == StrategyKind::GlftMm
                 && recent_cross_reject
                 && (slot_price - price).abs() >= self.cfg.tick_size.max(1e-9) - reprice_eps;
-            let needs_reprice = force_glft_drift_reprice
+            let mut needs_reprice = force_glft_drift_reprice
                 || cross_reprice_override
                 || slot_direction != Some(slot.direction)
                 || (slot_price - price).abs() >= (reprice_band - reprice_eps).max(0.0)
@@ -286,10 +294,9 @@ impl StrategyCoordinator {
                     .slot_shadow_since(slot)
                     .map(|ts| ts.elapsed())
                     .unwrap_or_default();
-                // In GLFT shadow mode, all publish decisions must be evaluated against the
-                // currently actionable target (post clamp + quantize + governor), not the
-                // far-side normalized target that may be intentionally unreachable this tick.
-                let price_gap = (slot_price - price).abs();
+                // In GLFT shadow mode, publish debt is defined as divergence between the
+                // last published order and the latest shadow target.
+                let price_gap_to_shadow = (slot_price - shadow_target_price).abs();
                 let size_gap = (slot_size - size).abs();
                 let (side_bid, side_ask) = match slot.side {
                     Side::Yes => (self.book.yes_bid, self.book.yes_ask),
@@ -310,179 +317,128 @@ impl StrategyCoordinator {
                 } else {
                     None
                 };
-                let unsafe_current_quote = unsafe_depth_ticks.is_some();
-                let (unsafe_trusted_ticks, unsafe_target_ticks) =
-                    Self::glft_unsafe_distance_thresholds(glft_drift_mode, glft_heat_score);
-                let unsafe_needs_publish = distance_to_trusted_mid_ticks
-                    .zip(distance_to_normalized_target_ticks)
-                    .map(|(trusted_dist, target_dist)| {
-                        trusted_dist > unsafe_trusted_ticks || target_dist > unsafe_target_ticks
-                    })
+                let invalid_quote_state = unsafe_depth_ticks
+                    .map(|depth| !depth.is_finite())
                     .unwrap_or(false);
                 let tick = self.cfg.tick_size.max(1e-9);
-                let hard_forced_realign = distance_to_trusted_mid_ticks
-                    .zip(distance_to_normalized_target_ticks)
-                    .map(|(trusted_dist, target_dist)| trusted_dist > 20.0 && target_dist > 14.0)
-                    .unwrap_or(false);
-                // EnvelopeEscort is a narrow publish accelerator:
-                // it is only allowed in Normal/Damped when quote drift is clearly lagging.
-                let escort_mode_allowed = matches!(
-                    glft_drift_mode,
-                    None | Some(crate::polymarket::glft::DriftMode::Normal)
-                        | Some(crate::polymarket::glft::DriftMode::Damped)
+                let (stale_trusted_ticks, stale_target_ticks) =
+                    Self::glft_stale_quote_thresholds(glft_quote_regime);
+                let target_debt_ticks = (price_gap_to_shadow / tick).floor();
+                let size_debt_ticks = if size_gap > 0.1 { 4.0 } else { 0.0 };
+                let reference_debt_ticks = distance_to_trusted_mid_ticks
+                    .zip(distance_to_shadow_target_ticks)
+                    .map(|(trusted_dist, shadow_target_dist)| {
+                        (trusted_dist - stale_trusted_ticks)
+                            .max(0.0)
+                            .max((shadow_target_dist - stale_target_ticks).max(0.0))
+                    })
+                    .unwrap_or(0.0);
+                let safety_debt_ticks = unsafe_depth_ticks
+                    .map(|depth| {
+                        if depth.is_finite() {
+                            depth.max(4.0)
+                        } else {
+                            99.0
+                        }
+                    })
+                    .unwrap_or(0.0);
+                let target_follow_debt_ticks = target_debt_ticks.max(size_debt_ticks);
+                let structural_debt_ticks = reference_debt_ticks.max(safety_debt_ticks);
+                let allow_target_follow_debt =
+                    Self::glft_allow_target_follow_debt(glft_quote_regime) && !glft_soft_stale;
+                let effective_target_follow_debt_ticks = if allow_target_follow_debt {
+                    target_follow_debt_ticks
+                } else {
+                    0.0
+                };
+                let total_publish_debt =
+                    effective_target_follow_debt_ticks.max(structural_debt_ticks);
+                let mut target_follow_threshold =
+                    Self::glft_publish_target_debt_threshold(glft_quote_regime);
+                let mut structural_threshold =
+                    Self::glft_publish_structural_debt_threshold(glft_quote_regime);
+                let mut debt_release_threshold =
+                    Self::glft_publish_debt_release_threshold(glft_quote_regime);
+                let mut debt_dwell = Self::glft_publish_debt_dwell(glft_quote_regime);
+                if regime_transition_active {
+                    let bump = Self::glft_transition_debt_threshold_bump(glft_quote_regime);
+                    target_follow_threshold += bump;
+                    structural_threshold += bump;
+                    debt_release_threshold += bump;
+                    debt_dwell += Self::glft_regime_transition_extra_dwell(glft_quote_regime);
+                }
+                if glft_soft_stale {
+                    self.consume_slot_publish_debt_release(slot, glft_quote_regime);
+                }
+                // Structural debt can bypass elapsed-vs-shadow asymmetry because it reflects
+                // safety/reference integrity instead of micro target chasing.
+                let structural_dwell_ready = elapsed >= debt_dwell || shadow_age >= debt_dwell;
+                // For pure target-following debt, require shadow stability so we do not
+                // chase every micro-step from the model.
+                let target_dwell_ready = shadow_age >= debt_dwell;
+                let debt_accum = self.update_slot_publish_debt_accumulator(
+                    slot,
+                    glft_quote_regime,
+                    effective_target_follow_debt_ticks,
+                    structural_debt_ticks,
+                    now,
                 );
-                let escort_required = distance_to_trusted_mid_ticks
-                    .zip(distance_to_normalized_target_ticks)
-                    .map(|(trusted_dist, target_dist)| trusted_dist >= 10.0 && target_dist >= 5.0)
-                    .unwrap_or(false);
-                let price_move_ticks = match glft_drift_mode {
-                    Some(crate::polymarket::glft::DriftMode::Damped) => 3.5,
-                    Some(crate::polymarket::glft::DriftMode::Frozen) => 4.0,
-                    _ => 3.0,
-                } + Self::glft_heat_price_move_extra_ticks(glft_heat_score);
-                let price_move_threshold = price_move_ticks * tick;
-                let price_move_min_age =
-                    Self::glft_price_move_min_age(glft_drift_mode, glft_heat_score);
-                let escort_min_age = Self::glft_envelope_escort_min_age(glft_drift_mode);
-                let unsafe_min_age = Self::glft_unsafe_publish_min_age(glft_drift_mode);
-                let forced_realign_min_age =
-                    Self::glft_forced_realign_min_age(glft_drift_mode, glft_heat_score);
-                let unsafe_moderate_ticks =
-                    Self::glft_unsafe_moderate_ticks(glft_drift_mode, glft_heat_score);
-                let (sync_trusted_ticks, sync_target_ticks) =
-                    Self::glft_sync_distance_thresholds(glft_drift_mode, glft_heat_score);
-                let mut attempted_directional_publish = false;
+                publish_debt = Some(total_publish_debt.max(debt_accum));
+                let publish_debt_ready = (structural_debt_ticks >= structural_threshold
+                    && structural_dwell_ready)
+                    || (effective_target_follow_debt_ticks >= target_follow_threshold
+                        && target_dwell_ready)
+                    || (debt_accum >= debt_release_threshold
+                        && (structural_dwell_ready || target_dwell_ready));
                 publish_reason = if recent_cross_reject {
                     publish_hard_safety_exception = true;
-                    Some(SlotPublishReason::CrossRejectRecovery)
-                } else if hard_forced_realign {
-                    // Hard forced realign is now budget-governed (not exempt)
-                    // to prevent unchecked churn. Only CrossRejectRecovery bypasses budget.
-                    attempted_directional_publish = true;
-                    match Self::slot_price_move_direction(slot_price, price) {
-                        Some(direction) if self.confirm_slot_price_move(slot, direction) => {
-                            Some(SlotPublishReason::ForcedRealign)
-                        }
-                        _ => None,
-                    }
-                } else if distance_to_trusted_mid_ticks
-                    .zip(distance_to_normalized_target_ticks)
-                    .map(|(trusted_dist, target_dist)| {
-                        trusted_dist >= sync_trusted_ticks && target_dist >= sync_target_ticks
-                    })
-                    .unwrap_or(false)
-                    && elapsed >= forced_realign_min_age
-                    && price_gap >= tick
-                {
-                    attempted_directional_publish = true;
-                    match Self::slot_price_move_direction(slot_price, price) {
-                        Some(direction) if self.confirm_slot_price_move(slot, direction) => {
-                            sync_selected = true;
-                            Some(SlotPublishReason::CadenceSync)
-                        }
-                        _ => None,
-                    }
-                } else if escort_mode_allowed
-                    && escort_required
-                    && elapsed >= escort_min_age
-                    && shadow_age >= shadow_publish_dwell
-                {
-                    attempted_directional_publish = true;
-                    match Self::slot_price_move_direction(slot_price, price) {
-                        Some(direction) if self.confirm_slot_price_move(slot, direction) => {
-                            Some(SlotPublishReason::EnvelopeEscort)
-                        }
-                        _ => None,
-                    }
-                } else if unsafe_current_quote && unsafe_needs_publish {
-                    let severe_unsafe = unsafe_depth_ticks
-                        .map(|depth_ticks| !depth_ticks.is_finite() || depth_ticks >= 4.0)
-                        .unwrap_or(false);
-                    let moderate_unsafe = unsafe_depth_ticks
-                        .map(|depth_ticks| {
-                            depth_ticks.is_finite() && depth_ticks >= unsafe_moderate_ticks
-                        })
-                        .unwrap_or(false);
-                    if severe_unsafe
-                        && unsafe_depth_ticks
-                            .map(|depth_ticks| !depth_ticks.is_finite())
-                            .unwrap_or(false)
-                    {
-                        publish_hard_safety_exception = true;
-                        Some(SlotPublishReason::UnsafeQuote)
-                    } else if severe_unsafe && elapsed >= unsafe_min_age / 2 {
-                        publish_hard_safety_exception = true;
-                        Some(SlotPublishReason::UnsafeQuote)
-                    } else if moderate_unsafe
-                        && elapsed >= unsafe_min_age
-                        && shadow_age >= shadow_publish_dwell
-                    {
-                        attempted_directional_publish = true;
-                        match Self::slot_price_move_direction(slot_price, price) {
-                            Some(direction) if self.confirm_slot_price_move(slot, direction) => {
-                                Some(SlotPublishReason::UnsafeQuote)
-                            }
-                            _ => None,
-                        }
-                    } else {
-                        None
-                    }
-                } else if size_gap > 0.1 {
-                    Some(SlotPublishReason::SizeMove)
-                } else if price_gap >= price_move_threshold {
-                    if elapsed >= price_move_min_age {
-                        let trusted_move_gate = Self::glft_price_move_trusted_min_ticks(
-                            glft_drift_mode,
-                            glft_heat_score,
-                        );
-                        let target_move_gate = Self::glft_price_move_target_min_ticks(
-                            glft_drift_mode,
-                            glft_heat_score,
-                        );
-                        let price_move_allowed = distance_to_trusted_mid_ticks
-                            .map(|ticks| ticks >= trusted_move_gate)
-                            .unwrap_or(true)
-                            || distance_to_normalized_target_ticks
-                                .map(|ticks| ticks >= target_move_gate)
-                                .unwrap_or(true)
-                            || shadow_age >= shadow_publish_dwell.saturating_mul(2);
-                        if !price_move_allowed {
-                            None
-                        } else {
-                            attempted_directional_publish = true;
-                            match Self::slot_price_move_direction(slot_price, price) {
-                                Some(direction)
-                                    if self.confirm_slot_price_move(slot, direction) =>
-                                {
-                                    Some(SlotPublishReason::PriceMove)
-                                }
-                                _ => None,
-                            }
-                        }
-                    } else {
-                        None
-                    }
+                    Some(SlotPublishReason::CrossRecovery)
+                } else if invalid_quote_state {
+                    publish_hard_safety_exception = true;
+                    Some(SlotPublishReason::InvalidState)
+                } else if !glft_soft_stale && publish_debt_ready {
+                    Some(SlotPublishReason::Debt)
                 } else {
                     None
                 };
-                if !attempted_directional_publish {
-                    self.reset_slot_price_move_confirmation(slot);
-                }
                 if let Some(reason_kind) = publish_reason {
-                    let cooldown = Self::glft_publish_reason_cooldown(
-                        reason_kind,
-                        glft_drift_mode,
-                        glft_heat_score,
-                    );
+                    let cooldown =
+                        Self::glft_publish_reason_cooldown(reason_kind, glft_quote_regime);
                     if cooldown > std::time::Duration::ZERO && elapsed < cooldown {
                         publish_reason = None;
-                        sync_selected = false;
                         publish_hard_safety_exception = false;
                     }
                 }
-                if publish_reason.is_some() {
-                    self.reset_slot_price_move_confirmation(slot);
+                if let Some(reason_kind) = publish_reason {
+                    if Self::glft_publish_should_settle_to_shadow(
+                        reason_kind,
+                        glft_quote_regime,
+                        price_gap_to_shadow,
+                        tick,
+                        distance_to_shadow_target_ticks,
+                    ) {
+                        // Once a publish reason is confirmed, settle directly to shadow target
+                        // instead of emitting another partial governor step. This removes
+                        // repetitive 2-4 tick debt-chasing reprices.
+                        price = shadow_target_price;
+                        if let Some((trusted_dist, action_target_dist, _)) =
+                            self.slot_relative_misalignment(slot, slot_price, price)
+                        {
+                            distance_to_trusted_mid_ticks = Some(trusted_dist);
+                            distance_to_action_target_ticks = Some(action_target_dist);
+                        }
+                        if let Some((_, shadow_target_dist, _)) =
+                            self.slot_relative_misalignment(slot, slot_price, shadow_target_price)
+                        {
+                            distance_to_shadow_target_ticks = Some(shadow_target_dist);
+                        }
+                    }
                 }
+                needs_reprice = force_glft_drift_reprice
+                    || cross_reprice_override
+                    || slot_direction != Some(slot.direction)
+                    || (slot_price - price).abs() >= (reprice_band - reprice_eps).max(0.0)
+                    || (slot_size - size).abs() > 0.1;
             }
             if needs_reprice {
                 if glft_shadow_mode && publish_reason.is_none() {
@@ -492,17 +448,13 @@ impl StrategyCoordinator {
                 if glft_shadow_mode {
                     if let Some(reason_kind) = publish_reason {
                         let bypass_budget = publish_hard_safety_exception
-                            || Self::glft_publish_reason_is_emergency(reason_kind);
-                        let budget_cost = Self::glft_publish_reason_budget_cost(
-                            reason_kind,
-                            glft_drift_mode,
-                            glft_heat_score,
-                        );
+                            || Self::glft_publish_reason_is_abnormal(reason_kind);
+                        let budget_cost =
+                            Self::glft_publish_reason_budget_cost(reason_kind, glft_quote_regime);
                         if !bypass_budget
                             && !self.consume_slot_publish_budget(
                                 slot,
-                                glft_drift_mode,
-                                glft_heat_score,
+                                glft_quote_regime,
                                 budget_cost,
                                 now,
                             )
@@ -514,7 +466,10 @@ impl StrategyCoordinator {
                         }
                     }
                 }
-                self.record_publish_reason_stats(publish_reason, sync_selected);
+                if glft_shadow_mode && matches!(publish_reason, Some(SlotPublishReason::Debt)) {
+                    self.consume_slot_publish_debt_release(slot, glft_quote_regime);
+                }
+                self.record_publish_reason_stats(publish_reason);
                 self.emit_quote_log(
                     slot,
                     price,
@@ -524,12 +479,14 @@ impl StrategyCoordinator {
                     Some(raw_target_price),
                     Some(normalized_target_price),
                     publish_reason,
+                    publish_debt,
                     distance_to_trusted_mid_ticks,
-                    distance_to_normalized_target_ticks,
+                    distance_to_action_target_ticks,
+                    distance_to_shadow_target_ticks,
                 );
                 self.slot_last_publish_reason[slot.index()] = publish_reason;
                 debug!(
-                    "🔄 reprice {:?} {:?} {:.3}→{:.3} sz={:.1} band={:.3} publish_reason={:?}",
+                    "🔄 reprice {:?} {:?} {:.3}→{:.3} sz={:.1} band={:.3} publish_cause={:?}",
                     slot.side,
                     slot.direction,
                     slot_price,
@@ -538,7 +495,6 @@ impl StrategyCoordinator {
                     reprice_band,
                     publish_reason
                 );
-                self.stats.cancel_reprice += 1;
                 self.place_slot(slot, price, size, reason).await;
             }
         }
@@ -567,7 +523,6 @@ impl StrategyCoordinator {
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
         self.reset_slot_publish_state(slot);
-        self.reset_slot_price_move_confirmation(slot);
         match slot {
             OrderSlot::YES_BUY => self.yes_target = None,
             OrderSlot::NO_BUY => self.no_target = None,
@@ -576,6 +531,7 @@ impl StrategyCoordinator {
         self.sync_buy_side_wrapper(slot);
 
         debug!("🗑️ Cancel {} ({:?})", slot.as_str(), reason);
+        self.stats.cancel_events = self.stats.cancel_events.saturating_add(1);
         if self.cfg.dry_run {
             info!("📝 DRY cancel {} ({:?})", slot.as_str(), reason);
             return;
@@ -712,12 +668,17 @@ impl StrategyCoordinator {
             reason,
         };
 
+        let replacing = self.slot_target(slot).is_some();
         self.slot_targets[slot.index()] = Some(target.clone());
         self.slot_last_ts[slot.index()] = Instant::now();
-        self.reset_slot_price_move_confirmation(slot);
         self.sync_buy_side_wrapper(slot);
 
         self.stats.placed += 1;
+        if replacing {
+            self.stats.replace_events = self.stats.replace_events.saturating_add(1);
+        } else {
+            self.stats.publish_events = self.stats.publish_events.saturating_add(1);
+        }
 
         if self.cfg.dry_run {
             info!(
@@ -740,8 +701,10 @@ impl StrategyCoordinator {
         raw_target: Option<f64>,
         normalized_target: Option<f64>,
         publish_reason: Option<SlotPublishReason>,
+        publish_debt: Option<f64>,
         distance_to_trusted_mid_ticks: Option<f64>,
-        distance_to_normalized_target_ticks: Option<f64>,
+        distance_to_action_target_ticks: Option<f64>,
+        distance_to_shadow_target_ticks: Option<f64>,
     ) {
         // GLFT slot quotes are sometimes nudged right before action (governor/keep-band).
         // Log actionable price/size so quote logs match actual place/reprice.
@@ -786,8 +749,7 @@ impl StrategyCoordinator {
             let shaped = shape_glft_quotes(
                 r_yes,
                 half_spread,
-                glft.drift_mode,
-                glft.basis_drift_ticks,
+                glft.quote_regime,
                 self.cfg.tick_size,
                 heat_score,
             );
@@ -829,7 +791,7 @@ impl StrategyCoordinator {
                 .or_else(|| self.slot_publish_reason(slot).map(|reason| reason.as_str()))
                 .unwrap_or("none");
             info!(
-                "📐 GLFT {} {:?}@{:.3} sz={:.1} | source={} fit={:?}/{:?} state={:?} drift_mode={:?} drift_ticks={:.1} anchor={:.3} basis={:.3} basis_raw={:.3} basis_clamped={:.3} modeled_mid={:.3} trusted_mid={:.3} synthetic_mid={:.3} stale_secs={:.2} alpha={:.3} heat={:.2} sigma={:.7} a={:.3} k={:.3} q_norm={:.3} inv_shift={:.6} half_base={:.4} spread_mult={:.3} dominant_side={:?} dominant_buy_penalty_ticks={:.1} dominant_buy_suppressed={} r_yes_pre={:.3} r_yes_post={:.3} raw_target={:.3} normalized_target={:.3} shadow_target={:.3} publish_target={:.3} publish_reason={} dist_trusted_ticks={:.1} dist_target_ticks={:.1} pre[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3} final[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3}",
+                "📐 GLFT {} {:?}@{:.3} sz={:.1} | source={} fit={:?}/{:?} state={:?} regime={:?} drift_mode={:?} drift_raw={:.1} drift_ewma={:.1} drift_persist_ms={} anchor={:.3} basis={:.3} basis_raw={:.3} basis_clamped={:.3} modeled_mid={:.3} trusted_mid={:.3} synthetic_mid={:.3} poly_soft_stale={} stale_secs={:.2} alpha={:.3} heat={:.2} sigma={:.7} a={:.3} k={:.3} q_norm={:.3} inv_shift={:.6} half_base={:.4} spread_mult={:.3} dominant_side={:?} dominant_buy_penalty_ticks={:.1} dominant_buy_suppressed={} r_yes_pre={:.3} r_yes_post={:.3} raw_target={:.3} normalized_target={:.3} shadow_target={:.3} publish_target={:.3} publish_cause={} publish_debt={:.1} dist_trusted_ticks={:.1} dist_action_ticks={:.1} dist_shadow_ticks={:.1} pre[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3} final[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3}",
                 slot.as_str(),
                 slot.direction,
                 price,
@@ -838,8 +800,11 @@ impl StrategyCoordinator {
                 glft.fit_quality,
                 if glft.ready && !glft.stale { "live" } else { "stale" },
                 glft.signal_state,
+                glft.quote_regime,
                 glft.drift_mode,
-                glft.basis_drift_ticks,
+                glft.drift_raw_ticks,
+                glft.drift_ewma_ticks,
+                glft.drift_persist_ms,
                 glft.anchor_prob,
                 glft.basis_prob,
                 glft.basis_raw,
@@ -847,6 +812,7 @@ impl StrategyCoordinator {
                 glft.modeled_mid,
                 glft.trusted_mid,
                 glft.synthetic_mid_yes,
+                glft.poly_soft_stale,
                 glft.stale_secs,
                 glft.alpha_flow,
                 heat_score,
@@ -867,8 +833,10 @@ impl StrategyCoordinator {
                 shadow_target,
                 price,
                 publish_reason,
+                publish_debt.unwrap_or(0.0),
                 distance_to_trusted_mid_ticks.unwrap_or(0.0),
-                distance_to_normalized_target_ticks.unwrap_or(0.0),
+                distance_to_action_target_ticks.unwrap_or(0.0),
+                distance_to_shadow_target_ticks.unwrap_or(0.0),
                 shaped.yes_buy_ceiling,
                 shaped.yes_sell_floor,
                 shaped.no_buy_ceiling,
@@ -885,58 +853,97 @@ impl StrategyCoordinator {
         }
     }
 
-    fn glft_buy_corridor_ticks(drift_mode: crate::polymarket::glft::DriftMode) -> f64 {
-        match drift_mode {
-            crate::polymarket::glft::DriftMode::Normal => 8.0,
-            crate::polymarket::glft::DriftMode::Damped => 7.0,
-            crate::polymarket::glft::DriftMode::Frozen => 6.0,
+    fn glft_buy_corridor_ticks(quote_regime: crate::polymarket::glft::QuoteRegime) -> f64 {
+        match quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => 8.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 7.0,
+            crate::polymarket::glft::QuoteRegime::Guarded
+            | crate::polymarket::glft::QuoteRegime::Blocked => 6.0,
         }
     }
 
-    fn glft_heat_publish_level(heat_score: f64) -> u8 {
-        if !heat_score.is_finite() {
-            return 0;
+    fn glft_update_slot_regime_state(
+        &mut self,
+        slot: OrderSlot,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        now: Instant,
+    ) -> bool {
+        let idx = slot.index();
+        let Some(regime) = quote_regime else {
+            self.slot_last_regime_seen[idx] = None;
+            self.slot_regime_changed_at[idx] = now;
+            return false;
+        };
+        if self.slot_last_regime_seen[idx] != Some(regime) {
+            self.slot_last_regime_seen[idx] = Some(regime);
+            self.slot_regime_changed_at[idx] = now;
+            return true;
         }
-        if heat_score >= 8.0 {
-            3
-        } else if heat_score >= 4.0 {
-            2
-        } else if heat_score >= 2.0 {
-            1
-        } else {
-            0
+        now.saturating_duration_since(self.slot_regime_changed_at[idx])
+            < Self::glft_regime_transition_grace(regime)
+    }
+
+    fn glft_regime_transition_grace(
+        regime: crate::polymarket::glft::QuoteRegime,
+    ) -> std::time::Duration {
+        match regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => std::time::Duration::from_millis(500),
+            crate::polymarket::glft::QuoteRegime::Tracking => std::time::Duration::from_millis(850),
+            crate::polymarket::glft::QuoteRegime::Guarded => std::time::Duration::from_millis(1200),
+            crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::from_millis(1500),
         }
     }
 
-    fn glft_heat_price_move_extra_ticks(heat_score: f64) -> f64 {
-        match Self::glft_heat_publish_level(heat_score) {
-            0 => 0.0,
-            1 => 1.0,
-            2 => 2.0,
-            _ => 3.0,
+    fn glft_regime_transition_extra_dwell(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> std::time::Duration {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
+                std::time::Duration::from_millis(250)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
+                std::time::Duration::from_millis(350)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
+                std::time::Duration::from_millis(450)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
+                std::time::Duration::from_millis(600)
+            }
+            None => std::time::Duration::from_millis(250),
+        }
+    }
+
+    fn glft_transition_debt_threshold_bump(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> f64 {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 1.5,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.25,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 1.0,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 0.5,
+            None => 1.0,
         }
     }
 
     fn glft_shadow_publish_dwell(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> std::time::Duration {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
+                std::time::Duration::from_millis(700)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
+                std::time::Duration::from_millis(1000)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
+                std::time::Duration::from_millis(1400)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
                 std::time::Duration::from_millis(1800)
             }
-            Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                std::time::Duration::from_millis(2200)
-            }
-            _ => std::time::Duration::from_millis(1500),
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => std::time::Duration::ZERO,
-            1 => std::time::Duration::from_millis(180),
-            2 => std::time::Duration::from_millis(320),
-            _ => std::time::Duration::from_millis(500),
-        };
-        base.saturating_add(extra)
+            None => std::time::Duration::from_millis(700),
+        }
     }
 
     fn glft_initial_dwell_book_healthy(&self, slot: OrderSlot) -> bool {
@@ -954,245 +961,111 @@ impl StrategyCoordinator {
             && glft.stale_secs.is_finite()
             && glft.stale_secs <= 1.0
             && !matches!(
-                glft.reference_health,
-                crate::polymarket::glft::ReferenceHealth::Blocked
+                glft.quote_regime,
+                crate::polymarket::glft::QuoteRegime::Blocked
             )
     }
 
-    fn glft_envelope_escort_min_age(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-    ) -> std::time::Duration {
-        match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => {
-                std::time::Duration::from_millis(1200)
-            }
-            _ => std::time::Duration::from_millis(1000),
+    pub(super) fn glft_publish_target_debt_threshold(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> f64 {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 4.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 5.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 6.0,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
+            None => 4.0,
         }
     }
 
-    fn glft_unsafe_publish_min_age(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-    ) -> std::time::Duration {
-        match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => {
-                std::time::Duration::from_millis(1600)
-            }
-            Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                std::time::Duration::from_millis(1900)
-            }
-            _ => std::time::Duration::from_millis(1400),
+    pub(super) fn glft_publish_structural_debt_threshold(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> f64 {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 2.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 3.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 4.0,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
+            None => 2.0,
         }
     }
 
-    fn glft_forced_realign_min_age(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+    fn glft_publish_debt_dwell(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> std::time::Duration {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => {
-                std::time::Duration::from_millis(1200)
-            }
-            Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                std::time::Duration::from_millis(1500)
-            }
-            _ => std::time::Duration::from_millis(900),
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => std::time::Duration::ZERO,
-            1 => std::time::Duration::from_millis(120),
-            2 => std::time::Duration::from_millis(220),
-            _ => std::time::Duration::from_millis(320),
-        };
-        base.saturating_add(extra)
+        Self::glft_shadow_publish_dwell(quote_regime)
     }
 
     fn glft_publish_reason_cooldown(
         reason: SlotPublishReason,
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> std::time::Duration {
-        let base = match reason {
-            SlotPublishReason::EnvelopeEscort => match drift_mode {
-                Some(crate::polymarket::glft::DriftMode::Damped) => {
-                    std::time::Duration::from_millis(2000)
-                }
-                Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                    std::time::Duration::from_millis(2200)
-                }
-                _ => std::time::Duration::from_millis(1800),
-            },
-            SlotPublishReason::PriceMove => match drift_mode {
-                Some(crate::polymarket::glft::DriftMode::Damped) => {
-                    std::time::Duration::from_millis(1600)
-                }
-                Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                    std::time::Duration::from_millis(1800)
-                }
-                _ => std::time::Duration::from_millis(1600),
-            },
-            SlotPublishReason::UnsafeQuote => match drift_mode {
-                Some(crate::polymarket::glft::DriftMode::Damped) => {
-                    std::time::Duration::from_millis(1500)
-                }
-                Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                    std::time::Duration::from_millis(1800)
-                }
-                _ => std::time::Duration::from_millis(1200),
-            },
-            SlotPublishReason::ForcedRealign => match drift_mode {
-                Some(crate::polymarket::glft::DriftMode::Damped) => {
-                    std::time::Duration::from_millis(1800)
-                }
-                Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                    std::time::Duration::from_millis(2100)
-                }
-                _ => std::time::Duration::from_millis(1500),
-            },
-            SlotPublishReason::CadenceSync => match drift_mode {
-                Some(crate::polymarket::glft::DriftMode::Damped) => {
-                    std::time::Duration::from_millis(1700)
-                }
-                Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                    std::time::Duration::from_millis(2000)
-                }
-                _ => std::time::Duration::from_millis(1500),
-            },
-            _ => std::time::Duration::ZERO,
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => std::time::Duration::ZERO,
-            1 => std::time::Duration::from_millis(140),
-            2 => std::time::Duration::from_millis(260),
-            _ => std::time::Duration::from_millis(420),
-        };
-        base.saturating_add(extra)
+        match reason {
+            SlotPublishReason::Initial => std::time::Duration::ZERO,
+            SlotPublishReason::Debt => Self::glft_shadow_publish_dwell(quote_regime),
+            SlotPublishReason::InvalidState => std::time::Duration::from_millis(150),
+            SlotPublishReason::CrossRecovery => std::time::Duration::ZERO,
+        }
     }
 
-    fn record_publish_reason_stats(
-        &mut self,
-        publish_reason: Option<SlotPublishReason>,
-        debt_sync_selected: bool,
-    ) {
-        if matches!(publish_reason, Some(SlotPublishReason::ForcedRealign)) {
+    fn glft_publish_should_settle_to_shadow(
+        reason: SlotPublishReason,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        shadow_price_gap: f64,
+        tick: f64,
+        shadow_gap_ticks: Option<f64>,
+    ) -> bool {
+        let settle_gap = match reason {
+            SlotPublishReason::CrossRecovery | SlotPublishReason::InvalidState => 2.0 * tick,
+            SlotPublishReason::Debt => match quote_regime {
+                Some(crate::polymarket::glft::QuoteRegime::Guarded) => 4.0 * tick,
+                Some(crate::polymarket::glft::QuoteRegime::Tracking) => 3.0 * tick,
+                _ => 2.0 * tick,
+            },
+            SlotPublishReason::Initial => f64::INFINITY,
+        };
+        // Shadow-gap gating should follow regime strictness but avoid 2-tick boundary chatter
+        // in Aligned/Tracking where most debt publishes happen.
+        let min_shadow_gap_ticks = match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 3.0,
+            _ => 2.0,
+        };
+        let shadow_large_enough = shadow_gap_ticks
+            .map(|ticks| ticks >= min_shadow_gap_ticks)
+            .unwrap_or(false);
+        shadow_price_gap >= settle_gap && shadow_large_enough
+    }
+
+    fn record_publish_reason_stats(&mut self, publish_reason: Option<SlotPublishReason>) {
+        if matches!(publish_reason, Some(SlotPublishReason::InvalidState)) {
             self.stats.forced_realign_count = self.stats.forced_realign_count.saturating_add(1);
             self.stats.forced_realign_hard_count =
                 self.stats.forced_realign_hard_count.saturating_add(1);
         }
-        if matches!(publish_reason, Some(SlotPublishReason::CadenceSync)) || debt_sync_selected {
+        if matches!(publish_reason, Some(SlotPublishReason::Debt)) {
             self.stats.debt_realign_triggers = self.stats.debt_realign_triggers.saturating_add(1);
         }
     }
 
-    fn glft_price_move_min_age(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> std::time::Duration {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => {
-                std::time::Duration::from_millis(1000)
-            }
-            Some(crate::polymarket::glft::DriftMode::Frozen) => {
-                std::time::Duration::from_millis(1200)
-            }
-            _ => std::time::Duration::from_millis(900),
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => std::time::Duration::ZERO,
-            1 => std::time::Duration::from_millis(100),
-            2 => std::time::Duration::from_millis(180),
-            _ => std::time::Duration::from_millis(280),
-        };
-        base.saturating_add(extra)
-    }
-
-    fn glft_price_move_trusted_min_ticks(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> f64 {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 6.5,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 7.0,
-            _ => 6.0,
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => 0.0,
-            1 => 0.25,
-            2 => 0.5,
-            _ => 0.75,
-        };
-        base + extra
-    }
-
-    fn glft_price_move_target_min_ticks(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> f64 {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 3.5,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 4.0,
-            _ => 3.0,
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => 0.0,
-            1 => 0.25,
-            2 => 0.5,
-            _ => 0.75,
-        };
-        base + extra
-    }
-
-    fn glft_unsafe_distance_thresholds(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
+    fn glft_stale_quote_thresholds(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> (f64, f64) {
-        let (base_trusted, base_target) = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => (10.0, 6.5),
-            Some(crate::polymarket::glft::DriftMode::Frozen) => (9.0, 6.0),
-            _ => (11.0, 7.0),
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => 0.0,
-            1 => 0.5,
-            2 => 1.0,
-            _ => 1.5,
-        };
-        (base_trusted + extra, base_target + extra)
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => (12.0, 8.0),
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => (10.0, 7.0),
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => (8.0, 6.0),
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => (6.0, 5.0),
+            None => (12.0, 8.0),
+        }
     }
 
-    fn glft_sync_distance_thresholds(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> (f64, f64) {
-        let (base_trusted, base_target) = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => (12.0, 4.5),
-            Some(crate::polymarket::glft::DriftMode::Frozen) => (13.0, 5.0),
-            _ => (11.0, 4.0),
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => 0.0,
-            1 => 0.5,
-            2 => 1.0,
-            _ => 1.5,
-        };
-        (base_trusted + extra, base_target + extra)
-    }
-
-    fn glft_unsafe_moderate_ticks(
-        drift_mode: Option<crate::polymarket::glft::DriftMode>,
-        heat_score: f64,
-    ) -> f64 {
-        let base = match drift_mode {
-            Some(crate::polymarket::glft::DriftMode::Damped) => 2.5,
-            Some(crate::polymarket::glft::DriftMode::Frozen) => 2.5,
-            _ => 3.0,
-        };
-        let extra = match Self::glft_heat_publish_level(heat_score) {
-            0 => 0.0,
-            1 => 0.25,
-            2 => 0.5,
-            _ => 0.75,
-        };
-        base + extra
+    fn glft_allow_target_follow_debt(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> bool {
+        matches!(
+            quote_regime,
+            None | Some(crate::polymarket::glft::QuoteRegime::Aligned)
+        )
     }
 
     fn glft_clamp_slot_target_price(&self, slot: OrderSlot, price: f64) -> f64 {
@@ -1201,7 +1074,7 @@ impl StrategyCoordinator {
         }
         let glft = *self.glft_rx.borrow();
         let tick = self.cfg.tick_size.max(1e-9);
-        let max_dev = Self::glft_buy_corridor_ticks(glft.drift_mode) * tick;
+        let max_dev = Self::glft_buy_corridor_ticks(glft.quote_regime) * tick;
         let side_trusted_mid = match slot.side {
             Side::Yes => glft.trusted_mid,
             Side::No => 1.0 - glft.trusted_mid,
@@ -1243,66 +1116,11 @@ impl StrategyCoordinator {
         self.slot_shadow_targets[idx].clone().unwrap_or(next)
     }
 
-    fn slot_price_move_direction(from_price: f64, to_price: f64) -> Option<PriceMoveDirection> {
-        if to_price > from_price + 1e-9 {
-            Some(PriceMoveDirection::Up)
-        } else if to_price + 1e-9 < from_price {
-            Some(PriceMoveDirection::Down)
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn confirm_slot_price_move(
-        &mut self,
-        slot: OrderSlot,
-        direction: PriceMoveDirection,
-    ) -> bool {
-        self.confirm_slot_price_move_at(slot, direction, Instant::now())
-    }
-
-    pub(super) fn confirm_slot_price_move_at(
-        &mut self,
-        slot: OrderSlot,
-        direction: PriceMoveDirection,
-        now: Instant,
-    ) -> bool {
-        const REQUIRED_STREAK: u8 = 3;
-        const REQUIRED_HOLD_MS: u64 = 900;
-        let idx = slot.index();
-        let same_direction = self.slot_price_move_dir[idx] == Some(direction);
-        let next_streak = if same_direction {
-            self.slot_price_move_streak[idx]
-                .saturating_add(1)
-                .min(REQUIRED_STREAK)
-        } else {
-            1
-        };
-        self.slot_price_move_dir[idx] = Some(direction);
-        self.slot_price_move_streak[idx] = next_streak;
-        if !same_direction || self.slot_price_move_since[idx].is_none() {
-            self.slot_price_move_since[idx] = Some(now);
-        }
-        let held_long_enough = self.slot_price_move_since[idx]
-            .map(|since| {
-                now.saturating_duration_since(since).as_millis() >= REQUIRED_HOLD_MS as u128
-            })
-            .unwrap_or(false);
-        next_streak >= REQUIRED_STREAK && held_long_enough
-    }
-
-    pub(super) fn reset_slot_price_move_confirmation(&mut self, slot: OrderSlot) {
-        let idx = slot.index();
-        self.slot_price_move_dir[idx] = None;
-        self.slot_price_move_streak[idx] = 0;
-        self.slot_price_move_since[idx] = None;
-    }
-
     pub(super) fn slot_relative_misalignment(
         &self,
         slot: OrderSlot,
         quoted_price: f64,
-        normalized_target_price: f64,
+        target_price: f64,
     ) -> Option<(f64, f64, bool)> {
         if self.cfg.strategy != StrategyKind::GlftMm {
             return None;
@@ -1314,13 +1132,11 @@ impl StrategyCoordinator {
         };
         let tick = self.cfg.tick_size.max(1e-9);
         let distance_to_trusted_mid_ticks = ((quoted_price - side_trusted_mid).abs()) / tick;
-        let distance_to_normalized_target_ticks =
-            ((quoted_price - normalized_target_price).abs()) / tick;
-        let force_realign =
-            distance_to_trusted_mid_ticks > 20.0 && distance_to_normalized_target_ticks > 14.0;
+        let distance_to_target_ticks = ((quoted_price - target_price).abs()) / tick;
+        let force_realign = distance_to_trusted_mid_ticks > 20.0 && distance_to_target_ticks > 14.0;
         Some((
             distance_to_trusted_mid_ticks,
-            distance_to_normalized_target_ticks,
+            distance_to_target_ticks,
             force_realign,
         ))
     }

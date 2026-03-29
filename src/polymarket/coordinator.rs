@@ -520,6 +520,9 @@ enum HardCloseAction {
 struct Stats {
     ticks: u64,
     placed: u64,
+    publish_events: u64,
+    replace_events: u64,
+    cancel_events: u64,
     cancel_toxic: u64,
     cancel_stale: u64,
     cancel_inv: u64,
@@ -530,6 +533,8 @@ struct Stats {
     ofi_kill_events: u64,
     ofi_blocked_ticks: u64,
     reference_blocked_ms: u64,
+    blocked_due_source: u64,
+    blocked_due_divergence: u64,
     skipped_debounce: u64,
     skipped_backoff: u64,
     skipped_empty_book: u64,
@@ -543,35 +548,21 @@ struct Stats {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotPublishReason {
-    InitialDwell,
-    PriceMove,
-    EnvelopeEscort,
-    CadenceSync,
-    SizeMove,
-    UnsafeQuote,
-    ForcedRealign,
-    CrossRejectRecovery,
+    Initial,
+    Debt,
+    InvalidState,
+    CrossRecovery,
 }
 
 impl SlotPublishReason {
     fn as_str(self) -> &'static str {
         match self {
-            Self::InitialDwell => "initial_dwell",
-            Self::PriceMove => "price_move",
-            Self::EnvelopeEscort => "envelope_escort",
-            Self::CadenceSync => "cadence_sync",
-            Self::SizeMove => "size_move",
-            Self::UnsafeQuote => "unsafe_quote",
-            Self::ForcedRealign => "forced_realign",
-            Self::CrossRejectRecovery => "cross_reject_recovery",
+            Self::Initial => "initial",
+            Self::Debt => "debt",
+            Self::InvalidState => "invalid_state",
+            Self::CrossRecovery => "cross_recovery",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PriceMoveDirection {
-    Up,
-    Down,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -729,11 +720,12 @@ pub struct StrategyCoordinator {
     slot_shadow_targets: [Option<DesiredTarget>; 4],
     slot_shadow_since: [Option<Instant>; 4],
     slot_last_publish_reason: [Option<SlotPublishReason>; 4],
+    slot_last_regime_seen: [Option<crate::polymarket::glft::QuoteRegime>; 4],
+    slot_regime_changed_at: [Instant; 4],
     slot_publish_budget: [f64; 4],
     slot_last_budget_refill: [Instant; 4],
-    slot_price_move_dir: [Option<PriceMoveDirection>; 4],
-    slot_price_move_streak: [u8; 4],
-    slot_price_move_since: [Option<Instant>; 4],
+    slot_publish_debt_accum: [f64; 4],
+    slot_last_debt_refill: [Instant; 4],
     yes_target: Option<DesiredTarget>,
     no_target: Option<DesiredTarget>,
     yes_last_ts: Instant,
@@ -852,11 +844,12 @@ impl StrategyCoordinator {
             slot_shadow_targets: std::array::from_fn(|_| None),
             slot_shadow_since: std::array::from_fn(|_| None),
             slot_last_publish_reason: std::array::from_fn(|_| None),
+            slot_last_regime_seen: std::array::from_fn(|_| None),
+            slot_regime_changed_at: std::array::from_fn(|_| Instant::now()),
             slot_publish_budget: [2.0; 4],
             slot_last_budget_refill: std::array::from_fn(|_| Instant::now()),
-            slot_price_move_dir: std::array::from_fn(|_| None),
-            slot_price_move_streak: [0; 4],
-            slot_price_move_since: std::array::from_fn(|_| None),
+            slot_publish_debt_accum: [0.0; 4],
+            slot_last_debt_refill: std::array::from_fn(|_| Instant::now()),
             yes_target: None,
             no_target: None,
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
@@ -966,11 +959,12 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={}) debt_sync={}) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} divergence={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={}) debt_sync={}) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
+            self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
-            self.stats.reference_blocked_ms,
+            self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_divergence,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count, self.stats.debt_realign_triggers,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
@@ -1049,8 +1043,8 @@ impl StrategyCoordinator {
                 crate::polymarket::glft::GlftSignalState::Live
             )
             && !matches!(
-                glft.reference_health,
-                crate::polymarket::glft::ReferenceHealth::Blocked
+                glft.quote_regime,
+                crate::polymarket::glft::QuoteRegime::Blocked
             )
     }
 
@@ -1097,10 +1091,21 @@ impl StrategyCoordinator {
         let ref_blocked = matches!(
             glft_snapshot,
             Some(snapshot) if matches!(
-                snapshot.reference_health,
-                crate::polymarket::glft::ReferenceHealth::Blocked
+                snapshot.quote_regime,
+                crate::polymarket::glft::QuoteRegime::Blocked
             )
         );
+        if let Some(snapshot) = glft_snapshot {
+            if ref_blocked && self.reference_blocked_since.is_none() {
+                let source_blocked = snapshot.stale || !snapshot.ready;
+                if source_blocked {
+                    self.stats.blocked_due_source = self.stats.blocked_due_source.saturating_add(1);
+                } else {
+                    self.stats.blocked_due_divergence =
+                        self.stats.blocked_due_divergence.saturating_add(1);
+                }
+            }
+        }
         self.update_reference_blocked_time(ref_blocked, now);
         self.maybe_log_inventory_metrics(&inv, &ofi);
 
