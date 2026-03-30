@@ -1276,6 +1276,47 @@ async fn test_glft_target_follow_debt_does_not_publish_without_structural_misali
 }
 
 #[tokio::test]
+async fn test_glft_guarded_edge_initial_publish_needs_extra_headroom() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, _m, g, _k, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    coord.book = book(0.94, 0.96, 0.04, 0.05);
+    coord.last_valid_book = coord.book;
+    coord.last_valid_ts_yes = Instant::now();
+    coord.last_valid_ts_no = Instant::now();
+
+    let mut glft = live_glft_snapshot();
+    glft.quote_regime = QuoteRegime::Guarded;
+    glft.drift_mode = DriftMode::Frozen;
+    glft.trusted_mid = 0.93;
+    glft.synthetic_mid_yes = 0.96;
+    let _ = g.send(glft);
+    let slot = OrderSlot::NO_BUY;
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Guarded);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(10);
+
+    // 1st call only seeds shadow target.
+    coord
+        .slot_place_or_reprice(slot, 0.01, 5.0, BidReason::Provide, None)
+        .await;
+    tokio::time::sleep(Duration::from_millis(3600)).await;
+    // 2nd call reaches initial publish window, but edge headroom is still fragile.
+    coord
+        .slot_place_or_reprice(slot, 0.01, 5.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(60), er.recv()).await.is_err(),
+        "guarded edge quote should be suppressed when best_ask barely equals post-only margin"
+    );
+    assert!(coord.slot_target(slot).is_none());
+}
+
+#[tokio::test]
 async fn test_glft_slot_rejects_increment_inv_limit_skip_counter() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;

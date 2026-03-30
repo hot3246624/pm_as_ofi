@@ -26,6 +26,14 @@ use super::types::Side;
 
 const GLFT_SOURCE_RECOVERY_FLAP_IGNORE_MS: u64 = 800;
 const GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS: u64 = 4_500;
+const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
+const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
+const LIVE_OBS_REPRICE_RATIO_WARN: f64 = 0.20;
+const LIVE_OBS_REPRICE_RATIO_ALERT: f64 = 0.35;
+const LIVE_OBS_REF_BLOCKED_WARN_MS: u64 = 15_000;
+const LIVE_OBS_REF_BLOCKED_ALERT_MS: u64 = 30_000;
+const LIVE_OBS_HEAT_EVENTS_WARN: u64 = 10;
+const LIVE_OBS_HEAT_EVENTS_ALERT: u64 = 14;
 
 #[path = "coordinator_endgame.rs"]
 mod coordinator_endgame;
@@ -551,6 +559,23 @@ struct Stats {
     debt_realign_triggers: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum LiveObsLevel {
+    Ok,
+    Warn,
+    Alert,
+}
+
+impl LiveObsLevel {
+    fn as_tag(self) -> &'static str {
+        match self {
+            Self::Ok => "OK",
+            Self::Warn => "WARN",
+            Self::Alert => "ALERT",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SlotPublishReason {
     Initial,
@@ -981,6 +1006,7 @@ impl StrategyCoordinator {
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count, self.stats.debt_realign_triggers,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
+        self.emit_live_observability_tags();
     }
 
     // ═════════════════════════════════════════════════
@@ -1085,6 +1111,131 @@ impl StrategyCoordinator {
 
     pub(super) fn note_skipped_inv_limit(&mut self) {
         self.stats.skipped_inv_limit = self.stats.skipped_inv_limit.saturating_add(1);
+    }
+
+    fn obs_ratio(num: u64, den: u64) -> f64 {
+        if den == 0 {
+            0.0
+        } else {
+            num as f64 / den as f64
+        }
+    }
+
+    fn obs_level_ge_f64(value: f64, warn: f64, alert: f64) -> LiveObsLevel {
+        if value >= alert {
+            LiveObsLevel::Alert
+        } else if value >= warn {
+            LiveObsLevel::Warn
+        } else {
+            LiveObsLevel::Ok
+        }
+    }
+
+    fn obs_level_ge_u64(value: u64, warn: u64, alert: u64) -> LiveObsLevel {
+        if value >= alert {
+            LiveObsLevel::Alert
+        } else if value >= warn {
+            LiveObsLevel::Warn
+        } else {
+            LiveObsLevel::Ok
+        }
+    }
+
+    fn emit_live_observability_tags(&self) {
+        let replace_ratio = Self::obs_ratio(self.stats.replace_events, self.stats.placed);
+        let reprice_ratio = Self::obs_ratio(self.stats.cancel_reprice, self.stats.placed);
+
+        let lvl_replace = Self::obs_level_ge_f64(
+            replace_ratio,
+            LIVE_OBS_REPLACE_RATIO_WARN,
+            LIVE_OBS_REPLACE_RATIO_ALERT,
+        );
+        let lvl_reprice = Self::obs_level_ge_f64(
+            reprice_ratio,
+            LIVE_OBS_REPRICE_RATIO_WARN,
+            LIVE_OBS_REPRICE_RATIO_ALERT,
+        );
+        let lvl_ref_blocked = Self::obs_level_ge_u64(
+            self.stats.reference_blocked_ms,
+            LIVE_OBS_REF_BLOCKED_WARN_MS,
+            LIVE_OBS_REF_BLOCKED_ALERT_MS,
+        );
+        let lvl_heat = Self::obs_level_ge_u64(
+            self.stats.ofi_heat_events,
+            LIVE_OBS_HEAT_EVENTS_WARN,
+            LIVE_OBS_HEAT_EVENTS_ALERT,
+        );
+        let lvl_toxic = if self.stats.ofi_toxic_events > 0 || self.stats.ofi_kill_events > 0 {
+            LiveObsLevel::Warn
+        } else {
+            LiveObsLevel::Ok
+        };
+        let lvl_source_block = if self.stats.blocked_due_source >= 2 {
+            LiveObsLevel::Warn
+        } else {
+            LiveObsLevel::Ok
+        };
+
+        let round_level = [
+            lvl_replace,
+            lvl_reprice,
+            lvl_ref_blocked,
+            lvl_heat,
+            lvl_toxic,
+            lvl_source_block,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or(LiveObsLevel::Ok);
+
+        let mut flags: Vec<&str> = Vec::new();
+        if lvl_replace >= LiveObsLevel::Warn {
+            flags.push("replace_ratio");
+        }
+        if lvl_reprice >= LiveObsLevel::Warn {
+            flags.push("reprice_ratio");
+        }
+        if lvl_ref_blocked >= LiveObsLevel::Warn {
+            flags.push("reference_blocked_ms");
+        }
+        if lvl_heat >= LiveObsLevel::Warn {
+            flags.push("ofi_heat_events");
+        }
+        if lvl_toxic >= LiveObsLevel::Warn {
+            flags.push("ofi_toxic_or_kill");
+        }
+        if lvl_source_block >= LiveObsLevel::Warn {
+            flags.push("source_blocked");
+        }
+        let flag_text = if flags.is_empty() {
+            "none".to_string()
+        } else {
+            flags.join(",")
+        };
+
+        let msg = format!(
+            "🏷️ LIVE_OBS[{}] replace_ratio={:.2}({}) reprice_ratio={:.2}({}) ref_blocked_ms={}({}) heat_events={}({}) toxic_events={} kill_events={} source_blocked={}({}) flags={}",
+            round_level.as_tag(),
+            replace_ratio,
+            lvl_replace.as_tag(),
+            reprice_ratio,
+            lvl_reprice.as_tag(),
+            self.stats.reference_blocked_ms,
+            lvl_ref_blocked.as_tag(),
+            self.stats.ofi_heat_events,
+            lvl_heat.as_tag(),
+            self.stats.ofi_toxic_events,
+            self.stats.ofi_kill_events,
+            self.stats.blocked_due_source,
+            lvl_source_block.as_tag(),
+            flag_text,
+        );
+
+        match round_level {
+            LiveObsLevel::Alert => warn!("{msg}"),
+            LiveObsLevel::Warn => warn!("{msg}"),
+            LiveObsLevel::Ok => info!("{msg}"),
+        }
     }
 
     fn update_reference_blocked_time(&mut self, blocked: bool, now: Instant) {

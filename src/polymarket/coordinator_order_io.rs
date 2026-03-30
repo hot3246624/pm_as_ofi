@@ -1113,8 +1113,11 @@ impl StrategyCoordinator {
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         match quote_regime {
-            Some(_) => 99.0,
-            None => 99.0,
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 7.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 8.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 9.0,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
+            None => 7.0,
         }
     }
 
