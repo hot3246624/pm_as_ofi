@@ -900,7 +900,7 @@ async fn test_glft_debt_publish_is_step_capped() {
 }
 
 #[tokio::test]
-async fn test_glft_debt_publish_uses_lower_cap_when_confidence_low() {
+async fn test_glft_debt_publish_uses_regime_based_cap() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
     let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
@@ -942,8 +942,8 @@ async fn test_glft_debt_publish_uses_lower_cap_when_confidence_low() {
         other => panic!("expected debt-capped publish, got {:?}", other),
     };
     assert!(
-        (published.price - 0.40).abs() < 1e-9,
-        "low-confidence Aligned should fall back to 10-tick step cap (got {:.3})",
+        (published.price - 0.44).abs() < 1e-9,
+        "Aligned regime should use 14-tick release cap independent of confidence (got {:.3})",
         published.price
     );
 }

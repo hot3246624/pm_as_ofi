@@ -2160,7 +2160,7 @@ fn quote_regime_target(
     ready: bool,
     binance_ok: bool,
     poly_ok: bool,
-    drift_raw_ticks: f64,
+    _drift_raw_ticks: f64,
     drift_ewma_ticks: f64,
     drift_persist_ms: u64,
     cool_to_tracking_ms: u64,
@@ -2174,11 +2174,9 @@ fn quote_regime_target(
 
     let persistent_tracking = drift_ewma_ticks > GLFT_QUOTE_TRACKING_ENTER_TICKS
         && drift_persist_ms >= GLFT_DRIFT_TRACKING_PERSIST_MS;
-    let persistent_guarded = (drift_ewma_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS
-        || drift_raw_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS)
+    let persistent_guarded = (drift_ewma_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS)
         && drift_persist_ms >= GLFT_DRIFT_GUARDED_PERSIST_MS;
-    let persistent_blocked = (drift_ewma_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS
-        || drift_raw_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS)
+    let persistent_blocked = (drift_ewma_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS)
         && drift_persist_ms >= GLFT_DRIFT_BLOCKED_PERSIST_MS;
     let cooled_for_tracking = cool_to_tracking_ms >= GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS;
     let cooled_for_aligned = cool_to_aligned_ms >= GLFT_DRIFT_COOL_TO_ALIGNED_PERSIST_MS;
@@ -2228,7 +2226,7 @@ fn quote_regime_target(
             }
         }
         QuoteRegime::Tracking => {
-            if drift_ewma_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS || persistent_guarded {
+            if persistent_guarded {
                 QuoteRegime::Guarded
             } else if drift_ewma_ticks > GLFT_QUOTE_TRACKING_EXIT_TICKS {
                 QuoteRegime::Tracking
@@ -2246,7 +2244,7 @@ fn quote_regime_target(
             }
         }
         QuoteRegime::Aligned => {
-            if drift_ewma_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS || persistent_guarded {
+            if persistent_guarded {
                 QuoteRegime::Guarded
             } else if persistent_tracking {
                 QuoteRegime::Tracking
@@ -2735,6 +2733,22 @@ mod tests {
                 0,
                 0.0,
             ),
+            QuoteRegime::Tracking
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                8.5,
+                8.5,
+                GLFT_DRIFT_GUARDED_PERSIST_MS,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Guarded
         );
         assert_eq!(
@@ -2793,6 +2807,22 @@ mod tests {
                 true,
                 14.5,
                 11.5,
+                GLFT_DRIFT_BLOCKED_PERSIST_MS,
+                0,
+                0,
+                0,
+                0.0,
+            ),
+            QuoteRegime::Guarded
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Guarded,
+                true,
+                true,
+                true,
+                14.5,
+                14.5,
                 GLFT_DRIFT_BLOCKED_PERSIST_MS,
                 0,
                 0,
@@ -3201,6 +3231,22 @@ mod tests {
                 0,
                 0.0,
             ),
+            QuoteRegime::Tracking
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                8.5,
+                8.5,
+                GLFT_DRIFT_GUARDED_PERSIST_MS,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Guarded
         );
         assert_eq!(
@@ -3211,6 +3257,22 @@ mod tests {
                 true,
                 14.5,
                 11.0,
+                GLFT_DRIFT_BLOCKED_PERSIST_MS,
+                0,
+                0,
+                0,
+                0.0,
+            ),
+            QuoteRegime::Guarded
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Guarded,
+                true,
+                true,
+                true,
+                14.5,
+                14.5,
                 GLFT_DRIFT_BLOCKED_PERSIST_MS,
                 0,
                 0,
