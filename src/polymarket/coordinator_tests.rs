@@ -949,6 +949,59 @@ async fn test_glft_debt_publish_uses_regime_based_cap() {
 }
 
 #[tokio::test]
+async fn test_glft_debt_publish_waits_for_regime_settle() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    let _ = g.send(live_glft_snapshot());
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(target);
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.58,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Tracking);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_millis(50);
+
+    coord
+        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "fresh regime transition should suppress debt publish"
+    );
+
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord
+        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
+        .await;
+    let published = timeout(Duration::from_millis(100), er.recv()).await;
+    assert!(
+        matches!(published, Ok(Some(OrderManagerCmd::SetTarget(_)))),
+        "settled regime should allow debt publish, got {:?}",
+        published
+    );
+}
+
+#[tokio::test]
 async fn test_glft_source_recovery_ignores_short_flaps() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;

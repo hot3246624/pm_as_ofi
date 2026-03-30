@@ -150,6 +150,14 @@ impl StrategyCoordinator {
         let glft_soft_stale = glft_snapshot.map(|s| s.poly_soft_stale).unwrap_or(false);
         let glft_shadow_mode =
             self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide;
+        let regime_stable_for_publish = if glft_shadow_mode {
+            let regime_age = self
+                .update_slot_regime_state(slot, glft_quote_regime, now)
+                .unwrap_or_default();
+            regime_age >= Self::glft_regime_publish_settle_dwell(glft_quote_regime)
+        } else {
+            true
+        };
         let mut shadow_publish_dwell = Self::glft_shadow_publish_dwell(glft_quote_regime);
         if glft_shadow_mode {
             if let Some(remaining) = self.glft_republish_settle_remaining(now) {
@@ -401,7 +409,7 @@ impl StrategyCoordinator {
                 } else if invalid_quote_state {
                     publish_hard_safety_exception = true;
                     Some(SlotPublishReason::InvalidState)
-                } else if !glft_soft_stale && publish_debt_ready {
+                } else if !glft_soft_stale && regime_stable_for_publish && publish_debt_ready {
                     Some(SlotPublishReason::Debt)
                 } else {
                     None

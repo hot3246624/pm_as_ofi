@@ -217,6 +217,42 @@ impl StrategyCoordinator {
         self.slot_absent_clear_since[idx] = None;
     }
 
+    pub(super) fn update_slot_regime_state(
+        &mut self,
+        slot: OrderSlot,
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        now: std::time::Instant,
+    ) -> Option<std::time::Duration> {
+        let regime = quote_regime?;
+        let idx = slot.index();
+        if self.slot_last_regime_seen[idx] != Some(regime) {
+            self.slot_last_regime_seen[idx] = Some(regime);
+            self.slot_regime_changed_at[idx] = now;
+            return Some(std::time::Duration::ZERO);
+        }
+        Some(now.saturating_duration_since(self.slot_regime_changed_at[idx]))
+    }
+
+    pub(super) fn glft_regime_publish_settle_dwell(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> std::time::Duration {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
+                std::time::Duration::from_millis(1_400)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
+                std::time::Duration::from_millis(2_000)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
+                std::time::Duration::from_millis(2_600)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
+                std::time::Duration::from_millis(3_200)
+            }
+            None => std::time::Duration::from_millis(1_400),
+        }
+    }
+
     pub(super) fn consume_slot_publish_budget(
         &mut self,
         slot: OrderSlot,

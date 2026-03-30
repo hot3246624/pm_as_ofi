@@ -1263,8 +1263,8 @@ impl StrategyCoordinator {
     }
 
     fn glft_republish_settle_window(blocked_for: Duration) -> Duration {
-        let scaled_ms = (blocked_for.as_millis() as f64 * 0.6) as u64;
-        let clamped_ms = scaled_ms.clamp(1_200, 2_200);
+        let scaled_ms = (blocked_for.as_millis() as f64 * 0.8) as u64;
+        let clamped_ms = scaled_ms.clamp(1_800, 4_200);
         Duration::from_millis(clamped_ms)
     }
 
@@ -1300,13 +1300,15 @@ impl StrategyCoordinator {
             self.glft_republish_settle_until = Some(now + settle);
             let reset_shadow_state =
                 blocked_for >= Duration::from_millis(GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS);
-            if reset_shadow_state {
-                for slot in OrderSlot::ALL {
+            for slot in OrderSlot::ALL {
+                self.slot_last_publish_reason[slot.index()] = None;
+                self.slot_absent_clear_since[slot.index()] = None;
+                self.reset_slot_publish_state(slot);
+                if reset_shadow_state {
                     self.slot_shadow_targets[slot.index()] = None;
                     self.slot_shadow_since[slot.index()] = Some(now);
-                    self.slot_last_publish_reason[slot.index()] = None;
-                    self.slot_absent_clear_since[slot.index()] = None;
-                    self.reset_slot_publish_state(slot);
+                } else if self.slot_shadow_targets[slot.index()].is_some() {
+                    self.slot_shadow_since[slot.index()] = Some(now);
                 }
             }
             info!(

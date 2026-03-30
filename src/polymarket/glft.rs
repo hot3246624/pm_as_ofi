@@ -2203,7 +2203,13 @@ fn quote_regime_target(
     }
 
     if persistent_blocked {
-        return QuoteRegime::Blocked;
+        return if matches!(current, QuoteRegime::Guarded) {
+            QuoteRegime::Blocked
+        } else {
+            // Escalate in stages: severe divergence first enters Guarded, then
+            // only escalates to Blocked if it persists while already Guarded.
+            QuoteRegime::Guarded
+        };
     }
     match current {
         QuoteRegime::Guarded => {
