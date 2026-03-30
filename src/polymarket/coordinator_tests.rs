@@ -633,6 +633,66 @@ fn test_glft_forced_realign_no_longer_triggers_early_bypass() {
     );
 }
 
+#[test]
+fn test_glft_publish_target_debt_threshold_mapping_is_not_globally_disabled() {
+    assert_eq!(
+        StrategyCoordinator::glft_publish_target_debt_threshold(Some(QuoteRegime::Aligned)),
+        7.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_target_debt_threshold(Some(QuoteRegime::Tracking)),
+        8.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_target_debt_threshold(Some(QuoteRegime::Guarded)),
+        9.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_target_debt_threshold(Some(QuoteRegime::Blocked)),
+        99.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_target_debt_threshold(None),
+        7.0
+    );
+}
+
+#[test]
+fn test_glft_structural_and_release_threshold_mapping_is_regime_specific() {
+    assert_eq!(
+        StrategyCoordinator::glft_publish_structural_debt_threshold(Some(QuoteRegime::Aligned)),
+        6.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_structural_debt_threshold(Some(QuoteRegime::Tracking)),
+        7.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_structural_debt_threshold(Some(QuoteRegime::Guarded)),
+        8.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_structural_debt_threshold(Some(QuoteRegime::Blocked)),
+        99.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_debt_release_threshold(Some(QuoteRegime::Aligned)),
+        9.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_debt_release_threshold(Some(QuoteRegime::Tracking)),
+        10.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_debt_release_threshold(Some(QuoteRegime::Guarded)),
+        11.0
+    );
+    assert_eq!(
+        StrategyCoordinator::glft_publish_debt_release_threshold(Some(QuoteRegime::Blocked)),
+        99.0
+    );
+}
+
 #[tokio::test]
 async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
     let mut config = cfg();
