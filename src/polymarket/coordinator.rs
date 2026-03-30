@@ -24,6 +24,9 @@ use super::strategy::{
 };
 use super::types::Side;
 
+const GLFT_SOURCE_RECOVERY_FLAP_IGNORE_MS: u64 = 800;
+const GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS: u64 = 4_500;
+
 #[path = "coordinator_endgame.rs"]
 mod coordinator_endgame;
 #[path = "coordinator_execution.rs"]
@@ -534,6 +537,8 @@ struct Stats {
     ofi_blocked_ticks: u64,
     reference_blocked_ms: u64,
     blocked_due_source: u64,
+    blocked_due_binance: u64,
+    blocked_due_poly: u64,
     blocked_due_divergence: u64,
     skipped_debounce: u64,
     skipped_backoff: u64,
@@ -719,6 +724,8 @@ pub struct StrategyCoordinator {
     slot_last_ts: [Instant; 4],
     slot_shadow_targets: [Option<DesiredTarget>; 4],
     slot_shadow_since: [Option<Instant>; 4],
+    slot_shadow_velocity_tps: [f64; 4],
+    slot_shadow_last_change_ts: [Option<Instant>; 4],
     slot_last_publish_reason: [Option<SlotPublishReason>; 4],
     slot_last_regime_seen: [Option<crate::polymarket::glft::QuoteRegime>; 4],
     slot_regime_changed_at: [Instant; 4],
@@ -741,6 +748,8 @@ pub struct StrategyCoordinator {
     was_toxic_yes: bool,
     was_toxic_no: bool,
     reference_blocked_since: Option<Instant>,
+    glft_source_blocked_since: Option<Instant>,
+    glft_republish_settle_until: Option<Instant>,
     last_metrics_log_ts: Instant,
     last_endgame_phase: EndgamePhase,
     edge_hold_state: Option<EdgeHoldState>,
@@ -843,6 +852,8 @@ impl StrategyCoordinator {
             }),
             slot_shadow_targets: std::array::from_fn(|_| None),
             slot_shadow_since: std::array::from_fn(|_| None),
+            slot_shadow_velocity_tps: [0.0; 4],
+            slot_shadow_last_change_ts: std::array::from_fn(|_| None),
             slot_last_publish_reason: std::array::from_fn(|_| None),
             slot_last_regime_seen: std::array::from_fn(|_| None),
             slot_regime_changed_at: std::array::from_fn(|_| Instant::now()),
@@ -862,6 +873,8 @@ impl StrategyCoordinator {
             was_toxic_yes: false,
             was_toxic_no: false,
             reference_blocked_since: None,
+            glft_source_blocked_since: None,
+            glft_republish_settle_until: None,
             last_metrics_log_ts,
             last_endgame_phase: EndgamePhase::Normal,
             edge_hold_state: None,
@@ -959,12 +972,12 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} divergence={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={}) debt_sync={}) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={}) debt_sync={}) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
-            self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_divergence,
+            self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count, self.stats.debt_realign_triggers,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
@@ -1052,6 +1065,28 @@ impl StrategyCoordinator {
         self.glft_is_tradeable_snapshot(*self.glft_rx.borrow())
     }
 
+    pub(super) fn note_cancel_reason(&mut self, reason: CancelReason) {
+        match reason {
+            CancelReason::ToxicFlow => {
+                self.stats.cancel_toxic = self.stats.cancel_toxic.saturating_add(1)
+            }
+            CancelReason::StaleData => {
+                self.stats.cancel_stale = self.stats.cancel_stale.saturating_add(1)
+            }
+            CancelReason::InventoryLimit => {
+                self.stats.cancel_inv = self.stats.cancel_inv.saturating_add(1)
+            }
+            CancelReason::Reprice => {
+                self.stats.cancel_reprice = self.stats.cancel_reprice.saturating_add(1)
+            }
+            _ => {}
+        }
+    }
+
+    pub(super) fn note_skipped_inv_limit(&mut self) {
+        self.stats.skipped_inv_limit = self.stats.skipped_inv_limit.saturating_add(1);
+    }
+
     fn update_reference_blocked_time(&mut self, blocked: bool, now: Instant) {
         match (blocked, self.reference_blocked_since) {
             (true, None) => {
@@ -1071,6 +1106,66 @@ impl StrategyCoordinator {
         if let Some(since) = self.reference_blocked_since.take() {
             let ms = now.saturating_duration_since(since).as_millis() as u64;
             self.stats.reference_blocked_ms = self.stats.reference_blocked_ms.saturating_add(ms);
+        }
+    }
+
+    fn glft_republish_settle_window(blocked_for: Duration) -> Duration {
+        let scaled_ms = (blocked_for.as_millis() as f64 * 0.6) as u64;
+        let clamped_ms = scaled_ms.clamp(1_200, 2_200);
+        Duration::from_millis(clamped_ms)
+    }
+
+    pub(super) fn glft_republish_settle_remaining(&self, now: Instant) -> Option<Duration> {
+        self.glft_republish_settle_until
+            .and_then(|until| until.checked_duration_since(now))
+    }
+
+    fn update_glft_source_recovery_state(&mut self, snapshot: GlftSignalSnapshot, now: Instant) {
+        let source_blocked = matches!(
+            snapshot.quote_regime,
+            crate::polymarket::glft::QuoteRegime::Blocked
+        ) && (snapshot.readiness_blockers.await_binance
+            || snapshot.readiness_blockers.await_poly_book);
+        if source_blocked {
+            if self.glft_source_blocked_since.is_none() {
+                self.glft_source_blocked_since = Some(now);
+            }
+            return;
+        }
+
+        if let Some(since) = self.glft_source_blocked_since.take() {
+            let blocked_for = now.saturating_duration_since(since);
+            if blocked_for < Duration::from_millis(GLFT_SOURCE_RECOVERY_FLAP_IGNORE_MS) {
+                debug!(
+                    "🧭 GLFT source flap ignored | blocked_for_ms={} (<{}ms)",
+                    blocked_for.as_millis(),
+                    GLFT_SOURCE_RECOVERY_FLAP_IGNORE_MS
+                );
+                return;
+            }
+            let settle = Self::glft_republish_settle_window(blocked_for);
+            self.glft_republish_settle_until = Some(now + settle);
+            let reset_shadow_state =
+                blocked_for >= Duration::from_millis(GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS);
+            if reset_shadow_state {
+                for slot in OrderSlot::ALL {
+                    self.slot_shadow_targets[slot.index()] = None;
+                    self.slot_shadow_since[slot.index()] = Some(now);
+                    self.slot_last_publish_reason[slot.index()] = None;
+                    self.reset_slot_publish_state(slot);
+                }
+            }
+            info!(
+                "🧭 GLFT source recovered | blocked_for_ms={} settle_ms={} reset_shadow={}",
+                blocked_for.as_millis(),
+                settle.as_millis(),
+                reset_shadow_state,
+            );
+        } else if self
+            .glft_republish_settle_until
+            .is_some_and(|until| now >= until)
+        {
+            self.glft_republish_settle_until = None;
         }
     }
 
@@ -1096,10 +1191,21 @@ impl StrategyCoordinator {
             )
         );
         if let Some(snapshot) = glft_snapshot {
+            if self.cfg.strategy == StrategyKind::GlftMm {
+                self.update_glft_source_recovery_state(snapshot, now);
+            }
             if ref_blocked && self.reference_blocked_since.is_none() {
-                let source_blocked = snapshot.stale || !snapshot.ready;
+                let source_blocked = snapshot.readiness_blockers.await_binance
+                    || snapshot.readiness_blockers.await_poly_book;
                 if source_blocked {
                     self.stats.blocked_due_source = self.stats.blocked_due_source.saturating_add(1);
+                    if snapshot.readiness_blockers.await_binance {
+                        self.stats.blocked_due_binance =
+                            self.stats.blocked_due_binance.saturating_add(1);
+                    }
+                    if snapshot.readiness_blockers.await_poly_book {
+                        self.stats.blocked_due_poly = self.stats.blocked_due_poly.saturating_add(1);
+                    }
                 } else {
                     self.stats.blocked_due_divergence =
                         self.stats.blocked_due_divergence.saturating_add(1);
@@ -1265,8 +1371,8 @@ impl StrategyCoordinator {
         let no_allowed =
             self.flow_risk_allows_intent(inv, quotes.buy_for(Side::No), no_stale, no_toxic_blocked);
 
-        // NOTE: Stats (cancel_toxic/cancel_stale) are counted in tick() Priority 2,
-        // not here, to prevent double-counting when both paths execute.
+        // NOTE: Cancel counters are recorded in clear_slot_target() so flow-risk
+        // only prunes intents here and avoids double-counting.
         if !yes_allowed {
             if quotes.buy_for(Side::Yes).is_some() {
                 debug!(

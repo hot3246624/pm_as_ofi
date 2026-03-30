@@ -148,12 +148,39 @@ impl StrategyCoordinator {
         };
         let glft_quote_regime = glft_snapshot.map(|s| s.quote_regime);
         let glft_soft_stale = glft_snapshot.map(|s| s.poly_soft_stale).unwrap_or(false);
+        let glft_trend_slope_tps = glft_snapshot
+            .map(|s| s.trusted_mid_slope_tps)
+            .unwrap_or(0.0);
+        let glft_shadow_mode =
+            self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide;
         let regime_transition_active =
             self.glft_update_slot_regime_state(slot, glft_quote_regime, now);
         let mut shadow_publish_dwell = Self::glft_shadow_publish_dwell(glft_quote_regime);
         if regime_transition_active {
             shadow_publish_dwell += Self::glft_regime_transition_extra_dwell(glft_quote_regime);
         }
+        if glft_shadow_mode {
+            if let Some(remaining) = self.glft_republish_settle_remaining(now) {
+                shadow_publish_dwell = shadow_publish_dwell.max(remaining);
+            }
+        }
+        let (
+            slope_target_bump,
+            slope_structural_bump,
+            slope_release_bump,
+            slope_extra_dwell,
+            slope_disable_target_follow,
+        ) = Self::glft_slope_publish_overlay(glft_quote_regime, glft_trend_slope_tps);
+        shadow_publish_dwell += slope_extra_dwell;
+        let shadow_velocity_tps = self.slot_shadow_velocity_tps[slot.index()];
+        let (
+            velocity_target_bump,
+            velocity_structural_bump,
+            velocity_release_bump,
+            velocity_extra_dwell,
+            velocity_disable_target_follow,
+        ) = Self::glft_shadow_velocity_publish_overlay(glft_quote_regime, shadow_velocity_tps);
+        shadow_publish_dwell += velocity_extra_dwell;
         let mut publish_reason: Option<SlotPublishReason> = None;
         let mut distance_to_trusted_mid_ticks: Option<f64> = None;
         let mut distance_to_action_target_ticks: Option<f64> = None;
@@ -161,8 +188,6 @@ impl StrategyCoordinator {
         let mut publish_debt: Option<f64> = None;
         let mut publish_hard_safety_exception = false;
         let mut shadow_target_price = normalized_target_price;
-        let glft_shadow_mode =
-            self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide;
         if glft_shadow_mode {
             let shadow_target =
                 self.update_slot_shadow_target(slot, normalized_target_price, size, reason);
@@ -345,7 +370,10 @@ impl StrategyCoordinator {
                 let target_follow_debt_ticks = target_debt_ticks.max(size_debt_ticks);
                 let structural_debt_ticks = reference_debt_ticks.max(safety_debt_ticks);
                 let allow_target_follow_debt =
-                    Self::glft_allow_target_follow_debt(glft_quote_regime) && !glft_soft_stale;
+                    Self::glft_allow_target_follow_debt(glft_quote_regime)
+                        && !glft_soft_stale
+                        && !slope_disable_target_follow
+                        && !velocity_disable_target_follow;
                 let effective_target_follow_debt_ticks = if allow_target_follow_debt {
                     target_follow_debt_ticks
                 } else {
@@ -360,6 +388,14 @@ impl StrategyCoordinator {
                 let mut debt_release_threshold =
                     Self::glft_publish_debt_release_threshold(glft_quote_regime);
                 let mut debt_dwell = Self::glft_publish_debt_dwell(glft_quote_regime);
+                target_follow_threshold += slope_target_bump;
+                structural_threshold += slope_structural_bump;
+                debt_release_threshold += slope_release_bump;
+                debt_dwell += slope_extra_dwell;
+                target_follow_threshold += velocity_target_bump;
+                structural_threshold += velocity_structural_bump;
+                debt_release_threshold += velocity_release_bump;
+                debt_dwell += velocity_extra_dwell;
                 if regime_transition_active {
                     let bump = Self::glft_transition_debt_threshold_bump(glft_quote_regime);
                     target_follow_threshold += bump;
@@ -372,7 +408,10 @@ impl StrategyCoordinator {
                 }
                 // Structural debt can bypass elapsed-vs-shadow asymmetry because it reflects
                 // safety/reference integrity instead of micro target chasing.
-                let structural_dwell_ready = elapsed >= debt_dwell || shadow_age >= debt_dwell;
+                // Publish debt should be driven by shadow-target persistence, not by
+                // old order age alone, otherwise trend micro-jitter keeps triggering
+                // replace waves even when the latest shadow target is not stable.
+                let structural_dwell_ready = shadow_age >= debt_dwell;
                 // For pure target-following debt, require shadow stability so we do not
                 // chase every micro-step from the model.
                 let target_dwell_ready = shadow_age >= debt_dwell;
@@ -384,12 +423,24 @@ impl StrategyCoordinator {
                     now,
                 );
                 publish_debt = Some(total_publish_debt.max(debt_accum));
-                let publish_debt_ready = (structural_debt_ticks >= structural_threshold
-                    && structural_dwell_ready)
-                    || (effective_target_follow_debt_ticks >= target_follow_threshold
-                        && target_dwell_ready)
-                    || (debt_accum >= debt_release_threshold
-                        && (structural_dwell_ready || target_dwell_ready));
+                // During regime transitions, allow debt-driven publish only for materially
+                // structural misalignment. This keeps transition windows from turning into
+                // repetitive debt-chasing reprices.
+                let transition_structural_hard =
+                    structural_debt_ticks >= (structural_threshold + 2.0) && structural_dwell_ready;
+                let transition_debt_gate = !regime_transition_active || transition_structural_hard;
+                let structural_debt_ready =
+                    structural_debt_ticks >= structural_threshold && structural_dwell_ready;
+                let target_follow_debt_ready = effective_target_follow_debt_ticks
+                    >= target_follow_threshold
+                    && target_dwell_ready;
+                // Debt accumulator release is reserved for persistent unresolved debt and
+                // should not trigger from purely tiny target-follow noise; thresholds are
+                // already regime-raised above baseline.
+                let debt_accum_ready = debt_accum >= debt_release_threshold
+                    && (structural_dwell_ready || target_dwell_ready);
+                let publish_debt_ready = transition_debt_gate
+                    && (structural_debt_ready || target_follow_debt_ready || debt_accum_ready);
                 publish_reason = if recent_cross_reject {
                     publish_hard_safety_exception = true;
                     Some(SlotPublishReason::CrossRecovery)
@@ -417,10 +468,20 @@ impl StrategyCoordinator {
                         tick,
                         distance_to_shadow_target_ticks,
                     ) {
-                        // Once a publish reason is confirmed, settle directly to shadow target
-                        // instead of emitting another partial governor step. This removes
-                        // repetitive 2-4 tick debt-chasing reprices.
-                        price = shadow_target_price;
+                        // Debt publishes use capped continuous release:
+                        // converge toward shadow target in bounded steps, then cool down.
+                        price = if matches!(reason_kind, SlotPublishReason::Debt) {
+                            self.glft_apply_debt_release_cap(
+                                slot_price,
+                                shadow_target_price,
+                                glft_snapshot,
+                                total_publish_debt,
+                                structural_debt_ticks,
+                            )
+                        } else {
+                            // Recovery/invalid-state keeps immediate settle semantics.
+                            shadow_target_price
+                        };
                         if let Some((trusted_dist, action_target_dist, _)) =
                             self.slot_relative_misalignment(slot, slot_price, price)
                         {
@@ -510,13 +571,7 @@ impl StrategyCoordinator {
         if !active {
             return;
         }
-        match reason {
-            CancelReason::ToxicFlow => self.stats.cancel_toxic += 1,
-            CancelReason::StaleData => self.stats.cancel_stale += 1,
-            CancelReason::InventoryLimit => self.stats.cancel_inv += 1,
-            CancelReason::Reprice => self.stats.cancel_reprice += 1,
-            _ => {}
-        }
+        self.note_cancel_reason(reason);
 
         self.slot_targets[slot.index()] = None;
         self.slot_shadow_targets[slot.index()] = None;
@@ -786,12 +841,13 @@ impl StrategyCoordinator {
                 .slot_shadow_target(slot)
                 .map(|target| target.price)
                 .unwrap_or(normalized_target.unwrap_or(price));
+            let shadow_velocity_tps = self.slot_shadow_velocity_tps[slot.index()];
             let publish_reason = publish_reason
                 .map(|reason| reason.as_str())
                 .or_else(|| self.slot_publish_reason(slot).map(|reason| reason.as_str()))
                 .unwrap_or("none");
             info!(
-                "📐 GLFT {} {:?}@{:.3} sz={:.1} | source={} fit={:?}/{:?} state={:?} regime={:?} drift_mode={:?} drift_raw={:.1} drift_ewma={:.1} drift_persist_ms={} anchor={:.3} basis={:.3} basis_raw={:.3} basis_clamped={:.3} modeled_mid={:.3} trusted_mid={:.3} synthetic_mid={:.3} poly_soft_stale={} stale_secs={:.2} alpha={:.3} heat={:.2} sigma={:.7} a={:.3} k={:.3} q_norm={:.3} inv_shift={:.6} half_base={:.4} spread_mult={:.3} dominant_side={:?} dominant_buy_penalty_ticks={:.1} dominant_buy_suppressed={} r_yes_pre={:.3} r_yes_post={:.3} raw_target={:.3} normalized_target={:.3} shadow_target={:.3} publish_target={:.3} publish_cause={} publish_debt={:.1} dist_trusted_ticks={:.1} dist_action_ticks={:.1} dist_shadow_ticks={:.1} pre[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3} final[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3}",
+                "📐 GLFT {} {:?}@{:.3} sz={:.1} | source={} fit={:?}/{:?} state={:?} regime={:?} drift_mode={:?} drift_raw={:.1} drift_ewma={:.1} drift_persist_ms={} slope_tps={:.2} shadow_v_tps={:.2} anchor={:.3} basis={:.3} basis_raw={:.3} basis_clamped={:.3} modeled_mid={:.3} trusted_mid={:.3} synthetic_mid={:.3} poly_soft_stale={} stale_secs={:.2} alpha={:.3} heat={:.2} sigma={:.7} a={:.3} k={:.3} q_norm={:.3} inv_shift={:.6} half_base={:.4} spread_mult={:.3} dominant_side={:?} dominant_buy_penalty_ticks={:.1} dominant_buy_suppressed={} r_yes_pre={:.3} r_yes_post={:.3} raw_target={:.3} normalized_target={:.3} shadow_target={:.3} publish_target={:.3} publish_cause={} publish_debt={:.1} dist_trusted_ticks={:.1} dist_action_ticks={:.1} dist_shadow_ticks={:.1} pre[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3} final[yb/ys/nb/ns]={:.3}/{:.3}/{:.3}/{:.3}",
                 slot.as_str(),
                 slot.direction,
                 price,
@@ -805,6 +861,8 @@ impl StrategyCoordinator {
                 glft.drift_raw_ticks,
                 glft.drift_ewma_ticks,
                 glft.drift_persist_ms,
+                glft.trusted_mid_slope_tps,
+                shadow_velocity_tps,
                 glft.anchor_prob,
                 glft.basis_prob,
                 glft.basis_raw,
@@ -887,10 +945,12 @@ impl StrategyCoordinator {
         regime: crate::polymarket::glft::QuoteRegime,
     ) -> std::time::Duration {
         match regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => std::time::Duration::from_millis(500),
-            crate::polymarket::glft::QuoteRegime::Tracking => std::time::Duration::from_millis(850),
-            crate::polymarket::glft::QuoteRegime::Guarded => std::time::Duration::from_millis(1200),
-            crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::from_millis(1500),
+            crate::polymarket::glft::QuoteRegime::Aligned => std::time::Duration::from_millis(900),
+            crate::polymarket::glft::QuoteRegime::Tracking => {
+                std::time::Duration::from_millis(1600)
+            }
+            crate::polymarket::glft::QuoteRegime::Guarded => std::time::Duration::from_millis(2200),
+            crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::from_millis(2200),
         }
     }
 
@@ -899,30 +959,113 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
-                std::time::Duration::from_millis(250)
-            }
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
-                std::time::Duration::from_millis(350)
-            }
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
-                std::time::Duration::from_millis(450)
-            }
-            Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
                 std::time::Duration::from_millis(600)
             }
-            None => std::time::Duration::from_millis(250),
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
+                std::time::Duration::from_millis(900)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
+                std::time::Duration::from_millis(1200)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
+                std::time::Duration::from_millis(900)
+            }
+            None => std::time::Duration::from_millis(600),
         }
+    }
+
+    fn glft_slope_publish_overlay(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        trusted_mid_slope_tps: f64,
+    ) -> (f64, f64, f64, std::time::Duration, bool) {
+        let slope = trusted_mid_slope_tps.max(0.0);
+        let regime_mult = match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 1.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 0.9,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 0.75,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 0.6,
+            None => 1.0,
+        };
+        let (target_bump, structural_bump, release_bump, extra_ms, disable_target_follow) =
+            if slope >= 6.0 {
+                (4.0, 3.0, 4.0, 900, true)
+            } else if slope >= 4.0 {
+                (3.0, 2.0, 3.0, 650, true)
+            } else if slope >= 2.5 {
+                (2.0, 1.0, 2.0, 450, false)
+            } else if slope >= 1.5 {
+                (1.0, 0.5, 1.0, 250, false)
+            } else {
+                (0.0, 0.0, 0.0, 0, false)
+            };
+        (
+            target_bump * regime_mult,
+            structural_bump * regime_mult,
+            release_bump * regime_mult,
+            std::time::Duration::from_millis(extra_ms),
+            disable_target_follow,
+        )
+    }
+
+    fn glft_shadow_velocity_publish_overlay(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        shadow_velocity_tps: f64,
+    ) -> (f64, f64, f64, std::time::Duration, bool) {
+        let v = shadow_velocity_tps.max(0.0);
+        let regime_mult = match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 1.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 0.9,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 0.8,
+            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 0.7,
+            None => 1.0,
+        };
+        let aligned = matches!(
+            quote_regime,
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) | None
+        );
+        let (target_bump, structural_bump, release_bump, mut extra_ms, mut disable_target_follow) =
+            if v >= 8.0 {
+                (4.0, 2.5, 4.0, 1_100, true)
+            } else if v >= 5.0 {
+                (2.5, 1.5, 2.5, 750, true)
+            } else if v >= 3.0 {
+                (1.5, 1.0, 1.5, 450, false)
+            } else if v >= 1.5 {
+                (0.5, 0.5, 0.5, 220, false)
+            } else {
+                (0.0, 0.0, 0.0, 0, false)
+            };
+        if aligned {
+            // In Aligned regime we still want debt to converge eventually; velocity
+            // should slow cadence, not fully disable target-follow publishing.
+            disable_target_follow = false;
+            extra_ms = extra_ms.min(600);
+        }
+        (
+            target_bump * regime_mult,
+            structural_bump * regime_mult,
+            release_bump * regime_mult,
+            std::time::Duration::from_millis(extra_ms),
+            disable_target_follow,
+        )
+    }
+
+    fn shadow_velocity_ewma(prev: f64, raw: f64) -> f64 {
+        // ~1.8s half-life at 5m cadence provides enough smoothing without
+        // hiding rapid target swings that should slow publish cadence.
+        let alpha = 1.0 - 2f64.powf(-1.0 / 1.8);
+        prev + alpha * (raw - prev)
     }
 
     fn glft_transition_debt_threshold_bump(
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 1.5,
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.25,
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 1.0,
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 2.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.75,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 1.5,
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => 0.5,
-            None => 1.0,
+            None => 1.5,
         }
     }
 
@@ -931,18 +1074,18 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
-                std::time::Duration::from_millis(700)
+                std::time::Duration::from_millis(2_200)
             }
             Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
-                std::time::Duration::from_millis(1000)
+                std::time::Duration::from_millis(2_800)
             }
             Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
-                std::time::Duration::from_millis(1400)
+                std::time::Duration::from_millis(3_400)
             }
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
-                std::time::Duration::from_millis(1800)
+                std::time::Duration::from_millis(3_600)
             }
-            None => std::time::Duration::from_millis(700),
+            None => std::time::Duration::from_millis(2_200),
         }
     }
 
@@ -970,11 +1113,8 @@ impl StrategyCoordinator {
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 4.0,
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 5.0,
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 6.0,
-            Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
-            None => 4.0,
+            Some(_) => 99.0,
+            None => 99.0,
         }
     }
 
@@ -982,11 +1122,11 @@ impl StrategyCoordinator {
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 2.0,
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 3.0,
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 4.0,
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 6.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 7.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 8.0,
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
-            None => 2.0,
+            None => 6.0,
         }
     }
 
@@ -1018,22 +1158,100 @@ impl StrategyCoordinator {
         let settle_gap = match reason {
             SlotPublishReason::CrossRecovery | SlotPublishReason::InvalidState => 2.0 * tick,
             SlotPublishReason::Debt => match quote_regime {
-                Some(crate::polymarket::glft::QuoteRegime::Guarded) => 4.0 * tick,
-                Some(crate::polymarket::glft::QuoteRegime::Tracking) => 3.0 * tick,
-                _ => 2.0 * tick,
+                Some(crate::polymarket::glft::QuoteRegime::Guarded) => 5.0 * tick,
+                Some(crate::polymarket::glft::QuoteRegime::Tracking) => 4.0 * tick,
+                _ => 3.0 * tick,
             },
             SlotPublishReason::Initial => f64::INFINITY,
         };
         // Shadow-gap gating should follow regime strictness but avoid 2-tick boundary chatter
         // in Aligned/Tracking where most debt publishes happen.
         let min_shadow_gap_ticks = match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 3.0,
-            _ => 2.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 5.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 4.0,
+            _ => 4.0,
         };
         let shadow_large_enough = shadow_gap_ticks
             .map(|ticks| ticks >= min_shadow_gap_ticks)
             .unwrap_or(false);
         shadow_price_gap >= settle_gap && shadow_large_enough
+    }
+
+    fn glft_debt_single_release_cap_ticks(
+        glft_snapshot: Option<GlftSignalSnapshot>,
+        publish_debt_ticks: f64,
+        structural_debt_ticks: f64,
+    ) -> f64 {
+        let Some(snapshot) = glft_snapshot else {
+            return 10.0;
+        };
+        let confidence = snapshot.reference_confidence.clamp(0.0, 1.0);
+        let drift_ewma = snapshot.drift_ewma_ticks.max(0.0);
+        let base = match snapshot.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => {
+                if confidence >= 0.85 && drift_ewma <= 2.5 {
+                    14.0
+                } else if confidence >= 0.65 {
+                    12.0
+                } else {
+                    10.0
+                }
+            }
+            crate::polymarket::glft::QuoteRegime::Tracking => {
+                if confidence >= 0.75 && drift_ewma <= 4.0 {
+                    9.0
+                } else {
+                    7.0
+                }
+            }
+            crate::polymarket::glft::QuoteRegime::Guarded => 6.0,
+            crate::polymarket::glft::QuoteRegime::Blocked => 4.0,
+        };
+        let allow_dynamic_release = match snapshot.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => confidence >= 0.65,
+            crate::polymarket::glft::QuoteRegime::Tracking => confidence >= 0.55,
+            crate::polymarket::glft::QuoteRegime::Guarded
+            | crate::polymarket::glft::QuoteRegime::Blocked => false,
+        };
+        if !allow_dynamic_release {
+            return base;
+        }
+        let debt = publish_debt_ticks.max(structural_debt_ticks).max(0.0);
+        // Structural convergence: release in larger chunks when debt is very large,
+        // so deep stale quotes do not require staircase-style multi-reprice catch-up.
+        let dynamic = (debt * 0.45).clamp(base, 28.0);
+        dynamic.max(base)
+    }
+
+    fn glft_apply_debt_release_cap(
+        &self,
+        current_price: f64,
+        shadow_target_price: f64,
+        glft_snapshot: Option<GlftSignalSnapshot>,
+        publish_debt_ticks: f64,
+        structural_debt_ticks: f64,
+    ) -> f64 {
+        let tick = self.cfg.tick_size.max(1e-9);
+        let max_step_ticks = Self::glft_debt_single_release_cap_ticks(
+            glft_snapshot,
+            publish_debt_ticks,
+            structural_debt_ticks,
+        )
+        .max(1.0);
+        let max_step = max_step_ticks * tick;
+        let gap = shadow_target_price - current_price;
+        if gap.abs() <= max_step + 1e-9 {
+            return shadow_target_price;
+        }
+
+        let stepped = self.glft_governed_price(current_price, shadow_target_price, max_step_ticks);
+        if (stepped - current_price).abs() >= tick * 0.5 {
+            stepped
+        } else if shadow_target_price > current_price {
+            self.quantize_up_to_tick((current_price + tick).min(shadow_target_price))
+        } else {
+            self.quantize_down_to_tick((current_price - tick).max(shadow_target_price))
+        }
     }
 
     fn record_publish_reason_stats(&mut self, publish_reason: Option<SlotPublishReason>) {
@@ -1060,12 +1278,12 @@ impl StrategyCoordinator {
     }
 
     fn glft_allow_target_follow_debt(
-        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+        _quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> bool {
-        matches!(
-            quote_regime,
-            None | Some(crate::polymarket::glft::QuoteRegime::Aligned)
-        )
+        // Structural-convergence mode:
+        // disable target-follow debt in all regimes so publish only fires on
+        // reference/safety misalignment, not model micro-tracking.
+        false
     }
 
     fn glft_clamp_slot_target_price(&self, slot: OrderSlot, price: f64) -> f64 {
@@ -1100,6 +1318,7 @@ impl StrategyCoordinator {
             reason,
         };
         let idx = slot.index();
+        let now = Instant::now();
         let changed = match self.slot_shadow_targets[idx].as_ref() {
             Some(current) => {
                 current.direction != next.direction
@@ -1110,8 +1329,28 @@ impl StrategyCoordinator {
             None => true,
         };
         if changed {
+            let raw_velocity_tps = self.slot_shadow_targets[idx]
+                .as_ref()
+                .and_then(|current| {
+                    self.slot_shadow_last_change_ts[idx].map(|last_ts| {
+                        let dt = now
+                            .saturating_duration_since(last_ts)
+                            .as_secs_f64()
+                            .max(1e-3);
+                        let tick = self.cfg.tick_size.max(1e-9);
+                        ((next.price - current.price).abs() / tick) / dt
+                    })
+                })
+                .unwrap_or(0.0);
+            let prev_velocity = self.slot_shadow_velocity_tps[idx].max(0.0);
+            self.slot_shadow_velocity_tps[idx] = if prev_velocity <= f64::EPSILON {
+                raw_velocity_tps
+            } else {
+                Self::shadow_velocity_ewma(prev_velocity, raw_velocity_tps)
+            };
+            self.slot_shadow_last_change_ts[idx] = Some(now);
             self.slot_shadow_targets[idx] = Some(next.clone());
-            self.slot_shadow_since[idx] = Some(Instant::now());
+            self.slot_shadow_since[idx] = Some(now);
         }
         self.slot_shadow_targets[idx].clone().unwrap_or(next)
     }

@@ -210,6 +210,8 @@ impl StrategyCoordinator {
         self.slot_last_budget_refill[idx] = std::time::Instant::now();
         self.slot_publish_debt_accum[idx] = 0.0;
         self.slot_last_debt_refill[idx] = std::time::Instant::now();
+        self.slot_shadow_velocity_tps[idx] = 0.0;
+        self.slot_shadow_last_change_ts[idx] = None;
         self.slot_last_regime_seen[idx] = None;
         self.slot_regime_changed_at[idx] = std::time::Instant::now();
     }
@@ -353,31 +355,31 @@ impl StrategyCoordinator {
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 3.0,
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 4.0,
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 5.0,
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 9.0,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 10.0,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 11.0,
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
-            None => 3.0,
+            None => 9.0,
         }
     }
 
     fn glft_publish_debt_cap() -> f64 {
-        12.0
+        14.0
     }
 
     fn glft_publish_budget_cap() -> f64 {
-        2.0
+        1.6
     }
 
     fn glft_publish_budget_refill_per_sec(
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         let rate: f64 = match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 1.25,
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.05,
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 0.85,
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => 0.90,
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => 0.75,
+            Some(crate::polymarket::glft::QuoteRegime::Guarded) => 0.60,
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => 0.50,
-            None => 1.25,
+            None => 0.90,
         };
         rate.max(0.20)
     }
@@ -616,12 +618,28 @@ impl StrategyCoordinator {
             let aligned_drift_cap = match signal_state {
                 crate::polymarket::glft::GlftSignalState::Bootstrapping
                 | crate::polymarket::glft::GlftSignalState::Assimilating => tick,
-                crate::polymarket::glft::GlftSignalState::Live => 2.0 * tick,
+                crate::polymarket::glft::GlftSignalState::Live => {
+                    let base_ticks = match glft.quote_regime {
+                        crate::polymarket::glft::QuoteRegime::Aligned => 3.0,
+                        crate::polymarket::glft::QuoteRegime::Tracking => 5.0,
+                        crate::polymarket::glft::QuoteRegime::Guarded => 6.0,
+                        crate::polymarket::glft::QuoteRegime::Blocked => 2.0,
+                    };
+                    base_ticks * tick
+                }
             };
             let trusted_mid_keep_cap = match signal_state {
                 crate::polymarket::glft::GlftSignalState::Bootstrapping
                 | crate::polymarket::glft::GlftSignalState::Assimilating => 4.0 * tick,
-                crate::polymarket::glft::GlftSignalState::Live => 8.0 * tick,
+                crate::polymarket::glft::GlftSignalState::Live => {
+                    let base_ticks = match glft.quote_regime {
+                        crate::polymarket::glft::QuoteRegime::Aligned => 8.0,
+                        crate::polymarket::glft::QuoteRegime::Tracking => 10.0,
+                        crate::polymarket::glft::QuoteRegime::Guarded => 12.0,
+                        crate::polymarket::glft::QuoteRegime::Blocked => 6.0,
+                    };
+                    base_ticks * tick
+                }
             };
             let trusted_keep_grace = std::time::Duration::from_millis(1_200);
             let side_trusted_mid = match side {

@@ -310,7 +310,7 @@ impl StrategyCoordinator {
         }
 
         if intent.is_some() && !allow_provide {
-            self.stats.skipped_inv_limit += 1;
+            self.note_skipped_inv_limit();
         }
 
         let action = self.decide_provide_side_action(
@@ -366,7 +366,7 @@ impl StrategyCoordinator {
                 let reject_reason =
                     self.slot_reject_reason(inv, slot, intent, stale, toxic, phase, &ofi);
                 if intent.is_some() && matches!(reject_reason, CancelReason::InventoryLimit) {
-                    self.stats.skipped_inv_limit = self.stats.skipped_inv_limit.saturating_add(1);
+                    self.note_skipped_inv_limit();
                 }
                 if self.slot_target_active(slot) {
                     // Keep-if-safe must be evaluated against the latest usable book to avoid

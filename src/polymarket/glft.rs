@@ -36,21 +36,33 @@ const GLFT_BASIS_LIVE_SOFT_CAP_ABS: f64 = 0.30;
 const GLFT_BASIS_LIVE_MAX_STEP: f64 = 0.03;
 const GLFT_BASIS_SNAPSHOT_MAX_ABS: f64 = 0.20;
 const GLFT_WARM_MIN_BINANCE_TICKS: usize = 3;
-const GLFT_WARM_MIN_BOOK_TICKS: usize = 3;
+// Poly book updates can be sparse during quiet windows; requiring 3 ticks can
+// stall readiness for tens of seconds even when snapshot + feed are healthy.
+const GLFT_WARM_MIN_BOOK_TICKS: usize = 1;
 const GLFT_WARM_BASIS_DEVIATION_TICKS: f64 = 6.0;
 const GLFT_WARM_BASIS_SOFT_ACCEPT_TICKS: f64 = 10.0;
 const GLFT_WARM_BASIS_BRIDGE_ACCEPT_TICKS: f64 = 16.0;
 const GLFT_WARM_FRESH_SNAPSHOT_MAX_AGE_SECS: u64 = 120;
 const GLFT_QUOTE_TRACKING_ENTER_TICKS: f64 = 4.0;
 const GLFT_QUOTE_TRACKING_EXIT_TICKS: f64 = 3.0;
+const GLFT_QUOTE_TRACKING_ALIGN_RELEASE_TICKS: f64 = 2.2;
 const GLFT_QUOTE_GUARDED_ENTER_TICKS: f64 = 8.0;
 const GLFT_QUOTE_GUARDED_EXIT_TICKS: f64 = 6.0;
+const GLFT_QUOTE_GUARDED_TRACK_RELEASE_TICKS: f64 = 5.2;
 const GLFT_QUOTE_BLOCKED_ENTER_TICKS: f64 = 14.0;
 const GLFT_QUOTE_BLOCKED_EXIT_TICKS: f64 = 11.0;
+const GLFT_QUOTE_TRACKING_MIN_HOLD_MS: u64 = 2400;
+const GLFT_QUOTE_GUARDED_MIN_HOLD_MS: u64 = 3200;
 const GLFT_DRIFT_FAST_EWMA_HALF_LIFE_SECS: f64 = 1.5;
 const GLFT_DRIFT_REGIME_EWMA_HALF_LIFE_SECS: f64 = 4.0;
+const GLFT_TREND_SLOPE_EWMA_HALF_LIFE_SECS: f64 = 1.8;
+const GLFT_TREND_SLOPE_SAMPLE_MIN_DT_SECS: f64 = 0.25;
+const GLFT_TREND_SLOPE_CAP_TPS: f64 = 80.0;
+const GLFT_DRIFT_TRACKING_PERSIST_MS: u64 = 1400;
 const GLFT_DRIFT_GUARDED_PERSIST_MS: u64 = 1200;
 const GLFT_DRIFT_BLOCKED_PERSIST_MS: u64 = 2200;
+const GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS: u64 = 2200;
+const GLFT_DRIFT_COOL_TO_ALIGNED_PERSIST_MS: u64 = 2800;
 const GLFT_QUOTE_REGIME_SWITCH_MIN_INTERVAL_MS: u64 = 500;
 const GLFT_QUOTE_REGIME_AT_SWITCH_MIN_INTERVAL_MS: u64 = 1800;
 const GLFT_QUOTE_REGIME_TG_SWITCH_MIN_INTERVAL_MS: u64 = 1200;
@@ -58,7 +70,12 @@ const GLFT_QUOTE_REGIME_ALIGNED_STREAK: u8 = 3;
 const GLFT_QUOTE_REGIME_TRACKING_STREAK: u8 = 2;
 const GLFT_QUOTE_REGIME_GUARDED_STREAK: u8 = 2;
 const GLFT_QUOTE_REGIME_BLOCKED_STREAK: u8 = 2;
+const GLFT_QUOTE_REGIME_PENDING_DEFAULT_MS: u64 = 450;
+const GLFT_QUOTE_REGIME_PENDING_AT_MS: u64 = 900;
+const GLFT_QUOTE_REGIME_PENDING_TG_MS: u64 = 1500;
 const GLFT_BLOCKED_MIN_HOLD_MS: u64 = 1200;
+const GLFT_SOURCE_BLOCK_ENTER_MS: u64 = 1200;
+const GLFT_SOURCE_BLOCK_EXIT_MS: u64 = 1600;
 const GLFT_WARM_SIGMA_RATIO_LIMIT: f64 = 4.0;
 const GLFT_WARM_MIN_A: f64 = 0.01;
 const GLFT_WARM_MAX_A: f64 = 50.0;
@@ -194,6 +211,14 @@ impl GlftReadinessBlockers {
             labels.join(",")
         }
     }
+
+    fn source_only(&self) -> bool {
+        (self.await_binance || self.await_poly_book)
+            && !self.await_fit
+            && !self.basis_unstable
+            && !self.sigma_unstable
+            && !self.min_warmup_not_elapsed
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -206,6 +231,7 @@ pub struct GlftSignalSnapshot {
     pub drift_raw_ticks: f64,
     pub drift_ewma_ticks: f64,
     pub drift_persist_ms: u64,
+    pub trusted_mid_slope_tps: f64,
     pub modeled_mid: f64,
     pub trusted_mid: f64,
     pub synthetic_mid_yes: f64,
@@ -244,6 +270,7 @@ impl Default for GlftSignalSnapshot {
             drift_raw_ticks: 0.0,
             drift_ewma_ticks: 0.0,
             drift_persist_ms: 0,
+            trusted_mid_slope_tps: 0.0,
             modeled_mid: 0.5,
             trusted_mid: 0.5,
             synthetic_mid_yes: 0.5,
@@ -312,7 +339,9 @@ struct ReferenceController {
     modeled_mid: f64,
     synthetic_mid_yes: f64,
     trusted_mid: f64,
+    trusted_mid_slope_tps: f64,
     poly_soft_stale: bool,
+    source_blocked: bool,
     confidence: f64,
     regime: QuoteRegime,
     health: ReferenceHealth,
@@ -470,6 +499,7 @@ pub struct GlftSignalEngine {
     round_open_binance: Option<f64>,
     last_poly_mid_prob: Option<f64>,
     last_poly_mid_ts: Option<Instant>,
+    last_poly_book_event_ts: Option<Instant>,
     basis_raw: f64,
     sigma_prob: f64,
     basis_prob: f64,
@@ -487,11 +517,21 @@ pub struct GlftSignalEngine {
     quote_regime_entered_at: Instant,
     quote_regime_pending: Option<QuoteRegime>,
     quote_regime_pending_count: u8,
+    quote_regime_pending_since: Option<Instant>,
     poly_soft_stale_active: bool,
     poly_soft_stale_entered_at: Option<Instant>,
     drift_fast_ewma_ticks: f64,
     drift_ewma_ticks: f64,
     drift_persist_since: Option<Instant>,
+    drift_cool_track_since: Option<Instant>,
+    drift_cool_align_since: Option<Instant>,
+    last_trusted_mid: Option<f64>,
+    last_trusted_mid_ts: Option<Instant>,
+    trusted_mid_slope_tps: f64,
+    source_block_active: bool,
+    source_unhealthy_since: Option<Instant>,
+    source_recovered_since: Option<Instant>,
+    source_block_reason: Option<ReferenceBlockReason>,
 }
 
 impl GlftSignalEngine {
@@ -524,6 +564,7 @@ impl GlftSignalEngine {
             round_open_binance: None,
             last_poly_mid_prob: None,
             last_poly_mid_ts: None,
+            last_poly_book_event_ts: None,
             basis_raw,
             sigma_prob: bootstrap.map(|s| s.sigma_prob).unwrap_or(BOOTSTRAP_SIGMA),
             basis_prob: basis_raw.clamp(-GLFT_BASIS_CLAMP_ABS, GLFT_BASIS_CLAMP_ABS),
@@ -544,11 +585,21 @@ impl GlftSignalEngine {
             quote_regime_entered_at: Instant::now(),
             quote_regime_pending: None,
             quote_regime_pending_count: 0,
+            quote_regime_pending_since: None,
             poly_soft_stale_active: false,
             poly_soft_stale_entered_at: None,
             drift_fast_ewma_ticks: 0.0,
             drift_ewma_ticks: 0.0,
             drift_persist_since: None,
+            drift_cool_track_since: None,
+            drift_cool_align_since: None,
+            last_trusted_mid: None,
+            last_trusted_mid_ts: None,
+            trusted_mid_slope_tps: 0.0,
+            source_block_active: false,
+            source_unhealthy_since: None,
+            source_recovered_since: None,
+            source_block_reason: None,
         }
     }
 
@@ -663,6 +714,7 @@ impl GlftSignalEngine {
                 ..
             } => {
                 self.poly_book_tick_count = self.poly_book_tick_count.saturating_add(1);
+                self.last_poly_book_event_ts = Some(Instant::now());
                 self.book = LocalBook {
                     yes_bid,
                     yes_ask,
@@ -939,18 +991,35 @@ impl GlftSignalEngine {
             .last_poly_mid_ts
             .map(|ts| ts.elapsed() > Duration::from_secs(POLY_BOOK_STALE_SECS))
             .unwrap_or(true);
+        let poly_feed_stale = self
+            .last_poly_book_event_ts
+            .map(|ts| ts.elapsed() > Duration::from_secs(GLFT_POLY_BLOCK_STALE_SECS))
+            .unwrap_or(true);
         let has_binance = self.round_open_binance.is_some()
             && self.binance_tick_count >= GLFT_WARM_MIN_BINANCE_TICKS
             && !binance_stale;
-        let has_poly_observed =
-            self.poly_book_tick_count >= GLFT_WARM_MIN_BOOK_TICKS && self.poly_yes_mid().is_some();
+        let has_poly_mid = self.poly_yes_mid().is_some();
+        let has_poly_feed =
+            self.poly_book_tick_count >= GLFT_WARM_MIN_BOOK_TICKS && !poly_feed_stale;
+        let has_poly_observed = if self.live_latched {
+            has_poly_feed && (has_poly_mid || self.last_poly_mid_ts.is_some())
+        } else {
+            self.poly_book_tick_count >= GLFT_WARM_MIN_BOOK_TICKS && has_poly_mid
+        };
         let poly_stale_secs = self
             .last_poly_mid_ts
             .map(|ts| ts.elapsed().as_secs_f64())
             .unwrap_or(f64::INFINITY);
-        let has_poly_fresh = has_poly_observed && !poly_stale;
-        let has_poly_soft =
-            has_poly_observed && poly_stale_secs <= GLFT_POLY_BLOCK_STALE_SECS as f64;
+        let has_poly_fresh = has_poly_mid && !poly_stale;
+        let has_recent_mid = self
+            .last_poly_mid_ts
+            .map(|ts| ts.elapsed().as_secs_f64() <= GLFT_POLY_BLOCK_STALE_SECS as f64)
+            .unwrap_or(false);
+        let has_poly_soft = if self.live_latched {
+            has_poly_feed && (has_poly_mid || has_recent_mid)
+        } else {
+            has_poly_observed && poly_stale_secs <= GLFT_POLY_BLOCK_STALE_SECS as f64
+        };
         let min_warmup_elapsed =
             now.duration_since(self.started_at) >= Duration::from_secs(GLFT_MIN_READY_WAIT_SECS);
         let rejected_fallback_wait_elapsed = now.duration_since(self.started_at)
@@ -1259,6 +1328,7 @@ impl GlftSignalEngine {
             self.live_latched = true;
         }
         let controller = self.reference_controller(&gate, anchor_prob, now_inst);
+        let trade_ready = gate.ready || (gate.blockers.source_only() && !controller.source_blocked);
         let stale_secs = self
             .last_binance_tick
             .map(|tick| tick.ts.elapsed().as_secs_f64())
@@ -1272,6 +1342,7 @@ impl GlftSignalEngine {
             drift_raw_ticks: controller.drift_raw_ticks,
             drift_ewma_ticks: controller.drift_ewma_ticks,
             drift_persist_ms: controller.drift_persist_ms,
+            trusted_mid_slope_tps: controller.trusted_mid_slope_tps,
             modeled_mid: controller.modeled_mid,
             trusted_mid: controller.trusted_mid,
             synthetic_mid_yes: controller.synthetic_mid_yes,
@@ -1294,8 +1365,8 @@ impl GlftSignalEngine {
             reference_health: controller.health,
             drift_mode: controller.drift_mode,
             hard_basis_unstable: matches!(controller.regime, QuoteRegime::Blocked),
-            ready: gate.ready,
-            stale: gate.blockers.await_binance || gate.blockers.await_poly_book,
+            ready: trade_ready,
+            stale: controller.source_blocked || (!trade_ready),
             stale_secs,
         };
         let _ = self.tx.send(snapshot);
@@ -1316,21 +1387,34 @@ impl GlftSignalEngine {
         let modeled_mid = modeled_mid_from_basis(anchor_prob, self.basis_prob, tick);
         let synthetic_mid_yes = self.synthetic_mid_for_reference().clamp(tick, 1.0 - tick);
         let drift_raw_ticks = ((modeled_mid - synthetic_mid_yes).abs()) / tick;
-        let binance_ok = !gate.blockers.await_binance;
-        let poly_ok = !gate.blockers.await_poly_book;
-        let (drift_ewma_ticks, drift_persist_ms) =
+        let raw_binance_ok = !gate.blockers.await_binance;
+        let raw_poly_ok = !gate.blockers.await_poly_book;
+        // Once we have latched into live mode, source health should be managed with
+        // hysteresis continuously. Restricting hysteresis to `source_only` blockers
+        // causes raw await_poly/await_fit interleaving to re-open flap windows.
+        let source_latched_mode = self.live_latched;
+        let (source_blocked, source_block_reason) =
+            self.update_source_block_latch(raw_binance_ok, raw_poly_ok, source_latched_mode, now);
+        let binance_ok = !source_blocked;
+        let poly_ok = !source_blocked;
+        let (drift_ewma_ticks, drift_persist_ms, cool_to_tracking_ms, cool_to_aligned_ms) =
             self.update_drift_state(drift_raw_ticks, now, gate.ready && binance_ok && poly_ok);
-        let hard_blocker = !gate.ready || !binance_ok || !poly_ok;
+        let hard_readiness_blocker = !gate.ready && !gate.blockers.source_only();
+        let hard_blocker = hard_readiness_blocker || !binance_ok || !poly_ok;
+        let trend_slope_tps = self.trusted_mid_slope_tps.max(0.0);
         let mut target_regime = quote_regime_target(
             self.quote_regime,
-            gate.ready,
+            !hard_readiness_blocker,
             binance_ok,
             poly_ok,
             drift_raw_ticks,
             drift_ewma_ticks,
             drift_persist_ms,
+            cool_to_tracking_ms,
+            cool_to_aligned_ms,
             now.saturating_duration_since(self.quote_regime_entered_at)
                 .as_millis() as u64,
+            trend_slope_tps,
         );
         // Side-feed degradation path: brief Poly book staleness should not force full block.
         // Keep trading in a more conservative regime and let execution side gating suppress
@@ -1339,7 +1423,14 @@ impl GlftSignalEngine {
         if poly_soft_stale && !matches!(target_regime, QuoteRegime::Blocked) {
             target_regime = match target_regime {
                 QuoteRegime::Aligned => QuoteRegime::Tracking,
-                QuoteRegime::Tracking | QuoteRegime::Guarded => QuoteRegime::Guarded,
+                QuoteRegime::Tracking => {
+                    if drift_ewma_ticks > GLFT_QUOTE_GUARDED_TRACK_RELEASE_TICKS {
+                        QuoteRegime::Guarded
+                    } else {
+                        QuoteRegime::Tracking
+                    }
+                }
+                QuoteRegime::Guarded => QuoteRegime::Guarded,
                 QuoteRegime::Blocked => QuoteRegime::Blocked,
             };
         }
@@ -1350,6 +1441,8 @@ impl GlftSignalEngine {
                 drift_ewma_ticks,
                 drift_persist_ms,
                 hard_blocker,
+                source_blocked,
+                source_block_reason,
             ))
         } else {
             None
@@ -1359,6 +1452,7 @@ impl GlftSignalEngine {
             drift_raw_ticks,
             drift_ewma_ticks,
             drift_persist_ms,
+            trend_slope_tps,
             modeled_mid,
             synthetic_mid_yes,
             now,
@@ -1373,6 +1467,7 @@ impl GlftSignalEngine {
             binance_ok && poly_ok,
         );
         let trusted_mid = trusted_mid(modeled_mid, synthetic_mid_yes, confidence, tick);
+        let trusted_mid_slope_tps = self.update_trusted_mid_slope(trusted_mid, now, tick);
         let health = quote_regime_reference_health(regime);
         let drift_mode = quote_regime_drift_mode(regime);
 
@@ -1380,7 +1475,9 @@ impl GlftSignalEngine {
             modeled_mid,
             synthetic_mid_yes,
             trusted_mid,
+            trusted_mid_slope_tps,
             poly_soft_stale,
+            source_blocked,
             confidence,
             regime,
             health,
@@ -1425,12 +1522,80 @@ impl GlftSignalEngine {
         self.poly_soft_stale_active
     }
 
+    fn update_source_block_latch(
+        &mut self,
+        raw_binance_ok: bool,
+        raw_poly_ok: bool,
+        use_hysteresis: bool,
+        now: Instant,
+    ) -> (bool, Option<ReferenceBlockReason>) {
+        let raw_sources_ok = raw_binance_ok && raw_poly_ok;
+        let current_reason = if !raw_binance_ok {
+            Some(ReferenceBlockReason::AwaitBinance)
+        } else if !raw_poly_ok {
+            Some(ReferenceBlockReason::AwaitPolyBook)
+        } else {
+            None
+        };
+
+        if !use_hysteresis {
+            self.source_block_active = !raw_sources_ok;
+            self.source_unhealthy_since = if raw_sources_ok { None } else { Some(now) };
+            self.source_recovered_since = None;
+            self.source_block_reason = current_reason;
+            return (self.source_block_active, self.source_block_reason);
+        }
+
+        if !raw_sources_ok {
+            self.source_recovered_since = None;
+            if self.source_unhealthy_since.is_none() {
+                self.source_unhealthy_since = Some(now);
+            }
+            if self
+                .source_unhealthy_since
+                .map(|since| {
+                    now.saturating_duration_since(since)
+                        >= Duration::from_millis(GLFT_SOURCE_BLOCK_ENTER_MS)
+                })
+                .unwrap_or(false)
+            {
+                self.source_block_active = true;
+                self.source_block_reason = current_reason;
+            }
+            return (self.source_block_active, self.source_block_reason);
+        }
+
+        self.source_unhealthy_since = None;
+        if self.source_block_active {
+            if self.source_recovered_since.is_none() {
+                self.source_recovered_since = Some(now);
+            }
+            if self
+                .source_recovered_since
+                .map(|since| {
+                    now.saturating_duration_since(since)
+                        >= Duration::from_millis(GLFT_SOURCE_BLOCK_EXIT_MS)
+                })
+                .unwrap_or(false)
+            {
+                self.source_block_active = false;
+                self.source_block_reason = None;
+                self.source_recovered_since = None;
+            }
+        } else {
+            self.source_recovered_since = None;
+            self.source_block_reason = None;
+        }
+
+        (self.source_block_active, self.source_block_reason)
+    }
+
     fn update_drift_state(
         &mut self,
         drift_raw_ticks: f64,
         now: Instant,
         sources_healthy: bool,
-    ) -> (f64, u64) {
+    ) -> (f64, u64, u64, u64) {
         self.drift_fast_ewma_ticks = if self.drift_fast_ewma_ticks <= 0.0 {
             drift_raw_ticks
         } else {
@@ -1452,9 +1617,9 @@ impl GlftSignalEngine {
 
         let persist_active = if !sources_healthy {
             false
-        } else if drift_raw_ticks >= GLFT_QUOTE_GUARDED_ENTER_TICKS {
+        } else if self.drift_ewma_ticks >= GLFT_QUOTE_TRACKING_ENTER_TICKS {
             true
-        } else if drift_raw_ticks <= GLFT_QUOTE_TRACKING_EXIT_TICKS {
+        } else if self.drift_ewma_ticks <= GLFT_QUOTE_TRACKING_EXIT_TICKS {
             false
         } else {
             self.drift_persist_since.is_some()
@@ -1465,13 +1630,66 @@ impl GlftSignalEngine {
             (false, Some(_)) => self.drift_persist_since = None,
             _ => {}
         }
+        let cool_tracking_active =
+            sources_healthy && self.drift_ewma_ticks <= GLFT_QUOTE_GUARDED_TRACK_RELEASE_TICKS;
+        match (cool_tracking_active, self.drift_cool_track_since) {
+            (true, None) => self.drift_cool_track_since = Some(now),
+            (false, Some(_)) => self.drift_cool_track_since = None,
+            _ => {}
+        }
+        let cool_aligned_active =
+            sources_healthy && self.drift_ewma_ticks <= GLFT_QUOTE_TRACKING_ALIGN_RELEASE_TICKS;
+        match (cool_aligned_active, self.drift_cool_align_since) {
+            (true, None) => self.drift_cool_align_since = Some(now),
+            (false, Some(_)) => self.drift_cool_align_since = None,
+            _ => {}
+        }
 
         let drift_persist_ms = self
             .drift_persist_since
             .map(|since| now.saturating_duration_since(since).as_millis() as u64)
             .unwrap_or(0);
+        let cool_to_tracking_ms = self
+            .drift_cool_track_since
+            .map(|since| now.saturating_duration_since(since).as_millis() as u64)
+            .unwrap_or(0);
+        let cool_to_aligned_ms = self
+            .drift_cool_align_since
+            .map(|since| now.saturating_duration_since(since).as_millis() as u64)
+            .unwrap_or(0);
 
-        (self.drift_ewma_ticks, drift_persist_ms)
+        (
+            self.drift_ewma_ticks,
+            drift_persist_ms,
+            cool_to_tracking_ms,
+            cool_to_aligned_ms,
+        )
+    }
+
+    fn update_trusted_mid_slope(&mut self, trusted_mid: f64, now: Instant, tick: f64) -> f64 {
+        let raw_slope = match (self.last_trusted_mid, self.last_trusted_mid_ts) {
+            (Some(last_mid), Some(last_ts)) => {
+                let dt = now
+                    .saturating_duration_since(last_ts)
+                    .as_secs_f64()
+                    .max(GLFT_TREND_SLOPE_SAMPLE_MIN_DT_SECS);
+                (((trusted_mid - last_mid).abs() / tick.max(1e-9)) / dt)
+                    .min(GLFT_TREND_SLOPE_CAP_TPS)
+            }
+            _ => 0.0,
+        };
+        self.last_trusted_mid = Some(trusted_mid);
+        self.last_trusted_mid_ts = Some(now);
+        self.trusted_mid_slope_tps = if self.trusted_mid_slope_tps <= 0.0 {
+            raw_slope
+        } else {
+            ewma_update(
+                self.trusted_mid_slope_tps,
+                raw_slope,
+                GLFT_TREND_SLOPE_EWMA_HALF_LIFE_SECS,
+            )
+        };
+        self.trusted_mid_slope_tps
     }
 
     fn update_quote_regime(
@@ -1480,6 +1698,7 @@ impl GlftSignalEngine {
         drift_raw_ticks: f64,
         drift_ewma_ticks: f64,
         drift_persist_ms: u64,
+        trend_slope_tps: f64,
         modeled_mid: f64,
         synthetic_mid_yes: f64,
         now: Instant,
@@ -1489,10 +1708,6 @@ impl GlftSignalEngine {
     ) -> QuoteRegime {
         let desired = if hard_blocker {
             QuoteRegime::Blocked
-        } else if matches!(self.quote_regime, QuoteRegime::Blocked)
-            && !matches!(target_regime, QuoteRegime::Blocked)
-        {
-            QuoteRegime::Guarded
         } else {
             target_regime
         };
@@ -1500,6 +1715,7 @@ impl GlftSignalEngine {
         if desired == self.quote_regime {
             self.quote_regime_pending = None;
             self.quote_regime_pending_count = 0;
+            self.quote_regime_pending_since = None;
             return self.quote_regime;
         }
 
@@ -1522,25 +1738,34 @@ impl GlftSignalEngine {
         } else {
             self.quote_regime_pending = Some(desired);
             self.quote_regime_pending_count = 1;
+            self.quote_regime_pending_since = Some(now);
         }
 
         let required = quote_regime_required_streak(self.quote_regime, desired, immediate_block);
-        if self.quote_regime_pending_count < required {
+        let pending_elapsed_ms = self
+            .quote_regime_pending_since
+            .map(|since| now.saturating_duration_since(since).as_millis() as u64)
+            .unwrap_or(0);
+        let pending_min_ms =
+            quote_regime_required_pending_ms(self.quote_regime, desired, immediate_block);
+        if self.quote_regime_pending_count < required || pending_elapsed_ms < pending_min_ms {
             return self.quote_regime;
         }
 
         self.quote_regime_pending = None;
         self.quote_regime_pending_count = 0;
+        self.quote_regime_pending_since = None;
 
         if desired != self.quote_regime {
             if matches!(desired, QuoteRegime::Blocked) {
                 let reason = block_reason.unwrap_or(ReferenceBlockReason::HardBlocker);
                 warn!(
-                    "📡 GLFT quote regime -> {:?} | drift_raw={:.1} drift_ewma={:.1} persist_ms={} modeled_mid={:.3} synthetic_mid={:.3} reason={} blockers={}",
+                    "📡 GLFT quote regime -> {:?} | drift_raw={:.1} drift_ewma={:.1} persist_ms={} slope_tps={:.2} modeled_mid={:.3} synthetic_mid={:.3} reason={} blockers={}",
                     desired,
                     drift_raw_ticks,
                     drift_ewma_ticks,
                     drift_persist_ms,
+                    trend_slope_tps,
                     modeled_mid,
                     synthetic_mid_yes,
                     reason.as_str(),
@@ -1548,11 +1773,12 @@ impl GlftSignalEngine {
                 );
             } else {
                 info!(
-                    "📡 GLFT quote regime -> {:?} | drift_raw={:.1} drift_ewma={:.1} persist_ms={} modeled_mid={:.3} synthetic_mid={:.3}",
+                    "📡 GLFT quote regime -> {:?} | drift_raw={:.1} drift_ewma={:.1} persist_ms={} slope_tps={:.2} modeled_mid={:.3} synthetic_mid={:.3}",
                     desired,
                     drift_raw_ticks,
                     drift_ewma_ticks,
                     drift_persist_ms,
+                    trend_slope_tps,
                     modeled_mid,
                     synthetic_mid_yes,
                 );
@@ -1937,31 +2163,45 @@ fn quote_regime_target(
     drift_raw_ticks: f64,
     drift_ewma_ticks: f64,
     drift_persist_ms: u64,
-    blocked_elapsed_ms: u64,
+    cool_to_tracking_ms: u64,
+    cool_to_aligned_ms: u64,
+    regime_elapsed_ms: u64,
+    _trend_slope_tps: f64,
 ) -> QuoteRegime {
     if !ready || !binance_ok || !poly_ok {
         return QuoteRegime::Blocked;
     }
 
-    let persistent_guarded = drift_raw_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS
+    let persistent_tracking = drift_ewma_ticks > GLFT_QUOTE_TRACKING_ENTER_TICKS
+        && drift_persist_ms >= GLFT_DRIFT_TRACKING_PERSIST_MS;
+    let persistent_guarded = (drift_ewma_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS
+        || drift_raw_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS)
         && drift_persist_ms >= GLFT_DRIFT_GUARDED_PERSIST_MS;
-    let persistent_blocked = drift_raw_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS
+    let persistent_blocked = (drift_ewma_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS
+        || drift_raw_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS)
         && drift_persist_ms >= GLFT_DRIFT_BLOCKED_PERSIST_MS;
+    let cooled_for_tracking = cool_to_tracking_ms >= GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS;
+    let cooled_for_aligned = cool_to_aligned_ms >= GLFT_DRIFT_COOL_TO_ALIGNED_PERSIST_MS;
 
     if matches!(current, QuoteRegime::Blocked) {
-        if blocked_elapsed_ms < GLFT_BLOCKED_MIN_HOLD_MS {
+        if regime_elapsed_ms < GLFT_BLOCKED_MIN_HOLD_MS {
             return QuoteRegime::Blocked;
         }
         if drift_ewma_ticks > GLFT_QUOTE_BLOCKED_EXIT_TICKS || persistent_blocked {
             return QuoteRegime::Blocked;
         }
+        // Recovery from Blocked must be driven by sustained cooling,
+        // not by one or two favorable frames.
+        if !cooled_for_tracking {
+            return QuoteRegime::Blocked;
+        }
         if drift_ewma_ticks > GLFT_QUOTE_GUARDED_EXIT_TICKS || persistent_guarded {
             return QuoteRegime::Guarded;
         }
-        if drift_ewma_ticks > GLFT_QUOTE_TRACKING_EXIT_TICKS {
+        if drift_ewma_ticks > GLFT_QUOTE_TRACKING_EXIT_TICKS || !cooled_for_aligned {
             return QuoteRegime::Tracking;
         }
-        return QuoteRegime::Guarded;
+        return QuoteRegime::Aligned;
     }
 
     if persistent_blocked {
@@ -1970,6 +2210,17 @@ fn quote_regime_target(
     match current {
         QuoteRegime::Guarded => {
             if drift_ewma_ticks > GLFT_QUOTE_GUARDED_EXIT_TICKS || persistent_guarded {
+                QuoteRegime::Guarded
+            } else if regime_elapsed_ms < GLFT_QUOTE_GUARDED_MIN_HOLD_MS {
+                // Keep Guarded sticky enough to absorb transient bounces in synthetic mid.
+                QuoteRegime::Guarded
+            } else if !cooled_for_tracking {
+                // De-escalation is persistence-driven: require sustained cool-down
+                // instead of reacting to one or two low-drift frames.
+                QuoteRegime::Guarded
+            } else if drift_ewma_ticks > GLFT_QUOTE_GUARDED_TRACK_RELEASE_TICKS {
+                // Guarded releases to Tracking only after drift has clearly cooled below
+                // guarded-exit band. This avoids Guarded<->Tracking chatter in trend pullbacks.
                 QuoteRegime::Guarded
             } else {
                 // De-escalation from Guarded is staged through Tracking.
@@ -1981,6 +2232,15 @@ fn quote_regime_target(
                 QuoteRegime::Guarded
             } else if drift_ewma_ticks > GLFT_QUOTE_TRACKING_EXIT_TICKS {
                 QuoteRegime::Tracking
+            } else if persistent_tracking || regime_elapsed_ms < GLFT_QUOTE_TRACKING_MIN_HOLD_MS {
+                // Avoid fast Tracking<->Aligned chatter during trend pullbacks.
+                QuoteRegime::Tracking
+            } else if !cooled_for_aligned {
+                QuoteRegime::Tracking
+            } else if drift_ewma_ticks > GLFT_QUOTE_TRACKING_ALIGN_RELEASE_TICKS {
+                // Tracking releases to Aligned only after a deeper cool-down than
+                // `tracking_exit`, otherwise short re-acceleration re-enters Tracking quickly.
+                QuoteRegime::Tracking
             } else {
                 QuoteRegime::Aligned
             }
@@ -1988,7 +2248,7 @@ fn quote_regime_target(
         QuoteRegime::Aligned => {
             if drift_ewma_ticks > GLFT_QUOTE_GUARDED_ENTER_TICKS || persistent_guarded {
                 QuoteRegime::Guarded
-            } else if drift_ewma_ticks > GLFT_QUOTE_TRACKING_ENTER_TICKS {
+            } else if persistent_tracking {
                 QuoteRegime::Tracking
             } else {
                 QuoteRegime::Aligned
@@ -2020,12 +2280,6 @@ fn quote_regime_required_streak(
     if immediate_block {
         return 1;
     }
-    if matches!(
-        (current, desired),
-        (QuoteRegime::Blocked, QuoteRegime::Guarded)
-    ) {
-        return 1;
-    }
     let base = match desired {
         QuoteRegime::Aligned => GLFT_QUOTE_REGIME_ALIGNED_STREAK,
         QuoteRegime::Tracking => GLFT_QUOTE_REGIME_TRACKING_STREAK,
@@ -2047,6 +2301,26 @@ fn quote_regime_required_streak(
     required
 }
 
+fn quote_regime_required_pending_ms(
+    current: QuoteRegime,
+    desired: QuoteRegime,
+    immediate_block: bool,
+) -> u64 {
+    if immediate_block {
+        return 0;
+    }
+    match (current, desired) {
+        (QuoteRegime::Blocked, QuoteRegime::Guarded)
+        | (QuoteRegime::Blocked, QuoteRegime::Tracking)
+        | (QuoteRegime::Blocked, QuoteRegime::Aligned) => GLFT_QUOTE_REGIME_PENDING_TG_MS,
+        (QuoteRegime::Aligned, QuoteRegime::Tracking)
+        | (QuoteRegime::Tracking, QuoteRegime::Aligned) => GLFT_QUOTE_REGIME_PENDING_AT_MS,
+        (QuoteRegime::Tracking, QuoteRegime::Guarded)
+        | (QuoteRegime::Guarded, QuoteRegime::Tracking) => GLFT_QUOTE_REGIME_PENDING_TG_MS,
+        _ => GLFT_QUOTE_REGIME_PENDING_DEFAULT_MS,
+    }
+}
+
 fn quote_regime_rank(regime: QuoteRegime) -> u8 {
     match regime {
         QuoteRegime::Aligned => 0,
@@ -2058,12 +2332,16 @@ fn quote_regime_rank(regime: QuoteRegime) -> u8 {
 
 fn reference_block_reason(
     gate: &ReadinessGate,
-    drift_raw_ticks: f64,
+    _drift_raw_ticks: f64,
     drift_ewma_ticks: f64,
     drift_persist_ms: u64,
     hard_blocker: bool,
+    source_blocked: bool,
+    source_block_reason: Option<ReferenceBlockReason>,
 ) -> ReferenceBlockReason {
-    if gate.blockers.await_binance {
+    if source_blocked {
+        source_block_reason.unwrap_or(ReferenceBlockReason::HardBlocker)
+    } else if gate.blockers.await_binance {
         ReferenceBlockReason::AwaitBinance
     } else if gate.blockers.await_poly_book {
         ReferenceBlockReason::AwaitPolyBook
@@ -2077,7 +2355,7 @@ fn reference_block_reason(
         ReferenceBlockReason::MinWarmupNotElapsed
     } else if !gate.ready {
         ReferenceBlockReason::NotReady
-    } else if drift_raw_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS
+    } else if drift_ewma_ticks > GLFT_QUOTE_BLOCKED_ENTER_TICKS
         && drift_persist_ms >= GLFT_DRIFT_BLOCKED_PERSIST_MS
     {
         ReferenceBlockReason::DriftExceeded
@@ -2299,6 +2577,7 @@ mod tests {
             no_bid: 0.50,
             no_ask: 0.51,
         };
+        engine.last_poly_book_event_ts = Some(Instant::now());
         engine.last_poly_mid_ts = Some(Instant::now());
         engine.basis_raw = 0.0;
         engine.basis_prob = 0.0;
@@ -2363,19 +2642,147 @@ mod tests {
     #[test]
     fn quote_regime_uses_hysteresis_thresholds() {
         assert_eq!(
-            quote_regime_target(QuoteRegime::Aligned, true, true, true, 4.5, 4.5, 0, 0),
-            QuoteRegime::Tracking
-        );
-        assert_eq!(
-            quote_regime_target(QuoteRegime::Tracking, true, true, true, 2.9, 2.9, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                4.5,
+                4.5,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Aligned
         );
         assert_eq!(
-            quote_regime_target(QuoteRegime::Tracking, true, true, true, 8.5, 8.5, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                4.5,
+                4.5,
+                GLFT_DRIFT_TRACKING_PERSIST_MS,
+                0,
+                0,
+                0,
+                0.0,
+            ),
+            QuoteRegime::Tracking
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                2.9,
+                2.9,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
+            QuoteRegime::Tracking
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                2.9,
+                2.9,
+                0,
+                0,
+                0,
+                GLFT_QUOTE_TRACKING_MIN_HOLD_MS + 10,
+                0.0,
+            ),
+            QuoteRegime::Tracking
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                2.1,
+                2.1,
+                0,
+                0,
+                GLFT_DRIFT_COOL_TO_ALIGNED_PERSIST_MS + 10,
+                GLFT_QUOTE_TRACKING_MIN_HOLD_MS + 10,
+                0.0,
+            ),
+            QuoteRegime::Aligned
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                8.5,
+                8.5,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Guarded
         );
         assert_eq!(
-            quote_regime_target(QuoteRegime::Guarded, true, true, true, 5.5, 5.5, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Guarded,
+                true,
+                true,
+                true,
+                5.5,
+                5.5,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
+            QuoteRegime::Guarded
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Guarded,
+                true,
+                true,
+                true,
+                5.5,
+                5.5,
+                0,
+                GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS + 10,
+                0,
+                GLFT_QUOTE_GUARDED_MIN_HOLD_MS + 10,
+                0.0,
+            ),
+            QuoteRegime::Guarded
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Guarded,
+                true,
+                true,
+                true,
+                5.1,
+                5.1,
+                0,
+                GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS + 10,
+                0,
+                GLFT_QUOTE_GUARDED_MIN_HOLD_MS + 10,
+                0.0,
+            ),
             QuoteRegime::Tracking
         );
         assert_eq!(
@@ -2388,8 +2795,47 @@ mod tests {
                 11.5,
                 GLFT_DRIFT_BLOCKED_PERSIST_MS,
                 0,
+                0,
+                0,
+                0.0,
             ),
             QuoteRegime::Blocked
+        );
+    }
+
+    #[test]
+    fn quote_regime_does_not_use_trend_slope_for_direct_entry() {
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                3.2,
+                3.2,
+                0,
+                0,
+                0,
+                0,
+                0.8,
+            ),
+            QuoteRegime::Aligned
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                3.2,
+                3.2,
+                0,
+                0,
+                0,
+                0,
+                2.6,
+            ),
+            QuoteRegime::Aligned
         );
     }
 
@@ -2694,15 +3140,67 @@ mod tests {
     #[test]
     fn quote_regime_targets_sources_and_drift() {
         assert_eq!(
-            quote_regime_target(QuoteRegime::Aligned, true, true, true, 2.0, 2.0, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                2.0,
+                2.0,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Aligned
         );
         assert_eq!(
-            quote_regime_target(QuoteRegime::Aligned, true, true, true, 5.0, 5.0, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                5.0,
+                5.0,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
+            QuoteRegime::Aligned
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                true,
+                true,
+                5.0,
+                5.0,
+                GLFT_DRIFT_TRACKING_PERSIST_MS,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Tracking
         );
         assert_eq!(
-            quote_regime_target(QuoteRegime::Tracking, true, true, true, 8.5, 8.5, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Tracking,
+                true,
+                true,
+                true,
+                8.5,
+                8.5,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Guarded
         );
         assert_eq!(
@@ -2715,6 +3213,9 @@ mod tests {
                 11.0,
                 GLFT_DRIFT_BLOCKED_PERSIST_MS,
                 0,
+                0,
+                0,
+                0.0,
             ),
             QuoteRegime::Blocked
         );
@@ -2727,12 +3228,11 @@ mod tests {
                 11.5,
                 11.5,
                 0,
-                GLFT_BLOCKED_MIN_HOLD_MS + 10
+                0,
+                0,
+                GLFT_BLOCKED_MIN_HOLD_MS + 10,
+                0.0,
             ),
-            QuoteRegime::Blocked
-        );
-        assert_eq!(
-            quote_regime_target(QuoteRegime::Blocked, true, true, true, 7.0, 7.0, 0, 100),
             QuoteRegime::Blocked
         );
         assert_eq!(
@@ -2744,12 +3244,43 @@ mod tests {
                 7.0,
                 7.0,
                 0,
-                GLFT_BLOCKED_MIN_HOLD_MS + 10
+                0,
+                0,
+                100,
+                0.0
+            ),
+            QuoteRegime::Blocked
+        );
+        assert_eq!(
+            quote_regime_target(
+                QuoteRegime::Blocked,
+                true,
+                true,
+                true,
+                7.0,
+                7.0,
+                0,
+                GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS + 10,
+                0,
+                GLFT_BLOCKED_MIN_HOLD_MS + 10,
+                0.0,
             ),
             QuoteRegime::Guarded
         );
         assert_eq!(
-            quote_regime_target(QuoteRegime::Aligned, true, false, true, 0.0, 0.0, 0, 0),
+            quote_regime_target(
+                QuoteRegime::Aligned,
+                true,
+                false,
+                true,
+                0.0,
+                0.0,
+                0,
+                0,
+                0,
+                0,
+                0.0,
+            ),
             QuoteRegime::Blocked
         );
     }
@@ -2779,7 +3310,7 @@ mod tests {
     }
 
     #[test]
-    fn quote_regime_recovers_through_guarded_streak() {
+    fn quote_regime_blocked_recovery_requires_pending_window() {
         let mut engine = test_engine("TESTREADY_REGIME_RECOVER", None);
         prime_ready_inputs(&mut engine);
         engine.live_latched = true;
@@ -2797,6 +3328,7 @@ mod tests {
                 4.0,
                 4.0,
                 0,
+                0.0,
                 0.50,
                 0.50,
                 now,
@@ -2804,7 +3336,7 @@ mod tests {
                 GlftReadinessBlockers::default(),
                 None,
             ),
-            QuoteRegime::Guarded
+            QuoteRegime::Blocked
         );
         assert_eq!(
             engine.update_quote_regime(
@@ -2812,6 +3344,7 @@ mod tests {
                 4.0,
                 4.0,
                 0,
+                0.0,
                 0.50,
                 0.50,
                 now + Duration::from_millis(500),
@@ -2819,7 +3352,7 @@ mod tests {
                 GlftReadinessBlockers::default(),
                 None,
             ),
-            QuoteRegime::Guarded
+            QuoteRegime::Blocked
         );
         assert_eq!(
             engine.update_quote_regime(
@@ -2827,6 +3360,7 @@ mod tests {
                 4.0,
                 4.0,
                 0,
+                0.0,
                 0.50,
                 0.50,
                 now + Duration::from_secs(1),
@@ -2834,7 +3368,7 @@ mod tests {
                 GlftReadinessBlockers::default(),
                 None,
             ),
-            QuoteRegime::Guarded
+            QuoteRegime::Blocked
         );
         assert_eq!(
             engine.update_quote_regime(
@@ -2842,6 +3376,7 @@ mod tests {
                 4.0,
                 4.0,
                 0,
+                0.0,
                 0.50,
                 0.50,
                 now + Duration::from_millis(1500),
@@ -2849,7 +3384,7 @@ mod tests {
                 GlftReadinessBlockers::default(),
                 None,
             ),
-            QuoteRegime::Guarded
+            QuoteRegime::Aligned
         );
         assert_eq!(
             engine.update_quote_regime(
@@ -2857,6 +3392,7 @@ mod tests {
                 4.0,
                 4.0,
                 0,
+                0.0,
                 0.50,
                 0.50,
                 now + Duration::from_secs(2),

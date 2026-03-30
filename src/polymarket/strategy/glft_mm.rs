@@ -303,6 +303,7 @@ mod tests {
             drift_raw_ticks: 0.0,
             drift_ewma_ticks: 0.0,
             drift_persist_ms: 0,
+            trusted_mid_slope_tps: 0.0,
             alpha_flow: 0.0,
             sigma_prob: 0.005,
             tau_norm: 0.5,

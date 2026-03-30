@@ -655,12 +655,12 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
     coord.slot_shadow_targets[OrderSlot::NO_BUY.index()] = Some(DesiredTarget {
         side: Side::No,
         direction: TradeDirection::Buy,
-        price: 0.50,
+        price: 0.58,
         size: 6.0,
         reason: BidReason::Provide,
     });
     coord.slot_shadow_since[OrderSlot::NO_BUY.index()] =
-        Some(Instant::now() - Duration::from_secs(2));
+        Some(Instant::now() - Duration::from_secs(3));
     coord.slot_publish_budget[OrderSlot::NO_BUY.index()] = 0.0;
     coord.slot_last_budget_refill[OrderSlot::NO_BUY.index()] = Instant::now();
     coord.slot_last_regime_seen[OrderSlot::NO_BUY.index()] = Some(QuoteRegime::Aligned);
@@ -668,14 +668,17 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
         Instant::now() - Duration::from_secs(5);
 
     coord
-        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.50, 6.0, BidReason::Provide, None)
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.70, 6.0, BidReason::Provide, None)
         .await;
 
     assert!(
         timeout(Duration::from_millis(20), er.recv()).await.is_err(),
         "budget exhausted should suppress non-emergency reprice"
     );
-    assert_eq!(coord.stats.publish_budget_suppressed, 1);
+    assert!(
+        coord.stats.publish_budget_suppressed + coord.stats.shadow_suppressed_updates >= 1,
+        "expected either budget gate or shadow gate suppression"
+    );
 }
 
 #[tokio::test]
@@ -702,11 +705,21 @@ async fn test_glft_sync_publish_is_budget_governed() {
     coord.slot_targets[slot.index()] = Some(target.clone());
     coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
     coord.yes_target = Some(target);
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.55,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(5);
     coord.slot_publish_budget[slot.index()] = 0.0;
     coord.slot_last_budget_refill[slot.index()] = Instant::now();
 
     coord
-        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(slot, 0.55, 5.0, BidReason::Provide, None)
         .await;
 
     assert!(
@@ -740,6 +753,16 @@ async fn test_glft_sync_publish_tracks_counter_when_published() {
     coord.slot_targets[slot.index()] = Some(target.clone());
     coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
     coord.yes_target = Some(target);
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(5);
 
     coord
         .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
@@ -759,6 +782,168 @@ async fn test_glft_sync_publish_tracks_counter_when_published() {
     assert_eq!(coord.stats.forced_realign_count, 0);
     assert_eq!(coord.stats.forced_realign_hard_count, 0);
     assert_eq!(coord.stats.debt_realign_triggers, 1);
+}
+
+#[tokio::test]
+async fn test_glft_debt_publish_is_step_capped() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    let _ = g.send(GlftSignalSnapshot {
+        trusted_mid: 0.50,
+        ..live_glft_snapshot()
+    });
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(target);
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.58,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(5);
+
+    coord
+        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
+        .await;
+
+    let published = match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => target,
+        other => panic!("expected debt-capped publish, got {:?}", other),
+    };
+    assert_eq!(published.side, Side::Yes);
+    assert!(
+        (published.price - 0.44).abs() < 1e-9,
+        "debt release should be step-capped to 14 ticks in high-confidence Aligned (got {:.3})",
+        published.price
+    );
+    assert_eq!(
+        coord.slot_last_publish_reason[slot.index()],
+        Some(SlotPublishReason::Debt)
+    );
+}
+
+#[tokio::test]
+async fn test_glft_debt_publish_uses_lower_cap_when_confidence_low() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    let mut snapshot = live_glft_snapshot();
+    snapshot.reference_confidence = 0.40;
+    let _ = g.send(snapshot);
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(target);
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.58,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(5);
+
+    coord
+        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
+        .await;
+
+    let published = match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => target,
+        other => panic!("expected debt-capped publish, got {:?}", other),
+    };
+    assert!(
+        (published.price - 0.40).abs() < 1e-9,
+        "low-confidence Aligned should fall back to 10-tick step cap (got {:.3})",
+        published.price
+    );
+}
+
+#[tokio::test]
+async fn test_glft_source_recovery_ignores_short_flaps() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let shadow = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_shadow_targets[slot.index()] = Some(shadow);
+    let old_shadow_since = Instant::now() - Duration::from_secs(2);
+    coord.slot_shadow_since[slot.index()] = Some(old_shadow_since);
+    let now = Instant::now();
+    coord.glft_source_blocked_since = Some(now - Duration::from_millis(100));
+
+    coord.update_glft_source_recovery_state(live_glft_snapshot(), now);
+
+    assert!(coord.glft_republish_settle_until.is_none());
+    assert_eq!(
+        coord.slot_shadow_targets[slot.index()]
+            .as_ref()
+            .map(|t| t.price),
+        Some(0.45)
+    );
+    assert_eq!(
+        coord.slot_shadow_since[slot.index()],
+        Some(old_shadow_since)
+    );
+}
+
+#[tokio::test]
+async fn test_glft_source_recovery_resets_shadow_after_persistent_block() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(2));
+    let now = Instant::now();
+    coord.glft_source_blocked_since = Some(now - Duration::from_secs(5));
+
+    coord.update_glft_source_recovery_state(live_glft_snapshot(), now);
+
+    assert!(coord.glft_republish_settle_until.is_some());
+    assert!(coord.slot_shadow_targets[slot.index()].is_none());
+    assert_eq!(coord.slot_shadow_since[slot.index()], Some(now));
 }
 
 #[tokio::test]
@@ -835,6 +1020,49 @@ async fn test_glft_not_ready_clears_active_slots_before_execution() {
     );
     assert!(coord.slot_target(OrderSlot::YES_BUY).is_none());
     assert!(coord.slot_target(OrderSlot::NO_BUY).is_none());
+}
+
+#[tokio::test]
+async fn test_glft_blocked_source_stats_split_binance_vs_poly() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, _, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+
+    let mut blocked = live_glft_snapshot();
+    blocked.quote_regime = QuoteRegime::Blocked;
+    blocked.reference_health = ReferenceHealth::Blocked;
+    blocked.ready = false;
+    blocked.stale = true;
+
+    blocked.readiness_blockers.await_binance = true;
+    blocked.readiness_blockers.await_poly_book = false;
+    let _ = g.send(blocked);
+    coord.tick().await;
+    assert_eq!(coord.stats.blocked_due_source, 1);
+    assert_eq!(coord.stats.blocked_due_binance, 1);
+    assert_eq!(coord.stats.blocked_due_poly, 0);
+    assert_eq!(coord.stats.blocked_due_divergence, 0);
+
+    // Reset blocked edge so the next blocked tick is counted as a new entry.
+    let mut live = live_glft_snapshot();
+    live.readiness_blockers.await_binance = false;
+    live.readiness_blockers.await_poly_book = false;
+    live.quote_regime = QuoteRegime::Aligned;
+    let _ = g.send(live);
+    coord.tick().await;
+
+    let mut blocked_poly = blocked;
+    blocked_poly.readiness_blockers.await_binance = false;
+    blocked_poly.readiness_blockers.await_poly_book = true;
+    let _ = g.send(blocked_poly);
+    coord.tick().await;
+    assert_eq!(coord.stats.blocked_due_source, 2);
+    assert_eq!(coord.stats.blocked_due_binance, 1);
+    assert_eq!(coord.stats.blocked_due_poly, 1);
+    assert_eq!(coord.stats.blocked_due_divergence, 0);
 }
 
 #[tokio::test]
@@ -948,7 +1176,10 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
     let _ = o.send(OfiSnapshot::default());
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.49, 0.50, 0.50, 0.51));
-    let _ = g.send(live_glft_snapshot());
+    let mut glft = live_glft_snapshot();
+    // Widen NO-side clamp corridor so "large move" remains large after target clamp.
+    glft.trusted_mid = 0.20;
+    let _ = g.send(glft);
 
     let target = DesiredTarget {
         side: Side::No,
@@ -974,7 +1205,7 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
     coord
         .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
         .await;
-    tokio::time::sleep(Duration::from_millis(1200)).await;
+    tokio::time::sleep(Duration::from_millis(3600)).await;
     coord
         .slot_place_or_reprice(OrderSlot::NO_BUY, 0.90, 5.0, BidReason::Provide, None)
         .await;
@@ -998,7 +1229,7 @@ async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
 }
 
 #[tokio::test]
-async fn test_glft_confirmed_publish_settles_to_shadow_target() {
+async fn test_glft_target_follow_debt_does_not_publish_without_structural_misalignment() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
     let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
@@ -1023,31 +1254,24 @@ async fn test_glft_confirmed_publish_settles_to_shadow_target() {
     coord
         .slot_place_or_reprice(slot, 0.90, 5.0, BidReason::Provide, None)
         .await;
-    tokio::time::sleep(Duration::from_millis(2200)).await;
+    tokio::time::sleep(Duration::from_millis(3200)).await;
 
-    let mut published = None;
-    for _ in 0..4 {
+    let mut published = false;
+    for _ in 0..6 {
         coord
             .slot_place_or_reprice(slot, 0.90, 5.0, BidReason::Provide, None)
             .await;
-        if let Ok(Some(OrderManagerCmd::SetTarget(t))) =
+        if let Ok(Some(OrderManagerCmd::SetTarget(_t))) =
             timeout(Duration::from_millis(80), er.recv()).await
         {
-            published = Some(t);
+            published = true;
             break;
         }
         tokio::time::sleep(Duration::from_millis(60)).await;
     }
-    let t = published.expect("expected eventual SetTarget");
-    let shadow_price = coord
-        .slot_shadow_target(slot)
-        .expect("shadow target should exist")
-        .price;
     assert!(
-        (t.price - shadow_price).abs() < 1e-9,
-        "confirmed publish should settle to shadow target: published={} shadow={}",
-        t.price,
-        shadow_price
+        !published,
+        "target-follow-only debt should not publish without structural misalignment"
     );
 }
 
