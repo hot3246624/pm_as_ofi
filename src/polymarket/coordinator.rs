@@ -758,6 +758,7 @@ pub struct StrategyCoordinator {
     slot_last_budget_refill: [Instant; 4],
     slot_publish_debt_accum: [f64; 4],
     slot_last_debt_refill: [Instant; 4],
+    slot_absent_clear_since: [Option<Instant>; 4],
     yes_target: Option<DesiredTarget>,
     no_target: Option<DesiredTarget>,
     yes_last_ts: Instant,
@@ -886,6 +887,7 @@ impl StrategyCoordinator {
             slot_last_budget_refill: std::array::from_fn(|_| Instant::now()),
             slot_publish_debt_accum: [0.0; 4],
             slot_last_debt_refill: std::array::from_fn(|_| Instant::now()),
+            slot_absent_clear_since: std::array::from_fn(|_| None),
             yes_target: None,
             no_target: None,
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
@@ -1303,6 +1305,7 @@ impl StrategyCoordinator {
                     self.slot_shadow_targets[slot.index()] = None;
                     self.slot_shadow_since[slot.index()] = Some(now);
                     self.slot_last_publish_reason[slot.index()] = None;
+                    self.slot_absent_clear_since[slot.index()] = None;
                     self.reset_slot_publish_state(slot);
                 }
             }

@@ -214,6 +214,7 @@ impl StrategyCoordinator {
         self.slot_shadow_last_change_ts[idx] = None;
         self.slot_last_regime_seen[idx] = None;
         self.slot_regime_changed_at[idx] = std::time::Instant::now();
+        self.slot_absent_clear_since[idx] = None;
     }
 
     pub(super) fn consume_slot_publish_budget(

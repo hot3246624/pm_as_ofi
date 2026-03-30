@@ -360,6 +360,9 @@ impl StrategyCoordinator {
                 Side::Yes => yes_toxic_blocked,
                 Side::No => no_toxic_blocked,
             };
+            if intent.is_some() {
+                self.slot_absent_clear_since[slot.index()] = None;
+            }
 
             let allowed = self.slot_quote_allowed(inv, slot, intent, stale, toxic, phase, &ofi);
             if !allowed {
@@ -369,6 +372,9 @@ impl StrategyCoordinator {
                     self.note_skipped_inv_limit();
                 }
                 if self.slot_target_active(slot) {
+                    if self.should_defer_absent_reprice_clear(slot, intent, reject_reason, phase) {
+                        continue;
+                    }
                     // Keep-if-safe must be evaluated against the latest usable book to avoid
                     // cancel/place thrash when strategy output jitters around slot boundaries.
                     if !stale
@@ -536,6 +542,77 @@ impl StrategyCoordinator {
             return CancelReason::EndgameRiskGate;
         }
         CancelReason::Reprice
+    }
+
+    fn should_defer_absent_reprice_clear(
+        &mut self,
+        slot: OrderSlot,
+        intent: Option<StrategyIntent>,
+        reject_reason: CancelReason,
+        phase: EndgamePhase,
+    ) -> bool {
+        if self.cfg.strategy != StrategyKind::GlftMm {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return false;
+        }
+        if intent.is_some() || !matches!(reject_reason, CancelReason::Reprice) {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return false;
+        }
+        if phase != EndgamePhase::Normal {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return false;
+        }
+        let glft = *self.glft_rx.borrow();
+        if !self.glft_is_tradeable_snapshot(glft)
+            || matches!(
+                glft.quote_regime,
+                crate::polymarket::glft::QuoteRegime::Blocked
+            )
+        {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return false;
+        }
+        let Some(current) = self.slot_target(slot) else {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return false;
+        };
+        let tick = self.cfg.tick_size.max(1e-9);
+        let trusted_side_mid = match slot.side {
+            Side::Yes => glft.trusted_mid,
+            Side::No => 1.0 - glft.trusted_mid,
+        };
+        let trusted_dist_ticks = ((current.price - trusted_side_mid).abs() / tick).floor();
+        let hard_stale_trusted_ticks = match glft.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => 12.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 10.0,
+            crate::polymarket::glft::QuoteRegime::Guarded => 8.0,
+            crate::polymarket::glft::QuoteRegime::Blocked => 0.0,
+        };
+        if trusted_dist_ticks > hard_stale_trusted_ticks {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return false;
+        }
+        let now = std::time::Instant::now();
+        let dwell = match glft.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => std::time::Duration::from_millis(900),
+            crate::polymarket::glft::QuoteRegime::Tracking => {
+                std::time::Duration::from_millis(1_500)
+            }
+            crate::polymarket::glft::QuoteRegime::Guarded => {
+                std::time::Duration::from_millis(2_200)
+            }
+            crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::ZERO,
+        };
+        let idx = slot.index();
+        let since = self.slot_absent_clear_since[idx].get_or_insert(now);
+        if now.saturating_duration_since(*since) < dwell {
+            self.stats.shadow_suppressed_updates =
+                self.stats.shadow_suppressed_updates.saturating_add(1);
+            return true;
+        }
+        self.slot_absent_clear_since[idx] = None;
+        false
     }
 
     pub(super) fn slot_blocked_by_ofi(&self, slot: OrderSlot, ofi: &OfiSnapshot) -> bool {
