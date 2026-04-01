@@ -594,19 +594,34 @@ impl StrategyCoordinator {
             return false;
         }
         let now = std::time::Instant::now();
-        let dwell = match glft.quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => std::time::Duration::from_millis(900),
+        let idx = slot.index();
+        let warmup_dwell = match glft.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => {
+                std::time::Duration::from_millis(1_200)
+            }
             crate::polymarket::glft::QuoteRegime::Tracking => {
-                std::time::Duration::from_millis(1_500)
+                std::time::Duration::from_millis(1_800)
             }
             crate::polymarket::glft::QuoteRegime::Guarded => {
-                std::time::Duration::from_millis(2_200)
+                std::time::Duration::from_millis(2_600)
             }
             crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::ZERO,
         };
-        let idx = slot.index();
         let since = self.slot_absent_clear_since[idx].get_or_insert(now);
-        if now.saturating_duration_since(*since) < dwell {
+        let elapsed = now.saturating_duration_since(*since);
+        if elapsed < warmup_dwell {
+            self.stats.shadow_suppressed_updates =
+                self.stats.shadow_suppressed_updates.saturating_add(1);
+            return true;
+        }
+        // Architecture rule:
+        // missing intent is not itself a clear signal in GLFT slot mode.
+        // We only clear when the existing quote is structurally stale against
+        // trusted reference, not when strategy temporarily suppresses a slot.
+        let republish_settling = self.glft_republish_settle_remaining(now).is_some();
+        let trusted_soft_hold_cap =
+            hard_stale_trusted_ticks + if republish_settling { 2.0 } else { 0.0 };
+        if trusted_dist_ticks <= trusted_soft_hold_cap {
             self.stats.shadow_suppressed_updates =
                 self.stats.shadow_suppressed_updates.saturating_add(1);
             return true;

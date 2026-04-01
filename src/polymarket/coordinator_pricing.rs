@@ -200,7 +200,7 @@ impl StrategyCoordinator {
         self.slot_shadow_since[slot.index()]
     }
 
-    pub(super) fn slot_publish_reason(&self, slot: OrderSlot) -> Option<SlotPublishReason> {
+    pub(super) fn slot_publish_reason(&self, slot: OrderSlot) -> Option<PolicyPublishCause> {
         self.slot_last_publish_reason[slot.index()]
     }
 
@@ -212,6 +212,11 @@ impl StrategyCoordinator {
         self.slot_last_debt_refill[idx] = std::time::Instant::now();
         self.slot_shadow_velocity_tps[idx] = 0.0;
         self.slot_shadow_last_change_ts[idx] = None;
+        self.slot_policy_candidates[idx] = None;
+        self.slot_policy_candidate_since[idx] = None;
+        self.slot_policy_states[idx] = None;
+        self.slot_policy_since[idx] = None;
+        self.slot_last_policy_transition[idx] = None;
         self.slot_last_regime_seen[idx] = None;
         self.slot_regime_changed_at[idx] = std::time::Instant::now();
         self.slot_absent_clear_since[idx] = None;
@@ -276,22 +281,19 @@ impl StrategyCoordinator {
         }
     }
 
-    pub(super) fn glft_publish_reason_is_abnormal(reason: SlotPublishReason) -> bool {
-        matches!(
-            reason,
-            SlotPublishReason::InvalidState | SlotPublishReason::CrossRecovery
-        )
+    pub(super) fn glft_publish_reason_is_abnormal(reason: PolicyPublishCause) -> bool {
+        matches!(reason, PolicyPublishCause::Safety | PolicyPublishCause::Recovery)
     }
 
     pub(super) fn glft_publish_reason_budget_cost(
-        reason: SlotPublishReason,
+        reason: PolicyPublishCause,
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
         let base: f64 = match reason {
-            SlotPublishReason::Initial => 0.75,
-            SlotPublishReason::Debt => 1.00,
-            SlotPublishReason::InvalidState => 1.35,
-            SlotPublishReason::CrossRecovery => 1.60,
+            PolicyPublishCause::Initial => 0.75,
+            PolicyPublishCause::Policy => 0.95,
+            PolicyPublishCause::Safety => 1.25,
+            PolicyPublishCause::Recovery => 1.60,
         };
         let regime_mult: f64 = match quote_regime {
             Some(crate::polymarket::glft::QuoteRegime::Tracking) => 1.08,
@@ -342,11 +344,22 @@ impl StrategyCoordinator {
 
         let target_threshold = Self::glft_publish_target_debt_threshold(quote_regime);
         let structural_threshold = Self::glft_publish_structural_debt_threshold(quote_regime);
+        let target_clear_floor = target_threshold * 0.50;
+        let structural_clear_floor = structural_threshold * 0.50;
 
         // Architecture intent:
         // - Direct debt thresholds drive immediate publish.
         // - Accumulator only integrates *excess above thresholds* so it represents
         //   persistent unresolved misalignment, not normal 1-2 tick tracking noise.
+        // - Once both debt sources cool to low-water bands, reset accumulator to avoid
+        //   stale debt re-triggering publishes after market has already re-aligned.
+        if target_follow_debt_ticks <= target_clear_floor
+            && structural_debt_ticks <= structural_clear_floor
+        {
+            self.slot_publish_debt_accum[idx] = 0.0;
+            return 0.0;
+        }
+
         let target_excess = (target_follow_debt_ticks.max(0.0) - target_threshold).max(0.0);
         let structural_excess = (structural_debt_ticks.max(0.0) - structural_threshold).max(0.0);
         if dt > f64::EPSILON && (target_excess > 0.0 || structural_excess > 0.0) {

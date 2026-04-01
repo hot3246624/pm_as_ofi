@@ -26,12 +26,19 @@ use super::types::Side;
 
 const GLFT_SOURCE_RECOVERY_FLAP_IGNORE_MS: u64 = 800;
 const GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS: u64 = 4_500;
+const GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS: u64 = 1_800;
+const GLFT_SOURCE_RECOVERY_SETTLE_MAX_MS: u64 = 12_000;
+const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
 const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
 const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
+const LIVE_OBS_REPLACE_PER_MIN_WARN: f64 = 4.0;
+const LIVE_OBS_REPLACE_PER_MIN_ALERT: f64 = 6.0;
 const LIVE_OBS_REPRICE_RATIO_WARN: f64 = 0.20;
 const LIVE_OBS_REPRICE_RATIO_ALERT: f64 = 0.35;
 const LIVE_OBS_REF_BLOCKED_WARN_MS: u64 = 15_000;
 const LIVE_OBS_REF_BLOCKED_ALERT_MS: u64 = 30_000;
+const LIVE_OBS_REF_BLOCKED_SOURCE_ONLY_WARN_MS: u64 = 60_000;
+const LIVE_OBS_REF_BLOCKED_SOURCE_ONLY_ALERT_MS: u64 = 120_000;
 const LIVE_OBS_HEAT_EVENTS_WARN: u64 = 10;
 const LIVE_OBS_HEAT_EVENTS_ALERT: u64 = 14;
 
@@ -534,6 +541,12 @@ struct Stats {
     publish_events: u64,
     replace_events: u64,
     cancel_events: u64,
+    publish_from_initial: u64,
+    publish_from_policy: u64,
+    publish_from_safety: u64,
+    publish_from_recovery: u64,
+    policy_transition_events: u64,
+    policy_noop_ticks: u64,
     cancel_toxic: u64,
     cancel_stale: u64,
     cancel_inv: u64,
@@ -556,7 +569,6 @@ struct Stats {
     publish_budget_suppressed: u64,
     forced_realign_count: u64,
     forced_realign_hard_count: u64,
-    debt_realign_triggers: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -577,22 +589,44 @@ impl LiveObsLevel {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SlotPublishReason {
+enum PolicyPublishCause {
     Initial,
-    Debt,
-    InvalidState,
-    CrossRecovery,
+    Policy,
+    Safety,
+    Recovery,
 }
 
-impl SlotPublishReason {
+impl PolicyPublishCause {
     fn as_str(self) -> &'static str {
         match self {
             Self::Initial => "initial",
-            Self::Debt => "debt",
-            Self::InvalidState => "invalid_state",
-            Self::CrossRecovery => "cross_recovery",
+            Self::Policy => "policy",
+            Self::Safety => "safety",
+            Self::Recovery => "recovery",
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PolicyTransitionReason {
+    Activate,
+    Suppress,
+    PriceBucket,
+    SizeBucket,
+    AggressivenessBucket,
+}
+
+impl PolicyTransitionReason {
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct QuotePolicyState {
+    active: bool,
+    policy_price: f64,
+    size: f64,
+    price_tick: i64,
+    size_bucket: i32,
+    aggressiveness_bucket: u8,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -751,7 +785,12 @@ pub struct StrategyCoordinator {
     slot_shadow_since: [Option<Instant>; 4],
     slot_shadow_velocity_tps: [f64; 4],
     slot_shadow_last_change_ts: [Option<Instant>; 4],
-    slot_last_publish_reason: [Option<SlotPublishReason>; 4],
+    slot_policy_candidates: [Option<QuotePolicyState>; 4],
+    slot_policy_candidate_since: [Option<Instant>; 4],
+    slot_policy_states: [Option<QuotePolicyState>; 4],
+    slot_policy_since: [Option<Instant>; 4],
+    slot_last_policy_transition: [Option<PolicyTransitionReason>; 4],
+    slot_last_publish_reason: [Option<PolicyPublishCause>; 4],
     slot_last_regime_seen: [Option<crate::polymarket::glft::QuoteRegime>; 4],
     slot_regime_changed_at: [Instant; 4],
     slot_publish_budget: [f64; 4],
@@ -773,9 +812,13 @@ pub struct StrategyCoordinator {
     was_hot_no: bool,
     was_toxic_yes: bool,
     was_toxic_no: bool,
+    glft_ready_seen: bool,
     reference_blocked_since: Option<Instant>,
     glft_source_blocked_since: Option<Instant>,
+    glft_source_blocked_saw_binance: bool,
+    glft_source_blocked_saw_poly: bool,
     glft_republish_settle_until: Option<Instant>,
+    glft_recovery_force_clear_pending: bool,
     last_metrics_log_ts: Instant,
     last_endgame_phase: EndgamePhase,
     edge_hold_state: Option<EdgeHoldState>,
@@ -880,6 +923,11 @@ impl StrategyCoordinator {
             slot_shadow_since: std::array::from_fn(|_| None),
             slot_shadow_velocity_tps: [0.0; 4],
             slot_shadow_last_change_ts: std::array::from_fn(|_| None),
+            slot_policy_candidates: std::array::from_fn(|_| None),
+            slot_policy_candidate_since: std::array::from_fn(|_| None),
+            slot_policy_states: std::array::from_fn(|_| None),
+            slot_policy_since: std::array::from_fn(|_| None),
+            slot_last_policy_transition: std::array::from_fn(|_| None),
             slot_last_publish_reason: std::array::from_fn(|_| None),
             slot_last_regime_seen: std::array::from_fn(|_| None),
             slot_regime_changed_at: std::array::from_fn(|_| Instant::now()),
@@ -899,9 +947,13 @@ impl StrategyCoordinator {
             was_hot_no: false,
             was_toxic_yes: false,
             was_toxic_no: false,
+            glft_ready_seen: false,
             reference_blocked_since: None,
             glft_source_blocked_since: None,
+            glft_source_blocked_saw_binance: false,
+            glft_source_blocked_saw_poly: false,
             glft_republish_settle_until: None,
+            glft_recovery_force_clear_pending: false,
             last_metrics_log_ts,
             last_endgame_phase: EndgamePhase::Normal,
             edge_hold_state: None,
@@ -999,13 +1051,15 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={}) debt_sync={}) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
+            self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
+            self.stats.policy_transition_events, self.stats.policy_noop_ticks,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
-            self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count, self.stats.debt_realign_triggers,
+            self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
         self.emit_live_observability_tags();
@@ -1146,21 +1200,64 @@ impl StrategyCoordinator {
     fn emit_live_observability_tags(&self) {
         let replace_ratio = Self::obs_ratio(self.stats.replace_events, self.stats.placed);
         let reprice_ratio = Self::obs_ratio(self.stats.cancel_reprice, self.stats.placed);
+        let elapsed_secs = self.market_start.elapsed().as_secs_f64().max(1.0);
+        let replace_per_min = (self.stats.replace_events as f64) * 60.0 / elapsed_secs;
+        let low_sample = self.stats.placed < LIVE_OBS_MIN_PLACED_SAMPLE;
 
-        let lvl_replace = Self::obs_level_ge_f64(
+        let lvl_replace_raw = Self::obs_level_ge_f64(
             replace_ratio,
             LIVE_OBS_REPLACE_RATIO_WARN,
             LIVE_OBS_REPLACE_RATIO_ALERT,
         );
-        let lvl_reprice = Self::obs_level_ge_f64(
+        let lvl_replace_rate = Self::obs_level_ge_f64(
+            replace_per_min,
+            LIVE_OBS_REPLACE_PER_MIN_WARN,
+            LIVE_OBS_REPLACE_PER_MIN_ALERT,
+        );
+        let lvl_reprice_raw = Self::obs_level_ge_f64(
             reprice_ratio,
             LIVE_OBS_REPRICE_RATIO_WARN,
             LIVE_OBS_REPRICE_RATIO_ALERT,
         );
+        // Small dry-run samples produce noisy ratio alerts; downgrade to informational.
+        let lvl_replace = if low_sample {
+            LiveObsLevel::Ok
+        } else if lvl_replace_rate < LiveObsLevel::Warn {
+            // Ratio alone is not meaningful for persistent two-slot quoting.
+            // Only escalate when absolute replace cadence is also high.
+            LiveObsLevel::Ok
+        } else if lvl_replace_raw >= LiveObsLevel::Alert
+            && lvl_replace_rate < LiveObsLevel::Alert
+        {
+            // High ratio with only moderate absolute cadence should not page as ALERT.
+            LiveObsLevel::Warn
+        } else {
+            lvl_replace_raw.max(lvl_replace_rate)
+        };
+        let lvl_reprice = if low_sample {
+            LiveObsLevel::Ok
+        } else {
+            lvl_reprice_raw
+        };
+        let source_only_blocked =
+            self.stats.blocked_due_source > 0 && self.stats.blocked_due_divergence == 0;
+        let (ref_block_warn_ms, ref_block_alert_ms, ref_block_scope) = if source_only_blocked {
+            (
+                LIVE_OBS_REF_BLOCKED_SOURCE_ONLY_WARN_MS,
+                LIVE_OBS_REF_BLOCKED_SOURCE_ONLY_ALERT_MS,
+                "source_only",
+            )
+        } else {
+            (
+                LIVE_OBS_REF_BLOCKED_WARN_MS,
+                LIVE_OBS_REF_BLOCKED_ALERT_MS,
+                "mixed_or_divergence",
+            )
+        };
         let lvl_ref_blocked = Self::obs_level_ge_u64(
             self.stats.reference_blocked_ms,
-            LIVE_OBS_REF_BLOCKED_WARN_MS,
-            LIVE_OBS_REF_BLOCKED_ALERT_MS,
+            ref_block_warn_ms,
+            ref_block_alert_ms,
         );
         let lvl_heat = Self::obs_level_ge_u64(
             self.stats.ofi_heat_events,
@@ -1191,6 +1288,9 @@ impl StrategyCoordinator {
         .unwrap_or(LiveObsLevel::Ok);
 
         let mut flags: Vec<&str> = Vec::new();
+        if low_sample {
+            flags.push("low_sample");
+        }
         if lvl_replace >= LiveObsLevel::Warn {
             flags.push("replace_ratio");
         }
@@ -1216,14 +1316,19 @@ impl StrategyCoordinator {
         };
 
         let msg = format!(
-            "🏷️ LIVE_OBS[{}] replace_ratio={:.2}({}) reprice_ratio={:.2}({}) ref_blocked_ms={}({}) heat_events={}({}) toxic_events={} kill_events={} source_blocked={}({}) flags={}",
+            "🏷️ LIVE_OBS[{}] placed={} sample_floor={} replace_ratio={:.2}({}) replace_per_min={:.2}({}) reprice_ratio={:.2}({}) ref_blocked_ms={}({};scope={}) heat_events={}({}) toxic_events={} kill_events={} source_blocked={}({}) flags={}",
             round_level.as_tag(),
+            self.stats.placed,
+            LIVE_OBS_MIN_PLACED_SAMPLE,
             replace_ratio,
             lvl_replace.as_tag(),
+            replace_per_min,
+            lvl_replace_rate.as_tag(),
             reprice_ratio,
             lvl_reprice.as_tag(),
             self.stats.reference_blocked_ms,
             lvl_ref_blocked.as_tag(),
+            ref_block_scope,
             self.stats.ofi_heat_events,
             lvl_heat.as_tag(),
             self.stats.ofi_toxic_events,
@@ -1262,10 +1367,42 @@ impl StrategyCoordinator {
         }
     }
 
-    fn glft_republish_settle_window(blocked_for: Duration) -> Duration {
-        let scaled_ms = (blocked_for.as_millis() as f64 * 0.8) as u64;
-        let clamped_ms = scaled_ms.clamp(1_800, 4_200);
-        Duration::from_millis(clamped_ms)
+    fn glft_republish_settle_window(
+        blocked_for: Duration,
+        saw_binance: bool,
+        saw_poly: bool,
+    ) -> Duration {
+        let blocked_ms = blocked_for.as_millis() as u64;
+        let base_ms = if blocked_ms < 2_000 {
+            GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS
+        } else if blocked_ms < 6_000 {
+            2_400
+        } else if blocked_ms < 15_000 {
+            3_200
+        } else if blocked_ms < 35_000 {
+            4_500
+        } else {
+            6_000
+        };
+        // Binance stalls are generally more disruptive than transient Poly-book stalls.
+        let source_penalty_ms = match (saw_binance, saw_poly) {
+            (true, true) => 1_200,
+            (true, false) => 900,
+            (false, true) => 400,
+            (false, false) => 0,
+        };
+        let settle_ms = (base_ms + source_penalty_ms)
+            .clamp(GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS, GLFT_SOURCE_RECOVERY_SETTLE_MAX_MS);
+        Duration::from_millis(settle_ms)
+    }
+
+    fn glft_source_block_profile(saw_binance: bool, saw_poly: bool) -> &'static str {
+        match (saw_binance, saw_poly) {
+            (true, true) => "binance+poly",
+            (true, false) => "binance",
+            (false, true) => "poly",
+            (false, false) => "unknown",
+        }
     }
 
     pub(super) fn glft_republish_settle_remaining(&self, now: Instant) -> Option<Duration> {
@@ -1282,7 +1419,11 @@ impl StrategyCoordinator {
         if source_blocked {
             if self.glft_source_blocked_since.is_none() {
                 self.glft_source_blocked_since = Some(now);
+                self.glft_source_blocked_saw_binance = false;
+                self.glft_source_blocked_saw_poly = false;
             }
+            self.glft_source_blocked_saw_binance |= snapshot.readiness_blockers.await_binance;
+            self.glft_source_blocked_saw_poly |= snapshot.readiness_blockers.await_poly_book;
             return;
         }
 
@@ -1296,10 +1437,13 @@ impl StrategyCoordinator {
                 );
                 return;
             }
-            let settle = Self::glft_republish_settle_window(blocked_for);
+            let saw_binance = self.glft_source_blocked_saw_binance;
+            let saw_poly = self.glft_source_blocked_saw_poly;
+            let settle = Self::glft_republish_settle_window(blocked_for, saw_binance, saw_poly);
             self.glft_republish_settle_until = Some(now + settle);
             let reset_shadow_state =
                 blocked_for >= Duration::from_millis(GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS);
+            self.glft_recovery_force_clear_pending = reset_shadow_state;
             for slot in OrderSlot::ALL {
                 self.slot_last_publish_reason[slot.index()] = None;
                 self.slot_absent_clear_since[slot.index()] = None;
@@ -1311,10 +1455,13 @@ impl StrategyCoordinator {
                     self.slot_shadow_since[slot.index()] = Some(now);
                 }
             }
+            self.glft_source_blocked_saw_binance = false;
+            self.glft_source_blocked_saw_poly = false;
             info!(
-                "🧭 GLFT source recovered | blocked_for_ms={} settle_ms={} reset_shadow={}",
+                "🧭 GLFT source recovered | blocked_for_ms={} settle_ms={} source_profile={} reset_shadow={}",
                 blocked_for.as_millis(),
                 settle.as_millis(),
+                Self::glft_source_block_profile(saw_binance, saw_poly),
                 reset_shadow_state,
             );
         } else if self
@@ -1322,6 +1469,8 @@ impl StrategyCoordinator {
             .is_some_and(|until| now >= until)
         {
             self.glft_republish_settle_until = None;
+            self.glft_source_blocked_saw_binance = false;
+            self.glft_source_blocked_saw_poly = false;
         }
     }
 
@@ -1339,6 +1488,11 @@ impl StrategyCoordinator {
         } else {
             None
         };
+        if self.cfg.strategy == StrategyKind::GlftMm
+            && glft_snapshot.is_some_and(|snapshot| self.glft_is_tradeable_snapshot(snapshot))
+        {
+            self.glft_ready_seen = true;
+        }
         let ref_blocked = matches!(
             glft_snapshot,
             Some(snapshot) if matches!(
@@ -1346,11 +1500,24 @@ impl StrategyCoordinator {
                 crate::polymarket::glft::QuoteRegime::Blocked
             )
         );
+        let track_ref_blocked = if self.cfg.strategy == StrategyKind::GlftMm {
+            self.glft_ready_seen
+        } else {
+            true
+        };
         if let Some(snapshot) = glft_snapshot {
             if self.cfg.strategy == StrategyKind::GlftMm {
                 self.update_glft_source_recovery_state(snapshot, now);
+                if self.glft_recovery_force_clear_pending {
+                    self.glft_recovery_force_clear_pending = false;
+                    for slot in OrderSlot::ALL {
+                        if self.slot_target_active(slot) {
+                            self.clear_slot_target(slot, CancelReason::StaleData).await;
+                        }
+                    }
+                }
             }
-            if ref_blocked && self.reference_blocked_since.is_none() {
+            if track_ref_blocked && ref_blocked && self.reference_blocked_since.is_none() {
                 let source_blocked = snapshot.readiness_blockers.await_binance
                     || snapshot.readiness_blockers.await_poly_book;
                 if source_blocked {
@@ -1368,7 +1535,7 @@ impl StrategyCoordinator {
                 }
             }
         }
-        self.update_reference_blocked_time(ref_blocked, now);
+        self.update_reference_blocked_time(track_ref_blocked && ref_blocked, now);
         self.maybe_log_inventory_metrics(&inv, &ofi);
 
         // ── Environmental Health Check ──

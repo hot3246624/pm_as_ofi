@@ -45,14 +45,14 @@ const GLFT_WARM_BASIS_BRIDGE_ACCEPT_TICKS: f64 = 16.0;
 const GLFT_WARM_FRESH_SNAPSHOT_MAX_AGE_SECS: u64 = 120;
 const GLFT_QUOTE_TRACKING_ENTER_TICKS: f64 = 4.0;
 const GLFT_QUOTE_TRACKING_EXIT_TICKS: f64 = 3.0;
-const GLFT_QUOTE_TRACKING_ALIGN_RELEASE_TICKS: f64 = 2.2;
+const GLFT_QUOTE_TRACKING_ALIGN_RELEASE_TICKS: f64 = 2.8;
 const GLFT_QUOTE_GUARDED_ENTER_TICKS: f64 = 8.0;
 const GLFT_QUOTE_GUARDED_EXIT_TICKS: f64 = 6.0;
 const GLFT_QUOTE_GUARDED_TRACK_RELEASE_TICKS: f64 = 5.2;
 const GLFT_QUOTE_BLOCKED_ENTER_TICKS: f64 = 14.0;
 const GLFT_QUOTE_BLOCKED_EXIT_TICKS: f64 = 11.0;
-const GLFT_QUOTE_TRACKING_MIN_HOLD_MS: u64 = 2400;
-const GLFT_QUOTE_GUARDED_MIN_HOLD_MS: u64 = 3200;
+const GLFT_QUOTE_TRACKING_MIN_HOLD_MS: u64 = 3200;
+const GLFT_QUOTE_GUARDED_MIN_HOLD_MS: u64 = 4200;
 const GLFT_DRIFT_FAST_EWMA_HALF_LIFE_SECS: f64 = 1.5;
 const GLFT_DRIFT_REGIME_EWMA_HALF_LIFE_SECS: f64 = 4.0;
 const GLFT_TREND_SLOPE_EWMA_HALF_LIFE_SECS: f64 = 1.8;
@@ -64,15 +64,17 @@ const GLFT_DRIFT_BLOCKED_PERSIST_MS: u64 = 2200;
 const GLFT_DRIFT_COOL_TO_TRACKING_PERSIST_MS: u64 = 2200;
 const GLFT_DRIFT_COOL_TO_ALIGNED_PERSIST_MS: u64 = 2800;
 const GLFT_QUOTE_REGIME_SWITCH_MIN_INTERVAL_MS: u64 = 500;
-const GLFT_QUOTE_REGIME_AT_SWITCH_MIN_INTERVAL_MS: u64 = 1800;
+const GLFT_QUOTE_REGIME_AT_SWITCH_MIN_INTERVAL_MS: u64 = 2800;
+const GLFT_QUOTE_REGIME_TA_SWITCH_MIN_INTERVAL_MS: u64 = 5200;
 const GLFT_QUOTE_REGIME_TG_SWITCH_MIN_INTERVAL_MS: u64 = 1200;
+const GLFT_QUOTE_REGIME_GT_SWITCH_MIN_INTERVAL_MS: u64 = 3000;
 const GLFT_QUOTE_REGIME_ALIGNED_STREAK: u8 = 3;
 const GLFT_QUOTE_REGIME_TRACKING_STREAK: u8 = 2;
 const GLFT_QUOTE_REGIME_GUARDED_STREAK: u8 = 2;
 const GLFT_QUOTE_REGIME_BLOCKED_STREAK: u8 = 2;
 const GLFT_QUOTE_REGIME_PENDING_DEFAULT_MS: u64 = 450;
-const GLFT_QUOTE_REGIME_PENDING_AT_MS: u64 = 900;
-const GLFT_QUOTE_REGIME_PENDING_TG_MS: u64 = 1500;
+const GLFT_QUOTE_REGIME_PENDING_AT_MS: u64 = 1400;
+const GLFT_QUOTE_REGIME_PENDING_TG_MS: u64 = 1900;
 const GLFT_BLOCKED_MIN_HOLD_MS: u64 = 1200;
 const GLFT_SOURCE_BLOCK_ENTER_MS: u64 = 1200;
 const GLFT_SOURCE_BLOCK_EXIT_MS: u64 = 1600;
@@ -616,7 +618,11 @@ impl GlftSignalEngine {
             .map(|ts| now_unix().saturating_sub(ts));
         info!(
             "📡 GLFT cold-start guard | source={} basis_raw={:.3} basis_init={:.3} clamp=±{:.2} min_ready={}s ready_cap={}s reject_fallback_wait={}s snapshot_rejected={} snapshot_age_s={}",
-            if self.bootstrap_loaded { "warm-start" } else { "bootstrap" },
+            if self.bootstrap_loaded {
+                "warm-start"
+            } else {
+                "bootstrap"
+            },
             self.basis_raw,
             self.basis_prob,
             GLFT_BASIS_CLAMP_ABS,
@@ -1417,10 +1423,13 @@ impl GlftSignalEngine {
             trend_slope_tps,
         );
         // Side-feed degradation path: brief Poly book staleness should not force full block.
-        // Keep trading in a more conservative regime and let execution side gating suppress
-        // slots that currently have unsafe/empty local depth.
+        // Keep trading in a more conservative regime only when divergence is already
+        // material/persistent; otherwise we create Aligned<->Tracking chatter from source
+        // heartbeat noise even at near-zero drift.
         let poly_soft_stale = self.update_poly_soft_stale(now, gate);
-        if poly_soft_stale && !matches!(target_regime, QuoteRegime::Blocked) {
+        let soft_stale_degrade_ready =
+            should_degrade_for_soft_stale(poly_soft_stale, drift_ewma_ticks, drift_persist_ms);
+        if soft_stale_degrade_ready && !matches!(target_regime, QuoteRegime::Blocked) {
             target_regime = match target_regime {
                 QuoteRegime::Aligned => QuoteRegime::Tracking,
                 QuoteRegime::Tracking => {
@@ -2262,15 +2271,31 @@ fn quote_regime_target(
     }
 }
 
+fn should_degrade_for_soft_stale(
+    poly_soft_stale: bool,
+    drift_ewma_ticks: f64,
+    drift_persist_ms: u64,
+) -> bool {
+    poly_soft_stale
+        && drift_ewma_ticks >= GLFT_QUOTE_TRACKING_ENTER_TICKS
+        && drift_persist_ms >= (GLFT_DRIFT_TRACKING_PERSIST_MS / 2)
+}
+
 fn quote_regime_switch_min_interval_ms(current: QuoteRegime, desired: QuoteRegime) -> u64 {
     match (current, desired) {
-        (QuoteRegime::Aligned, QuoteRegime::Tracking)
-        | (QuoteRegime::Tracking, QuoteRegime::Aligned) => {
+        (QuoteRegime::Aligned, QuoteRegime::Tracking) => {
             GLFT_QUOTE_REGIME_AT_SWITCH_MIN_INTERVAL_MS
         }
-        (QuoteRegime::Tracking, QuoteRegime::Guarded)
-        | (QuoteRegime::Guarded, QuoteRegime::Tracking) => {
+        // Recovery should be slower than escalation to avoid T<->A chatter in trend pullbacks.
+        (QuoteRegime::Tracking, QuoteRegime::Aligned) => {
+            GLFT_QUOTE_REGIME_TA_SWITCH_MIN_INTERVAL_MS
+        }
+        (QuoteRegime::Tracking, QuoteRegime::Guarded) => {
             GLFT_QUOTE_REGIME_TG_SWITCH_MIN_INTERVAL_MS
+        }
+        // Guarded->Tracking de-escalation remains staged and slower than T->G escalation.
+        (QuoteRegime::Guarded, QuoteRegime::Tracking) => {
+            GLFT_QUOTE_REGIME_GT_SWITCH_MIN_INTERVAL_MS
         }
         _ => GLFT_QUOTE_REGIME_SWITCH_MIN_INTERVAL_MS,
     }
@@ -3354,6 +3379,46 @@ mod tests {
     }
 
     #[test]
+    fn soft_stale_degrade_requires_material_persistent_drift() {
+        assert!(
+            !should_degrade_for_soft_stale(true, 0.0, 0),
+            "zero-drift soft stale must not degrade regime"
+        );
+        assert!(
+            !should_degrade_for_soft_stale(
+                true,
+                GLFT_QUOTE_TRACKING_ENTER_TICKS - 0.1,
+                GLFT_DRIFT_TRACKING_PERSIST_MS
+            ),
+            "sub-threshold drift must not degrade regime"
+        );
+        assert!(
+            !should_degrade_for_soft_stale(
+                true,
+                GLFT_QUOTE_TRACKING_ENTER_TICKS + 0.2,
+                (GLFT_DRIFT_TRACKING_PERSIST_MS / 2).saturating_sub(1)
+            ),
+            "insufficient persistence must not degrade regime"
+        );
+        assert!(
+            should_degrade_for_soft_stale(
+                true,
+                GLFT_QUOTE_TRACKING_ENTER_TICKS + 0.2,
+                GLFT_DRIFT_TRACKING_PERSIST_MS / 2
+            ),
+            "material and persistent drift should allow soft-stale degrade"
+        );
+        assert!(
+            !should_degrade_for_soft_stale(
+                false,
+                GLFT_QUOTE_TRACKING_ENTER_TICKS + 2.0,
+                GLFT_DRIFT_TRACKING_PERSIST_MS
+            ),
+            "without soft-stale signal there is no forced degrade"
+        );
+    }
+
+    #[test]
     fn quote_regime_switch_interval_is_longer_for_chatter_pairs() {
         assert_eq!(
             quote_regime_switch_min_interval_ms(QuoteRegime::Aligned, QuoteRegime::Tracking),
@@ -3361,7 +3426,7 @@ mod tests {
         );
         assert_eq!(
             quote_regime_switch_min_interval_ms(QuoteRegime::Tracking, QuoteRegime::Aligned),
-            GLFT_QUOTE_REGIME_AT_SWITCH_MIN_INTERVAL_MS
+            GLFT_QUOTE_REGIME_TA_SWITCH_MIN_INTERVAL_MS
         );
         assert_eq!(
             quote_regime_switch_min_interval_ms(QuoteRegime::Tracking, QuoteRegime::Guarded),
@@ -3369,7 +3434,7 @@ mod tests {
         );
         assert_eq!(
             quote_regime_switch_min_interval_ms(QuoteRegime::Guarded, QuoteRegime::Tracking),
-            GLFT_QUOTE_REGIME_TG_SWITCH_MIN_INTERVAL_MS
+            GLFT_QUOTE_REGIME_GT_SWITCH_MIN_INTERVAL_MS
         );
         assert_eq!(
             quote_regime_switch_min_interval_ms(QuoteRegime::Guarded, QuoteRegime::Aligned),
@@ -3452,7 +3517,7 @@ mod tests {
                 GlftReadinessBlockers::default(),
                 None,
             ),
-            QuoteRegime::Aligned
+            QuoteRegime::Blocked
         );
         assert_eq!(
             engine.update_quote_regime(
