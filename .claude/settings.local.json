@@ -5,7 +5,11 @@
       "Bash(cargo build --bin polymarket_v2 2>&1 | tail -40)",
       "Bash(cargo test 2>&1 | tail -40)",
       "Bash(cargo build 2>&1 | head -80)",
-      "Bash(cargo test 2>&1)"
+      "Bash(cargo test 2>&1)",
+      "Bash(ls -la /Users/hot/web3Scientist/pm_as_ofi/*.log*)",
+      "Bash(python3 -c ':*)",
+      "Bash(grep -rn \"CancelReason::Reprice\\\\|Reprice\" src/polymarket/coordinator*.rs)",
+      "Bash(grep:*)"
     ]
   }
 }

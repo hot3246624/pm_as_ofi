@@ -565,6 +565,9 @@ struct Stats {
     skipped_backoff: u64,
     skipped_empty_book: u64,
     skipped_inv_limit: u64,
+    retain_hits: u64,
+    soft_reset_count: u64,
+    full_reset_count: u64,
     shadow_suppressed_updates: u64,
     publish_budget_suppressed: u64,
     forced_realign_count: u64,
@@ -613,10 +616,26 @@ enum PolicyTransitionReason {
     Suppress,
     PriceBucket,
     SizeBucket,
-    AggressivenessBucket,
 }
 
-impl PolicyTransitionReason {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
+enum QuotePolicySideMode {
+    NormalBuy,
+    SuppressedBuy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotResetScope {
+    Soft,
+    Full,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetentionDecision {
+    Retain,
+    Republish,
+    Clear(CancelReason, SlotResetScope),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -624,9 +643,9 @@ struct QuotePolicyState {
     active: bool,
     policy_price: f64,
     size: f64,
-    price_tick: i64,
+    price_band_tick: i64,
     size_bucket: i32,
-    aggressiveness_bucket: u8,
+    side_mode: QuotePolicySideMode,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1051,7 +1070,7 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
@@ -1059,6 +1078,7 @@ impl StrategyCoordinator {
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
+            self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
@@ -1447,7 +1467,7 @@ impl StrategyCoordinator {
             for slot in OrderSlot::ALL {
                 self.slot_last_publish_reason[slot.index()] = None;
                 self.slot_absent_clear_since[slot.index()] = None;
-                self.reset_slot_publish_state(slot);
+                self.full_reset_slot_publish_state(slot);
                 if reset_shadow_state {
                     self.slot_shadow_targets[slot.index()] = None;
                     self.slot_shadow_since[slot.index()] = Some(now);

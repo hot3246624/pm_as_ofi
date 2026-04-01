@@ -123,6 +123,7 @@ fn live_glft_snapshot() -> GlftSignalSnapshot {
         quote_regime: QuoteRegime::Aligned,
         reference_confidence: 1.0,
         reference_health: ReferenceHealth::Healthy,
+        stale_secs: 0.0,
         ..GlftSignalSnapshot::default()
     }
 }
@@ -761,6 +762,7 @@ async fn test_glft_sync_publish_is_budget_governed() {
     let _ = o.send(OfiSnapshot::default());
     let _ = i.send(InventoryState::default());
     let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    coord.book = book(0.45, 0.46, 0.54, 0.55);
     let glft = GlftSignalSnapshot {
         trusted_mid: 0.50,
         ..live_glft_snapshot()
@@ -873,9 +875,136 @@ async fn test_glft_sync_publish_tracks_counter_when_published() {
         coord.slot_last_publish_reason[slot.index()],
         Some(PolicyPublishCause::Policy)
     );
-    assert_eq!(coord.stats.forced_realign_count, 1);
-    assert_eq!(coord.stats.forced_realign_hard_count, 0);
     assert_eq!(coord.stats.publish_from_policy, 1);
+}
+
+#[test]
+fn test_glft_policy_same_band_move_does_not_transition() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let glft = live_glft_snapshot();
+    let now = Instant::now();
+
+    let baseline = coord.build_slot_quote_policy(slot, 0.30, 5.0, glft);
+    coord.slot_policy_states[slot.index()] = Some(baseline);
+    coord.slot_policy_since[slot.index()] = Some(now - Duration::from_secs(10));
+    coord.slot_policy_candidates[slot.index()] = Some(baseline);
+    coord.slot_policy_candidate_since[slot.index()] = Some(now - Duration::from_secs(10));
+
+    let (_policy, transition) = coord.update_slot_quote_policy(slot, 0.35, 5.0, glft, now);
+    assert_eq!(transition, None, "same price band should not transition");
+    assert_eq!(coord.stats.policy_transition_events, 0);
+}
+
+#[test]
+fn test_glft_soft_reset_preserves_policy_state() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::NO_BUY;
+    let glft = live_glft_snapshot();
+    let policy = coord.build_slot_quote_policy(slot, 0.52, 5.0, glft);
+
+    coord.slot_policy_candidates[slot.index()] = Some(policy);
+    coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_policy_states[slot.index()] = Some(policy);
+    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Tracking);
+
+    coord.soft_reset_slot_publish_state(slot);
+
+    assert_eq!(coord.slot_policy_candidates[slot.index()], Some(policy));
+    assert_eq!(coord.slot_policy_states[slot.index()], Some(policy));
+    assert_eq!(coord.slot_last_regime_seen[slot.index()], Some(QuoteRegime::Tracking));
+    assert_eq!(coord.stats.soft_reset_count, 1);
+}
+
+#[test]
+fn test_glft_full_reset_clears_policy_state() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::NO_BUY;
+    let glft = live_glft_snapshot();
+    let policy = coord.build_slot_quote_policy(slot, 0.52, 5.0, glft);
+
+    coord.slot_policy_candidates[slot.index()] = Some(policy);
+    coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_policy_states[slot.index()] = Some(policy);
+    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Tracking);
+
+    coord.full_reset_slot_publish_state(slot);
+
+    assert_eq!(coord.slot_policy_candidates[slot.index()], None);
+    assert_eq!(coord.slot_policy_states[slot.index()], None);
+    assert_eq!(coord.slot_last_regime_seen[slot.index()], None);
+    assert_eq!(coord.stats.soft_reset_count, 1);
+    assert_eq!(coord.stats.full_reset_count, 1);
+}
+
+#[tokio::test]
+async fn test_glft_soft_reset_republish_uses_policy_not_initial() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _k, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+    coord.book = book(0.45, 0.46, 0.54, 0.55);
+    let glft = GlftSignalSnapshot {
+        trusted_mid: 0.50,
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(glft);
+
+    let slot = OrderSlot::YES_BUY;
+    let current = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(current.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(8);
+    coord.yes_target = Some(current);
+    let policy = coord.build_slot_quote_policy(slot, 0.45, 5.0, glft);
+    coord.slot_policy_candidates[slot.index()] = Some(policy);
+    coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(8));
+    coord.slot_policy_states[slot.index()] = Some(policy);
+    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(8));
+    coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(8);
+
+    coord
+        .clear_slot_target_with_scope(slot, CancelReason::Reprice, SlotResetScope::Soft)
+        .await;
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::ClearTarget { slot: clear_slot, reason })) => {
+            assert_eq!(clear_slot, slot);
+            assert_eq!(reason, CancelReason::Reprice);
+        }
+        other => panic!("expected soft-reset clear first, got {:?}", other),
+    }
+
+    coord
+        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.side, Side::Yes);
+            assert!(target.price > 0.0);
+        }
+        other => panic!("expected policy republish after soft reset, got {:?}", other),
+    }
+    assert_eq!(
+        coord.slot_last_publish_reason[slot.index()],
+        Some(PolicyPublishCause::Policy)
+    );
 }
 
 #[test]

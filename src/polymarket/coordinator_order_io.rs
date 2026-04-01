@@ -572,6 +572,16 @@ impl StrategyCoordinator {
     }
 
     pub(super) async fn clear_slot_target(&mut self, slot: OrderSlot, reason: CancelReason) {
+        let scope = self.default_slot_reset_scope(reason);
+        self.clear_slot_target_with_scope(slot, reason, scope).await;
+    }
+
+    pub(super) async fn clear_slot_target_with_scope(
+        &mut self,
+        slot: OrderSlot,
+        reason: CancelReason,
+        scope: SlotResetScope,
+    ) {
         let active = self.slot_target(slot).is_some();
         if !active {
             return;
@@ -582,7 +592,10 @@ impl StrategyCoordinator {
         self.slot_shadow_targets[slot.index()] = None;
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
-        self.reset_slot_publish_state(slot);
+        match scope {
+            SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
+            SlotResetScope::Full => self.full_reset_slot_publish_state(slot),
+        }
         match slot {
             OrderSlot::YES_BUY => self.yes_target = None,
             OrderSlot::NO_BUY => self.no_target = None,
@@ -590,10 +603,10 @@ impl StrategyCoordinator {
         }
         self.sync_buy_side_wrapper(slot);
 
-        debug!("🗑️ Cancel {} ({:?})", slot.as_str(), reason);
+        debug!("🗑️ Cancel {} ({:?}, {:?})", slot.as_str(), reason, scope);
         self.stats.cancel_events = self.stats.cancel_events.saturating_add(1);
         if self.cfg.dry_run {
-            info!("📝 DRY cancel {} ({:?})", slot.as_str(), reason);
+            info!("📝 DRY cancel {} ({:?}, {:?})", slot.as_str(), reason, scope);
             return;
         }
 
@@ -770,6 +783,7 @@ impl StrategyCoordinator {
         let slot_size = self.slot_target(slot).map(|t| t.size).unwrap_or(0.0);
         let slot_direction = self.slot_target(slot).map(|t| t.direction);
         let tick = self.cfg.tick_size.max(1e-9);
+        let had_committed_policy = self.slot_policy_states[slot.index()].is_some();
 
         let shadow_target =
             self.update_slot_shadow_target(slot, normalized_target_price, size, reason);
@@ -826,16 +840,6 @@ impl StrategyCoordinator {
             && slot_direction == Some(slot.direction)
             && (slot_price - policy.policy_price).abs() <= tick * 0.5
             && (slot_size - policy.size).abs() <= 0.1;
-        let policy_size_changed = active && (slot_size - policy.size).abs() > 0.1;
-        let policy_price_publish_ready = active
-            && Self::glft_policy_price_publish_ready(
-                quote_regime,
-                distance_to_trusted_mid_ticks,
-                distance_to_policy_ticks,
-            );
-
-        let policy_change_ready =
-            transition.is_some() && (policy_size_changed || policy_price_publish_ready);
         let severe_force_realign = if force_realign {
             let (trusted_force_threshold, target_force_threshold) =
                 Self::glft_force_realign_thresholds(glft.quote_regime);
@@ -857,14 +861,18 @@ impl StrategyCoordinator {
             Some(PolicyPublishCause::Safety)
         } else if !active {
             if policy_age >= policy_dwell && self.glft_initial_dwell_book_healthy(slot) {
-                Some(PolicyPublishCause::Initial)
+                Some(if had_committed_policy {
+                    PolicyPublishCause::Policy
+                } else {
+                    PolicyPublishCause::Initial
+                })
             } else {
                 None
             }
         } else if !policy_aligned
             && policy_age >= policy_dwell
             && regime_stable_for_publish
-            && (policy_change_ready || force_realign)
+            && (transition.is_some() || force_realign)
         {
             Some(PolicyPublishCause::Policy)
         } else {
@@ -903,11 +911,12 @@ impl StrategyCoordinator {
         }
 
         let publish_price = policy.policy_price;
+        let publish_size = policy.size;
         self.record_publish_reason_stats(Some(publish_cause));
         self.emit_quote_log(
             slot,
             publish_price,
-            size,
+            publish_size,
             reason,
             log_msg,
             Some(raw_target_price),
@@ -919,14 +928,14 @@ impl StrategyCoordinator {
             Some(distance_to_shadow_target_ticks),
         );
         self.slot_last_publish_reason[slot.index()] = Some(publish_cause);
-        self.place_slot(slot, publish_price, size, reason).await;
+        self.place_slot(slot, publish_price, publish_size, reason).await;
     }
 
     fn glft_policy_price_bucket_ticks(quote_regime: crate::polymarket::glft::QuoteRegime) -> f64 {
         match quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => 8.0,
-            crate::polymarket::glft::QuoteRegime::Tracking => 10.0,
-            crate::polymarket::glft::QuoteRegime::Guarded => 12.0,
+            crate::polymarket::glft::QuoteRegime::Aligned => 12.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 14.0,
+            crate::polymarket::glft::QuoteRegime::Guarded => 16.0,
             crate::polymarket::glft::QuoteRegime::Blocked => 99.0,
         }
     }
@@ -970,29 +979,6 @@ impl StrategyCoordinator {
         }
     }
 
-    fn glft_policy_publish_thresholds(
-        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
-    ) -> (f64, f64) {
-        match quote_regime {
-            Some(crate::polymarket::glft::QuoteRegime::Aligned) => (14.0, 10.0),
-            Some(crate::polymarket::glft::QuoteRegime::Tracking) => (13.0, 10.0),
-            Some(crate::polymarket::glft::QuoteRegime::Guarded) => (12.0, 10.0),
-            Some(crate::polymarket::glft::QuoteRegime::Blocked) => (99.0, 99.0),
-            None => (14.0, 10.0),
-        }
-    }
-
-    fn glft_policy_price_transition_threshold_ticks(
-        quote_regime: crate::polymarket::glft::QuoteRegime,
-    ) -> f64 {
-        match quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => 10.0,
-            crate::polymarket::glft::QuoteRegime::Tracking => 12.0,
-            crate::polymarket::glft::QuoteRegime::Guarded => 14.0,
-            crate::polymarket::glft::QuoteRegime::Blocked => 99.0,
-        }
-    }
-
     fn glft_policy_soft_unsafe_publish_threshold(
         quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
     ) -> f64 {
@@ -1003,17 +989,6 @@ impl StrategyCoordinator {
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => 99.0,
             None => 10.0,
         }
-    }
-
-    fn glft_policy_price_publish_ready(
-        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
-        distance_to_trusted_mid_ticks: f64,
-        distance_to_policy_ticks: f64,
-    ) -> bool {
-        let (trusted_threshold, policy_threshold) =
-            Self::glft_policy_publish_thresholds(quote_regime);
-        distance_to_trusted_mid_ticks >= trusted_threshold
-            && distance_to_policy_ticks >= policy_threshold
     }
 
     fn glft_quantize_policy_price(&self, slot: OrderSlot, price: f64, bucket_ticks: f64) -> f64 {
@@ -1038,18 +1013,6 @@ impl StrategyCoordinator {
         size: f64,
         glft: crate::polymarket::glft::GlftSignalSnapshot,
     ) -> QuotePolicyState {
-        let heat_score = {
-            let ofi = *self.ofi_rx.borrow();
-            ofi.yes.heat_score.max(ofi.no.heat_score)
-        };
-        let regime_bucket = match glft.quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => 0_u8,
-            crate::polymarket::glft::QuoteRegime::Tracking => 1_u8,
-            crate::polymarket::glft::QuoteRegime::Guarded => 2_u8,
-            crate::polymarket::glft::QuoteRegime::Blocked => 3_u8,
-        };
-        let heat_bucket = (heat_score / 3.0).floor().clamp(0.0, 2.0) as u8;
-        let aggressiveness_bucket = regime_bucket.saturating_mul(4).saturating_add(heat_bucket);
         let price = self.glft_quantize_policy_price(
             slot,
             normalized_target_price,
@@ -1060,17 +1023,17 @@ impl StrategyCoordinator {
             active: true,
             policy_price: price,
             size,
-            price_tick: (price / tick).round() as i64,
+            price_band_tick: (price / tick).round() as i64,
             size_bucket: (size * 10.0).round() as i32,
-            aggressiveness_bucket,
+            side_mode: QuotePolicySideMode::NormalBuy,
         }
     }
 
     fn classify_policy_transition(
         prev: Option<QuotePolicyState>,
         next: QuotePolicyState,
-        quote_regime: crate::polymarket::glft::QuoteRegime,
-        tick: f64,
+        _quote_regime: crate::polymarket::glft::QuoteRegime,
+        _tick: f64,
     ) -> Option<PolicyTransitionReason> {
         match prev {
             None => Some(PolicyTransitionReason::Activate),
@@ -1081,27 +1044,18 @@ impl StrategyCoordinator {
                     Some(PolicyTransitionReason::Suppress)
                 }
             }
-            Some(prev) if prev.aggressiveness_bucket != next.aggressiveness_bucket => {
-                Some(PolicyTransitionReason::AggressivenessBucket)
-            }
+            Some(prev) if prev.side_mode != next.side_mode => Some(PolicyTransitionReason::Suppress),
             Some(prev) if prev.size_bucket != next.size_bucket => {
                 Some(PolicyTransitionReason::SizeBucket)
             }
-            Some(prev) if prev.price_tick != next.price_tick => {
-                let moved_ticks = ((next.policy_price - prev.policy_price).abs()) / tick.max(1e-9);
-                let min_transition_ticks =
-                    Self::glft_policy_price_transition_threshold_ticks(quote_regime);
-                if moved_ticks + 1e-9 >= min_transition_ticks {
-                    Some(PolicyTransitionReason::PriceBucket)
-                } else {
-                    None
-                }
+            Some(prev) if prev.price_band_tick != next.price_band_tick => {
+                Some(PolicyTransitionReason::PriceBucket)
             }
             _ => None,
         }
     }
 
-    fn update_slot_quote_policy(
+    pub(super) fn update_slot_quote_policy(
         &mut self,
         slot: OrderSlot,
         normalized_target_price: f64,

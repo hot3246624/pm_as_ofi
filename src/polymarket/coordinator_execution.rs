@@ -364,6 +364,26 @@ impl StrategyCoordinator {
                 self.slot_absent_clear_since[slot.index()] = None;
             }
 
+            if intent.is_none() {
+                if self.slot_target_active(slot) {
+                    match self.evaluate_slot_retention(
+                        inv,
+                        ub,
+                        slot,
+                        None,
+                        CancelReason::Reprice,
+                        phase,
+                    ) {
+                        RetentionDecision::Retain => continue,
+                        RetentionDecision::Republish => {}
+                        RetentionDecision::Clear(reason, scope) => {
+                            self.clear_slot_target_with_scope(slot, reason, scope).await;
+                        }
+                    }
+                }
+                continue;
+            }
+
             let allowed = self.slot_quote_allowed(inv, slot, intent, stale, toxic, phase, &ofi);
             if !allowed {
                 let reject_reason =
@@ -372,46 +392,55 @@ impl StrategyCoordinator {
                     self.note_skipped_inv_limit();
                 }
                 if self.slot_target_active(slot) {
-                    if self.should_defer_absent_reprice_clear(slot, intent, reject_reason, phase) {
-                        continue;
-                    }
-                    // Keep-if-safe must be evaluated against the latest usable book to avoid
-                    // cancel/place thrash when strategy output jitters around slot boundaries.
-                    if !stale
-                        && !(toxic && self.slot_blocked_by_ofi(slot, &ofi))
-                        && self.keep_slot_target_if_safe(inv, ub, slot, intent, phase)
-                    {
-                        continue;
-                    }
-
-                    debug!(
-                        "🧭 slot gate clear {} reason={:?} phase={:?} remaining={}s stale={} toxic={} intent_present={} net_diff={:.2}",
-                        slot.as_str(),
+                    match self.evaluate_slot_retention(
+                        inv,
+                        ub,
+                        slot,
+                        intent,
                         reject_reason,
                         phase,
-                        remaining_secs,
-                        stale,
-                        toxic,
-                        intent.is_some(),
-                        inv.net_diff,
-                    );
-                    self.clear_slot_target(slot, reject_reason).await;
+                    ) {
+                        RetentionDecision::Retain => continue,
+                        RetentionDecision::Republish => {}
+                        RetentionDecision::Clear(reason, scope) => {
+                            debug!(
+                                "🧭 slot gate clear {} reason={:?} phase={:?} remaining={}s stale={} toxic={} intent_present={} net_diff={:.2}",
+                                slot.as_str(),
+                                reason,
+                                phase,
+                                remaining_secs,
+                                stale,
+                                toxic,
+                                intent.is_some(),
+                                inv.net_diff,
+                            );
+                            self.clear_slot_target_with_scope(slot, reason, scope).await;
+                            continue;
+                        }
+                    }
+
                 }
                 continue;
             }
 
-            let Some(intent) = intent else {
-                if self.slot_target_active(slot) {
-                    self.clear_slot_target(slot, CancelReason::InventoryLimit)
-                        .await;
-                }
-                continue;
-            };
+            let Some(intent) = intent else { continue };
 
-            // Unified keep-if-safe path: even when a fresh intent exists, retain the
-            // current maker order if it is still safe under the latest book.
-            if self.keep_slot_target_if_safe(inv, ub, slot, Some(intent), phase) {
-                continue;
+            if self.slot_target_active(slot) {
+                match self.evaluate_slot_retention(
+                    inv,
+                    ub,
+                    slot,
+                    Some(intent),
+                    CancelReason::Reprice,
+                    phase,
+                ) {
+                    RetentionDecision::Retain => continue,
+                    RetentionDecision::Republish => {}
+                    RetentionDecision::Clear(reason, scope) => {
+                        self.clear_slot_target_with_scope(slot, reason, scope).await;
+                        continue;
+                    }
+                }
             }
 
             let log_msg = match self.slot_target(slot) {
@@ -436,6 +465,100 @@ impl StrategyCoordinator {
             self.slot_place_or_reprice(slot, intent.price, intent.size, intent.reason, log_msg)
                 .await;
         }
+    }
+
+    fn evaluate_slot_retention(
+        &mut self,
+        inv: &InventoryState,
+        ub: &Book,
+        slot: OrderSlot,
+        intent: Option<StrategyIntent>,
+        reject_reason: CancelReason,
+        phase: EndgamePhase,
+    ) -> RetentionDecision {
+        let Some(current) = self.slot_target(slot).cloned() else {
+            return RetentionDecision::Republish;
+        };
+
+        if let Some(intent) = intent {
+            if self.keep_slot_target_if_safe(inv, ub, slot, Some(intent), phase) {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                return RetentionDecision::Retain;
+            }
+            return RetentionDecision::Republish;
+        }
+
+        if self.cfg.strategy != StrategyKind::GlftMm
+            || !matches!(reject_reason, CancelReason::Reprice)
+            || phase != EndgamePhase::Normal
+        {
+            return RetentionDecision::Clear(
+                reject_reason,
+                self.default_slot_reset_scope(reject_reason),
+            );
+        }
+
+        let glft = *self.glft_rx.borrow();
+        if !self.glft_is_tradeable_snapshot(glft)
+            || matches!(
+                glft.quote_regime,
+                crate::polymarket::glft::QuoteRegime::Blocked
+            )
+        {
+            self.slot_absent_clear_since[slot.index()] = None;
+            return RetentionDecision::Clear(
+                reject_reason,
+                self.default_slot_reset_scope(reject_reason),
+            );
+        }
+
+        let now = std::time::Instant::now();
+        let idx = slot.index();
+        let since = self.slot_absent_clear_since[idx].get_or_insert(now);
+        let elapsed = now.saturating_duration_since(*since);
+        let warmup_dwell = match glft.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => {
+                std::time::Duration::from_millis(1_200)
+            }
+            crate::polymarket::glft::QuoteRegime::Tracking => {
+                std::time::Duration::from_millis(1_800)
+            }
+            crate::polymarket::glft::QuoteRegime::Guarded => {
+                std::time::Duration::from_millis(4_000)
+            }
+            crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::ZERO,
+        };
+        if elapsed < warmup_dwell {
+            self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+            self.stats.shadow_suppressed_updates =
+                self.stats.shadow_suppressed_updates.saturating_add(1);
+            return RetentionDecision::Retain;
+        }
+
+        let tick = self.cfg.tick_size.max(1e-9);
+        let trusted_side_mid = match slot.side {
+            Side::Yes => glft.trusted_mid,
+            Side::No => 1.0 - glft.trusted_mid,
+        };
+        let trusted_dist_ticks = ((current.price - trusted_side_mid).abs() / tick).floor();
+        let hard_stale_trusted_ticks = match glft.quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => 16.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 14.0,
+            crate::polymarket::glft::QuoteRegime::Guarded => 14.0,
+            crate::polymarket::glft::QuoteRegime::Blocked => 0.0,
+        };
+        let republish_settling = self.glft_republish_settle_remaining(now).is_some();
+        let trusted_soft_hold_cap =
+            hard_stale_trusted_ticks + if republish_settling { 2.0 } else { 0.0 };
+        if trusted_dist_ticks <= trusted_soft_hold_cap {
+            self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+            self.stats.shadow_suppressed_updates =
+                self.stats.shadow_suppressed_updates.saturating_add(1);
+            return RetentionDecision::Retain;
+        }
+
+        self.slot_absent_clear_since[idx] = None;
+        RetentionDecision::Clear(reject_reason, SlotResetScope::Soft)
     }
 
     fn keep_slot_target_if_safe(
@@ -542,92 +665,6 @@ impl StrategyCoordinator {
             return CancelReason::EndgameRiskGate;
         }
         CancelReason::Reprice
-    }
-
-    fn should_defer_absent_reprice_clear(
-        &mut self,
-        slot: OrderSlot,
-        intent: Option<StrategyIntent>,
-        reject_reason: CancelReason,
-        phase: EndgamePhase,
-    ) -> bool {
-        if self.cfg.strategy != StrategyKind::GlftMm {
-            self.slot_absent_clear_since[slot.index()] = None;
-            return false;
-        }
-        if intent.is_some() || !matches!(reject_reason, CancelReason::Reprice) {
-            self.slot_absent_clear_since[slot.index()] = None;
-            return false;
-        }
-        if phase != EndgamePhase::Normal {
-            self.slot_absent_clear_since[slot.index()] = None;
-            return false;
-        }
-        let glft = *self.glft_rx.borrow();
-        if !self.glft_is_tradeable_snapshot(glft)
-            || matches!(
-                glft.quote_regime,
-                crate::polymarket::glft::QuoteRegime::Blocked
-            )
-        {
-            self.slot_absent_clear_since[slot.index()] = None;
-            return false;
-        }
-        let Some(current) = self.slot_target(slot) else {
-            self.slot_absent_clear_since[slot.index()] = None;
-            return false;
-        };
-        let tick = self.cfg.tick_size.max(1e-9);
-        let trusted_side_mid = match slot.side {
-            Side::Yes => glft.trusted_mid,
-            Side::No => 1.0 - glft.trusted_mid,
-        };
-        let trusted_dist_ticks = ((current.price - trusted_side_mid).abs() / tick).floor();
-        let hard_stale_trusted_ticks = match glft.quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => 12.0,
-            crate::polymarket::glft::QuoteRegime::Tracking => 10.0,
-            crate::polymarket::glft::QuoteRegime::Guarded => 8.0,
-            crate::polymarket::glft::QuoteRegime::Blocked => 0.0,
-        };
-        if trusted_dist_ticks > hard_stale_trusted_ticks {
-            self.slot_absent_clear_since[slot.index()] = None;
-            return false;
-        }
-        let now = std::time::Instant::now();
-        let idx = slot.index();
-        let warmup_dwell = match glft.quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => {
-                std::time::Duration::from_millis(1_200)
-            }
-            crate::polymarket::glft::QuoteRegime::Tracking => {
-                std::time::Duration::from_millis(1_800)
-            }
-            crate::polymarket::glft::QuoteRegime::Guarded => {
-                std::time::Duration::from_millis(2_600)
-            }
-            crate::polymarket::glft::QuoteRegime::Blocked => std::time::Duration::ZERO,
-        };
-        let since = self.slot_absent_clear_since[idx].get_or_insert(now);
-        let elapsed = now.saturating_duration_since(*since);
-        if elapsed < warmup_dwell {
-            self.stats.shadow_suppressed_updates =
-                self.stats.shadow_suppressed_updates.saturating_add(1);
-            return true;
-        }
-        // Architecture rule:
-        // missing intent is not itself a clear signal in GLFT slot mode.
-        // We only clear when the existing quote is structurally stale against
-        // trusted reference, not when strategy temporarily suppresses a slot.
-        let republish_settling = self.glft_republish_settle_remaining(now).is_some();
-        let trusted_soft_hold_cap =
-            hard_stale_trusted_ticks + if republish_settling { 2.0 } else { 0.0 };
-        if trusted_dist_ticks <= trusted_soft_hold_cap {
-            self.stats.shadow_suppressed_updates =
-                self.stats.shadow_suppressed_updates.saturating_add(1);
-            return true;
-        }
-        self.slot_absent_clear_since[idx] = None;
-        false
     }
 
     pub(super) fn slot_blocked_by_ofi(&self, slot: OrderSlot, ofi: &OfiSnapshot) -> bool {

@@ -204,7 +204,7 @@ impl StrategyCoordinator {
         self.slot_last_publish_reason[slot.index()]
     }
 
-    pub(super) fn reset_slot_publish_state(&mut self, slot: OrderSlot) {
+    pub(super) fn soft_reset_slot_publish_state(&mut self, slot: OrderSlot) {
         let idx = slot.index();
         self.slot_publish_budget[idx] = Self::glft_publish_budget_cap();
         self.slot_last_budget_refill[idx] = std::time::Instant::now();
@@ -212,14 +212,37 @@ impl StrategyCoordinator {
         self.slot_last_debt_refill[idx] = std::time::Instant::now();
         self.slot_shadow_velocity_tps[idx] = 0.0;
         self.slot_shadow_last_change_ts[idx] = None;
+        self.slot_last_policy_transition[idx] = None;
+        self.slot_absent_clear_since[idx] = None;
+        self.stats.soft_reset_count = self.stats.soft_reset_count.saturating_add(1);
+    }
+
+    pub(super) fn full_reset_slot_publish_state(&mut self, slot: OrderSlot) {
+        let idx = slot.index();
+        self.soft_reset_slot_publish_state(slot);
         self.slot_policy_candidates[idx] = None;
         self.slot_policy_candidate_since[idx] = None;
         self.slot_policy_states[idx] = None;
         self.slot_policy_since[idx] = None;
-        self.slot_last_policy_transition[idx] = None;
         self.slot_last_regime_seen[idx] = None;
         self.slot_regime_changed_at[idx] = std::time::Instant::now();
-        self.slot_absent_clear_since[idx] = None;
+        self.stats.full_reset_count = self.stats.full_reset_count.saturating_add(1);
+    }
+
+    pub(super) fn default_slot_reset_scope(&self, reason: CancelReason) -> SlotResetScope {
+        if self.cfg.strategy != StrategyKind::GlftMm {
+            return SlotResetScope::Full;
+        }
+        match reason {
+            CancelReason::Reprice => SlotResetScope::Soft,
+            CancelReason::StaleData
+            | CancelReason::ToxicFlow
+            | CancelReason::InventoryLimit
+            | CancelReason::EndgameRiskGate
+            | CancelReason::Shutdown
+            | CancelReason::MarketExpired
+            | CancelReason::Startup => SlotResetScope::Full,
+        }
     }
 
     pub(super) fn update_slot_regime_state(
