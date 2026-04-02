@@ -82,7 +82,10 @@ impl QuoteStrategy for GlftMmStrategy {
         );
         let spread_mult = (1.0 + cfg.glft_ofi_spread_beta * glft.alpha_flow.abs().powi(2))
             * heat_spread_mult(heat_score);
-        let half_spread = (offsets.half_spread_base * spread_mult).max(cfg.tick_size);
+        let min_half_spread = cfg.tick_size * cfg.glft_min_half_spread_ticks.max(1.0);
+        let half_spread = (offsets.half_spread_base * spread_mult)
+            .max(cfg.tick_size)
+            .max(min_half_spread);
         let r_yes = (p_anchor + alpha_prob - offsets.inventory_shift)
             .clamp(cfg.tick_size, 1.0 - cfg.tick_size);
         let shaped = shape_glft_quotes(

@@ -29,6 +29,7 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
+use pm_as_ofi::polymarket::strategy::StrategyKind;
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -844,6 +845,11 @@ fn log_config_self_check(
         coord.post_only_safety_ticks,
         coord.post_only_tight_spread_ticks,
         coord.post_only_extra_tight_ticks
+    );
+    info!(
+        "   glft_min_half_spread_ticks={:.1} (min half spread = {:.3})",
+        coord.glft_min_half_spread_ticks,
+        coord.glft_min_half_spread_ticks * coord.tick_size
     );
     info!(
         "   hedge_marketable_floor=${:.2} max_extra={:.2} max_extra_pct={:.0}%",
@@ -2036,37 +2042,54 @@ async fn main() -> anyhow::Result<()> {
     // PM_BID_SIZE / PM_MAX_NET_DIFF are hard floors.
     // PM_BID_PCT / PM_NET_DIFF_PCT (if set) provide dynamic targets.
     let bid_pct_raw = env::var("PM_BID_PCT").ok().filter(|s| !s.trim().is_empty());
-    let bid_pct_opt = bid_pct_raw
+    let bid_pct_parsed = bid_pct_raw
         .as_deref()
         .and_then(|s| s.parse::<f64>().ok())
-        .filter(|v| v.is_finite() && *v > 0.0);
-    if bid_pct_raw.is_some() && bid_pct_opt.is_none() {
+        .filter(|v| v.is_finite() && *v >= 0.0);
+    if bid_pct_raw.is_some() && bid_pct_parsed.is_none() {
         warn!(
             "⚠️ Invalid PM_BID_PCT='{}' — dynamic bid sizing disabled",
             bid_pct_raw.as_deref().unwrap_or_default()
         );
     }
+    let bid_pct_opt = bid_pct_parsed.filter(|v| *v > 0.0);
 
     let net_diff_pct_raw = env::var("PM_NET_DIFF_PCT")
         .ok()
         .filter(|s| !s.trim().is_empty());
-    let net_diff_pct_opt = net_diff_pct_raw
+    let net_diff_pct_parsed = net_diff_pct_raw
         .as_deref()
         .and_then(|s| s.parse::<f64>().ok())
-        .filter(|v| v.is_finite() && *v > 0.0);
-    if net_diff_pct_raw.is_some() && net_diff_pct_opt.is_none() {
+        .filter(|v| v.is_finite() && *v >= 0.0);
+    if net_diff_pct_raw.is_some() && net_diff_pct_parsed.is_none() {
         warn!(
             "⚠️ Invalid PM_NET_DIFF_PCT='{}' — dynamic net sizing disabled",
             net_diff_pct_raw.as_deref().unwrap_or_default()
         );
     }
-    if bid_pct_opt.is_some() || net_diff_pct_opt.is_some() {
+    let net_diff_pct_opt = net_diff_pct_parsed.filter(|v| *v > 0.0);
+    // GLFT risk policy:
+    // keep PM_MAX_NET_DIFF as a hard cap during stabilization.
+    // Ignore dynamic percentage upsizing in GLFT mode.
+    let mut dynamic_bid_pct_opt = bid_pct_opt;
+    let mut dynamic_net_diff_pct_opt = net_diff_pct_opt;
+    if coord_cfg_base.strategy == StrategyKind::GlftMm
+        && (dynamic_bid_pct_opt.is_some() || dynamic_net_diff_pct_opt.is_some())
+    {
+        warn!(
+            "⚠️ PM_BID_PCT/PM_NET_DIFF_PCT are ignored for glft_mm; using static PM_BID_SIZE/PM_MAX_NET_DIFF"
+        );
+        dynamic_bid_pct_opt = None;
+        dynamic_net_diff_pct_opt = None;
+    }
+
+    if dynamic_bid_pct_opt.is_some() || dynamic_net_diff_pct_opt.is_some() {
         info!(
             "📏 Dynamic sizing enabled: PM_BID_PCT={} PM_NET_DIFF_PCT={} (floors: PM_BID_SIZE / PM_MAX_NET_DIFF)",
-            bid_pct_opt
+            dynamic_bid_pct_opt
                 .map(|v| format!("{:.4}", v))
                 .unwrap_or_else(|| "off".to_string()),
-            net_diff_pct_opt
+            dynamic_net_diff_pct_opt
                 .map(|v| format!("{:.4}", v))
                 .unwrap_or_else(|| "off".to_string())
         );
@@ -2693,8 +2716,8 @@ async fn main() -> anyhow::Result<()> {
                         balance_f64,
                         bid_floor,
                         net_floor,
-                        bid_pct_opt,
-                        net_diff_pct_opt,
+                        dynamic_bid_pct_opt,
+                        dynamic_net_diff_pct_opt,
                     );
                     coord_cfg.bid_size = sizing.bid_effective;
                     coord_cfg.max_net_diff = sizing.net_effective;
@@ -2719,10 +2742,10 @@ async fn main() -> anyhow::Result<()> {
                             net_floor,
                             coord_cfg.bid_size,
                             coord_cfg.max_net_diff,
-                            bid_pct_opt
+                            dynamic_bid_pct_opt
                                 .map(|v| format!("{:.4}", v))
                                 .unwrap_or_else(|| "off".to_string()),
-                            net_diff_pct_opt
+                            dynamic_net_diff_pct_opt
                                 .map(|v| format!("{:.4}", v))
                                 .unwrap_or_else(|| "off".to_string())
                         );

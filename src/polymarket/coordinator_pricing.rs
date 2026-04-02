@@ -485,6 +485,14 @@ impl StrategyCoordinator {
                             intent.price,
                             intent.reason,
                         )
+                        && (self.cfg.strategy != StrategyKind::GlftMm
+                            || self.passes_pair_cost_guard_for_buy(
+                                inv,
+                                Side::Yes,
+                                intent.size,
+                                intent.price,
+                                intent.reason,
+                            ))
                 }
                 (Side::No, TradeDirection::Buy) => {
                     self.can_buy_no(inv, intent.size)
@@ -495,6 +503,14 @@ impl StrategyCoordinator {
                             intent.price,
                             intent.reason,
                         )
+                        && (self.cfg.strategy != StrategyKind::GlftMm
+                            || self.passes_pair_cost_guard_for_buy(
+                                inv,
+                                Side::No,
+                                intent.size,
+                                intent.price,
+                                intent.reason,
+                            ))
                 }
                 (Side::Yes, TradeDirection::Sell) => self.can_sell_yes(inv, intent.size),
                 (Side::No, TradeDirection::Sell) => self.can_sell_no(inv, intent.size),

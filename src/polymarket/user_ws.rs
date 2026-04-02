@@ -257,7 +257,8 @@ impl UserWsListener {
                             let fills = self.parse_trade_event(val, dedup);
                             for fill in fills {
                                 info!(
-                                    "🔔 REAL FILL: {:?} {:.2}@{:.3} status={:?} id={}",
+                                    "🔔 REAL FILL: slot={} {:?} {:.2}@{:.3} status={:?} id={}",
+                                    fill.slot().as_str(),
                                     fill.side,
                                     fill.filled_size,
                                     fill.price,

@@ -93,6 +93,8 @@ pub struct CoordinatorConfig {
     pub glft_ofi_alpha: f64,
     /// GLFT OFI -> spread widening coefficient.
     pub glft_ofi_spread_beta: f64,
+    /// GLFT minimum half spread floor (ticks per side).
+    pub glft_min_half_spread_ticks: f64,
     /// Time-decay amplifier k. Effective skew_factor = as_skew_factor * (1 + k * elapsed_frac).
     /// 0.0 disables decay. Default: 2.0 (up to 3× at expiry).
     pub as_time_decay_k: f64,
@@ -167,6 +169,7 @@ impl Default for CoordinatorConfig {
             glft_xi: 0.10,
             glft_ofi_alpha: 0.30,
             glft_ofi_spread_beta: 1.00,
+            glft_min_half_spread_ticks: 5.0,
             as_time_decay_k: 2.0, // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
@@ -314,6 +317,18 @@ impl CoordinatorConfig {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
                     c.glft_ofi_spread_beta = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_MIN_HALF_SPREAD_TICKS") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    c.glft_min_half_spread_ticks = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_MIN_HALF_SPREAD_TICKS={} (must be > 0), using {}",
+                        f, c.glft_min_half_spread_ticks
+                    );
                 }
             }
         }
@@ -1464,25 +1479,34 @@ impl StrategyCoordinator {
             self.glft_republish_settle_until = Some(now + settle);
             let reset_shadow_state =
                 blocked_for >= Duration::from_millis(GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS);
+            // Source-specific recovery continuity:
+            // - Poly-only short stalls: preserve policy continuity via soft reset.
+            // - Binance-involved or long stalls: keep full reset semantics.
+            let use_full_reset = saw_binance || reset_shadow_state;
             self.glft_recovery_force_clear_pending = reset_shadow_state;
             for slot in OrderSlot::ALL {
                 self.slot_last_publish_reason[slot.index()] = None;
                 self.slot_absent_clear_since[slot.index()] = None;
-                self.full_reset_slot_publish_state(slot);
+                if use_full_reset {
+                    self.full_reset_slot_publish_state(slot);
+                } else {
+                    self.soft_reset_slot_publish_state(slot);
+                }
                 if reset_shadow_state {
                     self.slot_shadow_targets[slot.index()] = None;
                     self.slot_shadow_since[slot.index()] = Some(now);
-                } else if self.slot_shadow_targets[slot.index()].is_some() {
+                } else if use_full_reset && self.slot_shadow_targets[slot.index()].is_some() {
                     self.slot_shadow_since[slot.index()] = Some(now);
                 }
             }
             self.glft_source_blocked_saw_binance = false;
             self.glft_source_blocked_saw_poly = false;
             info!(
-                "🧭 GLFT source recovered | blocked_for_ms={} settle_ms={} source_profile={} reset_shadow={}",
+                "🧭 GLFT source recovered | blocked_for_ms={} settle_ms={} source_profile={} reset_scope={} reset_shadow={}",
                 blocked_for.as_millis(),
                 settle.as_millis(),
                 Self::glft_source_block_profile(saw_binance, saw_poly),
+                if use_full_reset { "full" } else { "soft" },
                 reset_shadow_state,
             );
         } else if self

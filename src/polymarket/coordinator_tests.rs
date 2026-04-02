@@ -957,6 +957,30 @@ fn test_glft_policy_band_move_without_action_change_does_not_transition() {
 }
 
 #[test]
+fn test_glft_policy_band_move_with_one_tick_action_delta_does_not_transition() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let glft = live_glft_snapshot();
+    let now = Instant::now();
+
+    // Aligned bucket width = 12 ticks. 0.59 -> 0.60 crosses policy band,
+    // but action delta is only 1 tick and should be treated as no-op.
+    let baseline = coord.build_slot_quote_policy(slot, 0.59, 5.0, glft);
+    coord.slot_policy_states[slot.index()] = Some(baseline);
+    coord.slot_policy_since[slot.index()] = Some(now - Duration::from_secs(10));
+    coord.slot_policy_candidates[slot.index()] = Some(baseline);
+    coord.slot_policy_candidate_since[slot.index()] = Some(now - Duration::from_secs(10));
+
+    let (_policy, transition) = coord.update_slot_quote_policy(slot, 0.60, 5.0, glft, now, true);
+    assert_eq!(
+        transition, None,
+        "1-tick action delta across policy band should not transition"
+    );
+}
+
+#[test]
 fn test_glft_soft_reset_preserves_policy_state() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
@@ -980,6 +1004,53 @@ fn test_glft_soft_reset_preserves_policy_state() {
         Some(QuoteRegime::Tracking)
     );
     assert_eq!(coord.stats.soft_reset_count, 1);
+}
+
+#[tokio::test]
+async fn test_glft_source_recovery_poly_only_short_block_uses_soft_reset_continuity() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let glft = live_glft_snapshot();
+    let policy = coord.build_slot_quote_policy(slot, 0.52, 5.0, glft);
+
+    coord.slot_policy_candidates[slot.index()] = Some(policy);
+    coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_policy_states[slot.index()] = Some(policy);
+    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(3));
+    coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.52,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    let old_shadow_since = Instant::now() - Duration::from_secs(2);
+    coord.slot_shadow_since[slot.index()] = Some(old_shadow_since);
+
+    let now = Instant::now();
+    coord.glft_source_blocked_since = Some(now - Duration::from_secs(2));
+    coord.glft_source_blocked_saw_poly = true;
+    coord.glft_source_blocked_saw_binance = false;
+
+    coord.update_glft_source_recovery_state(live_glft_snapshot(), now);
+
+    assert!(coord.glft_republish_settle_until.is_some());
+    assert_eq!(coord.slot_policy_states[slot.index()], Some(policy));
+    assert_eq!(coord.slot_policy_candidates[slot.index()], Some(policy));
+    assert_eq!(
+        coord.slot_shadow_targets[slot.index()]
+            .as_ref()
+            .map(|t| t.price),
+        Some(0.52)
+    );
+    assert_eq!(
+        coord.slot_shadow_since[slot.index()],
+        Some(old_shadow_since)
+    );
+    assert_eq!(coord.stats.full_reset_count, 0);
+    assert_eq!(coord.stats.soft_reset_count, OrderSlot::ALL.len() as u64);
 }
 
 #[test]
@@ -1716,6 +1787,50 @@ async fn test_glft_high_drift_blocks_new_slot_place() {
 }
 
 #[tokio::test]
+async fn test_glft_frozen_drift_suppresses_buy_publish_even_when_tradeable() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+
+    let mut frozen = live_glft_snapshot();
+    frozen.quote_regime = QuoteRegime::Guarded;
+    frozen.drift_mode = DriftMode::Frozen;
+    frozen.basis_drift_ticks = 10.2;
+    frozen.drift_ewma_ticks = 9.1;
+    frozen.reference_health = ReferenceHealth::Guarded;
+    let _ = g.send(frozen);
+
+    let slot = OrderSlot::YES_BUY;
+    let existing = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(existing.clone());
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.yes_target = Some(existing);
+
+    coord
+        .slot_place_or_reprice(slot, 0.55, 5.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "frozen drift should suppress buy publish/reprice commands"
+    );
+    assert_eq!(
+        coord.slot_target(slot).map(|t| t.price),
+        Some(0.45),
+        "active buy target should remain unchanged while frozen"
+    );
+}
+
+#[tokio::test]
 async fn test_glft_soft_reprice_throttle_skips_small_early_jitter() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
@@ -2116,6 +2231,60 @@ fn test_outcome_floor_allows_recovery_buy_when_already_below_floor() {
     assert!(
         coord.passes_outcome_floor_for_buy(&inv, Side::No, 1.0, 0.20, BidReason::Hedge),
         "below-floor state should allow non-worsening/recovery buys"
+    );
+}
+
+#[test]
+fn test_glft_pair_cost_guard_blocks_newly_bad_pair_even_if_rebalancing() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::GlftMm;
+    c.pair_target = 0.98;
+    let (_, _, _, _, _, coord) = make(c);
+    let inv = InventoryState {
+        yes_qty: 5.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.80,
+        no_avg_cost: 0.0,
+        net_diff: 5.0,
+        portfolio_cost: 0.0,
+    };
+    let intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    assert!(
+        !coord.can_place_strategy_intent(&inv, Some(intent)),
+        "GLFT should block opening a newly paired position above pair_target"
+    );
+}
+
+#[test]
+fn test_glft_pair_cost_guard_allows_repair_when_already_above_target() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::GlftMm;
+    c.pair_target = 0.98;
+    let (_, _, _, _, _, coord) = make(c);
+    let inv = InventoryState {
+        yes_qty: 5.0,
+        no_qty: 5.0,
+        yes_avg_cost: 0.80,
+        no_avg_cost: 0.35,
+        net_diff: 0.0,
+        portfolio_cost: 1.15,
+    };
+    let intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.10,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    assert!(
+        coord.can_place_strategy_intent(&inv, Some(intent)),
+        "GLFT should allow buy that strictly improves an already-bad pair cost"
     );
 }
 

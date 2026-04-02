@@ -123,7 +123,8 @@ impl InventoryManager {
                     let _ = self.state_tx.send(self.state);
 
                     info!(
-                        "📦 Fill: {:?} {:.2}@{:.3} status={:?} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
+                        "📦 Fill: slot={} {:?} {:.2}@{:.3} status={:?} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
+                        fill.slot().as_str(),
                         fill.side, fill.filled_size, fill.price, fill.status, &fill.order_id[..8.min(fill.order_id.len())],
                         self.state.yes_qty, self.state.yes_avg_cost,
                         self.state.no_qty, self.state.no_avg_cost,
@@ -268,61 +269,78 @@ impl InventoryManager {
     }
 
     /// Rebuild position state entirely from the fill ledger.
-    /// Guarantees mathematically perfect VWAP at all times.
+    ///
+    /// NOTE:
+    /// We intentionally use inventory accounting semantics instead of a naive
+    /// signed cashflow VWAP:
+    /// - BUY updates weighted average cost.
+    /// - SELL only reduces quantity; remaining avg cost is preserved.
+    ///
+    /// This prevents near-flat sell sequences from producing impossible
+    /// negative average costs (e.g. NO@-190) that can corrupt strategy logic.
     fn recompute_from_ledger(&mut self) {
-        let (mut yes_qty, mut yes_cost_sum) = (0.0_f64, 0.0_f64);
-        let (mut no_qty, mut no_cost_sum) = (0.0_f64, 0.0_f64);
+        let (mut yes_qty, mut yes_avg) = (0.0_f64, 0.0_f64);
+        let (mut no_qty, mut no_avg) = (0.0_f64, 0.0_f64);
 
         for r in &self.ledger {
-            match r.side {
-                Side::Yes => {
-                    yes_qty += r.size;
-                    yes_cost_sum += r.size * r.price;
+            let fill_size = r.size.abs();
+            if fill_size <= f64::EPSILON {
+                continue;
+            }
+            match (r.side, r.direction) {
+                (Side::Yes, TradeDirection::Buy) => {
+                    let next_qty = yes_qty + fill_size;
+                    if next_qty > f64::EPSILON {
+                        yes_avg = ((yes_qty * yes_avg) + (fill_size * r.price)) / next_qty;
+                        yes_qty = next_qty;
+                    }
                 }
-                Side::No => {
-                    no_qty += r.size;
-                    no_cost_sum += r.size * r.price;
+                (Side::No, TradeDirection::Buy) => {
+                    let next_qty = no_qty + fill_size;
+                    if next_qty > f64::EPSILON {
+                        no_avg = ((no_qty * no_avg) + (fill_size * r.price)) / next_qty;
+                        no_qty = next_qty;
+                    }
+                }
+                (Side::Yes, TradeDirection::Sell) => {
+                    if yes_qty <= f64::EPSILON {
+                        warn!(
+                            "📦 YES sell fill exceeds tracked inventory (size={:.8}); clamping to flat",
+                            fill_size
+                        );
+                        yes_qty = 0.0;
+                        yes_avg = 0.0;
+                        continue;
+                    }
+                    yes_qty = (yes_qty - fill_size).max(0.0);
+                    if yes_qty <= 1e-9 {
+                        yes_qty = 0.0;
+                        yes_avg = 0.0;
+                    }
+                }
+                (Side::No, TradeDirection::Sell) => {
+                    if no_qty <= f64::EPSILON {
+                        warn!(
+                            "📦 NO sell fill exceeds tracked inventory (size={:.8}); clamping to flat",
+                            fill_size
+                        );
+                        no_qty = 0.0;
+                        no_avg = 0.0;
+                        continue;
+                    }
+                    no_qty = (no_qty - fill_size).max(0.0);
+                    if no_qty <= 1e-9 {
+                        no_qty = 0.0;
+                        no_avg = 0.0;
+                    }
                 }
             }
         }
 
-        if yes_qty.abs() < 1e-9 {
-            yes_qty = 0.0;
-            yes_cost_sum = 0.0;
-        }
-        if no_qty.abs() < 1e-9 {
-            no_qty = 0.0;
-            no_cost_sum = 0.0;
-        }
-        if yes_qty < 0.0 {
-            warn!(
-                "📦 YES qty drifted negative ({:.8}) after ledger rebuild; clamping to 0",
-                yes_qty
-            );
-            yes_qty = 0.0;
-            yes_cost_sum = 0.0;
-        }
-        if no_qty < 0.0 {
-            warn!(
-                "📦 NO qty drifted negative ({:.8}) after ledger rebuild; clamping to 0",
-                no_qty
-            );
-            no_qty = 0.0;
-            no_cost_sum = 0.0;
-        }
-
         self.state.yes_qty = yes_qty;
         self.state.no_qty = no_qty;
-        self.state.yes_avg_cost = if yes_qty > f64::EPSILON {
-            yes_cost_sum / yes_qty
-        } else {
-            0.0
-        };
-        self.state.no_avg_cost = if no_qty > f64::EPSILON {
-            no_cost_sum / no_qty
-        } else {
-            0.0
-        };
+        self.state.yes_avg_cost = yes_avg.max(0.0);
+        self.state.no_avg_cost = no_avg.max(0.0);
 
         // Recompute derived fields
         self.state.net_diff = self.state.yes_qty - self.state.no_qty;
@@ -570,5 +588,64 @@ mod tests {
         assert!(im.state.no_avg_cost.abs() < 1e-9);
         assert!((im.state.net_diff - 2.0).abs() < 1e-9);
         assert!(im.state.portfolio_cost.abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_sell_reduces_qty_without_corrupting_remaining_avg_cost() {
+        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+        let (_fill_tx, fill_rx) = mpsc::channel(16);
+        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+
+        im.apply_fill(&FillEvent {
+            order_id: "buy-no-1".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Buy,
+            filled_size: 5.0,
+            price: 0.51,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+
+        im.apply_fill(&FillEvent {
+            order_id: "sell-no-1".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Sell,
+            filled_size: 4.88,
+            price: 0.73,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+
+        assert!((im.state.no_qty - 0.12).abs() < 1e-9);
+        assert!((im.state.no_avg_cost - 0.51).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_sell_to_flat_resets_avg_cost_to_zero() {
+        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+        let (_fill_tx, fill_rx) = mpsc::channel(16);
+        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+
+        im.apply_fill(&FillEvent {
+            order_id: "buy-yes-1".to_string(),
+            side: Side::Yes,
+            direction: TradeDirection::Buy,
+            filled_size: 5.0,
+            price: 0.42,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+        im.apply_fill(&FillEvent {
+            order_id: "sell-yes-1".to_string(),
+            side: Side::Yes,
+            direction: TradeDirection::Sell,
+            filled_size: 5.0,
+            price: 0.09,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        });
+
+        assert!(im.state.yes_qty.abs() < 1e-9);
+        assert!(im.state.yes_avg_cost.abs() < 1e-9);
     }
 }

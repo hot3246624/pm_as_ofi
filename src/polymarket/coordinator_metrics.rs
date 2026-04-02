@@ -167,6 +167,70 @@ impl StrategyCoordinator {
         true
     }
 
+    pub(super) fn passes_pair_cost_guard_for_buy(
+        &self,
+        inv: &InventoryState,
+        side: Side,
+        size: f64,
+        price: f64,
+        reason: BidReason,
+    ) -> bool {
+        let Some(projected_inv) = self.project_buy_inventory(inv, side, size, price) else {
+            return false;
+        };
+        let current = self.derive_inventory_metrics(inv);
+        let projected = self.derive_inventory_metrics(&projected_inv);
+        if projected.paired_qty <= f64::EPSILON {
+            return true;
+        }
+
+        let target = self.cfg.pair_target.max(0.0);
+        if projected.pair_cost <= target + 1e-9 {
+            return true;
+        }
+
+        // Hedge intents may pay up if they are actively reducing directional risk.
+        let reduces_abs_net = projected_inv.net_diff.abs() + 1e-9 < inv.net_diff.abs();
+        if reason == BidReason::Hedge && reduces_abs_net {
+            debug!(
+                "🛡️ Pair-cost guard bypass ({:?} {:?}): side={:?} px={:.3} sz={:.2} projected_pair_cost={:.4} > target={:.4} but net_diff improves {:.2}->{:.2}",
+                reason,
+                TradeDirection::Buy,
+                side,
+                price,
+                size,
+                projected.pair_cost,
+                target,
+                inv.net_diff.abs(),
+                projected_inv.net_diff.abs(),
+            );
+            return true;
+        }
+
+        // If we are already above pair target, allow only strict repair moves.
+        if current.paired_qty > f64::EPSILON
+            && current.pair_cost > target + 1e-9
+            && projected.pair_cost + 1e-9 < current.pair_cost
+        {
+            return true;
+        }
+
+        debug!(
+            "🧱 Pair-cost guard block ({:?} {:?}): side={:?} px={:.3} sz={:.2} current_pair_cost={:.4} projected_pair_cost={:.4} target={:.4} paired_qty={:.2}->{:.2}",
+            reason,
+            TradeDirection::Buy,
+            side,
+            price,
+            size,
+            current.pair_cost,
+            projected.pair_cost,
+            target,
+            current.paired_qty,
+            projected.paired_qty,
+        );
+        false
+    }
+
     pub(crate) fn derive_inventory_metrics(
         &self,
         inv: &InventoryState,

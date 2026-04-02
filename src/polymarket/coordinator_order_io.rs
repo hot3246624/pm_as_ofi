@@ -781,6 +781,18 @@ impl StrategyCoordinator {
         now: Instant,
     ) {
         let glft = *self.glft_rx.borrow();
+        if slot.direction == TradeDirection::Buy
+            && matches!(glft.drift_mode, crate::polymarket::glft::DriftMode::Frozen)
+        {
+            // During Frozen drift, suppress all BUY slot publishes to avoid
+            // chasing the dominant side while reference alignment is degraded.
+            self.stats.policy_noop_ticks = self.stats.policy_noop_ticks.saturating_add(1);
+            debug!(
+                "🧊 GLFT frozen BUY suppressed for {:?} (regime={:?}, drift_raw={:.1}, drift_ewma={:.1})",
+                slot, glft.quote_regime, glft.basis_drift_ticks, glft.drift_ewma_ticks
+            );
+            return;
+        }
         let quote_regime = Some(glft.quote_regime);
         let inv = *self.inv_rx.borrow();
         let active = self.slot_target(slot).is_some();
@@ -788,6 +800,7 @@ impl StrategyCoordinator {
         let slot_size = self.slot_target(slot).map(|t| t.size).unwrap_or(0.0);
         let slot_direction = self.slot_target(slot).map(|t| t.direction);
         let tick = self.cfg.tick_size.max(1e-9);
+        let prev_committed_policy = self.slot_policy_states[slot.index()];
         let had_committed_policy = self.slot_policy_states[slot.index()].is_some();
 
         let regime_age = self
@@ -903,7 +916,23 @@ impl StrategyCoordinator {
         let publish_cause = publish_cause.unwrap();
         if active && matches!(publish_cause, PolicyPublishCause::Policy) {
             let since_last_publish = now.saturating_duration_since(self.slot_last_ts(slot));
-            if since_last_publish < Self::glft_policy_min_republish_interval(quote_regime) {
+            let mut required_republish_interval =
+                Self::glft_policy_min_republish_interval(quote_regime);
+            if let (Some(PolicyTransitionReason::PriceBucket), Some(prev_policy)) =
+                (transition, prev_committed_policy)
+            {
+                if Self::glft_policy_is_minor_pricebucket_transition(
+                    prev_policy,
+                    policy,
+                    glft.quote_regime,
+                    tick,
+                ) {
+                    required_republish_interval = required_republish_interval.max(
+                        Self::glft_policy_minor_pricebucket_publish_hold(quote_regime),
+                    );
+                }
+            }
+            if since_last_publish < required_republish_interval {
                 self.stats.shadow_suppressed_updates =
                     self.stats.shadow_suppressed_updates.saturating_add(1);
                 return;
@@ -1090,7 +1119,7 @@ impl StrategyCoordinator {
     fn classify_policy_transition(
         prev: Option<QuotePolicyState>,
         next: QuotePolicyState,
-        _quote_regime: crate::polymarket::glft::QuoteRegime,
+        quote_regime: crate::polymarket::glft::QuoteRegime,
         tick: f64,
     ) -> Option<PolicyTransitionReason> {
         match prev {
@@ -1111,16 +1140,83 @@ impl StrategyCoordinator {
             Some(prev) if prev.price_band_tick != next.price_band_tick => {
                 // Regime bucket can shift while executable action remains unchanged.
                 // Treat such moves as policy no-op to avoid transition churn.
-                let action_delta_ticks = ((next.action_price - prev.action_price).abs()
-                    / tick.max(1e-9))
-                .abs();
-                if action_delta_ticks >= 1.0 {
+                let action_delta_ticks =
+                    ((next.action_price - prev.action_price).abs() / tick.max(1e-9)).abs();
+                let min_action_delta_ticks =
+                    Self::glft_policy_min_action_transition_ticks(quote_regime);
+                if action_delta_ticks >= min_action_delta_ticks {
                     Some(PolicyTransitionReason::PriceBucket)
                 } else {
                     None
                 }
             }
             _ => None,
+        }
+    }
+
+    fn glft_policy_min_action_transition_ticks(
+        quote_regime: crate::polymarket::glft::QuoteRegime,
+    ) -> f64 {
+        match quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => 2.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 2.0,
+            crate::polymarket::glft::QuoteRegime::Guarded => 3.0,
+            crate::polymarket::glft::QuoteRegime::Blocked => 99.0,
+        }
+    }
+
+    fn glft_policy_is_minor_pricebucket_transition(
+        prev: QuotePolicyState,
+        next: QuotePolicyState,
+        quote_regime: crate::polymarket::glft::QuoteRegime,
+        tick: f64,
+    ) -> bool {
+        if !matches!(
+            quote_regime,
+            crate::polymarket::glft::QuoteRegime::Aligned
+                | crate::polymarket::glft::QuoteRegime::Tracking
+        ) {
+            return false;
+        }
+        let band_jump = (prev.price_band_tick - next.price_band_tick).abs();
+        if band_jump != 1 {
+            return false;
+        }
+        let action_delta_ticks =
+            ((next.action_price - prev.action_price).abs() / tick.max(1e-9)).abs();
+        action_delta_ticks <= 2.5 + 1e-9
+    }
+
+    fn glft_policy_minor_pricebucket_commit_dwell(
+        quote_regime: crate::polymarket::glft::QuoteRegime,
+    ) -> std::time::Duration {
+        match quote_regime {
+            crate::polymarket::glft::QuoteRegime::Aligned => {
+                std::time::Duration::from_millis(12_000)
+            }
+            crate::polymarket::glft::QuoteRegime::Tracking => {
+                std::time::Duration::from_millis(14_000)
+            }
+            crate::polymarket::glft::QuoteRegime::Guarded => {
+                std::time::Duration::from_millis(9_999)
+            }
+            crate::polymarket::glft::QuoteRegime::Blocked => {
+                std::time::Duration::from_millis(9_999)
+            }
+        }
+    }
+
+    fn glft_policy_minor_pricebucket_publish_hold(
+        quote_regime: Option<crate::polymarket::glft::QuoteRegime>,
+    ) -> std::time::Duration {
+        match quote_regime {
+            Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
+                std::time::Duration::from_millis(14_000)
+            }
+            Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
+                std::time::Duration::from_millis(16_000)
+            }
+            _ => std::time::Duration::ZERO,
         }
     }
 
@@ -1154,11 +1250,29 @@ impl StrategyCoordinator {
         let commit_ready =
             allow_commit && candidate_age >= Self::glft_policy_commit_dwell(glft.quote_regime);
         let committed = self.slot_policy_states[idx];
-        let committed_transition = if commit_ready {
+        let mut committed_transition = if commit_ready {
             Self::classify_policy_transition(committed, next, glft.quote_regime, tick)
         } else {
             None
         };
+        let mut blocked_minor_pricebucket = false;
+        if let (Some(prev), Some(PolicyTransitionReason::PriceBucket)) =
+            (committed, committed_transition)
+        {
+            if Self::glft_policy_is_minor_pricebucket_transition(
+                prev,
+                next,
+                glft.quote_regime,
+                tick,
+            ) {
+                let minor_commit_dwell =
+                    Self::glft_policy_minor_pricebucket_commit_dwell(glft.quote_regime);
+                if candidate_age < minor_commit_dwell {
+                    committed_transition = None;
+                    blocked_minor_pricebucket = true;
+                }
+            }
+        }
         if let (Some(prev), Some(PolicyTransitionReason::PriceBucket)) =
             (committed, committed_transition)
         {
@@ -1196,9 +1310,13 @@ impl StrategyCoordinator {
         } else if let Some(mut committed_state) = self.slot_policy_states[idx] {
             // Keep executable action in sync even when bucket-level policy does not transition.
             // This prevents republish-after-clear from reusing stale in-band prices.
-            committed_state.action_price = next.action_price;
-            committed_state.size = next.size;
-            self.slot_policy_states[idx] = Some(committed_state);
+            // Exception: when a minor price-bucket move is deliberately held for
+            // extended dwell, keep the committed action frozen so it can commit later.
+            if !blocked_minor_pricebucket {
+                committed_state.action_price = next.action_price;
+                committed_state.size = next.size;
+                self.slot_policy_states[idx] = Some(committed_state);
+            }
         }
         (
             self.slot_policy_states[idx].unwrap_or(next),
