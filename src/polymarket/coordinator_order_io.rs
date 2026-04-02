@@ -854,8 +854,8 @@ impl StrategyCoordinator {
         let severe_force_realign = if force_realign {
             let (trusted_force_threshold, target_force_threshold) =
                 Self::glft_force_realign_thresholds(glft.quote_regime);
-            distance_to_trusted_mid_ticks >= trusted_force_threshold + 4.0
-                && distance_to_policy_ticks >= target_force_threshold + 4.0
+            distance_to_trusted_mid_ticks >= trusted_force_threshold + 6.0
+                && distance_to_policy_ticks >= target_force_threshold + 6.0
         } else {
             false
         };
@@ -1091,7 +1091,7 @@ impl StrategyCoordinator {
         prev: Option<QuotePolicyState>,
         next: QuotePolicyState,
         _quote_regime: crate::polymarket::glft::QuoteRegime,
-        _tick: f64,
+        tick: f64,
     ) -> Option<PolicyTransitionReason> {
         match prev {
             None => Some(PolicyTransitionReason::Activate),
@@ -1109,7 +1109,16 @@ impl StrategyCoordinator {
                 Some(PolicyTransitionReason::SizeBucket)
             }
             Some(prev) if prev.price_band_tick != next.price_band_tick => {
-                Some(PolicyTransitionReason::PriceBucket)
+                // Regime bucket can shift while executable action remains unchanged.
+                // Treat such moves as policy no-op to avoid transition churn.
+                let action_delta_ticks = ((next.action_price - prev.action_price).abs()
+                    / tick.max(1e-9))
+                .abs();
+                if action_delta_ticks >= 1.0 {
+                    Some(PolicyTransitionReason::PriceBucket)
+                } else {
+                    None
+                }
             }
             _ => None,
         }
@@ -1150,6 +1159,25 @@ impl StrategyCoordinator {
         } else {
             None
         };
+        if let (Some(prev), Some(PolicyTransitionReason::PriceBucket)) =
+            (committed, committed_transition)
+        {
+            let band_jump = (prev.price_band_tick - next.price_band_tick).abs();
+            let action_delta_ticks = ((next.action_price - prev.action_price).abs() / tick).abs();
+            info!(
+                "🧭 GLFT policy band transition {} regime={:?} band={}→{} jump={} action={:.3}→{:.3} delta_ticks={:.1} candidate_age_ms={} commit_ready={}",
+                slot.as_str(),
+                glft.quote_regime,
+                prev.price_band_tick,
+                next.price_band_tick,
+                band_jump,
+                prev.action_price,
+                next.action_price,
+                action_delta_ticks,
+                candidate_age.as_millis(),
+                commit_ready
+            );
+        }
         if committed_transition.is_some() {
             self.slot_policy_states[idx] = Some(next);
             self.slot_policy_since[idx] = match committed_transition {

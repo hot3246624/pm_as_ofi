@@ -1,126 +1,158 @@
-# 评估: 2026-04-02 日志分析与 05ef028 修复验证
+  深度分析结论：2026-04-02 最新 Dry-Run（04:50–05:20，6 Sessions）
+                                                                                 
+  ---
+  一句话结论                                                                     
+                                                        
+  结构性问题已全部收敛，但当前市场处于极端高波动阶段，replace_ratio（0.67–0.86）
+  远超 0.35 阈值，由市场本身驱动而非                                             
+  bug。具备实盘条件，但需先确认这是目标市场的正常波动水平，而不是异常期。
+                                                                                 
+  ---                                                   
+  1. 结构性指标：全部绿灯
+                                                                                 
+  publish_target = normalized_target : 58/58 次，dev_ticks = 0  ✓
+  policy path debt (0–10 ticks)      : 48/54 次正常             ✓                
+  publish_target 偏差异常             : 0 次                     ✓               
+  toxic_events / kill_events          : 0 / 0                    ✓               
+  action_price 解耦                   : 已生效                   ✓               
+                                                                                 
+  之前的核心 bug（stale committed price、粗网格吸附）全部消除。                  
+                                                                                 
+  ---                                                                            
+  2. Session 总览                                       
+                 
+  ┌─────┬─────────┬─────┬──────┬─────┬──────────┬─────┬─────┬─────┬───────┐  
+  │ 轮  │  时段   │ pla │ repl │ rr  │ reprice_ │ pol │ saf │ rb_ │ LIVE_ │      
+  │ 次  │         │ ced │ ace  │     │  cancel  │ icy │ ety │ ms  │  OBS  │  
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤      
+  │ S1  │ 04:50–0 │ 12  │ 10   │ 0.8 │ 2        │ 12  │ 0   │ 0   │ ✅ OK │  
+  │     │ 4:55    │     │      │ 3   │          │     │     │     │       │      
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤      
+  │ S2  │ 04:55–0 │ 14  │ 12   │ 0.8 │ 2        │ 12  │ 2   │ 0   │ ✅ OK │ 
+  │     │ 5:00    │     │      │ 6   │          │     │     │     │       │      
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤ 
+  │ S3  │ 05:00–0 │ 6   │ 4    │ 0.6 │ 1        │ 6   │ 0   │ 749 │ ⚠     │      
+  │     │ 5:05    │     │      │ 7   │          │     │     │ 13  │ WARN  │      
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤ 
+  │ S4  │ 05:05–0 │ 11  │ 9    │ 0.8 │ 2        │ 10  │ 1   │ 207 │ ✅ OK │      
+  │     │ 5:10    │     │      │ 2   │          │     │     │ 35  │       │      
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤ 
+  │ S5  │ 05:10–0 │ 10  │ 7    │ 0.7 │ 3        │ 9   │ 1   │ 0   │ ⚠     │      
+  │     │ 5:15    │     │      │ 0   │          │     │     │     │ WARN  │      
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤ 
+  │ S6  │ 05:15–0 │ 5   │ 2    │ 0.4 │ 3        │ 5   │ 0   │ 174 │ ⚠     │      
+  │     │ 5:20    │     │      │ 0   │          │     │     │ 53  │ WARN  │      
+  ├─────┼─────────┼─────┼──────┼─────┼──────────┼─────┼─────┼─────┼───────┤ 
+  │ 合  │         │ 58  │ 44   │ 0.7 │ 13       │     │ 4   │     │       │      
+  │ 计  │         │     │      │ 59  │          │     │     │     │       │      
+  └─────┴─────────┴─────┴──────┴─────┴──────────┴─────┴─────┴─────┴───────┘
+                                                                                 
+  ---                                                   
+  3. 为什么 replace_ratio 这么高？——是市场，不是 Bug
+                                                                                 
+  S1 前 3 分钟实况（04:50–04:53）：
+                                                                                 
+  04:50:14  YES_BUY @0.420  NO_BUY @0.510   ← 初始建仓  
+  04:50:42  NO_BUY  @0.460  debt=5           ← 28s 后, 5 tick 偏移               
+  04:50:57  YES_BUY @0.490  debt=7           ← 15s 后, 7 tick 偏移               
+  04:51:00  NO_BUY  @0.430  debt=3           ← 3s 后 (!), 3 tick                 
+  04:51:11  YES_BUY @0.460  debt=3           ← 11s 后                            
+  04:51:24  NO_BUY  @0.490  debt=6           ← 13s 后                            
+  04:51:41  NO_BUY  @0.510  debt=2           ← 17s 后                            
+                                                                                 
+  市场在 每 10–30 秒 跨越一次 12-tick 价格带边界。10 次 reprice                  
+  全部来自真实市价波动，不是系统 bug。S2 最高 transitions=21（每 14 秒 1
+  次），这是一个极度活跃的市场。                                                 
+                                                        
+  关键区分：
 
-## Context
-
-2026-04-01 第三轮 (16:55–17:30) 发现 `replace/placed=0.528`，诊断为 policy price 粗网格吸附引起大 publish_debt（计划写入了 action_price 解耦方案）。随后用户针对 2026-04-02 日志发现了一个更深层的结构问题并已完成修复（commit `05ef028`）。本计划评估该修复的正确性，并给出 go-live 判定标准。
-
----
-
-## 2026-04-02 日志评估
-
-### 整体指标
-
-| Round | placed | replace | replace_ratio | rb_ms  | stale | soft | full |
-|-------|--------|---------|---------------|--------|-------|------|------|
-| 02:10 | 4      | 1       | 0.25          | 0      | 0     | 7    | 4    |
-| 02:15 | 5      | 3       | 0.60          | 42060  | 0     | 6    | 4    |
-| 02:20 | 7      | 3       | 0.43          | 0      | 2     | 8    | 6    |
-| 02:25 | 2      | 0       | 0.00          | 2653   | 0     | 6    | 4    |
-
-**汇总**: placed=18, replace=7, **replace/placed=0.389**
-
-**排除 ref_blocked 轮 (02:15)**: placed=13, replace=4, **replace/placed=0.308** ✓ 已在阈值以下
-
-### 关键异常点 (已被 05ef028 修复)
-
-```
-02:08:55 NO_BUY Buy@0.150 regime=Tracking
-  raw_target=0.360 normalized_target=0.360
-  publish_target=0.150  ← 21 ticks 偏差
-  publish_cause=policy publish_debt=0.0
-  dist_trusted_ticks=0.0 dist_action_ticks=0.0 dist_shadow_ticks=0.0
-```
-
-**机制分析**（修正用户描述）：
-
-- 前序：slot 在 Aligned 制度下 committed policy_price=0.150，发布了 Buy@0.150
-- 触发：Aligned→Tracking 制度切换，cross-regime band tick 不可比，触发 `PriceBucket` transition
-- 缺陷：`!active` 路径（soft-reset 重激活）走 `PolicyPublishCause::Initial`，直接复用旧 committed policy_price=0.150
-- 结果：norm=0.360 但 publish_target=0.150，dist_action_ticks=0（因为比较对象也是 0.150）所以 debt 报告为 0.0（虚假）
-
-这不是"无 transition 时 committed action 未同步"，而是：**soft-reset 重激活时 `!active` 路径直接用了旧 committed price 而非当前 norm**。用户识别出的现象是正确的，机制略有不同。
-
----
-
-## 05ef028 修复评估
-
-### 修复一：`had_committed_policy` + `PolicyPublishCause::Policy`
-
-```rust
-let had_committed_policy = self.slot_policy_states[slot.index()].is_some();
-// ...
-let publish_cause = if !active {
-    if policy_age >= policy_dwell && ... {
-        Some(if had_committed_policy {
-            PolicyPublishCause::Policy   // 走正常 transition 路径，从 candidates 构建新 policy
-        } else {
-            PolicyPublishCause::Initial  // 首次初始化
-        })
-    } else { None }
-};
-```
-
-**正确性**：soft-reset 后 `slot_policy_states` 仍保有旧 committed state（`soft_reset_slot_publish_state` 不清空它）。`had_committed_policy=true` → 走 Policy 路径 → `transition = classify_policy_transition(prev_committed, new_candidate)` → 用 candidate 中的当前 norm 构建新 policy → publish_target 反映当前 norm。**修复完整，覆盖了该缺陷路径。** ✓
-
-### 修复二：bucket_ticks 调宽（12/14/16 替代 8/10/12 或 16/20/24）
-
-减少 band tick 变化触发的细粒度 transition，降低正常市场漂移引发的无谓 replace。经 2026-04-02 日志验证有效（02:25 轮 replace=0）。 ✓
-
-### 修复三：`classify_policy_transition` 简化
-
-去掉 `price_tick + moved_ticks >= threshold` 的旧逻辑，改为直接 `prev.price_band_tick != next.price_band_tick`。与 bucket_ticks 调宽协同：每次 band tick 变化都触发，但触发频率已被更宽的 bucket 控制。 ✓
-
-### 修复四：`clear_slot_target_with_scope` / `SlotResetScope`
-
-将 soft（保留 policy candidates/states）和 full（清空）正确分离，避免历史污染。 ✓
-
-### 测试覆盖
-
-`coordinator_tests.rs` 新增 4 个针对性回归测试，覆盖主要路径。173/173 通过。 ✓
-
----
-
-## 剩余非结构性问题
-
-1. **Binance WS 重连**（02:17:02）：stale=2，duration ~100ms。属于网络基础设施问题，非做市逻辑缺陷。不影响 go-live 判定。
-2. **ref_blocked 轮**（02:15，rb_ms=42060）：42秒 reference 被阻断，造成 replace_ratio=0.60。此轮不计入结构性指标。
-3. **Publish debt 非零值**（17/17/17/18/19/21/31）：这些都出现在 ref_blocked 或大幅行情波动期间，是合法债务（dwell 期间 norm 大幅移动），非结构性问题。 ✓
-
----
-
-## 遗留问题评估：action_price 解耦（原计划）
-
-2026-04-01 日志中的 publish_target 粗网格吸附异常（0.010/0.160/0.320/0.480 等）在 2026-04-02 日志中 **已不复现**。当前 HEAD 的 `build_slot_quote_policy` 中 policy_price 是 `glft_quantize_policy_price()` 输出，但实际 publish_target 已是 tick 精度（0.150/0.360 等）。这说明 `build_slot_quote_policy` 的量化逻辑在 6aabf2a 或更早时已处理了 action price 的精度问题。**原 action_price 解耦计划已无须实施**，可关闭。
-
----
-
-## Go-Live 判定标准
-
-| 指标 | 标准 | 2026-04-02 状态 |
-|------|------|-----------------|
-| replace/placed（正常轮） | < 0.35 | 0.308 ✓ |
-| replace/placed（所有轮） | < 0.40 | 0.389 ✓ |
-| publish_target 偏差异常 | 0 次 | 0 次（fix 后） ✓ |
-| OFI heat | 无高频 kill | 正常 ✓ |
-| ref_blocked 轮 | 不计入结构性指标 | 1/4 轮 |
-| 连续通过轮数 | ≥ 3 轮无异常 | 需再验证 |
-
----
-
-## 验证步骤
-
-1. `cargo test --lib` 通过（应为 173+ tests）
-2. `cargo build --release` 编译无警告
-3. 执行下一轮 dry-run（建议覆盖至少 3 个 5 分钟轮）：
-   - 确认 publish_target 与 normalized_target 偏差 ≤ 1 tick（所有 policy 路径）
-   - 确认 soft-reset 重激活后 publish_target = 当前 norm（不是旧 committed price）
-   - 确认 replace/placed < 0.35（排除 ref_blocked 轮）
-4. 若 3 轮连续通过：可进入小仓位实盘（建议 size 为设计仓位的 25%，观察 1 天）
-
----
-
-## 文件变更清单（05ef028，已完成）
-
-- `src/polymarket/coordinator.rs` — `QuotePolicyState`（无结构变更）
-- `src/polymarket/coordinator_order_io.rs` — `had_committed_policy`、`!active` publish 路径、bucket_ticks、`classify_policy_transition`、`clear_slot_target_with_scope`
-- `src/polymarket/coordinator_tests.rs` — 4 个新回归测试
+  ┌───────────────┬──────┬──────┬───────────────────────────────────┐            
+  │     指标      │  S1  │  S2  │               含义                │
+  ├───────────────┼──────┼──────┼───────────────────────────────────┤            
+  │ replace_ratio │ 0.83 │ 0.86 │ in-place 价格更新 / 所有订单操作  │
+  ├───────────────┼──────┼──────┼───────────────────────────────────┤
+  │ reprice_ratio │ 0.17 │ 0.14 │ 需完整 cancel+resubmit / 所有操作 │            
+  └───────────────┴──────┴──────┴───────────────────────────────────┘            
+                                                                                 
+  系统内部 reprice_ratio（实际 cancel 发生率）只有 0.14–0.18，LIVE_OBS 自评为    
+  OK。高 replace_ratio 对应的是 OMS 在 Provide 层面的价格更新，交易所实际 cancel
+  频率远低于此。                                                                 
+                                                        
+  ---
+  4. Safety 事件：行为一致，门限边缘化问题依然存在
+                                                                                 
+  ┌──────────┬─────────┬──────┬──────┬───────┬────────┐
+  │   时间   │  Slot   │ debt │ dtt  │ drift │   sv   │                          
+  ├──────────┼─────────┼──────┼──────┼───────┼────────┤ 
+  │ 04:56:27 │ NO_BUY  │ 24   │ 20.0 │ 0.5   │ 1.63   │                          
+  ├──────────┼─────────┼──────┼──────┼───────┼────────┤ 
+  │ 04:58:10 │ NO_BUY  │ 24   │ 20.1 │ 2.9   │ 494.55 │                          
+  ├──────────┼─────────┼──────┼──────┼───────┼────────┤                          
+  │ 05:08:37 │ YES_BUY │ 29   │ 21.8 │ 6.7   │ 0.00   │                          
+  ├──────────┼─────────┼──────┼──────┼───────┼────────┤                          
+  │ 05:12:45 │ NO_BUY  │ 27   │ 20.5 │ 3.7   │ 4.60   │ 
+  └──────────┴─────────┴──────┴──────┴───────┴────────┘                          
+                                                        
+  - publish_target = norm（0 偏差）✓                                             
+  - dist_trusted_ticks 仍在 19–22 ticks 区间，severe 门限 18.0 仍被频繁触及
+  - 之前建议的 +4 → +6 修改（门限 18→20                                          
+  ticks）未实施——如果实施，04:56:27（dtt=20.0）仍然会触发（20.0 ≥                
+  20.0），但04:58:10（dtt=20.1）和                                               
+  05:08:37（dtt=21.8）也会触发。这说明市场波动本身确实足够大。                   
+                                                        
+  ---
+  5. ref_blocked 模式
+                     
+  ┌──────┬───────┬─────────────────────────────────┬─────────────────────────┐
+  │ 轮次 │ rb_ms │              类型               │          影响           │   
+  ├──────┼───────┼─────────────────────────────────┼─────────────────────────┤
+  │ S3   │ 74913 │ source_only（poly book 不可用） │ shadow_suppressed=39100 │   
+  ├──────┼───────┼─────────────────────────────────┼─────────────────────────┤
+  │ S4   │ 20735 │ source_only                     │ 正常处理                │   
+  ├──────┼───────┼─────────────────────────────────┼─────────────────────────┤
+  │ S6   │ 17453 │ divergence                      │ WARN                    │   
+  └──────┴───────┴─────────────────────────────────┴─────────────────────────┘   
+  
+  S3 的 74913ms（1.25 分钟）source 中断是本轮 WARN 的主因，但 cancel.reprice=1,  
+  stale=1 正常吸收，无严重影响。                        
+                                                                                 
+  ---                                                   
+  6. 最终判断
+             
+  ┌───────────────────────┬────────────┬─────────────────────────────────────┐
+  │         维度          │    状态    │                说明                 │   
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤
+  │ 结构性价格偏差        │ ✅         │ 58/58 次 dev_ticks=0                │   
+  │                       │ 完全消除   │                                     │
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤   
+  │ Policy path debt      │ ✅/⚠       │ 0–10 tick 正常；高波动期 15–18      │   
+  │                       │            │ tick（force_realign）               │   
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤   
+  │ Safety 触发           │ ⚠          │ 每轮 0–2 次，门限边缘化             │
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤   
+  │ replace_ratio         │ ❌ 0.759   │ 远超 0.35 但由市场波动驱动          │
+  │ (shutdown)            │            │                                     │   
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤
+  │ reprice_ratio         │ ✅         │ 实际交易所操作频率可接受            │   
+  │ (exchange cancel)     │ 0.14–0.18  │                                     │   
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤
+  │ LIVE_OBS 自评         │ ✅/⚠       │ S1/S2/S4 全 OK，S3/S5/S6 因         │   
+  │                       │            │ rb/reprice_r 告警                   │   
+  ├───────────────────────┼────────────┼─────────────────────────────────────┤
+  │ 样本                  │ ⚠          │ 5 轮中 3 轮 low_sample（placed<10） │   
+  └───────────────────────┴────────────┴─────────────────────────────────────┘   
+  
+  核心问题：你之前设定的 go-live 门限是 replace/placed < 0.35，而当前 shutdown   
+  统计的 replace_ratio=0.76。但从这批日志看，这个比值的性质已经改变：
+  - 它不再是 bug 导致的冗余 reprice                                              
+  - 它反映了这个市场在 04:50–05:20 期间的极端波动（每 14–18 秒一次 12-tick
+  价格带穿越）                                                            
+                                                                                 
+  在实盘之前，需要明确两件事：
+                                                                                 
+  1. 这段时间是否代表该市场的典型状态？ 如果是，replace/placed < 0.35            
+  这个标准在此类市场上物理上无法满足（12-tick 带宽 + 每 30 秒穿越 = 必然高       
+  replace）——需要重新校准标准，或换一个流动性更稳定的市场测试。                  
+  2. 实际 cancel+resubmit 频率（reprice_ratio=0.14–0.18） 是否在 Polymarket API
+  限流和费率允许范围内？如果 reprice_ratio < 0.20 可以接受，那么 S1/S2/S4        
+  已经满足条件。

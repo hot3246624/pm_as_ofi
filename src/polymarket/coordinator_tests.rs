@@ -932,6 +932,31 @@ fn test_glft_policy_same_band_move_syncs_committed_action_price() {
 }
 
 #[test]
+fn test_glft_policy_band_move_without_action_change_does_not_transition() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let glft = live_glft_snapshot();
+    let now = Instant::now();
+
+    let mut baseline = coord.build_slot_quote_policy(slot, 0.48, 5.0, glft);
+    // Simulate decoupled state after no-transition sync:
+    // executable action has already tracked down, but policy band anchor is old.
+    baseline.action_price = 0.38;
+    coord.slot_policy_states[slot.index()] = Some(baseline);
+    coord.slot_policy_since[slot.index()] = Some(now - Duration::from_secs(10));
+    coord.slot_policy_candidates[slot.index()] = Some(baseline);
+    coord.slot_policy_candidate_since[slot.index()] = Some(now - Duration::from_secs(10));
+
+    let (_policy, transition) = coord.update_slot_quote_policy(slot, 0.38, 5.0, glft, now, true);
+    assert_eq!(
+        transition, None,
+        "price band shift without executable action delta should be treated as no-op"
+    );
+}
+
+#[test]
 fn test_glft_soft_reset_preserves_policy_state() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
