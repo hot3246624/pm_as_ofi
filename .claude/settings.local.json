@@ -9,7 +9,10 @@
       "Bash(ls -la /Users/hot/web3Scientist/pm_as_ofi/*.log*)",
       "Bash(python3 -c ':*)",
       "Bash(grep -rn \"CancelReason::Reprice\\\\|Reprice\" src/polymarket/coordinator*.rs)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(cargo test:*)",
+      "Bash(python3:*)",
+      "Bash(cargo build:*)"
     ]
   }
 }

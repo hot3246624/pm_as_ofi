@@ -642,6 +642,7 @@ enum RetentionDecision {
 struct QuotePolicyState {
     active: bool,
     policy_price: f64,
+    action_price: f64,
     size: f64,
     price_band_tick: i64,
     size_bucket: i32,
@@ -1246,9 +1247,7 @@ impl StrategyCoordinator {
             // Ratio alone is not meaningful for persistent two-slot quoting.
             // Only escalate when absolute replace cadence is also high.
             LiveObsLevel::Ok
-        } else if lvl_replace_raw >= LiveObsLevel::Alert
-            && lvl_replace_rate < LiveObsLevel::Alert
-        {
+        } else if lvl_replace_raw >= LiveObsLevel::Alert && lvl_replace_rate < LiveObsLevel::Alert {
             // High ratio with only moderate absolute cadence should not page as ALERT.
             LiveObsLevel::Warn
         } else {
@@ -1411,8 +1410,10 @@ impl StrategyCoordinator {
             (false, true) => 400,
             (false, false) => 0,
         };
-        let settle_ms = (base_ms + source_penalty_ms)
-            .clamp(GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS, GLFT_SOURCE_RECOVERY_SETTLE_MAX_MS);
+        let settle_ms = (base_ms + source_penalty_ms).clamp(
+            GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS,
+            GLFT_SOURCE_RECOVERY_SETTLE_MAX_MS,
+        );
         Duration::from_millis(settle_ms)
     }
 

@@ -266,18 +266,18 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
-                std::time::Duration::from_millis(1_400)
+                std::time::Duration::from_millis(2_800)
             }
             Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
-                std::time::Duration::from_millis(2_000)
+                std::time::Duration::from_millis(4_000)
             }
             Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
-                std::time::Duration::from_millis(2_600)
+                std::time::Duration::from_millis(5_200)
             }
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
                 std::time::Duration::from_millis(3_200)
             }
-            None => std::time::Duration::from_millis(1_400),
+            None => std::time::Duration::from_millis(2_800),
         }
     }
 
@@ -305,7 +305,10 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn glft_publish_reason_is_abnormal(reason: PolicyPublishCause) -> bool {
-        matches!(reason, PolicyPublishCause::Safety | PolicyPublishCause::Recovery)
+        matches!(
+            reason,
+            PolicyPublishCause::Safety | PolicyPublishCause::Recovery
+        )
     }
 
     pub(super) fn glft_publish_reason_budget_cost(

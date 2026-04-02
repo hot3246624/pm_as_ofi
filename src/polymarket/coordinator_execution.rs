@@ -392,14 +392,8 @@ impl StrategyCoordinator {
                     self.note_skipped_inv_limit();
                 }
                 if self.slot_target_active(slot) {
-                    match self.evaluate_slot_retention(
-                        inv,
-                        ub,
-                        slot,
-                        intent,
-                        reject_reason,
-                        phase,
-                    ) {
+                    match self.evaluate_slot_retention(inv, ub, slot, intent, reject_reason, phase)
+                    {
                         RetentionDecision::Retain => continue,
                         RetentionDecision::Republish => {}
                         RetentionDecision::Clear(reason, scope) => {
@@ -418,7 +412,6 @@ impl StrategyCoordinator {
                             continue;
                         }
                     }
-
                 }
                 continue;
             }
@@ -467,7 +460,7 @@ impl StrategyCoordinator {
         }
     }
 
-    fn evaluate_slot_retention(
+    pub(super) fn evaluate_slot_retention(
         &mut self,
         inv: &InventoryState,
         ub: &Book,

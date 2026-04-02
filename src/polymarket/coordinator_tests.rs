@@ -701,7 +701,11 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
     let (o, i, _m, g, _, mut er, mut coord) = make_with_glft(config);
     let _ = o.send(OfiSnapshot::default());
     let _ = i.send(InventoryState::default());
-    let _ = g.send(live_glft_snapshot());
+    let glft_live = GlftSignalSnapshot {
+        trusted_mid: 0.80,
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(glft_live);
 
     let target = DesiredTarget {
         side: Side::No,
@@ -722,7 +726,7 @@ async fn test_glft_publish_budget_suppresses_non_emergency_reprice() {
     });
     coord.slot_shadow_since[OrderSlot::NO_BUY.index()] =
         Some(Instant::now() - Duration::from_secs(3));
-    let glft = live_glft_snapshot();
+    let glft = glft_live;
     coord.slot_policy_states[OrderSlot::NO_BUY.index()] =
         Some(coord.build_slot_quote_policy(OrderSlot::NO_BUY, 0.30, 5.0, glft));
     coord.slot_policy_since[OrderSlot::NO_BUY.index()] =
@@ -778,7 +782,7 @@ async fn test_glft_sync_publish_is_budget_governed() {
         reason: BidReason::Provide,
     };
     coord.slot_targets[slot.index()] = Some(target.clone());
-    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(6);
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(12);
     coord.yes_target = Some(target);
     coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
         side: Side::Yes,
@@ -787,15 +791,16 @@ async fn test_glft_sync_publish_is_budget_governed() {
         size: 5.0,
         reason: BidReason::Provide,
     });
-    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(6));
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(12));
     coord.slot_policy_states[slot.index()] =
         Some(coord.build_slot_quote_policy(slot, 0.30, 5.0, glft));
-    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(6));
+    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(12));
     coord.slot_policy_candidates[slot.index()] =
         Some(coord.build_slot_quote_policy(slot, 0.55, 5.0, glft));
-    coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(6));
+    coord.slot_policy_candidate_since[slot.index()] =
+        Some(Instant::now() - Duration::from_secs(12));
     coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
-    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(6);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(12);
     coord.slot_publish_budget[slot.index()] = 2.0;
     coord.slot_last_budget_refill[slot.index()] = Instant::now() - Duration::from_secs(1);
     coord.slot_publish_debt_accum[slot.index()] = 14.0;
@@ -837,31 +842,32 @@ async fn test_glft_sync_publish_tracks_counter_when_published() {
         reason: BidReason::Provide,
     };
     coord.slot_targets[slot.index()] = Some(target.clone());
-    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(6);
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(12);
     coord.yes_target = Some(target);
     coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
-        price: 0.45,
+        price: 0.70,
         size: 5.0,
         reason: BidReason::Provide,
     });
-    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(6));
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(12));
     coord.slot_policy_states[slot.index()] =
         Some(coord.build_slot_quote_policy(slot, 0.30, 5.0, glft));
-    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(6));
+    coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(12));
     coord.slot_policy_candidates[slot.index()] =
-        Some(coord.build_slot_quote_policy(slot, 0.45, 5.0, glft));
-    coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(6));
+        Some(coord.build_slot_quote_policy(slot, 0.58, 5.0, glft));
+    coord.slot_policy_candidate_since[slot.index()] =
+        Some(Instant::now() - Duration::from_secs(12));
     coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
-    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(6);
+    coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(12);
     coord.slot_publish_budget[slot.index()] = 2.0;
     coord.slot_last_budget_refill[slot.index()] = Instant::now() - Duration::from_secs(1);
     coord.slot_publish_debt_accum[slot.index()] = 14.0;
     coord.slot_last_debt_refill[slot.index()] = Instant::now() - Duration::from_secs(1);
 
     coord
-        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
         .await;
 
     match timeout(Duration::from_millis(100), er.recv()).await {
@@ -893,9 +899,36 @@ fn test_glft_policy_same_band_move_does_not_transition() {
     coord.slot_policy_candidates[slot.index()] = Some(baseline);
     coord.slot_policy_candidate_since[slot.index()] = Some(now - Duration::from_secs(10));
 
-    let (_policy, transition) = coord.update_slot_quote_policy(slot, 0.35, 5.0, glft, now);
+    let (_policy, transition) = coord.update_slot_quote_policy(slot, 0.35, 5.0, glft, now, true);
     assert_eq!(transition, None, "same price band should not transition");
     assert_eq!(coord.stats.policy_transition_events, 0);
+}
+
+#[test]
+fn test_glft_policy_same_band_move_syncs_committed_action_price() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let glft = live_glft_snapshot();
+    let now = Instant::now();
+
+    let baseline = coord.build_slot_quote_policy(slot, 0.30, 5.0, glft);
+    coord.slot_policy_states[slot.index()] = Some(baseline);
+    coord.slot_policy_since[slot.index()] = Some(now - Duration::from_secs(10));
+    coord.slot_policy_candidates[slot.index()] = Some(baseline);
+    coord.slot_policy_candidate_since[slot.index()] = Some(now - Duration::from_secs(10));
+
+    let (policy, transition) = coord.update_slot_quote_policy(slot, 0.35, 5.0, glft, now, true);
+    assert_eq!(transition, None, "same band should not transition");
+    assert!(
+        (policy.action_price - 0.35).abs() < 1e-9,
+        "committed action_price should track latest normalized target even without transition"
+    );
+    assert!(
+        (policy.policy_price - baseline.policy_price).abs() < 1e-9,
+        "policy band anchor should remain unchanged when transition is None"
+    );
 }
 
 #[test]
@@ -917,7 +950,10 @@ fn test_glft_soft_reset_preserves_policy_state() {
 
     assert_eq!(coord.slot_policy_candidates[slot.index()], Some(policy));
     assert_eq!(coord.slot_policy_states[slot.index()], Some(policy));
-    assert_eq!(coord.slot_last_regime_seen[slot.index()], Some(QuoteRegime::Tracking));
+    assert_eq!(
+        coord.slot_last_regime_seen[slot.index()],
+        Some(QuoteRegime::Tracking)
+    );
     assert_eq!(coord.stats.soft_reset_count, 1);
 }
 
@@ -943,6 +979,198 @@ fn test_glft_full_reset_clears_policy_state() {
     assert_eq!(coord.slot_last_regime_seen[slot.index()], None);
     assert_eq!(coord.stats.soft_reset_count, 1);
     assert_eq!(coord.stats.full_reset_count, 1);
+}
+
+// ── evaluate_slot_retention: absent-intent dwell-first protection ──────────────
+
+#[test]
+fn test_evaluate_slot_retention_warmup_dwell_fires_on_first_absent_tick() {
+    // The warmup dwell must start timing on the very first absent-intent tick.
+    // Before the dwell elapses, evaluate_slot_retention must return Retain
+    // regardless of how far the order is from trusted_mid.
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+    // absent_clear_since is None — first absent tick
+    assert!(coord.slot_absent_clear_since[slot.index()].is_none());
+
+    let glft = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Guarded,
+        trusted_mid: 0.50,
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(glft);
+
+    let inv = InventoryState::default();
+    let ub = book(0.45, 0.55, 0.45, 0.55);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(decision, RetentionDecision::Retain),
+        "First absent tick with Guarded 4s warmup must retain (elapsed=0 < 4000ms)",
+    );
+    assert!(
+        coord.slot_absent_clear_since[slot.index()].is_some(),
+        "Timer must be initialized on first absent tick",
+    );
+}
+
+#[test]
+fn test_evaluate_slot_retention_retains_order_at_threshold_after_guarded_dwell() {
+    // An order exactly at the Guarded hard_stale threshold (14 ticks) must be
+    // retained even after the 4s warmup dwell has elapsed.
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    // price=0.50, trusted_mid=0.64 → dist = |0.50 - 0.64| / 0.01 = 14.0 ticks == threshold
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+    // Simulate dwell already elapsed (5s > 4000ms Guarded warmup)
+    coord.slot_absent_clear_since[slot.index()] = Some(Instant::now() - Duration::from_secs(5));
+
+    let glft = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Guarded,
+        trusted_mid: 0.64,
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(glft);
+
+    let inv = InventoryState::default();
+    let ub = book(0.45, 0.55, 0.45, 0.55);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(decision, RetentionDecision::Retain),
+        "14.0 ticks <= Guarded threshold (14) must retain after dwell expires",
+    );
+}
+
+#[test]
+fn test_evaluate_slot_retention_evicts_order_beyond_threshold_after_aligned_dwell() {
+    // After the Aligned warmup (1200ms) elapses, an order more than 16 ticks
+    // away from trusted_mid must be evicted with Clear(Reprice, Soft).
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    // price=0.70, trusted_mid=0.50 → dist = floor(|0.70-0.50|/0.01) = 19 ticks > Aligned threshold 16.
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.70,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+    // Simulate Aligned warmup elapsed (2s > 1200ms)
+    coord.slot_absent_clear_since[slot.index()] = Some(Instant::now() - Duration::from_secs(2));
+
+    let glft = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Aligned,
+        trusted_mid: 0.50,
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(glft);
+
+    let inv = InventoryState::default();
+    let ub = book(0.45, 0.55, 0.45, 0.55);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(
+            decision,
+            RetentionDecision::Clear(CancelReason::Reprice, SlotResetScope::Soft)
+        ),
+        "19 ticks > Aligned threshold (16) must evict with Clear(Reprice, Soft) after dwell expires",
+    );
+    assert!(
+        coord.slot_absent_clear_since[slot.index()].is_none(),
+        "Timer must be cleared after eviction",
+    );
+}
+
+#[test]
+fn test_evaluate_slot_retention_blocked_regime_clears_without_dwell() {
+    // Blocked regime must bypass the warmup dwell entirely and return Clear
+    // on the very first absent-intent tick, regardless of distance.
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+    // absent_clear_since is None — ensure dwell path is never entered
+    assert!(coord.slot_absent_clear_since[slot.index()].is_none());
+
+    let glft = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Blocked,
+        trusted_mid: 0.50,
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(glft);
+
+    let inv = InventoryState::default();
+    let ub = book(0.45, 0.55, 0.45, 0.55);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(decision, RetentionDecision::Clear(CancelReason::Reprice, _)),
+        "Blocked regime must clear immediately without any dwell grace period",
+    );
+    assert!(
+        coord.slot_absent_clear_since[slot.index()].is_none(),
+        "Timer must remain None after blocked clear",
+    );
 }
 
 #[tokio::test]
@@ -983,7 +1211,10 @@ async fn test_glft_soft_reset_republish_uses_policy_not_initial() {
         .clear_slot_target_with_scope(slot, CancelReason::Reprice, SlotResetScope::Soft)
         .await;
     match timeout(Duration::from_millis(100), er.recv()).await {
-        Ok(Some(OrderManagerCmd::ClearTarget { slot: clear_slot, reason })) => {
+        Ok(Some(OrderManagerCmd::ClearTarget {
+            slot: clear_slot,
+            reason,
+        })) => {
             assert_eq!(clear_slot, slot);
             assert_eq!(reason, CancelReason::Reprice);
         }
@@ -997,9 +1228,15 @@ async fn test_glft_soft_reset_republish_uses_policy_not_initial() {
     match timeout(Duration::from_millis(100), er.recv()).await {
         Ok(Some(OrderManagerCmd::SetTarget(target))) => {
             assert_eq!(target.side, Side::Yes);
-            assert!(target.price > 0.0);
+            assert!(
+                (target.price - 0.45).abs() < 1e-9,
+                "soft-reset policy republish must use current normalized target, not stale committed price"
+            );
         }
-        other => panic!("expected policy republish after soft reset, got {:?}", other),
+        other => panic!(
+            "expected policy republish after soft reset, got {:?}",
+            other
+        ),
     }
     assert_eq!(
         coord.slot_last_publish_reason[slot.index()],
@@ -1113,7 +1350,7 @@ fn test_glft_debt_accumulator_resets_on_low_water() {
 }
 
 #[tokio::test]
-async fn test_glft_debt_publish_waits_for_regime_settle() {
+async fn test_glft_debt_path_does_not_autopublish_after_regime_settle() {
     let mut config = cfg();
     config.strategy = StrategyKind::GlftMm;
     let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
@@ -1131,28 +1368,28 @@ async fn test_glft_debt_publish_waits_for_regime_settle() {
         reason: BidReason::Provide,
     };
     coord.slot_targets[slot.index()] = Some(target.clone());
-    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(5);
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(12);
     coord.yes_target = Some(target);
     coord.slot_shadow_targets[slot.index()] = Some(DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
-        price: 0.58,
+        price: 0.72,
         size: 5.0,
         reason: BidReason::Provide,
     });
-    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(5));
+    coord.slot_shadow_since[slot.index()] = Some(Instant::now() - Duration::from_secs(12));
     let glft = live_glft_snapshot();
     coord.slot_policy_states[slot.index()] =
         Some(coord.build_slot_quote_policy(slot, 0.40, 5.0, glft));
     coord.slot_policy_since[slot.index()] = Some(Instant::now() - Duration::from_secs(7));
     coord.slot_policy_candidates[slot.index()] =
-        Some(coord.build_slot_quote_policy(slot, 0.58, 5.0, glft));
+        Some(coord.build_slot_quote_policy(slot, 0.72, 5.0, glft));
     coord.slot_policy_candidate_since[slot.index()] = Some(Instant::now() - Duration::from_secs(7));
     coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Tracking);
     coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_millis(50);
 
     coord
-        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(slot, 0.72, 5.0, BidReason::Provide, None)
         .await;
     assert!(
         timeout(Duration::from_millis(30), er.recv()).await.is_err(),
@@ -1162,13 +1399,11 @@ async fn test_glft_debt_publish_waits_for_regime_settle() {
     coord.slot_last_regime_seen[slot.index()] = Some(QuoteRegime::Aligned);
     coord.slot_regime_changed_at[slot.index()] = Instant::now() - Duration::from_secs(3);
     coord
-        .slot_place_or_reprice(slot, 0.58, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(slot, 0.72, 5.0, BidReason::Provide, None)
         .await;
-    let published = timeout(Duration::from_millis(100), er.recv()).await;
     assert!(
-        matches!(published, Ok(Some(OrderManagerCmd::SetTarget(_)))),
-        "settled regime should allow debt publish, got {:?}",
-        published
+        timeout(Duration::from_millis(40), er.recv()).await.is_err(),
+        "settled regime alone should not trigger debt-only autopublish",
     );
 }
 
