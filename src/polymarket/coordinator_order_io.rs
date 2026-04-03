@@ -67,9 +67,7 @@ impl StrategyCoordinator {
         if self.cfg.strategy == StrategyKind::GlftMm {
             let glft = *self.glft_rx.borrow();
             if !self.glft_is_tradeable_snapshot(glft) {
-                if active
-                    && !self.glft_should_retain_on_short_source_block(glft, Instant::now())
-                {
+                if active && !self.glft_should_retain_on_short_source_block(glft, Instant::now()) {
                     self.clear_slot_target(slot, CancelReason::StaleData).await;
                 } else if active {
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
@@ -993,9 +991,9 @@ impl StrategyCoordinator {
 
     fn glft_policy_price_bucket_ticks(quote_regime: crate::polymarket::glft::QuoteRegime) -> f64 {
         match quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => 12.0,
-            crate::polymarket::glft::QuoteRegime::Tracking => 14.0,
-            crate::polymarket::glft::QuoteRegime::Guarded => 16.0,
+            crate::polymarket::glft::QuoteRegime::Aligned => 14.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 16.0,
+            crate::polymarket::glft::QuoteRegime::Guarded => 18.0,
             crate::polymarket::glft::QuoteRegime::Blocked => 99.0,
         }
     }
@@ -1025,13 +1023,13 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             crate::polymarket::glft::QuoteRegime::Aligned => {
-                std::time::Duration::from_millis(4_200)
-            }
-            crate::polymarket::glft::QuoteRegime::Tracking => {
                 std::time::Duration::from_millis(5_200)
             }
-            crate::polymarket::glft::QuoteRegime::Guarded => {
+            crate::polymarket::glft::QuoteRegime::Tracking => {
                 std::time::Duration::from_millis(6_400)
+            }
+            crate::polymarket::glft::QuoteRegime::Guarded => {
+                std::time::Duration::from_millis(7_600)
             }
             crate::polymarket::glft::QuoteRegime::Blocked => {
                 std::time::Duration::from_millis(9_999)
@@ -1044,18 +1042,18 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
-                std::time::Duration::from_millis(8_500)
+                std::time::Duration::from_millis(11_000)
             }
             Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
-                std::time::Duration::from_millis(10_500)
+                std::time::Duration::from_millis(13_000)
             }
             Some(crate::polymarket::glft::QuoteRegime::Guarded) => {
-                std::time::Duration::from_millis(12_500)
+                std::time::Duration::from_millis(15_000)
             }
             Some(crate::polymarket::glft::QuoteRegime::Blocked) => {
                 std::time::Duration::from_millis(9_999)
             }
-            None => std::time::Duration::from_millis(8_500),
+            None => std::time::Duration::from_millis(11_000),
         }
     }
 
@@ -1164,9 +1162,9 @@ impl StrategyCoordinator {
         quote_regime: crate::polymarket::glft::QuoteRegime,
     ) -> f64 {
         match quote_regime {
-            crate::polymarket::glft::QuoteRegime::Aligned => 2.0,
-            crate::polymarket::glft::QuoteRegime::Tracking => 2.0,
-            crate::polymarket::glft::QuoteRegime::Guarded => 3.0,
+            crate::polymarket::glft::QuoteRegime::Aligned => 3.0,
+            crate::polymarket::glft::QuoteRegime::Tracking => 4.0,
+            crate::polymarket::glft::QuoteRegime::Guarded => 5.0,
             crate::polymarket::glft::QuoteRegime::Blocked => 99.0,
         }
     }
@@ -1190,7 +1188,7 @@ impl StrategyCoordinator {
         }
         let action_delta_ticks =
             ((next.action_price - prev.action_price).abs() / tick.max(1e-9)).abs();
-        action_delta_ticks <= 2.5 + 1e-9
+        action_delta_ticks <= 4.0 + 1e-9
     }
 
     fn glft_policy_minor_pricebucket_commit_dwell(
@@ -1198,10 +1196,10 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             crate::polymarket::glft::QuoteRegime::Aligned => {
-                std::time::Duration::from_millis(12_000)
+                std::time::Duration::from_millis(16_000)
             }
             crate::polymarket::glft::QuoteRegime::Tracking => {
-                std::time::Duration::from_millis(14_000)
+                std::time::Duration::from_millis(18_000)
             }
             crate::polymarket::glft::QuoteRegime::Guarded => {
                 std::time::Duration::from_millis(9_999)
@@ -1217,10 +1215,10 @@ impl StrategyCoordinator {
     ) -> std::time::Duration {
         match quote_regime {
             Some(crate::polymarket::glft::QuoteRegime::Aligned) => {
-                std::time::Duration::from_millis(14_000)
+                std::time::Duration::from_millis(18_000)
             }
             Some(crate::polymarket::glft::QuoteRegime::Tracking) => {
-                std::time::Duration::from_millis(16_000)
+                std::time::Duration::from_millis(20_000)
             }
             _ => std::time::Duration::ZERO,
         }
