@@ -1923,7 +1923,10 @@ async fn test_glft_long_source_block_clears_active_slots() {
                     cleared_no = true;
                 }
             }
-            other => panic!("expected stale ClearTarget under long source block, got {:?}", other),
+            other => panic!(
+                "expected stale ClearTarget under long source block, got {:?}",
+                other
+            ),
         }
     }
     assert!(cleared_yes && cleared_no);

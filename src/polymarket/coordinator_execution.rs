@@ -337,8 +337,8 @@ impl StrategyCoordinator {
         if self.cfg.strategy == StrategyKind::GlftMm {
             let glft = *self.glft_rx.borrow();
             if !self.glft_is_tradeable_snapshot(glft) {
-                let retain_short_source_block = self
-                    .glft_should_retain_on_short_source_block(glft, std::time::Instant::now());
+                let retain_short_source_block =
+                    self.glft_should_retain_on_short_source_block(glft, std::time::Instant::now());
                 for slot in OrderSlot::ALL {
                     if self.slot_target_active(slot) {
                         if retain_short_source_block {
