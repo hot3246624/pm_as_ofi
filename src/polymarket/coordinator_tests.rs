@@ -1,7 +1,7 @@
 use super::*;
 use crate::polymarket::glft::{
-    DriftMode, FitQuality, GlftFitStatus, GlftSignalState, QuoteRegime, ReferenceHealth,
-    WarmStartStatus,
+    DriftMode, FitQuality, GlftFitStatus, GlftReadinessBlockers, GlftSignalState, QuoteRegime,
+    ReferenceHealth, WarmStartStatus,
 };
 use std::time::Duration;
 use tokio::time::timeout;
@@ -1784,6 +1784,149 @@ async fn test_glft_high_drift_blocks_new_slot_place() {
         timeout(Duration::from_millis(20), er.recv()).await.is_err(),
         "glft high drift should block new place commands"
     );
+}
+
+#[tokio::test]
+async fn test_glft_short_source_block_retains_active_slots_without_clear() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+
+    let blocked = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Blocked,
+        reference_health: ReferenceHealth::Blocked,
+        ready: false,
+        stale: true,
+        readiness_blockers: GlftReadinessBlockers {
+            await_binance: false,
+            await_poly_book: true,
+            await_fit: false,
+            basis_unstable: false,
+            sigma_unstable: false,
+            min_warmup_not_elapsed: false,
+        },
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(blocked);
+    coord.glft_source_blocked_since = Some(Instant::now() - Duration::from_millis(500));
+
+    let yes_target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    let no_target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.54,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(yes_target.clone());
+    coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(no_target.clone());
+    coord.yes_target = Some(yes_target);
+    coord.no_target = Some(no_target);
+
+    coord
+        .execute_slot_market_making(
+            &InventoryState::default(),
+            &book(0.45, 0.46, 0.54, 0.55),
+            StrategyQuotes::default(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(40), er.recv()).await.is_err(),
+        "short source block should retain active slots without stale clear"
+    );
+    assert!(coord.slot_target(OrderSlot::YES_BUY).is_some());
+    assert!(coord.slot_target(OrderSlot::NO_BUY).is_some());
+}
+
+#[tokio::test]
+async fn test_glft_long_source_block_clears_active_slots() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (o, i, m, g, _, mut er, mut coord) = make_with_glft(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    let _ = m.send(bt(0.45, 0.46, 0.54, 0.55));
+
+    let blocked = GlftSignalSnapshot {
+        quote_regime: QuoteRegime::Blocked,
+        reference_health: ReferenceHealth::Blocked,
+        ready: false,
+        stale: true,
+        readiness_blockers: GlftReadinessBlockers {
+            await_binance: false,
+            await_poly_book: true,
+            await_fit: false,
+            basis_unstable: false,
+            sigma_unstable: false,
+            min_warmup_not_elapsed: false,
+        },
+        ..live_glft_snapshot()
+    };
+    let _ = g.send(blocked);
+    coord.glft_source_blocked_since = Some(Instant::now() - Duration::from_secs(3));
+
+    let yes_target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    let no_target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.54,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(yes_target.clone());
+    coord.slot_targets[OrderSlot::NO_BUY.index()] = Some(no_target.clone());
+    coord.yes_target = Some(yes_target);
+    coord.no_target = Some(no_target);
+
+    coord
+        .execute_slot_market_making(
+            &InventoryState::default(),
+            &book(0.45, 0.46, 0.54, 0.55),
+            StrategyQuotes::default(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .await;
+
+    let mut cleared_yes = false;
+    let mut cleared_no = false;
+    for _ in 0..2 {
+        match timeout(Duration::from_millis(100), er.recv()).await {
+            Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+                assert_eq!(reason, CancelReason::StaleData);
+                if slot == OrderSlot::YES_BUY {
+                    cleared_yes = true;
+                }
+                if slot == OrderSlot::NO_BUY {
+                    cleared_no = true;
+                }
+            }
+            other => panic!("expected stale ClearTarget under long source block, got {:?}", other),
+        }
+    }
+    assert!(cleared_yes && cleared_no);
 }
 
 #[tokio::test]

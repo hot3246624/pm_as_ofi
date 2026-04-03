@@ -28,6 +28,8 @@ const GLFT_SOURCE_RECOVERY_FLAP_IGNORE_MS: u64 = 800;
 const GLFT_SOURCE_RECOVERY_RESET_SHADOW_MS: u64 = 4_500;
 const GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS: u64 = 1_800;
 const GLFT_SOURCE_RECOVERY_SETTLE_MAX_MS: u64 = 12_000;
+const GLFT_SOURCE_BLOCK_RETAIN_HOLD_MS: u64 = 2_500;
+const GLFT_SOURCE_BLOCK_RETAIN_HOLD_BINANCE_MS: u64 = 1_500;
 const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
 const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
 const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
@@ -1181,6 +1183,37 @@ impl StrategyCoordinator {
 
     pub(super) fn glft_is_tradeable_now(&self) -> bool {
         self.glft_is_tradeable_snapshot(*self.glft_rx.borrow())
+    }
+
+    pub(super) fn glft_should_retain_on_short_source_block(
+        &self,
+        glft: crate::polymarket::glft::GlftSignalSnapshot,
+        now: Instant,
+    ) -> bool {
+        if self.cfg.strategy != StrategyKind::GlftMm || self.glft_is_tradeable_snapshot(glft) {
+            return false;
+        }
+        if !matches!(
+            glft.quote_regime,
+            crate::polymarket::glft::QuoteRegime::Blocked
+        ) {
+            return false;
+        }
+        let source_blocked =
+            glft.readiness_blockers.await_binance || glft.readiness_blockers.await_poly_book;
+        if !source_blocked {
+            return false;
+        }
+        let Some(since) = self.glft_source_blocked_since else {
+            return false;
+        };
+        let blocked_for = now.saturating_duration_since(since);
+        let hold_ms = if glft.readiness_blockers.await_binance {
+            GLFT_SOURCE_BLOCK_RETAIN_HOLD_BINANCE_MS
+        } else {
+            GLFT_SOURCE_BLOCK_RETAIN_HOLD_MS
+        };
+        blocked_for < Duration::from_millis(hold_ms)
     }
 
     pub(super) fn note_cancel_reason(&mut self, reason: CancelReason) {

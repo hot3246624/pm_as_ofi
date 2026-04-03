@@ -67,8 +67,14 @@ impl StrategyCoordinator {
         if self.cfg.strategy == StrategyKind::GlftMm {
             let glft = *self.glft_rx.borrow();
             if !self.glft_is_tradeable_snapshot(glft) {
-                if active {
+                if active
+                    && !self.glft_should_retain_on_short_source_block(glft, Instant::now())
+                {
                     self.clear_slot_target(slot, CancelReason::StaleData).await;
+                } else if active {
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    self.stats.shadow_suppressed_updates =
+                        self.stats.shadow_suppressed_updates.saturating_add(1);
                 }
                 return;
             }

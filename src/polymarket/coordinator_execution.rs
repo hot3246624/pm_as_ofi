@@ -337,9 +337,17 @@ impl StrategyCoordinator {
         if self.cfg.strategy == StrategyKind::GlftMm {
             let glft = *self.glft_rx.borrow();
             if !self.glft_is_tradeable_snapshot(glft) {
+                let retain_short_source_block = self
+                    .glft_should_retain_on_short_source_block(glft, std::time::Instant::now());
                 for slot in OrderSlot::ALL {
                     if self.slot_target_active(slot) {
-                        self.clear_slot_target(slot, CancelReason::StaleData).await;
+                        if retain_short_source_block {
+                            self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                            self.stats.shadow_suppressed_updates =
+                                self.stats.shadow_suppressed_updates.saturating_add(1);
+                        } else {
+                            self.clear_slot_target(slot, CancelReason::StaleData).await;
+                        }
                     }
                 }
                 return;
