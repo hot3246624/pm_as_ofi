@@ -873,12 +873,47 @@ pub struct StrategyCoordinator {
     kill_rx: mpsc::Receiver<KillSwitchSignal>,
     /// Execution-layer feedback channel used for adaptive maker safety.
     feedback_rx: mpsc::Receiver<ExecutionFeedback>,
+    /// Optional low-overhead observability snapshot channel for round validation.
+    obs_tx: Option<watch::Sender<CoordinatorObsSnapshot>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct MakerFriction {
     extra_safety_ticks: u8,
     last_cross_reject_ts: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CoordinatorObsSnapshot {
+    pub ticks: u64,
+    pub placed: u64,
+    pub publish_events: u64,
+    pub replace_events: u64,
+    pub cancel_events: u64,
+    pub publish_from_initial: u64,
+    pub publish_from_policy: u64,
+    pub publish_from_safety: u64,
+    pub publish_from_recovery: u64,
+    pub policy_transition_events: u64,
+    pub policy_noop_ticks: u64,
+    pub cancel_reprice: u64,
+    pub cancel_toxic: u64,
+    pub cancel_stale: u64,
+    pub cancel_inv: u64,
+    pub ofi_heat_events: u64,
+    pub ofi_toxic_events: u64,
+    pub ofi_kill_events: u64,
+    pub ofi_blocked_ticks: u64,
+    pub reference_blocked_ms: u64,
+    pub blocked_due_source: u64,
+    pub blocked_due_divergence: u64,
+    pub retain_hits: u64,
+    pub soft_reset_count: u64,
+    pub full_reset_count: u64,
+    pub shadow_suppressed_updates: u64,
+    pub publish_budget_suppressed: u64,
+    pub forced_realign_count: u64,
+    pub forced_realign_hard_count: u64,
 }
 
 impl StrategyCoordinator {
@@ -1004,7 +1039,13 @@ impl StrategyCoordinator {
             om_tx,
             kill_rx,
             feedback_rx,
+            obs_tx: None,
         }
+    }
+
+    pub fn with_obs_tx(mut self, obs_tx: watch::Sender<CoordinatorObsSnapshot>) -> Self {
+        self.obs_tx = Some(obs_tx);
+        self
     }
 
     pub(crate) fn cfg(&self) -> &CoordinatorConfig {
@@ -1023,6 +1064,7 @@ impl StrategyCoordinator {
             self.cfg.dry_run,
         );
         let mut watchdog = tokio::time::interval(Duration::from_millis(self.cfg.watchdog_tick_ms));
+        self.emit_obs_snapshot();
 
         loop {
             tokio::select! {
@@ -1044,11 +1086,13 @@ impl StrategyCoordinator {
                     );
                     // Re-use the full tick() logic which reads latest OFI watch state.
                     self.tick().await;
+                    self.emit_obs_snapshot();
                 }
 
                 Some(feedback) = self.feedback_rx.recv() => {
                     self.handle_execution_feedback(feedback);
                     self.tick().await;
+                    self.emit_obs_snapshot();
                 }
 
                 // Market data tick (watch/coalescing)
@@ -1059,11 +1103,13 @@ impl StrategyCoordinator {
                     let msg = self.md_rx.borrow().clone();
                     self.handle_market_data(msg).await;
                     self.tick().await;
+                    self.emit_obs_snapshot();
                 }
 
                 // Watchdog tick: enforce stale/toxic risk checks even when market WS is temporarily silent.
                 _ = watchdog.tick() => {
                     self.tick().await;
+                    self.emit_obs_snapshot();
                 }
             }
         }
@@ -1100,7 +1146,46 @@ impl StrategyCoordinator {
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
+        self.emit_obs_snapshot();
         self.emit_live_observability_tags();
+    }
+
+    fn emit_obs_snapshot(&self) {
+        let Some(obs_tx) = &self.obs_tx else {
+            return;
+        };
+        let snapshot = CoordinatorObsSnapshot {
+            ticks: self.stats.ticks,
+            placed: self.stats.placed,
+            publish_events: self.stats.publish_events,
+            replace_events: self.stats.replace_events,
+            cancel_events: self.stats.cancel_events,
+            publish_from_initial: self.stats.publish_from_initial,
+            publish_from_policy: self.stats.publish_from_policy,
+            publish_from_safety: self.stats.publish_from_safety,
+            publish_from_recovery: self.stats.publish_from_recovery,
+            policy_transition_events: self.stats.policy_transition_events,
+            policy_noop_ticks: self.stats.policy_noop_ticks,
+            cancel_reprice: self.stats.cancel_reprice,
+            cancel_toxic: self.stats.cancel_toxic,
+            cancel_stale: self.stats.cancel_stale,
+            cancel_inv: self.stats.cancel_inv,
+            ofi_heat_events: self.stats.ofi_heat_events,
+            ofi_toxic_events: self.stats.ofi_toxic_events,
+            ofi_kill_events: self.stats.ofi_kill_events,
+            ofi_blocked_ticks: self.stats.ofi_blocked_ticks,
+            reference_blocked_ms: self.stats.reference_blocked_ms,
+            blocked_due_source: self.stats.blocked_due_source,
+            blocked_due_divergence: self.stats.blocked_due_divergence,
+            retain_hits: self.stats.retain_hits,
+            soft_reset_count: self.stats.soft_reset_count,
+            full_reset_count: self.stats.full_reset_count,
+            shadow_suppressed_updates: self.stats.shadow_suppressed_updates,
+            publish_budget_suppressed: self.stats.publish_budget_suppressed,
+            forced_realign_count: self.stats.forced_realign_count,
+            forced_realign_hard_count: self.stats.forced_realign_hard_count,
+        };
+        let _ = obs_tx.send(snapshot);
     }
 
     // ═════════════════════════════════════════════════

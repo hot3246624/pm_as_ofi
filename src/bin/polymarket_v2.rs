@@ -8,11 +8,15 @@
 use futures::{SinkExt, StreamExt};
 use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
+use std::fs::{self, OpenOptions};
+use std::io::{BufWriter, Write};
+use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
@@ -22,7 +26,9 @@ use pm_as_ofi::polymarket::claims::{
     execute_market_merge, maybe_auto_claim, run_auto_claim_once, scan_claimable_positions,
     scan_mergeable_full_set_usdc, AutoClaimConfig, AutoClaimState,
 };
-use pm_as_ofi::polymarket::coordinator::{CoordinatorConfig, StrategyCoordinator};
+use pm_as_ofi::polymarket::coordinator::{
+    CoordinatorConfig, CoordinatorObsSnapshot, StrategyCoordinator,
+};
 use pm_as_ofi::polymarket::executor::{init_clob_client, AuthClient, Executor, ExecutorConfig};
 use pm_as_ofi::polymarket::glft::{GlftRuntimeConfig, GlftSignalEngine, GlftSignalSnapshot};
 use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
@@ -244,6 +250,695 @@ impl RoundClaimRunnerConfig {
             .collect::<Vec<_>>()
             .join(",")
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoundValidationSummary {
+    market_slug: String,
+    strategy: String,
+    round_start_ts_ms: i64,
+    round_end_ts_ms: i64,
+    partial_round: bool,
+    buy_fill_count: u64,
+    sell_fill_count: u64,
+    yes_bought_qty: f64,
+    yes_sold_qty: f64,
+    no_bought_qty: f64,
+    no_sold_qty: f64,
+    avg_yes_buy: Option<f64>,
+    avg_yes_sell: Option<f64>,
+    avg_no_buy: Option<f64>,
+    avg_no_sell: Option<f64>,
+    max_abs_net_diff: f64,
+    time_weighted_abs_net_diff: f64,
+    max_inventory_value: f64,
+    time_in_guarded_ms: u64,
+    time_in_blocked_ms: u64,
+    paired_locked_pnl_end: Option<f64>,
+    worst_case_outcome_pnl_end: Option<f64>,
+    realized_cash_pnl: f64,
+    mark_to_mid_pnl_end: Option<f64>,
+    fees_paid_est: Option<f64>,
+    maker_rebate_est: Option<f64>,
+    replace_events: u64,
+    cancel_events: u64,
+    publish_events: u64,
+    mean_entry_edge_vs_trusted_mid: Option<f64>,
+    mean_fill_slippage_vs_posted: Option<f64>,
+    fill_to_adverse_move_3s: Option<f64>,
+    fill_to_adverse_move_10s: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoundValidationAggregate {
+    rounds_total: usize,
+    rounds_partial: usize,
+    rounds_full: usize,
+    total_realized_cash_pnl: f64,
+    total_mark_to_mid_pnl_end: f64,
+    median_round_pnl: Option<f64>,
+    mean_fill_to_adverse_move_3s: Option<f64>,
+    mean_fill_to_adverse_move_10s: Option<f64>,
+    mean_max_abs_net_diff: Option<f64>,
+    mean_time_weighted_abs_net_diff: Option<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RoundValidationAggregateReport {
+    generated_at_ts_ms: i64,
+    strategy: String,
+    market_slug: String,
+    all: RoundValidationAggregate,
+    last_5: Option<RoundValidationAggregate>,
+    last_20: Option<RoundValidationAggregate>,
+    last_50: Option<RoundValidationAggregate>,
+}
+
+#[derive(Debug, Clone)]
+struct FillTrace {
+    side: Side,
+    direction: TradeDirection,
+    size: f64,
+    price: f64,
+    ts: Instant,
+    trusted_mid_yes_at_fill: Option<f64>,
+}
+
+#[derive(Debug)]
+struct RoundValidationCollector {
+    market_slug: String,
+    strategy: String,
+    round_start_ts_ms: i64,
+    start_instant: Instant,
+    trusted_mid_series: Vec<(Instant, f64)>,
+    fills: HashMap<String, FillTrace>,
+    seen_matched: HashSet<String>,
+    last_book_yes_mid: Option<f64>,
+    last_book_no_mid: Option<f64>,
+    last_inv: InventoryState,
+    last_inv_ts: Instant,
+    max_abs_net_diff: f64,
+    tw_abs_net_diff_accum: f64,
+    max_inventory_value: f64,
+    last_regime: pm_as_ofi::polymarket::glft::QuoteRegime,
+    last_regime_ts: Instant,
+    time_in_guarded_ms: u64,
+    time_in_blocked_ms: u64,
+}
+
+impl RoundValidationCollector {
+    fn new(market_slug: String, strategy: String, round_start_ts_ms: i64, now: Instant) -> Self {
+        Self {
+            market_slug,
+            strategy,
+            round_start_ts_ms,
+            start_instant: now,
+            trusted_mid_series: Vec::new(),
+            fills: HashMap::new(),
+            seen_matched: HashSet::new(),
+            last_book_yes_mid: None,
+            last_book_no_mid: None,
+            last_inv: InventoryState::default(),
+            last_inv_ts: now,
+            max_abs_net_diff: 0.0,
+            tw_abs_net_diff_accum: 0.0,
+            max_inventory_value: 0.0,
+            last_regime: pm_as_ofi::polymarket::glft::QuoteRegime::Blocked,
+            last_regime_ts: now,
+            time_in_guarded_ms: 0,
+            time_in_blocked_ms: 0,
+        }
+    }
+
+    fn fill_key(fill: &FillEvent) -> String {
+        format!(
+            "{}|{:?}|{:?}|{:.6}|{:.6}",
+            fill.order_id, fill.side, fill.direction, fill.filled_size, fill.price
+        )
+    }
+
+    fn note_fill(&mut self, fill: FillEvent, now: Instant) {
+        let key = Self::fill_key(&fill);
+        match fill.status {
+            FillStatus::Matched => {
+                self.seen_matched.insert(key.clone());
+            }
+            FillStatus::Confirmed => {
+                if self.seen_matched.contains(&key) {
+                    return;
+                }
+            }
+            FillStatus::Failed => {
+                self.fills.remove(&key);
+                return;
+            }
+        }
+
+        let trusted_mid_yes_at_fill = self.trusted_mid_at_or_before(now);
+        self.fills.entry(key).or_insert_with(|| FillTrace {
+            side: fill.side,
+            direction: fill.direction,
+            size: fill.filled_size.max(0.0),
+            price: fill.price,
+            ts: fill.ts,
+            trusted_mid_yes_at_fill,
+        });
+    }
+
+    fn note_inventory(&mut self, inv: InventoryState, now: Instant) {
+        let dt = now
+            .saturating_duration_since(self.last_inv_ts)
+            .as_secs_f64()
+            .max(0.0);
+        self.tw_abs_net_diff_accum += self.last_inv.net_diff.abs() * dt;
+        self.last_inv_ts = now;
+        self.last_inv = inv;
+        self.max_abs_net_diff = self.max_abs_net_diff.max(inv.net_diff.abs());
+        let inv_value =
+            (inv.yes_qty * inv.yes_avg_cost).max(0.0) + (inv.no_qty * inv.no_avg_cost).max(0.0);
+        self.max_inventory_value = self.max_inventory_value.max(inv_value);
+    }
+
+    fn note_glft(&mut self, snap: GlftSignalSnapshot, now: Instant) {
+        if snap.trusted_mid.is_finite() {
+            self.trusted_mid_series.push((now, snap.trusted_mid));
+        }
+        let dt_ms = now
+            .saturating_duration_since(self.last_regime_ts)
+            .as_millis() as u64;
+        match self.last_regime {
+            pm_as_ofi::polymarket::glft::QuoteRegime::Guarded => {
+                self.time_in_guarded_ms = self.time_in_guarded_ms.saturating_add(dt_ms);
+            }
+            pm_as_ofi::polymarket::glft::QuoteRegime::Blocked => {
+                self.time_in_blocked_ms = self.time_in_blocked_ms.saturating_add(dt_ms);
+            }
+            _ => {}
+        }
+        self.last_regime = snap.quote_regime;
+        self.last_regime_ts = now;
+    }
+
+    fn note_market_data(&mut self, msg: MarketDataMsg) {
+        if let MarketDataMsg::BookTick {
+            yes_bid,
+            yes_ask,
+            no_bid,
+            no_ask,
+            ..
+        } = msg
+        {
+            if yes_bid > 0.0 && yes_ask > 0.0 {
+                self.last_book_yes_mid = Some((yes_bid + yes_ask) * 0.5);
+            }
+            if no_bid > 0.0 && no_ask > 0.0 {
+                self.last_book_no_mid = Some((no_bid + no_ask) * 0.5);
+            }
+        }
+    }
+
+    fn trusted_mid_at_or_before(&self, t: Instant) -> Option<f64> {
+        self.trusted_mid_series
+            .iter()
+            .rev()
+            .find_map(|(ts, v)| if *ts <= t { Some(*v) } else { None })
+            .or_else(|| self.trusted_mid_series.first().map(|(_, v)| *v))
+    }
+
+    fn trusted_mid_at_or_after(&self, t: Instant) -> Option<f64> {
+        self.trusted_mid_series
+            .iter()
+            .find_map(|(ts, v)| if *ts >= t { Some(*v) } else { None })
+            .or_else(|| self.trusted_mid_series.last().map(|(_, v)| *v))
+    }
+
+    fn finalize(
+        mut self,
+        partial_round: bool,
+        coord_obs: CoordinatorObsSnapshot,
+        end_inv: InventoryState,
+        end_ts_ms: i64,
+        now: Instant,
+    ) -> RoundValidationSummary {
+        self.note_inventory(end_inv, now);
+        let dt_ms = now
+            .saturating_duration_since(self.last_regime_ts)
+            .as_millis() as u64;
+        match self.last_regime {
+            pm_as_ofi::polymarket::glft::QuoteRegime::Guarded => {
+                self.time_in_guarded_ms = self.time_in_guarded_ms.saturating_add(dt_ms);
+            }
+            pm_as_ofi::polymarket::glft::QuoteRegime::Blocked => {
+                self.time_in_blocked_ms = self.time_in_blocked_ms.saturating_add(dt_ms);
+            }
+            _ => {}
+        }
+
+        let elapsed_secs = now
+            .saturating_duration_since(self.start_instant)
+            .as_secs_f64()
+            .max(1e-9);
+        let time_weighted_abs_net_diff = self.tw_abs_net_diff_accum / elapsed_secs;
+
+        let mut buy_fill_count = 0_u64;
+        let mut sell_fill_count = 0_u64;
+        let (mut yes_buy_qty, mut yes_sell_qty, mut no_buy_qty, mut no_sell_qty) =
+            (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        let (mut yes_buy_cost, mut yes_sell_notional, mut no_buy_cost, mut no_sell_notional) =
+            (0.0_f64, 0.0_f64, 0.0_f64, 0.0_f64);
+        let mut realized_cash_pnl = 0.0_f64;
+
+        let mut edge_weighted_sum = 0.0_f64;
+        let mut edge_weight = 0.0_f64;
+        let mut move3_weighted_sum = 0.0_f64;
+        let mut move3_weight = 0.0_f64;
+        let mut move10_weighted_sum = 0.0_f64;
+        let mut move10_weight = 0.0_f64;
+
+        for fill in self.fills.values() {
+            if fill.size <= 0.0 || !fill.price.is_finite() {
+                continue;
+            }
+            let side_trusted_at_fill =
+                fill.trusted_mid_yes_at_fill.map(|yes_mid| match fill.side {
+                    Side::Yes => yes_mid,
+                    Side::No => 1.0 - yes_mid,
+                });
+            match (fill.side, fill.direction) {
+                (Side::Yes, TradeDirection::Buy) => {
+                    buy_fill_count = buy_fill_count.saturating_add(1);
+                    yes_buy_qty += fill.size;
+                    yes_buy_cost += fill.size * fill.price;
+                    realized_cash_pnl -= fill.size * fill.price;
+                    if let Some(side_trusted) = side_trusted_at_fill {
+                        edge_weighted_sum += (side_trusted - fill.price) * fill.size;
+                        edge_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(3))
+                    {
+                        move3_weighted_sum += (fut_yes_mid - fill.price) * fill.size;
+                        move3_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(10))
+                    {
+                        move10_weighted_sum += (fut_yes_mid - fill.price) * fill.size;
+                        move10_weight += fill.size;
+                    }
+                }
+                (Side::Yes, TradeDirection::Sell) => {
+                    sell_fill_count = sell_fill_count.saturating_add(1);
+                    yes_sell_qty += fill.size;
+                    yes_sell_notional += fill.size * fill.price;
+                    realized_cash_pnl += fill.size * fill.price;
+                    if let Some(side_trusted) = side_trusted_at_fill {
+                        edge_weighted_sum += (fill.price - side_trusted) * fill.size;
+                        edge_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(3))
+                    {
+                        move3_weighted_sum += (fill.price - fut_yes_mid) * fill.size;
+                        move3_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(10))
+                    {
+                        move10_weighted_sum += (fill.price - fut_yes_mid) * fill.size;
+                        move10_weight += fill.size;
+                    }
+                }
+                (Side::No, TradeDirection::Buy) => {
+                    buy_fill_count = buy_fill_count.saturating_add(1);
+                    no_buy_qty += fill.size;
+                    no_buy_cost += fill.size * fill.price;
+                    realized_cash_pnl -= fill.size * fill.price;
+                    if let Some(side_trusted) = side_trusted_at_fill {
+                        edge_weighted_sum += (side_trusted - fill.price) * fill.size;
+                        edge_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(3))
+                    {
+                        let fut_no_mid = 1.0 - fut_yes_mid;
+                        move3_weighted_sum += (fut_no_mid - fill.price) * fill.size;
+                        move3_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(10))
+                    {
+                        let fut_no_mid = 1.0 - fut_yes_mid;
+                        move10_weighted_sum += (fut_no_mid - fill.price) * fill.size;
+                        move10_weight += fill.size;
+                    }
+                }
+                (Side::No, TradeDirection::Sell) => {
+                    sell_fill_count = sell_fill_count.saturating_add(1);
+                    no_sell_qty += fill.size;
+                    no_sell_notional += fill.size * fill.price;
+                    realized_cash_pnl += fill.size * fill.price;
+                    if let Some(side_trusted) = side_trusted_at_fill {
+                        edge_weighted_sum += (fill.price - side_trusted) * fill.size;
+                        edge_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(3))
+                    {
+                        let fut_no_mid = 1.0 - fut_yes_mid;
+                        move3_weighted_sum += (fill.price - fut_no_mid) * fill.size;
+                        move3_weight += fill.size;
+                    }
+                    if let Some(fut_yes_mid) =
+                        self.trusted_mid_at_or_after(fill.ts + Duration::from_secs(10))
+                    {
+                        let fut_no_mid = 1.0 - fut_yes_mid;
+                        move10_weighted_sum += (fill.price - fut_no_mid) * fill.size;
+                        move10_weight += fill.size;
+                    }
+                }
+            }
+        }
+
+        let avg_yes_buy = if yes_buy_qty > 0.0 {
+            Some(yes_buy_cost / yes_buy_qty)
+        } else {
+            None
+        };
+        let avg_yes_sell = if yes_sell_qty > 0.0 {
+            Some(yes_sell_notional / yes_sell_qty)
+        } else {
+            None
+        };
+        let avg_no_buy = if no_buy_qty > 0.0 {
+            Some(no_buy_cost / no_buy_qty)
+        } else {
+            None
+        };
+        let avg_no_sell = if no_sell_qty > 0.0 {
+            Some(no_sell_notional / no_sell_qty)
+        } else {
+            None
+        };
+
+        let total_spent = end_inv.yes_qty.max(0.0) * end_inv.yes_avg_cost.max(0.0)
+            + end_inv.no_qty.max(0.0) * end_inv.no_avg_cost.max(0.0);
+        let paired_qty = end_inv.yes_qty.min(end_inv.no_qty).max(0.0);
+        let pair_cost = if end_inv.yes_qty > 0.0 && end_inv.no_qty > 0.0 {
+            end_inv.yes_avg_cost + end_inv.no_avg_cost
+        } else {
+            0.0
+        };
+        let paired_locked_pnl_end = if paired_qty > 0.0 {
+            Some(paired_qty * (1.0 - pair_cost))
+        } else {
+            None
+        };
+        let worst_case_outcome_pnl_end = if total_spent > 0.0 {
+            Some(end_inv.yes_qty.min(end_inv.no_qty) - total_spent)
+        } else {
+            None
+        };
+        let mark_to_mid_pnl_end = match (self.last_book_yes_mid, self.last_book_no_mid) {
+            (Some(yes_mid), Some(no_mid)) => Some(
+                end_inv.yes_qty * (yes_mid - end_inv.yes_avg_cost)
+                    + end_inv.no_qty * (no_mid - end_inv.no_avg_cost),
+            ),
+            _ => None,
+        };
+
+        RoundValidationSummary {
+            market_slug: self.market_slug,
+            strategy: self.strategy,
+            round_start_ts_ms: self.round_start_ts_ms,
+            round_end_ts_ms: end_ts_ms,
+            partial_round,
+            buy_fill_count,
+            sell_fill_count,
+            yes_bought_qty: yes_buy_qty,
+            yes_sold_qty: yes_sell_qty,
+            no_bought_qty: no_buy_qty,
+            no_sold_qty: no_sell_qty,
+            avg_yes_buy,
+            avg_yes_sell,
+            avg_no_buy,
+            avg_no_sell,
+            max_abs_net_diff: self.max_abs_net_diff,
+            time_weighted_abs_net_diff,
+            max_inventory_value: self.max_inventory_value,
+            time_in_guarded_ms: self.time_in_guarded_ms,
+            time_in_blocked_ms: self.time_in_blocked_ms,
+            paired_locked_pnl_end,
+            worst_case_outcome_pnl_end,
+            realized_cash_pnl,
+            mark_to_mid_pnl_end,
+            fees_paid_est: None,
+            maker_rebate_est: None,
+            replace_events: coord_obs.replace_events,
+            cancel_events: coord_obs.cancel_events,
+            publish_events: coord_obs.publish_events,
+            mean_entry_edge_vs_trusted_mid: if edge_weight > 0.0 {
+                Some(edge_weighted_sum / edge_weight)
+            } else {
+                None
+            },
+            mean_fill_slippage_vs_posted: None,
+            fill_to_adverse_move_3s: if move3_weight > 0.0 {
+                Some(move3_weighted_sum / move3_weight)
+            } else {
+                None
+            },
+            fill_to_adverse_move_10s: if move10_weight > 0.0 {
+                Some(move10_weighted_sum / move10_weight)
+            } else {
+                None
+            },
+        }
+    }
+}
+
+async fn run_round_validation_collector(
+    market_slug: String,
+    strategy: String,
+    round_start_ts_ms: i64,
+    mut fill_rx: mpsc::Receiver<FillEvent>,
+    mut inv_rx: watch::Receiver<InventoryState>,
+    mut glft_rx: watch::Receiver<GlftSignalSnapshot>,
+    mut md_rx: watch::Receiver<MarketDataMsg>,
+    coord_obs_rx: watch::Receiver<CoordinatorObsSnapshot>,
+    mut stop_rx: oneshot::Receiver<()>,
+    partial_round: bool,
+) -> RoundValidationSummary {
+    let start = Instant::now();
+    let mut collector =
+        RoundValidationCollector::new(market_slug, strategy, round_start_ts_ms, start);
+    collector.note_inventory(*inv_rx.borrow(), start);
+    collector.note_glft(*glft_rx.borrow(), start);
+    collector.note_market_data(md_rx.borrow().clone());
+
+    loop {
+        tokio::select! {
+            _ = &mut stop_rx => {
+                break;
+            }
+            Some(fill) = fill_rx.recv() => {
+                collector.note_fill(fill, Instant::now());
+            }
+            changed = inv_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                collector.note_inventory(*inv_rx.borrow(), Instant::now());
+            }
+            changed = glft_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                collector.note_glft(*glft_rx.borrow(), Instant::now());
+            }
+            changed = md_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+                collector.note_market_data(md_rx.borrow().clone());
+            }
+        }
+    }
+
+    collector.finalize(
+        partial_round,
+        *coord_obs_rx.borrow(),
+        *inv_rx.borrow(),
+        unix_now_ms(),
+        Instant::now(),
+    )
+}
+
+fn unix_now_ms() -> i64 {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    now.as_millis() as i64
+}
+
+fn round_validation_jsonl_path() -> PathBuf {
+    PathBuf::from("logs/round_validation_glft_mm.jsonl")
+}
+
+fn round_validation_aggregate_path() -> PathBuf {
+    PathBuf::from("logs/round_validation_aggregate.json")
+}
+
+fn append_round_validation_summary(summary: &RoundValidationSummary) -> anyhow::Result<()> {
+    let path = round_validation_jsonl_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let file = OpenOptions::new().create(true).append(true).open(path)?;
+    let mut writer = BufWriter::new(file);
+    writer.write_all(serde_json::to_string(summary)?.as_bytes())?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+    Ok(())
+}
+
+fn load_round_validation_summaries() -> anyhow::Result<Vec<RoundValidationSummary>> {
+    let path = round_validation_jsonl_path();
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text = fs::read_to_string(path)?;
+    Ok(text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<RoundValidationSummary>(line).ok())
+        .collect())
+}
+
+fn mean_opt(values: impl Iterator<Item = Option<f64>>) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut n = 0_u64;
+    for v in values.flatten() {
+        if v.is_finite() {
+            sum += v;
+            n = n.saturating_add(1);
+        }
+    }
+    if n > 0 {
+        Some(sum / n as f64)
+    } else {
+        None
+    }
+}
+
+fn median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.total_cmp(b));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(values[mid])
+    } else {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    }
+}
+
+fn aggregate_round_validation(entries: &[RoundValidationSummary]) -> RoundValidationAggregate {
+    let rounds_total = entries.len();
+    let rounds_partial = entries.iter().filter(|s| s.partial_round).count();
+    let rounds_full = rounds_total.saturating_sub(rounds_partial);
+    let total_realized_cash_pnl = entries.iter().map(|s| s.realized_cash_pnl).sum::<f64>();
+    let total_mark_to_mid_pnl_end = entries
+        .iter()
+        .map(|s| s.mark_to_mid_pnl_end.unwrap_or(0.0))
+        .sum::<f64>();
+    let median_round_pnl = median(
+        entries
+            .iter()
+            .map(|s| s.realized_cash_pnl + s.mark_to_mid_pnl_end.unwrap_or(0.0))
+            .collect(),
+    );
+    let mean_fill_to_adverse_move_3s = mean_opt(entries.iter().map(|s| s.fill_to_adverse_move_3s));
+    let mean_fill_to_adverse_move_10s =
+        mean_opt(entries.iter().map(|s| s.fill_to_adverse_move_10s));
+    let mean_max_abs_net_diff = if rounds_total > 0 {
+        Some(entries.iter().map(|s| s.max_abs_net_diff).sum::<f64>() / rounds_total as f64)
+    } else {
+        None
+    };
+    let mean_time_weighted_abs_net_diff = if rounds_total > 0 {
+        Some(
+            entries
+                .iter()
+                .map(|s| s.time_weighted_abs_net_diff)
+                .sum::<f64>()
+                / rounds_total as f64,
+        )
+    } else {
+        None
+    };
+    RoundValidationAggregate {
+        rounds_total,
+        rounds_partial,
+        rounds_full,
+        total_realized_cash_pnl,
+        total_mark_to_mid_pnl_end,
+        median_round_pnl,
+        mean_fill_to_adverse_move_3s,
+        mean_fill_to_adverse_move_10s,
+        mean_max_abs_net_diff,
+        mean_time_weighted_abs_net_diff,
+    }
+}
+
+fn update_round_validation_report(strategy: &str, market_slug: &str) -> anyhow::Result<()> {
+    let mut entries = load_round_validation_summaries()?;
+    entries.retain(|s| s.strategy == strategy && s.market_slug == market_slug);
+    let all = aggregate_round_validation(&entries);
+    let last_5 = if entries.len() >= 5 {
+        Some(aggregate_round_validation(&entries[entries.len() - 5..]))
+    } else {
+        None
+    };
+    let last_20 = if entries.len() >= 20 {
+        Some(aggregate_round_validation(&entries[entries.len() - 20..]))
+    } else {
+        None
+    };
+    let last_50 = if entries.len() >= 50 {
+        Some(aggregate_round_validation(&entries[entries.len() - 50..]))
+    } else {
+        None
+    };
+
+    let report = RoundValidationAggregateReport {
+        generated_at_ts_ms: unix_now_ms(),
+        strategy: strategy.to_string(),
+        market_slug: market_slug.to_string(),
+        all,
+        last_5,
+        last_20,
+        last_50,
+    };
+    let path = round_validation_aggregate_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(&report)?)?;
+    if report.all.rounds_full > 0 && report.all.rounds_full % 5 == 0 {
+        info!(
+            "📊 EdgeAggregate[{} rounds] strategy={} market={} pnl(realized/mtm)={:.4}/{:.4} median_round_pnl={:.4} adverse(3s/10s)={:.5}/{:.5}",
+            report.all.rounds_full,
+            report.strategy,
+            report.market_slug,
+            report.all.total_realized_cash_pnl,
+            report.all.total_mark_to_mid_pnl_end,
+            report.all.median_round_pnl.unwrap_or(0.0),
+            report.all.mean_fill_to_adverse_move_3s.unwrap_or(0.0),
+            report.all.mean_fill_to_adverse_move_10s.unwrap_or(0.0),
+        );
+    }
+    Ok(())
 }
 
 impl CapitalRecycleConfig {
@@ -2810,20 +3505,33 @@ async fn main() -> anyhow::Result<()> {
 
         // P0-2: Track all session spawns for cleanup on rotation
         let mut session_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+        let round_start_ts_ms = unix_now_ms();
+        let enable_round_validation = !dry_run
+            && coord_cfg.strategy == StrategyKind::GlftMm
+            && slug.starts_with("btc-updown-5m");
 
         // Fill fanout: UserWS → fill_tx → splitter → (InventoryManager, Executor)
         let (fill_tx, mut fill_rx) = mpsc::channel::<FillEvent>(64);
         let (inv_event_tx, inv_event_rx) = mpsc::channel::<InventoryEvent>(64);
         let (exec_fill_tx, exec_fill_rx) = mpsc::channel::<FillEvent>(64);
+        let (validation_fill_tx, validation_fill_rx) = mpsc::channel::<FillEvent>(256);
+        let validation_fill_tx_opt = if enable_round_validation {
+            Some(validation_fill_tx.clone())
+        } else {
+            None
+        };
         let inv_event_tx_split = inv_event_tx.clone();
 
-        // Splitter task: fan-out fills to both InventoryManager and Executor
+        // Splitter task: fan-out fills to InventoryManager, Executor, and round validator
         session_handles.push(tokio::spawn(async move {
             while let Some(fill) = fill_rx.recv().await {
                 let _ = inv_event_tx_split
                     .send(InventoryEvent::Fill(fill.clone()))
                     .await;
-                let _ = exec_fill_tx.send(fill).await;
+                let _ = exec_fill_tx.send(fill.clone()).await;
+                if let Some(tx) = validation_fill_tx_opt.as_ref() {
+                    let _ = tx.send(fill).await;
+                }
             }
         }));
 
@@ -2844,6 +3552,32 @@ async fn main() -> anyhow::Result<()> {
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
         let (glft_watch_tx, glft_watch_rx) = watch::channel(GlftSignalSnapshot::default());
+        let (coord_obs_tx, coord_obs_rx) = watch::channel(CoordinatorObsSnapshot::default());
+
+        let mut validation_stop_tx: Option<oneshot::Sender<()>> = None;
+        let mut validation_handle: Option<tokio::task::JoinHandle<RoundValidationSummary>> = None;
+        if enable_round_validation {
+            let inv_watch_rx_validation = inv_watch_rx.clone();
+            let glft_watch_rx_validation = glft_watch_rx.clone();
+            let coord_md_rx_validation = coord_md_rx.clone();
+            let coord_obs_rx_validation = coord_obs_rx.clone();
+            let (stop_tx, stop_rx) = oneshot::channel::<()>();
+            validation_stop_tx = Some(stop_tx);
+            let validation_market_slug = slug.clone();
+            let validation_strategy = coord_cfg.strategy.as_str().to_string();
+            validation_handle = Some(tokio::spawn(run_round_validation_collector(
+                validation_market_slug,
+                validation_strategy,
+                round_start_ts_ms,
+                validation_fill_rx,
+                inv_watch_rx_validation,
+                glft_watch_rx_validation,
+                coord_md_rx_validation,
+                coord_obs_rx_validation,
+                stop_rx,
+                false,
+            )));
+        }
 
         // Opt-4: Direct kill channel from OFI Engine → Coordinator.
         // Capacity 4: at most one kill per side (YES/NO) queued without blocking OFI heartbeat.
@@ -2885,7 +3619,8 @@ async fn main() -> anyhow::Result<()> {
             om_tx.clone(),
             kill_rx,
             feedback_rx,
-        );
+        )
+        .with_obs_tx(coord_obs_tx);
         session_handles.push(tokio::spawn(coord.run()));
 
         let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx);
@@ -3020,12 +3755,61 @@ async fn main() -> anyhow::Result<()> {
             }
         }
 
+        if let Some(stop_tx) = validation_stop_tx.take() {
+            let _ = stop_tx.send(());
+        }
+        let mut round_validation_summary: Option<RoundValidationSummary> = None;
+        if let Some(handle) = validation_handle.take() {
+            match tokio::time::timeout(Duration::from_secs(3), handle).await {
+                Ok(Ok(summary)) => {
+                    round_validation_summary = Some(summary);
+                }
+                Ok(Err(e)) => {
+                    warn!("⚠️ Round validation collector join failed: {:?}", e);
+                }
+                Err(_) => {
+                    warn!("⚠️ Round validation collector timed out");
+                }
+            }
+        }
+
         info!("🧹 Aborting remaining session tasks");
 
         // P0-2: Abort all session tasks to prevent leaking
         for h in session_handles {
             h.abort();
             let _ = h.await;
+        }
+
+        if let Some(mut summary) = round_validation_summary {
+            summary.partial_round = !market_settled;
+            if let Err(e) = append_round_validation_summary(&summary) {
+                warn!("⚠️ Failed to append round validation summary: {:?}", e);
+            } else {
+                info!(
+                    "📘 RoundValidation | market={} strategy={} partial={} fills(buy/sell)={}/{} net(max/tw)={:.2}/{:.2} pnl(realized/mtm)={:.4}/{:.4} pub(replace/cancel/publish)={}/{}/{}",
+                    summary.market_slug,
+                    summary.strategy,
+                    summary.partial_round,
+                    summary.buy_fill_count,
+                    summary.sell_fill_count,
+                    summary.max_abs_net_diff,
+                    summary.time_weighted_abs_net_diff,
+                    summary.realized_cash_pnl,
+                    summary.mark_to_mid_pnl_end.unwrap_or(0.0),
+                    summary.replace_events,
+                    summary.cancel_events,
+                    summary.publish_events,
+                );
+                if let Err(e) =
+                    update_round_validation_report(&summary.strategy, &summary.market_slug)
+                {
+                    warn!(
+                        "⚠️ Failed to refresh round validation aggregate report: {:?}",
+                        e
+                    );
+                }
+            }
         }
 
         let ended_condition = market_id.parse::<alloy::primitives::B256>().ok();
