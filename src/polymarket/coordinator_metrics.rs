@@ -75,7 +75,7 @@ impl StrategyCoordinator {
         })
     }
 
-    pub(super) fn open_edge_for_inventory(
+    pub(crate) fn open_edge_for_inventory(
         &self,
         inv: &InventoryState,
         metrics: &StrategyInventoryMetrics,

@@ -220,6 +220,7 @@ impl StrategyCoordinator {
     pub(super) fn full_reset_slot_publish_state(&mut self, slot: OrderSlot) {
         let idx = slot.index();
         self.soft_reset_slot_publish_state(slot);
+        self.clear_slot_recovery_publish_state(slot);
         self.slot_policy_candidates[idx] = None;
         self.slot_policy_candidate_since[idx] = None;
         self.slot_policy_states[idx] = None;

@@ -1,6 +1,6 @@
 # `pair_arb` 策略说明
 
-本文档描述当前仓库中最接近旧 `pair cost + A-S + OFI` 主线的策略：`pair_arb`。
+本文档描述当前仓库中旧 `pair cost + A-S + OFI` 主线的恢复版本：`pair_arb`。
 
 ## 1. 定位
 
@@ -11,6 +11,7 @@
 - 以库存偏置做风险控制
 
 它不是 `glft_mm` 那种外锚驱动的真双边做市，也不是 `gabagool_grid` 的 utility 模型。
+当前版本已经显式去掉 `pair_arb` 的方向对冲 overlay、尾盘强制去风险和市价对冲链路。
 
 如果你的目标是继续走“尽量把 YES/NO 的组合成本压到目标线以下”的老路线，当前仓库里最直接的入口就是 `pair_arb`。
 
@@ -35,14 +36,14 @@
 
 可以把 `pair_arb` 理解成：
 
-“围绕 `pair_target` 做一个带库存偏置的双边买入器。”
+“围绕 `pair_target` 做一个带库存偏置的双边买入器。只有当新的买入通过阈值检查，并且满足『改善已配对收益/对子成本』或『在可接受风险内增加正 open edge』时，才继续挂单。”
 
 它的核心不是预测方向，而是：
 - 尽量低价收集 YES
 - 尽量低价收集 NO
 - 让组合成本尽量不要超过目标值
 
-## 4. 每个 Tick 的动作流程
+## 4. 每个 Tick 的动作流程（当前实现）
 
 1. 读取 YES/NO 盘口
 2. 计算 `mid_yes` 和 `mid_no`
@@ -52,7 +53,11 @@
 6. 得到 `raw_yes/raw_no`
 7. 如果已有对侧库存，再用 `Inventory Cost Clamp` 把该侧买价钳住
 8. 再经过 strict maker clamp，确保不撞穿盘口
-9. 最终生成：
+9. 对每个候选买单执行 `simulate_buy`，只在通过以下语义门时保留：
+   - 优先：提升 `paired_locked_pnl` / 降低 `pair_cost` / 使 `pair_cost` 达到 `pair_target`
+   - 次级：`utility_delta >= bid_size * tick_size`
+   - 若是风险增加单：还要求 `open_edge` 比当前更好
+10. 最终生成：
    - `YesBuy`
    - `NoBuy`
 
@@ -91,13 +96,17 @@
 - `PM_AS_SKEW_FACTOR`
   - 库存偏置强度
 - `PM_AS_TIME_DECAY_K`
-  - 时间衰减强度，越接近收盘，库存偏置越激进
+  - 时间衰减强度
 
 共享层仍然会继续作用：
-- OFI kill-switch
+- OFI 风险抑制
 - outcome floor
 - stale gate
-- endgame
+
+不再作为 `pair_arb` 正常盘中主逻辑的机制：
+- 方向对冲 overlay（`Hedge`）
+- 尾盘强制市价去风险
+- maker sell alpha harvesting
 
 ## 7. 它和 `glft_mm` 的区别
 
@@ -113,16 +122,17 @@
 - 主目标是 GLFT reservation price + spread
 - `pair_cost` 不再是主驱动
 
-## 8. 当前结论
+## 8. 测试建议
 
-如果你想继续验证：
-- “老的 pair cost / A-S 哲学还能不能跑”
+推荐测试顺序：
+1. 先 `5m dry-run` 做机制冒烟（2-3 轮，主要看生命周期、挂撤和库存约束）
+2. 再 `15m` 做收益验证（10 轮起步，参数冻结）
 
-那当前应该选：
+推荐验证配置：
 - `PM_STRATEGY=pair_arb`
+- `POLYMARKET_MARKET_SLUG=btc-updown-15m`
+- `PM_BID_SIZE=5`
+- `PM_MAX_NET_DIFF=5`
+- `PM_DRY_RUN=true`（先）
 
-如果你想验证：
-- “外锚 + GLFT 的真双边做市”
-
-那才选：
-- `PM_STRATEGY=glft_mm`
+在 `15m` 验证完成前，不建议把 `glft_mm` 作为生产主线。

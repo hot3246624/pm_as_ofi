@@ -5,10 +5,10 @@
 ## 1. 当前结论
 
 当前推荐实盘主线是：
-- `PM_STRATEGY=glft_mm`
-- 仅运行在 `btc/eth/xrp/sol` 的 `*-updown-5m`
-- 正常盘中走真双边 maker
-- 共享尾盘、安全阀、回收和 claim，不再让尾盘逻辑承担主策略修复职责
+- `PM_STRATEGY=pair_arb`
+- 收益验证优先 `btc-updown-15m`（`5m` 仅用于机制冒烟）
+- 正常盘中走双边 maker buy-only
+- 去掉方向对冲 overlay 与尾盘强制市价去风险
 
 其它策略仍可运行，但不再作为默认实盘路线。
 
@@ -18,11 +18,11 @@
 负责回答一件事：
 - 当前 tick 想挂哪些 maker 单
 
-当前统一输出四个槽位：
+`pair_arb` 主线只输出两个买入槽位：
 - `YesBuy`
-- `YesSell`
 - `NoBuy`
-- `NoSell`
+
+执行层统一仍支持四槽位，这是共享基础设施能力，不代表当前主线策略会用到四槽位。
 
 ### 2.2 执行层
 负责回答另一件事：
@@ -39,14 +39,14 @@
 统一处理：
 - `PM_MAX_NET_DIFF`
 - outcome floor
-- OFI slot-level kill-switch
+- OFI 风险抑制
 - stale book
 - SoftClose / HardClose / Freeze
 - recycle / claim
 
 ## 3. 共享系统边界
 
-本手册不再承担 `glft_mm` 独立策略规格书的角色。  
+本手册不承担 `glft_mm` 独立策略规格书的角色。  
 `glft_mm` 的专属说明见：
 - `docs/STRATEGY_GLFT_MM_ZH.md`
 
@@ -59,7 +59,7 @@
 - `PM_PAIR_TARGET`：共享 outcome-floor 参考线
 
 说明：
-- `PM_MAX_PORTFOLIO_COST` 是旧 hedge / rescue 路径的兼容参数，不属于当前 `glft_mm` 正常盘中主逻辑。
+- `PM_MAX_PORTFOLIO_COST` 是旧 hedge / rescue 路径兼容参数，不属于当前 `pair_arb` 主路径。
 
 ### 3.2 共享执行治理
 
@@ -81,17 +81,16 @@
 - recycle / claim
 
 ## 4. OFI 的共享角色
-OFI 现在不是主策略本身，而是共享执行保护层。
+OFI 不是主策略本身，而是共享执行保护层。
 
-它做三件事：
-- 进入 `alpha_prob`
-- 进入 `spread_mult`
-- 作为 slot-level kill-switch 抑制最危险的槽位
+在 `pair_arb` 主线中它做两件事：
+- 抑制明显风险增加的买入意图
+- 作为毒性门控避免在坏流里继续加仓
 
 语义：
-- `YES` 买压强：优先抑制 `YesSell`
+- 在 buy-only 主线下，重点抑制“继续扩大单边风险”的买单
 - `YES` 卖压强：优先抑制 `YesBuy`
-- `NO` 对称处理
+- `NO` 卖压强：优先抑制 `NoBuy`
 
 为避免误杀，当前实现还有：
 - 2-heartbeat 才正式进入 toxic
@@ -112,16 +111,14 @@ OFI 现在不是主策略本身，而是共享执行保护层。
 - 正常盘中靠库存偏移和价差控制风险
 - 极端情况下靠统一门禁和尾盘安全阀止血
 
-## 6. 尾盘是共享安全阀，不是主策略
+## 6. 尾盘是共享能力，不是 `pair_arb` 主路径
 
-尾盘逻辑在系统层保留，但不同执行模式接入深度不同：
-- buy-only / legacy hedge 路径：仍可进入更完整的 `Keep / MakerRepair / ForceTaker`
-- `glft_mm` 当前 slot 路径：只把 `SoftClose/HardClose/Freeze` 作为 phase gate 使用，实际效果是“非 Normal 阶段禁止风险增加型 slot 意图”
+系统层仍保留尾盘阶段，但 `pair_arb` 当前主线路径不再依赖：
+- HardClose maker-repair
+- ForceTaker
+- 市价强制对冲
 
-因此：
-- `glft_mm` 不能靠尾盘逻辑赚钱
-- 当前 `glft_mm` 并没有独立的 HardClose maker-repair / taker-de-risk 数学分支
-- 若未来要做更强尾盘处理，应作为 `glft_mm` 的专门增强项，而不是继续沿用旧 hedge 叙事
+`pair_arb` 当前核心是盘中 pair-cost + inventory 语义，不靠尾盘补丁修收益。
 
 ## 7. 共享资本循环
 
@@ -144,16 +141,16 @@ OFI 现在不是主策略本身，而是共享执行保护层。
   - 当前仍是 research，不作为默认 live 主线
 - `pair_arb`
   - 当前最接近旧 `pair cost + A-S` 主线的可运行策略
-  - 可直接运行，但不是当前主线
+  - 当前验证主线
 - `dip_buy` / `phase_builder`
   - 实验策略
   - 不纳入当前正式上线文档主线
 
 ## 9. 当前实盘结论
 
-如果你的目标是“现在就准备 5m 实盘测试”，当前仓库应按下面的理解使用：
+如果你的目标是“现在进入收益验证”，当前仓库应按下面的理解使用：
 
-1. 主策略选 `glft_mm`
-2. `.env.example` 直接作为模板起点
-3. 优先关注执行稳定性、OFI 阈值行为、Binance 外锚稳定性，以及 slot 路径尾盘行为是否满足预期
-4. 其它策略不要再和当前主线混用
+1. 主策略选 `pair_arb`
+2. 先 `5m` 冒烟（机制），再 `15m` 验证（收益）
+3. 参数冻结跑满样本轮次，再做 go/no-go，不中途调参
+4. `glft_mm` 留作 challenger，不和主线混跑

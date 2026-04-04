@@ -19,9 +19,13 @@ cargo run --bin polymarket_v2
 期望：
 - 市场解析成功
 - Market WS 正常
-- `glft_mm` 时 Binance 外锚正常连接
+- `pair_arb` 下正常输出双边 `Buy` 意图
 - 不发真实订单
-- 日志里能看到 keep-if-safe / OFI / stale / endgame 的自然行为
+- 日志里能看到 keep-if-safe / OFI / stale 的自然行为
+
+推荐顺序：
+1. `btc-updown-5m` 跑 2-3 轮机制冒烟
+2. 切到 `btc-updown-15m` 跑收益验证样本（参数冻结）
 
 ## 3. Live 冒烟
 
@@ -38,8 +42,7 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 ## 4. 重点回归场景
 
 每次改下面这些模块，都应至少重跑一轮 dry-run：
-- `src/polymarket/glft.rs`
-- `src/polymarket/strategy/glft_mm.rs`
+- `src/polymarket/strategy/pair_arb.rs`
 - `src/polymarket/coordinator_execution.rs`
 - `src/polymarket/ofi.rs`
 - `src/bin/polymarket_v2.rs`
@@ -51,10 +54,10 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 - 是否仍有撤改单风暴
 - `crosses book` 是否成串出现
 
-### GLFT
-- `fit_quality` 是否从 `Warm` 进入 `Ready`
-- Binance stale 时是否静默
-- `A/k` 是否异常跳变
+### pair_arb
+- 是否始终保持 buy-only（无 `Hedge` / `OneShotTakerHedge`）
+- 双边报价是否符合 `pair_target + inventory clamp` 语义
+- `residual_inventory_cost_end` 是否可控
 
 ### OFI
 - threshold 是否过快上升

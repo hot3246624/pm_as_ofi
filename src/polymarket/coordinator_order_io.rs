@@ -101,6 +101,8 @@ impl StrategyCoordinator {
         }
         let recent_cross_reject =
             self.recent_cross_reject(slot.side, std::time::Duration::from_secs(2));
+        let recovery_publish_ready =
+            self.should_publish_recovery_for_slot(slot, std::time::Duration::from_secs(2), now);
 
         if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
             self.slot_place_or_reprice_glft_policy(
@@ -110,7 +112,7 @@ impl StrategyCoordinator {
                 size,
                 reason,
                 log_msg.as_deref(),
-                recent_cross_reject,
+                recovery_publish_ready,
                 now,
             )
             .await;
@@ -219,7 +221,7 @@ impl StrategyCoordinator {
                     distance_to_action_target_ticks = Some(action_target_dist);
                 }
                 distance_to_shadow_target_ticks = Some(0.0);
-                if recent_cross_reject {
+                if recovery_publish_ready {
                     publish_reason = Some(PolicyPublishCause::Recovery);
                     publish_hard_safety_exception = true;
                 } else if shadow_age >= shadow_publish_dwell
@@ -285,6 +287,9 @@ impl StrategyCoordinator {
                 self.consume_slot_publish_debt_release(slot, glft_quote_regime);
             }
             self.record_publish_reason_stats(publish_reason);
+            if matches!(publish_reason, Some(PolicyPublishCause::Recovery)) {
+                self.note_recovery_publish_for_slot(slot, now);
+            }
             self.emit_quote_log(
                 slot,
                 price,
@@ -441,7 +446,7 @@ impl StrategyCoordinator {
                     && (structural_dwell_ready || target_dwell_ready);
                 let publish_debt_ready =
                     structural_debt_ready || target_follow_debt_ready || debt_accum_ready;
-                publish_reason = if recent_cross_reject {
+                publish_reason = if recovery_publish_ready {
                     publish_hard_safety_exception = true;
                     Some(PolicyPublishCause::Recovery)
                 } else if invalid_quote_state {
@@ -540,6 +545,9 @@ impl StrategyCoordinator {
                     self.consume_slot_publish_debt_release(slot, glft_quote_regime);
                 }
                 self.record_publish_reason_stats(publish_reason);
+                if matches!(publish_reason, Some(PolicyPublishCause::Recovery)) {
+                    self.note_recovery_publish_for_slot(slot, now);
+                }
                 self.emit_quote_log(
                     slot,
                     price,
@@ -781,7 +789,7 @@ impl StrategyCoordinator {
         size: f64,
         reason: BidReason,
         log_msg: Option<&str>,
-        recent_cross_reject: bool,
+        recovery_publish_ready: bool,
         now: Instant,
     ) {
         let glft = *self.glft_rx.borrow();
@@ -883,7 +891,7 @@ impl StrategyCoordinator {
             && regime_stable_for_publish
             && soft_unsafe_depth_ticks
                 >= Self::glft_policy_soft_unsafe_publish_threshold(quote_regime);
-        let publish_cause = if recent_cross_reject {
+        let publish_cause = if recovery_publish_ready {
             Some(PolicyPublishCause::Recovery)
         } else if hard_unsafe_state || soft_unsafe_trigger {
             Some(PolicyPublishCause::Safety)
@@ -942,8 +950,7 @@ impl StrategyCoordinator {
                 return;
             }
         }
-        let bypass_budget =
-            recent_cross_reject || Self::glft_publish_reason_is_abnormal(publish_cause);
+        let bypass_budget = Self::glft_publish_reason_is_abnormal(publish_cause);
         let budget_cost = Self::glft_publish_reason_budget_cost(publish_cause, quote_regime);
         if !bypass_budget && !self.consume_slot_publish_budget(slot, quote_regime, budget_cost, now)
         {
@@ -969,6 +976,9 @@ impl StrategyCoordinator {
         } else {
             0.0
         };
+        if matches!(publish_cause, PolicyPublishCause::Recovery) {
+            self.note_recovery_publish_for_slot(slot, now);
+        }
         self.record_publish_reason_stats(Some(publish_cause));
         self.emit_quote_log(
             slot,

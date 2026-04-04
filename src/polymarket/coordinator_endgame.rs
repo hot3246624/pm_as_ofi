@@ -9,6 +9,9 @@ impl StrategyCoordinator {
         ub: &Book,
         st: &mut ExecutionState,
     ) {
+        if self.cfg.strategy == StrategyKind::PairArb {
+            return;
+        }
         if st.endgame_phase != self.last_endgame_phase {
             let remaining = self.seconds_to_market_end().unwrap_or_default();
             info!(

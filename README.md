@@ -2,17 +2,15 @@
 
 Polymarket crypto up/down 市场做市与库存管理引擎。
 
-当前仓库已经收敛到一条明确主线：
-- 推荐实盘主策略：`glft_mm`
-- 推荐市场：`btc/eth/xrp/sol` 的 `*-updown-5m`
-- 除主线外，还保留 `pair_arb` 和 `gabagool_grid` 作为可直接运行的次级策略
+当前仓库当前验证主线：
+- 推荐测试主策略：`pair_arb`
+- 推荐收益验证市场：`btc-updown-15m`
+- `glft_mm` 保留为 challenger / research 线
 
-## 当前主线能力
+## 当前共享能力
 
 - `OrderSlot(side,direction)` 四槽位执行层：`YesBuy / YesSell / NoBuy / NoSell`
-- Binance `aggTrade` 外部锚 + Polymarket 本地盘口/成交融合
-- GLFT 强度拟合：`10s refit / 30s window`
-- OFI 同时进入 `alpha + spread`，并保留共享 kill-switch
+- OFI 热度/毒性抑制、stale gate、生命周期去抖
 - 共享执行治理：`keep-if-safe`、post-only 安全垫、slot 级 cancel/reprice
 - 共享风控：`PM_MAX_NET_DIFF`、outcome floor、endgame、recycle、claim
 
@@ -20,10 +18,10 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 
 | 策略 | 定位 | 状态 |
 | --- | --- | --- |
-| `glft_mm` | 真双边、slot-keyed、5m crypto 主线 | 推荐 |
+| `pair_arb` | pair cost + A-S 风格双边买入策略 | 推荐（当前验证主线） |
+| `glft_mm` | 真双边、slot-keyed、外锚驱动 | challenger |
 | `gabagool_grid` | buy-only utility 基线 | 可用 |
 | `gabagool_corridor` | `gabagool_grid` 的 corridor 变体 | research |
-| `pair_arb` | pair cost + A-S 风格双边买入策略 | 可用 |
 | `dip_buy` | 单边抄底 | 实验 |
 | `phase_builder` | 分阶段单边建仓 | 实验 |
 
@@ -58,32 +56,29 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 ## 推荐阅读顺序
 
 1. `docs/STRATEGY_V2_CORE_ZH.md`
-2. `docs/STRATEGY_GLFT_MM_ZH.md`
-3. `docs/STRATEGY_PAIR_ARB_ZH.md`
+2. `docs/STRATEGY_PAIR_ARB_ZH.md`
+3. `docs/STRATEGY_GLFT_MM_ZH.md`
 4. `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
 5. `docs/CONFIG_REFERENCE_ZH.md`
-6. `docs/GO_LIVE_5M_CHECKLIST_ZH.md`
+6. `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
 7. `docs/TESTING.md`
 8. `docs/ADDING_STRATEGY_ZH.md`
 
-## 当前推荐 5m 参数基线
+## 当前推荐验证参数基线（pair_arb）
 
 以 `.env.example` 为准，核心值如下：
 
 ```env
-PM_STRATEGY=glft_mm
-POLYMARKET_MARKET_SLUG="btc-updown-5m"
+PM_STRATEGY=pair_arb
+POLYMARKET_MARKET_SLUG="btc-updown-15m"
 PM_BID_SIZE=5.0
-PM_MAX_NET_DIFF=15.0
-PM_PAIR_TARGET=0.985
+PM_MAX_NET_DIFF=5.0
+PM_PAIR_TARGET=0.98
+PM_AS_SKEW_FACTOR=0.15
+PM_AS_TIME_DECAY_K=2.0
 PM_REPRICE_THRESHOLD=0.020
 PM_DEBOUNCE_MS=700
-PM_GLFT_GAMMA=0.10
-PM_GLFT_XI=0.10
-PM_GLFT_OFI_ALPHA=0.30
-PM_GLFT_OFI_SPREAD_BETA=1.00
 PM_OFI_ADAPTIVE=true
-PM_OFI_ADAPTIVE_K=4.2
 PM_OFI_ADAPTIVE_MIN=120.0
 PM_OFI_ADAPTIVE_MAX=1800.0
 PM_OFI_RATIO_ENTER=0.70
@@ -92,7 +87,7 @@ PM_AUTO_CLAIM=true
 ```
 
 说明：
-- 这是当前准备实盘测试的保守配置，不是利润最大化配置。
-- 代码 fallback 默认策略仍是 `gabagool_grid`；但模板和实盘建议统一使用 `glft_mm`。
-- 如果 Binance 外锚失效，`glft_mm` 会主动静默并清空四槽位，不会回退到纯 Poly 报价。
-- `PM_MAX_PORTFOLIO_COST`、旧 hedge 参数和完整尾盘 repair/taker 阶段，不属于当前 `glft_mm` 正常盘中主逻辑。
+- 建议先 `5m` 做机制冒烟，再用 `15m` 做收益验证。
+- 这是当前准备验证的保守配置，不是利润最大化配置。
+- 当前 `pair_arb` 已去掉方向对冲 overlay 和尾盘强制市价对冲路径。
+- `glft_mm` 仍可运行，但不建议作为当前生产主线。

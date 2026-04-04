@@ -7,7 +7,7 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{mpsc, watch};
-use tokio::time::sleep;
+use tokio::time::{sleep, timeout};
 use tokio_tungstenite::connect_async;
 use tracing::{debug, info, warn};
 
@@ -21,6 +21,7 @@ const SIGMA_HALF_LIFE_SECS: f64 = 20.0;
 const SIGMA_VAR_FLOOR: f64 = 2e-7;
 const BINANCE_STALE_SECS: u64 = 3;
 const BINANCE_STALE_GRACE_SECS: u64 = 2;
+const BINANCE_IDLE_RECONNECT_SECS: u64 = 6;
 const POLY_BOOK_STALE_SECS: u64 = 2;
 // Poly book staleness has two tiers:
 // - > POLY_BOOK_STALE_SECS: degrade to Guarded/Tracking (still tradable if other checks pass)
@@ -2510,32 +2511,50 @@ async fn run_binance_aggtrade_feed(symbol: String, tx: mpsc::Sender<BinanceTick>
                 info!("📡 GLFT Binance anchor connected: {}", symbol);
                 backoff = Duration::from_millis(250);
                 let (_write, mut read) = ws.split();
-                while let Some(msg) = read.next().await {
-                    match msg {
-                        Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
-                            if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                                if let Some(price) = value
-                                    .get("p")
-                                    .and_then(|v| v.as_str())
-                                    .and_then(|s| s.parse::<f64>().ok())
-                                    .filter(|v| *v > 0.0)
-                                {
-                                    let _ = tx
-                                        .send(BinanceTick {
-                                            price,
-                                            ts: Instant::now(),
-                                        })
-                                        .await;
+                loop {
+                    match timeout(
+                        Duration::from_secs(BINANCE_IDLE_RECONNECT_SECS),
+                        read.next(),
+                    )
+                    .await
+                    {
+                        Ok(Some(msg)) => match msg {
+                            Ok(tokio_tungstenite::tungstenite::Message::Text(text)) => {
+                                if let Ok(value) = serde_json::from_str::<Value>(&text) {
+                                    if let Some(price) = value
+                                        .get("p")
+                                        .and_then(|v| v.as_str())
+                                        .and_then(|s| s.parse::<f64>().ok())
+                                        .filter(|v| *v > 0.0)
+                                    {
+                                        let _ = tx
+                                            .send(BinanceTick {
+                                                price,
+                                                ts: Instant::now(),
+                                            })
+                                            .await;
+                                    }
                                 }
                             }
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
-                            warn!("⚠️ GLFT Binance anchor closed: {}", symbol);
+                            Ok(tokio_tungstenite::tungstenite::Message::Close(_)) => {
+                                warn!("⚠️ GLFT Binance anchor closed: {}", symbol);
+                                break;
+                            }
+                            Ok(_) => {}
+                            Err(err) => {
+                                warn!("⚠️ GLFT Binance anchor read failed: {} {:?}", symbol, err);
+                                break;
+                            }
+                        },
+                        Ok(None) => {
+                            warn!("⚠️ GLFT Binance anchor stream ended: {}", symbol);
                             break;
                         }
-                        Ok(_) => {}
-                        Err(err) => {
-                            warn!("⚠️ GLFT Binance anchor read failed: {} {:?}", symbol, err);
+                        Err(_) => {
+                            warn!(
+                                "⚠️ GLFT Binance anchor idle timeout: {} idle={}s -> reconnect",
+                                symbol, BINANCE_IDLE_RECONNECT_SECS
+                            );
                             break;
                         }
                     }

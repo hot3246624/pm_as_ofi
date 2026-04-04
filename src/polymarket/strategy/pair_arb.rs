@@ -1,4 +1,5 @@
 use crate::polymarket::coordinator::StrategyCoordinator;
+use crate::polymarket::coordinator::StrategyInventoryMetrics;
 use crate::polymarket::messages::{BidReason, TradeDirection};
 use crate::polymarket::types::Side;
 use tracing::debug;
@@ -8,6 +9,7 @@ use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, Strateg
 pub(crate) struct PairArbStrategy;
 
 pub(crate) static PAIR_ARB_STRATEGY: PairArbStrategy = PairArbStrategy;
+const FLOAT_EPS: f64 = 1e-9;
 
 impl QuoteStrategy for PairArbStrategy {
     fn kind(&self) -> StrategyKind {
@@ -22,6 +24,9 @@ impl QuoteStrategy for PairArbStrategy {
         let cfg = coordinator.cfg();
         let inv = input.inv;
         let ub = input.book;
+        let current_metrics = input.metrics;
+        let current_utility = coordinator.utility_for_inventory(inv, current_metrics, ub);
+        let current_open_edge = coordinator.open_edge_for_inventory(inv, current_metrics, ub);
 
         let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
         let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
@@ -96,7 +101,19 @@ impl QuoteStrategy for PairArbStrategy {
         };
 
         let mut quotes = StrategyQuotes::default();
-        if bid_yes > 0.0 {
+        if bid_yes > 0.0
+            && self.should_keep_candidate(
+                coordinator,
+                inv,
+                ub,
+                current_metrics,
+                current_utility,
+                current_open_edge,
+                Side::Yes,
+                bid_yes,
+                cfg.bid_size,
+            )
+        {
             quotes.set(StrategyIntent {
                 side: Side::Yes,
                 direction: TradeDirection::Buy,
@@ -105,7 +122,19 @@ impl QuoteStrategy for PairArbStrategy {
                 reason: BidReason::Provide,
             });
         }
-        if bid_no > 0.0 {
+        if bid_no > 0.0
+            && self.should_keep_candidate(
+                coordinator,
+                inv,
+                ub,
+                current_metrics,
+                current_utility,
+                current_open_edge,
+                Side::No,
+                bid_no,
+                cfg.bid_size,
+            )
+        {
             quotes.set(StrategyIntent {
                 side: Side::No,
                 direction: TradeDirection::Buy,
@@ -116,5 +145,70 @@ impl QuoteStrategy for PairArbStrategy {
         }
 
         quotes
+    }
+}
+
+impl PairArbStrategy {
+    #[allow(clippy::too_many_arguments)]
+    fn should_keep_candidate(
+        &self,
+        coordinator: &StrategyCoordinator,
+        inv: &crate::polymarket::messages::InventoryState,
+        book: &crate::polymarket::coordinator::Book,
+        current_metrics: &StrategyInventoryMetrics,
+        current_utility: f64,
+        current_open_edge: f64,
+        side: Side,
+        price: f64,
+        size: f64,
+    ) -> bool {
+        let intent = StrategyIntent {
+            side,
+            direction: TradeDirection::Buy,
+            price,
+            size,
+            reason: BidReason::Provide,
+        };
+        if !coordinator.can_place_strategy_intent(inv, Some(intent)) {
+            return false;
+        }
+
+        let Some(projected) = coordinator.simulate_buy(inv, side, size, price) else {
+            return false;
+        };
+
+        let improves_locked_pnl =
+            projected.metrics.paired_locked_pnl > current_metrics.paired_locked_pnl + FLOAT_EPS;
+        let improves_pair_cost = current_metrics.paired_qty > FLOAT_EPS
+            && projected.metrics.paired_qty > FLOAT_EPS
+            && projected.metrics.pair_cost + FLOAT_EPS < current_metrics.pair_cost;
+        let reaches_target_pair = projected.metrics.paired_qty > FLOAT_EPS
+            && projected.metrics.pair_cost <= coordinator.cfg().pair_target + FLOAT_EPS;
+        if improves_locked_pnl || improves_pair_cost || reaches_target_pair {
+            return true;
+        }
+
+        let projected_utility = coordinator.utility_for_inventory(
+            &projected.projected_inventory,
+            &projected.metrics,
+            book,
+        );
+        let utility_delta = projected_utility - current_utility;
+        let min_utility_delta = size * coordinator.cfg().tick_size.max(1e-9);
+        if utility_delta + FLOAT_EPS < min_utility_delta {
+            return false;
+        }
+
+        let risk_increasing = projected.projected_abs_net_diff > inv.net_diff.abs() + FLOAT_EPS;
+        if !risk_increasing {
+            return true;
+        }
+
+        let projected_open_edge = coordinator.open_edge_for_inventory(
+            &projected.projected_inventory,
+            &projected.metrics,
+            book,
+        );
+        projected_open_edge > current_open_edge + FLOAT_EPS
     }
 }

@@ -1006,6 +1006,34 @@ fn test_glft_soft_reset_preserves_policy_state() {
     assert_eq!(coord.stats.soft_reset_count, 1);
 }
 
+#[test]
+fn test_glft_recovery_publish_dedup_blocks_same_cross_episode() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    let first_cross = Instant::now() - Duration::from_millis(100);
+    coord.yes_maker_friction.last_cross_reject_ts = Some(first_cross);
+
+    assert!(
+        coord.should_publish_recovery_for_slot(slot, Duration::from_secs(2), Instant::now()),
+        "first recent cross reject should be eligible for one recovery publish"
+    );
+
+    coord.note_recovery_publish_for_slot(slot, Instant::now() - Duration::from_millis(1_500));
+
+    assert!(
+        !coord.should_publish_recovery_for_slot(slot, Duration::from_secs(2), Instant::now()),
+        "same cross-reject episode must not repeatedly republish recovery"
+    );
+
+    coord.yes_maker_friction.last_cross_reject_ts = Some(Instant::now());
+    assert!(
+        coord.should_publish_recovery_for_slot(slot, Duration::from_secs(2), Instant::now()),
+        "a new cross-reject episode should re-arm recovery publish"
+    );
+}
+
 #[tokio::test]
 async fn test_glft_source_recovery_poly_only_short_block_uses_soft_reset_continuity() {
     let mut config = cfg();
@@ -1051,6 +1079,30 @@ async fn test_glft_source_recovery_poly_only_short_block_uses_soft_reset_continu
     );
     assert_eq!(coord.stats.full_reset_count, 0);
     assert_eq!(coord.stats.soft_reset_count, OrderSlot::ALL.len() as u64);
+}
+
+#[tokio::test]
+async fn test_glft_source_recovery_clears_recovery_publish_state() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::GlftMm;
+    let (_o, _i, _m, _g, _k, _er, mut coord) = make_with_glft(config);
+    let slot = OrderSlot::YES_BUY;
+    coord.yes_maker_friction.last_cross_reject_ts =
+        Some(Instant::now() - Duration::from_millis(100));
+    coord.note_recovery_publish_for_slot(slot, Instant::now() - Duration::from_millis(1_500));
+    assert!(!coord.should_publish_recovery_for_slot(slot, Duration::from_secs(2), Instant::now()));
+
+    let now = Instant::now();
+    coord.glft_source_blocked_since = Some(now - Duration::from_secs(5));
+    coord.glft_source_blocked_saw_poly = true;
+    coord.update_glft_source_recovery_state(live_glft_snapshot(), now);
+
+    assert!(coord.slot_last_recovery_cross_seen_at[slot.index()].is_none());
+    assert!(coord.slot_last_recovery_publish_at[slot.index()].is_none());
+    assert!(
+        coord.should_publish_recovery_for_slot(slot, Duration::from_secs(2), now),
+        "source recovery should clear slot recovery dedup so the next live recovery can publish"
+    );
 }
 
 #[test]
@@ -2761,7 +2813,7 @@ async fn test_endgame_soft_close_blocks_only_risk_increasing_provide() {
 }
 
 #[tokio::test]
-async fn test_endgame_soft_close_clear_reason_is_endgame_risk_gate() {
+async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairArb;
     let now_secs = std::time::SystemTime::now()
@@ -2802,8 +2854,8 @@ async fn test_endgame_soft_close_clear_reason_is_endgame_risk_gate() {
     }
     assert_eq!(
         reason,
-        Some(CancelReason::EndgameRiskGate),
-        "SoftClose risk gate should clear with EndgameRiskGate reason"
+        None,
+        "pair_arb should not apply endgame clear gate in soft-close"
     );
 
     drop(m);
@@ -3018,7 +3070,10 @@ async fn test_inventory_cost_clamp_disables_side_when_ceiling_below_tick() {
         !saw_yes,
         "YES should be disabled when inventory clamp ceiling is below tick"
     );
-    assert!(saw_no, "NO side should still be quotable");
+    assert!(
+        !saw_no,
+        "NO side should be suppressed when add would only worsen imbalance without pair/open-edge improvement"
+    );
 
     drop(m);
     let _ = h.await;
@@ -3039,7 +3094,14 @@ async fn test_balanced_excess_mid_capped() {
     if let Ok(Some(OrderManagerCmd::SetTarget(target))) = c2 {
         prices.insert(target.side, target.price);
     }
-    assert!(prices[&Side::Yes] + prices[&Side::No] <= 0.98 + 1e-9);
+    if prices.contains_key(&Side::Yes) && prices.contains_key(&Side::No) {
+        assert!(prices[&Side::Yes] + prices[&Side::No] <= 0.98 + 1e-9);
+    } else {
+        assert!(
+            prices.is_empty(),
+            "pair_arb should either quote both sides under cap or stay silent when utility threshold is not met"
+        );
+    }
 
     drop(m);
     let _ = h.await;
@@ -3758,7 +3820,7 @@ async fn test_empty_book_skipped() {
 #[tokio::test]
 async fn test_hedge_emergency_ceiling_toxic_flow() {
     let mut cfg = cfg();
-    cfg.strategy = StrategyKind::PairArb;
+    cfg.strategy = StrategyKind::DipBuy;
     cfg.max_net_diff = 10.0;
     cfg.pair_target = 0.985;
     cfg.max_portfolio_cost = 1.02;
@@ -3848,7 +3910,7 @@ async fn test_stale_book_protection() {
 #[tokio::test]
 async fn test_dynamic_hedge_sizing_shares() {
     let mut cfg = cfg();
-    cfg.strategy = StrategyKind::PairArb;
+    cfg.strategy = StrategyKind::DipBuy;
     cfg.bid_size = 5.0;
     let (_o, i, m, _k, mut e, coord) = make(cfg);
     let h = tokio::spawn(coord.run());
@@ -3878,6 +3940,92 @@ async fn test_dynamic_hedge_sizing_shares() {
         }
     }
     assert!(found_hedge, "Expected hedge order of size 12.0 on NO");
+
+    drop(m);
+    let _ = h.await;
+}
+
+#[tokio::test]
+async fn test_pair_arb_skips_directional_hedge_with_large_imbalance() {
+    let mut cfg = cfg();
+    cfg.strategy = StrategyKind::PairArb;
+    cfg.bid_size = 5.0;
+    let (_o, i, m, _k, mut e, coord) = make(cfg);
+    let h = tokio::spawn(coord.run());
+
+    let _ = i.send(InventoryState {
+        net_diff: 12.0,
+        yes_qty: 12.0,
+        yes_avg_cost: 0.50,
+        ..Default::default()
+    });
+    let _ = m.send(bt(0.48, 0.52, 0.48, 0.52));
+
+    let mut saw_hedge = false;
+    while let Ok(Some(cmd)) = timeout(Duration::from_millis(200), e.recv()).await {
+        match cmd {
+            OrderManagerCmd::SetTarget(target) if target.reason == BidReason::Hedge => {
+                saw_hedge = true;
+                break;
+            }
+            OrderManagerCmd::OneShotTakerHedge { .. } => {
+                saw_hedge = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !saw_hedge,
+        "pair_arb should not dispatch directional hedge or taker de-risk overlays"
+    );
+
+    drop(m);
+    let _ = h.await;
+}
+
+#[tokio::test]
+async fn test_pair_arb_hard_close_skips_taker_and_maker_hedge() {
+    let mut cfg = cfg();
+    cfg.strategy = StrategyKind::PairArb;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    cfg.market_end_ts = Some(now_secs + 15);
+    cfg.endgame_soft_close_secs = 60;
+    cfg.endgame_hard_close_secs = 30;
+    cfg.endgame_freeze_secs = 5;
+
+    let (_o, i, m, _k, mut e, coord) = make(cfg);
+    let _ = i.send(InventoryState {
+        net_diff: 4.0,
+        yes_qty: 4.0,
+        yes_avg_cost: 0.55,
+        ..Default::default()
+    });
+
+    let h = tokio::spawn(coord.run());
+    let _ = m.send(bt(0.30, 0.32, 0.68, 0.70));
+
+    let mut saw_hedge = false;
+    while let Ok(Some(cmd)) = timeout(Duration::from_millis(200), e.recv()).await {
+        match cmd {
+            OrderManagerCmd::SetTarget(target) if target.reason == BidReason::Hedge => {
+                saw_hedge = true;
+                break;
+            }
+            OrderManagerCmd::OneShotTakerHedge { .. } => {
+                saw_hedge = true;
+                break;
+            }
+            _ => {}
+        }
+    }
+    assert!(
+        !saw_hedge,
+        "pair_arb should stay buy-only in hard-close and not trigger taker/maker hedge overlays"
+    );
 
     drop(m);
     let _ = h.await;
@@ -3923,7 +4071,7 @@ async fn test_inventory_limits_block_orders() {
 #[tokio::test]
 async fn test_hedge_size_change_reprices() {
     let mut cfg = cfg();
-    cfg.strategy = StrategyKind::PairArb;
+    cfg.strategy = StrategyKind::DipBuy;
     cfg.as_skew_factor = 0.0;
     cfg.max_net_diff = 100.0;
     cfg.hedge_debounce_ms = 0;

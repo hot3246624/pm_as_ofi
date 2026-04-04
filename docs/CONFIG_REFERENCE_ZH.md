@@ -7,8 +7,8 @@
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
-| `POLYMARKET_MARKET_SLUG` | `btc-updown-5m` | 当前推荐主战场 |
-| `PM_BINANCE_SYMBOL_OVERRIDE` | unset | `glft_mm` 可选覆盖；默认按 slug 自动映射 |
+| `POLYMARKET_MARKET_SLUG` | `btc-updown-15m` | 当前推荐收益验证市场（`5m` 仅用于机制冒烟） |
+| `PM_BINANCE_SYMBOL_OVERRIDE` | unset | 仅 `glft_mm` 使用；`pair_arb` 主线不需要 |
 | `POLYMARKET_PRIVATE_KEY` | empty | 实盘必填 |
 | `POLYMARKET_FUNDER_ADDRESS` | empty | 实盘必填 |
 | `POLYMARKET_API_KEY/SECRET/PASSPHRASE` | unset | 可选，留空则尝试派生 |
@@ -29,14 +29,14 @@
 | `PM_COORD_WATCHDOG_MS` | `500` | 无行情时的风控心跳 |
 | `PM_STRATEGY_METRICS_LOG_SECS` | `15` | 指标日志周期 |
 
-## 3. 当前推荐策略模板（5m live 基线）
+## 3. 当前推荐策略模板（pair_arb 验证基线）
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
-| `PM_STRATEGY` | `glft_mm` | 当前唯一推荐 live 主线 |
-| `PM_BID_SIZE` | `5.0` | 单槽位 clip |
-| `PM_MAX_NET_DIFF` | `15.0` | 盘中净仓硬上限 |
-| `PM_PAIR_TARGET` | `0.985` | 当前主要通过共享 outcome-floor 参与 `glft_mm` 的 buy-side 风控 |
+| `PM_STRATEGY` | `pair_arb` | 当前验证主线 |
+| `PM_BID_SIZE` | `5.0` | 单次挂单份额 |
+| `PM_MAX_NET_DIFF` | `5.0` | 盘中净仓硬上限（验证期保守值） |
+| `PM_PAIR_TARGET` | `0.98` | 组合成本目标线（pair_arb 核心参数） |
 | `PM_TICK_SIZE` | `0.01` | 价格粒度 |
 | `PM_POST_ONLY_SAFETY_TICKS` | `2.0` | maker 安全垫基础退让 |
 | `PM_POST_ONLY_TIGHT_SPREAD_TICKS` | `3.0` | 紧价差额外退让触发线 |
@@ -45,8 +45,10 @@
 | `PM_DEBOUNCE_MS` | `700` | provide 防抖 |
 | `PM_STALE_TTL_MS` | `3000` | 单侧 stale TTL |
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
+| `PM_AS_SKEW_FACTOR` | `0.15` | 库存偏置强度（pair_arb） |
+| `PM_AS_TIME_DECAY_K` | `2.0` | 库存偏置时间衰减（pair_arb） |
 
-## 4. `glft_mm` 专属参数
+## 4. `glft_mm` 专属参数（仅 challenger 使用）
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
@@ -70,10 +72,10 @@
 - post-only `crosses book` 短冷却 = `1000ms`（独立于通用 validation 冷却）
 
 运行解读：
-- `glft_mm` 允许同侧 `buy -> sell` 的 maker 回转；这不是 `pair-cost-first` 路径
-- 日志中的 `fit_source=bootstrap / warm-start / last-good-fit` 是内部状态观测，不对应新的 `.env` 参数
+- `pair_arb` 主线不读取这组参数
+- 仅在切换 `PM_STRATEGY=glft_mm` 时才需要启用
 
-## 5. OFI 推荐值（当前 5m live 基线）
+## 5. OFI 推荐值（当前 pair_arb 验证基线）
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
@@ -97,30 +99,27 @@
 - 进入/恢复阈值由 rolling `Q99/Q95` 映射到 score 空间，再叠加 ratio gate 与最小毒性保持时间
 - `PM_OFI_ADAPTIVE_MIN/MAX` 仅作 baseline 护栏；高热时若触及上限会输出 `saturated` 可观测日志
 
-## 6. Endgame（当前 `glft_mm` 的真实有效范围）
+## 6. Endgame（当前 `pair_arb` 主线语义）
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | `60` | 对 `glft_mm` 有实效：进入非 `Normal` phase 后，阻止风险增加型 slot 意图 |
-| `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 当前会改变 phase 名称，但 `glft_mm` slot 路径没有更强的独立 HardClose 行为 |
-| `PM_ENDGAME_FREEZE_SECS` | `2` | 当前会改变 phase 名称，但 `glft_mm` slot 路径没有更强的独立 Freeze 行为 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | `60` | 共享阶段参数，`pair_arb` 主路径不依赖它做主动去风险 |
+| `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 共享阶段参数 |
+| `PM_ENDGAME_FREEZE_SECS` | `2` | 共享阶段参数 |
 
-当前不应视为 `glft_mm` 核心生效参数：
-- `PM_ENDGAME_MAKER_REPAIR_MIN_SECS`
-- `PM_ENDGAME_EDGE_KEEP_MULT`
-- `PM_ENDGAME_EDGE_EXIT_MULT`
+说明：
+- `pair_arb` 当前已去掉方向对冲 overlay 与尾盘强制市价去风险路径。
+- `PM_ENDGAME_MAKER_REPAIR_MIN_SECS` / `PM_ENDGAME_EDGE_KEEP_MULT` / `PM_ENDGAME_EDGE_EXIT_MULT` 对当前 `pair_arb` 主路径不生效。
 
-它们仍保留在代码里，主要服务旧执行路径或未来增强，不属于当前 `glft_mm` 主模板。
-
-## 7. 兼容保留参数（当前 `glft_mm` 正常盘中不主用）
+## 7. 兼容保留参数（当前 `pair_arb` 主路径不主用）
 
 | 参数 | 模板建议 | 说明 |
 | --- | --- | --- |
-| `PM_MAX_PORTFOLIO_COST` | 注释保留 | 旧 hedge / rescue ceiling 语义；当前 `glft_mm` 正常盘中不走这条路径 |
-| `PM_HEDGE_DEBOUNCE_MS` | 注释保留 | 旧 hedge path 防抖；当前 `glft_mm` 正常盘中不发 hedge |
-| `PM_MIN_HEDGE_SIZE` | 注释保留 | 旧 hedge/taker 路径参数 |
-| `PM_HEDGE_ROUND_UP` | 注释保留 | 旧 hedge/taker 路径参数 |
-| `PM_HEDGE_MIN_MARKETABLE_*` | 注释保留 | 旧 hedge/taker 路径参数 |
+| `PM_MAX_PORTFOLIO_COST` | 注释保留 | 旧 hedge / rescue ceiling 兼容参数，当前主路径不使用 |
+| `PM_HEDGE_DEBOUNCE_MS` | 注释保留 | 旧 hedge 兼容参数 |
+| `PM_MIN_HEDGE_SIZE` | 注释保留 | 旧 hedge/taker 兼容参数 |
+| `PM_HEDGE_ROUND_UP` | 注释保留 | 旧 hedge/taker 兼容参数 |
+| `PM_HEDGE_MIN_MARKETABLE_*` | 注释保留 | 旧 hedge/taker 兼容参数 |
 
 ## 8. recycle / claim
 
@@ -152,15 +151,13 @@
 以下参数仍被代码支持，但不属于当前推荐 live 主线：
 - `PM_OPEN_PAIR_BAND`
 - `PM_DIP_BUY_MAX_ENTRY_PRICE`
-- `PM_AS_SKEW_FACTOR`
-- `PM_AS_TIME_DECAY_K`
 - `PM_BID_PCT`
 - `PM_NET_DIFF_PCT`
 
 原则：
-- 当前先把 `glft_mm` 跑稳
-- 非主线参数默认不作为 live 模板的激活项
+- 当前先把 `pair_arb` 跑稳
+- 非主线参数默认不作为验证模板激活项
 
 补充说明：
 - `PM_OPEN_PAIR_BAND` 主要服务 `gabagool_grid`
-- `PM_AS_SKEW_FACTOR` / `PM_AS_TIME_DECAY_K` 主要服务 `pair_arb`
+- `PM_AS_SKEW_FACTOR` / `PM_AS_TIME_DECAY_K` 是 `pair_arb` 核心参数

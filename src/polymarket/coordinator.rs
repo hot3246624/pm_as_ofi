@@ -828,6 +828,8 @@ pub struct StrategyCoordinator {
     slot_policy_since: [Option<Instant>; 4],
     slot_last_policy_transition: [Option<PolicyTransitionReason>; 4],
     slot_last_publish_reason: [Option<PolicyPublishCause>; 4],
+    slot_last_recovery_publish_at: [Option<Instant>; 4],
+    slot_last_recovery_cross_seen_at: [Option<Instant>; 4],
     slot_last_regime_seen: [Option<crate::polymarket::glft::QuoteRegime>; 4],
     slot_regime_changed_at: [Instant; 4],
     slot_publish_budget: [f64; 4],
@@ -1001,6 +1003,8 @@ impl StrategyCoordinator {
             slot_policy_since: std::array::from_fn(|_| None),
             slot_last_policy_transition: std::array::from_fn(|_| None),
             slot_last_publish_reason: std::array::from_fn(|_| None),
+            slot_last_recovery_publish_at: std::array::from_fn(|_| None),
+            slot_last_recovery_cross_seen_at: std::array::from_fn(|_| None),
             slot_last_regime_seen: std::array::from_fn(|_| None),
             slot_regime_changed_at: std::array::from_fn(|_| Instant::now()),
             slot_publish_budget: [2.0; 4],
@@ -1605,6 +1609,7 @@ impl StrategyCoordinator {
             for slot in OrderSlot::ALL {
                 self.slot_last_publish_reason[slot.index()] = None;
                 self.slot_absent_clear_since[slot.index()] = None;
+                self.clear_slot_recovery_publish_state(slot);
                 if use_full_reset {
                     self.full_reset_slot_publish_state(slot);
                 } else {
@@ -1945,6 +1950,45 @@ impl StrategyCoordinator {
             .last_cross_reject_ts
             .map(|ts| ts.elapsed() <= within)
             .unwrap_or(false)
+    }
+
+    pub(super) fn should_publish_recovery_for_slot(
+        &self,
+        slot: OrderSlot,
+        within: Duration,
+        now: Instant,
+    ) -> bool {
+        const GLFT_RECOVERY_REPUBLISH_COOLDOWN_MS: u64 = 1_200;
+
+        let Some(cross_ts) = self.maker_friction(slot.side).last_cross_reject_ts else {
+            return false;
+        };
+        if now.saturating_duration_since(cross_ts) > within {
+            return false;
+        }
+        let idx = slot.index();
+        if self.slot_last_recovery_cross_seen_at[idx] == Some(cross_ts) {
+            return false;
+        }
+        self.slot_last_recovery_publish_at[idx]
+            .map(|last| {
+                now.saturating_duration_since(last)
+                    >= Duration::from_millis(GLFT_RECOVERY_REPUBLISH_COOLDOWN_MS)
+            })
+            .unwrap_or(true)
+    }
+
+    pub(super) fn note_recovery_publish_for_slot(&mut self, slot: OrderSlot, now: Instant) {
+        let idx = slot.index();
+        self.slot_last_recovery_publish_at[idx] = Some(now);
+        self.slot_last_recovery_cross_seen_at[idx] =
+            self.maker_friction(slot.side).last_cross_reject_ts;
+    }
+
+    pub(super) fn clear_slot_recovery_publish_state(&mut self, slot: OrderSlot) {
+        let idx = slot.index();
+        self.slot_last_recovery_publish_at[idx] = None;
+        self.slot_last_recovery_cross_seen_at[idx] = None;
     }
 
     fn maker_friction_mut(&mut self, side: Side) -> &mut MakerFriction {

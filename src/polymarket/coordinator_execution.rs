@@ -47,6 +47,9 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn should_execute_directional_hedges(&self, st: &ExecutionState) -> bool {
+        if self.cfg.strategy == StrategyKind::PairArb {
+            return false;
+        }
         match self.cfg.strategy.execution_mode() {
             StrategyExecutionMode::DirectionalHedgeOverlay => true,
             StrategyExecutionMode::UnifiedBuys => st.endgame_phase >= EndgamePhase::HardClose,

@@ -122,9 +122,11 @@ impl StrategyKind {
 
     pub(crate) fn execution_mode(self) -> StrategyExecutionMode {
         match self {
-            Self::GabagoolGrid | Self::GabagoolCorridor => StrategyExecutionMode::UnifiedBuys,
+            Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {
+                StrategyExecutionMode::UnifiedBuys
+            }
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
-            Self::PairArb | Self::DipBuy | Self::PhaseBuilder => {
+            Self::DipBuy | Self::PhaseBuilder => {
                 StrategyExecutionMode::DirectionalHedgeOverlay
             }
         }

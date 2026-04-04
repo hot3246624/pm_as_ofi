@@ -277,7 +277,14 @@ struct RoundValidationSummary {
     paired_locked_pnl_end: Option<f64>,
     worst_case_outcome_pnl_end: Option<f64>,
     realized_cash_pnl: f64,
+    #[serde(default)]
+    realized_round_pnl_ex_residual: f64,
     mark_to_mid_pnl_end: Option<f64>,
+    #[serde(default)]
+    residual_inventory_cost_end: f64,
+    #[serde(default)]
+    residual_exit_required: bool,
+    loss_attribution: Option<RoundLossAttribution>,
     fees_paid_est: Option<f64>,
     maker_rebate_est: Option<f64>,
     replace_events: u64,
@@ -289,14 +296,27 @@ struct RoundValidationSummary {
     fill_to_adverse_move_10s: Option<f64>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum RoundLossAttribution {
+    AModelWrong,
+    BQuoteTooAggressive,
+    CInventoryNotCompleted,
+    DExecutionTimingBug,
+    EMarketNotSuitable,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RoundValidationAggregate {
     rounds_total: usize,
     rounds_partial: usize,
     rounds_full: usize,
     total_realized_cash_pnl: f64,
+    total_realized_round_pnl_ex_residual: f64,
     total_mark_to_mid_pnl_end: f64,
+    total_residual_inventory_cost_end: f64,
     median_round_pnl: Option<f64>,
+    median_round_pnl_ex_residual: Option<f64>,
     mean_fill_to_adverse_move_3s: Option<f64>,
     mean_fill_to_adverse_move_10s: Option<f64>,
     mean_max_abs_net_diff: Option<f64>,
@@ -641,7 +661,23 @@ impl RoundValidationCollector {
             None
         };
 
-        let total_spent = end_inv.yes_qty.max(0.0) * end_inv.yes_avg_cost.max(0.0)
+        let mean_entry_edge_vs_trusted_mid = if edge_weight > 0.0 {
+            Some(edge_weighted_sum / edge_weight)
+        } else {
+            None
+        };
+        let fill_to_adverse_move_3s = if move3_weight > 0.0 {
+            Some(move3_weighted_sum / move3_weight)
+        } else {
+            None
+        };
+        let fill_to_adverse_move_10s = if move10_weight > 0.0 {
+            Some(move10_weighted_sum / move10_weight)
+        } else {
+            None
+        };
+
+        let residual_inventory_cost_end = end_inv.yes_qty.max(0.0) * end_inv.yes_avg_cost.max(0.0)
             + end_inv.no_qty.max(0.0) * end_inv.no_avg_cost.max(0.0);
         let paired_qty = end_inv.yes_qty.min(end_inv.no_qty).max(0.0);
         let pair_cost = if end_inv.yes_qty > 0.0 && end_inv.no_qty > 0.0 {
@@ -654,8 +690,8 @@ impl RoundValidationCollector {
         } else {
             None
         };
-        let worst_case_outcome_pnl_end = if total_spent > 0.0 {
-            Some(end_inv.yes_qty.min(end_inv.no_qty) - total_spent)
+        let worst_case_outcome_pnl_end = if residual_inventory_cost_end > 0.0 {
+            Some(end_inv.yes_qty.min(end_inv.no_qty) - residual_inventory_cost_end)
         } else {
             None
         };
@@ -665,6 +701,35 @@ impl RoundValidationCollector {
                     + end_inv.no_qty * (no_mid - end_inv.no_avg_cost),
             ),
             _ => None,
+        };
+        let residual_exit_required = residual_inventory_cost_end > 1e-9;
+        let realized_round_pnl_ex_residual = realized_cash_pnl + residual_inventory_cost_end;
+        let marked_round_pnl = realized_cash_pnl + mark_to_mid_pnl_end.unwrap_or(0.0);
+        let recovery_storm_observed = coord_obs.publish_from_recovery >= 4;
+        let source_stale_observed =
+            coord_obs.blocked_due_source > 0 || self.time_in_blocked_ms >= 15_000;
+        let residual_dominates = residual_exit_required
+            && residual_inventory_cost_end
+                >= (marked_round_pnl
+                    .abs()
+                    .max(realized_round_pnl_ex_residual.abs()))
+                .max(1.0)
+                    * 0.5;
+        let strongly_adverse = fill_to_adverse_move_10s.unwrap_or(0.0) <= -0.01
+            || fill_to_adverse_move_3s.unwrap_or(0.0) <= -0.008;
+        let thin_or_negative_edge = mean_entry_edge_vs_trusted_mid.unwrap_or(0.0) <= 0.0;
+        let loss_attribution = if partial_round {
+            Some(RoundLossAttribution::DExecutionTimingBug)
+        } else if recovery_storm_observed || source_stale_observed {
+            Some(RoundLossAttribution::DExecutionTimingBug)
+        } else if residual_dominates {
+            Some(RoundLossAttribution::CInventoryNotCompleted)
+        } else if strongly_adverse {
+            Some(RoundLossAttribution::AModelWrong)
+        } else if thin_or_negative_edge {
+            Some(RoundLossAttribution::BQuoteTooAggressive)
+        } else {
+            Some(RoundLossAttribution::EMarketNotSuitable)
         };
 
         RoundValidationSummary {
@@ -691,28 +756,20 @@ impl RoundValidationCollector {
             paired_locked_pnl_end,
             worst_case_outcome_pnl_end,
             realized_cash_pnl,
+            realized_round_pnl_ex_residual,
             mark_to_mid_pnl_end,
+            residual_inventory_cost_end,
+            residual_exit_required,
+            loss_attribution,
             fees_paid_est: None,
             maker_rebate_est: None,
             replace_events: coord_obs.replace_events,
             cancel_events: coord_obs.cancel_events,
             publish_events: coord_obs.publish_events,
-            mean_entry_edge_vs_trusted_mid: if edge_weight > 0.0 {
-                Some(edge_weighted_sum / edge_weight)
-            } else {
-                None
-            },
+            mean_entry_edge_vs_trusted_mid,
             mean_fill_slippage_vs_posted: None,
-            fill_to_adverse_move_3s: if move3_weight > 0.0 {
-                Some(move3_weighted_sum / move3_weight)
-            } else {
-                None
-            },
-            fill_to_adverse_move_10s: if move10_weight > 0.0 {
-                Some(move10_weighted_sum / move10_weight)
-            } else {
-                None
-            },
+            fill_to_adverse_move_3s,
+            fill_to_adverse_move_10s,
         }
     }
 }
@@ -848,14 +905,28 @@ fn aggregate_round_validation(entries: &[RoundValidationSummary]) -> RoundValida
     let rounds_partial = entries.iter().filter(|s| s.partial_round).count();
     let rounds_full = rounds_total.saturating_sub(rounds_partial);
     let total_realized_cash_pnl = entries.iter().map(|s| s.realized_cash_pnl).sum::<f64>();
+    let total_realized_round_pnl_ex_residual = entries
+        .iter()
+        .map(|s| s.realized_round_pnl_ex_residual)
+        .sum::<f64>();
     let total_mark_to_mid_pnl_end = entries
         .iter()
         .map(|s| s.mark_to_mid_pnl_end.unwrap_or(0.0))
+        .sum::<f64>();
+    let total_residual_inventory_cost_end = entries
+        .iter()
+        .map(|s| s.residual_inventory_cost_end)
         .sum::<f64>();
     let median_round_pnl = median(
         entries
             .iter()
             .map(|s| s.realized_cash_pnl + s.mark_to_mid_pnl_end.unwrap_or(0.0))
+            .collect(),
+    );
+    let median_round_pnl_ex_residual = median(
+        entries
+            .iter()
+            .map(|s| s.realized_round_pnl_ex_residual)
             .collect(),
     );
     let mean_fill_to_adverse_move_3s = mean_opt(entries.iter().map(|s| s.fill_to_adverse_move_3s));
@@ -882,8 +953,11 @@ fn aggregate_round_validation(entries: &[RoundValidationSummary]) -> RoundValida
         rounds_partial,
         rounds_full,
         total_realized_cash_pnl,
+        total_realized_round_pnl_ex_residual,
         total_mark_to_mid_pnl_end,
+        total_residual_inventory_cost_end,
         median_round_pnl,
+        median_round_pnl_ex_residual,
         mean_fill_to_adverse_move_3s,
         mean_fill_to_adverse_move_10s,
         mean_max_abs_net_diff,
@@ -927,13 +1001,16 @@ fn update_round_validation_report(strategy: &str, market_slug: &str) -> anyhow::
     fs::write(path, serde_json::to_vec_pretty(&report)?)?;
     if report.all.rounds_full > 0 && report.all.rounds_full % 5 == 0 {
         info!(
-            "📊 EdgeAggregate[{} rounds] strategy={} market={} pnl(realized/mtm)={:.4}/{:.4} median_round_pnl={:.4} adverse(3s/10s)={:.5}/{:.5}",
+            "📊 EdgeAggregate[{} rounds] strategy={} market={} pnl(realized/ex_residual/mtm/residual)={:.4}/{:.4}/{:.4}/{:.4} median(marked/ex_residual)={:.4}/{:.4} adverse(3s/10s)={:.5}/{:.5}",
             report.all.rounds_full,
             report.strategy,
             report.market_slug,
             report.all.total_realized_cash_pnl,
+            report.all.total_realized_round_pnl_ex_residual,
             report.all.total_mark_to_mid_pnl_end,
+            report.all.total_residual_inventory_cost_end,
             report.all.median_round_pnl.unwrap_or(0.0),
+            report.all.median_round_pnl_ex_residual.unwrap_or(0.0),
             report.all.mean_fill_to_adverse_move_3s.unwrap_or(0.0),
             report.all.mean_fill_to_adverse_move_10s.unwrap_or(0.0),
         );
@@ -2512,6 +2589,14 @@ async fn run_market_ws(
                 backoff = Duration::from_millis(100); // Reset on successful connect
                 let (mut write, mut read) = ws.split();
                 let mut session_had_market_data = false;
+                let mut session_raw_msg_count: u64 = 0;
+                let mut session_parsed_msg_count: u64 = 0;
+                let mut session_trade_tick_count: u64 = 0;
+                let mut session_book_tick_count: u64 = 0;
+                let mut last_raw_msg_at = tokio::time::Instant::now();
+                let mut last_market_data_at = tokio::time::Instant::now();
+                let mut health_probe = tokio::time::interval(Duration::from_secs(10));
+                health_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
                 // Subscribe
                 let asset_ids = settings.market_assets();
@@ -2558,15 +2643,57 @@ async fn run_market_ws(
 
                 // Read loop with wall-clock deadline
                 loop {
+                    // Hard wall-clock guard: avoid deadline starvation when read branch is very hot.
+                    if tokio::time::Instant::now() >= deadline {
+                        info!("🏁 Market expired (hard guard) — stopping WS");
+                        ping_handle.abort();
+                        return MarketEnd::Expired;
+                    }
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => {
                             info!("🏁 Market expired (wall-clock) — stopping WS");
                             ping_handle.abort();
                             return MarketEnd::Expired;
                         }
+                        _ = health_probe.tick() => {
+                            let now = tokio::time::Instant::now();
+                            let raw_silence = now.saturating_duration_since(last_raw_msg_at);
+                            let market_data_silence = now.saturating_duration_since(last_market_data_at);
+
+                            // Connection appears alive but no raw payloads: force reconnect.
+                            if raw_silence >= Duration::from_secs(30) {
+                                warn!(
+                                    "⚠️ Market WS raw stream silent for {:?} (raw_msgs={} parsed={} book_ticks={} trade_ticks={}) — reconnecting",
+                                    raw_silence,
+                                    session_raw_msg_count,
+                                    session_parsed_msg_count,
+                                    session_book_tick_count,
+                                    session_trade_tick_count
+                                );
+                                ping_handle.abort();
+                                break;
+                            }
+
+                            // Raw payloads exist, but no usable market data reaches strategy path.
+                            if session_raw_msg_count > 0
+                                && !session_had_market_data
+                                && market_data_silence >= Duration::from_secs(30)
+                            {
+                                warn!(
+                                    "⚠️ Market WS has raw payloads but no usable market data for {:?} (raw_msgs={} parsed={}) — reconnecting",
+                                    market_data_silence,
+                                    session_raw_msg_count,
+                                    session_parsed_msg_count
+                                );
+                                ping_handle.abort();
+                                break;
+                            }
+                        }
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(Message::Text(text))) => {
+                                    session_raw_msg_count = session_raw_msg_count.saturating_add(1);
+                                    last_raw_msg_at = tokio::time::Instant::now();
                                     if let Ok(value) = serde_json::from_str::<Value>(&text) {
                                         let values = if value.is_array() {
                                             value.as_array().cloned().unwrap_or_default()
@@ -2577,15 +2704,20 @@ async fn run_market_ws(
                                         for val in &values {
                                             let parsed = parse_ws_message(&settings, val);
                                             for md_msg in parsed {
+                                                session_parsed_msg_count = session_parsed_msg_count.saturating_add(1);
                                                 match &md_msg {
                                                     MarketDataMsg::TradeTick { .. } => {
                                                         session_had_market_data = true;
+                                                        session_trade_tick_count = session_trade_tick_count.saturating_add(1);
+                                                        last_market_data_at = tokio::time::Instant::now();
                                                         let _ = ofi_tx.send(md_msg.clone()).await;
                                                         let _ = glft_tx.send(md_msg.clone()).await;
                                                     }
                                                     MarketDataMsg::BookTick { .. } => {
                                                         if let Some(full) = book_asm.update(&md_msg) {
                                                             session_had_market_data = true;
+                                                            session_book_tick_count = session_book_tick_count.saturating_add(1);
+                                                            last_market_data_at = tokio::time::Instant::now();
                                                             let _ = glft_tx.send(full.clone()).await;
                                                             let _ = coord_tx.send(full);
                                                         }
@@ -2619,6 +2751,14 @@ async fn run_market_ws(
                         }
                     }
                 }
+                info!(
+                    "📡 WS session summary: raw_msgs={} parsed={} book_ticks={} trade_ticks={} had_market_data={}",
+                    session_raw_msg_count,
+                    session_parsed_msg_count,
+                    session_book_tick_count,
+                    session_trade_tick_count,
+                    session_had_market_data
+                );
                 if session_had_market_data {
                     consecutive_failures = 0;
                 } else {
@@ -3787,7 +3927,7 @@ async fn main() -> anyhow::Result<()> {
                 warn!("⚠️ Failed to append round validation summary: {:?}", e);
             } else {
                 info!(
-                    "📘 RoundValidation | market={} strategy={} partial={} fills(buy/sell)={}/{} net(max/tw)={:.2}/{:.2} pnl(realized/mtm)={:.4}/{:.4} pub(replace/cancel/publish)={}/{}/{}",
+                    "📘 RoundValidation | market={} strategy={} partial={} fills(buy/sell)={}/{} net(max/tw)={:.2}/{:.2} pnl(realized/ex_residual/mtm/residual)={:.4}/{:.4}/{:.4}/{:.4} attr={:?} pub(replace/cancel/publish)={}/{}/{}",
                     summary.market_slug,
                     summary.strategy,
                     summary.partial_round,
@@ -3796,7 +3936,10 @@ async fn main() -> anyhow::Result<()> {
                     summary.max_abs_net_diff,
                     summary.time_weighted_abs_net_diff,
                     summary.realized_cash_pnl,
+                    summary.realized_round_pnl_ex_residual,
                     summary.mark_to_mid_pnl_end.unwrap_or(0.0),
+                    summary.residual_inventory_cost_end,
+                    summary.loss_attribution,
                     summary.replace_events,
                     summary.cancel_events,
                     summary.publish_events,
@@ -3954,6 +4097,48 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn round_summary_for_test() -> RoundValidationSummary {
+        RoundValidationSummary {
+            market_slug: "btc-updown-5m-test".to_string(),
+            strategy: "glft_mm".to_string(),
+            round_start_ts_ms: 1,
+            round_end_ts_ms: 2,
+            partial_round: false,
+            buy_fill_count: 1,
+            sell_fill_count: 0,
+            yes_bought_qty: 5.0,
+            yes_sold_qty: 0.0,
+            no_bought_qty: 0.0,
+            no_sold_qty: 0.0,
+            avg_yes_buy: Some(0.5),
+            avg_yes_sell: None,
+            avg_no_buy: None,
+            avg_no_sell: None,
+            max_abs_net_diff: 5.0,
+            time_weighted_abs_net_diff: 3.0,
+            max_inventory_value: 2.5,
+            time_in_guarded_ms: 1_000,
+            time_in_blocked_ms: 0,
+            paired_locked_pnl_end: None,
+            worst_case_outcome_pnl_end: Some(-0.5),
+            realized_cash_pnl: -2.5,
+            realized_round_pnl_ex_residual: 0.0,
+            mark_to_mid_pnl_end: Some(-0.25),
+            residual_inventory_cost_end: 2.5,
+            residual_exit_required: true,
+            loss_attribution: Some(RoundLossAttribution::CInventoryNotCompleted),
+            fees_paid_est: None,
+            maker_rebate_est: None,
+            replace_events: 2,
+            cancel_events: 1,
+            publish_events: 3,
+            mean_entry_edge_vs_trusted_mid: Some(0.01),
+            mean_fill_slippage_vs_posted: None,
+            fill_to_adverse_move_3s: Some(-0.02),
+            fill_to_adverse_move_10s: Some(-0.03),
+        }
+    }
+
     fn claim_cfg_for_test(dry_run: bool) -> AutoClaimConfig {
         AutoClaimConfig {
             enabled: true,
@@ -4078,6 +4263,17 @@ mod tests {
         let huge = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
         let parsed = parse_u256_allowance(huge).expect("must parse large allowance");
         assert!(!parsed.is_zero(), "large allowance should be non-zero");
+    }
+
+    #[test]
+    fn test_round_validation_aggregate_tracks_residual_inventory_fields() {
+        let entries = vec![round_summary_for_test()];
+        let agg = aggregate_round_validation(&entries);
+        assert_eq!(agg.total_realized_cash_pnl, -2.5);
+        assert_eq!(agg.total_realized_round_pnl_ex_residual, 0.0);
+        assert_eq!(agg.total_residual_inventory_cost_end, 2.5);
+        assert_eq!(agg.median_round_pnl, Some(-2.75));
+        assert_eq!(agg.median_round_pnl_ex_residual, Some(0.0));
     }
 
     #[test]

@@ -12,7 +12,9 @@
       "Bash(grep:*)",
       "Bash(cargo test:*)",
       "Bash(python3:*)",
-      "Bash(cargo build:*)"
+      "Bash(cargo build:*)",
+      "WebFetch(domain:x.com)",
+      "WebFetch(domain:twitter.com)"
     ]
   }
 }
