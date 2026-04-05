@@ -2853,8 +2853,7 @@ async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
         }
     }
     assert_eq!(
-        reason,
-        None,
+        reason, None,
         "pair_arb should not apply endgame clear gate in soft-close"
     );
 
@@ -3105,6 +3104,37 @@ async fn test_balanced_excess_mid_capped() {
 
     drop(m);
     let _ = h.await;
+}
+
+#[test]
+fn test_pair_arb_round_suitability_waits_then_skips_imbalanced_round() {
+    let (_, _, _, _, _, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let now = Instant::now();
+    coord.pair_arb_round_gate_until = now + Duration::from_secs(60);
+
+    // During the first 60s, pair_arb should only observe.
+    let observing = coord.evaluate_pair_arb_round_suitability(&book(0.11, 0.13, 0.87, 0.89), now);
+    assert!(
+        observing.is_none(),
+        "round gate should stay in observation window"
+    );
+
+    // After gate deadline, the same skewed market should be marked skipped.
+    let decided = coord.evaluate_pair_arb_round_suitability(
+        &book(0.11, 0.13, 0.87, 0.89),
+        now + Duration::from_secs(61),
+    );
+    assert_eq!(decided, Some(RoundSuitability::SkippedImbalanced));
+}
+
+#[test]
+fn test_pair_arb_round_suitability_marks_balanced_round_eligible() {
+    let (_, _, _, _, _, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let now = Instant::now();
+    coord.pair_arb_round_gate_until = now;
+
+    let decided = coord.evaluate_pair_arb_round_suitability(&book(0.34, 0.36, 0.59, 0.61), now);
+    assert_eq!(decided, Some(RoundSuitability::Eligible));
 }
 
 #[tokio::test]

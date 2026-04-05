@@ -10,6 +10,11 @@ pub(crate) struct PairArbStrategy;
 
 pub(crate) static PAIR_ARB_STRATEGY: PairArbStrategy = PairArbStrategy;
 const FLOAT_EPS: f64 = 1e-9;
+const TIER_1_NET_DIFF: f64 = 5.0;
+const TIER_2_NET_DIFF: f64 = 10.0;
+const TIER_1_MULT: f64 = 0.85;
+const TIER_2_MULT: f64 = 0.70;
+const EARLY_SKEW_MULT: f64 = 0.35;
 
 impl QuoteStrategy for PairArbStrategy {
     fn kind(&self) -> StrategyKind {
@@ -38,7 +43,10 @@ impl QuoteStrategy for PairArbStrategy {
         } else {
             0.0
         };
-        let effective_skew_factor = cfg.as_skew_factor * coordinator.compute_time_decay_factor();
+        let abs_net_diff = inv.net_diff.abs();
+        let time_decay = coordinator.compute_time_decay_factor();
+        let effective_skew_factor =
+            Self::effective_skew_factor(cfg.as_skew_factor, abs_net_diff, time_decay);
         let skew_shift = skew * effective_skew_factor;
 
         let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
@@ -49,6 +57,12 @@ impl QuoteStrategy for PairArbStrategy {
             raw_yes -= overflow / 2.0;
             raw_no -= overflow / 2.0;
         }
+
+        // 1b) Tiered avg-cost cap for dominant inventory side.
+        // This is an extra cap before pair-cost ceiling:
+        // - Tier 1: net diff >= 5  -> dominant side bid <= avg * 0.85
+        // - Tier 2: net diff >= 10 -> dominant side bid <= avg * 0.70
+        (raw_yes, raw_no) = Self::apply_tier_avg_cost_cap(inv, raw_yes, raw_no);
 
         // 2) Inventory Cost Clamp
         let mut disable_yes_by_cost = false;
@@ -149,6 +163,41 @@ impl QuoteStrategy for PairArbStrategy {
 }
 
 impl PairArbStrategy {
+    pub(crate) fn effective_skew_factor(base: f64, abs_net_diff: f64, time_decay: f64) -> f64 {
+        if abs_net_diff < TIER_1_NET_DIFF {
+            return base * EARLY_SKEW_MULT;
+        }
+        if abs_net_diff < TIER_2_NET_DIFF {
+            let ramp = (abs_net_diff - TIER_1_NET_DIFF) / (TIER_2_NET_DIFF - TIER_1_NET_DIFF);
+            return base * (EARLY_SKEW_MULT + (1.0 - EARLY_SKEW_MULT) * ramp) * time_decay;
+        }
+        base * time_decay
+    }
+
+    fn apply_tier_avg_cost_cap(
+        inv: &crate::polymarket::messages::InventoryState,
+        mut raw_yes: f64,
+        mut raw_no: f64,
+    ) -> (f64, f64) {
+        if inv.net_diff >= TIER_1_NET_DIFF && inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 {
+            let mult = if inv.net_diff >= TIER_2_NET_DIFF {
+                TIER_2_MULT
+            } else {
+                TIER_1_MULT
+            };
+            raw_yes = raw_yes.min(inv.yes_avg_cost * mult);
+        }
+        if inv.net_diff <= -TIER_1_NET_DIFF && inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
+            let mult = if inv.net_diff <= -TIER_2_NET_DIFF {
+                TIER_2_MULT
+            } else {
+                TIER_1_MULT
+            };
+            raw_no = raw_no.min(inv.no_avg_cost * mult);
+        }
+        (raw_yes, raw_no)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn should_keep_candidate(
         &self,
@@ -210,5 +259,56 @@ impl PairArbStrategy {
             book,
         );
         projected_open_edge > current_open_edge + FLOAT_EPS
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::polymarket::messages::InventoryState;
+
+    #[test]
+    fn test_effective_skew_factor_uses_tiered_curve() {
+        let base = 0.06;
+        let td = 1.6;
+
+        let early = PairArbStrategy::effective_skew_factor(base, 3.0, td);
+        assert!((early - (base * EARLY_SKEW_MULT)).abs() < 1e-9);
+
+        let mid = PairArbStrategy::effective_skew_factor(base, 7.5, td);
+        let expected_mid = base * (EARLY_SKEW_MULT + 0.65 * 0.5) * td;
+        assert!((mid - expected_mid).abs() < 1e-9);
+
+        let late = PairArbStrategy::effective_skew_factor(base, 12.0, td);
+        assert!((late - (base * td)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_tier_avg_cost_cap_applies_on_dominant_side() {
+        let inv_yes = InventoryState {
+            yes_qty: 15.0,
+            yes_avg_cost: 0.45,
+            no_qty: 0.0,
+            no_avg_cost: 0.0,
+            net_diff: 10.0,
+            ..Default::default()
+        };
+        let (yes_capped, no_unchanged) =
+            PairArbStrategy::apply_tier_avg_cost_cap(&inv_yes, 0.60, 0.40);
+        assert!((yes_capped - (0.45 * TIER_2_MULT)).abs() < 1e-9);
+        assert!((no_unchanged - 0.40).abs() < 1e-9);
+
+        let inv_no = InventoryState {
+            no_qty: 10.0,
+            no_avg_cost: 0.50,
+            yes_qty: 0.0,
+            yes_avg_cost: 0.0,
+            net_diff: -6.0,
+            ..Default::default()
+        };
+        let (yes_unchanged, no_capped) =
+            PairArbStrategy::apply_tier_avg_cost_cap(&inv_no, 0.30, 0.60);
+        assert!((yes_unchanged - 0.30).abs() < 1e-9);
+        assert!((no_capped - (0.50 * TIER_1_MULT)).abs() < 1e-9);
     }
 }
