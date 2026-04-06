@@ -1,8 +1,8 @@
 use crate::polymarket::coordinator::StrategyCoordinator;
 use crate::polymarket::coordinator::StrategyInventoryMetrics;
-use crate::polymarket::messages::{BidReason, TradeDirection};
+use crate::polymarket::messages::{BidReason, SideOfi, TradeDirection};
 use crate::polymarket::types::Side;
-use tracing::debug;
+use tracing::{debug, trace};
 
 use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput};
 
@@ -15,6 +15,31 @@ const TIER_2_NET_DIFF: f64 = 10.0;
 const TIER_1_MULT: f64 = 0.85;
 const TIER_2_MULT: f64 = 0.70;
 const EARLY_SKEW_MULT: f64 = 0.35;
+const OFI_HOT_ADJUST_TICKS: f64 = 1.0;
+const OFI_TOXIC_ADJUST_TICKS: f64 = 2.0;
+const RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT: f64 = -0.5;
+const RISK_INCR_LOW_NET_MIN_UTILITY_MULT: f64 = 0.5;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PairArbRiskEffect {
+    PairingOrReducing,
+    RiskIncreasing,
+}
+
+impl PairArbRiskEffect {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PairingOrReducing => "pairing",
+            Self::RiskIncreasing => "risk_increasing",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PairArbOfiDecision {
+    adjust_ticks: f64,
+    suppress: bool,
+}
 
 impl QuoteStrategy for PairArbStrategy {
     fn kind(&self) -> StrategyKind {
@@ -64,6 +89,57 @@ impl QuoteStrategy for PairArbStrategy {
         // - Tier 2: net diff >= 10 -> dominant side bid <= avg * 0.70
         (raw_yes, raw_no) = Self::apply_tier_avg_cost_cap(inv, raw_yes, raw_no);
 
+        let mut quotes = StrategyQuotes::default();
+        let yes_risk_effect = Self::candidate_risk_effect(inv, Side::Yes, cfg.bid_size);
+        let yes_ofi = Self::ofi_decision(input.ofi.map(|ofi| ofi.yes), yes_risk_effect);
+        if yes_ofi.suppress {
+            quotes.note_pair_arb_ofi_suppressed();
+            debug!(
+                "🪵 pair_arb OFI suppress | side=YES risk_effect={} ofi_heat={:.2} ofi_toxic={} ofi_saturated={} ofi_adjust_ticks={:.1} ofi_suppressed=true",
+                yes_risk_effect.as_str(),
+                input.ofi.map(|ofi| ofi.yes.heat_score).unwrap_or_default(),
+                input.ofi.map(|ofi| ofi.yes.is_toxic).unwrap_or(false),
+                input.ofi.map(|ofi| ofi.yes.saturated).unwrap_or(false),
+                yes_ofi.adjust_ticks,
+            );
+        } else if yes_ofi.adjust_ticks > 0.0 {
+            raw_yes -= yes_ofi.adjust_ticks * cfg.tick_size;
+            quotes.note_pair_arb_ofi_softened();
+            debug!(
+                "🪵 pair_arb OFI soften | side=YES risk_effect={} ofi_heat={:.2} ofi_toxic={} ofi_saturated={} ofi_adjust_ticks={:.1} ofi_suppressed=false",
+                yes_risk_effect.as_str(),
+                input.ofi.map(|ofi| ofi.yes.heat_score).unwrap_or_default(),
+                input.ofi.map(|ofi| ofi.yes.is_toxic).unwrap_or(false),
+                input.ofi.map(|ofi| ofi.yes.saturated).unwrap_or(false),
+                yes_ofi.adjust_ticks,
+            );
+        }
+
+        let no_risk_effect = Self::candidate_risk_effect(inv, Side::No, cfg.bid_size);
+        let no_ofi = Self::ofi_decision(input.ofi.map(|ofi| ofi.no), no_risk_effect);
+        if no_ofi.suppress {
+            quotes.note_pair_arb_ofi_suppressed();
+            debug!(
+                "🪵 pair_arb OFI suppress | side=NO risk_effect={} ofi_heat={:.2} ofi_toxic={} ofi_saturated={} ofi_adjust_ticks={:.1} ofi_suppressed=true",
+                no_risk_effect.as_str(),
+                input.ofi.map(|ofi| ofi.no.heat_score).unwrap_or_default(),
+                input.ofi.map(|ofi| ofi.no.is_toxic).unwrap_or(false),
+                input.ofi.map(|ofi| ofi.no.saturated).unwrap_or(false),
+                no_ofi.adjust_ticks,
+            );
+        } else if no_ofi.adjust_ticks > 0.0 {
+            raw_no -= no_ofi.adjust_ticks * cfg.tick_size;
+            quotes.note_pair_arb_ofi_softened();
+            debug!(
+                "🪵 pair_arb OFI soften | side=NO risk_effect={} ofi_heat={:.2} ofi_toxic={} ofi_saturated={} ofi_adjust_ticks={:.1} ofi_suppressed=false",
+                no_risk_effect.as_str(),
+                input.ofi.map(|ofi| ofi.no.heat_score).unwrap_or_default(),
+                input.ofi.map(|ofi| ofi.no.is_toxic).unwrap_or(false),
+                input.ofi.map(|ofi| ofi.no.saturated).unwrap_or(false),
+                no_ofi.adjust_ticks,
+            );
+        }
+
         // 2) Inventory Cost Clamp
         let mut disable_yes_by_cost = false;
         let mut disable_no_by_cost = false;
@@ -103,59 +179,64 @@ impl QuoteStrategy for PairArbStrategy {
             raw_no = f64::min(raw_no, ub.no_ask - no_safety_margin);
         }
 
-        let bid_yes = if disable_yes_by_cost {
-            0.0
-        } else {
-            coordinator.safe_price(raw_yes)
-        };
-        let bid_no = if disable_no_by_cost {
-            0.0
-        } else {
-            coordinator.safe_price(raw_no)
-        };
-
-        let mut quotes = StrategyQuotes::default();
-        if bid_yes > 0.0
-            && self.should_keep_candidate(
-                coordinator,
-                inv,
-                ub,
-                current_metrics,
-                current_utility,
-                current_open_edge,
-                Side::Yes,
-                bid_yes,
-                cfg.bid_size,
-            )
-        {
-            quotes.set(StrategyIntent {
-                side: Side::Yes,
-                direction: TradeDirection::Buy,
-                price: bid_yes,
-                size: cfg.bid_size,
-                reason: BidReason::Provide,
-            });
+        if !yes_ofi.suppress {
+            let bid_yes = if disable_yes_by_cost {
+                0.0
+            } else {
+                coordinator.safe_price(raw_yes)
+            };
+            if bid_yes > 0.0
+                && self.should_keep_candidate(
+                    coordinator,
+                    &mut quotes,
+                    inv,
+                    ub,
+                    current_metrics,
+                    current_utility,
+                    current_open_edge,
+                    Side::Yes,
+                    bid_yes,
+                    cfg.bid_size,
+                )
+            {
+                quotes.set(StrategyIntent {
+                    side: Side::Yes,
+                    direction: TradeDirection::Buy,
+                    price: bid_yes,
+                    size: cfg.bid_size,
+                    reason: BidReason::Provide,
+                });
+            }
         }
-        if bid_no > 0.0
-            && self.should_keep_candidate(
-                coordinator,
-                inv,
-                ub,
-                current_metrics,
-                current_utility,
-                current_open_edge,
-                Side::No,
-                bid_no,
-                cfg.bid_size,
-            )
-        {
-            quotes.set(StrategyIntent {
-                side: Side::No,
-                direction: TradeDirection::Buy,
-                price: bid_no,
-                size: cfg.bid_size,
-                reason: BidReason::Provide,
-            });
+
+        if !no_ofi.suppress {
+            let bid_no = if disable_no_by_cost {
+                0.0
+            } else {
+                coordinator.safe_price(raw_no)
+            };
+            if bid_no > 0.0
+                && self.should_keep_candidate(
+                    coordinator,
+                    &mut quotes,
+                    inv,
+                    ub,
+                    current_metrics,
+                    current_utility,
+                    current_open_edge,
+                    Side::No,
+                    bid_no,
+                    cfg.bid_size,
+                )
+            {
+                quotes.set(StrategyIntent {
+                    side: Side::No,
+                    direction: TradeDirection::Buy,
+                    price: bid_no,
+                    size: cfg.bid_size,
+                    reason: BidReason::Provide,
+                });
+            }
         }
 
         quotes
@@ -163,6 +244,62 @@ impl QuoteStrategy for PairArbStrategy {
 }
 
 impl PairArbStrategy {
+    fn candidate_risk_effect(
+        inv: &crate::polymarket::messages::InventoryState,
+        side: Side,
+        size: f64,
+    ) -> PairArbRiskEffect {
+        let projected = match side {
+            Side::Yes => (inv.net_diff + size).abs(),
+            Side::No => (inv.net_diff - size).abs(),
+        };
+        if projected <= inv.net_diff.abs() + FLOAT_EPS {
+            PairArbRiskEffect::PairingOrReducing
+        } else {
+            PairArbRiskEffect::RiskIncreasing
+        }
+    }
+
+    fn ofi_decision(
+        side_ofi: Option<SideOfi>,
+        risk_effect: PairArbRiskEffect,
+    ) -> PairArbOfiDecision {
+        if risk_effect != PairArbRiskEffect::RiskIncreasing {
+            return PairArbOfiDecision {
+                adjust_ticks: 0.0,
+                suppress: false,
+            };
+        }
+        let Some(side_ofi) = side_ofi else {
+            return PairArbOfiDecision {
+                adjust_ticks: 0.0,
+                suppress: false,
+            };
+        };
+        if side_ofi.is_toxic && side_ofi.saturated {
+            return PairArbOfiDecision {
+                adjust_ticks: OFI_TOXIC_ADJUST_TICKS,
+                suppress: true,
+            };
+        }
+        if side_ofi.is_toxic {
+            return PairArbOfiDecision {
+                adjust_ticks: OFI_TOXIC_ADJUST_TICKS,
+                suppress: false,
+            };
+        }
+        if side_ofi.is_hot {
+            return PairArbOfiDecision {
+                adjust_ticks: OFI_HOT_ADJUST_TICKS,
+                suppress: false,
+            };
+        }
+        PairArbOfiDecision {
+            adjust_ticks: 0.0,
+            suppress: false,
+        }
+    }
+
     pub(crate) fn effective_skew_factor(base: f64, abs_net_diff: f64, time_decay: f64) -> f64 {
         if abs_net_diff < TIER_1_NET_DIFF {
             return base * EARLY_SKEW_MULT;
@@ -198,10 +335,27 @@ impl PairArbStrategy {
         (raw_yes, raw_no)
     }
 
+    fn min_utility_delta_for_risk_increasing(
+        current_paired_qty: f64,
+        abs_net_diff: f64,
+        size: f64,
+        tick_size: f64,
+    ) -> f64 {
+        let base = size * tick_size.max(1e-9);
+        if current_paired_qty <= FLOAT_EPS && abs_net_diff <= FLOAT_EPS {
+            return RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT * base;
+        }
+        if abs_net_diff + FLOAT_EPS < size {
+            return RISK_INCR_LOW_NET_MIN_UTILITY_MULT * base;
+        }
+        base
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn should_keep_candidate(
         &self,
         coordinator: &StrategyCoordinator,
+        quotes: &mut StrategyQuotes,
         inv: &crate::polymarket::messages::InventoryState,
         book: &crate::polymarket::coordinator::Book,
         current_metrics: &StrategyInventoryMetrics,
@@ -219,10 +373,25 @@ impl PairArbStrategy {
             reason: BidReason::Provide,
         };
         if !coordinator.can_place_strategy_intent(inv, Some(intent)) {
+            quotes.note_pair_arb_skip_inventory_gate();
+            trace!(
+                "🧭 pair_arb skip | side={} reason=inventory_gate price={:.4} size={:.2} net_diff={:.2}",
+                side.as_str(),
+                price,
+                size,
+                inv.net_diff,
+            );
             return false;
         }
 
         let Some(projected) = coordinator.simulate_buy(inv, side, size, price) else {
+            quotes.note_pair_arb_skip_simulate_buy_none();
+            trace!(
+                "🧭 pair_arb skip | side={} reason=simulate_buy_none price={:.4} size={:.2}",
+                side.as_str(),
+                price,
+                size,
+            );
             return false;
         };
 
@@ -234,6 +403,13 @@ impl PairArbStrategy {
         let reaches_target_pair = projected.metrics.paired_qty > FLOAT_EPS
             && projected.metrics.pair_cost <= coordinator.cfg().pair_target + FLOAT_EPS;
         if improves_locked_pnl || improves_pair_cost || reaches_target_pair {
+            quotes.note_pair_arb_keep_candidate();
+            return true;
+        }
+
+        let risk_increasing = projected.projected_abs_net_diff > inv.net_diff.abs() + FLOAT_EPS;
+        if !risk_increasing {
+            quotes.note_pair_arb_keep_candidate();
             return true;
         }
 
@@ -243,14 +419,23 @@ impl PairArbStrategy {
             book,
         );
         let utility_delta = projected_utility - current_utility;
-        let min_utility_delta = size * coordinator.cfg().tick_size.max(1e-9);
+        let min_utility_delta = Self::min_utility_delta_for_risk_increasing(
+            current_metrics.paired_qty,
+            inv.net_diff.abs(),
+            size,
+            coordinator.cfg().tick_size,
+        );
         if utility_delta + FLOAT_EPS < min_utility_delta {
+            quotes.note_pair_arb_skip_utility_delta();
+            trace!(
+                "🧭 pair_arb skip | side={} reason=utility_delta utility_delta={:.6} min_delta={:.6} pair_cost={:.4} paired_qty={:.2}",
+                side.as_str(),
+                utility_delta,
+                min_utility_delta,
+                projected.metrics.pair_cost,
+                projected.metrics.paired_qty,
+            );
             return false;
-        }
-
-        let risk_increasing = projected.projected_abs_net_diff > inv.net_diff.abs() + FLOAT_EPS;
-        if !risk_increasing {
-            return true;
         }
 
         let projected_open_edge = coordinator.open_edge_for_inventory(
@@ -258,14 +443,27 @@ impl PairArbStrategy {
             &projected.metrics,
             book,
         );
-        projected_open_edge > current_open_edge + FLOAT_EPS
+        let keep = projected_open_edge > current_open_edge + FLOAT_EPS;
+        if !keep {
+            quotes.note_pair_arb_skip_open_edge_not_improved();
+            trace!(
+                "🧭 pair_arb skip | side={} reason=open_edge_not_improved current_open_edge={:.6} projected_open_edge={:.6} projected_abs_net_diff={:.2}",
+                side.as_str(),
+                current_open_edge,
+                projected_open_edge,
+                projected.projected_abs_net_diff,
+            );
+        } else {
+            quotes.note_pair_arb_keep_candidate();
+        }
+        keep
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::polymarket::messages::InventoryState;
+    use crate::polymarket::messages::{InventoryState, SideOfi};
 
     #[test]
     fn test_effective_skew_factor_uses_tiered_curve() {
@@ -310,5 +508,85 @@ mod tests {
             PairArbStrategy::apply_tier_avg_cost_cap(&inv_no, 0.30, 0.60);
         assert!((yes_unchanged - 0.30).abs() < 1e-9);
         assert!((no_capped - (0.50 * TIER_1_MULT)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_ofi_hot_only_softens_risk_increasing_buy() {
+        let decision = PairArbStrategy::ofi_decision(
+            Some(SideOfi {
+                is_hot: true,
+                heat_score: 2.0,
+                ..Default::default()
+            }),
+            PairArbRiskEffect::RiskIncreasing,
+        );
+        assert!((decision.adjust_ticks - OFI_HOT_ADJUST_TICKS).abs() < 1e-9);
+        assert!(!decision.suppress);
+    }
+
+    #[test]
+    fn test_ofi_toxic_softens_or_suppresses_risk_increasing_buy() {
+        let softened = PairArbStrategy::ofi_decision(
+            Some(SideOfi {
+                is_toxic: true,
+                toxic_buy: true,
+                ..Default::default()
+            }),
+            PairArbRiskEffect::RiskIncreasing,
+        );
+        assert!((softened.adjust_ticks - OFI_TOXIC_ADJUST_TICKS).abs() < 1e-9);
+        assert!(!softened.suppress);
+
+        let suppressed = PairArbStrategy::ofi_decision(
+            Some(SideOfi {
+                is_toxic: true,
+                toxic_buy: true,
+                saturated: true,
+                ..Default::default()
+            }),
+            PairArbRiskEffect::RiskIncreasing,
+        );
+        assert!((suppressed.adjust_ticks - OFI_TOXIC_ADJUST_TICKS).abs() < 1e-9);
+        assert!(suppressed.suppress);
+    }
+
+    #[test]
+    fn test_ofi_ignored_for_pairing_or_reducing_buy() {
+        let decision = PairArbStrategy::ofi_decision(
+            Some(SideOfi {
+                is_hot: true,
+                is_toxic: true,
+                saturated: true,
+                toxic_buy: true,
+                ..Default::default()
+            }),
+            PairArbRiskEffect::PairingOrReducing,
+        );
+        assert_eq!(decision.adjust_ticks, 0.0);
+        assert!(!decision.suppress);
+    }
+
+    #[test]
+    fn test_min_utility_delta_for_risk_increasing_bootstrap_and_low_net() {
+        let size = 5.0;
+        let tick = 0.01;
+        let base = size * tick;
+
+        let bootstrap =
+            PairArbStrategy::min_utility_delta_for_risk_increasing(0.0, 0.0, size, tick);
+        assert!((bootstrap - (RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT * base)).abs() < 1e-9);
+
+        let low_net = PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 4.0, size, tick);
+        assert!((low_net - (RISK_INCR_LOW_NET_MIN_UTILITY_MULT * base)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_min_utility_delta_for_risk_increasing_full_threshold_after_low_net() {
+        let size = 5.0;
+        let tick = 0.01;
+        let base = size * tick;
+
+        let full = PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 5.0, size, tick);
+        assert!((full - base).abs() < 1e-9);
     }
 }

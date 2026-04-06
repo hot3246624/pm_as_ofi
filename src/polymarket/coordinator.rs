@@ -47,6 +47,7 @@ const LIVE_OBS_HEAT_EVENTS_ALERT: u64 = 14;
 const PAIR_ARB_ROUND_GATE_SECS: u64 = 60;
 const PAIR_ARB_IMBALANCE_MID_THRESHOLD: f64 = 0.20;
 const PAIR_ARB_IMBALANCE_PAIR_GAP: f64 = 0.01;
+const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
 
 #[path = "coordinator_endgame.rs"]
 mod coordinator_endgame;
@@ -593,6 +594,24 @@ struct Stats {
     publish_budget_suppressed: u64,
     forced_realign_count: u64,
     forced_realign_hard_count: u64,
+    pair_arb_ofi_softened_quotes: u64,
+    pair_arb_ofi_suppressed_quotes: u64,
+    pair_arb_keep_candidates: u64,
+    pair_arb_skip_inventory_gate: u64,
+    pair_arb_skip_simulate_buy_none: u64,
+    pair_arb_skip_utility_delta: u64,
+    pair_arb_skip_open_edge_not_improved: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PairArbGateLogSnapshot {
+    ofi_softened_quotes: u64,
+    ofi_suppressed_quotes: u64,
+    keep_candidates: u64,
+    skip_inventory_gate: u64,
+    skip_simulate_buy_none: u64,
+    skip_utility_delta: u64,
+    skip_open_edge_not_improved: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -867,6 +886,8 @@ pub struct StrategyCoordinator {
     glft_republish_settle_until: Option<Instant>,
     glft_recovery_force_clear_pending: bool,
     last_metrics_log_ts: Instant,
+    pair_arb_gate_last_log_ts: Instant,
+    pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
     last_endgame_phase: EndgamePhase,
     edge_hold_state: Option<EdgeHoldState>,
     yes_maker_friction: MakerFriction,
@@ -924,6 +945,13 @@ pub struct CoordinatorObsSnapshot {
     pub publish_budget_suppressed: u64,
     pub forced_realign_count: u64,
     pub forced_realign_hard_count: u64,
+    pub pair_arb_ofi_softened_quotes: u64,
+    pub pair_arb_ofi_suppressed_quotes: u64,
+    pub pair_arb_keep_candidates: u64,
+    pub pair_arb_skip_inventory_gate: u64,
+    pub pair_arb_skip_simulate_buy_none: u64,
+    pub pair_arb_skip_utility_delta: u64,
+    pub pair_arb_skip_open_edge_not_improved: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1050,6 +1078,8 @@ impl StrategyCoordinator {
             glft_republish_settle_until: None,
             glft_recovery_force_clear_pending: false,
             last_metrics_log_ts,
+            pair_arb_gate_last_log_ts: now,
+            pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
             last_endgame_phase: EndgamePhase::Normal,
             edge_hold_state: None,
             yes_maker_friction: MakerFriction::default(),
@@ -1157,13 +1187,15 @@ impl StrategyCoordinator {
             final_metrics.residual_inventory_value,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
             self.stats.policy_transition_events, self.stats.policy_noop_ticks,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
+            self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes,
+            self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none, self.stats.pair_arb_skip_utility_delta, self.stats.pair_arb_skip_open_edge_not_improved,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
@@ -1207,8 +1239,50 @@ impl StrategyCoordinator {
             publish_budget_suppressed: self.stats.publish_budget_suppressed,
             forced_realign_count: self.stats.forced_realign_count,
             forced_realign_hard_count: self.stats.forced_realign_hard_count,
+            pair_arb_ofi_softened_quotes: self.stats.pair_arb_ofi_softened_quotes,
+            pair_arb_ofi_suppressed_quotes: self.stats.pair_arb_ofi_suppressed_quotes,
+            pair_arb_keep_candidates: self.stats.pair_arb_keep_candidates,
+            pair_arb_skip_inventory_gate: self.stats.pair_arb_skip_inventory_gate,
+            pair_arb_skip_simulate_buy_none: self.stats.pair_arb_skip_simulate_buy_none,
+            pair_arb_skip_utility_delta: self.stats.pair_arb_skip_utility_delta,
+            pair_arb_skip_open_edge_not_improved: self.stats.pair_arb_skip_open_edge_not_improved,
         };
         let _ = obs_tx.send(snapshot);
+    }
+
+    fn record_strategy_quote_diagnostics(&mut self, quotes: &StrategyQuotes) {
+        self.stats.pair_arb_ofi_softened_quotes = self
+            .stats
+            .pair_arb_ofi_softened_quotes
+            .saturating_add(quotes.diagnostics.pair_arb_ofi_softened_quotes as u64);
+        self.stats.pair_arb_ofi_suppressed_quotes = self
+            .stats
+            .pair_arb_ofi_suppressed_quotes
+            .saturating_add(quotes.diagnostics.pair_arb_ofi_suppressed_quotes as u64);
+        self.stats.pair_arb_keep_candidates = self
+            .stats
+            .pair_arb_keep_candidates
+            .saturating_add(quotes.diagnostics.pair_arb_keep_candidates as u64);
+        self.stats.pair_arb_skip_inventory_gate = self
+            .stats
+            .pair_arb_skip_inventory_gate
+            .saturating_add(quotes.diagnostics.pair_arb_skip_inventory_gate as u64);
+        self.stats.pair_arb_skip_simulate_buy_none = self
+            .stats
+            .pair_arb_skip_simulate_buy_none
+            .saturating_add(quotes.diagnostics.pair_arb_skip_simulate_buy_none as u64);
+        self.stats.pair_arb_skip_utility_delta = self
+            .stats
+            .pair_arb_skip_utility_delta
+            .saturating_add(quotes.diagnostics.pair_arb_skip_utility_delta as u64);
+        self.stats.pair_arb_skip_open_edge_not_improved = self
+            .stats
+            .pair_arb_skip_open_edge_not_improved
+            .saturating_add(quotes.diagnostics.pair_arb_skip_open_edge_not_improved as u64);
+    }
+
+    pub(super) fn execution_toxic_block_applies(&self) -> bool {
+        self.cfg.strategy != StrategyKind::PairArb
     }
 
     // ═════════════════════════════════════════════════
@@ -1938,6 +2012,7 @@ impl StrategyCoordinator {
             glft: glft_snapshot.as_ref(),
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
+        self.record_strategy_quote_diagnostics(&quotes);
         self.apply_flow_risk(
             &inv,
             &mut quotes,
@@ -1971,6 +2046,8 @@ impl StrategyCoordinator {
         if self.cfg.strategy.execution_mode() == StrategyExecutionMode::SlotMarketMaking {
             return;
         }
+        let yes_toxic_blocked = yes_toxic_blocked && self.execution_toxic_block_applies();
+        let no_toxic_blocked = no_toxic_blocked && self.execution_toxic_block_applies();
         let yes_allowed = self.flow_risk_allows_intent(
             inv,
             quotes.buy_for(Side::Yes),

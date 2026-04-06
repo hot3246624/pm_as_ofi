@@ -14,7 +14,11 @@
       "Bash(python3:*)",
       "Bash(cargo build:*)",
       "WebFetch(domain:x.com)",
-      "WebFetch(domain:twitter.com)"
+      "WebFetch(domain:twitter.com)",
+      "WebFetch(domain:nitter.net)",
+      "WebFetch(domain:webcache.googleusercontent.com)",
+      "WebFetch(domain:polymarketanalytics.com)",
+      "WebFetch(domain:polymarketwhales.info)"
     ]
   }
 }

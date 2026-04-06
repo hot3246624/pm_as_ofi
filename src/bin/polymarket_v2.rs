@@ -16,6 +16,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -2469,6 +2470,46 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
     msgs
 }
 
+/// Parse one WS text payload and return parsed market-data messages plus ingest stats.
+fn parse_ws_payload(settings: &Settings, text: &str) -> (Vec<MarketDataMsg>, u64, u64) {
+    let mut out = Vec::new();
+    let mut unknown_events = 0_u64;
+    let mut parse_drops = 0_u64;
+
+    let value = match serde_json::from_str::<Value>(text) {
+        Ok(v) => v,
+        Err(_) => return (out, unknown_events, 1),
+    };
+
+    let values = if value.is_array() {
+        value.as_array().cloned().unwrap_or_default()
+    } else {
+        vec![value]
+    };
+
+    for val in &values {
+        let event_type = val
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+        let known_event = matches!(
+            event_type,
+            "book" | "price_change" | "best_bid_ask" | "last_trade_price"
+        );
+        if !known_event {
+            unknown_events = unknown_events.saturating_add(1);
+        }
+
+        let parsed = parse_ws_message(settings, val);
+        if known_event && parsed.is_empty() {
+            parse_drops = parse_drops.saturating_add(1);
+        }
+        out.extend(parsed);
+    }
+
+    (out, unknown_events, parse_drops)
+}
+
 // ─────────────────────────────────────────────────────────
 // Book State Assembler (merges partial updates into full BookTick)
 // ─────────────────────────────────────────────────────────
@@ -2536,6 +2577,72 @@ enum MarketEnd {
     },
 }
 
+// Hard guard against "zombie rounds": even if WS loop gets stuck, the outer runner
+// must force-rotate shortly after the market end timestamp.
+const MARKET_WS_HARD_CUTOFF_GRACE_SECS: u64 = 45;
+// If we keep receiving raw payloads but never reconstruct a full 4-price book,
+// reconnect proactively because strategy cannot trade without complete book.
+const MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS: u64 = 30;
+
+fn try_forward_md(
+    tx: &mpsc::Sender<MarketDataMsg>,
+    msg: MarketDataMsg,
+    dropped_full_counter: &mut u64,
+) {
+    match tx.try_send(msg) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            *dropped_full_counter = dropped_full_counter.saturating_add(1);
+        }
+        // Closed receiver is expected for non-GLFT strategies.
+        Err(TrySendError::Closed(_)) => {}
+    }
+}
+
+async fn run_market_ws_with_wall_guard(
+    settings: Settings,
+    ofi_tx: mpsc::Sender<MarketDataMsg>,
+    glft_tx: mpsc::Sender<MarketDataMsg>,
+    coord_tx: watch::Sender<MarketDataMsg>,
+    end_ts: u64,
+) -> MarketEnd {
+    let hard_cutoff_ts = end_ts.saturating_add(MARKET_WS_HARD_CUTOFF_GRACE_SECS);
+    let mut ws_task = tokio::spawn(run_market_ws(settings, ofi_tx, glft_tx, coord_tx, end_ts));
+    loop {
+        tokio::select! {
+            joined = &mut ws_task => {
+                match joined {
+                    Ok(reason) => return reason,
+                    Err(e) => {
+                        warn!("⚠️ Market WS task join error: {:?} — treating as degraded", e);
+                        return MarketEnd::WsDegraded {
+                            consecutive_failures: ws_degrade_max_failures(),
+                            remaining_secs: 0,
+                        };
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {
+                let now_unix = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_else(|_| Duration::from_secs(0))
+                    .as_secs();
+                if now_unix >= hard_cutoff_ts {
+                    warn!(
+                        "🛑 Hard wall-clock cutoff reached (now={} >= end_ts+grace={}+{}) — aborting market WS and rotating",
+                        now_unix,
+                        end_ts,
+                        MARKET_WS_HARD_CUTOFF_GRACE_SECS
+                    );
+                    ws_task.abort();
+                    let _ = ws_task.await;
+                    return MarketEnd::Expired;
+                }
+            }
+        }
+    }
+}
+
 async fn run_market_ws(
     settings: Settings,
     ofi_tx: mpsc::Sender<MarketDataMsg>,
@@ -2560,6 +2667,7 @@ async fn run_market_ws(
     let mut backoff = Duration::from_millis(100);
     let max_backoff = Duration::from_secs(5);
     let mut consecutive_failures: u32 = 0;
+    let mut subscribe_custom_feature_enabled = settings.custom_feature;
 
     loop {
         // Check if already expired before connecting
@@ -2590,13 +2698,25 @@ async fn run_market_ws(
                 let (mut write, mut read) = ws.split();
                 let mut session_had_market_data = false;
                 let mut session_raw_msg_count: u64 = 0;
+                let mut session_text_msg_count: u64 = 0;
+                let mut session_binary_msg_count: u64 = 0;
                 let mut session_parsed_msg_count: u64 = 0;
                 let mut session_trade_tick_count: u64 = 0;
                 let mut session_book_tick_count: u64 = 0;
+                let mut session_partial_yes_book_count: u64 = 0;
+                let mut session_partial_no_book_count: u64 = 0;
+                let mut session_unknown_event_count: u64 = 0;
+                let mut session_parse_drop_count: u64 = 0;
+                let mut session_non_utf8_binary_count: u64 = 0;
+                let mut session_tx_drop_count: u64 = 0;
+                let mut warned_non_utf8_binary = false;
+                let session_started_at = tokio::time::Instant::now();
                 let mut last_raw_msg_at = tokio::time::Instant::now();
                 let mut last_market_data_at = tokio::time::Instant::now();
+                let mut last_full_book_at: Option<tokio::time::Instant> = None;
                 let mut health_probe = tokio::time::interval(Duration::from_secs(10));
                 health_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                let mut session_expired = false;
 
                 // Subscribe
                 let asset_ids = settings.market_assets();
@@ -2605,10 +2725,14 @@ async fn run_market_ws(
                     "operation": "subscribe",
                     "markets": [],
                     "assets_ids": asset_ids,
+                    "asset_ids": settings.market_assets(),
                     "initial_dump": true,
-                    "custom_feature_enabled": settings.custom_feature,
+                    "custom_feature_enabled": subscribe_custom_feature_enabled,
                 });
-                info!("📤 Subscribe: {}", subscribe);
+                info!(
+                    "📤 Subscribe: {} (custom_feature_enabled={})",
+                    subscribe, subscribe_custom_feature_enabled
+                );
 
                 if let Err(err) = write.send(Message::Text(subscribe.to_string())).await {
                     warn!("WS subscribe failed: {err:?}");
@@ -2647,18 +2771,23 @@ async fn run_market_ws(
                     if tokio::time::Instant::now() >= deadline {
                         info!("🏁 Market expired (hard guard) — stopping WS");
                         ping_handle.abort();
-                        return MarketEnd::Expired;
+                        session_expired = true;
+                        break;
                     }
                     tokio::select! {
                         _ = tokio::time::sleep_until(deadline) => {
                             info!("🏁 Market expired (wall-clock) — stopping WS");
                             ping_handle.abort();
-                            return MarketEnd::Expired;
+                            session_expired = true;
+                            break;
                         }
                         _ = health_probe.tick() => {
                             let now = tokio::time::Instant::now();
                             let raw_silence = now.saturating_duration_since(last_raw_msg_at);
                             let market_data_silence = now.saturating_duration_since(last_market_data_at);
+                            let no_full_book_silence = now.saturating_duration_since(
+                                last_full_book_at.unwrap_or(session_started_at),
+                            );
 
                             // Connection appears alive but no raw payloads: force reconnect.
                             if raw_silence >= Duration::from_secs(30) {
@@ -2688,41 +2817,210 @@ async fn run_market_ws(
                                 ping_handle.abort();
                                 break;
                             }
+
+                            // Raw payloads exist, but no complete 4-price book ever formed (or has stalled)
+                            // for too long. Strategy cannot trade in this state, so reconnect.
+                            if session_raw_msg_count > 0
+                                && no_full_book_silence
+                                    >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS)
+                            {
+                                warn!(
+                                    "⚠️ Market WS missing complete book for {:?} (raw={} parsed={} partial_yes={} partial_no={} full_book={} trade={} unknown={} dropped={} tx_dropped={}) — reconnecting",
+                                    no_full_book_silence,
+                                    session_raw_msg_count,
+                                    session_parsed_msg_count,
+                                    session_partial_yes_book_count,
+                                    session_partial_no_book_count,
+                                    session_book_tick_count,
+                                    session_trade_tick_count,
+                                    session_unknown_event_count,
+                                    session_parse_drop_count,
+                                    session_tx_drop_count,
+                                );
+                                ping_handle.abort();
+                                break;
+                            }
+
+                            info!(
+                                "📡 WS ingest | raw={} text={} binary={} parsed={} partial_yes={} partial_no={} full_book={} trade={} unknown={} dropped={} tx_dropped={} no_full_book_for={:.1}s",
+                                session_raw_msg_count,
+                                session_text_msg_count,
+                                session_binary_msg_count,
+                                session_parsed_msg_count,
+                                session_partial_yes_book_count,
+                                session_partial_no_book_count,
+                                session_book_tick_count,
+                                session_trade_tick_count,
+                                session_unknown_event_count,
+                                session_parse_drop_count,
+                                session_tx_drop_count,
+                                no_full_book_silence.as_secs_f64()
+                            );
                         }
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(Message::Text(text))) => {
-                                    session_raw_msg_count = session_raw_msg_count.saturating_add(1);
+                                    session_raw_msg_count =
+                                        session_raw_msg_count.saturating_add(1);
+                                    session_text_msg_count =
+                                        session_text_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
-                                    if let Ok(value) = serde_json::from_str::<Value>(&text) {
-                                        let values = if value.is_array() {
-                                            value.as_array().cloned().unwrap_or_default()
-                                        } else {
-                                            vec![value]
-                                        };
 
-                                        for val in &values {
-                                            let parsed = parse_ws_message(&settings, val);
+                                    let (parsed, unknown_events, parse_drops) =
+                                        parse_ws_payload(&settings, &text);
+                                    session_unknown_event_count = session_unknown_event_count
+                                        .saturating_add(unknown_events);
+                                    session_parse_drop_count =
+                                        session_parse_drop_count.saturating_add(parse_drops);
+
+                                    for md_msg in parsed {
+                                        session_parsed_msg_count =
+                                            session_parsed_msg_count.saturating_add(1);
+                                        match &md_msg {
+                                            MarketDataMsg::TradeTick { .. } => {
+                                                session_had_market_data = true;
+                                                session_trade_tick_count =
+                                                    session_trade_tick_count.saturating_add(1);
+                                                last_market_data_at = tokio::time::Instant::now();
+                                                try_forward_md(
+                                                    &ofi_tx,
+                                                    md_msg.clone(),
+                                                    &mut session_tx_drop_count,
+                                                );
+                                                try_forward_md(
+                                                    &glft_tx,
+                                                    md_msg.clone(),
+                                                    &mut session_tx_drop_count,
+                                                );
+                                            }
+                                            MarketDataMsg::BookTick { .. } => {
+                                                if let MarketDataMsg::BookTick {
+                                                    yes_bid,
+                                                    yes_ask,
+                                                    no_bid,
+                                                    no_ask,
+                                                    ..
+                                                } = &md_msg
+                                                {
+                                                    if *yes_bid > 0.0 || *yes_ask > 0.0 {
+                                                        session_partial_yes_book_count =
+                                                            session_partial_yes_book_count
+                                                                .saturating_add(1);
+                                                    }
+                                                    if *no_bid > 0.0 || *no_ask > 0.0 {
+                                                        session_partial_no_book_count =
+                                                            session_partial_no_book_count
+                                                                .saturating_add(1);
+                                                    }
+                                                }
+                                                if let Some(full) = book_asm.update(&md_msg) {
+                                                    session_had_market_data = true;
+                                                    session_book_tick_count =
+                                                        session_book_tick_count.saturating_add(1);
+                                                    last_market_data_at = tokio::time::Instant::now();
+                                                    last_full_book_at = Some(last_market_data_at);
+                                                    try_forward_md(
+                                                        &glft_tx,
+                                                        full.clone(),
+                                                        &mut session_tx_drop_count,
+                                                    );
+                                                    let _ = coord_tx.send(full);
+                                                }
+                                            }
+                                        }
+                                        if session_parsed_msg_count % 256 == 0 {
+                                            tokio::task::yield_now().await;
+                                        }
+                                    }
+                                }
+                                Some(Ok(Message::Binary(bytes))) => {
+                                    session_raw_msg_count =
+                                        session_raw_msg_count.saturating_add(1);
+                                    session_binary_msg_count =
+                                        session_binary_msg_count.saturating_add(1);
+                                    last_raw_msg_at = tokio::time::Instant::now();
+
+                                    match std::str::from_utf8(&bytes) {
+                                        Ok(text) => {
+                                            let (parsed, unknown_events, parse_drops) =
+                                                parse_ws_payload(&settings, text);
+                                            session_unknown_event_count = session_unknown_event_count
+                                                .saturating_add(unknown_events);
+                                            session_parse_drop_count = session_parse_drop_count
+                                                .saturating_add(parse_drops);
+
                                             for md_msg in parsed {
-                                                session_parsed_msg_count = session_parsed_msg_count.saturating_add(1);
+                                                session_parsed_msg_count =
+                                                    session_parsed_msg_count.saturating_add(1);
                                                 match &md_msg {
                                                     MarketDataMsg::TradeTick { .. } => {
                                                         session_had_market_data = true;
-                                                        session_trade_tick_count = session_trade_tick_count.saturating_add(1);
+                                                        session_trade_tick_count =
+                                                            session_trade_tick_count.saturating_add(1);
                                                         last_market_data_at = tokio::time::Instant::now();
-                                                        let _ = ofi_tx.send(md_msg.clone()).await;
-                                                        let _ = glft_tx.send(md_msg.clone()).await;
+                                                        try_forward_md(
+                                                            &ofi_tx,
+                                                            md_msg.clone(),
+                                                            &mut session_tx_drop_count,
+                                                        );
+                                                        try_forward_md(
+                                                            &glft_tx,
+                                                            md_msg.clone(),
+                                                            &mut session_tx_drop_count,
+                                                        );
                                                     }
                                                     MarketDataMsg::BookTick { .. } => {
+                                                        if let MarketDataMsg::BookTick {
+                                                            yes_bid,
+                                                            yes_ask,
+                                                            no_bid,
+                                                            no_ask,
+                                                            ..
+                                                        } = &md_msg
+                                                        {
+                                                            if *yes_bid > 0.0 || *yes_ask > 0.0 {
+                                                                session_partial_yes_book_count =
+                                                                    session_partial_yes_book_count
+                                                                        .saturating_add(1);
+                                                            }
+                                                            if *no_bid > 0.0 || *no_ask > 0.0 {
+                                                                session_partial_no_book_count =
+                                                                    session_partial_no_book_count
+                                                                        .saturating_add(1);
+                                                            }
+                                                        }
                                                         if let Some(full) = book_asm.update(&md_msg) {
                                                             session_had_market_data = true;
-                                                            session_book_tick_count = session_book_tick_count.saturating_add(1);
+                                                            session_book_tick_count =
+                                                                session_book_tick_count
+                                                                    .saturating_add(1);
                                                             last_market_data_at = tokio::time::Instant::now();
-                                                            let _ = glft_tx.send(full.clone()).await;
+                                                            last_full_book_at = Some(last_market_data_at);
+                                                            try_forward_md(
+                                                                &glft_tx,
+                                                                full.clone(),
+                                                                &mut session_tx_drop_count,
+                                                            );
                                                             let _ = coord_tx.send(full);
                                                         }
                                                     }
                                                 }
+                                                if session_parsed_msg_count % 256 == 0 {
+                                                    tokio::task::yield_now().await;
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            session_non_utf8_binary_count =
+                                                session_non_utf8_binary_count.saturating_add(1);
+                                            session_parse_drop_count =
+                                                session_parse_drop_count.saturating_add(1);
+                                            if !warned_non_utf8_binary {
+                                                warn!(
+                                                    "⚠️ Market WS received non-UTF8 binary frame(s); first_len={} — relying on reconnect/fallback",
+                                                    bytes.len()
+                                                );
+                                                warned_non_utf8_binary = true;
                                             }
                                         }
                                     }
@@ -2752,13 +3050,38 @@ async fn run_market_ws(
                     }
                 }
                 info!(
-                    "📡 WS session summary: raw_msgs={} parsed={} book_ticks={} trade_ticks={} had_market_data={}",
+                    "📡 WS session summary: raw_msgs={} text={} binary={} non_utf8_binary={} parsed={} partial_yes={} partial_no={} book_ticks={} trade_ticks={} unknown={} dropped={} tx_dropped={} had_market_data={} custom_feature_enabled={}",
                     session_raw_msg_count,
+                    session_text_msg_count,
+                    session_binary_msg_count,
+                    session_non_utf8_binary_count,
                     session_parsed_msg_count,
+                    session_partial_yes_book_count,
+                    session_partial_no_book_count,
                     session_book_tick_count,
                     session_trade_tick_count,
-                    session_had_market_data
+                    session_unknown_event_count,
+                    session_parse_drop_count,
+                    session_tx_drop_count,
+                    session_had_market_data,
+                    subscribe_custom_feature_enabled
                 );
+                if subscribe_custom_feature_enabled {
+                    if session_raw_msg_count == 0 {
+                        warn!(
+                            "🧪 WS A/B fallback: no raw payloads in this session with custom_feature_enabled=true; retrying next session with custom_feature_enabled=false"
+                        );
+                        subscribe_custom_feature_enabled = false;
+                    } else if session_book_tick_count == 0 {
+                        warn!(
+                            "🧪 WS A/B fallback: no complete book in this session with custom_feature_enabled=true; retrying next session with custom_feature_enabled=false"
+                        );
+                        subscribe_custom_feature_enabled = false;
+                    }
+                }
+                if session_expired {
+                    return MarketEnd::Expired;
+                }
                 if session_had_market_data {
                     consecutive_failures = 0;
                 } else {
@@ -3848,7 +4171,7 @@ async fn main() -> anyhow::Result<()> {
 
         // ── Step 3: Run until market expires ──
         // P2 FIX: Use effective_end_ts to avoid overflow in fixed mode
-        let reason = run_market_ws(
+        let reason = run_market_ws_with_wall_guard(
             settings,
             ofi_md_tx,
             glft_md_tx,

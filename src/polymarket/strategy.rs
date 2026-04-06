@@ -48,11 +48,23 @@ pub(crate) struct StrategyIntent {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct StrategyQuoteDiagnostics {
+    pub(crate) pair_arb_ofi_softened_quotes: u8,
+    pub(crate) pair_arb_ofi_suppressed_quotes: u8,
+    pub(crate) pair_arb_keep_candidates: u8,
+    pub(crate) pair_arb_skip_inventory_gate: u8,
+    pub(crate) pair_arb_skip_simulate_buy_none: u8,
+    pub(crate) pair_arb_skip_utility_delta: u8,
+    pub(crate) pair_arb_skip_open_edge_not_improved: u8,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct StrategyQuotes {
     pub(crate) yes_buy: Option<StrategyIntent>,
     pub(crate) yes_sell: Option<StrategyIntent>,
     pub(crate) no_buy: Option<StrategyIntent>,
     pub(crate) no_sell: Option<StrategyIntent>,
+    pub(crate) diagnostics: StrategyQuoteDiagnostics,
 }
 
 impl StrategyQuotes {
@@ -85,6 +97,53 @@ impl StrategyQuotes {
 
     pub(crate) fn buy_for(&self, side: Side) -> Option<StrategyIntent> {
         self.get(OrderSlot::new(side, TradeDirection::Buy))
+    }
+
+    pub(crate) fn note_pair_arb_ofi_softened(&mut self) {
+        self.diagnostics.pair_arb_ofi_softened_quotes = self
+            .diagnostics
+            .pair_arb_ofi_softened_quotes
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pair_arb_ofi_suppressed(&mut self) {
+        self.diagnostics.pair_arb_ofi_suppressed_quotes = self
+            .diagnostics
+            .pair_arb_ofi_suppressed_quotes
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pair_arb_keep_candidate(&mut self) {
+        self.diagnostics.pair_arb_keep_candidates =
+            self.diagnostics.pair_arb_keep_candidates.saturating_add(1);
+    }
+
+    pub(crate) fn note_pair_arb_skip_inventory_gate(&mut self) {
+        self.diagnostics.pair_arb_skip_inventory_gate = self
+            .diagnostics
+            .pair_arb_skip_inventory_gate
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pair_arb_skip_simulate_buy_none(&mut self) {
+        self.diagnostics.pair_arb_skip_simulate_buy_none = self
+            .diagnostics
+            .pair_arb_skip_simulate_buy_none
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pair_arb_skip_utility_delta(&mut self) {
+        self.diagnostics.pair_arb_skip_utility_delta = self
+            .diagnostics
+            .pair_arb_skip_utility_delta
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pair_arb_skip_open_edge_not_improved(&mut self) {
+        self.diagnostics.pair_arb_skip_open_edge_not_improved = self
+            .diagnostics
+            .pair_arb_skip_open_edge_not_improved
+            .saturating_add(1);
     }
 }
 
@@ -126,9 +185,7 @@ impl StrategyKind {
                 StrategyExecutionMode::UnifiedBuys
             }
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
-            Self::DipBuy | Self::PhaseBuilder => {
-                StrategyExecutionMode::DirectionalHedgeOverlay
-            }
+            Self::DipBuy | Self::PhaseBuilder => StrategyExecutionMode::DirectionalHedgeOverlay,
         }
     }
 

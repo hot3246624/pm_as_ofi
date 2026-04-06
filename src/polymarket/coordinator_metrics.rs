@@ -5,6 +5,75 @@ use tracing::{debug, info};
 use super::*;
 
 impl StrategyCoordinator {
+    fn pair_arb_gate_snapshot(&self) -> PairArbGateLogSnapshot {
+        PairArbGateLogSnapshot {
+            ofi_softened_quotes: self.stats.pair_arb_ofi_softened_quotes,
+            ofi_suppressed_quotes: self.stats.pair_arb_ofi_suppressed_quotes,
+            keep_candidates: self.stats.pair_arb_keep_candidates,
+            skip_inventory_gate: self.stats.pair_arb_skip_inventory_gate,
+            skip_simulate_buy_none: self.stats.pair_arb_skip_simulate_buy_none,
+            skip_utility_delta: self.stats.pair_arb_skip_utility_delta,
+            skip_open_edge_not_improved: self.stats.pair_arb_skip_open_edge_not_improved,
+        }
+    }
+
+    fn maybe_log_pair_arb_gate_summary(&mut self) {
+        if self.cfg.strategy != StrategyKind::PairArb {
+            return;
+        }
+        let now = Instant::now();
+        let interval = Duration::from_secs(PAIR_ARB_GATE_SUMMARY_SECS);
+        if now.duration_since(self.pair_arb_gate_last_log_ts) < interval {
+            return;
+        }
+        self.pair_arb_gate_last_log_ts = now;
+
+        let cur = self.pair_arb_gate_snapshot();
+        let prev = self.pair_arb_gate_last_snapshot;
+        self.pair_arb_gate_last_snapshot = cur;
+
+        let keep_delta = cur.keep_candidates.saturating_sub(prev.keep_candidates);
+        let softened_delta = cur
+            .ofi_softened_quotes
+            .saturating_sub(prev.ofi_softened_quotes);
+        let suppressed_delta = cur
+            .ofi_suppressed_quotes
+            .saturating_sub(prev.ofi_suppressed_quotes);
+        let skip_inv_delta = cur
+            .skip_inventory_gate
+            .saturating_sub(prev.skip_inventory_gate);
+        let skip_sim_delta = cur
+            .skip_simulate_buy_none
+            .saturating_sub(prev.skip_simulate_buy_none);
+        let skip_util_delta = cur
+            .skip_utility_delta
+            .saturating_sub(prev.skip_utility_delta);
+        let skip_edge_delta = cur
+            .skip_open_edge_not_improved
+            .saturating_sub(prev.skip_open_edge_not_improved);
+
+        let skip_total = skip_inv_delta + skip_sim_delta + skip_util_delta + skip_edge_delta;
+        let attempts = keep_delta + skip_total;
+        let keep_rate = if attempts > 0 {
+            keep_delta as f64 / attempts as f64
+        } else {
+            0.0
+        };
+
+        info!(
+            "🧭 PairArbGate(30s) | attempts={} keep={} keep_rate={:.1}% skip(inv/sim/util/edge)={}/{}/{}/{} ofi(softened/suppressed)={}/{}",
+            attempts,
+            keep_delta,
+            keep_rate * 100.0,
+            skip_inv_delta,
+            skip_sim_delta,
+            skip_util_delta,
+            skip_edge_delta,
+            softened_delta,
+            suppressed_delta,
+        );
+    }
+
     pub(super) fn outcome_floor_pnl(&self) -> f64 {
         let max_net = self.cfg.max_net_diff.max(0.0);
         if max_net <= f64::EPSILON {
@@ -314,5 +383,6 @@ impl StrategyCoordinator {
             ofi.yes.is_toxic,
             ofi.no.is_toxic,
         );
+        self.maybe_log_pair_arb_gate_summary();
     }
 }

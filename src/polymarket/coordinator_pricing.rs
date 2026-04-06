@@ -232,7 +232,13 @@ impl StrategyCoordinator {
 
     pub(super) fn default_slot_reset_scope(&self, reason: CancelReason) -> SlotResetScope {
         if self.cfg.strategy != StrategyKind::GlftMm {
-            return SlotResetScope::Full;
+            return if self.cfg.strategy == StrategyKind::PairArb
+                && matches!(reason, CancelReason::Reprice)
+            {
+                SlotResetScope::Soft
+            } else {
+                SlotResetScope::Full
+            };
         }
         match reason {
             CancelReason::Reprice => SlotResetScope::Soft,

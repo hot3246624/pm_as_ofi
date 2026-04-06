@@ -258,6 +258,9 @@ impl StrategyCoordinator {
                     return;
                 }
             }
+            if self.cfg.strategy == StrategyKind::PairArb {
+                publish_reason = Some(PolicyPublishCause::Initial);
+            }
             if glft_shadow_mode && publish_reason.is_none() {
                 self.stats.shadow_suppressed_updates += 1;
                 return;
@@ -317,10 +320,16 @@ impl StrategyCoordinator {
             let cross_reprice_override = self.cfg.strategy == StrategyKind::GlftMm
                 && recent_cross_reject
                 && (slot_price - price).abs() >= self.cfg.tick_size.max(1e-9) - reprice_eps;
+            let price_gap = (slot_price - price).abs();
+            let price_gap_triggers_reprice = if self.cfg.strategy == StrategyKind::PairArb {
+                price_gap > (reprice_band + reprice_eps).max(0.0)
+            } else {
+                price_gap >= (reprice_band - reprice_eps).max(0.0)
+            };
             let mut needs_reprice = force_glft_drift_reprice
                 || cross_reprice_override
                 || slot_direction != Some(slot.direction)
-                || (slot_price - price).abs() >= (reprice_band - reprice_eps).max(0.0)
+                || price_gap_triggers_reprice
                 || (slot_size - size).abs() > 0.1;
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
                 let shadow_age = self
@@ -516,6 +525,9 @@ impl StrategyCoordinator {
                     || (slot_size - size).abs() > 0.1;
             }
             if needs_reprice {
+                if self.cfg.strategy == StrategyKind::PairArb && publish_reason.is_none() {
+                    publish_reason = Some(PolicyPublishCause::Policy);
+                }
                 if glft_shadow_mode && publish_reason.is_none() {
                     self.stats.shadow_suppressed_updates += 1;
                     return;

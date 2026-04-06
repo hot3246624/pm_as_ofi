@@ -269,6 +269,8 @@ impl StrategyCoordinator {
         st: &mut ExecutionState,
     ) {
         st.apply_blocked_provide();
+        let yes_toxic_blocked = yes_toxic_blocked && self.execution_toxic_block_applies();
+        let no_toxic_blocked = no_toxic_blocked && self.execution_toxic_block_applies();
 
         self.dispatch_provide_side(
             inv,
@@ -493,6 +495,7 @@ impl StrategyCoordinator {
         }
 
         if self.cfg.strategy != StrategyKind::GlftMm
+            && self.cfg.strategy != StrategyKind::PairArb
             || !matches!(reject_reason, CancelReason::Reprice)
             || phase != EndgamePhase::Normal
         {
@@ -500,6 +503,26 @@ impl StrategyCoordinator {
                 reject_reason,
                 self.default_slot_reset_scope(reject_reason),
             );
+        }
+
+        if self.cfg.strategy == StrategyKind::PairArb {
+            let now = std::time::Instant::now();
+            let idx = slot.index();
+            let since = self.slot_absent_clear_since[idx].get_or_insert(now);
+            let elapsed = now.saturating_duration_since(*since);
+            let warmup_dwell = std::time::Duration::from_millis(1_200);
+            if elapsed < warmup_dwell {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                return RetentionDecision::Retain;
+            }
+
+            if self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                return RetentionDecision::Retain;
+            }
+
+            self.slot_absent_clear_since[idx] = None;
+            return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
         }
 
         let glft = *self.glft_rx.borrow();

@@ -177,6 +177,26 @@ fn gabagool_corridor_quotes(
     )
 }
 
+fn pair_arb_quotes(
+    c: CoordinatorConfig,
+    inv: InventoryState,
+    book: Book,
+    ofi: Option<OfiSnapshot>,
+) -> StrategyQuotes {
+    let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::PairArb));
+    let metrics = coord.derive_inventory_metrics(&inv);
+    StrategyKind::PairArb.compute_quotes(
+        &coord,
+        StrategyTickInput {
+            inv: &inv,
+            book: &book,
+            metrics: &metrics,
+            ofi: ofi.as_ref(),
+            glft: None,
+        },
+    )
+}
+
 // ── Price clamping ──
 
 #[test]
@@ -1318,6 +1338,104 @@ fn test_evaluate_slot_retention_blocked_regime_clears_without_dwell() {
     assert!(
         coord.slot_absent_clear_since[slot.index()].is_none(),
         "Timer must remain None after blocked clear",
+    );
+}
+
+#[test]
+fn test_pair_arb_evaluate_slot_retention_absent_intent_uses_dwell_and_soft_clear() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+
+    let inv = InventoryState::default();
+    let stable_book = book(0.43, 0.55, 0.45, 0.57);
+    let first = coord.evaluate_slot_retention(
+        &inv,
+        &stable_book,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(first, RetentionDecision::Retain),
+        "pair_arb should retain on first absent-intent tick (dwell)"
+    );
+    assert!(coord.slot_absent_clear_since[slot.index()].is_some());
+
+    coord.slot_absent_clear_since[slot.index()] = Some(Instant::now() - Duration::from_secs(2));
+    let after_dwell_safe = coord.evaluate_slot_retention(
+        &inv,
+        &stable_book,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(after_dwell_safe, RetentionDecision::Retain),
+        "pair_arb should retain after dwell when order is still maker-safe"
+    );
+
+    // Drive order into unsafe crossed state: buy price >= ask - tick/2
+    let crossed_book = book(0.43, 0.44, 0.45, 0.57);
+    let unsafe_decision = coord.evaluate_slot_retention(
+        &inv,
+        &crossed_book,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(
+            unsafe_decision,
+            RetentionDecision::Clear(CancelReason::Reprice, SlotResetScope::Soft)
+        ),
+        "pair_arb should soft-clear absent intent once order is no longer safe"
+    );
+}
+
+#[tokio::test]
+async fn test_pair_arb_publish_reason_stats_for_initial_and_reprice() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.40, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial SetTarget, got {:?}", other),
+    }
+    assert_eq!(coord.stats.publish_from_initial, 1);
+    assert_eq!(coord.slot_last_publish_reason[OrderSlot::YES_BUY.index()], Some(PolicyPublishCause::Initial));
+
+    coord.slot_last_ts[OrderSlot::YES_BUY.index()] = Instant::now() - Duration::from_secs(2);
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.37, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected policy reprice SetTarget, got {:?}", other),
+    }
+    assert_eq!(coord.stats.publish_from_policy, 1);
+    assert_eq!(
+        coord.slot_last_publish_reason[OrderSlot::YES_BUY.index()],
+        Some(PolicyPublishCause::Policy)
     );
 }
 
@@ -2574,7 +2692,8 @@ async fn test_cancel_stats_track_toxic_and_inventory_reasons() {
 
 #[tokio::test]
 async fn test_other_side_can_still_quote_when_one_side_toxic() {
-    let (o, _i, m, _k, mut e, coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let (o, _i, m, _k, mut e, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
 
     // NO is toxic, YES is healthy: coordinator should still place YES bid.
     let _ = o.send(OfiSnapshot {
@@ -3019,7 +3138,8 @@ async fn test_hard_close_entry_below_keep_prefers_maker_repair_when_time_allows(
 
 #[tokio::test]
 async fn test_balanced_mid_pricing() {
-    let (_o, _i, m, _k, mut e, coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let (_o, _i, m, _k, mut e, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
     let h = tokio::spawn(coord.run());
     let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
@@ -3135,6 +3255,139 @@ fn test_pair_arb_round_suitability_marks_balanced_round_eligible() {
 
     let decided = coord.evaluate_pair_arb_round_suitability(&book(0.34, 0.36, 0.59, 0.61), now);
     assert_eq!(decided, Some(RoundSuitability::Eligible));
+}
+
+#[test]
+fn test_pair_arb_ofi_hot_softens_same_side_risk_increasing_buy() {
+    let c = with_strategy(cfg(), StrategyKind::PairArb);
+    let inv = InventoryState::default();
+    let b = book(0.44, 0.46, 0.48, 0.52);
+
+    let base = pair_arb_quotes(c.clone(), inv, b, None);
+    let hot = pair_arb_quotes(
+        c,
+        inv,
+        b,
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                is_hot: true,
+                heat_score: 2.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+    );
+
+    assert!(
+        base.buy_for(Side::Yes).is_some(),
+        "base YES buy should exist"
+    );
+    assert!(
+        hot.buy_for(Side::Yes).is_some(),
+        "hot YES buy should still exist"
+    );
+    assert_eq!(hot.diagnostics.pair_arb_ofi_softened_quotes, 1);
+    assert_eq!(hot.diagnostics.pair_arb_ofi_suppressed_quotes, 0);
+}
+
+#[test]
+fn test_pair_arb_ofi_toxic_softens_same_side_risk_increasing_buy() {
+    let c = with_strategy(cfg(), StrategyKind::PairArb);
+    let inv = InventoryState::default();
+    let b = book(0.44, 0.46, 0.48, 0.52);
+
+    let base = pair_arb_quotes(c.clone(), inv, b, None);
+    let toxic = pair_arb_quotes(
+        c,
+        inv,
+        b,
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                is_toxic: true,
+                toxic_buy: true,
+                heat_score: 2.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+    );
+
+    assert!(
+        base.buy_for(Side::Yes).is_some(),
+        "base YES buy should exist"
+    );
+    assert!(
+        toxic.buy_for(Side::Yes).is_some(),
+        "toxic YES buy should still exist when not saturated"
+    );
+    assert_eq!(toxic.diagnostics.pair_arb_ofi_softened_quotes, 1);
+    assert_eq!(toxic.diagnostics.pair_arb_ofi_suppressed_quotes, 0);
+}
+
+#[test]
+fn test_pair_arb_ofi_saturated_suppresses_same_side_risk_increasing_buy() {
+    let c = with_strategy(cfg(), StrategyKind::PairArb);
+    let inv = InventoryState::default();
+    let b = book(0.44, 0.46, 0.48, 0.52);
+
+    let saturated = pair_arb_quotes(
+        c,
+        inv,
+        b,
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                is_toxic: true,
+                toxic_buy: true,
+                saturated: true,
+                heat_score: 3.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+    );
+
+    assert!(saturated.buy_for(Side::Yes).is_none());
+    assert!(saturated.buy_for(Side::No).is_some());
+    assert_eq!(saturated.diagnostics.pair_arb_ofi_softened_quotes, 0);
+    assert_eq!(saturated.diagnostics.pair_arb_ofi_suppressed_quotes, 1);
+}
+
+#[test]
+fn test_pair_arb_pairing_buy_ignores_toxic_ofi() {
+    let c = with_strategy(cfg(), StrategyKind::PairArb);
+    let inv = InventoryState {
+        no_qty: 4.0,
+        no_avg_cost: 0.30,
+        net_diff: -4.0,
+        ..Default::default()
+    };
+    let b = book(0.63, 0.65, 0.18, 0.20);
+
+    let base = pair_arb_quotes(c.clone(), inv, b, None);
+    let toxic = pair_arb_quotes(
+        c,
+        inv,
+        b,
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                is_toxic: true,
+                toxic_buy: true,
+                saturated: true,
+                heat_score: 3.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+    );
+
+    let base_yes = base.buy_for(Side::Yes).expect("base pairing YES buy").price;
+    let toxic_yes = toxic
+        .buy_for(Side::Yes)
+        .expect("toxic pairing YES buy")
+        .price;
+    assert!((base_yes - toxic_yes).abs() < 1e-9);
+    assert_eq!(toxic.diagnostics.pair_arb_ofi_softened_quotes, 0);
+    assert_eq!(toxic.diagnostics.pair_arb_ofi_suppressed_quotes, 0);
 }
 
 #[tokio::test]
@@ -3670,7 +3923,8 @@ async fn test_gabagool_ofi_toxic_does_not_block_risk_reducing_unified_buy() {
     let mut c = cfg();
     c.strategy = StrategyKind::GabagoolGrid;
 
-    let (o, i, m, _k, mut e, coord) = make(c);
+    let (o, i, m, _k, mut e, mut coord) = make(c);
+    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
             ofi_score: -200.0,
@@ -3714,6 +3968,61 @@ async fn test_gabagool_ofi_toxic_does_not_block_risk_reducing_unified_buy() {
 
     drop(m);
     let _ = h.await;
+}
+
+#[test]
+fn test_pair_arb_ofi_toxic_does_not_block_pairing_buy_in_execution_layer() {
+    let c = with_strategy(cfg(), StrategyKind::PairArb);
+    let (_, _, _, _, _, coord) = make(c);
+    let inv = InventoryState {
+        no_qty: 4.0,
+        no_avg_cost: 0.30,
+        net_diff: -4.0,
+        ..Default::default()
+    };
+    let ofi = OfiSnapshot {
+        yes: SideOfi {
+            ofi_score: -200.0,
+            buy_volume: 0.0,
+            sell_volume: 200.0,
+            heat_score: 2.0,
+            is_hot: true,
+            is_toxic: true,
+            toxic_buy: true,
+            saturated: true,
+            ..Default::default()
+        },
+        no: SideOfi::default(),
+        reference_mid_yes: 0.45,
+        ts: Instant::now(),
+    };
+    let book = book(0.63, 0.65, 0.18, 0.20);
+    let metrics = coord.derive_inventory_metrics(&inv);
+    let mut quotes = StrategyKind::PairArb.compute_quotes(
+        &coord,
+        StrategyTickInput {
+            inv: &inv,
+            book: &book,
+            metrics: &metrics,
+            ofi: Some(&ofi),
+            glft: None,
+        },
+    );
+
+    assert!(
+        quotes.buy_for(Side::Yes).is_some(),
+        "pairing YES buy should survive strategy-level OFI shaping"
+    );
+
+    coord.apply_flow_risk(&inv, &mut quotes, false, false, true, false);
+
+    let pairing_yes = quotes
+        .buy_for(Side::Yes)
+        .expect("pairing YES buy should survive execution-layer toxic gating for pair_arb");
+    assert_eq!(pairing_yes.side, Side::Yes);
+    assert_eq!(pairing_yes.direction, TradeDirection::Buy);
+    assert!(pairing_yes.price > 0.0);
+    assert_eq!(pairing_yes.reason, BidReason::Provide);
 }
 
 #[tokio::test]
@@ -3814,7 +4123,8 @@ async fn test_debounce_skips_rapid_reprice() {
     let mut cfg = cfg();
     cfg.strategy = StrategyKind::PairArb;
     cfg.debounce_ms = 5000; // 5 seconds - will definitely block
-    let (_o, _i, m, _k, mut e, coord) = make(cfg);
+    let (_o, _i, m, _k, mut e, mut coord) = make(cfg);
+    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
     let h = tokio::spawn(coord.run());
 
     // First tick: places bids

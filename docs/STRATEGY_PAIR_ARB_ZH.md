@@ -35,17 +35,24 @@
 - `10 <= |net_diff| < 15`：`100% * as_skew_factor`，叠加 time decay
 - `|net_diff| >= 15`：由库存上限逻辑阻止继续加主仓侧风险
 
-4. 应用主仓侧梯度 avg-cost 封顶（在 Inventory Cost Clamp 之前）：
+4. 应用主仓侧梯度 avg-cost 封顶：
 - Tier 1：`|net_diff| >= 5`，主仓侧 `bid <= avg_cost * 0.85`
 - Tier 2：`|net_diff| >= 10`，主仓侧 `bid <= avg_cost * 0.70`
 
-5. 应用 `pair_cost ceiling`（硬保护）：
+5. 应用 OFI 软塑形（仅同侧风险增加单）：
+- `pairing / risk-reducing buy`：完全忽略 OFI
+- `same-side risk-increasing buy`：
+  - `is_hot=true`：额外下调 `1 tick`
+  - `is_toxic=true`：额外下调 `2 ticks`
+  - `is_toxic && saturated`：直接 suppress，不挂这一侧
+
+6. 应用 `pair_cost ceiling`（硬保护）：
 - `yes_ceiling = pair_target - no_avg_cost`
 - `no_ceiling = pair_target - yes_avg_cost`
 
-6. 应用 strict maker clamp 与 tick 对齐。
+7. 应用 strict maker clamp 与 tick 对齐。
 
-7. 对候选买单执行 `simulate_buy` 过滤：
+8. 对候选买单执行 `simulate_buy` 过滤：
 - 优先：提升 `paired_locked_pnl` / 降低 `pair_cost` / 让 `pair_cost` 达到目标线
 - 次级：`utility_delta >= bid_size * tick_size`
 - 若是风险增加单：还要求 `projected_open_edge > current_open_edge`
@@ -79,7 +86,9 @@
 ## 6. OFI 与执行层边界
 
 当前主线中：
-- OFI 只做软约束（抑制风险增加单、轻微退让），不覆盖 pair-cost 主目标
+- OFI 由 `pair_arb` 策略层自己消费，不再由执行层对 `pair_arb` 做常态硬拦截
+- OFI 只塑形同侧风险增加单，不阻断 pairing buy
+- `PM_OFI_*` 继续复用现有全局 OFI 引擎参数，`pair_arb` 不新增专属参数
 - 执行层节奏参数（`debounce/reprice_threshold` 等）本轮不作为策略调参对象
 
 ## 7. 推荐验证参数（当前默认）

@@ -35,7 +35,7 @@
 | --- | --- | --- |
 | `PM_STRATEGY` | `pair_arb` | 当前验证主线 |
 | `PM_BID_SIZE` | `5.0` | 单次挂单份额 |
-| `PM_MAX_NET_DIFF` | `5.0` | 盘中净仓硬上限（验证期保守值） |
+| `PM_MAX_NET_DIFF` | `15.0` | 盘中净仓硬上限（当前 15m 验证基线） |
 | `PM_PAIR_TARGET` | `0.98` | 组合成本目标线（pair_arb 核心参数） |
 | `PM_TICK_SIZE` | `0.01` | 价格粒度 |
 | `PM_POST_ONLY_SAFETY_TICKS` | `2.0` | maker 安全垫基础退让 |
@@ -45,8 +45,8 @@
 | `PM_DEBOUNCE_MS` | `700` | provide 防抖 |
 | `PM_STALE_TTL_MS` | `3000` | 单侧 stale TTL |
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
-| `PM_AS_SKEW_FACTOR` | `0.15` | 库存偏置强度（pair_arb） |
-| `PM_AS_TIME_DECAY_K` | `2.0` | 库存偏置时间衰减（pair_arb） |
+| `PM_AS_SKEW_FACTOR` | `0.06` | 三段库存 skew 的基础强度（pair_arb） |
+| `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 
@@ -98,6 +98,11 @@
 - kill 主判定基于 `normalized_score = |OFI| / baseline`，其中 baseline 来自 rolling `Q50`
 - 进入/恢复阈值由 rolling `Q99/Q95` 映射到 score 空间，再叠加 ratio gate 与最小毒性保持时间
 - `PM_OFI_ADAPTIVE_MIN/MAX` 仅作 baseline 护栏；高热时若触及上限会输出 `saturated` 可观测日志
+- `pair_arb` 当前只把这套 OFI 用于 same-side risk-increasing buy 的软塑形：
+  - `hot` 额外退让 `1 tick`
+  - `toxic` 额外退让 `2 ticks`
+  - `toxic + saturated` 直接 suppress 同侧加仓
+- `pairing / risk-reducing buy` 不受 OFI 影响；`pair_arb` 也不新增专属 `PM_OFI_*` 参数
 
 ## 6. Endgame（当前 `pair_arb` 主线语义）
 
