@@ -1,14 +1,43 @@
-评估总结
-PLAN_Codex 的方向和核心机制设计都非常好，三大改造（分段 skew / 梯度封顶 / Round Gate）和 pair_arb 代码已有实现可以很好地对接。发现 6 个具体问题：
+I've now traced through the actual Round #3 fill sequence against the V5 rules quantitatively. Let me write the evaluation.
 
-需立即处理（P0）
-.env 参数完全没同步 — 当前 skew=0.15 / max_net_diff=5 / time_decay_k=2.0，但 PLAN_Codex 要求 0.06 / 15 / 1.0。不改就跑等于在旧参数上测试新策略。
-需决定（实施前）
-三段 skew 的边界定义 — PLAN_Codex 用固定 5/10/15，PLAN_Claude 用 frac=0.5 比例。两者在 max_net_diff=15 时分界点不同（Codex: net_diff=5 开始爬升 vs Claude: net_diff=7.5 开始爬升）。你倾向哪个？
+Edited plan_codex_evaluation.md
 
-Round Gate 行为 — 首 tick 检测即判定，还是观测 60s 后再判定？一旦触发是整轮静默还是可恢复？
+评估完成。核心发现：
 
-文档清理
-4-6. PLAN_Claude Part 4 的 skew=0.20 建议已被 Part 5 的 0.06 取代但未标注；tier cap 与 simulate_buy 的交互虽然正确但需声明；执行层参数（debounce/reprice_threshold）需要明确保持不变或调整。
+## V5 评分：7.5/10 — 一个关键盲区
 
-详细分析请查看 evaluation artifact。请先在上述 2-3 的决策点给出你的倾向，我再进行代码实施。
+### ✅ V5 做得好的
+- **状态签名 Republish** 设计优秀（`dominant_side × net_bucket × soft_close`）
+- **无路径依赖**哲学比 V1 更优雅
+- **Tier cap 参数化**方向正确，对正常价格区间有约束力
+- SoftClose、OFI 边界明确
+
+### ❌ 结构性盲区：Tier cap 是天花板，不是地板
+
+我用 Round#3 的**实际填单数据**逐笔回放了 V5 规则：
+
+```
+YES@0.060 下单时: yes_avg=0.324, net_diff=5
+  → tier 1 cap = 0.324 × 0.80 = 0.259
+  → 0.060 < 0.259 → ✅ 通过（cap 是上限，0.06 远低于上限）
+
+YES@0.010 下单时: yes_avg=0.280, net_diff=10
+  → tier 2 cap = 0.280 × 0.60 = 0.168
+  → 0.010 < 0.168 → ✅ 通过
+
+高失衡准入: min_utility_delta = 0.10
+  → 买 5@0.01 成本仅 $0.05，但 pair_cost 从 0.6925 降到 0.6539
+  → locked_pnl 改善 +$0.77 → 远超 0.10 门槛 → ✅ 通过
+```
+
+**V5 的全部 6 层防线无一能拦截 YES@0.01。**
+
+### 📌 唯一建议：加一个 `MIN_BID_PRICE`
+
+这不违反 V5 的「无路径依赖、只看当前状态」哲学：
+- 不看 last fill price
+- 不冻结同侧买入
+- 只是「价格低于 0.10 直接不报价」
+- Tier cap = 天花板，MIN_BID = 地板——**天花板和地板组成完整防线**
+
+详细分析（含完整定量回放表格）已写入 artifact。

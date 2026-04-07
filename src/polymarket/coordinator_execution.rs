@@ -3,6 +3,35 @@ use tracing::debug;
 use super::*;
 
 impl StrategyCoordinator {
+    pub(super) fn pair_arb_state_key(
+        &self,
+        inv: &InventoryState,
+        phase: EndgamePhase,
+    ) -> PairArbStateKey {
+        let abs_net = inv.net_diff.abs();
+        let net_bucket = if abs_net <= 1e-9 {
+            PairArbNetBucket::Flat
+        } else if abs_net < 5.0 {
+            PairArbNetBucket::Low
+        } else if abs_net < 10.0 {
+            PairArbNetBucket::Mid
+        } else {
+            PairArbNetBucket::High
+        };
+        let dominant_side = if inv.net_diff > 1e-9 {
+            Some(Side::Yes)
+        } else if inv.net_diff < -1e-9 {
+            Some(Side::No)
+        } else {
+            None
+        };
+        PairArbStateKey {
+            dominant_side,
+            net_bucket,
+            soft_close_active: phase >= EndgamePhase::SoftClose,
+        }
+    }
+
     // Policy-3: Execution (hedge/provide dispatch)
     pub(super) async fn execute_quotes(
         &mut self,
@@ -79,6 +108,206 @@ impl StrategyCoordinator {
             block_maker_hedge: false,
             endgame_phase: self.endgame_phase(),
         }
+    }
+
+    fn pair_arb_quote_still_admissible(
+        &self,
+        inv: &InventoryState,
+        ub: &Book,
+        slot: OrderSlot,
+        price: f64,
+        size: f64,
+        phase: EndgamePhase,
+    ) -> bool {
+        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
+            return true;
+        }
+
+        let intent = StrategyIntent {
+            side: slot.side,
+            direction: slot.direction,
+            price,
+            size,
+            reason: BidReason::Provide,
+        };
+        if !self.can_place_strategy_intent(inv, Some(intent)) {
+            return false;
+        }
+
+        let risk_effect =
+            crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
+                inv, slot.side, size,
+            );
+        let risk_increasing = matches!(
+            risk_effect,
+            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing
+        );
+        if phase != EndgamePhase::Normal && risk_increasing {
+            return false;
+        }
+
+        let side_ofi = match slot.side {
+            Side::Yes => self.ofi_rx.borrow().yes,
+            Side::No => self.ofi_rx.borrow().no,
+        };
+        let ofi_decision =
+            crate::polymarket::strategy::pair_arb::PairArbStrategy::ofi_decision(
+                Some(side_ofi),
+                risk_effect,
+            );
+        if ofi_decision.suppress {
+            return false;
+        }
+
+        let eps = 1e-9;
+        if slot.side == Side::Yes && inv.net_diff >= 5.0 && inv.yes_avg_cost > 0.0 {
+            let mult = if inv.net_diff >= 10.0 {
+                self.cfg.pair_arb_tier_2_mult
+            } else {
+                self.cfg.pair_arb_tier_1_mult
+            };
+            if price > inv.yes_avg_cost * mult + eps {
+                return false;
+            }
+        }
+        if slot.side == Side::No && inv.net_diff <= -5.0 && inv.no_avg_cost > 0.0 {
+            let mult = if inv.net_diff <= -10.0 {
+                self.cfg.pair_arb_tier_2_mult
+            } else {
+                self.cfg.pair_arb_tier_1_mult
+            };
+            if price > inv.no_avg_cost * mult + eps {
+                return false;
+            }
+        }
+
+        let ceiling = match slot.side {
+            Side::Yes => crate::polymarket::strategy::pair_arb::PairArbStrategy::vwap_ceiling(
+                self.cfg.pair_target,
+                inv.no_avg_cost,
+                inv.yes_qty,
+                inv.yes_avg_cost,
+                self.cfg.bid_size,
+            ),
+            Side::No => crate::polymarket::strategy::pair_arb::PairArbStrategy::vwap_ceiling(
+                self.cfg.pair_target,
+                inv.yes_avg_cost,
+                inv.no_qty,
+                inv.no_avg_cost,
+                self.cfg.bid_size,
+            ),
+        };
+        if ceiling <= self.cfg.tick_size + eps || price > ceiling + eps {
+            return false;
+        }
+
+        let current_metrics = self.derive_inventory_metrics(inv);
+        let current_utility = self.utility_for_inventory(inv, &current_metrics, ub);
+        let current_open_edge = self.open_edge_for_inventory(inv, &current_metrics, ub);
+        let Some(projected) = self.simulate_buy(inv, slot.side, size, price) else {
+            return false;
+        };
+
+        let improves_locked_pnl =
+            projected.metrics.paired_locked_pnl > current_metrics.paired_locked_pnl + eps;
+        let improves_pair_cost = current_metrics.paired_qty > eps
+            && projected.metrics.paired_qty > eps
+            && projected.metrics.pair_cost + eps < current_metrics.pair_cost;
+        let reaches_target_pair = projected.metrics.paired_qty > eps
+            && projected.metrics.pair_cost <= self.cfg.pair_target + eps;
+        if improves_locked_pnl || improves_pair_cost || reaches_target_pair {
+            return true;
+        }
+        if !risk_increasing {
+            return true;
+        }
+
+        let projected_utility = self.utility_for_inventory(
+            &projected.projected_inventory,
+            &projected.metrics,
+            ub,
+        );
+        let utility_delta = projected_utility - current_utility;
+        let min_utility_delta = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_utility_delta_for_risk_increasing(
+            current_metrics.paired_qty,
+            inv.net_diff.abs(),
+            size,
+            self.cfg.tick_size,
+        );
+        if utility_delta + eps < min_utility_delta {
+            return false;
+        }
+
+        let projected_open_edge = self.open_edge_for_inventory(
+            &projected.projected_inventory,
+            &projected.metrics,
+            ub,
+        );
+        let min_open_edge_improvement = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_open_edge_improvement_for_risk_increasing(
+            inv.net_diff.abs(),
+            size,
+            self.cfg.tick_size,
+        );
+        projected_open_edge - current_open_edge + eps >= min_open_edge_improvement
+    }
+
+    fn pair_arb_should_retain_existing(
+        &mut self,
+        inv: &InventoryState,
+        ub: &Book,
+        slot: OrderSlot,
+        intent: StrategyIntent,
+        phase: EndgamePhase,
+    ) -> bool {
+        let Some(current) = self.slot_target(slot).cloned() else {
+            return false;
+        };
+        let state_key = self.pair_arb_state_key(inv, phase);
+        let idx = slot.index();
+        let state_changed = self.slot_pair_arb_state_keys[idx].is_some()
+            && self.slot_pair_arb_state_keys[idx] != Some(state_key);
+        let still_admissible = !state_changed
+            || self.pair_arb_quote_still_admissible(
+                inv,
+                ub,
+                slot,
+                current.price,
+                current.size,
+                phase,
+            );
+        if state_changed {
+            debug!(
+                "🧭 pair_arb retain recheck | slot={} state_key_changed=true net_bucket={:?} dominant_side={:?} softclose_blocked={} state_change_republish={}",
+                slot.as_str(),
+                state_key.net_bucket,
+                state_key.dominant_side,
+                state_key.soft_close_active,
+                !still_admissible,
+            );
+        }
+        if !still_admissible {
+            return false;
+        }
+
+        let (best_bid, best_ask) = match slot.side {
+            Side::Yes => (ub.yes_bid, ub.yes_ask),
+            Side::No => (ub.no_bid, ub.no_ask),
+        };
+        if self.keep_existing_maker_if_safe(
+            inv,
+            slot.side,
+            intent.direction,
+            intent.price,
+            intent.size,
+            intent.price,
+            best_bid,
+            best_ask,
+            intent.reason,
+        ) {
+            self.slot_pair_arb_state_keys[idx] = Some(state_key);
+            return true;
+        }
+        false
     }
 
     pub(super) async fn execute_hedges(
@@ -508,6 +737,34 @@ impl StrategyCoordinator {
         if self.cfg.strategy == StrategyKind::PairArb {
             let now = std::time::Instant::now();
             let idx = slot.index();
+            let state_key = self.pair_arb_state_key(inv, phase);
+            let state_changed = self.slot_pair_arb_state_keys[idx].is_some()
+                && self.slot_pair_arb_state_keys[idx] != Some(state_key);
+            if state_changed {
+                let admissible = self.pair_arb_quote_still_admissible(
+                    inv,
+                    ub,
+                    slot,
+                    current.price,
+                    current.size,
+                    phase,
+                );
+                debug!(
+                    "🧭 pair_arb absent-intent recheck | slot={} state_key_changed=true net_bucket={:?} dominant_side={:?} softclose_blocked={} state_change_republish={}",
+                    slot.as_str(),
+                    state_key.net_bucket,
+                    state_key.dominant_side,
+                    state_key.soft_close_active,
+                    !admissible,
+                );
+                if admissible && self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
+                    self.slot_pair_arb_state_keys[idx] = Some(state_key);
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    return RetentionDecision::Retain;
+                }
+                self.slot_absent_clear_since[idx] = None;
+                return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
+            }
             let since = self.slot_absent_clear_since[idx].get_or_insert(now);
             let elapsed = now.saturating_duration_since(*since);
             let warmup_dwell = std::time::Duration::from_millis(1_200);
@@ -517,6 +774,7 @@ impl StrategyCoordinator {
             }
 
             if self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
+                self.slot_pair_arb_state_keys[idx] = Some(state_key);
                 self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                 return RetentionDecision::Retain;
             }
@@ -753,21 +1011,29 @@ impl StrategyCoordinator {
         match action {
             ProvideSideAction::None => {}
             ProvideSideAction::Place { intent } => {
-                let (best_bid, best_ask) = match side {
-                    Side::Yes => (ub.yes_bid, ub.yes_ask),
-                    Side::No => (ub.no_bid, ub.no_ask),
+                let slot = OrderSlot::new(side, intent.direction);
+                let phase = self.endgame_phase();
+                let should_retain = if self.cfg.strategy == StrategyKind::PairArb {
+                    self.pair_arb_should_retain_existing(inv, ub, slot, intent, phase)
+                } else {
+                    let (best_bid, best_ask) = match side {
+                        Side::Yes => (ub.yes_bid, ub.yes_ask),
+                        Side::No => (ub.no_bid, ub.no_ask),
+                    };
+                    self.keep_existing_maker_if_safe(
+                        inv,
+                        side,
+                        intent.direction,
+                        intent.price,
+                        intent.size,
+                        intent.price,
+                        best_bid,
+                        best_ask,
+                        intent.reason,
+                    )
                 };
-                if self.keep_existing_maker_if_safe(
-                    inv,
-                    side,
-                    intent.direction,
-                    intent.price,
-                    intent.size,
-                    intent.price,
-                    best_bid,
-                    best_ask,
-                    intent.reason,
-                ) {
+                if should_retain {
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     return;
                 }
                 self.place_or_reprice(
@@ -781,6 +1047,25 @@ impl StrategyCoordinator {
                 .await;
             }
             ProvideSideAction::Clear { reason } => {
+                if self.cfg.strategy == StrategyKind::PairArb {
+                    let slot = OrderSlot::new(side, TradeDirection::Buy);
+                    match self.evaluate_slot_retention(
+                        inv,
+                        ub,
+                        slot,
+                        None,
+                        reason,
+                        self.endgame_phase(),
+                    ) {
+                        RetentionDecision::Retain => return,
+                        RetentionDecision::Republish => {}
+                        RetentionDecision::Clear(clear_reason, scope) => {
+                            self.clear_slot_target_with_scope(slot, clear_reason, scope)
+                                .await;
+                            return;
+                        }
+                    }
+                }
                 self.clear_target(side, reason).await;
             }
         }

@@ -39,7 +39,7 @@
 统一处理：
 - `PM_MAX_NET_DIFF`
 - outcome floor
-- OFI 风险抑制
+- 共享 OFI 引擎
 - stale book
 - SoftClose / HardClose / Freeze
 - recycle / claim
@@ -75,28 +75,31 @@
 共享风控层统一处理：
 - `PM_MAX_NET_DIFF`
 - outcome floor
-- OFI slot-level / side-level 抑制
+- 共享 OFI 信号引擎
 - stale book
 - endgame phase gate
 - recycle / claim
 
 ## 4. OFI 的共享角色
-OFI 不是主策略本身，而是共享执行保护层。
+OFI 现在分成两层：
 
-在 `pair_arb` 主线中它做两件事：
-- 抑制明显风险增加的买入意图
-- 作为毒性门控避免在坏流里继续加仓
+1. 共享层只负责维护 OFI 引擎本身
+- `heat`
+- `toxicity`
+- `saturated`
+- regime-aware baseline 与恢复语义
 
-语义：
-- 在 buy-only 主线下，重点抑制“继续扩大单边风险”的买单
-- `YES` 卖压强：优先抑制 `YesBuy`
-- `NO` 卖压强：优先抑制 `NoBuy`
+2. 各策略自己决定如何消费 OFI
 
-为避免误杀，当前实现还有：
-- 2-heartbeat 才正式进入 toxic
-- adaptive threshold 心跳更新
-- rise cap
-- robust clipping + mean reversion
+当前主线 `pair_arb` 的语义是：
+- OFI 不再由执行层对 normal-phase buy 做常态硬拦截
+- OFI 只在策略层塑形 same-side risk-increasing buy
+- pairing / risk-reducing buy 完全忽略 OFI
+
+这意味着：
+- 共享层提供的是统一信号，不是统一的交易裁决
+- `pair_arb` 的主目标仍然是 `pair_cost / paired_locked_pnl`
+- OFI 只是 subordinate 风险塑形器，不覆盖主目标函数
 
 ## 5. 盘中硬风险边界
 
@@ -105,11 +108,11 @@ OFI 不是主策略本身，而是共享执行保护层。
 
 在此之上，还有两个共享门：
 - outcome floor：禁止新增 Buy 把最差结算结果继续挖深
-- stale / toxic：禁止继续在坏数据或坏流里冒险
+- stale / source gate：禁止继续在坏数据里冒险
 
 这意味着当前系统的风险哲学是：
 - 正常盘中靠库存偏移和价差控制风险
-- 极端情况下靠统一门禁和尾盘安全阀止血
+- 极端情况下靠统一门禁和共享安全阀止血
 
 ## 6. 尾盘是共享能力，不是 `pair_arb` 主路径
 

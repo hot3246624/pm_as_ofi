@@ -10,7 +10,7 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 ## 当前共享能力
 
 - `OrderSlot(side,direction)` 四槽位执行层：`YesBuy / YesSell / NoBuy / NoSell`
-- OFI 热度/毒性抑制、stale gate、生命周期去抖
+- 共享 OFI 热度/毒性引擎、stale gate、生命周期去抖
 - 共享执行治理：`keep-if-safe`、post-only 安全垫、slot 级 cancel/reprice
 - 共享风控：`PM_MAX_NET_DIFF`、outcome floor、endgame、recycle、claim
 
@@ -72,10 +72,10 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 PM_STRATEGY=pair_arb
 POLYMARKET_MARKET_SLUG="btc-updown-15m"
 PM_BID_SIZE=5.0
-PM_MAX_NET_DIFF=5.0
+PM_MAX_NET_DIFF=15.0
 PM_PAIR_TARGET=0.98
-PM_AS_SKEW_FACTOR=0.15
-PM_AS_TIME_DECAY_K=2.0
+PM_AS_SKEW_FACTOR=0.06
+PM_AS_TIME_DECAY_K=1.0
 PM_REPRICE_THRESHOLD=0.020
 PM_DEBOUNCE_MS=700
 PM_OFI_ADAPTIVE=true
@@ -89,5 +89,8 @@ PM_AUTO_CLAIM=true
 说明：
 - 建议先 `5m` 做机制冒烟，再用 `15m` 做收益验证。
 - 这是当前准备验证的保守配置，不是利润最大化配置。
-- 当前 `pair_arb` 已去掉方向对冲 overlay 和尾盘强制市价对冲路径。
+- 当前 `pair_arb` 已去掉方向对冲 overlay 和尾盘强制市价对冲路径，运行形态是 `UnifiedBuys`。
+- `pair_arb` 的 dry-run 重点看两类日志：
+  - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
+  - `LIVE_OBS`：执行稳定性与 `pair_arb_softened_ratio`
 - `glft_mm` 仍可运行，但不建议作为当前生产主线。

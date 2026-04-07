@@ -22,6 +22,7 @@ cargo run --bin polymarket_v2
 - `pair_arb` 下正常输出双边 `Buy` 意图
 - 不发真实订单
 - 日志里能看到 keep-if-safe / OFI / stale 的自然行为
+- `15m` 轮次里能看到 `PairArbGate(30s)` 与 `LIVE_OBS`
 
 推荐顺序：
 1. `btc-updown-5m` 跑 2-3 轮机制冒烟
@@ -56,14 +57,42 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 
 ### pair_arb
 - 是否始终保持 buy-only（无 `Hedge` / `OneShotTakerHedge`）
-- 双边报价是否符合 `pair_target + inventory clamp` 语义
+- 双边报价是否符合 `pair_target + tier avg-cost cap + VWAP ceiling` 语义
 - `residual_inventory_cost_end` 是否可控
+- `PairArbGate(30s)` 是否合理：
+  - `attempts / keep / keep_rate`
+  - `skip(inv/sim/util/edge)`
+  - `ofi(softened/suppressed)`
+- `LIVE_OBS` 是否合理：
+  - `replace_ratio`
+  - `reprice_ratio`
+  - `ref_blocked_ms`
+  - `heat_events`
+  - `pair_arb_softened_ratio`
 
 ### OFI
-- threshold 是否过快上升
-- toxic 是否长时间不恢复
-- recovery 后是否立即再次 kill
+- 对 `pair_arb`，重点不是“有没有热度”，而是：
+  - 是否只塑形 same-side risk-increasing buy
+  - 是否没有误伤 pairing buy
+  - `softened/suppressed` 是否与实际盘口环境相符
 
 ### 资本循环
 - recycle 是否只在真正余额压力下触发
 - claim 是否在回合窗口内完成
+
+## 6. dry-run 与收益判断的边界
+
+`dry-run` 只能验证：
+- 生命周期是否稳定
+- 策略是否按预期出意图
+- 执行治理是否没有失控
+
+`dry-run` 不能验证：
+- 真实 fill edge
+- 残仓损失
+- 真实盈利能力
+
+所以：
+- `5m dry-run` 主要看机制
+- `15m dry-run` 主要看策略行为是否合理
+- 真正的 go/no-go 仍要靠小额 live 样本

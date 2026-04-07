@@ -494,6 +494,61 @@ fn test_keep_existing_provide_allows_small_ceiling_overshoot_within_band() {
     ));
 }
 
+#[test]
+fn test_pair_arb_keep_existing_uses_looser_resting_buy_safety() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_, _, _, _, _, mut c) = make(config);
+    c.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.49,
+        size: 2.0,
+        reason: BidReason::Provide,
+    });
+    let inv = InventoryState::default();
+
+    // With best ask = 0.50 and tick = 0.01, pair_arb retain path allows
+    // keeping a resting BUY at 0.49 (one tick below ask).
+    assert!(c.keep_existing_maker_if_safe(
+        &inv,
+        Side::Yes,
+        TradeDirection::Buy,
+        0.50,
+        2.0,
+        0.50,
+        0.48,
+        0.50,
+        BidReason::Provide,
+    ));
+}
+
+#[test]
+fn test_non_pair_arb_keep_existing_still_uses_strict_submit_safety() {
+    let (_, _, _, _, _, mut c) = make(cfg());
+    c.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.49,
+        size: 2.0,
+        reason: BidReason::Provide,
+    });
+    let inv = InventoryState::default();
+
+    // Non-pair_arb strategies keep the stricter aggressive_price safety margin.
+    assert!(!c.keep_existing_maker_if_safe(
+        &inv,
+        Side::Yes,
+        TradeDirection::Buy,
+        0.50,
+        2.0,
+        0.50,
+        0.48,
+        0.50,
+        BidReason::Provide,
+    ));
+}
+
 #[tokio::test]
 async fn test_keep_existing_provide_when_still_maker_safe() {
     let (o, i, m, _, mut er, mut coord) = make(cfg());
@@ -527,6 +582,52 @@ async fn test_keep_existing_provide_when_still_maker_safe() {
         .await;
 
     assert!(timeout(Duration::from_millis(20), er.recv()).await.is_err());
+    assert!(
+        coord.stats.retain_hits > 0,
+        "provide keep path should increment retain_hits for observability"
+    );
+}
+
+#[tokio::test]
+async fn test_pair_arb_absent_intent_retain_does_not_clear_active_buy() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (o, i, m, _, mut er, mut coord) = make(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    coord.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 2.0,
+        reason: BidReason::Provide,
+    });
+
+    let ub = book(0.29, 0.35, 0.20, 0.24);
+    let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
+    coord
+        .apply_provide_side_action(
+            &InventoryState::default(),
+            &ub,
+            Side::Yes,
+            ProvideSideAction::Clear {
+                reason: CancelReason::Reprice,
+            },
+        )
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "pair_arb absent-intent retain should not emit clear command while order is maker-safe"
+    );
+    assert!(
+        coord.slot_target(OrderSlot::YES_BUY).is_some(),
+        "pair_arb retain should keep active buy target"
+    );
+    assert!(
+        coord.stats.retain_hits > 0,
+        "pair_arb retain path should increment retain_hits for observability"
+    );
 }
 
 #[tokio::test]
@@ -1426,7 +1527,7 @@ async fn test_pair_arb_publish_reason_stats_for_initial_and_reprice() {
 
     coord.slot_last_ts[OrderSlot::YES_BUY.index()] = Instant::now() - Duration::from_secs(2);
     coord
-        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.37, 5.0, BidReason::Provide, None)
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.35, 5.0, BidReason::Provide, None)
         .await;
     match timeout(Duration::from_millis(50), er.recv()).await {
         Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
@@ -1437,6 +1538,99 @@ async fn test_pair_arb_publish_reason_stats_for_initial_and_reprice() {
         coord.slot_last_publish_reason[OrderSlot::YES_BUY.index()],
         Some(PolicyPublishCause::Policy)
     );
+}
+
+#[tokio::test]
+async fn test_pair_arb_directional_retain_does_not_chase_higher_buy_bid() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    // Initial publish.
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.40, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.yes_last_ts = Instant::now() - Duration::from_secs(2);
+
+    // Upward price move would normally trigger reprice by threshold, but pair_arb
+    // should retain lower bid to avoid chasing up.
+    coord
+        .slot_place_or_reprice(slot, 0.46, 5.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "pair_arb retain should avoid sending reprice command on higher buy bid"
+    );
+    assert!(
+        coord.stats.retain_hits > 0,
+        "directional retain should increment retain_hits"
+    );
+    let live = coord.slot_target(slot).expect("slot target must stay active");
+    assert!(
+        (live.price - 0.40).abs() < 1e-9,
+        "retained order price must remain at lower live bid"
+    );
+}
+
+#[tokio::test]
+async fn test_pair_arb_state_bucket_change_republishes_higher_buy_bid() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+
+    let high_net = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.45,
+        no_qty: 0.0,
+        no_avg_cost: 0.0,
+        net_diff: 10.0,
+        ..Default::default()
+    };
+    let _ = i.send(high_net);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.18, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial SetTarget, got {:?}", other),
+    }
+
+    let mid_net = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.45,
+        no_qty: 5.0,
+        no_avg_cost: 0.42,
+        net_diff: 5.0,
+        ..Default::default()
+    };
+    let _ = i.send(mid_net);
+
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord
+        .slot_place_or_reprice(slot, 0.36, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.slot(), slot);
+            assert!((target.price - 0.36).abs() < 1e-9);
+        }
+        other => panic!("expected republish SetTarget on state change, got {:?}", other),
+    }
 }
 
 #[tokio::test]
@@ -4466,4 +4660,37 @@ async fn test_hedge_size_change_reprices() {
 
     drop(m);
     let _ = h.await;
+}
+
+#[test]
+fn test_pair_arb_live_obs_heat_alert_on_high_softened_ratio() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairArb;
+    let (_, _, _, _, _, mut coord) = make(c);
+    coord.stats.ofi_heat_events = 15;
+
+    let lvl = coord.pair_arb_obs_heat_level(2_000, 0.52);
+    assert_eq!(lvl, LiveObsLevel::Alert);
+}
+
+#[test]
+fn test_pair_arb_live_obs_heat_requires_min_attempts_for_alert() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairArb;
+    let (_, _, _, _, _, mut coord) = make(c);
+    coord.stats.ofi_heat_events = 5;
+
+    let lvl = coord.pair_arb_obs_heat_level(500, 0.95);
+    assert_eq!(lvl, LiveObsLevel::Ok);
+}
+
+#[test]
+fn test_pair_arb_live_obs_heat_warns_on_high_event_regime() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairArb;
+    let (_, _, _, _, _, mut coord) = make(c);
+    coord.stats.ofi_heat_events = 25;
+
+    let lvl = coord.pair_arb_obs_heat_level(2_000, 0.39);
+    assert_eq!(lvl, LiveObsLevel::Warn);
 }

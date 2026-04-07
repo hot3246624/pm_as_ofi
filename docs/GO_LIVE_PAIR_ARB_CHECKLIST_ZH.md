@@ -12,10 +12,10 @@
 PM_STRATEGY=pair_arb
 POLYMARKET_MARKET_SLUG="btc-updown-15m"
 PM_BID_SIZE=5.0
-PM_MAX_NET_DIFF=5.0
+PM_MAX_NET_DIFF=15.0
 PM_PAIR_TARGET=0.98
-PM_AS_SKEW_FACTOR=0.15
-PM_AS_TIME_DECAY_K=2.0
+PM_AS_SKEW_FACTOR=0.06
+PM_AS_TIME_DECAY_K=1.0
 PM_DRY_RUN=true
 ```
 
@@ -38,6 +38,8 @@ PM_DRY_RUN=true
 先 `PM_DRY_RUN=true` 跑 3 轮，再切小额 live 跑满 10 轮。
 
 聚焦指标：
+- `PairArbGate(30s)`
+- `LIVE_OBS`
 - `round_total_pnl`
 - `residual_inventory_cost_end`
 - `loss_attribution`
@@ -47,6 +49,8 @@ PM_DRY_RUN=true
 - 累计 `round_total_pnl >= 0`
 - 中位数 `round_total_pnl >= 0`
 - `residual_inventory_cost_end` 不是主亏损来源
+- `LIVE_OBS` 不出现持续性的 `ref_blocked_ms` 异常
+- `PairArbGate(30s)` 中 `ofi(suppressed)` 不能长期主导
 
 ## 5. 切 live 前检查
 

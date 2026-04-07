@@ -9,9 +9,6 @@ impl StrategyCoordinator {
         ub: &Book,
         st: &mut ExecutionState,
     ) {
-        if self.cfg.strategy == StrategyKind::PairArb {
-            return;
-        }
         if st.endgame_phase != self.last_endgame_phase {
             let remaining = self.seconds_to_market_end().unwrap_or_default();
             info!(
@@ -19,6 +16,18 @@ impl StrategyCoordinator {
                 self.last_endgame_phase, st.endgame_phase, remaining
             );
             self.last_endgame_phase = st.endgame_phase;
+        }
+        if self.cfg.strategy == StrategyKind::PairArb {
+            if st.endgame_phase >= EndgamePhase::SoftClose {
+                // PairArb only adopts the minimal SoftClose semantics:
+                // block risk-increasing buys late in the round, but keep
+                // pairing / risk-reducing buys alive. Do not enter HardClose,
+                // maker-repair, or taker de-risk modes.
+                self.apply_tail_risk_gate(inv, st);
+            } else {
+                self.edge_hold_state = None;
+            }
+            return;
         }
         if st.endgame_phase >= EndgamePhase::SoftClose {
             // Tail mode: stop risk-increasing intents but keep non-increasing maker repair alive.

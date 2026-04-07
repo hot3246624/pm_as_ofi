@@ -700,7 +700,28 @@ impl StrategyCoordinator {
         if current.price > effective_ceiling + 1e-9 {
             return false;
         }
-        let safe_limit = self.aggressive_price_for(side, effective_ceiling, best_bid, best_ask);
+        let safe_limit = if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && direction == TradeDirection::Buy
+        {
+            // PairArb retain path: existing live orders should use a looser
+            // keep-safety bound than fresh submit safety.
+            // We only require the resting BUY to stay at least one tick below
+            // best ask, which avoids churn from over-strict post-only margins.
+            if best_ask <= 0.0 {
+                0.0
+            } else {
+                let keep_margin = self.cfg.tick_size.max(1e-9);
+                let safe_below = best_ask - keep_margin;
+                if safe_below <= 0.0 {
+                    0.0
+                } else {
+                    self.safe_price(effective_ceiling.min(safe_below))
+                }
+            }
+        } else {
+            self.aggressive_price_for(side, effective_ceiling, best_bid, best_ask)
+        };
         if safe_limit <= 0.0 || current.price > safe_limit + 1e-9 {
             return false;
         }

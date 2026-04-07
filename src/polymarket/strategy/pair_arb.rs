@@ -12,16 +12,16 @@ pub(crate) static PAIR_ARB_STRATEGY: PairArbStrategy = PairArbStrategy;
 const FLOAT_EPS: f64 = 1e-9;
 const TIER_1_NET_DIFF: f64 = 5.0;
 const TIER_2_NET_DIFF: f64 = 10.0;
-const TIER_1_MULT: f64 = 0.85;
-const TIER_2_MULT: f64 = 0.70;
 const EARLY_SKEW_MULT: f64 = 0.35;
 const OFI_HOT_ADJUST_TICKS: f64 = 1.0;
 const OFI_TOXIC_ADJUST_TICKS: f64 = 2.0;
 const RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT: f64 = -0.5;
 const RISK_INCR_LOW_NET_MIN_UTILITY_MULT: f64 = 0.5;
+const HIGH_IMBALANCE_UTILITY_MULT: f64 = 2.0;
+const HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PairArbRiskEffect {
+pub(crate) enum PairArbRiskEffect {
     PairingOrReducing,
     RiskIncreasing,
 }
@@ -36,9 +36,9 @@ impl PairArbRiskEffect {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct PairArbOfiDecision {
-    adjust_ticks: f64,
-    suppress: bool,
+pub(crate) struct PairArbOfiDecision {
+    pub(crate) adjust_ticks: f64,
+    pub(crate) suppress: bool,
 }
 
 impl QuoteStrategy for PairArbStrategy {
@@ -84,10 +84,15 @@ impl QuoteStrategy for PairArbStrategy {
         }
 
         // 1b) Tiered avg-cost cap for dominant inventory side.
-        // This is an extra cap before pair-cost ceiling:
-        // - Tier 1: net diff >= 5  -> dominant side bid <= avg * 0.85
-        // - Tier 2: net diff >= 10 -> dominant side bid <= avg * 0.70
-        (raw_yes, raw_no) = Self::apply_tier_avg_cost_cap(inv, raw_yes, raw_no);
+        // This is an extra cap before pair-cost ceiling, driven by the
+        // current inventory state rather than path-dependent fill history.
+        (raw_yes, raw_no) = Self::apply_tier_avg_cost_cap(
+            inv,
+            raw_yes,
+            raw_no,
+            cfg.pair_arb_tier_1_mult,
+            cfg.pair_arb_tier_2_mult,
+        );
 
         let mut quotes = StrategyQuotes::default();
         let yes_risk_effect = Self::candidate_risk_effect(inv, Side::Yes, cfg.bid_size);
@@ -140,11 +145,17 @@ impl QuoteStrategy for PairArbStrategy {
             );
         }
 
-        // 2) Inventory Cost Clamp
+        // 2) Inventory Cost Clamp (VWAP ceiling)
         let mut disable_yes_by_cost = false;
         let mut disable_no_by_cost = false;
         if inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
-            let yes_ceiling = cfg.pair_target - inv.no_avg_cost;
+            let yes_ceiling = Self::vwap_ceiling(
+                cfg.pair_target,
+                inv.no_avg_cost,
+                inv.yes_qty,
+                inv.yes_avg_cost,
+                cfg.bid_size,
+            );
             raw_yes = f64::min(raw_yes, yes_ceiling);
             if yes_ceiling <= cfg.tick_size + 1e-9 {
                 disable_yes_by_cost = true;
@@ -155,7 +166,13 @@ impl QuoteStrategy for PairArbStrategy {
             }
         }
         if inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 {
-            let no_ceiling = cfg.pair_target - inv.yes_avg_cost;
+            let no_ceiling = Self::vwap_ceiling(
+                cfg.pair_target,
+                inv.yes_avg_cost,
+                inv.no_qty,
+                inv.no_avg_cost,
+                cfg.bid_size,
+            );
             raw_no = f64::min(raw_no, no_ceiling);
             if no_ceiling <= cfg.tick_size + 1e-9 {
                 disable_no_by_cost = true;
@@ -244,7 +261,28 @@ impl QuoteStrategy for PairArbStrategy {
 }
 
 impl PairArbStrategy {
-    fn candidate_risk_effect(
+    pub(crate) fn vwap_ceiling(
+        pair_target: f64,
+        opp_avg: f64,
+        same_qty: f64,
+        same_avg: f64,
+        bid_size: f64,
+    ) -> f64 {
+        let legacy = pair_target - opp_avg;
+        if same_qty <= FLOAT_EPS || bid_size <= FLOAT_EPS {
+            return legacy;
+        }
+
+        let numerator = (pair_target - opp_avg) * (same_qty + bid_size) - same_qty * same_avg;
+        let ceiling = numerator / bid_size;
+        if ceiling.is_finite() {
+            ceiling
+        } else {
+            legacy
+        }
+    }
+
+    pub(crate) fn candidate_risk_effect(
         inv: &crate::polymarket::messages::InventoryState,
         side: Side,
         size: f64,
@@ -260,7 +298,7 @@ impl PairArbStrategy {
         }
     }
 
-    fn ofi_decision(
+    pub(crate) fn ofi_decision(
         side_ofi: Option<SideOfi>,
         risk_effect: PairArbRiskEffect,
     ) -> PairArbOfiDecision {
@@ -311,31 +349,33 @@ impl PairArbStrategy {
         base * time_decay
     }
 
-    fn apply_tier_avg_cost_cap(
+    pub(crate) fn apply_tier_avg_cost_cap(
         inv: &crate::polymarket::messages::InventoryState,
         mut raw_yes: f64,
         mut raw_no: f64,
+        tier_1_mult: f64,
+        tier_2_mult: f64,
     ) -> (f64, f64) {
         if inv.net_diff >= TIER_1_NET_DIFF && inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 {
             let mult = if inv.net_diff >= TIER_2_NET_DIFF {
-                TIER_2_MULT
+                tier_2_mult
             } else {
-                TIER_1_MULT
+                tier_1_mult
             };
             raw_yes = raw_yes.min(inv.yes_avg_cost * mult);
         }
         if inv.net_diff <= -TIER_1_NET_DIFF && inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
             let mult = if inv.net_diff <= -TIER_2_NET_DIFF {
-                TIER_2_MULT
+                tier_2_mult
             } else {
-                TIER_1_MULT
+                tier_1_mult
             };
             raw_no = raw_no.min(inv.no_avg_cost * mult);
         }
         (raw_yes, raw_no)
     }
 
-    fn min_utility_delta_for_risk_increasing(
+    pub(crate) fn min_utility_delta_for_risk_increasing(
         current_paired_qty: f64,
         abs_net_diff: f64,
         size: f64,
@@ -348,7 +388,23 @@ impl PairArbStrategy {
         if abs_net_diff + FLOAT_EPS < size {
             return RISK_INCR_LOW_NET_MIN_UTILITY_MULT * base;
         }
+        if abs_net_diff + FLOAT_EPS >= TIER_2_NET_DIFF {
+            return HIGH_IMBALANCE_UTILITY_MULT * base;
+        }
         base
+    }
+
+    pub(crate) fn min_open_edge_improvement_for_risk_increasing(
+        abs_net_diff: f64,
+        size: f64,
+        tick_size: f64,
+    ) -> f64 {
+        let base = size * tick_size.max(1e-9);
+        if abs_net_diff + FLOAT_EPS >= TIER_2_NET_DIFF {
+            HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT * base
+        } else {
+            FLOAT_EPS
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -428,10 +484,16 @@ impl PairArbStrategy {
         if utility_delta + FLOAT_EPS < min_utility_delta {
             quotes.note_pair_arb_skip_utility_delta();
             trace!(
-                "🧭 pair_arb skip | side={} reason=utility_delta utility_delta={:.6} min_delta={:.6} pair_cost={:.4} paired_qty={:.2}",
+                "🧭 pair_arb skip | side={} candidate_role={} reason=utility_delta utility_delta={:.6} min_delta={:.6} high_imbalance_admission={} pair_cost={:.4} paired_qty={:.2}",
                 side.as_str(),
+                if risk_increasing { "risk_increasing" } else { "pairing" },
                 utility_delta,
                 min_utility_delta,
+                if inv.net_diff.abs() + FLOAT_EPS >= TIER_2_NET_DIFF {
+                    "blocked"
+                } else {
+                    "pass"
+                },
                 projected.metrics.pair_cost,
                 projected.metrics.paired_qty,
             );
@@ -443,14 +505,28 @@ impl PairArbStrategy {
             &projected.metrics,
             book,
         );
-        let keep = projected_open_edge > current_open_edge + FLOAT_EPS;
+        let min_open_edge_improvement = Self::min_open_edge_improvement_for_risk_increasing(
+            inv.net_diff.abs(),
+            size,
+            coordinator.cfg().tick_size,
+        );
+        let open_edge_delta = projected_open_edge - current_open_edge;
+        let keep = open_edge_delta + FLOAT_EPS >= min_open_edge_improvement;
         if !keep {
             quotes.note_pair_arb_skip_open_edge_not_improved();
             trace!(
-                "🧭 pair_arb skip | side={} reason=open_edge_not_improved current_open_edge={:.6} projected_open_edge={:.6} projected_abs_net_diff={:.2}",
+                "🧭 pair_arb skip | side={} candidate_role={} reason=open_edge_not_improved current_open_edge={:.6} projected_open_edge={:.6} open_edge_delta={:.6} min_delta={:.6} high_imbalance_admission={} projected_abs_net_diff={:.2}",
                 side.as_str(),
+                if risk_increasing { "risk_increasing" } else { "pairing" },
                 current_open_edge,
                 projected_open_edge,
+                open_edge_delta,
+                min_open_edge_improvement,
+                if inv.net_diff.abs() + FLOAT_EPS >= TIER_2_NET_DIFF {
+                    "blocked"
+                } else {
+                    "pass"
+                },
                 projected.projected_abs_net_diff,
             );
         } else {
@@ -483,6 +559,8 @@ mod tests {
 
     #[test]
     fn test_tier_avg_cost_cap_applies_on_dominant_side() {
+        let tier_1_mult = 0.80;
+        let tier_2_mult = 0.60;
         let inv_yes = InventoryState {
             yes_qty: 15.0,
             yes_avg_cost: 0.45,
@@ -492,8 +570,8 @@ mod tests {
             ..Default::default()
         };
         let (yes_capped, no_unchanged) =
-            PairArbStrategy::apply_tier_avg_cost_cap(&inv_yes, 0.60, 0.40);
-        assert!((yes_capped - (0.45 * TIER_2_MULT)).abs() < 1e-9);
+            PairArbStrategy::apply_tier_avg_cost_cap(&inv_yes, 0.60, 0.40, tier_1_mult, tier_2_mult);
+        assert!((yes_capped - (0.45 * tier_2_mult)).abs() < 1e-9);
         assert!((no_unchanged - 0.40).abs() < 1e-9);
 
         let inv_no = InventoryState {
@@ -505,9 +583,68 @@ mod tests {
             ..Default::default()
         };
         let (yes_unchanged, no_capped) =
-            PairArbStrategy::apply_tier_avg_cost_cap(&inv_no, 0.30, 0.60);
+            PairArbStrategy::apply_tier_avg_cost_cap(&inv_no, 0.30, 0.60, tier_1_mult, tier_2_mult);
         assert!((yes_unchanged - 0.30).abs() < 1e-9);
-        assert!((no_capped - (0.50 * TIER_1_MULT)).abs() < 1e-9);
+        assert!((no_capped - (0.50 * tier_1_mult)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vwap_ceiling_equals_legacy_when_same_qty_is_zero() {
+        let legacy = 0.98 - 0.40;
+        let ceiling = PairArbStrategy::vwap_ceiling(0.98, 0.40, 0.0, 0.35, 5.0);
+        assert!((ceiling - legacy).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vwap_ceiling_relaxes_when_holding_cheap_same_side_inventory() {
+        // From PLAN_Claude example: yes_qty=5, yes_avg=0.40, no_avg=0.40
+        // legacy ceiling=0.58, vwap ceiling=0.76
+        let legacy = 0.98 - 0.40;
+        let ceiling = PairArbStrategy::vwap_ceiling(0.98, 0.40, 5.0, 0.40, 5.0);
+        assert!(ceiling > legacy);
+        assert!((ceiling - 0.76).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vwap_ceiling_relaxes_opposite_side_pairing_capacity() {
+        // YES-heavy buy NO example: yes_avg=0.30, no_qty=5, no_avg=0.50
+        // legacy no ceiling=0.68, vwap no ceiling=0.86
+        let legacy = 0.98 - 0.30;
+        let ceiling = PairArbStrategy::vwap_ceiling(0.98, 0.30, 5.0, 0.50, 5.0);
+        assert!(ceiling > legacy);
+        assert!((ceiling - 0.86).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_vwap_ceiling_never_exceeds_pair_target_after_projected_fill() {
+        let pair_target = 0.98;
+        let opp_avg = 0.40;
+        let same_qty = 5.0;
+        let same_avg = 0.40;
+        let bid_size = 5.0;
+        let ceiling = PairArbStrategy::vwap_ceiling(pair_target, opp_avg, same_qty, same_avg, bid_size);
+        let projected_same_avg = (same_qty * same_avg + bid_size * ceiling) / (same_qty + bid_size);
+        assert!(projected_same_avg + opp_avg <= pair_target + 1e-9);
+
+        let safer_bid = ceiling - 0.10;
+        let safer_avg = (same_qty * same_avg + bid_size * safer_bid) / (same_qty + bid_size);
+        assert!(safer_avg + opp_avg <= pair_target + 1e-9);
+    }
+
+    #[test]
+    fn test_tier_cap_still_dominates_when_vwap_ceiling_is_looser() {
+        let inv = InventoryState {
+            yes_qty: 5.0,
+            yes_avg_cost: 0.80,
+            no_qty: 5.0,
+            no_avg_cost: 0.10,
+            net_diff: 10.0,
+            ..Default::default()
+        };
+        let (tier_capped_yes, _) =
+            PairArbStrategy::apply_tier_avg_cost_cap(&inv, 0.95, 0.20, 0.80, 0.60);
+        let vwap_yes_ceiling = PairArbStrategy::vwap_ceiling(0.98, inv.no_avg_cost, inv.yes_qty, inv.yes_avg_cost, 5.0);
+        assert!(tier_capped_yes < vwap_yes_ceiling);
     }
 
     #[test]
@@ -588,5 +725,22 @@ mod tests {
 
         let full = PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 5.0, size, tick);
         assert!((full - base).abs() < 1e-9);
+
+        let high_imbalance =
+            PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 10.0, size, tick);
+        assert!((high_imbalance - (HIGH_IMBALANCE_UTILITY_MULT * base)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_min_open_edge_improvement_tightens_in_high_imbalance() {
+        let size = 5.0;
+        let tick = 0.01;
+        let base = size * tick;
+
+        let normal = PairArbStrategy::min_open_edge_improvement_for_risk_increasing(5.0, size, tick);
+        assert!(normal <= FLOAT_EPS * 2.0);
+
+        let high = PairArbStrategy::min_open_edge_improvement_for_risk_increasing(10.0, size, tick);
+        assert!((high - (HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT * base)).abs() < 1e-9);
     }
 }

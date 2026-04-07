@@ -44,6 +44,9 @@ const LIVE_OBS_REF_BLOCKED_SOURCE_ONLY_WARN_MS: u64 = 60_000;
 const LIVE_OBS_REF_BLOCKED_SOURCE_ONLY_ALERT_MS: u64 = 120_000;
 const LIVE_OBS_HEAT_EVENTS_WARN: u64 = 10;
 const LIVE_OBS_HEAT_EVENTS_ALERT: u64 = 14;
+const LIVE_OBS_PAIR_ARB_HEAT_EVENTS_WARN: u64 = 20;
+const LIVE_OBS_PAIR_ARB_SOFTENED_ALERT_RATIO: f64 = 0.50;
+const LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT: u64 = 1_000;
 const PAIR_ARB_ROUND_GATE_SECS: u64 = 60;
 const PAIR_ARB_IMBALANCE_MID_THRESHOLD: f64 = 0.20;
 const PAIR_ARB_IMBALANCE_PAIR_GAP: f64 = 0.01;
@@ -105,6 +108,10 @@ pub struct CoordinatorConfig {
     /// Time-decay amplifier k. Effective skew_factor = as_skew_factor * (1 + k * elapsed_frac).
     /// 0.0 disables decay. Default: 2.0 (up to 3× at expiry).
     pub as_time_decay_k: f64,
+    /// PairArb dominant-side avg-cost cap multiplier when 5 <= |net_diff| < 10.
+    pub pair_arb_tier_1_mult: f64,
+    /// PairArb dominant-side avg-cost cap multiplier when |net_diff| >= 10.
+    pub pair_arb_tier_2_mult: f64,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
     pub market_end_ts: Option<u64>,
     /// Opt-3: Faster debounce for hedge orders (urgent, shouldn't wait 500ms).
@@ -178,6 +185,8 @@ impl Default for CoordinatorConfig {
             glft_ofi_spread_beta: 1.00,
             glft_min_half_spread_ticks: 5.0,
             as_time_decay_k: 2.0, // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
+            pair_arb_tier_1_mult: 0.80,
+            pair_arb_tier_2_mult: 0.60,
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
@@ -342,6 +351,30 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_AS_TIME_DECAY_K") {
             if let Ok(f) = v.parse::<f64>() {
                 c.as_time_decay_k = f.max(0.0);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_1_MULT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..=1.0).contains(&f) {
+                    c.pair_arb_tier_1_mult = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_1_MULT={} (must satisfy 0 <= x <= 1), using {}",
+                        f, c.pair_arb_tier_1_mult
+                    );
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_2_MULT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..=1.0).contains(&f) {
+                    c.pair_arb_tier_2_mult = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_2_MULT={} (must satisfy 0 <= x <= 1), using {}",
+                        f, c.pair_arb_tier_2_mult
+                    );
+                }
             }
         }
         if let Ok(v) = std::env::var("PM_HEDGE_DEBOUNCE_MS") {
@@ -860,6 +893,7 @@ pub struct StrategyCoordinator {
     slot_publish_debt_accum: [f64; 4],
     slot_last_debt_refill: [Instant; 4],
     slot_absent_clear_since: [Option<Instant>; 4],
+    slot_pair_arb_state_keys: [Option<PairArbStateKey>; 4],
     yes_target: Option<DesiredTarget>,
     no_target: Option<DesiredTarget>,
     yes_last_ts: Instant,
@@ -960,6 +994,21 @@ pub(crate) enum RoundSuitability {
     SkippedImbalanced,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairArbNetBucket {
+    Flat,
+    Low,
+    Mid,
+    High,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PairArbStateKey {
+    pub(crate) dominant_side: Option<Side>,
+    pub(crate) net_bucket: PairArbNetBucket,
+    pub(crate) soft_close_active: bool,
+}
+
 impl StrategyCoordinator {
     pub fn new(
         cfg: CoordinatorConfig,
@@ -1054,6 +1103,7 @@ impl StrategyCoordinator {
             slot_publish_debt_accum: [0.0; 4],
             slot_last_debt_refill: std::array::from_fn(|_| Instant::now()),
             slot_absent_clear_since: std::array::from_fn(|_| None),
+            slot_pair_arb_state_keys: std::array::from_fn(|_| None),
             yes_target: None,
             no_target: None,
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
@@ -1448,9 +1498,43 @@ impl StrategyCoordinator {
         }
     }
 
+    fn pair_arb_obs_heat_level(
+        &self,
+        pair_arb_gate_attempts: u64,
+        pair_arb_softened_ratio: f64,
+    ) -> LiveObsLevel {
+        if pair_arb_gate_attempts >= LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT
+            && pair_arb_softened_ratio >= LIVE_OBS_PAIR_ARB_SOFTENED_ALERT_RATIO
+        {
+            LiveObsLevel::Alert
+        } else if self.stats.ofi_heat_events >= LIVE_OBS_PAIR_ARB_HEAT_EVENTS_WARN {
+            LiveObsLevel::Warn
+        } else {
+            LiveObsLevel::Ok
+        }
+    }
+
     fn emit_live_observability_tags(&self) {
         let replace_ratio = Self::obs_ratio(self.stats.replace_events, self.stats.placed);
-        let reprice_ratio = Self::obs_ratio(self.stats.cancel_reprice, self.stats.placed);
+        let reprice_ratio_raw = Self::obs_ratio(self.stats.cancel_reprice, self.stats.placed);
+        let pair_arb_edge_explained_reprice = if self.cfg.strategy == StrategyKind::PairArb {
+            self.stats
+                .cancel_reprice
+                .min(self.stats.pair_arb_skip_open_edge_not_improved)
+        } else {
+            0
+        };
+        let pair_arb_unexplained_reprice = self
+            .stats
+            .cancel_reprice
+            .saturating_sub(pair_arb_edge_explained_reprice);
+        let reprice_ratio = if self.cfg.strategy == StrategyKind::PairArb {
+            // PairArb can legitimately clear+republish from strategy skip_edge (intent=None)
+            // without actual chase behavior. Alert only on unexplained reprice churn.
+            Self::obs_ratio(pair_arb_unexplained_reprice, self.stats.placed)
+        } else {
+            reprice_ratio_raw
+        };
         let elapsed_secs = self.market_start.elapsed().as_secs_f64().max(1.0);
         let replace_per_min = (self.stats.replace_events as f64) * 60.0 / elapsed_secs;
         let low_sample = self.stats.placed < LIVE_OBS_MIN_PLACED_SAMPLE;
@@ -1508,11 +1592,31 @@ impl StrategyCoordinator {
             ref_block_warn_ms,
             ref_block_alert_ms,
         );
-        let lvl_heat = Self::obs_level_ge_u64(
-            self.stats.ofi_heat_events,
-            LIVE_OBS_HEAT_EVENTS_WARN,
-            LIVE_OBS_HEAT_EVENTS_ALERT,
+        let pair_arb_gate_attempts = self
+            .stats
+            .pair_arb_keep_candidates
+            .saturating_add(self.stats.pair_arb_skip_inventory_gate)
+            .saturating_add(self.stats.pair_arb_skip_simulate_buy_none)
+            .saturating_add(self.stats.pair_arb_skip_utility_delta)
+            .saturating_add(self.stats.pair_arb_skip_open_edge_not_improved);
+        let pair_arb_softened_ratio = Self::obs_ratio(
+            self.stats.pair_arb_ofi_softened_quotes,
+            pair_arb_gate_attempts,
         );
+        let lvl_heat = if self.cfg.strategy == StrategyKind::PairArb {
+            // PairArb OFI is subordinate shaping. Follow the 5-round PLAN_Claude
+            // interpretation:
+            // - ALERT: shaping impacts >= 50% of gate attempts
+            // - WARN: high heat-event regime (informational)
+            // Guard with minimum attempts to avoid startup/sample noise.
+            self.pair_arb_obs_heat_level(pair_arb_gate_attempts, pair_arb_softened_ratio)
+        } else {
+            Self::obs_level_ge_u64(
+                self.stats.ofi_heat_events,
+                LIVE_OBS_HEAT_EVENTS_WARN,
+                LIVE_OBS_HEAT_EVENTS_ALERT,
+            )
+        };
         let lvl_toxic = if self.stats.ofi_toxic_events > 0 || self.stats.ofi_kill_events > 0 {
             LiveObsLevel::Warn
         } else {
@@ -1546,6 +1650,9 @@ impl StrategyCoordinator {
         if lvl_reprice >= LiveObsLevel::Warn {
             flags.push("reprice_ratio");
         }
+        if self.cfg.strategy == StrategyKind::PairArb && pair_arb_edge_explained_reprice > 0 {
+            flags.push("reprice_edge_explained");
+        }
         if lvl_ref_blocked >= LiveObsLevel::Warn {
             flags.push("reference_blocked_ms");
         }
@@ -1565,7 +1672,7 @@ impl StrategyCoordinator {
         };
 
         let msg = format!(
-            "🏷️ LIVE_OBS[{}] placed={} sample_floor={} replace_ratio={:.2}({}) replace_per_min={:.2}({}) reprice_ratio={:.2}({}) ref_blocked_ms={}({};scope={}) heat_events={}({}) toxic_events={} kill_events={} source_blocked={}({}) flags={}",
+            "🏷️ LIVE_OBS[{}] placed={} sample_floor={} replace_ratio={:.2}({}) replace_per_min={:.2}({}) reprice_ratio={:.2}({}) reprice_ratio_raw={:.2} edge_explained={} ref_blocked_ms={}({};scope={}) heat_events={}({}) pair_arb_softened_ratio={:.2} toxic_events={} kill_events={} source_blocked={}({}) flags={}",
             round_level.as_tag(),
             self.stats.placed,
             LIVE_OBS_MIN_PLACED_SAMPLE,
@@ -1575,11 +1682,14 @@ impl StrategyCoordinator {
             lvl_replace_rate.as_tag(),
             reprice_ratio,
             lvl_reprice.as_tag(),
+            reprice_ratio_raw,
+            pair_arb_edge_explained_reprice,
             self.stats.reference_blocked_ms,
             lvl_ref_blocked.as_tag(),
             ref_block_scope,
             self.stats.ofi_heat_events,
             lvl_heat.as_tag(),
+            pair_arb_softened_ratio,
             self.stats.ofi_toxic_events,
             self.stats.ofi_kill_events,
             self.stats.blocked_due_source,

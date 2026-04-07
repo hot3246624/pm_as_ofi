@@ -50,6 +50,19 @@ impl StrategyCoordinator {
         let now = Instant::now();
         let reprice_eps = 1e-9;
         let raw_target_price = price;
+        let pair_arb_state_changed = if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+            && active
+        {
+            let inv = *self.inv_rx.borrow();
+            let phase = self.endgame_phase();
+            self.slot_pair_arb_state_keys[slot.index()].is_some()
+                && self.slot_pair_arb_state_keys[slot.index()]
+                    != Some(self.pair_arb_state_key(&inv, phase))
+        } else {
+            false
+        };
         if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
             price = self.glft_clamp_slot_target_price(slot, price);
         }
@@ -316,7 +329,9 @@ impl StrategyCoordinator {
                     return;
                 }
             }
-            let reprice_band = self.maker_keep_band(reason);
+            // PairArb publish policy: widen reprice band while inventory is flat/light,
+            // then tighten back to base band as net exposure grows.
+            let reprice_band = self.pair_arb_effective_reprice_band(reason);
             let cross_reprice_override = self.cfg.strategy == StrategyKind::GlftMm
                 && recent_cross_reject
                 && (slot_price - price).abs() >= self.cfg.tick_size.max(1e-9) - reprice_eps;
@@ -331,6 +346,24 @@ impl StrategyCoordinator {
                 || slot_direction != Some(slot.direction)
                 || price_gap_triggers_reprice
                 || (slot_size - size).abs() > 0.1;
+            // PairArb is BUY-only and pair-cost-first:
+            // if the newly computed bid is higher than the live bid, keep the
+            // existing lower-price order instead of chasing up.
+            if needs_reprice
+                && self.cfg.strategy == StrategyKind::PairArb
+                && slot_direction == Some(slot.direction)
+                && (slot_size - size).abs() <= 0.1
+                && slot.direction == TradeDirection::Buy
+                && !pair_arb_state_changed
+                && price > slot_price + reprice_eps
+            {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                debug!(
+                    "🔒 PairArb retain {:?}: current={:.4} new={:.4} gap={:.4}",
+                    slot, slot_price, price, price_gap
+                );
+                return;
+            }
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
                 let shadow_age = self
                     .slot_shadow_since(slot)
@@ -590,6 +623,25 @@ impl StrategyCoordinator {
         }
     }
 
+    fn pair_arb_effective_reprice_band(&self, reason: BidReason) -> f64 {
+        let base = self.maker_keep_band(reason);
+        if self.cfg.strategy != StrategyKind::PairArb || reason != BidReason::Provide {
+            return base;
+        }
+        let tick = self.cfg.tick_size.max(1e-9);
+        let inv = *self.inv_rx.borrow();
+        let abs_net = inv.net_diff.abs();
+        let bid_size = self.cfg.bid_size.max(tick);
+        let extra_ticks = if abs_net + 1e-9 < bid_size {
+            2.0
+        } else if abs_net + 1e-9 < 2.0 * bid_size {
+            1.0
+        } else {
+            0.0
+        };
+        base + extra_ticks * tick
+    }
+
     pub(super) async fn clear_target(&mut self, side: Side, reason: CancelReason) {
         self.clear_slot_target(OrderSlot::new(side, TradeDirection::Buy), reason)
             .await;
@@ -616,6 +668,7 @@ impl StrategyCoordinator {
         self.slot_shadow_targets[slot.index()] = None;
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
+        self.slot_pair_arb_state_keys[slot.index()] = None;
         match scope {
             SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
             SlotResetScope::Full => self.full_reset_slot_publish_state(slot),
@@ -773,6 +826,11 @@ impl StrategyCoordinator {
         let replacing = self.slot_target(slot).is_some();
         self.slot_targets[slot.index()] = Some(target.clone());
         self.slot_last_ts[slot.index()] = Instant::now();
+        if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+            let inv = *self.inv_rx.borrow();
+            let phase = self.endgame_phase();
+            self.slot_pair_arb_state_keys[slot.index()] = Some(self.pair_arb_state_key(&inv, phase));
+        }
         self.sync_buy_side_wrapper(slot);
 
         self.stats.placed += 1;

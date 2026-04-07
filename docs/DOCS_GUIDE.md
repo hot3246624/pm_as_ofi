@@ -26,7 +26,7 @@
 - `docs/STRATEGY_GLFT_MM_ZH.md`
   - `glft_mm` 的独立策略规格书：信号、数学、适用边界、当前真实行为（非当前主线）
 - `docs/STRATEGY_PAIR_ARB_ZH.md`
-  - `pair_arb` 的独立策略说明：`pair_target`、库存偏置、A-S 风格定价、模拟准入语义
+  - `pair_arb` 的独立策略说明：`pair_target`、三段 skew、tier avg-cost cap、VWAP ceiling、OFI 软塑形、Round Suitability Gate、关键日志口径
 - `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
   - `gabagool_grid` 的独立策略说明：open-pair-band、utility 过滤、离散 buy-only 逻辑
 - `docs/CONFIG_REFERENCE_ZH.md`

@@ -47,6 +47,12 @@
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 | `PM_AS_SKEW_FACTOR` | `0.06` | 三段库存 skew 的基础强度（pair_arb） |
 | `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
+| `PM_PAIR_ARB_TIER_1_MULT` | `0.80` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_2_MULT` | `0.60` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
+
+验证时建议同时观察两组日志：
+- `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
+- `LIVE_OBS`：执行稳定性与 `pair_arb_softened_ratio`
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 

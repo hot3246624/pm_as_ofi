@@ -11,7 +11,7 @@
 
 不应该新建策略，而应改执行层/风控层，当问题属于：
 - keep-if-safe / reprice / post-only
-- OFI kill-switch
+- 共享 OFI 引擎或其消费边界
 - stale / endgame
 - recycle / claim
 - reconcile / OMS / Executor 生命周期
@@ -22,6 +22,7 @@
 - `inv`
 - `book`
 - `metrics`
+- `ofi`（可选）
 - `glft`（可选）
 
 策略层输出：`StrategyQuotes`
@@ -47,10 +48,10 @@
 
 当前有三种执行模式：
 - `UnifiedBuys`
-  - 典型：`gabagool_grid` / `gabagool_corridor`
-  - 正常盘中主要输出 buy，由统一层决定尾盘 hedge/taker
+  - 典型：`pair_arb` / `gabagool_grid` / `gabagool_corridor`
+  - 正常盘中主要输出 buy，由共享执行层治理保留/重报价/清槽
 - `DirectionalHedgeOverlay`
-  - 典型：`pair_arb` / `dip_buy` / `phase_builder`
+  - 典型：`dip_buy` / `phase_builder`
   - 策略层输出 provide，统一层叠加 directional hedge
 - `SlotMarketMaking`
   - 典型：`glft_mm`
@@ -127,6 +128,7 @@ impl QuoteStrategy for MyStrategy {
 至少补：
 - 解析/注册测试
 - 最小行为测试
+- 若策略消费 `ofi/glft`，补对应信号分支测试
 - 若涉及 sell/四槽位，再补执行层兼容测试
 
 ### 步骤 5：同步文档
