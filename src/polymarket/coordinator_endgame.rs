@@ -235,9 +235,23 @@ impl StrategyCoordinator {
         let Some(intent) = intent else {
             return true;
         };
+        if self.cfg.strategy == StrategyKind::PairArb {
+            return !self.pair_arb_soft_close_blocks_side(inv, intent.side);
+        }
         let cur_abs = inv.net_diff.abs();
         let next_abs = self.projected_abs_net_diff(inv.net_diff, intent);
         next_abs <= cur_abs + 1e-6
+    }
+
+    pub(super) fn pair_arb_soft_close_blocks_side(&self, inv: &InventoryState, side: Side) -> bool {
+        let eps = 1e-6;
+        if inv.net_diff > eps {
+            return side == Side::Yes;
+        }
+        if inv.net_diff < -eps {
+            return side == Side::No;
+        }
+        false
     }
 
     pub(super) fn projected_abs_net_diff(&self, net: f64, intent: StrategyIntent) -> f64 {

@@ -142,7 +142,10 @@ impl StrategyCoordinator {
             risk_effect,
             crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing
         );
-        if phase != EndgamePhase::Normal && risk_increasing {
+        if phase >= EndgamePhase::SoftClose
+            && risk_increasing
+            && self.pair_arb_soft_close_blocks_side(inv, slot.side)
+        {
             return false;
         }
 

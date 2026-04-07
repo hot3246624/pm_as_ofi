@@ -3175,6 +3175,60 @@ async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
 }
 
 #[tokio::test]
+async fn test_pair_arb_soft_close_keeps_both_buy_provides_when_flat() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairArb;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    c.market_end_ts = Some(now_secs + 40);
+    c.endgame_soft_close_secs = 60;
+    c.endgame_hard_close_secs = 20;
+    c.endgame_freeze_secs = 5;
+    c.min_order_size = 10.0;
+
+    let (_o, i, m, _k, mut e, mut coord) = make(c);
+    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
+    coord.pair_arb_round_gate_until = Instant::now() - Duration::from_secs(1);
+    let _ = i.send(InventoryState::default());
+
+    let h = tokio::spawn(coord.run());
+    let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
+
+    let mut saw_yes_provide = false;
+    let mut saw_no_provide = false;
+    let mut saw_endgame_clear = false;
+    while let Ok(Some(cmd)) = timeout(Duration::from_millis(150), e.recv()).await {
+        match cmd {
+            OrderManagerCmd::SetTarget(target) if target.reason == BidReason::Provide => {
+                if target.side == Side::Yes {
+                    saw_yes_provide = true;
+                } else if target.side == Side::No {
+                    saw_no_provide = true;
+                }
+            }
+            OrderManagerCmd::ClearTarget { reason, .. } if reason == CancelReason::EndgameRiskGate => {
+                saw_endgame_clear = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        saw_yes_provide && saw_no_provide,
+        "pair_arb should keep two-sided provides in soft-close when inventory is flat"
+    );
+    assert!(
+        !saw_endgame_clear,
+        "pair_arb soft-close should not clear both buy slots when net_diff is flat"
+    );
+
+    drop(m);
+    let _ = h.await;
+}
+
+#[tokio::test]
 async fn test_hard_close_entry_keep_mode_skips_taker() {
     let mut c = cfg();
     let now_secs = std::time::SystemTime::now()
