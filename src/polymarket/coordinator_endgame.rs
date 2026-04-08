@@ -9,6 +9,7 @@ impl StrategyCoordinator {
         ub: &Book,
         st: &mut ExecutionState,
     ) {
+        let phase_changed = st.endgame_phase != self.last_endgame_phase;
         if st.endgame_phase != self.last_endgame_phase {
             let remaining = self.seconds_to_market_end().unwrap_or_default();
             info!(
@@ -18,6 +19,10 @@ impl StrategyCoordinator {
             self.last_endgame_phase = st.endgame_phase;
         }
         if self.cfg.strategy == StrategyKind::PairArb {
+            if phase_changed {
+                self.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()] = true;
+                self.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()] = true;
+            }
             if st.endgame_phase >= EndgamePhase::SoftClose {
                 // PairArb only adopts the minimal SoftClose semantics:
                 // block risk-increasing buys late in the round, but keep
@@ -244,6 +249,10 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn pair_arb_soft_close_blocks_side(&self, inv: &InventoryState, side: Side) -> bool {
+        let deadband = 0.5 * self.cfg.bid_size;
+        if inv.net_diff.abs() <= deadband + 1e-9 {
+            return true;
+        }
         let eps = 1e-6;
         if inv.net_diff > eps {
             return side == Side::Yes;

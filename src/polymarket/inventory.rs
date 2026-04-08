@@ -3,29 +3,20 @@
 //! Tracks real-time position state (YES/NO quantities, average costs)
 //! and broadcasts snapshots via a `watch` channel for the Coordinator to read.
 
+use std::time::{Duration, Instant};
+
 use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
-use super::messages::{FillEvent, FillStatus, InventoryEvent, InventoryState, TradeDirection};
+use super::messages::{
+    FillEvent, FillStatus, InventoryEvent, InventorySnapshot, InventoryState, TradeDirection,
+};
 use super::types::Side;
 
-// ─────────────────────────────────────────────────────────
-// Configuration
-// ─────────────────────────────────────────────────────────
-
-/// Inventory constraints. All values configurable at startup.
 #[derive(Debug, Clone)]
 pub struct InventoryConfig {
-    /// Maximum absolute net directional exposure (|YES - NO|).
-    /// Default: 10 shares.
     pub max_net_diff: f64,
-
-    /// Maximum portfolio cost (yes_avg + no_avg).
-    /// Must stay < 1.0 for guaranteed profit on resolution.
-    /// Default: 1.02 (2% slack for fees).
     pub max_portfolio_cost: f64,
-
-    /// Order size to project capacity (fetched from env).
     pub bid_size: f64,
 }
 
@@ -40,7 +31,6 @@ impl Default for InventoryConfig {
 }
 
 impl InventoryConfig {
-    /// Load overrides from environment variables (if set).
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
         if let Ok(v) = std::env::var("PM_MAX_NET_DIFF") {
@@ -50,7 +40,6 @@ impl InventoryConfig {
         }
         if let Ok(v) = std::env::var("PM_MAX_PORTFOLIO_COST") {
             if let Ok(f) = v.parse::<f64>() {
-                // Note: max_portfolio_cost in InventoryConfig is informational only.
                 cfg.max_portfolio_cost = f;
             }
         }
@@ -63,143 +52,181 @@ impl InventoryConfig {
     }
 }
 
-// ─────────────────────────────────────────────────────────
-// Actor
-// ─────────────────────────────────────────────────────────
-
-/// Individual fill record stored in the ledger for precise VWAP reconstruction.
 #[derive(Debug, Clone)]
 struct FillRecord {
-    order_id: String,
     side: Side,
     direction: TradeDirection,
     size: f64,
     price: f64,
 }
 
-/// Inventory Manager: receives fill events, maintains position state,
-/// broadcasts latest state via `watch` channel.
-///
-/// P1 FIX: Uses a fill ledger for exact VWAP reconstruction on reversals,
-/// preventing avg_cost drift when Failed fills subtract quantity.
+#[derive(Debug, Clone)]
+struct PendingFillRecord {
+    order_id: String,
+    side: Side,
+    direction: TradeDirection,
+    size: f64,
+    price: f64,
+    matched_at: Instant,
+}
+
+const PENDING_PROMOTION_TIMEOUT: Duration = Duration::from_secs(15);
+const PENDING_PROMOTION_TICK: Duration = Duration::from_millis(250);
+
 pub struct InventoryManager {
     cfg: InventoryConfig,
-    state: InventoryState,
+    snapshot: InventorySnapshot,
     fill_rx: mpsc::Receiver<InventoryEvent>,
-    state_tx: watch::Sender<InventoryState>,
-    /// P1 FIX: Ledger of all active (non-reversed) fills for exact VWAP.
-    ledger: Vec<FillRecord>,
+    state_tx: watch::Sender<InventorySnapshot>,
+    settled_ledger: Vec<FillRecord>,
+    pending_fills: Vec<PendingFillRecord>,
+    matched_pending_events: u64,
+    confirmed_promotions: u64,
+    timeout_promotions: u64,
+    failed_reverts: u64,
+    late_failed_after_promotion: u64,
 }
 
 impl InventoryManager {
     pub fn new(
         cfg: InventoryConfig,
         fill_rx: mpsc::Receiver<InventoryEvent>,
-        state_tx: watch::Sender<InventoryState>,
+        state_tx: watch::Sender<InventorySnapshot>,
     ) -> Self {
-        let state = InventoryState::default();
         Self {
             cfg,
-            state,
+            snapshot: InventorySnapshot::default(),
             fill_rx,
             state_tx,
-            ledger: Vec::new(),
+            settled_ledger: Vec::new(),
+            pending_fills: Vec::new(),
+            matched_pending_events: 0,
+            confirmed_promotions: 0,
+            timeout_promotions: 0,
+            failed_reverts: 0,
+            late_failed_after_promotion: 0,
         }
     }
 
-    /// Actor main loop. Runs until the fill channel is closed.
     pub async fn run(mut self) {
         info!(
             "📦 InventoryManager started | max_net_diff={:.0} max_cost={:.3}",
             self.cfg.max_net_diff, self.cfg.max_portfolio_cost,
         );
 
-        while let Some(event) = self.fill_rx.recv().await {
-            match event {
-                InventoryEvent::Fill(fill) => {
-                    self.apply_fill(&fill);
+        let mut promotion_tick = tokio::time::interval(PENDING_PROMOTION_TICK);
 
-                    // Broadcast updated state (non-blocking, overwrites previous)
-                    let _ = self.state_tx.send(self.state);
-
-                    info!(
-                        "📦 Fill: slot={} {:?} {:.2}@{:.3} status={:?} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
-                        fill.slot().as_str(),
-                        fill.side, fill.filled_size, fill.price, fill.status, &fill.order_id[..8.min(fill.order_id.len())],
-                        self.state.yes_qty, self.state.yes_avg_cost,
-                        self.state.no_qty, self.state.no_avg_cost,
-                        self.state.net_diff, self.state.portfolio_cost,
-                    );
+        loop {
+            tokio::select! {
+                maybe_event = self.fill_rx.recv() => {
+                    let Some(event) = maybe_event else {
+                        break;
+                    };
+                    match event {
+                        InventoryEvent::Fill(fill) => {
+                            self.apply_fill(&fill);
+                            let _ = self.state_tx.send(self.snapshot);
+                            self.log_fill_snapshot(&fill);
+                        }
+                        InventoryEvent::Merge { full_set_size, merge_id, .. } => {
+                            self.apply_merge(full_set_size, &merge_id);
+                            let _ = self.state_tx.send(self.snapshot);
+                            info!(
+                                "📦 Merge sync: full_set={:.2} id={} → settled net={:.1} cost={:.4} || working net={:.1} cost={:.4} pending_yes={:.2} pending_no={:.2} fragile={}",
+                                full_set_size,
+                                &merge_id[..8.min(merge_id.len())],
+                                self.snapshot.settled.net_diff,
+                                self.snapshot.settled.portfolio_cost,
+                                self.snapshot.working.net_diff,
+                                self.snapshot.working.portfolio_cost,
+                                self.snapshot.pending_yes_qty,
+                                self.snapshot.pending_no_qty,
+                                self.snapshot.fragile,
+                            );
+                        }
+                    }
                 }
-                InventoryEvent::Merge {
-                    full_set_size,
-                    merge_id,
-                    ..
-                } => {
-                    self.apply_merge(full_set_size, &merge_id);
-                    let _ = self.state_tx.send(self.state);
-                    info!(
-                        "📦 Merge sync: full_set={:.2} id={} → YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4}",
-                        full_set_size,
-                        &merge_id[..8.min(merge_id.len())],
-                        self.state.yes_qty,
-                        self.state.yes_avg_cost,
-                        self.state.no_qty,
-                        self.state.no_avg_cost,
-                        self.state.net_diff,
-                        self.state.portfolio_cost,
-                    );
+                _ = promotion_tick.tick() => {
+                    if self.promote_expired_pending(Instant::now()) {
+                        let _ = self.state_tx.send(self.snapshot);
+                    }
                 }
             }
         }
 
-        info!("📦 InventoryManager shutting down (channel closed)");
+        info!(
+            "📦 InventoryManager shutting down (channel closed) | finality(matched_pending={} confirmed_promotions={} timeout_promotions={} failed_reverts={} late_failed_after_promotion={})",
+            self.matched_pending_events,
+            self.confirmed_promotions,
+            self.timeout_promotions,
+            self.failed_reverts,
+            self.late_failed_after_promotion,
+        );
     }
 
-    /// Apply a fill using ledger-based VWAP reconstruction.
-    /// Matched → add to ledger. Confirmed → idempotent if Matched exists, else record.
-    /// Failed → remove from ledger. Then recompute from scratch.
+    fn working_state(&self) -> InventoryState {
+        self.snapshot.working
+    }
+
+    fn log_fill_snapshot(&self, fill: &FillEvent) {
+        info!(
+            "📦 Fill: slot={} {:?} {:.2}@{:.3} status={:?} id={} → settled YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4} || working YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4} pending_yes={:.2} pending_no={:.2} fragile={}",
+            fill.slot().as_str(),
+            fill.side,
+            fill.filled_size,
+            fill.price,
+            fill.status,
+            &fill.order_id[..8.min(fill.order_id.len())],
+            self.snapshot.settled.yes_qty,
+            self.snapshot.settled.yes_avg_cost,
+            self.snapshot.settled.no_qty,
+            self.snapshot.settled.no_avg_cost,
+            self.snapshot.settled.net_diff,
+            self.snapshot.settled.portfolio_cost,
+            self.snapshot.working.yes_qty,
+            self.snapshot.working.yes_avg_cost,
+            self.snapshot.working.no_qty,
+            self.snapshot.working.no_avg_cost,
+            self.snapshot.working.net_diff,
+            self.snapshot.working.portfolio_cost,
+            self.snapshot.pending_yes_qty,
+            self.snapshot.pending_no_qty,
+            self.snapshot.fragile,
+        );
+    }
+
     fn apply_fill(&mut self, fill: &FillEvent) {
         let signed_size = match fill.direction {
             TradeDirection::Buy => fill.filled_size,
             TradeDirection::Sell => -fill.filled_size,
         };
+
         match fill.status {
             FillStatus::Matched => {
-                self.ledger.push(FillRecord {
+                self.matched_pending_events = self.matched_pending_events.saturating_add(1);
+                self.pending_fills.push(PendingFillRecord {
                     order_id: fill.order_id.clone(),
                     side: fill.side,
                     direction: fill.direction,
                     size: signed_size,
                     price: fill.price,
+                    matched_at: fill.ts,
                 });
             }
             FillStatus::Confirmed => {
-                // Check if we already have a Matched entry for this order+side+size.
-                // If yes → idempotent no-op (MATCHED→CONFIRMED normal path).
-                // If no → this is a Confirmed-first scenario (e.g. after reconnect),
-                //         so we must record it to avoid losing the fill entirely.
-                let already_tracked = self.ledger.iter().any(|r| {
-                    r.order_id == fill.order_id
-                        && r.side == fill.side
-                        && r.direction == fill.direction
-                        && (r.size - signed_size).abs() < 1e-6
-                });
-                if already_tracked {
-                    info!(
-                        "📦 Confirmed fill for order {}… — already tracked via Matched (no-op)",
-                        &fill.order_id[..8.min(fill.order_id.len())]
-                    );
-                    return; // Skip recompute — nothing changed
-                } else {
-                    // Confirmed-first: no Matched was seen (likely reconnect replay).
-                    // Record it to prevent inventory loss.
+                if !self.promote_pending_fill(
+                    fill.order_id.as_str(),
+                    fill.side,
+                    fill.direction,
+                    signed_size,
+                    Some(fill.price),
+                    "confirmed",
+                ) {
                     warn!(
                         "📦 Confirmed-first fill for order {}… — no prior Matched, recording to prevent loss",
                         &fill.order_id[..8.min(fill.order_id.len())]
                     );
-                    self.ledger.push(FillRecord {
-                        order_id: fill.order_id.clone(),
+                    self.settled_ledger.push(FillRecord {
                         side: fill.side,
                         direction: fill.direction,
                         size: signed_size,
@@ -208,81 +235,79 @@ impl InventoryManager {
                 }
             }
             FillStatus::Failed => {
-                // Remove the FIRST matching entry for this order_id + side + size
-                if let Some(idx) = self.ledger.iter().position(|r| {
-                    r.order_id == fill.order_id
-                        && r.side == fill.side
-                        && r.direction == fill.direction
-                        && (r.size - signed_size).abs() < 1e-6
-                }) {
-                    self.ledger.remove(idx);
+                if !self.remove_pending_fill(
+                    fill.order_id.as_str(),
+                    fill.side,
+                    fill.direction,
+                    signed_size,
+                ) {
+                    self.late_failed_after_promotion =
+                        self.late_failed_after_promotion.saturating_add(1);
+                    warn!(
+                        "📦 Late FAILED after timeout promotion or missing pending record for order {}… — keeping settled inventory intact",
+                        &fill.order_id[..8.min(fill.order_id.len())]
+                    );
                 } else {
-                    // Fallback: remove any entry with matching order_id + side + direction
-                    if let Some(idx) = self.ledger.iter().position(|r| {
-                        r.order_id == fill.order_id
-                            && r.side == fill.side
-                            && r.direction == fill.direction
-                    }) {
-                        self.ledger.remove(idx);
-                    }
+                    self.failed_reverts = self.failed_reverts.saturating_add(1);
                 }
             }
         }
 
-        // Recompute everything from the ledger (zero-drift VWAP)
-        self.recompute_from_ledger();
+        self.recompute_snapshot();
     }
 
-    /// Apply merge-side inventory synchronization.
-    ///
-    /// Merge consumes one YES and one NO per full-set unit. We model this as
-    /// synthetic negative ledger entries at current side VWAP so remaining
-    /// average costs stay stable.
-    fn apply_merge(&mut self, full_set_size: f64, merge_id: &str) {
+    fn apply_merge(&mut self, full_set_size: f64, _merge_id: &str) {
         let requested = full_set_size.max(0.0);
         if requested <= f64::EPSILON {
             return;
         }
-        let available_full_set = self.state.yes_qty.min(self.state.no_qty).max(0.0);
+
+        let current = self.working_state();
+        let available_full_set = current.yes_qty.min(current.no_qty).max(0.0);
         let amount = requested.min(available_full_set);
         if amount <= f64::EPSILON {
             return;
         }
 
-        let yes_price = self.state.yes_avg_cost.max(0.0);
-        let no_price = self.state.no_avg_cost.max(0.0);
-        self.ledger.push(FillRecord {
-            order_id: format!("merge:{}:yes", merge_id),
+        self.settled_ledger.push(FillRecord {
             side: Side::Yes,
             direction: TradeDirection::Sell,
             size: -amount,
-            price: yes_price,
+            price: current.yes_avg_cost.max(0.0),
         });
-        self.ledger.push(FillRecord {
-            order_id: format!("merge:{}:no", merge_id),
+        self.settled_ledger.push(FillRecord {
             side: Side::No,
             direction: TradeDirection::Sell,
             size: -amount,
-            price: no_price,
+            price: current.no_avg_cost.max(0.0),
         });
-        self.recompute_from_ledger();
+
+        self.recompute_snapshot();
     }
 
-    /// Rebuild position state entirely from the fill ledger.
-    ///
-    /// NOTE:
-    /// We intentionally use inventory accounting semantics instead of a naive
-    /// signed cashflow VWAP:
-    /// - BUY updates weighted average cost.
-    /// - SELL only reduces quantity; remaining avg cost is preserved.
-    ///
-    /// This prevents near-flat sell sequences from producing impossible
-    /// negative average costs (e.g. NO@-190) that can corrupt strategy logic.
-    fn recompute_from_ledger(&mut self) {
+    fn recompute_snapshot(&mut self) {
+        self.snapshot.settled = Self::recompute_state_from_records(&self.settled_ledger);
+        let mut working_records = self.settled_ledger.clone();
+        working_records.extend(self.pending_fills.iter().map(|pending| FillRecord {
+            side: pending.side,
+            direction: pending.direction,
+            size: pending.size,
+            price: pending.price,
+        }));
+        self.snapshot.working = Self::recompute_state_from_records(&working_records);
+        self.snapshot.pending_yes_qty =
+            (self.snapshot.working.yes_qty - self.snapshot.settled.yes_qty).max(0.0);
+        self.snapshot.pending_no_qty =
+            (self.snapshot.working.no_qty - self.snapshot.settled.no_qty).max(0.0);
+        self.snapshot.fragile =
+            self.snapshot.pending_yes_qty > 1e-9 || self.snapshot.pending_no_qty > 1e-9;
+    }
+
+    fn recompute_state_from_records(records: &[FillRecord]) -> InventoryState {
         let (mut yes_qty, mut yes_avg) = (0.0_f64, 0.0_f64);
         let (mut no_qty, mut no_avg) = (0.0_f64, 0.0_f64);
 
-        for r in &self.ledger {
+        for r in records {
             let fill_size = r.size.abs();
             if fill_size <= f64::EPSILON {
                 continue;
@@ -337,25 +362,117 @@ impl InventoryManager {
             }
         }
 
-        self.state.yes_qty = yes_qty;
-        self.state.no_qty = no_qty;
-        self.state.yes_avg_cost = yes_avg.max(0.0);
-        self.state.no_avg_cost = no_avg.max(0.0);
-
-        // Recompute derived fields
-        self.state.net_diff = self.state.yes_qty - self.state.no_qty;
-        self.state.portfolio_cost = if self.state.yes_qty > 0.0 && self.state.no_qty > 0.0 {
-            self.state.yes_avg_cost + self.state.no_avg_cost
+        let mut state = InventoryState::default();
+        state.yes_qty = yes_qty;
+        state.no_qty = no_qty;
+        state.yes_avg_cost = yes_avg.max(0.0);
+        state.no_avg_cost = no_avg.max(0.0);
+        state.net_diff = state.yes_qty - state.no_qty;
+        state.portfolio_cost = if state.yes_qty > 0.0 && state.no_qty > 0.0 {
+            state.yes_avg_cost + state.no_avg_cost
         } else {
-            0.0 // Not a complete pair yet
+            0.0
         };
+        state
+    }
+
+    fn remove_pending_fill(
+        &mut self,
+        order_id: &str,
+        side: Side,
+        direction: TradeDirection,
+        signed_size: f64,
+    ) -> bool {
+        if let Some(idx) = self.pending_fills.iter().position(|r| {
+            r.order_id == order_id
+                && r.side == side
+                && r.direction == direction
+                && (r.size - signed_size).abs() < 1e-6
+        }) {
+            self.pending_fills.remove(idx);
+            true
+        } else if let Some(idx) = self
+            .pending_fills
+            .iter()
+            .position(|r| r.order_id == order_id && r.side == side && r.direction == direction)
+        {
+            self.pending_fills.remove(idx);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn promote_pending_fill(
+        &mut self,
+        order_id: &str,
+        side: Side,
+        direction: TradeDirection,
+        signed_size: f64,
+        price_override: Option<f64>,
+        reason: &str,
+    ) -> bool {
+        if let Some(idx) = self.pending_fills.iter().position(|r| {
+            r.order_id == order_id
+                && r.side == side
+                && r.direction == direction
+                && (r.size - signed_size).abs() < 1e-6
+        }) {
+            let pending = self.pending_fills.remove(idx);
+            self.settled_ledger.push(FillRecord {
+                side: pending.side,
+                direction: pending.direction,
+                size: pending.size,
+                price: price_override.unwrap_or(pending.price),
+            });
+            self.confirmed_promotions = self.confirmed_promotions.saturating_add(1);
+            info!(
+                "📦 Pending fill promoted to settled ({}) for order {}…",
+                reason,
+                &order_id[..8.min(order_id.len())]
+            );
+            true
+        } else {
+            false
+        }
+    }
+
+    fn promote_expired_pending(&mut self, now: Instant) -> bool {
+        let mut changed = false;
+        let mut idx = 0;
+        while idx < self.pending_fills.len() {
+            if now.saturating_duration_since(self.pending_fills[idx].matched_at)
+                >= PENDING_PROMOTION_TIMEOUT
+            {
+                let pending = self.pending_fills.remove(idx);
+                info!(
+                    "📦 Pending fill timeout-promoted to settled after {}ms for order {}…",
+                    PENDING_PROMOTION_TIMEOUT.as_millis(),
+                    &pending.order_id[..8.min(pending.order_id.len())]
+                );
+                self.settled_ledger.push(FillRecord {
+                    side: pending.side,
+                    direction: pending.direction,
+                    size: pending.size,
+                    price: pending.price,
+                });
+                self.timeout_promotions = self.timeout_promotions.saturating_add(1);
+                changed = true;
+                continue;
+            }
+            idx += 1;
+        }
+
+        if changed {
+            self.recompute_snapshot();
+        }
+        changed
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     fn make_fill(side: Side, size: f64, price: f64) -> FillEvent {
         FillEvent {
@@ -369,283 +486,104 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_single_side_fill() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
+    fn make_manager() -> InventoryManager {
+        let (state_tx, _state_rx) = watch::channel(InventorySnapshot::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
+        InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx)
+    }
 
+    #[test]
+    fn matched_updates_working_and_sets_fragile() {
+        let mut im = make_manager();
         im.apply_fill(&make_fill(Side::Yes, 10.0, 0.50));
-        assert!((im.state.yes_qty - 10.0).abs() < 1e-9);
-        assert!((im.state.yes_avg_cost - 0.50).abs() < 1e-9);
-        assert!((im.state.net_diff - 10.0).abs() < 1e-9);
-        assert!((im.state.portfolio_cost - 0.0).abs() < 1e-9); // no pair yet
+        assert!((im.snapshot.working.yes_qty - 10.0).abs() < 1e-9);
+        assert!(im.snapshot.settled.yes_qty.abs() < 1e-9);
+        assert!(im.snapshot.fragile);
+        assert!((im.snapshot.pending_yes_qty - 10.0).abs() < 1e-9);
     }
 
     #[test]
-    fn test_pair_fill() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let cfg = InventoryConfig::default();
-        let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
-
-        im.apply_fill(&make_fill(Side::Yes, 5.0, 0.48));
-        im.apply_fill(&make_fill(Side::No, 5.0, 0.49));
-
-        assert!((im.state.net_diff - 0.0).abs() < 1e-9);
-        assert!((im.state.portfolio_cost - 0.97).abs() < 1e-9); // 0.48+0.49
-    }
-
-    #[test]
-    fn test_vwap_averaging() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        im.apply_fill(&make_fill(Side::Yes, 10.0, 0.50));
-        im.apply_fill(&make_fill(Side::Yes, 10.0, 0.52));
-
-        assert!((im.state.yes_qty - 20.0).abs() < 1e-9);
-        // VWAP = (10*0.50 + 10*0.52) / 20 = 0.51
-        assert!((im.state.yes_avg_cost - 0.51).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_inventory_constraint() {
-        let cfg = InventoryConfig {
-            max_net_diff: 5.0,
-            ..Default::default()
-        };
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(cfg, fill_rx, state_tx);
-
-        im.apply_fill(&make_fill(Side::Yes, 5.0, 0.50));
-        // Gating now happens in Coordinator, not InventoryManager.
-        assert!((im.state.net_diff - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_failed_fill_reversal() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        // Fill 5 YES in two separate orders
-        im.apply_fill(&make_fill(Side::Yes, 5.0, 0.50));
+    fn confirmed_promotes_pending_to_settled() {
+        let mut im = make_manager();
+        let matched = make_fill(Side::No, 3.0, 0.45);
+        im.apply_fill(&matched);
         im.apply_fill(&FillEvent {
-            order_id: "test-order-2".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Buy,
-            filled_size: 5.0,
-            price: 0.50,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
+            status: FillStatus::Confirmed,
+            ..matched.clone()
         });
-        assert!((im.state.yes_qty - 10.0).abs() < 1e-9);
+        assert!((im.snapshot.settled.no_qty - 3.0).abs() < 1e-9);
+        assert!((im.snapshot.working.no_qty - 3.0).abs() < 1e-9);
+        assert!(!im.snapshot.fragile);
+    }
 
-        // Failed: reverse the second order (5 units)
+    #[test]
+    fn failed_reverts_pending_only() {
+        let mut im = make_manager();
+        let fill = make_fill(Side::Yes, 5.0, 0.50);
+        im.apply_fill(&fill);
         im.apply_fill(&FillEvent {
-            order_id: "test-order-2".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Buy,
-            filled_size: 5.0,
-            price: 0.50,
             status: FillStatus::Failed,
-            ts: Instant::now(),
+            ..fill.clone()
         });
-        assert!((im.state.yes_qty - 5.0).abs() < 1e-9);
-        assert!((im.state.net_diff - 5.0).abs() < 1e-9);
-        // P1 FIX: avg_cost should still be exactly 0.50 after reversal
-        assert!((im.state.yes_avg_cost - 0.50).abs() < 1e-9);
+        assert!(im.snapshot.working.yes_qty.abs() < 1e-9);
+        assert!(im.snapshot.settled.yes_qty.abs() < 1e-9);
+        assert!(!im.snapshot.fragile);
     }
 
     #[test]
-    fn test_confirmed_first_records_fill() {
-        // Simulate reconnect scenario: only CONFIRMED arrives, no prior MATCHED.
-        // The fill should still be recorded to prevent silent inventory loss.
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        // Only Confirmed arrives (no prior Matched)
-        im.apply_fill(&FillEvent {
-            order_id: "confirmed-only".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Buy,
-            filled_size: 5.0,
-            price: 0.48,
-            status: FillStatus::Confirmed,
-            ts: Instant::now(),
-        });
-
-        // Should be recorded, not silently dropped
-        assert!((im.state.yes_qty - 5.0).abs() < 1e-9);
-        assert!((im.state.yes_avg_cost - 0.48).abs() < 1e-9);
+    fn timeout_promotion_moves_pending_to_settled() {
+        let mut im = make_manager();
+        let mut fill = make_fill(Side::Yes, 5.0, 0.48);
+        fill.ts = Instant::now() - PENDING_PROMOTION_TIMEOUT - Duration::from_millis(1);
+        im.apply_fill(&fill);
+        assert!(im.snapshot.fragile);
+        assert!(im.promote_expired_pending(Instant::now()));
+        assert!((im.snapshot.settled.yes_qty - 5.0).abs() < 1e-9);
+        assert!(!im.snapshot.fragile);
     }
 
     #[test]
-    fn test_confirmed_after_matched_is_noop() {
-        // Normal lifecycle: MATCHED then CONFIRMED for the same order.
-        // Inventory should NOT double.
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        // Matched first
-        im.apply_fill(&FillEvent {
-            order_id: "duptest".to_string(),
-            side: Side::No,
-            direction: TradeDirection::Buy,
-            filled_size: 3.0,
-            price: 0.45,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
-        });
-        assert!((im.state.no_qty - 3.0).abs() < 1e-9);
-
-        // Confirmed: should be no-op (idempotent)
-        im.apply_fill(&FillEvent {
-            order_id: "duptest".to_string(),
-            side: Side::No,
-            direction: TradeDirection::Buy,
-            filled_size: 3.0,
-            price: 0.45,
-            status: FillStatus::Confirmed,
-            ts: Instant::now(),
-        });
-        // Still 3.0, NOT 6.0
-        assert!((im.state.no_qty - 3.0).abs() < 1e-9);
-        assert!((im.state.no_avg_cost - 0.45).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_merge_sync_reduces_both_sides_and_keeps_vwap() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        im.apply_fill(&FillEvent {
+    fn merge_sync_reduces_settled_inventory_and_keeps_vwap() {
+        let mut im = make_manager();
+        let yes = FillEvent {
             order_id: "yes-1".to_string(),
             side: Side::Yes,
             direction: TradeDirection::Buy,
             filled_size: 10.0,
             price: 0.40,
-            status: FillStatus::Matched,
+            status: FillStatus::Confirmed,
             ts: Instant::now(),
-        });
-        im.apply_fill(&FillEvent {
+        };
+        let no = FillEvent {
             order_id: "no-1".to_string(),
             side: Side::No,
             direction: TradeDirection::Buy,
             filled_size: 10.0,
             price: 0.58,
-            status: FillStatus::Matched,
+            status: FillStatus::Confirmed,
             ts: Instant::now(),
-        });
-
+        };
+        im.apply_fill(&yes);
+        im.apply_fill(&no);
         im.apply_merge(4.0, "m1");
-
-        assert!((im.state.yes_qty - 6.0).abs() < 1e-9);
-        assert!((im.state.no_qty - 6.0).abs() < 1e-9);
-        assert!((im.state.yes_avg_cost - 0.40).abs() < 1e-9);
-        assert!((im.state.no_avg_cost - 0.58).abs() < 1e-9);
-        assert!(im.state.net_diff.abs() < 1e-9);
-        assert!((im.state.portfolio_cost - 0.98).abs() < 1e-9);
+        assert!((im.snapshot.settled.yes_qty - 6.0).abs() < 1e-9);
+        assert!((im.snapshot.settled.no_qty - 6.0).abs() < 1e-9);
+        assert!((im.snapshot.settled.yes_avg_cost - 0.40).abs() < 1e-9);
+        assert!((im.snapshot.settled.no_avg_cost - 0.58).abs() < 1e-9);
     }
 
     #[test]
-    fn test_merge_sync_is_clamped_by_available_full_set() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
+    fn late_failed_after_timeout_does_not_rollback_settled() {
+        let mut im = make_manager();
+        let mut fill = make_fill(Side::No, 5.0, 0.63);
+        fill.ts = Instant::now() - PENDING_PROMOTION_TIMEOUT - Duration::from_millis(1);
+        im.apply_fill(&fill);
+        assert!(im.promote_expired_pending(Instant::now()));
         im.apply_fill(&FillEvent {
-            order_id: "yes-2".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Buy,
-            filled_size: 4.0,
-            price: 0.37,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
+            status: FillStatus::Failed,
+            ..fill
         });
-        im.apply_fill(&FillEvent {
-            order_id: "no-2".to_string(),
-            side: Side::No,
-            direction: TradeDirection::Buy,
-            filled_size: 2.0,
-            price: 0.63,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
-        });
-
-        // Request exceeds available full set (min(4,2)=2), should clamp to 2.
-        im.apply_merge(5.0, "m2");
-
-        assert!((im.state.yes_qty - 2.0).abs() < 1e-9);
-        assert!(im.state.no_qty.abs() < 1e-9);
-        assert!((im.state.yes_avg_cost - 0.37).abs() < 1e-9);
-        assert!(im.state.no_avg_cost.abs() < 1e-9);
-        assert!((im.state.net_diff - 2.0).abs() < 1e-9);
-        assert!(im.state.portfolio_cost.abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_sell_reduces_qty_without_corrupting_remaining_avg_cost() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        im.apply_fill(&FillEvent {
-            order_id: "buy-no-1".to_string(),
-            side: Side::No,
-            direction: TradeDirection::Buy,
-            filled_size: 5.0,
-            price: 0.51,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
-        });
-
-        im.apply_fill(&FillEvent {
-            order_id: "sell-no-1".to_string(),
-            side: Side::No,
-            direction: TradeDirection::Sell,
-            filled_size: 4.88,
-            price: 0.73,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
-        });
-
-        assert!((im.state.no_qty - 0.12).abs() < 1e-9);
-        assert!((im.state.no_avg_cost - 0.51).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_sell_to_flat_resets_avg_cost_to_zero() {
-        let (state_tx, _state_rx) = watch::channel(InventoryState::default());
-        let (_fill_tx, fill_rx) = mpsc::channel(16);
-        let mut im = InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx);
-
-        im.apply_fill(&FillEvent {
-            order_id: "buy-yes-1".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Buy,
-            filled_size: 5.0,
-            price: 0.42,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
-        });
-        im.apply_fill(&FillEvent {
-            order_id: "sell-yes-1".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Sell,
-            filled_size: 5.0,
-            price: 0.09,
-            status: FillStatus::Matched,
-            ts: Instant::now(),
-        });
-
-        assert!(im.state.yes_qty.abs() < 1e-9);
-        assert!(im.state.yes_avg_cost.abs() < 1e-9);
+        assert!((im.snapshot.settled.no_qty - 5.0).abs() < 1e-9);
+        assert!((im.snapshot.working.no_qty - 5.0).abs() < 1e-9);
     }
 }

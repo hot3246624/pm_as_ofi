@@ -54,7 +54,8 @@ impl QuoteStrategy for PairArbStrategy {
         input: StrategyTickInput<'_>,
     ) -> StrategyQuotes {
         let cfg = coordinator.cfg();
-        let inv = input.inv;
+        let inv = input.settled_inv;
+        let fragile = input.inventory.fragile;
         let ub = input.book;
         let current_metrics = input.metrics;
         let current_utility = coordinator.utility_for_inventory(inv, current_metrics, ub);
@@ -121,6 +122,12 @@ impl QuoteStrategy for PairArbStrategy {
                 yes_ofi.adjust_ticks,
             );
         }
+        if fragile {
+            match yes_risk_effect {
+                PairArbRiskEffect::RiskIncreasing => raw_yes -= 2.0 * cfg.tick_size,
+                PairArbRiskEffect::PairingOrReducing => raw_yes -= 1.0 * cfg.tick_size,
+            }
+        }
 
         let no_risk_effect = Self::candidate_risk_effect(inv, Side::No, cfg.bid_size);
         let no_ofi = Self::ofi_decision(input.ofi.map(|ofi| ofi.no), no_risk_effect);
@@ -145,6 +152,12 @@ impl QuoteStrategy for PairArbStrategy {
                 input.ofi.map(|ofi| ofi.no.saturated).unwrap_or(false),
                 no_ofi.adjust_ticks,
             );
+        }
+        if fragile {
+            match no_risk_effect {
+                PairArbRiskEffect::RiskIncreasing => raw_no -= 2.0 * cfg.tick_size,
+                PairArbRiskEffect::PairingOrReducing => raw_no -= 1.0 * cfg.tick_size,
+            }
         }
 
         // 2) Inventory Cost Clamp (VWAP ceiling)
@@ -209,6 +222,7 @@ impl QuoteStrategy for PairArbStrategy {
                     coordinator,
                     &mut quotes,
                     inv,
+                    input.working_inv,
                     ub,
                     current_metrics,
                     current_utility,
@@ -216,6 +230,7 @@ impl QuoteStrategy for PairArbStrategy {
                     Side::Yes,
                     bid_yes,
                     cfg.bid_size,
+                    fragile,
                 )
             {
                 quotes.set(StrategyIntent {
@@ -239,6 +254,7 @@ impl QuoteStrategy for PairArbStrategy {
                     coordinator,
                     &mut quotes,
                     inv,
+                    input.working_inv,
                     ub,
                     current_metrics,
                     current_utility,
@@ -246,6 +262,7 @@ impl QuoteStrategy for PairArbStrategy {
                     Side::No,
                     bid_no,
                     cfg.bid_size,
+                    fragile,
                 )
             {
                 quotes.set(StrategyIntent {
@@ -415,6 +432,7 @@ impl PairArbStrategy {
         coordinator: &StrategyCoordinator,
         quotes: &mut StrategyQuotes,
         inv: &crate::polymarket::messages::InventoryState,
+        safety_inv: &crate::polymarket::messages::InventoryState,
         book: &crate::polymarket::coordinator::Book,
         current_metrics: &StrategyInventoryMetrics,
         current_utility: f64,
@@ -422,6 +440,7 @@ impl PairArbStrategy {
         side: Side,
         price: f64,
         size: f64,
+        fragile: bool,
     ) -> bool {
         let intent = StrategyIntent {
             side,
@@ -430,14 +449,14 @@ impl PairArbStrategy {
             size,
             reason: BidReason::Provide,
         };
-        if !coordinator.can_place_strategy_intent(inv, Some(intent)) {
+        if !coordinator.can_place_strategy_intent(safety_inv, Some(intent)) {
             quotes.note_pair_arb_skip_inventory_gate();
             trace!(
                 "🧭 pair_arb skip | side={} reason=inventory_gate price={:.4} size={:.2} net_diff={:.2}",
                 side.as_str(),
                 price,
                 size,
-                inv.net_diff,
+                safety_inv.net_diff,
             );
             return false;
         }
@@ -517,6 +536,10 @@ impl PairArbStrategy {
             min_utility_delta = min_utility_delta.max(
                 STALLED_UTILITY_MULT * size * coordinator.cfg().tick_size.max(1e-9),
             );
+        }
+        if fragile {
+            min_utility_delta = min_utility_delta
+                .max(2.0 * size * coordinator.cfg().tick_size.max(1e-9));
         }
         if utility_delta + FLOAT_EPS < min_utility_delta {
             quotes.note_pair_arb_skip_utility_delta();

@@ -27,18 +27,33 @@ fn with_strategy(mut c: CoordinatorConfig, strategy: StrategyKind) -> Coordinato
     c
 }
 
+#[derive(Clone)]
+struct TestInventoryTx(watch::Sender<InventorySnapshot>);
+
+impl TestInventoryTx {
+    fn send(&self, inv: InventoryState) -> Result<(), watch::error::SendError<InventorySnapshot>> {
+        self.0.send(InventorySnapshot {
+            settled: inv,
+            working: inv,
+            pending_yes_qty: 0.0,
+            pending_no_qty: 0.0,
+            fragile: false,
+        })
+    }
+}
+
 fn make(
     c: CoordinatorConfig,
 ) -> (
     watch::Sender<OfiSnapshot>,
-    watch::Sender<InventoryState>,
+    TestInventoryTx,
     watch::Sender<MarketDataMsg>,
     mpsc::Sender<KillSwitchSignal>,
     mpsc::Receiver<OrderManagerCmd>,
     StrategyCoordinator,
 ) {
     let (o, or) = watch::channel(OfiSnapshot::default());
-    let (i, ir) = watch::channel(InventoryState::default());
+    let (i, ir) = watch::channel(InventorySnapshot::default());
     let (m, mr) = watch::channel(MarketDataMsg::BookTick {
         yes_bid: 0.0,
         yes_ask: 0.0,
@@ -50,7 +65,7 @@ fn make(
     let (k, kr) = mpsc::channel(16);
     (
         o,
-        i,
+        TestInventoryTx(i),
         m,
         k,
         er,
@@ -62,7 +77,7 @@ fn make_with_glft(
     c: CoordinatorConfig,
 ) -> (
     watch::Sender<OfiSnapshot>,
-    watch::Sender<InventoryState>,
+    TestInventoryTx,
     watch::Sender<MarketDataMsg>,
     watch::Sender<GlftSignalSnapshot>,
     mpsc::Sender<KillSwitchSignal>,
@@ -70,7 +85,7 @@ fn make_with_glft(
     StrategyCoordinator,
 ) {
     let (o, or) = watch::channel(OfiSnapshot::default());
-    let (i, ir) = watch::channel(InventoryState::default());
+    let (i, ir) = watch::channel(InventorySnapshot::default());
     let (m, mr) = watch::channel(MarketDataMsg::BookTick {
         yes_bid: 0.0,
         yes_ask: 0.0,
@@ -82,14 +97,15 @@ fn make_with_glft(
     let (e, er) = mpsc::channel(16);
     let (k, kr) = mpsc::channel(16);
     let (_f, fr) = mpsc::channel(16);
+    let (_r, rr) = mpsc::channel(16);
     (
         o,
-        i,
+        TestInventoryTx(i),
         m,
         g,
         k,
         er,
-        StrategyCoordinator::with_aux_rx(c, or, ir, mr, gr, e, kr, fr),
+        StrategyCoordinator::with_aux_rx(c, or, ir, mr, gr, e, kr, fr, rr),
     )
 }
 
@@ -135,6 +151,9 @@ fn phase_builder_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
         &coord,
         StrategyTickInput {
             inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
             book: &book,
             metrics: &metrics,
             ofi: None,
@@ -150,6 +169,9 @@ fn gabagool_grid_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
         &coord,
         StrategyTickInput {
             inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
             book: &book,
             metrics: &metrics,
             ofi: None,
@@ -169,6 +191,9 @@ fn gabagool_corridor_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
             book: &book,
             metrics: &metrics,
             ofi: None,
@@ -189,6 +214,9 @@ fn pair_arb_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
             book: &book,
             metrics: &metrics,
             ofi: ofi.as_ref(),
@@ -1768,13 +1796,118 @@ async fn test_pair_arb_state_improvement_reanchors_higher_quote_after_fill() {
     }
 }
 
+#[tokio::test]
+async fn test_pair_arb_worsening_reanchors_missing_side_quote() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 3.0,
+        yes_avg_cost: 0.50,
+        no_qty: 14.0,
+        no_avg_cost: 0.40,
+        net_diff: -11.0,
+        ..Default::default()
+    };
+    let _ = i.send(inv);
+
+    let slot = OrderSlot::YES_BUY;
+    let current = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(current.clone());
+    coord.yes_target = Some(current);
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: Some(Side::No),
+        net_bucket: PairArbNetBucket::Low,
+        soft_close_active: false,
+    });
+    coord.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
+
+    let ub = book(0.55, 0.56, 0.44, 0.45);
+    coord.book = ub;
+
+    coord
+        .slot_place_or_reprice(slot, 0.56, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.slot(), slot);
+            assert!((target.price - 0.56).abs() < 1e-9);
+        }
+        other => panic!(
+            "expected republish SetTarget after pairing-urgency reanchor, got {:?}",
+            other
+        ),
+    }
+}
+
+#[test]
+fn test_pair_arb_endgame_phase_change_marks_recheck_pending() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, i, _m, _k, _er, mut coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 8.0,
+        yes_avg_cost: 0.50,
+        no_qty: 10.0,
+        no_avg_cost: 0.45,
+        net_diff: -2.0,
+        ..Default::default()
+    };
+    let _ = i.send(inv);
+
+    let mut st = coord.init_execution_state(&inv, StrategyQuotes::default());
+    st.endgame_phase = EndgamePhase::SoftClose;
+    coord.apply_endgame_controls(&inv, &book(0.49, 0.50, 0.50, 0.51), &mut st);
+
+    assert!(coord.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()]);
+    assert!(coord.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()]);
+}
+
+#[test]
+fn test_pair_arb_soft_close_deadband_blocks_both_sides() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.bid_size = 5.0;
+    let (_o, _i, _m, _k, _er, coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.50,
+        no_qty: 12.0,
+        no_avg_cost: 0.45,
+        net_diff: -2.0,
+        ..Default::default()
+    };
+    assert!(coord.pair_arb_soft_close_blocks_side(&inv, Side::Yes));
+    assert!(coord.pair_arb_soft_close_blocks_side(&inv, Side::No));
+}
+
 #[test]
 fn test_pair_arb_merge_aware_round_accounting_tracks_realized_pair_metrics() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     let (_o, _i, _m, _k, _er, mut coord) = make(config);
 
-    coord.last_inv_snapshot = InventoryState {
+    coord.last_settled_inv_snapshot = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.40,
+        no_qty: 10.0,
+        no_avg_cost: 0.45,
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    coord.last_working_inv_snapshot = InventoryState {
         yes_qty: 10.0,
         yes_avg_cost: 0.40,
         no_qty: 10.0,
@@ -1783,13 +1916,26 @@ fn test_pair_arb_merge_aware_round_accounting_tracks_realized_pair_metrics() {
         ..Default::default()
     };
     coord.observe_pair_arb_inventory_transition(
-        &InventoryState {
-            yes_qty: 5.0,
-            yes_avg_cost: 0.40,
-            no_qty: 5.0,
-            no_avg_cost: 0.45,
-            net_diff: 0.0,
-            ..Default::default()
+        &InventorySnapshot {
+            settled: InventoryState {
+                yes_qty: 5.0,
+                yes_avg_cost: 0.40,
+                no_qty: 5.0,
+                no_avg_cost: 0.45,
+                net_diff: 0.0,
+                ..Default::default()
+            },
+            working: InventoryState {
+                yes_qty: 5.0,
+                yes_avg_cost: 0.40,
+                no_qty: 5.0,
+                no_avg_cost: 0.45,
+                net_diff: 0.0,
+                ..Default::default()
+            },
+            pending_yes_qty: 0.0,
+            pending_no_qty: 0.0,
+            fragile: false,
         },
         Instant::now(),
     );
@@ -2969,13 +3115,15 @@ fn test_glft_pair_cost_guard_allows_repair_when_already_above_target() {
 #[tokio::test]
 async fn test_toxic_cancels_only_toxic_side() {
     let (o, _i, m, _k, mut e, mut coord) = make(cfg());
-    coord.yes_target = Some(DesiredTarget {
+    let existing = DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
         price: 0.45,
         size: 2.0,
         reason: BidReason::Provide,
-    });
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(existing.clone());
+    coord.yes_target = Some(existing);
     coord.no_target = Some(DesiredTarget {
         side: Side::No,
         direction: TradeDirection::Buy,
@@ -3292,7 +3440,7 @@ async fn test_endgame_soft_close_blocks_only_risk_increasing_provide() {
 }
 
 #[tokio::test]
-async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
+async fn test_pair_arb_soft_close_deadband_clears_existing_buy_target() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairArb;
     let now_secs = std::time::SystemTime::now()
@@ -3306,13 +3454,17 @@ async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
     c.min_order_size = 10.0;
 
     let (_o, i, m, _k, mut e, mut coord) = make(c);
-    coord.yes_target = Some(DesiredTarget {
+    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
+    coord.pair_arb_round_gate_until = Instant::now() - Duration::from_secs(1);
+    let existing = DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
         price: 0.45,
         size: 2.0,
         reason: BidReason::Provide,
-    });
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(existing.clone());
+    coord.yes_target = Some(existing);
     let _ = i.send(InventoryState {
         net_diff: 2.0,
         yes_qty: 2.0,
@@ -3332,8 +3484,9 @@ async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
         }
     }
     assert_eq!(
-        reason, None,
-        "pair_arb should not apply endgame clear gate in soft-close"
+        reason,
+        Some(CancelReason::EndgameRiskGate),
+        "pair_arb soft-close deadband should clear existing buy targets when residual is tiny"
     );
 
     drop(m);
@@ -3341,7 +3494,7 @@ async fn test_pair_arb_soft_close_does_not_force_endgame_clear() {
 }
 
 #[tokio::test]
-async fn test_pair_arb_soft_close_keeps_both_buy_provides_when_flat() {
+async fn test_pair_arb_soft_close_deadband_blocks_new_buys_when_flat() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairArb;
     let now_secs = std::time::SystemTime::now()
@@ -3382,8 +3535,8 @@ async fn test_pair_arb_soft_close_keeps_both_buy_provides_when_flat() {
     }
 
     assert!(
-        saw_yes_provide && saw_no_provide,
-        "pair_arb should keep two-sided provides in soft-close when inventory is flat"
+        !saw_yes_provide && !saw_no_provide,
+        "pair_arb soft-close deadband should block new buy provides when inventory is flat"
     );
     assert!(
         !saw_endgame_clear,
@@ -4416,6 +4569,9 @@ fn test_pair_arb_ofi_toxic_does_not_block_pairing_buy_in_execution_layer() {
         &coord,
         StrategyTickInput {
             inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
             book: &book,
             metrics: &metrics,
             ofi: Some(&ofi),

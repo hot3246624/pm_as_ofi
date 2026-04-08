@@ -1,108 +1,194 @@
-这份 `2026-04-08` dry-run 的结论很明确：**V4 没有回退，但也没有被真正验证到。**
+## Pair_arb 两阶段成交语义收敛计划（修复 MATCHED/FAILED 状态不同步）
 
-**核心结论**
-1. **这份日志没有任何 fill，V4 的两条主修复几乎都没被触发。**  
-- [logs/polymarket.log.2026-04-08:53](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:53)  
-- [logs/polymarket.log.2026-04-08:350](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:350)  
-- [logs/polymarket.log.2026-04-08:993](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:993)  
-这些地方都写了 `No User WS — net_diff stays 0 (no fills)`。  
-所以：
-- `PairProgressRegime` 一直是 `Healthy`
-- `StateImprovementReanchor` 没有真实 fill 可触发
-- `merge-aware accounting` 也自然全是 `0`
+### Summary
+当前主问题不是 `pair_arb` 数学本身，而是单一库存真相把 `MATCHED` 和 `FAILED` 混成了一条即时事实，导致：
 
-2. **系统层面是稳定的，之前那类执行层 churn 已经明显不在主矛盾位置。**  
-完成 round 的 shutdown 大致是：
-- [logs/polymarket.log.2026-04-08:302](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:302)
-- [logs/polymarket.log.2026-04-08:608](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:608)
-- [logs/polymarket.log.2026-04-08:942](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:942)
+- `MATCHED` 过早放松风险约束
+- `FAILED` 迟到后又把库存拉回去
+- 旧单在错误状态下被保留或仅靠普通撤单路径失效
+- `OMS` 与 `Coordinator` 的槽位活跃状态出现 split-brain
 
-共同特征：
-- `recovery=0`
-- `safety=0`
-- `toxic_events=0`
-- `kill_events=0`
-- `source_blocked/divergence=0`
+本轮固定采用 **两阶段成交语义**，但不是“等 `CONFIRMED` 才行动”。  
+核心原则锁死为：
 
-这说明：
-- 没有 recovery storm
-- 没有 source stale 把系统搞乱
-- 没有 reference/publish 架构回退
+- `MATCHED` 可以立即让系统 **更保守**
+- `MATCHED` 不可以立即让系统 **更激进/更放松**
+- `CONFIRMED` 才允许正式释放风险约束
+- `FAILED` 只回滚 provisional 状态，不再让错误真相先污染整套决策
 
-3. **当前 dry-run 暴露的真实问题，不是 V4 失效，而是 `pair_arb` 在“无成交、库存永远 0”的环境里仍然会持续深挂。**  
-最关键证据是 `PairArbGate(30s)`：
-- [logs/polymarket.log.2026-04-08:100](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:100)
-- [logs/polymarket.log.2026-04-08:272](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:272)
-- [logs/polymarket.log.2026-04-08:922](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:922)
-- [logs/polymarket.log.2026-04-08:1168](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1168)
+### Key Changes
+#### 1. Inventory 改为 `settled + provisional` 双视图
+把当前单一 [InventoryState](/Users/hot/web3Scientist/pm_as_ofi/src/polymarket/messages.rs:219) 升级为一个统一快照，例如：
 
-全部是：
-- `keep_rate=100.0%`
-- `skip(inv/sim/util/edge)=0/0/0/0`
+- `settled`: 最终可信库存
+- `working`: `settled + unresolved matched fills`
+- `pending_fills`: 仅内部追踪，按 `order_id + side + direction + size` 维护 unresolved matched
 
-这意味着：
-- 当前 candidate admission 在 `net_diff=0` 的 dry-run 场景下几乎没有形成任何过滤
-- 策略会一路把 bid 往下走，只要 book 和内部报价链允许
+固定语义：
+- `Matched`
+  - 只进入 `pending_fills`
+  - 更新 `working`
+  - 不直接并入 `settled`
+- `Confirmed`
+  - 若存在同 key pending：从 pending 提升到 settled
+  - 若无 pending：按 confirmed-first 容错直接并入 settled
+- `Failed`
+  - 只撤销 pending 对 `working` 的影响
+  - 不再从 `settled` 里“反删除”已最终确认的库存
+- `Merge`
+  - 同步作用于 `settled` 与 `working`
+  - merge 后 pending 仍保留，但要重新映射剩余可解释库存
 
-4. **因此你看到的深价继续存在，但它和上一轮要修的“状态改善后旧单不重锚”不是同一个问题。**  
-例如：
-- `No@0.400 -> 0.330 -> 0.280 -> 0.230 -> 0.180`  
-  [logs/polymarket.log.2026-04-08:108](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:108)
-  [logs/polymarket.log.2026-04-08:109](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:109)
-  [logs/polymarket.log.2026-04-08:110](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:110)
-  [logs/polymarket.log.2026-04-08:120](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:120)
-  [logs/polymarket.log.2026-04-08:171](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:171)
-- `Yes@0.140 -> 0.090 -> 0.040`  
-  [logs/polymarket.log.2026-04-08:1059](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1059)
-  [logs/polymarket.log.2026-04-08:1096](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1096)
-  [logs/polymarket.log.2026-04-08:1111](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1111)
+#### 2. 策略与执行改成“非对称权限”
+`pair_arb` 不等待 `CONFIRMED` 才工作，但不同动作读取不同库存视图。
 
-但这里 `net_diff` 始终是 `0`，所以：
-- 这不是“高失衡 stalled 失效”
-- 也不是“状态改善后没 reanchor”
-- 而是“flat/no-fill 环境下，策略没有单独的 exploration governor”
+固定规则：
+- **会增加风险 / 放松约束** 的动作，只能基于 `settled`
+  - dominant-side relief
+  - net bucket 改善
+  - risk-fill anchor reset
+  - 主仓侧旧单继续 retain
+  - 解除 stalled / 高失衡 admission
+  - 上调主仓侧报价
+- **会降低风险 / 增强保守性** 的动作，可以基于 `working`
+  - 缺失侧 pairing quote
+  - 状态恶化后的旧单 invalidation
+  - 进入高失衡 / stalled
+  - 继续压低主仓侧价格
+  - SoftClose 阻断
+- 直接结果：
+  - `NO matched` 不能立刻让 `YES` 旧危险单获得保留资格
+  - 但 `YES matched` 可以立刻促使系统去补 `NO`
 
-5. **OFI 还在起作用，但只是 subordinate shaping，不是主 gate。**  
-shutdown 显示：
-- `pair_arb_softened=16618 / 20982 / 24417`
-- `pair_arb_suppressed=0`
-对应：
-- [logs/polymarket.log.2026-04-08:302](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:302)
-- [logs/polymarket.log.2026-04-08:608](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:608)
-- [logs/polymarket.log.2026-04-08:942](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:942)
+#### 3. `pair_arb` 状态机按双视图拆分
+当前 `pair_arb_state_key / PairProgressState / StateImprovementReanchor / invalidation check` 统一吃单一 `InventoryState`。本轮收敛为：
 
-所以不是 OFI 被抛弃了，而是：
-- 它在这类场景只负责把报价压低一点
-- 并没有强到会阻止整段 stair-step 深挂
+- `Risk state key` 用 `settled`
+  - `dominant_side`
+  - `net_bucket`
+  - `pair progress improvement`
+  - risk-fill anchor reset
+- `Safety/invalidation state` 用 `working`
+  - 当前 live quote 是否因更坏库存已不合法
+  - 是否要立刻撤掉/重发主仓侧旧单
+  - 是否进入 `Stalled`
 
-**我对这份日志的判断**
-- **V4 没有失败。**
-- **但这份 dry-run 也没有证明 V4 成功。**
-- 它证明的是另一件事：  
-  `pair_arb` 在“无 fill、永远 flat”的 dry-run 模式下，仍然会持续深挂，而当前 `PairArbGate` 对这种场景几乎没有过滤。
+固定要求：
+- `StateImprovementReanchor` 只接受 **settled improvement**
+- `FillTriggeredInvalidationCheck` 接受 **working worsening**
+- `MATCHED` 只能触发保守方向的重检，不能触发 relief
 
-**是否需要继续优化**
-如果你问“下一步最有价值的动作是什么”，答案是：
+#### 4. 槽位生命周期改成单一真相，消除 OMS/Coordinator split-brain
+当前 `OMS` 在 `OrderFilled` 时会把 slot 置 `Idle`，但 `Coordinator` 仍可能保留 `slot_targets`。  
+这轮必须引入 Coordinator 侧的 **slot soft release**。
 
-1. **如果目标是验证 V4 是否解决实盘问题：不要继续靠这种 dry-run。**  
-因为它根本不产生：
-- `net_diff` 变化
-- bucket 改善
-- stalled
-- reanchor
+固定行为：
+- 以下事件一旦发生，Coordinator 必须同步 soft release 对应槽位：
+  - `OrderFilled`
+  - reconcile missing-on-exchange release
+  - 明确 slot no-longer-live 的 terminal event
+- `soft release` 只清：
+  - 当前已发布 live target
+  - 当前 slot active 标记
+- `soft release` 不清：
+  - `pair_arb` policy continuity
+  - recheck pending
+  - risk/progress state
+- `clear/full reset` 仍只保留给：
+  - source blocked
+  - invalid state
+  - round cleanup
 
-2. **如果目标是继续从 dry-run 里挖问题：那现在唯一值得修的是一个独立问题。**  
-也就是：
-- `flat + no-fill` 场景下的单侧深挂探索约束  
-这和 V4 不是一回事，应该被当成单独策略问题处理。
+结果：
+- 交易所无单时，Coordinator 不再误以为 slot 仍 active
+- 缺失腿不会因为本地旧 target 残留而错过立即重建
 
-**建议**
-1. 先跑小额 live，验证 V4 真正关心的两件事：
-- 高失衡且长期无配对时，same-side build 是否收敛
-- `|net_diff|` 改善或回到 `0` 后，旧低价单是否被重锚
-2. 如果你仍想先在 dry-run 上再收一道口，我建议下一轮只做一个非常小的策略改动：
-- 给 `pair_arb` 增加 `flat/no-fill exploration guard`
-- 只作用于 `net_diff=0` 且长期无成交的场景
-- 不碰 V4 的 reanchor / stalled 逻辑
+#### 5. `Matched -> Failed` 不再走“先放松、后反悔”
+对于本次 `04-08` 场景，系统需要保证：
 
-如果你要，我下一步可以直接给出这个 `flat/no-fill exploration guard` 的最小实现方案。
+- `NO matched`
+  - 可以触发缺失腿/风险重检
+  - 不能让主仓侧 `YES@0.32` 因“看起来 net=0”而继续被视为安全
+- `NO failed`
+  - 只移除 provisional relief
+  - 立即触发 working worsening invalidation
+  - 若 live order 已无效，走 `Republish`，不是普通慢路径等待
+
+也就是说，本轮不追求把 `t2` 再压到极限，而是先把 `t1` 对策略的伤害从结构上消掉。
+
+#### 6. 可观测性补齐
+新增明确指标与日志，避免以后再靠猜：
+
+- `matched_pending_events`
+- `confirmed_promotions`
+- `failed_pending_reverts`
+- `slot_soft_release_events`
+- `risk_relief_blocked_by_provisional`
+- `working_worsening_invalidation`
+- `fill_status_conflict(order_id, first=Matched, later=Failed)`
+
+日志每次打印：
+- `settled_net_diff`
+- `working_net_diff`
+- `pending_yes_qty`
+- `pending_no_qty`
+- `decision_view={settled|working}`
+- `slot_live_on_exchange`
+- `slot_target_present_local`
+
+### Public Interfaces / Types
+新增或升级最小接口：
+
+- `InventorySnapshot`
+  - `settled: InventoryState`
+  - `working: InventoryState`
+- `PendingFillRecord`
+- `InventoryViewKind::{Settled, Working}`
+- `soft_release_slot_target(...)`
+- `FillLifecycleMetrics`
+  - `matched_pending`
+  - `confirmed`
+  - `failed_reverted`
+
+策略输入从单一 `&InventoryState` 升级为 `&InventorySnapshot` 或等价的双视图访问接口。  
+不新增 `.env` 参数，不修改 `pair_arb` 价格链、tier 参数、OFI、SoftClose 哲学。
+
+### Test Plan
+1. **Matched 不再立即放松风险**
+- 初始 `YES-heavy`
+- 缺失侧 `NO matched` 到来但未 confirmed
+- 主仓侧旧 `YES` 单不得因 provisional relief 被 retain
+- dominant-side relief / bucket improvement 不得触发
+
+2. **Matched 仍允许快速保守动作**
+- `YES matched` 让 `working` 风险更高
+- 缺失侧 `NO` pairing quote 仍可立即生成
+- stalled / invalidation 可立即生效
+
+3. **Failed 只回滚 provisional**
+- `Matched -> Failed` 同 order id
+- `working` 回退，`settled` 不被错误污染
+- 若该回退使 live quote 不合法，立即 `Republish`
+
+4. **Confirmed promotion**
+- `Matched -> Confirmed`
+- pending 正确提升到 settled
+- 之后才允许 relief/reanchor/reset risk anchors
+
+5. **Slot soft release**
+- `OrderFilled` 后 OMS `Idle`
+- Coordinator 同步 soft release
+- 同价或近价缺失腿下一 tick 可立即重建
+- 不再出现“前端没单，Coordinator 还认为 active”的状态
+
+6. **04-08 回放验收**
+- `NO matched` 后 `YES@0.32` 不能再因为 provisional `net=0` 获得保留
+- 即便 `NO failed` 迟到约 9.7s，系统也不会在这段时间里把 risk relief 当真
+- 收盘前不再因为同类 provisional relief 把残仓放大到 `net=10`
+
+### Assumptions
+- 主线继续 `pair_arb + BTC 15m`
+- 本轮不重写 `pair_arb` 数学，不讨论 tier 参数是否再压低
+- 当前第一矛盾是成交状态语义和槽位生命周期，不是撤单速度本身
+- `MATCHED` 仍然有价值，但只能用于“更保守”，不能用于“更放松”
+- 若这轮完成后 live 仍明显亏损，再评估是否是 `pair_arb + BTC 15m` 的策略边界，而不是继续修 correctness

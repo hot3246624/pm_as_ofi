@@ -923,7 +923,8 @@ pub struct StrategyCoordinator {
     last_metrics_log_ts: Instant,
     pair_arb_gate_last_log_ts: Instant,
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
-    last_inv_snapshot: InventoryState,
+    last_settled_inv_snapshot: InventoryState,
+    last_working_inv_snapshot: InventoryState,
     pair_arb_progress_state: PairProgressState,
     round_realized_pair_metrics: RoundRealizedPairMetrics,
     last_endgame_phase: EndgamePhase,
@@ -933,7 +934,7 @@ pub struct StrategyCoordinator {
     stats: Stats,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
-    inv_rx: watch::Receiver<InventoryState>,
+    inv_rx: watch::Receiver<InventorySnapshot>,
     md_rx: watch::Receiver<MarketDataMsg>,
     glft_rx: watch::Receiver<GlftSignalSnapshot>,
     om_tx: mpsc::Sender<OrderManagerCmd>,
@@ -942,6 +943,8 @@ pub struct StrategyCoordinator {
     kill_rx: mpsc::Receiver<KillSwitchSignal>,
     /// Execution-layer feedback channel used for adaptive maker safety.
     feedback_rx: mpsc::Receiver<ExecutionFeedback>,
+    /// Slot lifecycle release events from OMS.
+    slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
     /// Optional low-overhead observability snapshot channel for round validation.
     obs_tx: Option<watch::Sender<CoordinatorObsSnapshot>>,
 }
@@ -1040,7 +1043,7 @@ impl StrategyCoordinator {
     pub fn new(
         cfg: CoordinatorConfig,
         ofi_rx: watch::Receiver<OfiSnapshot>,
-        inv_rx: watch::Receiver<InventoryState>,
+        inv_rx: watch::Receiver<InventorySnapshot>,
         md_rx: watch::Receiver<MarketDataMsg>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
     ) -> Self {
@@ -1048,6 +1051,7 @@ impl StrategyCoordinator {
         // The select loop uses `Some(x) = recv()` which skips closed channels.
         let (_dead_kill_tx, dead_kill_rx) = mpsc::channel(1);
         let (_dead_feedback_tx, dead_feedback_rx) = mpsc::channel(1);
+        let (_dead_release_tx, dead_release_rx) = mpsc::channel(1);
         let (_dead_glft_tx, dead_glft_rx) = watch::channel(GlftSignalSnapshot::default());
         Self::with_aux_rx(
             cfg,
@@ -1058,6 +1062,7 @@ impl StrategyCoordinator {
             om_tx,
             dead_kill_rx,
             dead_feedback_rx,
+            dead_release_rx,
         )
     }
 
@@ -1065,12 +1070,13 @@ impl StrategyCoordinator {
     pub fn with_kill_rx(
         cfg: CoordinatorConfig,
         ofi_rx: watch::Receiver<OfiSnapshot>,
-        inv_rx: watch::Receiver<InventoryState>,
+        inv_rx: watch::Receiver<InventorySnapshot>,
         md_rx: watch::Receiver<MarketDataMsg>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
         kill_rx: mpsc::Receiver<KillSwitchSignal>,
     ) -> Self {
         let (_dead_feedback_tx, dead_feedback_rx) = mpsc::channel(1);
+        let (_dead_release_tx, dead_release_rx) = mpsc::channel(1);
         let (_dead_glft_tx, dead_glft_rx) = watch::channel(GlftSignalSnapshot::default());
         Self::with_aux_rx(
             cfg,
@@ -1081,18 +1087,20 @@ impl StrategyCoordinator {
             om_tx,
             kill_rx,
             dead_feedback_rx,
+            dead_release_rx,
         )
     }
 
     pub fn with_aux_rx(
         cfg: CoordinatorConfig,
         ofi_rx: watch::Receiver<OfiSnapshot>,
-        inv_rx: watch::Receiver<InventoryState>,
+        inv_rx: watch::Receiver<InventorySnapshot>,
         md_rx: watch::Receiver<MarketDataMsg>,
         glft_rx: watch::Receiver<GlftSignalSnapshot>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
         kill_rx: mpsc::Receiver<KillSwitchSignal>,
         feedback_rx: mpsc::Receiver<ExecutionFeedback>,
+        slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
     ) -> Self {
         let now = Instant::now();
         let last_metrics_log_ts = if cfg.strategy_metrics_log_secs > 0 {
@@ -1158,7 +1166,8 @@ impl StrategyCoordinator {
             last_metrics_log_ts,
             pair_arb_gate_last_log_ts: now,
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
-            last_inv_snapshot: InventoryState::default(),
+            last_settled_inv_snapshot: InventoryState::default(),
+            last_working_inv_snapshot: InventoryState::default(),
             pair_arb_progress_state: PairProgressState::default(),
             round_realized_pair_metrics: RoundRealizedPairMetrics::default(),
             last_endgame_phase: EndgamePhase::Normal,
@@ -1173,6 +1182,7 @@ impl StrategyCoordinator {
             om_tx,
             kill_rx,
             feedback_rx,
+            slot_release_rx,
             obs_tx: None,
         }
     }
@@ -1180,6 +1190,18 @@ impl StrategyCoordinator {
     pub fn with_obs_tx(mut self, obs_tx: watch::Sender<CoordinatorObsSnapshot>) -> Self {
         self.obs_tx = Some(obs_tx);
         self
+    }
+
+    pub(crate) fn current_inventory_snapshot(&self) -> InventorySnapshot {
+        *self.inv_rx.borrow()
+    }
+
+    pub(crate) fn current_settled_inventory(&self) -> InventoryState {
+        self.current_inventory_snapshot().settled
+    }
+
+    pub(crate) fn current_working_inventory(&self) -> InventoryState {
+        self.current_inventory_snapshot().working
     }
 
     pub(crate) fn cfg(&self) -> &CoordinatorConfig {
@@ -1229,6 +1251,12 @@ impl StrategyCoordinator {
                     self.emit_obs_snapshot();
                 }
 
+                Some(release) = self.slot_release_rx.recv() => {
+                    self.handle_slot_release_event(release).await;
+                    self.tick().await;
+                    self.emit_obs_snapshot();
+                }
+
                 // Market data tick (watch/coalescing)
                 changed = self.md_rx.changed() => {
                     if changed.is_err() {
@@ -1249,7 +1277,7 @@ impl StrategyCoordinator {
         }
 
         let final_inv = *self.inv_rx.borrow();
-        let final_metrics = self.derive_inventory_metrics(&final_inv);
+        let final_metrics = self.derive_inventory_metrics(&final_inv.working);
         self.flush_reference_blocked_time(Instant::now());
         let dominant_side = match final_metrics.dominant_side {
             Some(Side::Yes) => "YES",
@@ -1964,8 +1992,15 @@ impl StrategyCoordinator {
         let now = Instant::now();
         self.decay_maker_friction(now);
         let ofi = *self.ofi_rx.borrow();
-        let inv = *self.inv_rx.borrow();
-        self.observe_pair_arb_inventory_transition(&inv, now);
+        let inv_snapshot = self.current_inventory_snapshot();
+        let working_inv = inv_snapshot.working;
+        let settled_inv = inv_snapshot.settled;
+        let decision_inv = if self.cfg.strategy == StrategyKind::PairArb {
+            settled_inv
+        } else {
+            working_inv
+        };
+        self.observe_pair_arb_inventory_transition(&inv_snapshot, now);
         let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
             Some(*self.glft_rx.borrow())
         } else {
@@ -2019,7 +2054,7 @@ impl StrategyCoordinator {
             }
         }
         self.update_reference_blocked_time(track_ref_blocked && ref_blocked, now);
-        self.maybe_log_inventory_metrics(&inv, &ofi);
+        self.maybe_log_inventory_metrics(&working_inv, &ofi);
 
         // ── Environmental Health Check ──
         let ttl = Duration::from_millis(self.cfg.stale_ttl_ms);
@@ -2148,9 +2183,12 @@ impl StrategyCoordinator {
         }
 
         // Priority 4: Strategy quote + unified flow-risk overlay + execution.
-        let metrics = self.derive_inventory_metrics(&inv);
+        let metrics = self.derive_inventory_metrics(&decision_inv);
         let input = StrategyTickInput {
-            inv: &inv,
+            inv: &decision_inv,
+            settled_inv: &settled_inv,
+            working_inv: &working_inv,
+            inventory: &inv_snapshot,
             book: &ub,
             metrics: &metrics,
             ofi: Some(&ofi),
@@ -2159,7 +2197,7 @@ impl StrategyCoordinator {
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
         self.record_strategy_quote_diagnostics(&quotes);
         self.apply_flow_risk(
-            &inv,
+            &working_inv,
             &mut quotes,
             yes_stale,
             no_stale,
@@ -2167,7 +2205,7 @@ impl StrategyCoordinator {
             no_toxic_blocked,
         );
         self.execute_quotes(
-            &inv,
+            &working_inv,
             &ub,
             quotes,
             yes_stale,

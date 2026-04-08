@@ -55,7 +55,7 @@ impl StrategyCoordinator {
             && slot.direction == TradeDirection::Buy
             && active
         {
-            let inv = *self.inv_rx.borrow();
+            let inv = self.current_settled_inventory();
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()].is_some()
                 && self.slot_pair_arb_state_keys[slot.index()]
@@ -383,7 +383,7 @@ impl StrategyCoordinator {
                     Side::No => (self.book.no_bid, self.book.no_ask),
                 };
                 let has_valid_side_book = side_bid > 0.0 && side_ask > side_bid;
-                let inv = *self.inv_rx.borrow();
+                let inv = self.current_working_inventory();
                 let unsafe_depth_ticks = if has_valid_side_book {
                     self.slot_quote_unsafe_depth_ticks(
                         &inv,
@@ -634,7 +634,7 @@ impl StrategyCoordinator {
             return base;
         }
         let tick = self.cfg.tick_size.max(1e-9);
-        let inv = *self.inv_rx.borrow();
+        let inv = self.current_settled_inventory();
         let abs_net = inv.net_diff.abs();
         let bid_size = self.cfg.bid_size.max(tick);
         let extra_ticks = if abs_net + 1e-9 < bid_size {
@@ -702,6 +702,25 @@ impl StrategyCoordinator {
             .om_tx
             .send(OrderManagerCmd::ClearTarget { slot, reason })
             .await;
+    }
+
+    pub(super) fn soft_release_slot_target(&mut self, slot: OrderSlot) {
+        if self.slot_targets[slot.index()].is_none() {
+            return;
+        }
+        self.slot_targets[slot.index()] = None;
+        self.slot_shadow_targets[slot.index()] = None;
+        self.slot_shadow_since[slot.index()] = None;
+        self.slot_last_publish_reason[slot.index()] = None;
+        self.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
+        self.soft_reset_slot_publish_state(slot);
+        match slot {
+            OrderSlot::YES_BUY => self.yes_target = None,
+            OrderSlot::NO_BUY => self.no_target = None,
+            _ => {}
+        }
+        self.sync_buy_side_wrapper(slot);
+        debug!("🧭 Soft release {} after OMS/exchange release", slot.as_str());
     }
 
     pub(super) async fn dispatch_taker_intent(
@@ -833,7 +852,7 @@ impl StrategyCoordinator {
         self.slot_targets[slot.index()] = Some(target.clone());
         self.slot_last_ts[slot.index()] = Instant::now();
         if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
-            let inv = *self.inv_rx.borrow();
+            let inv = self.current_settled_inventory();
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()] = Some(self.pair_arb_state_key(&inv, phase));
             self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
@@ -883,7 +902,6 @@ impl StrategyCoordinator {
             return;
         }
         let quote_regime = Some(glft.quote_regime);
-        let inv = *self.inv_rx.borrow();
         let active = self.slot_target(slot).is_some();
         let slot_price = self.slot_target(slot).map(|t| t.price).unwrap_or(0.0);
         let slot_size = self.slot_target(slot).map(|t| t.size).unwrap_or(0.0);
@@ -919,7 +937,7 @@ impl StrategyCoordinator {
         let has_valid_side_book = best_bid > 0.0 && best_ask > best_bid;
         let unsafe_depth_ticks = if active && has_valid_side_book {
             self.slot_quote_unsafe_depth_ticks(
-                &inv,
+                &self.current_working_inventory(),
                 slot,
                 slot_price,
                 slot_size.max(size),
@@ -1434,7 +1452,7 @@ impl StrategyCoordinator {
         // Log actionable price/size so quote logs match actual place/reprice.
         if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
             let glft = *self.glft_rx.borrow();
-            let inv = *self.inv_rx.borrow();
+            let inv = self.current_working_inventory();
             let book = self.book;
             let q_norm = (inv.net_diff / self.cfg.max_net_diff.max(1e-9)).clamp(-1.0, 1.0);
             let p_anchor = glft

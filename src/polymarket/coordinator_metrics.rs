@@ -103,26 +103,44 @@ impl StrategyCoordinator {
 
     pub(super) fn observe_pair_arb_inventory_transition(
         &mut self,
-        inv: &InventoryState,
+        snapshot: &InventorySnapshot,
         now: Instant,
     ) {
+        let settled = snapshot.settled;
+        let working = snapshot.working;
         if self.cfg.strategy != StrategyKind::PairArb {
-            self.last_inv_snapshot = *inv;
+            self.last_settled_inv_snapshot = settled;
+            self.last_working_inv_snapshot = working;
             return;
         }
 
-        let prev = self.last_inv_snapshot;
-        if (prev.yes_qty - inv.yes_qty).abs() <= FLOAT_INV_EPS
-            && (prev.no_qty - inv.no_qty).abs() <= FLOAT_INV_EPS
-            && (prev.yes_avg_cost - inv.yes_avg_cost).abs() <= FLOAT_INV_EPS
-            && (prev.no_avg_cost - inv.no_avg_cost).abs() <= FLOAT_INV_EPS
-        {
+        let prev_settled = self.last_settled_inv_snapshot;
+        let prev_working = self.last_working_inv_snapshot;
+        let settled_changed = (prev_settled.yes_qty - settled.yes_qty).abs() > FLOAT_INV_EPS
+            || (prev_settled.no_qty - settled.no_qty).abs() > FLOAT_INV_EPS
+            || (prev_settled.yes_avg_cost - settled.yes_avg_cost).abs() > FLOAT_INV_EPS
+            || (prev_settled.no_avg_cost - settled.no_avg_cost).abs() > FLOAT_INV_EPS;
+        let prev_fragile = (prev_working.yes_qty - prev_settled.yes_qty).abs() > FLOAT_INV_EPS
+            || (prev_working.no_qty - prev_settled.no_qty).abs() > FLOAT_INV_EPS;
+        let working_changed = (prev_working.yes_qty - working.yes_qty).abs() > FLOAT_INV_EPS
+            || (prev_working.no_qty - working.no_qty).abs() > FLOAT_INV_EPS
+            || (prev_working.yes_avg_cost - working.yes_avg_cost).abs() > FLOAT_INV_EPS
+            || (prev_working.no_avg_cost - working.no_avg_cost).abs() > FLOAT_INV_EPS
+            || snapshot.fragile != prev_fragile;
+        if !settled_changed && !working_changed {
             return;
         }
 
         self.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()] = true;
         self.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()] = true;
 
+        if !settled_changed {
+            self.last_working_inv_snapshot = working;
+            return;
+        }
+
+        let prev = prev_settled;
+        let inv = settled;
         let prev_bucket = Self::pair_arb_net_bucket_for_abs(prev.net_diff.abs());
         let curr_bucket = Self::pair_arb_net_bucket_for_abs(inv.net_diff.abs());
         let prev_dom = if prev.net_diff > FLOAT_INV_EPS {
@@ -157,7 +175,7 @@ impl StrategyCoordinator {
         }
 
         let prev_metrics = self.derive_inventory_metrics(&prev);
-        let current_metrics = self.derive_inventory_metrics(inv);
+        let current_metrics = self.derive_inventory_metrics(&inv);
         if current_metrics.paired_qty
             >= self.pair_arb_progress_state.last_pair_progress_paired_qty
                 + PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA
@@ -200,17 +218,20 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released += merged_full_set;
         }
 
-        self.last_inv_snapshot = *inv;
+        self.last_settled_inv_snapshot = settled;
+        self.last_working_inv_snapshot = working;
 
         debug!(
-            "🧭 PairArb inventory transition | prev_net={:.2} curr_net={:.2} prev_bucket={:?} curr_bucket={:?} prev_dom={:?} curr_dom={:?} progress_regime={:?}",
+            "🧭 PairArb inventory transition | settled_prev_net={:.2} settled_curr_net={:.2} working_curr_net={:.2} fragile={} prev_bucket={:?} curr_bucket={:?} prev_dom={:?} curr_dom={:?} progress_regime={:?}",
             prev.net_diff,
             inv.net_diff,
+            working.net_diff,
+            snapshot.fragile,
             prev_bucket,
             curr_bucket,
             prev_dom,
             curr_dom,
-            self.pair_arb_progress_regime(inv, now),
+            self.pair_arb_progress_regime(&inv, now),
         );
         let _ = prev_metrics; // retained for future debugging without recompute churn
     }

@@ -53,6 +53,31 @@
 - 已经挂在书上的旧单，不会因为策略层重新算出了新价格就必然立刻撤掉
 - 旧单是否继续保留，取决于共享执行治理是否认为它仍然安全、仍然对齐当前目标
 
+## 3.3 成交最终性语义（`settled / working / fragile`）
+
+`pair_arb` 当前使用三层库存语义，专门处理 `Matched -> Failed` 的状态不同步问题：
+
+- `settled_inventory`
+  - 最终可信库存
+  - 只在以下两种情况推进：
+    - 收到显式 `Confirmed/Mined`
+    - `Matched` 在 `15s` 内未失败（`timeout promotion`）
+- `working_inventory`
+  - `settled + unresolved matched`
+  - 用于保守风控、失效重检、缺失腿修复
+- `fragile`
+  - 只要 unresolved pending 非空即为 `true`
+  - 表示当前处于“成交未确权”的脆弱窗口
+
+关键原则：
+- `MATCHED` 可以让系统立刻更保守
+- `MATCHED` 不可以让系统立刻放松风险约束
+
+在 `fragile=true` 时：
+- `same-side risk-increasing` 候选会额外 inward retreat，并抬高准入门槛
+- 旧单 retain 更严格，不允许依赖 provisional relief 获得保留资格
+- 缺失腿 `pairing` 候选仍允许，但会更保守地报价
+
 ## 4. Tick 级价格链
 
 每个 tick，`pair_arb` 的价格链固定为：
@@ -142,20 +167,31 @@ OFI 在 `pair_arb` 中不是主目标函数，而是 subordinate 风险塑形器
 - 不允许覆盖 `pair_cost-first` 主目标
 - 不误伤真正的 pairing buy
 
-### 4.5 高失衡准入收紧（不是硬 brake）
+### 4.5 高失衡准入收紧（`Healthy/Stalled` 两态，不是硬 brake）
 
 当 `abs(net_diff) >= 10` 时，`pair_arb` 不会硬性冻结主仓侧 build。  
-它做的是更严格的候选准入：
+它先看 `PairProgressRegime`：
 
-- 仅对 `same-side risk-increasing buy` 生效
-- `pairing / risk-reducing buy` 完全不受影响
-- 当前默认门槛：
-  - `min_utility_delta >= 2.0 * bid_size * tick`
-  - 且 `projected_open_edge` 至少改善 `0.5 * bid_size * tick`
+- `Healthy`
+  - 默认状态
+  - 或者虽然高失衡，但最近 `60s` 内 `paired_qty` 有实质推进
+- `Stalled`
+  - `abs(net_diff) >= 10`
+  - 且最近 `60s` 没有达到最小配对推进（`paired_qty` 增量 `< 1.0`）
+
+然后只对 `same-side risk-increasing buy` 追加收紧：
+- `pairing / risk-reducing buy` 完全不受这组规则影响
+- `Healthy` 下沿用基础门槛：
+  - `min_utility_delta >= 2.0 * size * tick`
+  - `projected_open_edge` 至少改善 `0.5 * size * tick`
+- `Stalled` 下进一步收紧：
+  - 若存在同 bucket 的同侧 risk-fill 锚点，则要求 `price <= last_risk_fill_price - 1*tick`
+  - `min_utility_delta >= max(base, 4.0 * size * tick)`
+  - `min_open_edge_improvement >= max(base, 1.0 * size * tick)`
 
 语义：
 - 不是“不许继续均价下修”
-- 而是“高失衡区只允许明显更值得的同侧 build 存在”
+- 而是“高失衡且配对停滞时，只允许显著更优的同侧 build 通过”
 
 ### 4.6 `VWAP ceiling`
 
@@ -306,17 +342,21 @@ OFI 在 `pair_arb` 中不是主目标函数，而是 subordinate 风险塑形器
 
 当前 `pair_arb` 不再完全绕开 endgame。
 
-它接入的是**最小 SoftClose**：
-- 仅阻断 `same-side risk-increasing buy`
-- 继续允许 `pairing / risk-reducing buy`
-- 不启用：
+它接入的是**最小 SoftClose**，但包含一个尾段 deadband：
+- 正常 SoftClose 语义：
+  - 阻断 `same-side risk-increasing buy`
+  - 继续允许 `pairing / risk-reducing buy`
+- deadband 语义（当前实现）：
+  - 当 `|net_diff| <= 0.5 * bid_size` 时，最后阶段不再开任何新 `Buy`（包含 pairing）
+  - 目的：避免最后几十秒在极小残差下反复开单对冲
+- 继续不启用：
   - `HardClose`
   - `ForceTaker`
   - 市价去风险
 
 当前验证基线里：
 - `PM_ENDGAME_SOFT_CLOSE_SECS=45`
-- 含义是最后 `45s` 停止危险加仓，但继续允许补配对
+- 含义是最后 `45s` 进入软收敛；若残差已很小（`<= bid_size/2`）则直接停止新开单
 
 ## 9. OFI 与执行层边界
 
@@ -381,8 +421,12 @@ OFI 在 `pair_arb` 中不是主目标函数，而是 subordinate 风险塑形器
 
 ### 10.3 `state-change republish`
 
-`pair_arb` 的旧单重检不再跟着每个 partial fill 跑。  
-当前只看一个简化状态签名：
+`pair_arb` 的旧单重检分两类触发，不再是“每 tick 无脑重发”：
+
+1. `state_key` 变化触发  
+2. `fill_recheck_pending` 触发（库存变化或 phase 变化）
+
+其中 `state_key` 仍是简化签名：
 
 - `dominant_side`
 - `|net_diff|` 所在 bucket：
@@ -392,14 +436,56 @@ OFI 在 `pair_arb` 中不是主目标函数，而是 subordinate 风险塑形器
   - `High (>=10)`
 - `soft_close_active`
 
-只有这个状态签名变化时，系统才会重新判断当前 live quote 是否还满足：
+库存变化（fill/merge 引起的 qty/avg 变化）和 endgame phase 变化也会把槽位标记为 `fill_recheck_pending`，触发一次“仍可保留吗”的再判断。
+
+重检时会判断当前 live quote 是否还满足：
 - tier cap
 - 高失衡准入
 - `VWAP ceiling`
 - `SoftClose`
 - OFI suppress
 
-如果不再满足，执行层会优先走 `Republish`，而不是让旧单长期按旧状态滞留。
+如果不再满足，执行层会优先走 `Republish`（极端风险场景才 `Clear`），避免旧单长期按旧状态滞留。
+
+### 10.4 `upward reanchor`（你提到的“两个地方”）
+
+当前 `upward reanchor` 只在 `pair_arb` 的 `Buy` 槽位生效，且仅在 `fill_recheck_pending=true` 时评估。  
+你说的“两个地方”本质上是同一机制里的**两条触发分支**：
+
+1. `StateImprovement` 分支
+- 条件：
+  - `dominant_side` 对该槽位出现 relief（例如该槽位不再是主仓侧），或
+  - `net_bucket` 向更低风险档改善
+- 阈值：
+  - `Flat/Low`：fresh target 至少比当前 live 价高 `> 1 tick`
+  - `Mid`：`> 2 ticks`
+  - `High`：不触发该分支
+
+2. `PairingUrgency` 分支
+- 条件：
+  - 主导侧未翻转（同一 dominant side 持续）
+  - `net_bucket` 变差
+  - 当前槽位是“缺失侧”（需要补配对的一侧）
+- 阈值：
+  - `Mid`：`> 2 ticks`
+  - `High`：`> 3 ticks`
+
+结果：
+- 触发任一分支后，会把该 live quote 标记为“需要重锚”（`needs_reanchor=true`），进入 `Republish`
+- 目的不是追价，而是在库存状态发生关键变化时，防止“旧低价单长期滞留、错过应有的补配对报价”
+
+### 10.5 成交最终性观测（`MATCHED -> FAILED`）
+
+`InventoryManager` 现在会在 shutdown 打印 finality 统计：
+- `matched_pending`
+- `confirmed_promotions`
+- `timeout_promotions`
+- `failed_reverts`
+- `late_failed_after_promotion`
+
+复盘重点：
+- 若 `late_failed_after_promotion` 持续偏高，说明 venue 状态噪声显著，需单独评估是否引入 venue-quality penalty
+- 若 `failed_reverts` 偏高且集中在同侧，说明该侧 pending fill 质量差，`fragile` 窗口会更常出现
 
 ## 11. 推荐验证参数（当前默认）
 

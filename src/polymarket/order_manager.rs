@@ -5,7 +5,7 @@ use tracing::{info, warn};
 
 use super::messages::{
     BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult, OrderSlot,
-    TradeDirection, TradeIntent, TradePurpose, TradeUrgency,
+    SlotReleaseEvent, TradeDirection, TradeIntent, TradePurpose, TradeUrgency,
 };
 use super::types::Side;
 
@@ -60,6 +60,7 @@ pub struct OrderManager {
     cmd_rx: mpsc::Receiver<OrderManagerCmd>,
     exec_tx: mpsc::Sender<ExecutionCmd>,
     result_rx: mpsc::Receiver<OrderResult>,
+    slot_release_tx: mpsc::Sender<SlotReleaseEvent>,
 }
 
 impl OrderManager {
@@ -67,6 +68,7 @@ impl OrderManager {
         cmd_rx: mpsc::Receiver<OrderManagerCmd>,
         exec_tx: mpsc::Sender<ExecutionCmd>,
         result_rx: mpsc::Receiver<OrderResult>,
+        slot_release_tx: mpsc::Sender<SlotReleaseEvent>,
     ) -> Self {
         Self {
             slots: std::array::from_fn(|idx| SlotTracker::new(OrderSlot::ALL[idx])),
@@ -75,6 +77,7 @@ impl OrderManager {
             cmd_rx,
             exec_tx,
             result_rx,
+            slot_release_tx,
         }
     }
 
@@ -273,6 +276,7 @@ impl OrderManager {
         info!("✅ OMS: {} OrderFilled -> Slot freed", slot.as_str());
         tracker.state = OrderState::Idle;
         tracker.desired = None;
+        let _ = self.slot_release_tx.send(SlotReleaseEvent { slot }).await;
         if slot.direction == TradeDirection::Buy {
             let until = Instant::now() + SELL_AVAILABLE_WARMUP;
             self.set_sell_available_after(slot.side, Some(until));
@@ -483,8 +487,9 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
         let (exec_tx, mut exec_rx) = mpsc::channel(8);
         let (result_tx, result_rx) = mpsc::channel(8);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(8);
 
-        let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
         let h = tokio::spawn(om.run());
 
         let _ = cmd_tx
@@ -522,8 +527,9 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (exec_tx, mut exec_rx) = mpsc::channel(16);
         let (result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
 
-        let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
         let h = tokio::spawn(om.run());
 
         let slot = OrderSlot::YES_BUY;
@@ -592,8 +598,9 @@ mod tests {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (exec_tx, mut exec_rx) = mpsc::channel(16);
         let (result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
 
-        let om = OrderManager::new(cmd_rx, exec_tx, result_rx);
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
         let h = tokio::spawn(om.run());
 
         let _ = result_tx

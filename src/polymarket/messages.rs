@@ -238,6 +238,20 @@ impl Default for InventoryState {
     }
 }
 
+/// Inventory truth model with explicit pending/provisional fills.
+///
+/// - `settled`: final trusted inventory used for risk relief.
+/// - `working`: settled + unresolved matched fills used for conservative reactions.
+/// - `fragile`: true whenever unresolved pending fills exist.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InventorySnapshot {
+    pub settled: InventoryState,
+    pub working: InventoryState,
+    pub pending_yes_qty: f64,
+    pub pending_no_qty: f64,
+    pub fragile: bool,
+}
+
 // ─────────────────────────────────────────────────────────
 // Order Management Commands (Coordinator → OMS)
 // ─────────────────────────────────────────────────────────
@@ -389,6 +403,12 @@ pub enum OrderResult {
     TakerHedgeFailed { side: Side, cooldown_ms: u64 },
     /// Cancel operation for a side completed.
     CancelAck { slot: OrderSlot },
+}
+
+/// OMS / executor lifecycle signal that a slot is no longer live on exchange.
+#[derive(Debug, Clone, Copy)]
+pub struct SlotReleaseEvent {
+    pub slot: OrderSlot,
 }
 
 /// Lightweight execution feedback channel for Coordinator-side adaptive behavior.

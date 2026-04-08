@@ -54,6 +54,12 @@
 - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
 - `LIVE_OBS`：执行稳定性与 `pair_arb_softened_ratio`
 
+`pair_arb` 当前成交最终性实现（固定内部常量，不开放 env）：
+- inventory 三层语义：`settled / working / fragile`
+- `MATCHED` 先进入 pending，只更新 `working`
+- `FAILED` 只回滚 pending，不回滚已 settled 部分
+- `timeout promotion = 15s`：`MATCHED` 超时未失败则提升到 `settled`
+
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 
 | 参数 | 模板值 | 说明 |
@@ -114,7 +120,7 @@
 
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
-| `PM_ENDGAME_SOFT_CLOSE_SECS` | `60` | 共享阶段参数，`pair_arb` 主路径不依赖它做主动去风险 |
+| `PM_ENDGAME_SOFT_CLOSE_SECS` | `45` | 共享阶段参数；`pair_arb` 在 SoftClose 下阻断 risk-increasing，且 `|net_diff|<=bid_size/2` 时停止新开买单 |
 | `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 共享阶段参数 |
 | `PM_ENDGAME_FREEZE_SECS` | `2` | 共享阶段参数 |
 

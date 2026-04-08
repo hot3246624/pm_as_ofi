@@ -264,11 +264,11 @@ mod tests {
         DriftMode, FitQuality, GlftFitSource, GlftFitStatus, GlftReadinessBlockers,
         GlftSignalSnapshot, GlftSignalState, QuoteRegime, WarmStartStatus,
     };
-    use crate::polymarket::messages::{InventoryState, MarketDataMsg, OfiSnapshot};
+    use crate::polymarket::messages::{InventorySnapshot, InventoryState, MarketDataMsg, OfiSnapshot, SlotReleaseEvent};
 
     fn make_coord(cfg: crate::polymarket::coordinator::CoordinatorConfig) -> StrategyCoordinator {
         let (_ofi_tx, ofi_rx) = tokio::sync::watch::channel(OfiSnapshot::default());
-        let (_inv_tx, inv_rx) = tokio::sync::watch::channel(InventoryState::default());
+        let (_inv_tx, inv_rx) = tokio::sync::watch::channel(InventorySnapshot::default());
         let (_md_tx, md_rx) = tokio::sync::watch::channel(MarketDataMsg::BookTick {
             yes_bid: 0.0,
             yes_ask: 0.0,
@@ -280,6 +280,7 @@ mod tests {
         let (om_tx, _om_rx) = tokio::sync::mpsc::channel(1);
         let (_kill_tx, kill_rx) = tokio::sync::mpsc::channel(1);
         let (_feedback_tx, feedback_rx) = tokio::sync::mpsc::channel(1);
+        let (_release_tx, release_rx) = tokio::sync::mpsc::channel::<SlotReleaseEvent>(1);
         StrategyCoordinator::with_aux_rx(
             cfg,
             ofi_rx,
@@ -289,6 +290,7 @@ mod tests {
             om_tx,
             kill_rx,
             feedback_rx,
+            release_rx,
         )
     }
 
@@ -354,6 +356,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -389,6 +394,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -425,6 +433,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -465,6 +476,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -504,6 +518,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -553,6 +570,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -590,6 +610,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -627,6 +650,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -668,6 +694,9 @@ mod tests {
             &coord,
             StrategyTickInput {
                 inv: &inv,
+                settled_inv: &inv,
+                working_inv: &inv,
+                inventory: &crate::polymarket::messages::InventorySnapshot { settled: inv, working: inv, pending_yes_qty: 0.0, pending_no_qty: 0.0, fragile: false },
                 book: &book,
                 metrics: &metrics,
                 ofi: None,

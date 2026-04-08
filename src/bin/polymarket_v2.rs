@@ -780,7 +780,7 @@ async fn run_round_validation_collector(
     strategy: String,
     round_start_ts_ms: i64,
     mut fill_rx: mpsc::Receiver<FillEvent>,
-    mut inv_rx: watch::Receiver<InventoryState>,
+    mut inv_rx: watch::Receiver<InventorySnapshot>,
     mut glft_rx: watch::Receiver<GlftSignalSnapshot>,
     mut md_rx: watch::Receiver<MarketDataMsg>,
     coord_obs_rx: watch::Receiver<CoordinatorObsSnapshot>,
@@ -790,7 +790,7 @@ async fn run_round_validation_collector(
     let start = Instant::now();
     let mut collector =
         RoundValidationCollector::new(market_slug, strategy, round_start_ts_ms, start);
-    collector.note_inventory(*inv_rx.borrow(), start);
+    collector.note_inventory(inv_rx.borrow().working, start);
     collector.note_glft(*glft_rx.borrow(), start);
     collector.note_market_data(md_rx.borrow().clone());
 
@@ -806,7 +806,7 @@ async fn run_round_validation_collector(
                 if changed.is_err() {
                     break;
                 }
-                collector.note_inventory(*inv_rx.borrow(), Instant::now());
+                collector.note_inventory(inv_rx.borrow().working, Instant::now());
             }
             changed = glft_rx.changed() => {
                 if changed.is_err() {
@@ -826,7 +826,7 @@ async fn run_round_validation_collector(
     collector.finalize(
         partial_round,
         *coord_obs_rx.borrow(),
-        *inv_rx.borrow(),
+        inv_rx.borrow().working,
         unix_now_ms(),
         Instant::now(),
     )
@@ -4012,10 +4012,11 @@ async fn main() -> anyhow::Result<()> {
             no_ask: 0.0,
             ts: Instant::now(),
         });
-        let (inv_watch_tx, inv_watch_rx) = watch::channel(InventoryState::default());
+        let (inv_watch_tx, inv_watch_rx) = watch::channel(InventorySnapshot::default());
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
         let (glft_watch_tx, glft_watch_rx) = watch::channel(GlftSignalSnapshot::default());
         let (coord_obs_tx, coord_obs_rx) = watch::channel(CoordinatorObsSnapshot::default());
+        let (slot_release_tx, slot_release_rx) = mpsc::channel::<SlotReleaseEvent>(64);
 
         let mut validation_stop_tx: Option<oneshot::Sender<()>> = None;
         let mut validation_handle: Option<tokio::task::JoinHandle<RoundValidationSummary>> = None;
@@ -4082,11 +4083,12 @@ async fn main() -> anyhow::Result<()> {
             om_tx.clone(),
             kill_rx,
             feedback_rx,
+            slot_release_rx,
         )
         .with_obs_tx(coord_obs_tx);
         session_handles.push(tokio::spawn(coord.run()));
 
-        let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx);
+        let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx, slot_release_tx);
         session_handles.push(tokio::spawn(om.run()));
 
         if !dry_run && recycle_cfg.enabled {

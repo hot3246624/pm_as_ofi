@@ -1,52 +1,48 @@
-Ran command: `wc -l /Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-05`
-Viewed polymarket.log.2026-04-05:1-542
-Searched for "quote|buy|Gate|Skipped|net_diff|yes|no"
-Searched for "(quote|buy|Gate|Skipped)"
-Searched for "(skip|gate|drift|imbalance)"
-Searched for "suitability"
-Ran command: `grep -E "endgame|resolv|spawn|StrategyMetrics" /Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-05 | head -n 30`
-Searched for "close|endgame|is_active"
-Viewed coordinator.rs:800-1000
-Searched for "end_ts"
-Ran command: `grep -n "async fn run" /Users/hot/web3Scientist/pm_as_ofi/src/polymarket/coordinator.rs`
-Viewed coordinator.rs:1080-1150
-Searched for "fn tick"
-Viewed coordinator.rs:1765-1820
-Searched for "fn tick|endgame"
-Viewed coordinator.rs:1821-1950
-Searched for "evaluate_pair_arb_round_suitability"
-Viewed coordinator.rs:1700-1740
-Viewed coordinator.rs:1740-1760
-Searched for "end_ts"
+Ran command: `grep -n -B 5 -C 5 "id=0x39dc67" /Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08`
+Edited implementation_plan.md
 
-我对这份最新的 `logs/polymarket.log.2026-04-05` （Dry Run 日志）进行了深度的检索和分析，发现了两个非常严重的**工程级别**的异常状态。
+这是一份极高水准的设计方案！把业务状态做 **“Settled + Working 双视图拆分”**，并且执行 **“非对称鉴权”**，这是非常成熟的高频衍生品交易网关（如 CME 等级别的接入端）处理不确定状态的标配范式。
 
-这就是为什么你的策略整整跑了 1 个多小时却没有发出一笔模拟订单的原因，与策略核心逻辑（如 Skew 或封顶参数）无关，而是**基础设施层卡死了**：
+它将彻底锁死“假装由于另一头可能被撮合了，就在主仓口松开防线胡乱加仓”的巨大风险。消除 OMS 这边的分裂脑也是长治久安之策。
 
-### 异常 1：公共订单簿数据（WS）接收失败，策略在不停“空转”
-- **现象**：在 `07:30:03` 时，日志显示 `✅ WS connected (status=101)`，接着发送了订阅请求 `📤 Subscribe: {"assets_ids":...}`。但从那以后，只有死板的 15秒一次的 `StrategyMetrics` 打印，所有的内部值全是 0。
-- **根本原因**：我在 `coordinator.rs` 中确认了以下代码：
-  ```rust
-  let ub = self.usable_book();
-  if ub.yes_bid <= 0.0 || ub.no_bid <= 0.0 {
-      self.stats.skipped_empty_book += 1;
-      return;
-  }
-  ```
-  如果收不到 Orderbook 数据，`tick()` 函数会直接在这里被 `return` 拦截掉！这就是为什么连 `evaluate_pair_arb_round_suitability` 的 60s 倒计时都没有触发（没收齐有效价格），更是没有任何模拟下单（Quotes）的日志记录。
-- **定性**：这说明 Polymarket 的 Orderbook WebSocket 订阅失败了，或者在 Dry Run 模式下数据流管道没有正确打通。
-
-### 异常 2：僵尸轮次（Zombie Round），到期未关闭
-- **现象**：你参与的是 `btc-updown-15m-1775374200` 市场（15分钟局）。它在 `07:30` 准时启动，本应在 `07:45` 进入结算（触发 Endgame 的 Soft/Hard Phase）。
-- **事实**：日志在 `07:45` 完全没有任何反应，并且不停地把 `StrategyMetrics` 打印到了 `08:51:23` （也就是运行了 80多分钟还在跑 15 分钟的局）。
-- **根本原因**：`Coordinator` 的 `run` 本身是一个死循环，依赖于外部的引擎（主框架）在到达 `end_ts` 的时候掐断数据流 (`md_rx_dropped`) 来触发关闭。这意味着在当前的 `DRY-RUN` 模式下，主外壳程序的“生命周期定时器”失效了，导致机器人变成了没人管的僵尸。
+**但是（这也是致命的但是），我带入实际变量做了详细的数理推演，发现：这个双视图架构即便完美上线，也依然会在 `04-08` 那次事件中复刻一模一样的悲剧！**
 
 ---
 
-### 下一步行动指南
+### 🚨 推演：为什么双视图挡不住那 131ms？
 
-这个日志证明目前的 Dry Run 系统并不能正确演练。你需要排查底层机制。
+回到日志案发当场（带入最新的架构规则）：
+- 阶段 1（`03:47:34.073`）：`NO` Matched 且 `YES` 也 Matched。
+- 此时状态如何？
+  - `settled_net` = `0` (暂未 Confirmed，因为没这消息)
+  - `working_net` = `0 - 5 + 5` = `0`
+- 结论：**双视图目前全部报 `0`。**
+- 阶段 2（`03:47:38.288`）：策略滴答（tick）运行。因为它看到 `settled` 是 0、`working` 也是 0，它便毫无内疚地认为现在天下太平，可以出去探路赚钱了。于是极其合法地**发送了 `YES@0.320`**。
+- 阶段 3（`03:47:43.814`，惨祸前夕）：10 秒整，`NO` 回传 Failed 恶报。`pending_fills` 抹掉这笔。
+- 此时双视图重算：
+  - `settled_net` = `0`
+  - `working_net` = `0 + 5(那个假装还活着的 YES)` = **`+5`**
+- 阶段 4：安检触发！根据您的非对称规则，**“状态恶化后的旧单 Invalidation 必须基于 Working”**。
+- 系统看到 `working_net=+5`，猛然惊醒：我们此时多单过重，旧悬单 `YES@0.320` 变成了一颗毒药该立刻销毁！
+- 于是系统**火速下发了 Cancel 命令（用时极短）**。
+- 但对不起，在 Cancel 飞向交易所的这 **`131 ms`** 空窗期内，你的 `YES@0.320` 因为一直挂在那儿，依然被一头撞进来的 Taker 给吃掉了。
 
-如果由于系统层无法获得真正的 Dry Run 模拟数据，结合我们刚才敲定的**最新实施计划**（极限拉扯型的小资金策略）：我建议**放弃没有任何交易流的 Dry Run，直接换成全自动挂单，但是把 Bids 缩到最小比例，去实盘里充当“沙盒”**。
+**这就是这个 131ms 被击穿的核心：不是你的规则判定慢了，而是在收到 Failed 之前，双管齐下的 0 视图“伪善假象”让你非常合法地留着那张钓鱼单！**等醒悟过来派兵去撤时，天花板已经塌了。
 
-如果您需要，我现在就可以直接在代码层面帮您修复这几点，并将资金受限型（0.60/0.30 封顶与 20 cents 熔断）策略落地，从而进入最小规模实装测试（即用真小钱去测试真实订单流）？
+---
+
+### 💡 绝杀对策：双视图配合“脆弱期步步为营 (Fragile Spread Widening)”
+
+如果您坚持原味保留“不要错过那 10 秒钟能够赚的钱”，唯一的出路是结合我先前提交的那套做法。并且在您构筑的这张双视图新大陆上，它的实现会变得异常优雅且容易：
+
+在判断是否属于该“退避防守”的悬窗期时，连定时器都可以省了！
+**只看一个等式： `working_qty != settled_qty`。**
+
+只要这不相等，就代表着系统中目前有 **“未确权的 Pending Fills 在走钢丝”**。在这个时期，所有的发单逻辑一律照常绿灯放行，只在出价的最后环节实施“退步防御”：
+
+- 当 `working == settled` 时，`YES@0.320` 发！
+- 当 `working != settled` 时，系统照发 `YES` 探路单，但在底层安全防护计算中强制退缩 1~2 ticks。于是实际挂单变成了 `YES@0.300` 或 `YES@0.290`！
+
+这样，即便 Failed 的恶报延迟 10 秒发来，导致你在 131 ms 的通讯延迟里手无寸铁，来势汹汹砸穿盘口的 Taker **也只能砸到你的 0.320 或 0.310，摸不到你藏在 0.300 下的退缩单！** 于是 Cancel 安全靠岸，毫发无损躲下此劫。
+
+详细的深度评估报告被我存入在了右侧的 `implementation_plan.md` 中。如果您这套强壮的底层升级愿意加上这最后一把“防穿刺退步锁”，这篇草案将是无懈可击的高频引擎重构方案。请确认该补防是否纳入，确认后我随时等待开工动刀。
