@@ -894,6 +894,7 @@ pub struct StrategyCoordinator {
     slot_last_debt_refill: [Instant; 4],
     slot_absent_clear_since: [Option<Instant>; 4],
     slot_pair_arb_state_keys: [Option<PairArbStateKey>; 4],
+    slot_pair_arb_fill_recheck_pending: [bool; 4],
     yes_target: Option<DesiredTarget>,
     no_target: Option<DesiredTarget>,
     yes_last_ts: Instant,
@@ -922,6 +923,9 @@ pub struct StrategyCoordinator {
     last_metrics_log_ts: Instant,
     pair_arb_gate_last_log_ts: Instant,
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
+    last_inv_snapshot: InventoryState,
+    pair_arb_progress_state: PairProgressState,
+    round_realized_pair_metrics: RoundRealizedPairMetrics,
     last_endgame_phase: EndgamePhase,
     edge_hold_state: Option<EdgeHoldState>,
     yes_maker_friction: MakerFriction,
@@ -1007,6 +1011,29 @@ pub(crate) struct PairArbStateKey {
     pub(crate) dominant_side: Option<Side>,
     pub(crate) net_bucket: PairArbNetBucket,
     pub(crate) soft_close_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PairProgressRegime {
+    Healthy,
+    Stalled,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct PairProgressState {
+    pub(crate) last_pair_progress_at: Option<Instant>,
+    pub(crate) last_pair_progress_paired_qty: f64,
+    pub(crate) last_risk_increasing_fill_price_yes: Option<f64>,
+    pub(crate) last_risk_increasing_fill_price_no: Option<f64>,
+    pub(crate) last_risk_fill_net_bucket_yes: Option<PairArbNetBucket>,
+    pub(crate) last_risk_fill_net_bucket_no: Option<PairArbNetBucket>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct RoundRealizedPairMetrics {
+    pub(crate) realized_pair_qty: f64,
+    pub(crate) realized_pair_locked_pnl: f64,
+    pub(crate) merged_cash_released: f64,
 }
 
 impl StrategyCoordinator {
@@ -1104,6 +1131,7 @@ impl StrategyCoordinator {
             slot_last_debt_refill: std::array::from_fn(|_| Instant::now()),
             slot_absent_clear_since: std::array::from_fn(|_| None),
             slot_pair_arb_state_keys: std::array::from_fn(|_| None),
+            slot_pair_arb_fill_recheck_pending: [false; 4],
             yes_target: None,
             no_target: None,
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
@@ -1130,6 +1158,9 @@ impl StrategyCoordinator {
             last_metrics_log_ts,
             pair_arb_gate_last_log_ts: now,
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
+            last_inv_snapshot: InventoryState::default(),
+            pair_arb_progress_state: PairProgressState::default(),
+            round_realized_pair_metrics: RoundRealizedPairMetrics::default(),
             last_endgame_phase: EndgamePhase::Normal,
             edge_hold_state: None,
             yes_maker_friction: MakerFriction::default(),
@@ -1226,7 +1257,7 @@ impl StrategyCoordinator {
             None => "FLAT",
         };
         info!(
-            "🎯 FinalMetrics | paired_qty={:.2} pair_cost={:.4} paired_locked_pnl={:.4} worst_case_outcome_pnl={:.4} total_spent={:.4} dominant={} residual_qty={:.2} residual_value={:.4}",
+            "🎯 FinalMetrics | paired_qty={:.2} pair_cost={:.4} paired_locked_pnl={:.4} worst_case_outcome_pnl={:.4} total_spent={:.4} dominant={} residual_qty={:.2} residual_value={:.4} realized_pair_qty={:.2} realized_pair_locked_pnl={:.4} merged_cash_released={:.4}",
             final_metrics.paired_qty,
             final_metrics.pair_cost,
             final_metrics.paired_locked_pnl,
@@ -1235,6 +1266,9 @@ impl StrategyCoordinator {
             dominant_side,
             final_metrics.residual_qty,
             final_metrics.residual_inventory_value,
+            self.round_realized_pair_metrics.realized_pair_qty,
+            self.round_realized_pair_metrics.realized_pair_locked_pnl,
+            self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
             "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
@@ -1931,6 +1965,7 @@ impl StrategyCoordinator {
         self.decay_maker_friction(now);
         let ofi = *self.ofi_rx.borrow();
         let inv = *self.inv_rx.borrow();
+        self.observe_pair_arb_inventory_transition(&inv, now);
         let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
             Some(*self.glft_rx.borrow())
         } else {

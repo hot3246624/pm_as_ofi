@@ -63,6 +63,10 @@ impl StrategyCoordinator {
         } else {
             false
         };
+        let pair_arb_fill_recheck_pending = self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+            && self.slot_pair_arb_fill_recheck_pending[slot.index()];
         if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
             price = self.glft_clamp_slot_target_price(slot, price);
         }
@@ -355,6 +359,7 @@ impl StrategyCoordinator {
                 && (slot_size - size).abs() <= 0.1
                 && slot.direction == TradeDirection::Buy
                 && !pair_arb_state_changed
+                && !pair_arb_fill_recheck_pending
                 && price > slot_price + reprice_eps
             {
                 self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
@@ -669,6 +674,7 @@ impl StrategyCoordinator {
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
         self.slot_pair_arb_state_keys[slot.index()] = None;
+        self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         match scope {
             SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
             SlotResetScope::Full => self.full_reset_slot_publish_state(slot),
@@ -830,6 +836,7 @@ impl StrategyCoordinator {
             let inv = *self.inv_rx.borrow();
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()] = Some(self.pair_arb_state_key(&inv, phase));
+            self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         }
         self.sync_buy_side_wrapper(slot);
 

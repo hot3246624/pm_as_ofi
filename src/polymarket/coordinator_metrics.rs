@@ -4,7 +4,217 @@ use tracing::{debug, info};
 
 use super::*;
 
+const PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA: f64 = 1.0;
+const PAIR_ARB_STALLED_SECS: u64 = 60;
+const FLOAT_INV_EPS: f64 = 1e-6;
+
 impl StrategyCoordinator {
+    pub(crate) fn pair_arb_net_bucket_for_abs(abs_net: f64) -> PairArbNetBucket {
+        if abs_net <= FLOAT_INV_EPS {
+            PairArbNetBucket::Flat
+        } else if abs_net < 5.0 {
+            PairArbNetBucket::Low
+        } else if abs_net < 10.0 {
+            PairArbNetBucket::Mid
+        } else {
+            PairArbNetBucket::High
+        }
+    }
+
+    pub(crate) fn pair_arb_net_bucket_rank(bucket: PairArbNetBucket) -> u8 {
+        match bucket {
+            PairArbNetBucket::Flat => 0,
+            PairArbNetBucket::Low => 1,
+            PairArbNetBucket::Mid => 2,
+            PairArbNetBucket::High => 3,
+        }
+    }
+
+    pub(crate) fn pair_arb_progress_regime(
+        &self,
+        inv: &InventoryState,
+        now: Instant,
+    ) -> PairProgressRegime {
+        if inv.net_diff.abs() + FLOAT_INV_EPS < 10.0 {
+            return PairProgressRegime::Healthy;
+        }
+        let since = self
+            .pair_arb_progress_state
+            .last_pair_progress_at
+            .unwrap_or(self.market_start);
+        if now.saturating_duration_since(since) >= Duration::from_secs(PAIR_ARB_STALLED_SECS) {
+            PairProgressRegime::Stalled
+        } else {
+            PairProgressRegime::Healthy
+        }
+    }
+
+    pub(crate) fn pair_arb_last_risk_fill(
+        &self,
+        side: Side,
+    ) -> Option<(f64, PairArbNetBucket)> {
+        match side {
+            Side::Yes => self
+                .pair_arb_progress_state
+                .last_risk_increasing_fill_price_yes
+                .zip(self.pair_arb_progress_state.last_risk_fill_net_bucket_yes),
+            Side::No => self
+                .pair_arb_progress_state
+                .last_risk_increasing_fill_price_no
+                .zip(self.pair_arb_progress_state.last_risk_fill_net_bucket_no),
+        }
+    }
+
+    fn pair_arb_detect_buy_fill_price(
+        prev_qty: f64,
+        prev_avg: f64,
+        next_qty: f64,
+        next_avg: f64,
+    ) -> Option<f64> {
+        if next_qty <= prev_qty + FLOAT_INV_EPS {
+            return None;
+        }
+        let delta_qty = next_qty - prev_qty;
+        if delta_qty <= FLOAT_INV_EPS {
+            return None;
+        }
+        let prev_cost = prev_qty.max(0.0) * prev_avg.max(0.0);
+        let next_cost = next_qty.max(0.0) * next_avg.max(0.0);
+        let price = (next_cost - prev_cost) / delta_qty;
+        if price.is_finite() && price > 0.0 {
+            Some(price)
+        } else {
+            None
+        }
+    }
+
+    fn pair_arb_reset_risk_fill_anchor(&mut self, side: Side) {
+        match side {
+            Side::Yes => {
+                self.pair_arb_progress_state.last_risk_increasing_fill_price_yes = None;
+                self.pair_arb_progress_state.last_risk_fill_net_bucket_yes = None;
+            }
+            Side::No => {
+                self.pair_arb_progress_state.last_risk_increasing_fill_price_no = None;
+                self.pair_arb_progress_state.last_risk_fill_net_bucket_no = None;
+            }
+        }
+    }
+
+    pub(super) fn observe_pair_arb_inventory_transition(
+        &mut self,
+        inv: &InventoryState,
+        now: Instant,
+    ) {
+        if self.cfg.strategy != StrategyKind::PairArb {
+            self.last_inv_snapshot = *inv;
+            return;
+        }
+
+        let prev = self.last_inv_snapshot;
+        if (prev.yes_qty - inv.yes_qty).abs() <= FLOAT_INV_EPS
+            && (prev.no_qty - inv.no_qty).abs() <= FLOAT_INV_EPS
+            && (prev.yes_avg_cost - inv.yes_avg_cost).abs() <= FLOAT_INV_EPS
+            && (prev.no_avg_cost - inv.no_avg_cost).abs() <= FLOAT_INV_EPS
+        {
+            return;
+        }
+
+        self.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()] = true;
+        self.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()] = true;
+
+        let prev_bucket = Self::pair_arb_net_bucket_for_abs(prev.net_diff.abs());
+        let curr_bucket = Self::pair_arb_net_bucket_for_abs(inv.net_diff.abs());
+        let prev_dom = if prev.net_diff > FLOAT_INV_EPS {
+            Some(Side::Yes)
+        } else if prev.net_diff < -FLOAT_INV_EPS {
+            Some(Side::No)
+        } else {
+            None
+        };
+        let curr_dom = if inv.net_diff > FLOAT_INV_EPS {
+            Some(Side::Yes)
+        } else if inv.net_diff < -FLOAT_INV_EPS {
+            Some(Side::No)
+        } else {
+            None
+        };
+
+        let dominant_flipped = prev_dom != curr_dom;
+        if dominant_flipped {
+            self.pair_arb_reset_risk_fill_anchor(Side::Yes);
+            self.pair_arb_reset_risk_fill_anchor(Side::No);
+        } else if Self::pair_arb_net_bucket_rank(curr_bucket)
+            < Self::pair_arb_net_bucket_rank(prev_bucket)
+        {
+            match curr_dom {
+                Some(side) => self.pair_arb_reset_risk_fill_anchor(side),
+                None => {
+                    self.pair_arb_reset_risk_fill_anchor(Side::Yes);
+                    self.pair_arb_reset_risk_fill_anchor(Side::No);
+                }
+            }
+        }
+
+        let prev_metrics = self.derive_inventory_metrics(&prev);
+        let current_metrics = self.derive_inventory_metrics(inv);
+        if current_metrics.paired_qty
+            >= self.pair_arb_progress_state.last_pair_progress_paired_qty
+                + PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA
+                - FLOAT_INV_EPS
+        {
+            self.pair_arb_progress_state.last_pair_progress_at = Some(now);
+            self.pair_arb_progress_state.last_pair_progress_paired_qty = current_metrics.paired_qty;
+        }
+
+        let prev_abs = prev.net_diff.abs();
+        let curr_abs = inv.net_diff.abs();
+        if curr_abs > prev_abs + FLOAT_INV_EPS {
+            if let Some(price) = Self::pair_arb_detect_buy_fill_price(
+                prev.yes_qty,
+                prev.yes_avg_cost,
+                inv.yes_qty,
+                inv.yes_avg_cost,
+            ) {
+                self.pair_arb_progress_state.last_risk_increasing_fill_price_yes = Some(price);
+                self.pair_arb_progress_state.last_risk_fill_net_bucket_yes = Some(curr_bucket);
+            }
+            if let Some(price) = Self::pair_arb_detect_buy_fill_price(
+                prev.no_qty,
+                prev.no_avg_cost,
+                inv.no_qty,
+                inv.no_avg_cost,
+            ) {
+                self.pair_arb_progress_state.last_risk_increasing_fill_price_no = Some(price);
+                self.pair_arb_progress_state.last_risk_fill_net_bucket_no = Some(curr_bucket);
+            }
+        }
+
+        let merged_yes = (prev.yes_qty - inv.yes_qty).max(0.0);
+        let merged_no = (prev.no_qty - inv.no_qty).max(0.0);
+        let merged_full_set = merged_yes.min(merged_no);
+        if merged_full_set > FLOAT_INV_EPS {
+            self.round_realized_pair_metrics.realized_pair_qty += merged_full_set;
+            self.round_realized_pair_metrics.realized_pair_locked_pnl +=
+                merged_full_set * (1.0 - prev.yes_avg_cost.max(0.0) - prev.no_avg_cost.max(0.0));
+            self.round_realized_pair_metrics.merged_cash_released += merged_full_set;
+        }
+
+        self.last_inv_snapshot = *inv;
+
+        debug!(
+            "🧭 PairArb inventory transition | prev_net={:.2} curr_net={:.2} prev_bucket={:?} curr_bucket={:?} prev_dom={:?} curr_dom={:?} progress_regime={:?}",
+            prev.net_diff,
+            inv.net_diff,
+            prev_bucket,
+            curr_bucket,
+            prev_dom,
+            curr_dom,
+            self.pair_arb_progress_regime(inv, now),
+        );
+        let _ = prev_metrics; // retained for future debugging without recompute churn
+    }
+
     fn pair_arb_gate_snapshot(&self) -> PairArbGateLogSnapshot {
         PairArbGateLogSnapshot {
             ofi_softened_quotes: self.stats.pair_arb_ofi_softened_quotes,
@@ -368,7 +578,7 @@ impl StrategyCoordinator {
         };
 
         info!(
-            "📊 StrategyMetrics | paired_qty={:.2} pair_cost={:.4} paired_locked_pnl={:.4} worst_case_outcome_pnl={:.4} total_spent={:.4} dominant={} residual_qty={:.2} residual_value={:.4} net_diff={:.2} ofi(y/n)={:.1}/{:.1} toxic(y/n)={}/{}",
+            "📊 StrategyMetrics | paired_qty={:.2} pair_cost={:.4} paired_locked_pnl={:.4} worst_case_outcome_pnl={:.4} total_spent={:.4} dominant={} residual_qty={:.2} residual_value={:.4} net_diff={:.2} ofi(y/n)={:.1}/{:.1} toxic(y/n)={}/{} pair_progress_regime={:?} realized_pair_qty={:.2} realized_pair_locked_pnl={:.4} merged_cash_released={:.4}",
             m.paired_qty,
             m.pair_cost,
             m.paired_locked_pnl,
@@ -382,6 +592,10 @@ impl StrategyCoordinator {
             ofi.no.ofi_score,
             ofi.yes.is_toxic,
             ofi.no.is_toxic,
+            self.pair_arb_progress_regime(inv, now),
+            self.round_realized_pair_metrics.realized_pair_qty,
+            self.round_realized_pair_metrics.realized_pair_locked_pnl,
+            self.round_realized_pair_metrics.merged_cash_released,
         );
         self.maybe_log_pair_arb_gate_summary();
     }

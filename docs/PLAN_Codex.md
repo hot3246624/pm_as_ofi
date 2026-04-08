@@ -1,235 +1,108 @@
-## Pair_arb 实盘修正版计划 V5（简化状态签名 + 可配置 tier cap）
+这份 `2026-04-08` dry-run 的结论很明确：**V4 没有回退，但也没有被真正验证到。**
 
-### Summary
-基于你刚才的三点，计划需要继续收敛：
+**核心结论**
+1. **这份日志没有任何 fill，V4 的两条主修复几乎都没被触发。**  
+- [logs/polymarket.log.2026-04-08:53](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:53)  
+- [logs/polymarket.log.2026-04-08:350](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:350)  
+- [logs/polymarket.log.2026-04-08:993](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:993)  
+这些地方都写了 `No User WS — net_diff stays 0 (no fills)`。  
+所以：
+- `PairProgressRegime` 一直是 `Healthy`
+- `StateImprovementReanchor` 没有真实 fill 可触发
+- `merge-aware accounting` 也自然全是 `0`
 
-- **不采用 `last_risk_fill_price` 路径依赖**
-- **不采用硬性的 `pair_progress_brake`**
-- **Republish 改为简化状态签名驱动**
-- **`tier avg-cost cap` 收紧到 `0.80 / 0.60`，并做成可配置参数**
-- **OFI 继续复用当前 GLFT 引擎，但在 `pair_arb` 中只做 subordinate shaping，不再追求“常态毒性撤单”**
+2. **系统层面是稳定的，之前那类执行层 churn 已经明显不在主矛盾位置。**  
+完成 round 的 shutdown 大致是：
+- [logs/polymarket.log.2026-04-08:302](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:302)
+- [logs/polymarket.log.2026-04-08:608](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:608)
+- [logs/polymarket.log.2026-04-08:942](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:942)
 
-这版的核心哲学是：
-- `pair_arb` 继续只看当前状态，不看历史路径
-- 主仓侧不是“禁止继续买”，而是“高失衡时更难通过准入”
-- 只有真正重要的状态变化才触发 republish，不跟着每个 partial fill 跑
+共同特征：
+- `recovery=0`
+- `safety=0`
+- `toxic_events=0`
+- `kill_events=0`
+- `source_blocked/divergence=0`
 
-### Key Changes
-#### 1. `tier avg-cost cap` 收紧并参数化
-把当前 `pair_arb` 的 dominant-side cap 从 `0.85 / 0.70` 收紧到：
+这说明：
+- 没有 recovery storm
+- 没有 source stale 把系统搞乱
+- 没有 reference/publish 架构回退
 
-- `5 <= |net_diff| < 10`
-  - 主仓侧 `bid <= avg_cost * 0.80`
-- `|net_diff| >= 10`
-  - 主仓侧 `bid <= avg_cost * 0.60`
+3. **当前 dry-run 暴露的真实问题，不是 V4 失效，而是 `pair_arb` 在“无成交、库存永远 0”的环境里仍然会持续深挂。**  
+最关键证据是 `PairArbGate(30s)`：
+- [logs/polymarket.log.2026-04-08:100](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:100)
+- [logs/polymarket.log.2026-04-08:272](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:272)
+- [logs/polymarket.log.2026-04-08:922](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:922)
+- [logs/polymarket.log.2026-04-08:1168](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1168)
 
-同时新增两项配置参数：
-- `PM_PAIR_ARB_TIER_1_MULT=0.80`
-- `PM_PAIR_ARB_TIER_2_MULT=0.60`
+全部是：
+- `keep_rate=100.0%`
+- `skip(inv/sim/util/edge)=0/0/0/0`
 
-固定约束：
-- 这两个参数只影响 `pair_arb`
-- 依然位于价格链中的 `VWAP ceiling` 之前
-- 依然只约束主仓侧 `same-side risk-increasing buy`
-- 不引入 `last fill` 路径依赖，不要求“价格必须低于上一笔成交价”
+这意味着：
+- 当前 candidate admission 在 `net_diff=0` 的 dry-run 场景下几乎没有形成任何过滤
+- 策略会一路把 bid 往下走，只要 book 和内部报价链允许
 
-价格链固定为：
-1. A-S 基础价
-2. 三段 skew
-3. **tier avg-cost cap**
-4. same-side OFI soft shaping
-5. `VWAP ceiling`
-6. maker clamp
-7. `safe_price`
-8. `simulate_buy`
+4. **因此你看到的深价继续存在，但它和上一轮要修的“状态改善后旧单不重锚”不是同一个问题。**  
+例如：
+- `No@0.400 -> 0.330 -> 0.280 -> 0.230 -> 0.180`  
+  [logs/polymarket.log.2026-04-08:108](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:108)
+  [logs/polymarket.log.2026-04-08:109](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:109)
+  [logs/polymarket.log.2026-04-08:110](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:110)
+  [logs/polymarket.log.2026-04-08:120](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:120)
+  [logs/polymarket.log.2026-04-08:171](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:171)
+- `Yes@0.140 -> 0.090 -> 0.040`  
+  [logs/polymarket.log.2026-04-08:1059](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1059)
+  [logs/polymarket.log.2026-04-08:1096](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1096)
+  [logs/polymarket.log.2026-04-08:1111](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:1111)
 
-#### 2. 用“高失衡准入收紧”替代硬 brake
-不再做“30 秒无进展就冻结主仓侧”的 `pair_progress_brake`。  
-改为只在候选准入层收紧 `same-side risk-increasing buy`：
+但这里 `net_diff` 始终是 `0`，所以：
+- 这不是“高失衡 stalled 失效”
+- 也不是“状态改善后没 reanchor”
+- 而是“flat/no-fill 环境下，策略没有单独的 exploration governor”
 
-- `pairing / risk-reducing buy` 完全不受影响
-- `same-side risk-increasing buy`：
-  - `abs(net_diff) < 10`：保持现有 `utility / open_edge` 规则
-  - `abs(net_diff) >= 10`：提高准入门槛
-    - `min_utility_delta` 提高到 `2.0 * size * tick`
-    - 且 `projected_open_edge` 必须至少改善 `0.5 * size * tick`
-- 任一不满足则 suppress 该候选
+5. **OFI 还在起作用，但只是 subordinate shaping，不是主 gate。**  
+shutdown 显示：
+- `pair_arb_softened=16618 / 20982 / 24417`
+- `pair_arb_suppressed=0`
+对应：
+- [logs/polymarket.log.2026-04-08:302](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:302)
+- [logs/polymarket.log.2026-04-08:608](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:608)
+- [logs/polymarket.log.2026-04-08:942](/Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-08:942)
 
-这一步的作用是：
-- 不硬冻结主仓侧继续平均成本的能力
-- 但在高失衡区，只允许“明显更值得”的同侧 build 继续存在
-- 这比硬 brake 更符合 `pair_cost-first` 的策略思想
+所以不是 OFI 被抛弃了，而是：
+- 它在这类场景只负责把报价压低一点
+- 并没有强到会阻止整段 stair-step 深挂
 
-#### 3. Pair_arb 专属最小 SoftClose
-保留最小 endgame 接入：
+**我对这份日志的判断**
+- **V4 没有失败。**
+- **但这份 dry-run 也没有证明 V4 成功。**
+- 它证明的是另一件事：  
+  `pair_arb` 在“无 fill、永远 flat”的 dry-run 模式下，仍然会持续深挂，而当前 `PairArbGate` 对这种场景几乎没有过滤。
 
-- 仅对 `15m` 启用
-- 固定窗口：最后 `45s`
-- 只阻断：
-  - `same-side risk-increasing buy`
-- 继续允许：
-  - `pairing / risk-reducing buy`
-- 继续跳过：
-  - `HardClose`
-  - `ForceTaker`
-  - 市价去风险
+**是否需要继续优化**
+如果你问“下一步最有价值的动作是什么”，答案是：
 
-目标：
-- 防止最后几十秒继续把单边残仓从 `10 -> 15`
-- 不误伤真正的补配对机会
+1. **如果目标是验证 V4 是否解决实盘问题：不要继续靠这种 dry-run。**  
+因为它根本不产生：
+- `net_diff` 变化
+- bucket 改善
+- stalled
+- reanchor
 
-#### 4. `Republish` 改成简化状态签名驱动
-`pair_arb` 的状态变化 republish 不再看每次 fill 的细粒度数字，也不看 `paired_qty` 桶。  
-固定采用简化状态签名：
+2. **如果目标是继续从 dry-run 里挖问题：那现在唯一值得修的是一个独立问题。**  
+也就是：
+- `flat + no-fill` 场景下的单侧深挂探索约束  
+这和 V4 不是一回事，应该被当成单独策略问题处理。
 
-- `dominant_side`：`Yes | No | Flat`
-- `net_bucket`：
-  - `Flat` (`|net_diff| == 0`)
-  - `Low` (`0 < |net_diff| < 5`)
-  - `Mid` (`5 <= |net_diff| < 10`)
-  - `High` (`|net_diff| >= 10`)
-- `soft_close_active`：`true | false`
+**建议**
+1. 先跑小额 live，验证 V4 真正关心的两件事：
+- 高失衡且长期无配对时，same-side build 是否收敛
+- `|net_diff|` 改善或回到 `0` 后，旧低价单是否被重锚
+2. 如果你仍想先在 dry-run 上再收一道口，我建议下一轮只做一个非常小的策略改动：
+- 给 `pair_arb` 增加 `flat/no-fill exploration guard`
+- 只作用于 `net_diff=0` 且长期无成交的场景
+- 不碰 V4 的 reanchor / stalled 逻辑
 
-规则固定：
-- 只有当这个状态签名发生变化时，才做一次 `state-change admissibility recheck`
-- 若当前 live quote 因新状态已不再满足：
-  - `tier avg-cost cap`
-  - 高失衡准入
-  - `VWAP ceiling`
-  - `SoftClose`
-  - OFI suppress
-- 则走：
-  - `RetentionDecision::Republish`
-- 若状态签名未变化：
-  - partial fill
-  - `net_diff +1/+2/+3`
-  - 小规模 `paired_qty` 增加
-  都**不触发 republish**
-- 只有：
-  - source blocked
-  - invalid state
-  - round cleanup
-  才允许 `Clear`
-
-这一步的目标是：
-- 避免 1 秒内多次 partial fill 导致重复 republish
-- 又保留真正关键状态变化的响应能力
-
-#### 5. OFI 边界明确：继承 GLFT 引擎，但在 Pair_arb 中降级使用
-当前 OFI **确实继承的是 GLFT 时代的引擎**，包括：
-- `heat`
-- `toxicity`
-- `saturated`
-- regime-aware baseline
-- adverse-selection 确认
-
-但在 `pair_arb` 中，它的职责已经被刻意降级：
-
-- `pairing / risk-reducing buy`
-  - 忽略 OFI
-- `same-side risk-increasing buy`
-  - `hot`：下调 1 tick
-  - `toxic`：下调 2 ticks
-  - `toxic + saturated`：suppress
-- 执行层对 `pair_arb` 不再做第二套常态 OFI 硬拦截
-
-所以“最近似乎没有毒性撤单”并不代表 OFI 没用了，而是：
-- 引擎还在跑
-- 统计仍会记 `heat_events / toxic_events / kill_events`
-- 但 `pair_arb` 的主语义已经不是“常态毒性撤单”，而是“高热/毒性下收紧同侧加仓”
-
-这条边界在文档里要明确写死，避免继续误解。
-
-#### 6. 观测与文档同步
-同步更新：
-- `STRATEGY_PAIR_ARB_ZH.md`
-- `CONFIG_REFERENCE_ZH.md`
-- `README` / checklist 中当前 pair_arb 部分
-
-日志新增：
-- `candidate_role={pairing|risk_increasing}`
-- `high_imbalance_admission={pass|blocked}`
-- `state_key_changed=true|false`
-- `state_change_republish=true|false`
-- `softclose_blocked=true|false`
-
-同时处理死统计项：
-- `cancel_toxic`
-- `cancel_inv`
-- `skipped_inv_limit`
-
-要求二选一：
-- 真接线并持续计数
-- 或删除，不再保留假可观测性
-
-### Public Interfaces / Config
-新增或调整最小接口：
-
-- 新增配置：
-  - `PM_PAIR_ARB_TIER_1_MULT`
-  - `PM_PAIR_ARB_TIER_2_MULT`
-- 新增内部状态：
-  - `PairArbStateKey`
-    - `dominant_side`
-    - `net_bucket`
-    - `soft_close_active`
-- 不新增新的 OFI 参数
-- 不新增 `pair_progress_brake` 参数
-- 不改变 `PM_STRATEGY=pair_arb` 外部入口
-
-### Test Plan
-1. **tier cap 配置**
-- 默认值读取为 `0.80 / 0.60`
-- 自定义配置可覆盖
-- `net_diff=10, yes_avg=0.60`：
-  - YES cap = `0.36`
-- `net_diff=5, yes_avg=0.60`：
-  - YES cap = `0.48`
-- `net_diff<5`：
-  - dominant-side cap 消失
-
-2. **高失衡准入**
-- `abs(net_diff) >= 10` 时：
-  - utility/open-edge 门槛更高
-  - 但不是硬冻结
-- pairing buy 不受影响
-- 验证状态改善后仍可合法再报价
-
-3. **SoftClose**
-- `15m` 最后 `45s`
-  - risk-increasing buy 阻断
-  - pairing / risk-reducing buy 保留
-
-4. **简化状态签名 Republish**
-- partial fill 但签名未变化：
-  - 不 republish
-- `|net_diff|` 跨越 `0/5/10`：
-  - 触发一次状态重检
-- `dominant_side` 翻转：
-  - 触发一次状态重检
-- 进入 `SoftClose`：
-  - 触发一次状态重检
-- 不再因为每个 small fill 重复 churn
-
-5. **OFI 边界**
-- same-side risk-increasing + `hot`：
-  - 报价软化 1 tick
-- same-side risk-increasing + `toxic + saturated`：
-  - suppress
-- pairing buy + toxic：
-  - 不得被误伤
-- 证明 `pair_arb` 的 OFI 语义是“soft shaping”，不是“常态毒性撤单”
-
-6. **针对 2026-04-07 live 的回放验收**
-- Round #1：允许 state-driven 的正常再报价，但不应出现尾段危险 build
-- Round #2：高失衡区同侧 build 必须更难通过，不再一路轻松买满
-- Round #3：配对成功后，旧单只在关键状态变化时 republish，不再长期滞留，也不因每个 partial fill 反复重算
-
-### Assumptions
-- 主线继续 `pair_arb + BTC 15m`
-- 采用更简单的 republish 签名，不引入 `paired_qty` 桶
-- 不采用路径依赖的 `last_risk_fill_price`
-- 不采用硬 `pair_progress_brake`
-- OFI 继续复用当前 GLFT 引擎，但在 `pair_arb` 中只保留 subordinate shaping 角色
-- 不采纳绝对价格底限
-- 不引入 taker / HardClose / 市价去风险
+如果你要，我下一步可以直接给出这个 `flat/no-fill exploration guard` 的最小实现方案。

@@ -1633,6 +1633,172 @@ async fn test_pair_arb_state_bucket_change_republishes_higher_buy_bid() {
     }
 }
 
+#[test]
+fn test_pair_arb_progress_regime_enters_stalled_after_no_progress() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+    let now = Instant::now();
+    coord.pair_arb_progress_state.last_pair_progress_at = Some(now - Duration::from_secs(61));
+
+    let stalled = coord.pair_arb_progress_regime(
+        &InventoryState {
+            yes_qty: 10.0,
+            yes_avg_cost: 0.40,
+            no_qty: 0.0,
+            no_avg_cost: 0.0,
+            net_diff: 10.0,
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(stalled, PairProgressRegime::Stalled);
+
+    coord.pair_arb_progress_state.last_pair_progress_at = Some(now);
+    let healthy = coord.pair_arb_progress_regime(
+        &InventoryState {
+            yes_qty: 10.0,
+            yes_avg_cost: 0.40,
+            no_qty: 0.0,
+            no_avg_cost: 0.0,
+            net_diff: 10.0,
+            ..Default::default()
+        },
+        now,
+    );
+    assert_eq!(healthy, PairProgressRegime::Healthy);
+}
+
+#[test]
+fn test_pair_arb_fill_recheck_rechecks_absent_intent_even_without_state_change() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+    coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: Some(Side::Yes),
+        net_bucket: PairArbNetBucket::High,
+        soft_close_active: false,
+    });
+    coord.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
+
+    let inv = InventoryState {
+        yes_qty: 15.0,
+        yes_avg_cost: 0.20,
+        no_qty: 5.0,
+        no_avg_cost: 0.49,
+        net_diff: 10.0,
+        ..Default::default()
+    };
+    let ub = book(0.29, 0.40, 0.59, 0.60);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(
+            decision,
+            RetentionDecision::Clear(CancelReason::Reprice, SlotResetScope::Soft)
+        ),
+        "fill-triggered recheck should soft-clear same-state quote once it becomes inadmissible"
+    );
+}
+
+#[tokio::test]
+async fn test_pair_arb_state_improvement_reanchors_higher_quote_after_fill() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 5.0,
+        yes_avg_cost: 0.46,
+        no_qty: 5.0,
+        no_avg_cost: 0.49,
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    let _ = i.send(inv);
+
+    let slot = OrderSlot::NO_BUY;
+    let current = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.37,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(current.clone());
+    coord.no_target = Some(current);
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: Some(Side::No),
+        net_bucket: PairArbNetBucket::Low,
+        soft_close_active: false,
+    });
+    coord.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
+
+    let ub = book(0.45, 0.46, 0.50, 0.51);
+    coord.book = ub;
+
+    coord
+        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.slot(), slot);
+            assert!((target.price - 0.45).abs() < 1e-9);
+        }
+        other => panic!("expected republish SetTarget after reanchor, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_pair_arb_merge_aware_round_accounting_tracks_realized_pair_metrics() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+
+    coord.last_inv_snapshot = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.40,
+        no_qty: 10.0,
+        no_avg_cost: 0.45,
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    coord.observe_pair_arb_inventory_transition(
+        &InventoryState {
+            yes_qty: 5.0,
+            yes_avg_cost: 0.40,
+            no_qty: 5.0,
+            no_avg_cost: 0.45,
+            net_diff: 0.0,
+            ..Default::default()
+        },
+        Instant::now(),
+    );
+
+    assert!((coord.round_realized_pair_metrics.realized_pair_qty - 5.0).abs() < 1e-9);
+    assert!((coord.round_realized_pair_metrics.realized_pair_locked_pnl - 0.75).abs() < 1e-9);
+    assert!((coord.round_realized_pair_metrics.merged_cash_released - 5.0).abs() < 1e-9);
+}
+
 #[tokio::test]
 async fn test_glft_soft_reset_republish_uses_policy_not_initial() {
     let mut config = cfg();

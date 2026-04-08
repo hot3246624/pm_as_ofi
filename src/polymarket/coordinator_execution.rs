@@ -3,6 +3,47 @@ use tracing::debug;
 use super::*;
 
 impl StrategyCoordinator {
+    fn pair_arb_reanchor_gap_ticks(bucket: PairArbNetBucket) -> Option<f64> {
+        match bucket {
+            PairArbNetBucket::Flat | PairArbNetBucket::Low => Some(1.0),
+            PairArbNetBucket::Mid => Some(2.0),
+            PairArbNetBucket::High => None,
+        }
+    }
+
+    fn pair_arb_should_reanchor_upward(
+        &self,
+        slot: OrderSlot,
+        prev_state: Option<PairArbStateKey>,
+        state_key: PairArbStateKey,
+        current_price: f64,
+        fresh_price: f64,
+    ) -> bool {
+        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
+            return false;
+        }
+        let Some(prev_state) = prev_state else {
+            return false;
+        };
+        if fresh_price <= current_price + 1e-9 {
+            return false;
+        }
+
+        let dominant_relief =
+            prev_state.dominant_side == Some(slot.side) && state_key.dominant_side != Some(slot.side);
+        let bucket_improved =
+            Self::pair_arb_net_bucket_rank(state_key.net_bucket)
+                < Self::pair_arb_net_bucket_rank(prev_state.net_bucket);
+        if !dominant_relief && !bucket_improved {
+            return false;
+        }
+
+        let Some(gap_ticks) = Self::pair_arb_reanchor_gap_ticks(state_key.net_bucket) else {
+            return false;
+        };
+        fresh_price > current_price + gap_ticks * self.cfg.tick_size.max(1e-9) + 1e-9
+    }
+
     pub(super) fn pair_arb_state_key(
         &self,
         inv: &InventoryState,
@@ -225,18 +266,34 @@ impl StrategyCoordinator {
             return true;
         }
 
+        let progress_regime = self.pair_arb_progress_regime(inv, std::time::Instant::now());
+        if matches!(progress_regime, PairProgressRegime::Stalled) {
+            let current_bucket = Self::pair_arb_net_bucket_for_abs(inv.net_diff.abs());
+            if let Some((last_price, anchor_bucket)) = self.pair_arb_last_risk_fill(slot.side) {
+                let max_stalled_price = last_price - self.cfg.tick_size.max(1e-9);
+                if anchor_bucket == current_bucket && price > max_stalled_price + eps {
+                    return false;
+                }
+            }
+        }
+
         let projected_utility = self.utility_for_inventory(
             &projected.projected_inventory,
             &projected.metrics,
             ub,
         );
         let utility_delta = projected_utility - current_utility;
-        let min_utility_delta = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_utility_delta_for_risk_increasing(
+        let mut min_utility_delta = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_utility_delta_for_risk_increasing(
             current_metrics.paired_qty,
             inv.net_diff.abs(),
             size,
             self.cfg.tick_size,
         );
+        if matches!(progress_regime, PairProgressRegime::Stalled) {
+            min_utility_delta = min_utility_delta.max(
+                4.0 * size * self.cfg.tick_size.max(1e-9),
+            );
+        }
         if utility_delta + eps < min_utility_delta {
             return false;
         }
@@ -246,11 +303,16 @@ impl StrategyCoordinator {
             &projected.metrics,
             ub,
         );
-        let min_open_edge_improvement = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_open_edge_improvement_for_risk_increasing(
+        let mut min_open_edge_improvement = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_open_edge_improvement_for_risk_increasing(
             inv.net_diff.abs(),
             size,
             self.cfg.tick_size,
         );
+        if matches!(progress_regime, PairProgressRegime::Stalled) {
+            min_open_edge_improvement = min_open_edge_improvement.max(
+                1.0 * size * self.cfg.tick_size.max(1e-9),
+            );
+        }
         projected_open_edge - current_open_edge + eps >= min_open_edge_improvement
     }
 
@@ -267,9 +329,10 @@ impl StrategyCoordinator {
         };
         let state_key = self.pair_arb_state_key(inv, phase);
         let idx = slot.index();
-        let state_changed = self.slot_pair_arb_state_keys[idx].is_some()
-            && self.slot_pair_arb_state_keys[idx] != Some(state_key);
-        let still_admissible = !state_changed
+        let prev_state = self.slot_pair_arb_state_keys[idx];
+        let state_changed = prev_state.is_some() && prev_state != Some(state_key);
+        let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
+        let still_admissible = !(state_changed || fill_recheck)
             || self.pair_arb_quote_still_admissible(
                 inv,
                 ub,
@@ -278,17 +341,28 @@ impl StrategyCoordinator {
                 current.size,
                 phase,
             );
-        if state_changed {
+        let needs_reanchor = fill_recheck
+            && self.pair_arb_should_reanchor_upward(
+                slot,
+                prev_state,
+                state_key,
+                current.price,
+                intent.price,
+            );
+        if state_changed || fill_recheck {
             debug!(
-                "🧭 pair_arb retain recheck | slot={} state_key_changed=true net_bucket={:?} dominant_side={:?} softclose_blocked={} state_change_republish={}",
+                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} still_admissible={} state_improvement_reanchor={}",
                 slot.as_str(),
+                state_changed,
+                fill_recheck,
                 state_key.net_bucket,
                 state_key.dominant_side,
                 state_key.soft_close_active,
-                !still_admissible,
+                still_admissible,
+                needs_reanchor,
             );
         }
-        if !still_admissible {
+        if !still_admissible || needs_reanchor {
             return false;
         }
 
@@ -308,6 +382,7 @@ impl StrategyCoordinator {
             intent.reason,
         ) {
             self.slot_pair_arb_state_keys[idx] = Some(state_key);
+            self.slot_pair_arb_fill_recheck_pending[idx] = false;
             return true;
         }
         false
@@ -741,9 +816,10 @@ impl StrategyCoordinator {
             let now = std::time::Instant::now();
             let idx = slot.index();
             let state_key = self.pair_arb_state_key(inv, phase);
-            let state_changed = self.slot_pair_arb_state_keys[idx].is_some()
-                && self.slot_pair_arb_state_keys[idx] != Some(state_key);
-            if state_changed {
+            let prev_state = self.slot_pair_arb_state_keys[idx];
+            let state_changed = prev_state.is_some() && prev_state != Some(state_key);
+            let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
+            if state_changed || fill_recheck {
                 let admissible = self.pair_arb_quote_still_admissible(
                     inv,
                     ub,
@@ -753,8 +829,10 @@ impl StrategyCoordinator {
                     phase,
                 );
                 debug!(
-                    "🧭 pair_arb absent-intent recheck | slot={} state_key_changed=true net_bucket={:?} dominant_side={:?} softclose_blocked={} state_change_republish={}",
+                    "🧭 pair_arb absent-intent recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} state_change_republish={}",
                     slot.as_str(),
+                    state_changed,
+                    fill_recheck,
                     state_key.net_bucket,
                     state_key.dominant_side,
                     state_key.soft_close_active,
@@ -762,6 +840,7 @@ impl StrategyCoordinator {
                 );
                 if admissible && self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
                     self.slot_pair_arb_state_keys[idx] = Some(state_key);
+                    self.slot_pair_arb_fill_recheck_pending[idx] = false;
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     return RetentionDecision::Retain;
                 }
@@ -778,6 +857,7 @@ impl StrategyCoordinator {
 
             if self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
                 self.slot_pair_arb_state_keys[idx] = Some(state_key);
+                self.slot_pair_arb_fill_recheck_pending[idx] = false;
                 self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                 return RetentionDecision::Retain;
             }
