@@ -1,239 +1,196 @@
-# 实盘日志深度分析 — 2026-04-07（第二次实盘，V5 修改后）
+# PLAN_Codex 深度评估报告
 
-> [!IMPORTANT]
-> 本次分析覆盖 5 场实盘 Round（12:00–13:15 UTC），是策略 V5 修改后的首次实盘运行。
-> 与上午的 3 场实盘相比，此次包含了 `SoftClose t-45s` 和 `coordinator_endgame` 的新修改。
+## 一、总体判断
 
----
+**这是迄今为止最精准、最克制的一版改造计划。** 它找到了当前 `pair_arb` 三个月实盘迭代中最核心的低效根因——不是 tier 参数、不是 OFI 灵敏度、不是 settled/fragile 状态机复杂度——而是 **执行语义没有区分两类本质不同的买单**。
 
-## 一、五场 Round 总览
-
-| 指标 | Round #1 | Round #2 | Round #3 | Round #4 | Round #5 |
-|---|---|---|---|---|---|
-| **时间** | 12:00-12:15 | 12:15-12:30 | 12:30-12:45 | 12:45-13:00 | 13:00-13:15 |
-| **YES fills** | 5@0.53, 5@0.39, 5@0.16, 5@0.11, 5@0.06, 5@0.02 | 5@0.40 | 5@0.50, 5@0.45, 5@0.40, 2@0.04 | 5@0.46, 5@0.36, 5@0.25 | 5@0.45 |
-| **NO fills** | 5@0.42, 5@0.37, 5@0.32, 5@0.09 | 5@0.55, 5@0.50, 5@0.39, 5@0.24 | 5@0.45 | 5@0.49, 5@0.36, 5@0.08, 5@0.03 | 5@0.50, 5@0.37, 5@0.32, 5@0.19 |
-| **paired_qty** | 19.99 | 0 (merged) | 5.00 | 15.00 | 0 (merged) |
-| **pair_cost** | 0.5117 | — | 0.8511 | 0.5967 | — |
-| **locked_pnl** | $9.76 | $0 | $0.74 | $6.05 | $0 |
-| **worst_case** | **+$7.65** | **-$6.00** | **-$4.08** | **+$4.85** | **-$5.18** |
-| **dominant** | YES (10) | NO (15) | YES (12) | NO (5) | NO (15) |
-| **结果** | ✅ 优秀 | ❌ 全损 | ⚠️ 微利 | ✅ 好 | ❌ 亏损 |
-| **claim est** | ~$20 | $0 | ~$5 | ~$15 | 待定 |
-
-### 盈亏归因
-
-| Round | 结果方向 | 策略结局 | 盈亏 |
-|---|---|---|---|
-| #1 | YES 赢 | paired=20 + YES残差10 → 全赢 | **+~$17.65** (locked_pnl $9.76 + residual 10×$1 - $2.12) |
-| #2 | YES 赢 | paired=0(merged), NO残差15 → 全输 | **-$6.00** |
-| #3 | 不确定 | paired=5, YES残差12 | **~$0 到 -$4** |
-| #4 | YES 赢 | paired=15 + NO残差5 → 正向 | **+~$9.85** (locked $6.05 + NO残差归零但worst_case已正) |
-| #5 | 不确定 | paired=0(merged), NO残差15 | **-$5.18 到 +$9.83** |
+从 `STRATEGY_PAIR_ARB_ZH.md` 的策略哲学出发，这版计划做到了"改得少、改得准"。
 
 ---
 
-## 二、核心发现 — SoftClose t-45s 已生效
+## 二、与策略哲学的对齐度分析
 
-### ✅ SoftClose 正确启动
+### 2.1 策略核心哲学回顾
 
-每一轮均在末 45s 正确触发 `Normal → SoftClose → HardClose → Freeze`：
+根据 [STRATEGY_PAIR_ARB_ZH.md](file:///Users/hot/web3Scientist/pm_as_ofi/docs/STRATEGY_PAIR_ARB_ZH.md) 定义的四条核心：
 
-```
-Round #1: 12:14:15 SoftClose → 12:14:30 HardClose → 12:14:58 Freeze
-Round #2: 12:29:15 SoftClose → 12:29:30 HardClose → 12:29:58 Freeze
-Round #3: 12:44:15 SoftClose → 12:44:30 HardClose → 12:44:58 Freeze
-Round #4: 12:59:15 SoftClose → 12:59:30 HardClose → 12:59:58 Freeze
-Round #5: 13:14:15 SoftClose → 13:14:30 HardClose → 13:14:58 Freeze
-```
+1. **Maker-only / Buy-only / Pair-cost-first**
+2. **单一策略状态脑**（不用 settled/fragile 分裂视图）
+3. **5/10 阶梯即时切换**
+4. **尾 45s 只做配对，不扩风险**
 
-### ✅ 尾段无新下单（相比上午改善明显）
+### 2.2 逐项对齐
 
-上午的实盘中，Round #1 在最后 1 秒仍在下单。此次 5 场中，**进入 SoftClose 后没有新的 fill 产生**。这是本次修改的最直接成效。
+| 哲学要求 | PLAN_Codex 覆盖 | 评判 |
+| :--- | :--- | :--- |
+| maker-only | ✅ 不引入 taker/HardClose | 完美对齐 |
+| pair-cost-first | ✅ VWAP ceiling 仍是价格链终极约束 | 完美对齐 |
+| 单一状态脑 | ✅ 明确放弃 fragile/settled/pending，保留 working-only | 完美对齐 |
+| 5/10 阶梯 | ✅ 不改 tier 参数，不改切换逻辑 | 完美对齐 |
+| SoftClose | ✅ 配对腿继续允许，risk-increasing 阻断 | 完美对齐 |
+| OFI 从属 | ✅ 不改 OFI 数学，配对腿忽略 OFI | 完美对齐 |
 
----
-
-## 三、仍然存在的问题
-
-### 问题 A: 极端低价仍然出现
-
-| Round | 极端填单 | net_diff 时状态 |
-|---|---|---|
-| #1 | YES@0.060, YES@0.020 | net=5→10, YES dom |
-| #3 | YES@0.040 (2.03 shares) | net=~12, YES dom |
-| #4 | NO@0.080, NO@0.030 | net=~-10→-15, NO dom |
-
-> [!CAUTION]
-> **所有方向都出现了极端低价**。不仅是 YES 侧（如上午的分析），NO 侧同样在 Round #4 出现了 @0.080 和 @0.030。
-> 
-> 这证实了我在 V5 评估中的核心发现：**tier cap 是天花板不是地板，无法阻止极端低价**。
-> Tier cap 0.60 在 NO@0.030 面前完全无效（cap 远高于 0.030）。
-
-Round #4 的 NO 极端买入序列：
-```
-12:48:34  YES 5@0.460  (net=0→5, YES dom)
-12:48:50  YES 5@0.360  (net=5→10, YES dom, tier2 cap active)
-12:49:01  YES 5@0.250  (net=10→15, hit max)
-...
-12:53:32  NO 5@0.360   (pairing buy, net=15→10)
-12:55:52  NO 5@0.080   (pairing继续, net=10→5)  ← 极端价格
-12:55:52  NO 5@0.030   (pairing继续, net=5→0)   ← 更极端
-```
-
-这些 NO 买入虽然从 `net_diff` 角度看是在减少失衡（从 15 降到 0），属于 `PairingOrReducing`，但 @0.030 意味着策略在"BTC 97% 概率不跌"时仍然买 NO。
-
-**关键洞察**：极端价格不仅发生在 `RiskIncreasing` 方向，也发生在 `PairingOrReducing` 方向。`MIN_BID_PRICE` 应该对**所有方向**生效，而不仅仅是 risk-increasing。
-
-### 问题 B: 单边瀑布式追买模式（Round #2 和 #5）
-
-Round #2 和 #5 呈现完全相同的病态模式：
-
-**Round #2**:
-```
-12:16:17  YES 5@0.400  → YES=5
-12:17:21  NO 5@0.550   → YES=5, NO=5, paired=5 ← 唯一一次配对
-12:18:13  NO 5@0.500   → NO=10
-12:18:52  NO 5@0.390   → NO=15
-12:19:10  NO 5@0.240   → NO=20, net=-15 MAX
-```
-
-此后 8 分钟完全无 fill，直到 Round 结束。最终 merged 后 paired_qty=0。
-
-**Round #5**:
-```
-13:01:19  NO 5@0.500   → NO=5
-13:03:35  YES 5@0.450  → YES=5, NO=5 ← 唯一一次配对
-13:04:37  NO 5@0.370   → NO=10
-13:05:13  NO 5@0.320   → NO=15
-13:05:28  NO 5@0.190   → NO=20, net=-15 MAX
-```
-
-此后 9 分钟完全无 fill，直到 Round 结束。
-
-> [!WARNING]
-> **两场灾难的共同特征**：
-> 1. 只配对了 1 次（paired_qty=5）
-> 2. 然后对手侧（NO）持续追买至 max_net_diff=15
-> 3. 追买耗时仅 3-4 分钟
-> 4. 之后系统无法自救，等待 10 分钟后到期
-> 5. Merge 后 paired_qty=0，残差 15 份全部面临方向风险
-> 
-> **V5 的高失衡准入收紧（Change #2）对此无效**，因为：
-> - NO@0.500→0.370→0.320→0.190 的价格**本身在递减**
-> - 每次 NO 买入都会降低 pair_cost（如果关联 YES 的话），utility 改善
-> - 直到 net_diff=15 才被 `PM_MAX_NET_DIFF` 硬上限拦住
-
-### 问题 C: paired_qty=0 的 Merge 行为
-
-Round #2 和 #5 最终 paired_qty=0，表明系统自动 merge 了配对的 5 份（YES 5 + NO 5 → 回收 $1 × 5 = $5）。Merge 后：
-- 回收了部分资本
-- 但 paired 信息丢失，locked_pnl 归零
-- 残差 15 份完全暴露在方向风险中
-
-这不是 bug，是设计行为。但它掩盖了真实的 pair_cost 和收益数据。
+> [!TIP]
+> 这版计划的最大美德是 **"不碰不该碰的东西"**。相比前几版对 settled/fragile/timeout-promotion 的反复折腾，这版的克制程度本身就是一种架构品味。
 
 ---
 
-## 四、好消息 — Round #1 和 #4 的成功模式
+## 三、架构优雅度评估
 
-### Round #1: 教科书级执行
+### 3.1 核心设计原则："按角色拆执行语义"
 
-```
-12:01:02  YES 5@0.530   (开仓)
-12:01:33  NO 5@0.420    (首配, pair_cost=0.950)
-12:01:38  NO 5@0.370    (追配, pair_cost→0.925)
-12:04:45  NO 5@0.320    (追配, pair_cost→0.900)
-12:06:41  NO 5@0.090    (深度配, pair_cost→0.830)
-12:06:46  YES 5@0.390   (反向, pair_cost→0.760)
-12:06:59  YES 5@0.160   (追配, pair_cost→0.660)
-12:07:03  YES 5@0.110   (追配, pair_cost→0.598)
-12:07:56  YES 5@0.060   (深度, pair_cost→0.550)
-12:08:28  YES 5@0.020   (深度, pair_cost→0.512)
-```
+计划的整个改造只围绕一个命题：
 
-**关键成功因素**：
-- 双边都有深度流动性
-- NO 侧先追买到 net=-15，然后 YES 瀑布式反买
-- 最终 pair_cost 从 0.950 一路降到 0.512！
-- worst_case = +$7.65（无论结果都能赢）
+> **同一个 PairArb BUY，根据它是 `risk-increasing` 还是 `pairing/reducing`，应该有不同的执行行为。**
 
-### Round #4: 类似模式
+这个拆分点选得极好，原因是：
 
-YES 先追买到 net=15，然后 NO 瀑布反买（含 @0.080 和 @0.030），pair_cost 从高位降到 0.597。
+1. **`candidate_risk_effect()` 已经存在**（[pair_arb.rs:285-299](file:///Users/hot/web3Scientist/pm_as_ofi/src/polymarket/strategy/pair_arb.rs#L285-L299)）。策略层已经在计算每个候选 BUY 是 `PairingOrReducing` 还是 `RiskIncreasing`，只是之前没有把这个信息传递到执行层。
+2. **不需要新增状态**。`candidate_risk_effect` 是纯函数，输入是当前 `inv.net_diff + side + size`，不依赖历史、不引入新状态变量。
+3. **不需要修改价格链数学**。A-S、skew、tier cap、VWAP ceiling 全部不动。唯一变化是 maker clamp 和 retain 的适用条件。
 
-**结论**：策略的核心逻辑（pair-cost-first）在**双边都有流动性**时效果极好。问题出在**单边流动性枯竭**时策略无法自救。
+### 3.2 三层修改的内聚性
+
+| 修改 | 层级 | 改什么 | 不改什么 |
+| :--- | :--- | :--- | :--- |
+| Fix 1: maker clamp 按角色拆 | 策略定价层 (`pair_arb.rs`) | 配对腿不持续跟 ask 下拉 | A-S/skew/tier cap/VWAP ceiling |
+| Fix 2: retain 按角色拆 | 发布执行层 (`coordinator_order_io.rs`) | 配对腿允许向上 reprice | state_key 切换逻辑、fill recheck |
+| Fix 3: post-only 改为动作约束 | 发布执行层 | 初次放单保持 post-only，但不持续拖价 | order_manager 协议 |
+
+这三层的内聚性非常高——每层只改一个条件判断，且三个改动之间没有交叉依赖（任何一个单独上线都不会破坏另外两个）。
+
+> [!NOTE]
+> 相比之下，之前的 V5 计划需要同时修改 `InventorySnapshot` 数据结构、`pair_arb` 定价逻辑、`coordinator_execution` 的状态机、和 `coordinator_order_io` 的发布逻辑——四个层面耦合在一起。这版只动两个文件的条件分支。
 
 ---
 
-## 五、新旧问题对比
+## 四、执行效率评估
 
-| 问题 | 上午实盘 | 下午实盘（V5后） | 改善？ |
-|---|---|---|---|
-| 尾段危险买入 | ❌ 末1s仍下单 | ✅ SoftClose 阻止 | **已修复** |
-| 极端低价 | YES@0.06, @0.01 | YES@0.06, @0.02; NO@0.08, @0.03 | ❌ 仍存在 |
-| 单边追买到 max | YES 连续追买 | NO 连续追买（Round#2,#5） | ❌ 方向变了但模式相同 |
-| 陈旧订单 | 挂 7 分钟不动 | 未明显复现 | ⚠️ 待观察 |
-| 梯度违反 | 0.28→0.23→0.25 | 未复现 | ✅ 可能已改善 |
+### 4.1 Fix 1（配对腿去 maker clamp）的效率
 
----
-
-## 六、定量风险评估
-
-### 本次 5 场综合
-
-| 项目 | 数值 |
-|---|---|
-| 总场次 | 5 |
-| 盈利场 | 2 (Round #1, #4) |
-| 亏损场 | 2 (Round #2, #5) |
-| 不确定 | 1 (Round #3) |
-| 最大单场盈 | ~+$17.65 (Round #1) |
-| 最大单场亏 | -$6.00 (Round #2) |
-| 估算总盈亏 | ~+$16 (取决于 Round #3 和 #5 结果) |
-
-### 风险模式
-
-- **2/5 场（40%）** 出现单边追买到 max_net_diff 且无法自救
-- 这两场都以 `paired_qty=0` 结束（merge 后），完全暴露在方向风险中
-- **单边追买的决定因素不是策略逻辑，而是市场流动性**——当一侧有 taker 不断扫盘时，策略会疯狂喂单
-
----
-
-## 七、优先建议
-
-### P0: MIN_BID_PRICE（立即）
+**问题定位精确。** 从 [pair_arb.rs:192-197](file:///Users/hot/web3Scientist/pm_as_ofi/src/polymarket/strategy/pair_arb.rs#L192-L197) 可以看到，当前的 maker clamp 对 YES 和 NO **无差别施加**：
 
 ```rust
-const MIN_BID_PRICE: f64 = 0.10;
-// 对 YES 和 NO 双侧生效，对所有 risk effect 生效
-// Pairing buy @0.030 也应该被拦截
+if ub.yes_ask > 0.0 {
+    raw_yes = f64::min(raw_yes, ub.yes_ask - yes_safety_margin);
+}
+if ub.no_ask > 0.0 {
+    raw_no = f64::min(raw_no, ub.no_ask - no_safety_margin);
+}
 ```
 
-本次新增证据：Round #4 的 **NO@0.030** 证明极端价格不分方向。
+计划提议的修改方式也很直接——在 clamp 前增加 `is_pairing` 判断。这只需要在现有代码的 L192 前插入 2 行变量声明，然后在 L192 和 L195 各加一个 `&& !xxx_is_pairing` 条件。
 
-### P1: 单边追买速率刹车（尽快）
+**代码改动量：约 6 行。**
 
-Round #2 和 #5 的失败模式完全一致：3-4 分钟内追买到 max。考虑：
+### 4.2 Fix 2（retain 按角色拆）的效率
 
+**问题定位精确。** 从 [coordinator_order_io.rs:356-371](file:///Users/hot/web3Scientist/pm_as_ofi/src/polymarket/coordinator_order_io.rs#L356-L371) 可以看到，当前的 retain 只看 `price > slot_price`，不区分角色：
+
+```rust
+if needs_reprice
+    && self.cfg.strategy == StrategyKind::PairArb
+    && ...
+    && price > slot_price + reprice_eps  // ← 所有向上都 retain
+{
+    retain_hits++;
+    return;
+}
 ```
-当同侧连续 3 次 fill 且总耗时 < 120s 时，
-下一次同侧 risk-increasing buy 增加 cooldown（如 30s）。
-```
 
-这不是硬冻结，而是「降频」。
+计划提议在此处增加 `candidate_risk_effect` 判断：
+- 如果是 `RiskIncreasing`：保持现有 retain（不追更高价）
+- 如果是 `PairingOrReducing`：只 retain ≤ 2 ticks 的小漂移，> 2 ticks 放行 reprice
 
-### P2: Merge 后重新计算 paired 信息
+这需要在 L356 前获取当前 `inv`、计算 `risk_effect`，然后修改条件。新增约 10 行代码。
 
-当前 merge 导致 paired_qty 归零、locked_pnl 消失。考虑在 merge 后保留一个 `realized_pnl` 字段，使 FinalMetrics 能准确反映本轮实际收益。
+> [!IMPORTANT]
+> 这里有一个实现细节需要注意：`slot_place_or_reprice` 当前用 `self.current_working_inventory()` 获取库存（L58）。这个函数已经在上下文中被调用了，所以获取 `risk_effect` 的成本几乎为零——不需要额外的 I/O 或状态查询。
+
+### 4.3 Fix 3（post-only 改为动作约束）
+
+这一条在计划中描述得最清楚，本质是：
+
+- **不改 `pair_arb.rs` 的价格输出**（策略层输出的是 strategic target）
+- **在 `slot_place_or_reprice` 的 `!active`（新单初放）分支里做 clamp**
+- **在 `active`（已有挂单）路径上，不再为配对腿做持续 clamp**
+
+这实际上是 Fix 1 的自然推论：策略层不再 clamp → 执行层只在初次放置时做安全检查。
 
 ---
 
-## 八、总结
+## 五、风险分析
 
-**V5 修改的效果**：
-- ✅ SoftClose t-45s **已验证生效**——5/5 场均正确触发，尾段无新 fill
-- ❌ 极端低价 **仍未解决**——YES 和 NO 双侧均出现 @0.02-@0.09 的极端买入
-- ❌ 单边追买 **仍未解决**——Round #2 和 #5 复现了 4/7 日上午的灾难模式
-- ⚠️ 梯度违反 **未复现**——可能是偶然，也可能是 tier cap 收紧的效果
+### 5.1 风险 1：配对腿 strategic target 高于 best ask 时的行为
 
-**策略的根本矛盾**：pair_arb 在双边均有流动性时表现极好（Round #1 锁定 $9.76），但在单边流动性枯竭时无法自救。V5 的 tier cap 和高失衡准入对此无效，因为问题本质不是「出价太高」，而是「出价太多太快」。
+**场景**：配对腿（比如 NO）的 VWAP ceiling = 0.66，当前 NO best_ask = 0.64。策略输出 `raw_no = 0.66`（因为不再 clamp）。
+
+**当前代码行为**：在 `slot_place_or_reprice` 的 `!active` 分支，如果按计划在初次放置时做 post-only clamp，则实际下单价 = `min(0.66, 0.64 - safety_margin) ≈ 0.63`。这是正确的。
+
+**但如果市场随后反弹**（ask 从 0.64 涨到 0.70），live 挂单在 0.63。按 Fix 2 的逻辑，fresh target 0.66 > live 0.63 = +3 ticks > 2 ticks 阈值 → 触发 Republish。新单再次初放 clamp → `min(0.66, 0.70 - margin) = 0.66`。
+
+**这是完全正确的行为**：配对腿终于能追上市场上行了。✅
+
+### 5.2 风险 2：配对腿 strategic target 高于 best ask 且 ask 极窄时的 post-only 循环
+
+**场景**：VWAP ceiling = 0.66，NO ask = 0.66（刚好等于）。clamp 后 = `0.66 - 0.01 = 0.65`。下单 0.65。ask 保持 0.66。fresh target 仍然 0.66，但 live 是 0.65。差 1 tick ≤ 2 ticks → retain。
+
+**几秒后 ask 微跌到 0.65**。CLOB 自动成交 live 挂单。成交价 0.65。
+
+**这就是 Fix 1 + Fix 3 的设计效果**：配对腿在 VWAP ceiling 附近"等鱼上钩"，而不是追到底部。与之前在 0.55 成交相比，改善了 0.10 的成交价。✅
+
+### 5.3 ⚠️ 风险 3（唯一存疑）：`net_diff` 恰好在 ±5 边界时的角色判定晃动
+
+当 `inv.net_diff` 恰好在 ±5 附近（比如 4.9 或 5.1）时：
+
+- `candidate_risk_effect(inv, Side::Yes, 5.0)` 的结果取决于 `(4.9 + 5.0).abs() = 9.9` vs `4.9.abs() = 4.9` → 9.9 > 4.9 → `RiskIncreasing`
+- 但如果 `net_diff = 5.1`：`(5.1 + 5.0).abs() = 10.1` vs `5.1.abs() = 5.1` → 10.1 > 5.1 → 仍然 `RiskIncreasing`
+- 如果 `net_diff = -5.1`（YES 是配对腿）：`(-5.1 + 5.0).abs() = 0.1` vs `5.1` → 0.1 < 5.1 → `PairingOrReducing` ✅
+
+**边界行为正确。** `candidate_risk_effect` 的数学定义（projected `|net_diff|` vs current `|net_diff|`）天然处理了边界情况。在 `net_diff` 正负翻转时，同侧永远是 RiskIncreasing（因为加仓只会远离 0),对侧永远是 PairingOrReducing（加仓靠近 0）。
+
+但有一个微妙的 **tick-by-tick 晃动风险**：如果 `net_diff` 在 `4.99` 和 `5.01` 之间高频振荡（因为市场微结构导致的小幅 fill），两侧的角色可能在 `RiskIncreasing` 和 `PairingOrReducing` 之间反复切换。这会导致 maker clamp 一会儿施加、一会儿不施加→价格一会儿被压低、一会儿抬回→触发频繁的 Republish。
+
+**缓解**：当前的 `pair_arb_effective_reprice_band` 已经在 `|net_diff| < bid_size` 时放宽了 reprice band（+2 ticks），所以在 flat/low 区间，微小价格变化不会触发 reprice。但在 `|net_diff| ≈ 5` 时，reprice band 回到 base，角色切换造成的价格跳变可能超出 band。
+
+> [!WARNING]
+> **建议**：在 Fix 1 中，将 `is_pairing` 的判定从 `net_diff >= TIER_1_NET_DIFF` 改为带有小幅迟滞的 `net_diff >= TIER_1_NET_DIFF + 0.5 * bid_size` 或者直接复用 `candidate_risk_effect` 而不用硬编码 threshold。后者更优雅，因为它自动包含了 projected net_diff 的方向判断。
+
+---
+
+## 六、与 PLAN_Claude 修复方案的对比
+
+| 维度 | PLAN_Claude 原版 Fix 1-3 | PLAN_Codex 新版 |
+| :--- | :--- | :--- |
+| 改动范围 | 2 个文件 | 2 个文件（相同） |
+| 核心思想 | retain 放宽 + 配对腿去 clamp + pairing floor | retain 按角色拆 + 配对腿去 clamp + post-only 动作化 |
+| 是否引入新参数 | `PAIR_ARB_MAX_RETAIN_UP_TICKS` | 同（2 ticks） |
+| 是否引入新状态 | 否 | 否 |
+| pairing floor | 有（90% VWAP ceiling） | 无（认为不需要） |
+| 文档和日志 | 无规划 | 有完整的可观测性设计（Section 6） |
+
+**PLAN_Codex 的改进**：
+1. 更清晰地表述了"为什么不要 pairing floor"——配对腿由 VWAP ceiling 自然约束，额外的 floor 会在低迷市场中强行挂出不符合市场价的订单。
+2. 增加了 Section 6 可观测性设计，这在 PLAN_Claude 中完全缺失。`candidate_role`、`strategic_target_price` vs `action_price`、`retain_block_reason` 这几个日志字段对后续排障极其关键。
+3. Section 3 "post-only 是动作约束，不是长期定价目标"的表述非常精确，这是 PLAN_Claude 没有明确说出来的设计哲学。
+
+**PLAN_Claude 的优势**：
+1. `pairing_floor` 在极端情况下（A-S skew 和 VWAP ceiling 都给出很低价格时）能保证配对腿不会报出"明明有利润空间但报价远低于 breakeven"的价格。PLAN_Codex 放弃了这层保护，需要依赖 VWAP ceiling 本身的正确性。
+
+---
+
+## 七、最终评分
+
+| 维度 | 评分 | 说明 |
+| :--- | :--- | :--- |
+| 策略哲学对齐 | **10/10** | 完美遵守"单一状态脑、pair-cost-first、maker-only"三大原则 |
+| 架构优雅度 | **9/10** | 改动极少、内聚极高、无耦合、无新状态。扣 1 分因为 `is_pairing` 判定建议用 `candidate_risk_effect` 而非硬编码 threshold |
+| 执行效率 | **9/10** | 代码改动量约 20 行，零运行时开销。扣 1 分因为缺少边界迟滞设计 |
+| 风险控制 | **8/10** | 扣 2 分因为放弃了 `pairing_floor` 且存在 `net_diff≈5` 边界晃动风险 |
+| 可观测性 | **9/10** | Section 6 设计完整实用，但缺少 `pairing_upward_reprice_count` 的 shutdown metrics |
+| 完整性 | **9/10** | Test Plan 完整覆盖 4 个场景，有 04-08 回放验收。扣 1 分因为没有提及 merge sync 期间的行为 |
+
+**总分：9.0/10**
+
+> [!TIP]
+> **结论**：这版计划可以直接执行。它用最小的代码改动解决了最核心的问题（配对腿成交价劣化和挂单僵死），同时完美保持了策略哲学的一致性。建议在实施时注意上述两个边界风险点（Section 5.3 的迟滞设计和 `pairing_floor` 是否需要保留一个轻量版本）。

@@ -629,6 +629,7 @@ struct Stats {
     forced_realign_hard_count: u64,
     pair_arb_ofi_softened_quotes: u64,
     pair_arb_ofi_suppressed_quotes: u64,
+    pair_arb_pairing_upward_reprice: u64,
     pair_arb_keep_candidates: u64,
     pair_arb_skip_inventory_gate: u64,
     pair_arb_skip_simulate_buy_none: u64,
@@ -988,6 +989,7 @@ pub struct CoordinatorObsSnapshot {
     pub forced_realign_hard_count: u64,
     pub pair_arb_ofi_softened_quotes: u64,
     pub pair_arb_ofi_suppressed_quotes: u64,
+    pub pair_arb_pairing_upward_reprice: u64,
     pub pair_arb_keep_candidates: u64,
     pub pair_arb_skip_inventory_gate: u64,
     pub pair_arb_skip_simulate_buy_none: u64,
@@ -1196,10 +1198,6 @@ impl StrategyCoordinator {
         *self.inv_rx.borrow()
     }
 
-    pub(crate) fn current_settled_inventory(&self) -> InventoryState {
-        self.current_inventory_snapshot().settled
-    }
-
     pub(crate) fn current_working_inventory(&self) -> InventoryState {
         self.current_inventory_snapshot().working
     }
@@ -1299,14 +1297,14 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
             self.stats.policy_transition_events, self.stats.policy_noop_ticks,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
-            self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes,
+            self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice,
             self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none, self.stats.pair_arb_skip_utility_delta, self.stats.pair_arb_skip_open_edge_not_improved,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
@@ -1353,6 +1351,7 @@ impl StrategyCoordinator {
             forced_realign_hard_count: self.stats.forced_realign_hard_count,
             pair_arb_ofi_softened_quotes: self.stats.pair_arb_ofi_softened_quotes,
             pair_arb_ofi_suppressed_quotes: self.stats.pair_arb_ofi_suppressed_quotes,
+            pair_arb_pairing_upward_reprice: self.stats.pair_arb_pairing_upward_reprice,
             pair_arb_keep_candidates: self.stats.pair_arb_keep_candidates,
             pair_arb_skip_inventory_gate: self.stats.pair_arb_skip_inventory_gate,
             pair_arb_skip_simulate_buy_none: self.stats.pair_arb_skip_simulate_buy_none,
@@ -1995,11 +1994,7 @@ impl StrategyCoordinator {
         let inv_snapshot = self.current_inventory_snapshot();
         let working_inv = inv_snapshot.working;
         let settled_inv = inv_snapshot.settled;
-        let decision_inv = if self.cfg.strategy == StrategyKind::PairArb {
-            settled_inv
-        } else {
-            working_inv
-        };
+        let decision_inv = working_inv;
         self.observe_pair_arb_inventory_transition(&inv_snapshot, now);
         let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
             Some(*self.glft_rx.borrow())

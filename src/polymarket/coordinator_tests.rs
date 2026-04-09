@@ -225,6 +225,132 @@ fn pair_arb_quotes(
     )
 }
 
+fn pair_arb_quotes_with_snapshot(
+    c: CoordinatorConfig,
+    settled: InventoryState,
+    working: InventoryState,
+    inventory: InventorySnapshot,
+    book: Book,
+    ofi: Option<OfiSnapshot>,
+) -> StrategyQuotes {
+    let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::PairArb));
+    let metrics = coord.derive_inventory_metrics(&working);
+    StrategyKind::PairArb.compute_quotes(
+        &coord,
+        StrategyTickInput {
+            inv: &working,
+            settled_inv: &settled,
+            working_inv: &working,
+            inventory: &inventory,
+            book: &book,
+            metrics: &metrics,
+            ofi: ofi.as_ref(),
+            glft: None,
+        },
+    )
+}
+
+#[test]
+fn test_pair_arb_uses_working_inventory_for_tiered_yes_cap() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairArb;
+    c.bid_size = 5.0;
+    c.max_net_diff = 15.0;
+    c.pair_arb_tier_1_mult = 0.75;
+    c.pair_arb_tier_2_mult = 0.50;
+
+    let settled = InventoryState {
+        yes_qty: 5.0,
+        yes_avg_cost: 0.62,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    let working = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.61,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 5.0,
+        ..Default::default()
+    };
+    let inventory = InventorySnapshot {
+        settled,
+        working,
+        pending_yes_qty: 5.0,
+        pending_no_qty: 0.0,
+        fragile: false,
+    };
+
+    let tier_1_mult = c.pair_arb_tier_1_mult;
+    let quotes = pair_arb_quotes_with_snapshot(
+        c,
+        settled,
+        working,
+        inventory,
+        book(0.61, 0.62, 0.34, 0.35),
+        None,
+    );
+    if let Some(intent) = quotes.get(OrderSlot::YES_BUY) {
+        let max_yes = working.yes_avg_cost * tier_1_mult;
+        assert!(
+            intent.price <= max_yes + 1e-9,
+            "YES quote must honor working-net tier cap: got {:.4}, max {:.4}",
+            intent.price,
+            max_yes
+        );
+    }
+}
+
+#[test]
+fn test_pair_arb_execution_recheck_rejects_stale_same_side_quote_from_working_inventory() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.bid_size = 5.0;
+    config.max_net_diff = 15.0;
+    config.pair_arb_tier_1_mult = 0.75;
+    config.pair_arb_tier_2_mult = 0.50;
+    let (_o, i, _m, _k, _er, coord) = make(config);
+
+    let settled = InventoryState {
+        yes_qty: 5.0,
+        yes_avg_cost: 0.62,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    let working = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.61,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 5.0,
+        ..Default::default()
+    };
+    let _ = i.0.send(InventorySnapshot {
+        settled,
+        working,
+        pending_yes_qty: 5.0,
+        pending_no_qty: 0.0,
+        fragile: false,
+    });
+
+    let ub = book(0.61, 0.62, 0.34, 0.35);
+    assert!(
+        !coord.pair_arb_quote_still_admissible(
+            &working,
+            &ub,
+            OrderSlot::YES_BUY,
+            0.57,
+            5.0,
+            EndgamePhase::Normal,
+        ),
+        "fill-triggered recheck should invalidate stale YES build quotes once working net_diff reaches tiered cap range"
+    );
+}
+
 // ── Price clamping ──
 
 #[test]
@@ -1661,6 +1787,93 @@ async fn test_pair_arb_state_bucket_change_republishes_higher_buy_bid() {
     }
 }
 
+#[tokio::test]
+async fn test_pair_arb_pairing_side_allows_upward_reprice_when_drift_exceeds_two_ticks() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 20.0,
+        yes_avg_cost: 0.58,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 15.0,
+        ..Default::default()
+    };
+    let _ = i.send(inv);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.35, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial NO SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+
+    coord
+        .slot_place_or_reprice(slot, 0.39, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.slot(), slot);
+            assert!((target.price - 0.39).abs() < 1e-9);
+        }
+        other => panic!("expected upward reprice for pairing side, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_pair_arb_pairing_side_retains_small_upward_drift_within_two_ticks() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 20.0,
+        yes_avg_cost: 0.58,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 15.0,
+        ..Default::default()
+    };
+    let _ = i.send(inv);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.35, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial NO SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+
+    // +2 ticks should still retain for pairing leg to avoid micro-churn.
+    coord
+        .slot_place_or_reprice(slot, 0.37, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Err(_) => {}
+        other => panic!(
+            "expected no upward reprice for pairing side within 2 ticks, got {:?}",
+            other
+        ),
+    }
+}
+
 #[test]
 fn test_pair_arb_progress_regime_enters_stalled_after_no_progress() {
     let mut config = cfg();
@@ -1841,7 +2054,9 @@ async fn test_pair_arb_worsening_reanchors_missing_side_quote() {
     match timeout(Duration::from_millis(50), er.recv()).await {
         Ok(Some(OrderManagerCmd::SetTarget(target))) => {
             assert_eq!(target.slot(), slot);
-            assert!((target.price - 0.56).abs() < 1e-9);
+            let margin = coord.post_only_safety_margin_for(Side::Yes, 0.55, 0.56);
+            let expected = (0.56f64).min(0.56 - margin);
+            assert!((target.price - expected).abs() < 1e-9);
         }
         other => panic!(
             "expected republish SetTarget after pairing-urgency reanchor, got {:?}",

@@ -19,8 +19,6 @@ const RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT: f64 = -0.5;
 const RISK_INCR_LOW_NET_MIN_UTILITY_MULT: f64 = 0.5;
 const HIGH_IMBALANCE_UTILITY_MULT: f64 = 2.0;
 const HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT: f64 = 0.5;
-const STALLED_UTILITY_MULT: f64 = 4.0;
-const STALLED_OPEN_EDGE_IMPROVE_MULT: f64 = 1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairArbRiskEffect {
@@ -54,8 +52,7 @@ impl QuoteStrategy for PairArbStrategy {
         input: StrategyTickInput<'_>,
     ) -> StrategyQuotes {
         let cfg = coordinator.cfg();
-        let inv = input.settled_inv;
-        let fragile = input.inventory.fragile;
+        let inv = input.inv;
         let ub = input.book;
         let current_metrics = input.metrics;
         let current_utility = coordinator.utility_for_inventory(inv, current_metrics, ub);
@@ -122,12 +119,6 @@ impl QuoteStrategy for PairArbStrategy {
                 yes_ofi.adjust_ticks,
             );
         }
-        if fragile {
-            match yes_risk_effect {
-                PairArbRiskEffect::RiskIncreasing => raw_yes -= 2.0 * cfg.tick_size,
-                PairArbRiskEffect::PairingOrReducing => raw_yes -= 1.0 * cfg.tick_size,
-            }
-        }
 
         let no_risk_effect = Self::candidate_risk_effect(inv, Side::No, cfg.bid_size);
         let no_ofi = Self::ofi_decision(input.ofi.map(|ofi| ofi.no), no_risk_effect);
@@ -152,12 +143,6 @@ impl QuoteStrategy for PairArbStrategy {
                 input.ofi.map(|ofi| ofi.no.saturated).unwrap_or(false),
                 no_ofi.adjust_ticks,
             );
-        }
-        if fragile {
-            match no_risk_effect {
-                PairArbRiskEffect::RiskIncreasing => raw_no -= 2.0 * cfg.tick_size,
-                PairArbRiskEffect::PairingOrReducing => raw_no -= 1.0 * cfg.tick_size,
-            }
         }
 
         // 2) Inventory Cost Clamp (VWAP ceiling)
@@ -198,16 +183,20 @@ impl QuoteStrategy for PairArbStrategy {
             }
         }
 
-        // 3) Strict Maker Clamp (same safety-margin logic as aggressive_price)
+        // 3) Role-aware maker clamp.
+        //
+        // Risk-increasing leg keeps strict maker clamp.
+        // Pairing/reducing leg keeps strategic target (VWAP/pair-target driven)
+        // and only applies post-only safety at action time in order IO.
         let yes_safety_margin =
             coordinator.post_only_safety_margin_for(Side::Yes, ub.yes_bid, ub.yes_ask);
         let no_safety_margin =
             coordinator.post_only_safety_margin_for(Side::No, ub.no_bid, ub.no_ask);
 
-        if ub.yes_ask > 0.0 {
+        if ub.yes_ask > 0.0 && yes_risk_effect == PairArbRiskEffect::RiskIncreasing {
             raw_yes = f64::min(raw_yes, ub.yes_ask - yes_safety_margin);
         }
-        if ub.no_ask > 0.0 {
+        if ub.no_ask > 0.0 && no_risk_effect == PairArbRiskEffect::RiskIncreasing {
             raw_no = f64::min(raw_no, ub.no_ask - no_safety_margin);
         }
 
@@ -222,7 +211,6 @@ impl QuoteStrategy for PairArbStrategy {
                     coordinator,
                     &mut quotes,
                     inv,
-                    input.working_inv,
                     ub,
                     current_metrics,
                     current_utility,
@@ -230,7 +218,6 @@ impl QuoteStrategy for PairArbStrategy {
                     Side::Yes,
                     bid_yes,
                     cfg.bid_size,
-                    fragile,
                 )
             {
                 quotes.set(StrategyIntent {
@@ -254,7 +241,6 @@ impl QuoteStrategy for PairArbStrategy {
                     coordinator,
                     &mut quotes,
                     inv,
-                    input.working_inv,
                     ub,
                     current_metrics,
                     current_utility,
@@ -262,7 +248,6 @@ impl QuoteStrategy for PairArbStrategy {
                     Side::No,
                     bid_no,
                     cfg.bid_size,
-                    fragile,
                 )
             {
                 quotes.set(StrategyIntent {
@@ -432,7 +417,6 @@ impl PairArbStrategy {
         coordinator: &StrategyCoordinator,
         quotes: &mut StrategyQuotes,
         inv: &crate::polymarket::messages::InventoryState,
-        safety_inv: &crate::polymarket::messages::InventoryState,
         book: &crate::polymarket::coordinator::Book,
         current_metrics: &StrategyInventoryMetrics,
         current_utility: f64,
@@ -440,7 +424,6 @@ impl PairArbStrategy {
         side: Side,
         price: f64,
         size: f64,
-        fragile: bool,
     ) -> bool {
         let intent = StrategyIntent {
             side,
@@ -449,14 +432,14 @@ impl PairArbStrategy {
             size,
             reason: BidReason::Provide,
         };
-        if !coordinator.can_place_strategy_intent(safety_inv, Some(intent)) {
+        if !coordinator.can_place_strategy_intent(inv, Some(intent)) {
             quotes.note_pair_arb_skip_inventory_gate();
             trace!(
                 "🧭 pair_arb skip | side={} reason=inventory_gate price={:.4} size={:.2} net_diff={:.2}",
                 side.as_str(),
                 price,
                 size,
-                safety_inv.net_diff,
+                inv.net_diff,
             );
             return false;
         }
@@ -490,61 +473,22 @@ impl PairArbStrategy {
             return true;
         }
 
-        let now = std::time::Instant::now();
-        let progress_regime = coordinator.pair_arb_progress_regime(inv, now);
-        if matches!(
-            progress_regime,
-            crate::polymarket::coordinator::PairProgressRegime::Stalled
-        ) {
-            let current_bucket =
-                crate::polymarket::coordinator::StrategyCoordinator::pair_arb_net_bucket_for_abs(
-                    inv.net_diff.abs(),
-                );
-            if let Some((last_price, anchor_bucket)) = coordinator.pair_arb_last_risk_fill(side) {
-                let max_stalled_price = last_price - coordinator.cfg().tick_size.max(1e-9);
-                if anchor_bucket == current_bucket && price > max_stalled_price + FLOAT_EPS {
-                    quotes.note_pair_arb_skip_utility_delta();
-                    trace!(
-                        "🧭 pair_arb skip | side={} candidate_role=risk_increasing reason=stalled_ladder price={:.4} max_price={:.4} current_bucket={:?} anchor_bucket={:?}",
-                        side.as_str(),
-                        price,
-                        max_stalled_price,
-                        current_bucket,
-                        anchor_bucket,
-                    );
-                    return false;
-                }
-            }
-        }
-
         let projected_utility = coordinator.utility_for_inventory(
             &projected.projected_inventory,
             &projected.metrics,
             book,
         );
         let utility_delta = projected_utility - current_utility;
-        let mut min_utility_delta = Self::min_utility_delta_for_risk_increasing(
+        let min_utility_delta = Self::min_utility_delta_for_risk_increasing(
             current_metrics.paired_qty,
             inv.net_diff.abs(),
             size,
             coordinator.cfg().tick_size,
         );
-        if matches!(
-            progress_regime,
-            crate::polymarket::coordinator::PairProgressRegime::Stalled
-        ) {
-            min_utility_delta = min_utility_delta.max(
-                STALLED_UTILITY_MULT * size * coordinator.cfg().tick_size.max(1e-9),
-            );
-        }
-        if fragile {
-            min_utility_delta = min_utility_delta
-                .max(2.0 * size * coordinator.cfg().tick_size.max(1e-9));
-        }
         if utility_delta + FLOAT_EPS < min_utility_delta {
             quotes.note_pair_arb_skip_utility_delta();
             trace!(
-                "🧭 pair_arb skip | side={} candidate_role={} reason=utility_delta utility_delta={:.6} min_delta={:.6} high_imbalance_admission={} progress_regime={:?} pair_cost={:.4} paired_qty={:.2}",
+                "🧭 pair_arb skip | side={} candidate_role={} reason=utility_delta utility_delta={:.6} min_delta={:.6} high_imbalance_admission={} pair_cost={:.4} paired_qty={:.2}",
                 side.as_str(),
                 if risk_increasing { "risk_increasing" } else { "pairing" },
                 utility_delta,
@@ -554,7 +498,6 @@ impl PairArbStrategy {
                 } else {
                     "pass"
                 },
-                progress_regime,
                 projected.metrics.pair_cost,
                 projected.metrics.paired_qty,
             );
@@ -566,27 +509,17 @@ impl PairArbStrategy {
             &projected.metrics,
             book,
         );
-        let mut min_open_edge_improvement = Self::min_open_edge_improvement_for_risk_increasing(
+        let min_open_edge_improvement = Self::min_open_edge_improvement_for_risk_increasing(
             inv.net_diff.abs(),
             size,
             coordinator.cfg().tick_size,
         );
-        if matches!(
-            progress_regime,
-            crate::polymarket::coordinator::PairProgressRegime::Stalled
-        ) {
-            min_open_edge_improvement = min_open_edge_improvement.max(
-                STALLED_OPEN_EDGE_IMPROVE_MULT
-                    * size
-                    * coordinator.cfg().tick_size.max(1e-9),
-            );
-        }
         let open_edge_delta = projected_open_edge - current_open_edge;
         let keep = open_edge_delta + FLOAT_EPS >= min_open_edge_improvement;
         if !keep {
             quotes.note_pair_arb_skip_open_edge_not_improved();
             trace!(
-                "🧭 pair_arb skip | side={} candidate_role={} reason=open_edge_not_improved current_open_edge={:.6} projected_open_edge={:.6} open_edge_delta={:.6} min_delta={:.6} high_imbalance_admission={} progress_regime={:?} projected_abs_net_diff={:.2}",
+                "🧭 pair_arb skip | side={} candidate_role={} reason=open_edge_not_improved current_open_edge={:.6} projected_open_edge={:.6} open_edge_delta={:.6} min_delta={:.6} high_imbalance_admission={} projected_abs_net_diff={:.2}",
                 side.as_str(),
                 if risk_increasing { "risk_increasing" } else { "pairing" },
                 current_open_edge,
@@ -598,7 +531,6 @@ impl PairArbStrategy {
                 } else {
                     "pass"
                 },
-                progress_regime,
                 projected.projected_abs_net_diff,
             );
         } else {

@@ -49,22 +49,6 @@ impl StrategyCoordinator {
         }
     }
 
-    pub(crate) fn pair_arb_last_risk_fill(
-        &self,
-        side: Side,
-    ) -> Option<(f64, PairArbNetBucket)> {
-        match side {
-            Side::Yes => self
-                .pair_arb_progress_state
-                .last_risk_increasing_fill_price_yes
-                .zip(self.pair_arb_progress_state.last_risk_fill_net_bucket_yes),
-            Side::No => self
-                .pair_arb_progress_state
-                .last_risk_increasing_fill_price_no
-                .zip(self.pair_arb_progress_state.last_risk_fill_net_bucket_no),
-        }
-    }
-
     fn pair_arb_detect_buy_fill_price(
         prev_qty: f64,
         prev_avg: f64,

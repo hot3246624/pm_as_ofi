@@ -55,7 +55,7 @@ impl StrategyCoordinator {
             && slot.direction == TradeDirection::Buy
             && active
         {
-            let inv = self.current_settled_inventory();
+            let inv = self.current_working_inventory();
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()].is_some()
                 && self.slot_pair_arb_state_keys[slot.index()]
@@ -310,9 +310,10 @@ impl StrategyCoordinator {
             if matches!(publish_reason, Some(PolicyPublishCause::Recovery)) {
                 self.note_recovery_publish_for_slot(slot, now);
             }
+            let action_price = self.pair_arb_action_price_for_post_only(slot, price, size, reason);
             self.emit_quote_log(
                 slot,
-                price,
+                action_price,
                 size,
                 reason,
                 log_msg.as_deref(),
@@ -325,7 +326,7 @@ impl StrategyCoordinator {
                 distance_to_shadow_target_ticks,
             );
             self.slot_last_publish_reason[slot.index()] = publish_reason;
-            self.place_slot(slot, price, size, reason).await;
+            self.place_slot(slot, action_price, size, reason).await;
         } else {
             if self.cfg.strategy == StrategyKind::GlftMm {
                 if !self.glft_is_tradeable_now() {
@@ -350,9 +351,22 @@ impl StrategyCoordinator {
                 || slot_direction != Some(slot.direction)
                 || price_gap_triggers_reprice
                 || (slot_size - size).abs() > 0.1;
+            let pair_arb_risk_effect = if self.cfg.strategy == StrategyKind::PairArb
+                && reason == BidReason::Provide
+                && slot.direction == TradeDirection::Buy
+            {
+                let inv = self.current_working_inventory();
+                Some(crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
+                    &inv,
+                    slot.side,
+                    size,
+                ))
+            } else {
+                None
+            };
             // PairArb is BUY-only and pair-cost-first:
-            // if the newly computed bid is higher than the live bid, keep the
-            // existing lower-price order instead of chasing up.
+            // - same-side risk-increasing leg never chases higher bid
+            // - pairing/reducing leg allows upward republish when drift is meaningful
             if needs_reprice
                 && self.cfg.strategy == StrategyKind::PairArb
                 && slot_direction == Some(slot.direction)
@@ -362,12 +376,47 @@ impl StrategyCoordinator {
                 && !pair_arb_fill_recheck_pending
                 && price > slot_price + reprice_eps
             {
-                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                let tick = self.cfg.tick_size.max(1e-9);
+                let upward_ticks = ((price - slot_price) / tick).max(0.0);
+                let (retain, retain_reason) = match pair_arb_risk_effect {
+                    Some(crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing) => {
+                        (true, "same_side_no_chase")
+                    }
+                    Some(crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing) => {
+                        (upward_ticks <= 2.0 + 1e-9, "small_pairing_up_drift")
+                    }
+                    None => (true, "same_side_no_chase"),
+                };
+                if retain {
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    debug!(
+                        "🔒 PairArb retain {:?}: candidate_role={:?} retain_block_reason={} strategic_target={:.4} live={:.4} upward_ticks={:.2}",
+                        slot,
+                        pair_arb_risk_effect,
+                        retain_reason,
+                        price,
+                        slot_price,
+                        upward_ticks,
+                    );
+                    return;
+                }
                 debug!(
-                    "🔒 PairArb retain {:?}: current={:.4} new={:.4} gap={:.4}",
-                    slot, slot_price, price, price_gap
+                    "🔁 PairArb upward reprice {:?}: candidate_role={:?} pairing_upward_reprice=true strategic_target={:.4} live={:.4} upward_ticks={:.2}",
+                    slot,
+                    pair_arb_risk_effect,
+                    price,
+                    slot_price,
+                    upward_ticks,
                 );
-                return;
+                if matches!(
+                    pair_arb_risk_effect,
+                    Some(crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing)
+                ) {
+                    self.stats.pair_arb_pairing_upward_reprice = self
+                        .stats
+                        .pair_arb_pairing_upward_reprice
+                        .saturating_add(1);
+                }
             }
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
                 let shadow_age = self
@@ -563,6 +612,8 @@ impl StrategyCoordinator {
                     || (slot_size - size).abs() > 0.1;
             }
             if needs_reprice {
+                let action_price =
+                    self.pair_arb_action_price_for_post_only(slot, price, size, reason);
                 if self.cfg.strategy == StrategyKind::PairArb && publish_reason.is_none() {
                     publish_reason = Some(PolicyPublishCause::Policy);
                 }
@@ -600,7 +651,7 @@ impl StrategyCoordinator {
                 }
                 self.emit_quote_log(
                     slot,
-                    price,
+                    action_price,
                     size,
                     reason,
                     log_msg.as_deref(),
@@ -618,14 +669,61 @@ impl StrategyCoordinator {
                     slot.side,
                     slot.direction,
                     slot_price,
-                    price,
+                    action_price,
                     size,
                     reprice_band,
                     publish_reason
                 );
-                self.place_slot(slot, price, size, reason).await;
+                self.place_slot(slot, action_price, size, reason).await;
             }
         }
+    }
+
+    fn pair_arb_action_price_for_post_only(
+        &self,
+        slot: OrderSlot,
+        strategic_target: f64,
+        size: f64,
+        reason: BidReason,
+    ) -> f64 {
+        if self.cfg.strategy != StrategyKind::PairArb
+            || reason != BidReason::Provide
+            || slot.direction != TradeDirection::Buy
+        {
+            return strategic_target;
+        }
+        let inv = self.current_working_inventory();
+        let risk_effect = crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
+            &inv,
+            slot.side,
+            size,
+        );
+        let best_ask = match slot.side {
+            Side::Yes => self.book.yes_ask,
+            Side::No => self.book.no_ask,
+        };
+        if best_ask <= 0.0 {
+            return strategic_target;
+        }
+        let best_bid = match slot.side {
+            Side::Yes => self.book.yes_bid,
+            Side::No => self.book.no_bid,
+        };
+        let safety_margin = self.post_only_safety_margin_for(slot.side, best_bid, best_ask);
+        let post_only_cap = best_ask - safety_margin;
+        let action_price = strategic_target.min(post_only_cap);
+        if risk_effect == crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing
+            && action_price + 1e-9 < strategic_target
+        {
+            debug!(
+                "🧭 pair_arb action clamp | slot={} candidate_role=pairing strategic_target={:.4} action_price={:.4} best_ask={:.4}",
+                slot.as_str(),
+                strategic_target,
+                action_price,
+                best_ask,
+            );
+        }
+        action_price
     }
 
     fn pair_arb_effective_reprice_band(&self, reason: BidReason) -> f64 {
@@ -634,7 +732,7 @@ impl StrategyCoordinator {
             return base;
         }
         let tick = self.cfg.tick_size.max(1e-9);
-        let inv = self.current_settled_inventory();
+        let inv = self.current_working_inventory();
         let abs_net = inv.net_diff.abs();
         let bid_size = self.cfg.bid_size.max(tick);
         let extra_ticks = if abs_net + 1e-9 < bid_size {
@@ -852,7 +950,7 @@ impl StrategyCoordinator {
         self.slot_targets[slot.index()] = Some(target.clone());
         self.slot_last_ts[slot.index()] = Instant::now();
         if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
-            let inv = self.current_settled_inventory();
+            let inv = self.current_working_inventory();
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()] = Some(self.pair_arb_state_key(&inv, phase));
             self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;

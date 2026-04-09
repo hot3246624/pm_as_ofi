@@ -1,517 +1,109 @@
-# `pair_arb` 策略说明（2026-04 版）
+# Pair_arb 策略说明（当前主线）
 
-本文档描述当前主线 `pair_arb` 的运行语义、价格链、风险边界和验证口径。
+## 1. 核心目标
 
-## 1. 定位
+`pair_arb` 是 `maker-only / buy-only / pair-cost-first` 策略。
 
-`pair_arb` 是当前仓库的主验证策略。它是一个：
-- maker-only
-- buy-only
-- 双边报价
-- `UnifiedBuys` 执行模式
-- 以 `pair_cost / paired_locked_pnl` 为主目标
-- 以库存偏置限制单边风险
+策略只做一件事：在不突破风险上限的前提下，持续用双边挂买把 `pair_cost` 压到 `pair_target` 附近或以下，并优先提升可配对仓位。
 
-它不是：
-- `glft_mm` 那种外锚真双边做市
-- `dip_buy / phase_builder` 那种 directional hedge overlay
-- 尾盘市价对冲或方向性主动平仓策略
-
-当前策略只输出两个买入槽位：
-- `YesBuy`
-- `NoBuy`
-
-共享执行层仍支持四槽位，但 `pair_arb` 主路径不会主动输出 `Sell`。
+---
 
-## 2. 一句话策略意图
-
-只有当新的买入符合阈值要求，最好能服务于更低对子成本，且不把库存推入不可接受的单边敞口时，才继续挂单。
-
-这里“最好能服务于更低对子成本”的含义是：
-- 优先鼓励能直接改善 `pair_cost / paired_locked_pnl` 的买入
-- 对同侧继续加仓则要求更严格：必须更便宜，且要对 open edge / utility 有改善
+## 2. 运行语义（简化版）
 
-## 3. 运行形态
+### 2.1 单一策略状态脑
 
-`pair_arb` 的控制流分成两层：
+策略报价只读一个库存视图（`strategy_inventory`）：
 
-### 3.1 策略层
-每个 tick 只负责回答：
-- 现在 `YesBuy` 该不该挂
-- 现在 `NoBuy` 该不该挂
-
-### 3.2 执行层
-统一负责：
-- keep-if-safe
-- retain / republish / clear
-- post-only 安全垫
-- slot 生命周期
-- reprice / cancel / reconcile
-
-这意味着：
-- `pair_arb` 不直接控制 OMS / Executor
-- 已经挂在书上的旧单，不会因为策略层重新算出了新价格就必然立刻撤掉
-- 旧单是否继续保留，取决于共享执行治理是否认为它仍然安全、仍然对齐当前目标
-
-## 3.3 成交最终性语义（`settled / working / fragile`）
+- `Matched`：立即更新库存，立即影响下一单报价
+- `Failed`：反向回滚库存，立即影响下一单报价
+- `Merge sync`：做库存校正
 
-`pair_arb` 当前使用三层库存语义，专门处理 `Matched -> Failed` 的状态不同步问题：
-
-- `settled_inventory`
-  - 最终可信库存
-  - 只在以下两种情况推进：
-    - 收到显式 `Confirmed/Mined`
-    - `Matched` 在 `15s` 内未失败（`timeout promotion`）
-- `working_inventory`
-  - `settled + unresolved matched`
-  - 用于保守风控、失效重检、缺失腿修复
-- `fragile`
-  - 只要 unresolved pending 非空即为 `true`
-  - 表示当前处于“成交未确权”的脆弱窗口
-
-关键原则：
-- `MATCHED` 可以让系统立刻更保守
-- `MATCHED` 不可以让系统立刻放松风险约束
-
-在 `fragile=true` 时：
-- `same-side risk-increasing` 候选会额外 inward retreat，并抬高准入门槛
-- 旧单 retain 更严格，不允许依赖 provisional relief 获得保留资格
-- 缺失腿 `pairing` 候选仍允许，但会更保守地报价
-
-## 4. Tick 级价格链
-
-每个 tick，`pair_arb` 的价格链固定为：
-
-1. A-S 基础价格
-2. 三段库存 skew
-3. 主仓侧梯度 avg-cost cap
-4. same-side OFI soft shaping
-5. `VWAP ceiling`
-6. strict maker clamp
-7. `safe_price`
-8. `simulate_buy`
-
-只有最后通过整条链的候选，才会真正变成 `YesBuy / NoBuy` 意图。
-
-### 4.1 A-S 基础价格
-
-先计算盘口中间价：
-- `mid_yes = (yes_bid + yes_ask) / 2`
-- `mid_no = (no_bid + no_ask) / 2`
-
-再基于 `pair_target` 计算双边的基础下压：
-- `excess = max(0, mid_yes + mid_no - pair_target)`
-
-含义：
-- 当 `YES + NO` 的中间价和高于 `pair_target` 时，双边基础报价都会往下压
-- 这样系统天然优先在更便宜的对子成本区间挂单
-
-### 4.2 三段库存 skew（固定边界 `5 / 10 / 15`）
-
-- `|net_diff| < 5`
-  - `0.35 * PM_AS_SKEW_FACTOR`
-  - 不叠加 time decay
-- `5 <= |net_diff| < 10`
-  - skew 从 `35% -> 100%` 线性抬升
-  - 开始叠加 `PM_AS_TIME_DECAY_K`
-- `10 <= |net_diff| < 15`
-  - `100% * PM_AS_SKEW_FACTOR`
-  - 继续叠加 time decay
-- `|net_diff| >= 15`
-  - 由库存硬上限阻止继续增加主仓侧风险
-
-这套 skew 只看当前状态，不保留历史记忆。
-
-也就是说：
-- 当 `|net_diff|` 升到 `10`，主仓侧偏置会明显增强
-- 当后续缺失侧成交，把 `|net_diff|` 拉回 `4`，策略会在下一次 tick 重新回到低强度 skew 区间
-- 它不是“进入某档后永久停留”，而是纯粹由当前库存状态驱动
-
-### 4.3 主仓侧 avg-cost cap（可配置）
-
-这一步只限制主仓侧继续 build，不限制缺失侧 pairing。
-
-当前默认规则：
-- Tier 1：`5 <= |net_diff| < 10`
-  - 主仓侧 `bid <= avg_cost * PM_PAIR_ARB_TIER_1_MULT`
-  - 当前默认：`0.80`
-- Tier 2：`|net_diff| >= 10`
-  - 主仓侧 `bid <= avg_cost * PM_PAIR_ARB_TIER_2_MULT`
-  - 当前默认：`0.60`
+策略不再使用 `settled / pending / fragile` 驱动报价分支。
 
-直观理解：
-- 仓位越偏，主仓侧继续买就必须越便宜
-- 缺失侧补配对不受这条约束，仍可相对积极
-- 这条约束只看**当前状态**，不看“上一笔 risk fill 的价格路径”
-
-### 4.4 OFI 软塑形（仅同侧风险增加单）
+### 2.2 阶梯逻辑（按 `|net_diff|`）
 
-OFI 在 `pair_arb` 中不是主目标函数，而是 subordinate 风险塑形器。
-
-先判断候选买单的风险效果：
-- `projected_abs_net_diff <= current_abs_net_diff`
-  - 视为 `pairing / risk-reducing`
-- `projected_abs_net_diff > current_abs_net_diff`
-  - 视为 `same-side risk-increasing`
+- `|net_diff| = 0`：
+  - 回到 flat-state，按市场 + `pair_target` 发送双边买单
+- `0 < |net_diff| < 5`：
+  - 仍是轻偏置双边
+- `5 <= |net_diff| < 10`：
+  - 主仓侧进入 `tier1` ceiling
+- `|net_diff| >= 10`：
+  - 主仓侧进入 `tier2` ceiling
 
-规则固定：
-- `pairing / risk-reducing buy`
-  - 完全忽略 OFI
-- `same-side risk-increasing buy`
-  - `is_hot=true`：额外下调 `1 tick`
-  - `is_toxic=true`：额外下调 `2 ticks`
-  - `is_toxic && saturated`：直接 suppress，该侧本 tick 不下单
+一旦 `|net_diff|` 到达/穿越 `5` 或 `10`，下一单就按新梯度上限计算。
 
-所以当前 OFI 的角色是：
-- 让同侧加仓“更便宜才买”
-- 不允许覆盖 `pair_cost-first` 主目标
-- 不误伤真正的 pairing buy
+### 2.3 状态变化后的旧单处理
 
-### 4.5 高失衡准入收紧（`Healthy/Stalled` 两态，不是硬 brake）
+当以下事件发生时会重算状态并重评 live 订单：
 
-当 `abs(net_diff) >= 10` 时，`pair_arb` 不会硬性冻结主仓侧 build。  
-它先看 `PairProgressRegime`：
+- `Matched`
+- `Failed`
+- `Merge sync`
+- `SoftClose` 进入
+- 新 round 开始
 
-- `Healthy`
-  - 默认状态
-  - 或者虽然高失衡，但最近 `60s` 内 `paired_qty` 有实质推进
-- `Stalled`
-  - `abs(net_diff) >= 10`
-  - 且最近 `60s` 没有达到最小配对推进（`paired_qty` 增量 `< 1.0`）
+若旧单不符合新状态约束，执行 `Republish`（重报价），而不是让旧单跨 bucket 长期留存。
 
-然后只对 `same-side risk-increasing buy` 追加收紧：
-- `pairing / risk-reducing buy` 完全不受这组规则影响
-- `Healthy` 下沿用基础门槛：
-  - `min_utility_delta >= 2.0 * size * tick`
-  - `projected_open_edge` 至少改善 `0.5 * size * tick`
-- `Stalled` 下进一步收紧：
-  - 若存在同 bucket 的同侧 risk-fill 锚点，则要求 `price <= last_risk_fill_price - 1*tick`
-  - `min_utility_delta >= max(base, 4.0 * size * tick)`
-  - `min_open_edge_improvement >= max(base, 1.0 * size * tick)`
+---
 
-语义：
-- 不是“不许继续均价下修”
-- 而是“高失衡且配对停滞时，只允许显著更优的同侧 build 通过”
+## 3. 价格链（保持 pair-cost-first）
 
-### 4.6 `VWAP ceiling`
+每侧候选价格链：
 
-这是当前 `pair_arb` 的硬价格保护。
+1. 市场中价基础报价（含 A-S/skew）
+2. 主仓侧 `tier avg-cost cap`
+3. OFI 软塑形（仅 same-side risk-increasing）
+4. `VWAP ceiling`（pair target 约束）
+5. maker 安全夹层（`same-side` 在策略层持续 clamp；`pairing` 在执行动作时 clamp）
+6. `simulate_buy` 与效用筛选
 
-它不再使用旧的静态 ceiling：
-- `pair_target - opposite_avg`
+约束优先级：
 
-而是用“本次成交后投影均价”反推最高允许 bid：
-- `yes_ceiling = vwap_ceiling(pair_target, no_avg, yes_qty, yes_avg, bid_size)`
-- `no_ceiling = vwap_ceiling(pair_target, yes_avg, no_qty, no_avg, bid_size)`
+- 风险和库存硬约束优先
+- `tier cap` 与 `VWAP ceiling` 是同侧加仓上限
+- `pairing / risk-reducing` 不受 same-side `tier cap` 误伤
+- 配对腿的战略目标价不再被持续 `ask-1tick` 下拉；仅在真实 place/reprice 动作时做 post-only 安全夹层
 
-语义：
-- 若同侧当前无仓位（`same_qty <= 0`），自动退化回旧公式
-- 若同侧已有更低成本仓位，`VWAP ceiling` 会比旧公式更宽，释放原本被白白浪费的 pair-cost 空间
-- 若 `vwap_ceiling <= tick`，该侧本 tick 禁挂
+### 执行语义（重要）
 
-重要优先级：
-- `tier avg-cost cap` 先于 `VWAP ceiling`
-- `VWAP ceiling` 先于 maker clamp
+- `same-side risk-increasing buy`：
+  - 继续 `no-chase`（新价更高时默认 retain）
+- `pairing / risk-reducing buy`：
+  - 若新价比 live 价高超过 `2 ticks`，允许 upward republish
+  - `<=2 ticks` 的微小上行仍 retain，避免抖动
 
-所以：
-- 主仓侧高位继续加仓，仍会先被 tier cap 压住
-- 缺失侧补配对，则可以吃到 `VWAP ceiling` 带来的更宽空间
+---
 
-### 4.7 `simulate_buy`
+## 4. 尾段规则（15m）
 
-最终候选还要经过投影过滤。
+最后 `45s` 进入最小 `SoftClose`：
 
-优先改善项：
-- 提升 `paired_locked_pnl`
-- 降低 `pair_cost`
-- 让投影 `pair_cost` 达到目标线
+- 阻断 `same-side risk-increasing buy`
+- 继续允许 `pairing / risk-reducing buy`
+- 不使用 `HardClose / taker / 市价去风险`
 
-风险增加单还要额外满足：
-- `utility_delta >= bid_size * tick_size`
-- `projected_open_edge > current_open_edge`
+---
 
-这一步确保策略不会为了“还没坏到爆”就继续盲目抬仓。
+## 5. OFI 角色（从属，不主导）
 
-## 5. 一个具体例子
+OFI 继续使用当前引擎，但只做从属塑形：
 
-下面用一个简化例子说明它怎么工作。
+- `pairing / risk-reducing buy`：忽略 OFI
+- `same-side risk-increasing buy`：
+  - `hot`：`-1 tick`
+  - `toxic`：`-2 ticks`
+  - `toxic + saturated`：suppress
 
-### 5.1 开始时库存平衡
+OFI 不参与状态机切换，不定义 `5/10` 阶梯，不替代 `pair_target` 主目标。
 
-假设观察期结束后：
-- `mid_yes = 0.47`
-- `mid_no = 0.50`
-- `pair_target = 0.98`
-- `net_diff = 0`
+---
 
-此时：
-- 双边都可能产生 `Buy` 意图
-- skew 很轻
-- 没有主仓侧 avg-cost cap
-- 只要候选通过 `VWAP ceiling + simulate_buy`，就会挂 `YesBuy` 和/或 `NoBuy`
+## 6. 实盘检查点
 
-### 5.2 先成交一笔 YES
+重点观察四项：
 
-假设先成交：
-- `YES 5 @ 0.46`
-
-此时：
-- `yes_qty = 5`
-- `yes_avg = 0.46`
-- `net_diff = +5`
-
-下一次 tick：
-- 策略进入 `YES-heavy` 的 Tier 1
-- 同侧 `YesBuy` 会被 `yes_avg * PM_PAIR_ARB_TIER_1_MULT` 约束
-- 在当前默认值下，就是 `0.46 * 0.80 = 0.368`
-- 缺失侧 `NoBuy` 不受这个 cap 约束，更可能成为优先候选
-
-如果这时盘口让 `NO` 很便宜，系统会倾向继续挂 `NoBuy` 去补配对。
-
-### 5.3 后面又成交一笔 NO
-
-假设又成交：
-- `NO 5 @ 0.49`
-
-此时：
-- `net_diff` 回到接近 `0`
-
-接下来会发生两件事：
-
-1. 策略层重新按当前状态计算
-- skew 回到低强度区间
-- 主仓侧 tier cap 也会自然放松
-
-2. 执行层重新治理书上的旧单
-- 已经挂着的 `YesBuy` 不会因为“历史上你曾经 `YES-heavy`”而被永久压制
-- 但它也不会无条件保留
-- 执行层会根据当前新的 intent、走廊和 keep-if-safe 规则决定：
-  - 继续留着
-  - 重报价
-  - 或清掉
-
-所以当前系统不是“配平后重新开一个新阶段状态机”，而是：
-- 策略状态完全由当前库存决定
-- 订单状态由共享执行层持续治理
-
-## 6. Round Suitability Gate（15m）
-
-`pair_arb` 在 `15m` 主验证市场上，先做 `60s` 观察窗口：
-
-- 观察期内只收集 `mid_yes / mid_no` 样本，不发单
-- 60 秒后用中位数判定
-
-触发 `SkippedImbalanced` 的条件：
-- `min(median_mid_yes, median_mid_no) < 0.20`
-- 且 `median_mid_yes + median_mid_no >= pair_target + 0.01`
-
-触发后：
-- 本轮整轮静默
-- 不中途恢复
-
-这里要特别强调：
-- 这不是一个“证明本轮不可能做出低 pair_cost”的数学定理
-- 也不是在说 `YES + NO > 1` 就一定没有 edge
-
-它只是一个当前版本的**极端轮次 veto 启发式**：
-- 如果开盘后整整 `60s`，一侧长期低于 `0.20`
-- 同时双边中位价和仍然偏高
-- 那么系统把这种 round 视为“早期就强单边、对子成本恢复概率差”的轮次，直接跳过
-
-换句话说，`pair_arb` 的真正盈利方式仍然是：
-- 允许先后腿成交
-- 通过时间上的错位去做更低的 pair cost
-
-当前这个 gate 只是为了避免在“开盘就极端失衡”的轮次里过早背上单腿风险，不是为了否定时序配对本身。
-
-## 7. `locked_pnl > 0` 的语义
-
-`locked_pnl > 0` 不等于停手。
-
-自动化系统在已锁利后仍可继续买入，只要新买入仍通过：
-- `VWAP ceiling`
-- `max_net_diff`
-- `simulate_buy` 的改善条件
-
-真正让策略停止的是：
-- 没有候选通过过滤
-- 命中库存上限
-- 命中 `SkippedImbalanced`
-
-## 8. Endgame 与执行层边界
-
-当前 `pair_arb` 不再完全绕开 endgame。
-
-它接入的是**最小 SoftClose**，但包含一个尾段 deadband：
-- 正常 SoftClose 语义：
-  - 阻断 `same-side risk-increasing buy`
-  - 继续允许 `pairing / risk-reducing buy`
-- deadband 语义（当前实现）：
-  - 当 `|net_diff| <= 0.5 * bid_size` 时，最后阶段不再开任何新 `Buy`（包含 pairing）
-  - 目的：避免最后几十秒在极小残差下反复开单对冲
-- 继续不启用：
-  - `HardClose`
-  - `ForceTaker`
-  - 市价去风险
-
-当前验证基线里：
-- `PM_ENDGAME_SOFT_CLOSE_SECS=45`
-- 含义是最后 `45s` 进入软收敛；若残差已很小（`<= bid_size/2`）则直接停止新开单
-
-## 9. OFI 与执行层边界
-
-当前主线中：
-- OFI 由 `pair_arb` 策略层自己消费
-- 执行层不再对 `pair_arb` 的 normal-phase buy 做常态 OFI 硬拦截
-- stale / inventory / outcome floor / round suitability / endgame 仍由共享层处理
-
-也就是说：
-- OFI 在 `pair_arb` 里是价格塑形器，不是常态一刀切 gate
-- `pairing / risk-reducing buy` 不会因为 OFI 被误伤
-
-但这里还有一个容易混淆的边界：
-- “pairing buy 不受 OFI 抑制”
-- 不等于
-- “已经挂在书上的 pairing 买单永远不需要下调”
-
-如果市场继续朝有利于该侧买入的方向走：
-- 更低的价格意味着更好的 pair cost
-- 这时是否保留旧单、还是按更低目标重报价，不由 OFI 决定
-- 它属于共享执行层的 retain / republish 问题
-
-所以正确理解是：
-- OFI 不负责阻断 pairing side
-- 但执行层仍然可以在目标明显下移时，把旧的 pairing 买单下调到更合理的位置
-- 这两件事不能混为一谈
-
-## 10. 关键日志怎么读
-
-### 10.1 `PairArbGate(30s)`
-
-它是当前 `pair_arb` 的主要策略观测窗口，核心字段：
-- `attempts`
-- `keep`
-- `skip(inv/sim/util/edge)`
-- `ofi(softened/suppressed)`
-
-解释：
-- `attempts`：候选数量
-- `keep`：真正通过整条价格链与 `simulate_buy` 的数量
-- `skip_inv`：被库存硬门槛挡掉
-- `skip_sim`：`simulate_buy` 没通过
-- `skip_util`：utility 改善不够
-- `skip_edge`：open edge 没改善
-- `ofi_softened/suppressed`：OFI 只对同侧风险增加单产生了多少软塑形/抑制
-
-### 9.2 `LIVE_OBS`
-
-当前 `pair_arb` 的 `LIVE_OBS` 不再把“热”简单等价成“危险”。
-
-现阶段重点看：
-- `replace_ratio`
-- `reprice_ratio`
-- `ref_blocked_ms`
-- `heat_events`
-- `pair_arb_softened_ratio`
-
-当前语义下：
-- `heat_events` 高，不代表系统必须停
-- 更值得看的是 `pair_arb_softened_ratio`
-  - 它表示 OFI 实际有多大比例真的在塑形 `pair_arb`
-
-### 10.3 `state-change republish`
-
-`pair_arb` 的旧单重检分两类触发，不再是“每 tick 无脑重发”：
-
-1. `state_key` 变化触发  
-2. `fill_recheck_pending` 触发（库存变化或 phase 变化）
-
-其中 `state_key` 仍是简化签名：
-
-- `dominant_side`
-- `|net_diff|` 所在 bucket：
-  - `Flat`
-  - `Low (<5)`
-  - `Mid (5~10)`
-  - `High (>=10)`
-- `soft_close_active`
-
-库存变化（fill/merge 引起的 qty/avg 变化）和 endgame phase 变化也会把槽位标记为 `fill_recheck_pending`，触发一次“仍可保留吗”的再判断。
-
-重检时会判断当前 live quote 是否还满足：
-- tier cap
-- 高失衡准入
-- `VWAP ceiling`
-- `SoftClose`
-- OFI suppress
-
-如果不再满足，执行层会优先走 `Republish`（极端风险场景才 `Clear`），避免旧单长期按旧状态滞留。
-
-### 10.4 `upward reanchor`（你提到的“两个地方”）
-
-当前 `upward reanchor` 只在 `pair_arb` 的 `Buy` 槽位生效，且仅在 `fill_recheck_pending=true` 时评估。  
-你说的“两个地方”本质上是同一机制里的**两条触发分支**：
-
-1. `StateImprovement` 分支
-- 条件：
-  - `dominant_side` 对该槽位出现 relief（例如该槽位不再是主仓侧），或
-  - `net_bucket` 向更低风险档改善
-- 阈值：
-  - `Flat/Low`：fresh target 至少比当前 live 价高 `> 1 tick`
-  - `Mid`：`> 2 ticks`
-  - `High`：不触发该分支
-
-2. `PairingUrgency` 分支
-- 条件：
-  - 主导侧未翻转（同一 dominant side 持续）
-  - `net_bucket` 变差
-  - 当前槽位是“缺失侧”（需要补配对的一侧）
-- 阈值：
-  - `Mid`：`> 2 ticks`
-  - `High`：`> 3 ticks`
-
-结果：
-- 触发任一分支后，会把该 live quote 标记为“需要重锚”（`needs_reanchor=true`），进入 `Republish`
-- 目的不是追价，而是在库存状态发生关键变化时，防止“旧低价单长期滞留、错过应有的补配对报价”
-
-### 10.5 成交最终性观测（`MATCHED -> FAILED`）
-
-`InventoryManager` 现在会在 shutdown 打印 finality 统计：
-- `matched_pending`
-- `confirmed_promotions`
-- `timeout_promotions`
-- `failed_reverts`
-- `late_failed_after_promotion`
-
-复盘重点：
-- 若 `late_failed_after_promotion` 持续偏高，说明 venue 状态噪声显著，需单独评估是否引入 venue-quality penalty
-- 若 `failed_reverts` 偏高且集中在同侧，说明该侧 pending fill 质量差，`fragile` 窗口会更常出现
-
-## 11. 推荐验证参数（当前默认）
-
-- `PM_STRATEGY=pair_arb`
-- `POLYMARKET_MARKET_SLUG=btc-updown-15m`
-- `PM_BID_SIZE=5`
-- `PM_MAX_NET_DIFF=15`
-- `PM_PAIR_TARGET=0.98`
-- `PM_AS_SKEW_FACTOR=0.06`
-- `PM_AS_TIME_DECAY_K=1.0`
-- `PM_PAIR_ARB_TIER_1_MULT=0.80`
-- `PM_PAIR_ARB_TIER_2_MULT=0.60`
-- `PM_ENDGAME_SOFT_CLOSE_SECS=45`
-
-## 12. 验证顺序
-
-1. `5m` 冒烟 2-3 轮
-- 只验证机制：无 ghost order、无异常拒单连锁、无生命周期失控
-
-2. `15m dry-run` 5 个完整 round
-- 核对 `SkippedImbalanced` 是否只在真正失衡 round 触发
-- 核对前段 skew 是否明显低于旧版本
-- 核对 Tier 1/2 封顶是否生效
-- 核对 `PairArbGate(30s)` 与 `LIVE_OBS` 是否稳定
-
-3. 小额 `15m live` 10 个 round
-- 观察 `locked_pnl` 中位数
-- 观察是否仍出现主仓侧高位加仓
-- 观察残仓损失是否改善
+1. `|net_diff|` 穿越 `5/10` 后，下一单是否立即切到对应 tier ceiling
+2. `net_diff` 回到 `0` 后，是否恢复 flat-state 双边报价
+3. 配对腿旧单是否在状态变化后及时 republish，而非长期滞留
+4. 最后 `45s` 是否只出现 pairing/reducing，不再继续扩大单边
