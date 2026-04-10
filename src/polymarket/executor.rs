@@ -254,7 +254,7 @@ impl Executor {
                             self.handle_execute_intent(intent).await;
                         }
                         Some(ExecutionCmd::PlacePostOnlyBid { side, direction, price, size, reason }) => {
-                            self.handle_place_bid(side, direction, price, size, reason).await;
+                            self.handle_place_bid(side, direction, price, size, reason, 0.0).await;
                         }
                         Some(ExecutionCmd::PlaceTakerHedge { side, direction, size }) => {
                             self.handle_place_taker(side, direction, size, TradePurpose::Hedge).await;
@@ -734,6 +734,7 @@ impl Executor {
                     price,
                     intent.size,
                     intent.purpose.as_bid_reason(),
+                    intent.local_unreleased_matched_notional_usdc,
                 )
                 .await;
             }
@@ -751,6 +752,7 @@ impl Executor {
         price: f64,
         size: f64,
         reason: BidReason,
+        local_unreleased_matched_notional_usdc: f64,
     ) {
         let slot = OrderSlot::new(side, direction);
         let reason_str = match reason {
@@ -863,11 +865,20 @@ impl Executor {
         if direction == TradeDirection::Buy {
             if let Some(free_usdc) = self.cached_free_balance_usdc().await {
                 let required_usdc = (price * size).max(0.0);
+                let effective_free_usdc =
+                    (free_usdc - local_unreleased_matched_notional_usdc.max(0.0)).max(0.0);
                 // Keep a small cushion for transient balance/allowance lag.
-                if free_usdc + 0.05 < required_usdc {
+                if effective_free_usdc + 0.05 < required_usdc {
                     warn!(
-                        "🚫 Precheck reject {:?} {:?}@{:.3} sz={:.1}: need {:.2} USDC > free {:.2} USDC",
-                        direction, side, price, size, required_usdc, free_usdc
+                        "🚫 pair_arb_headroom_blocked=true {:?} {:?}@{:.3} sz={:.1}: need {:.2} USDC > effective_free {:.2} USDC (raw_free={:.2} local_unreleased_matched={:.2})",
+                        direction,
+                        side,
+                        price,
+                        size,
+                        required_usdc,
+                        effective_free_usdc,
+                        free_usdc,
+                        local_unreleased_matched_notional_usdc.max(0.0),
                     );
                     let _ = self
                         .emit_reject_event(PlacementRejectEvent {
@@ -904,6 +915,11 @@ impl Executor {
                     self.last_buy_place_ts[side.index()] = Some(Instant::now());
                 }
                 self.slot_orders_mut(slot).insert(order_id, size);
+                self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
+                    slot,
+                    ts: Instant::now(),
+                })
+                .await;
                 // Notify OrderManager that state can transition to Live
                 let _ = self
                     .result_tx
@@ -948,6 +964,11 @@ impl Executor {
                                 self.last_buy_place_ts[side.index()] = Some(Instant::now());
                             }
                             self.slot_orders_mut(slot).insert(order_id, size);
+                            self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
+                                slot,
+                                ts: Instant::now(),
+                            })
+                            .await;
                             let _ = self
                                 .result_tx
                                 .send(OrderResult::OrderPlaced {
@@ -1075,6 +1096,7 @@ impl Executor {
                     self.emit_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
                         slot,
                         ts: Instant::now(),
+                        rejected_action_price: price,
                     })
                     .await;
                 }

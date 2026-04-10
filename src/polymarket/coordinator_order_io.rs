@@ -67,6 +67,45 @@ impl StrategyCoordinator {
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
             && self.slot_pair_arb_fill_recheck_pending[slot.index()];
+        let pair_arb_expected_state = if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+        {
+            self.slot_pair_arb_intent_state_keys[slot.index()]
+        } else {
+            None
+        };
+        let pair_arb_current_state = if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+        {
+            let inv = self.current_working_inventory();
+            let phase = self.endgame_phase();
+            Some(self.pair_arb_state_key(&inv, phase))
+        } else {
+            None
+        };
+        if let (Some(expected_state), Some(current_state)) =
+            (pair_arb_expected_state, pair_arb_current_state)
+        {
+            self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+            if expected_state != current_state {
+                debug!(
+                    "🧭 pair_arb_stale_target_dropped | slot={} expected_state={:?} current_state={:?} target_price={:.4} target_size={:.2}",
+                    slot.as_str(),
+                    expected_state,
+                    current_state,
+                    price,
+                    size,
+                );
+                return;
+            }
+        } else if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+        {
+            self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+        }
         if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
             price = self.glft_clamp_slot_target_price(slot, price);
         }
@@ -680,7 +719,7 @@ impl StrategyCoordinator {
         }
     }
 
-    fn pair_arb_action_price_for_post_only(
+    pub(super) fn pair_arb_action_price_for_post_only(
         &self,
         slot: OrderSlot,
         strategic_target: f64,
@@ -709,19 +748,34 @@ impl StrategyCoordinator {
             Side::Yes => self.book.yes_bid,
             Side::No => self.book.no_bid,
         };
-        let safety_margin = self.post_only_safety_margin_for(slot.side, best_bid, best_ask);
+        let base_safety_margin = self.post_only_safety_margin_for(slot.side, best_bid, best_ask);
+        let tick = self.cfg.tick_size.max(1e-9);
+        let extra_ticks = f64::from(self.slot_pair_arb_cross_reject_extra_ticks[slot.index()]);
+        let safety_margin = base_safety_margin + extra_ticks * tick;
         let post_only_cap = best_ask - safety_margin;
-        let action_price = strategic_target.min(post_only_cap);
+        let last_rejected_cap = self.slot_pair_arb_last_cross_rejected_action_price[slot.index()]
+            .map(|last| (last - tick).max(0.0));
+        let action_price = if let Some(reject_cap) = last_rejected_cap {
+            strategic_target.min(post_only_cap).min(reject_cap)
+        } else {
+            strategic_target.min(post_only_cap)
+        };
+        let reject_repriced = last_rejected_cap
+            .map(|_| action_price + 1e-9 < strategic_target.min(post_only_cap))
+            .unwrap_or(false);
         if risk_effect
             == crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing
             && action_price + 1e-9 < strategic_target
         {
             debug!(
-                "🧭 pair_arb action clamp | slot={} candidate_role=pairing strategic_target={:.4} action_price={:.4} best_ask={:.4}",
+                "🧭 pair_arb action clamp | slot={} candidate_role=pairing strategic_target={:.4} pair_arb_retry_action_price={:.4} best_ask={:.4} pair_arb_cross_reject_extra_ticks={:.0} pair_arb_cross_reject_last_price={:.4} pair_arb_cross_reject_repriced={}",
                 slot.as_str(),
                 strategic_target,
                 action_price,
                 best_ask,
+                extra_ticks,
+                self.slot_pair_arb_last_cross_rejected_action_price[slot.index()].unwrap_or(0.0),
+                reject_repriced,
             );
         }
         action_price
@@ -744,6 +798,20 @@ impl StrategyCoordinator {
             0.0
         };
         base + extra_ticks * tick
+    }
+
+    fn pair_arb_local_unreleased_matched_notional_usdc(&self) -> f64 {
+        let snapshot = *self.inv_rx.borrow();
+        let settled_spent = (snapshot.settled.yes_qty * snapshot.settled.yes_avg_cost)
+            + (snapshot.settled.no_qty * snapshot.settled.no_avg_cost);
+        let working_spent = (snapshot.working.yes_qty * snapshot.working.yes_avg_cost)
+            + (snapshot.working.no_qty * snapshot.working.no_avg_cost);
+        let unreleased = (working_spent - settled_spent).max(0.0);
+        if unreleased.is_finite() {
+            unreleased
+        } else {
+            0.0
+        }
     }
 
     pub(super) async fn clear_target(&mut self, side: Side, reason: CancelReason) {
@@ -773,6 +841,7 @@ impl StrategyCoordinator {
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
         self.slot_pair_arb_state_keys[slot.index()] = None;
+        self.slot_pair_arb_intent_state_keys[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         match scope {
             SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
@@ -811,6 +880,7 @@ impl StrategyCoordinator {
         self.slot_shadow_targets[slot.index()] = None;
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
+        self.slot_pair_arb_intent_state_keys[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
         self.soft_reset_slot_publish_state(slot);
         match slot {
@@ -975,6 +1045,23 @@ impl StrategyCoordinator {
                 reason, slot.direction, slot.side, price, size
             );
             return;
+        }
+
+        if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+        {
+            let local_unreleased_matched_notional_usdc =
+                self.pair_arb_local_unreleased_matched_notional_usdc();
+            if local_unreleased_matched_notional_usdc > 1e-9 {
+                let _ = self
+                    .om_tx
+                    .send(OrderManagerCmd::SetPairArbHeadroom {
+                        slot,
+                        local_unreleased_matched_notional_usdc,
+                    })
+                    .await;
+            }
         }
 
         let _ = self.om_tx.send(OrderManagerCmd::SetTarget(target)).await;

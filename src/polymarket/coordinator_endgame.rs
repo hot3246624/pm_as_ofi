@@ -2,6 +2,8 @@ use tracing::info;
 
 use super::*;
 
+const PAIR_ARB_RISK_OPEN_CUTOFF_SECS: u64 = 90;
+
 impl StrategyCoordinator {
     pub(super) fn apply_endgame_controls(
         &mut self,
@@ -121,6 +123,15 @@ impl StrategyCoordinator {
         } else {
             EndgamePhase::Normal
         }
+    }
+
+    pub(crate) fn pair_arb_risk_open_cutoff_active(&self) -> bool {
+        if self.cfg.strategy != StrategyKind::PairArb {
+            return false;
+        }
+        self.seconds_to_market_end()
+            .map(|remaining| remaining <= PAIR_ARB_RISK_OPEN_CUTOFF_SECS)
+            .unwrap_or(false)
     }
 
     pub(super) fn hard_close_action(

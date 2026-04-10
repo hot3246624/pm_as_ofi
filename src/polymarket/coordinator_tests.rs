@@ -459,6 +459,7 @@ fn test_cross_book_feedback_increases_side_specific_margin() {
     c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
         slot: OrderSlot::YES_BUY,
         ts: Instant::now(),
+        rejected_action_price: 0.33,
     });
     let widened = c.post_only_safety_margin_for(Side::Yes, 0.30, 0.34);
     assert!((widened - (base + c.cfg.tick_size)).abs() < 1e-9);
@@ -472,6 +473,7 @@ fn test_cross_book_feedback_caps_and_decays() {
         c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
             slot: OrderSlot::NO_BUY,
             ts: t0,
+            rejected_action_price: 0.41,
         });
     }
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 3);
@@ -483,6 +485,36 @@ fn test_cross_book_feedback_caps_and_decays() {
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 1);
     c.decay_maker_friction(t0 + Duration::from_secs(12));
     assert_eq!(c.maker_friction(Side::No).extra_safety_ticks, 0);
+}
+
+#[test]
+fn test_pair_arb_cross_reject_sticky_margin_increases_and_clears_on_accept() {
+    let (_, _, _, _, _, mut c) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    c.book = book(0.43, 0.45, 0.40, 0.42);
+    let slot = OrderSlot::YES_BUY;
+
+    let base = c.pair_arb_action_price_for_post_only(slot, 0.44, 5.0, BidReason::Provide);
+
+    c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
+        slot,
+        ts: Instant::now(),
+        rejected_action_price: 0.44,
+    });
+    assert_eq!(c.slot_pair_arb_cross_reject_extra_ticks[slot.index()], 1);
+    let widened = c.pair_arb_action_price_for_post_only(slot, 0.44, 5.0, BidReason::Provide);
+    assert!(
+        (widened - (base - c.cfg.tick_size)).abs() < 1e-9,
+        "expected one extra sticky tick: base={base:.4} widened={widened:.4} tick={:.4}",
+        c.cfg.tick_size
+    );
+
+    c.handle_execution_feedback(ExecutionFeedback::OrderAccepted {
+        slot,
+        ts: Instant::now(),
+    });
+    assert_eq!(c.slot_pair_arb_cross_reject_extra_ticks[slot.index()], 0);
+    let reset = c.pair_arb_action_price_for_post_only(slot, 0.44, 5.0, BidReason::Provide);
+    assert!((reset - base).abs() < 1e-9);
 }
 
 #[test]
@@ -501,7 +533,11 @@ fn test_recent_cross_reject_disables_glft_keep_band() {
     c.no_target = Some(target);
     c.slot_last_ts[slot.index()] = now - Duration::from_secs(3);
     c.no_last_ts = now - Duration::from_secs(3);
-    c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed { slot, ts: now });
+    c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
+        slot,
+        ts: now,
+        rejected_action_price: 0.46,
+    });
 
     let inv = InventoryState::default();
     assert!(!c.keep_existing_maker_if_safe(
@@ -514,6 +550,36 @@ fn test_recent_cross_reject_disables_glft_keep_band() {
         0.44,
         0.47,
         BidReason::Provide,
+    ));
+}
+
+#[test]
+fn test_pair_arb_quote_still_admissible_uses_zero_margin_in_flat_state() {
+    let (_, _, _, _, _, coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let flat = InventoryState {
+        yes_qty: 5.0,
+        yes_avg_cost: 0.40,
+        no_qty: 5.0,
+        no_avg_cost: 0.49,
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    let ub = book(0.54, 0.55, 0.48, 0.49);
+    assert!(coord.pair_arb_quote_still_admissible(
+        &flat,
+        &ub,
+        OrderSlot::YES_BUY,
+        0.55,
+        5.0,
+        EndgamePhase::Normal,
+    ));
+    assert!(!coord.pair_arb_quote_still_admissible(
+        &flat,
+        &ub,
+        OrderSlot::YES_BUY,
+        0.73,
+        5.0,
+        EndgamePhase::Normal,
     ));
 }
 
@@ -3836,7 +3902,6 @@ async fn test_cancel_stats_track_toxic_and_inventory_reasons() {
 #[tokio::test]
 async fn test_other_side_can_still_quote_when_one_side_toxic() {
     let (o, _i, m, _k, mut e, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
-    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
 
     // NO is toxic, YES is healthy: coordinator should still place YES bid.
     let _ = o.send(OfiSnapshot {
@@ -4089,8 +4154,6 @@ async fn test_pair_arb_soft_close_deadband_clears_existing_buy_target() {
     c.min_order_size = 10.0;
 
     let (_o, i, m, _k, mut e, mut coord) = make(c);
-    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
-    coord.pair_arb_round_gate_until = Instant::now() - Duration::from_secs(1);
     let existing = DesiredTarget {
         side: Side::Yes,
         direction: TradeDirection::Buy,
@@ -4120,7 +4183,7 @@ async fn test_pair_arb_soft_close_deadband_clears_existing_buy_target() {
     }
     assert_eq!(
         reason,
-        Some(CancelReason::EndgameRiskGate),
+        Some(CancelReason::Reprice),
         "pair_arb soft-close deadband should clear existing buy targets when residual is tiny"
     );
 
@@ -4143,8 +4206,6 @@ async fn test_pair_arb_soft_close_deadband_blocks_new_buys_when_flat() {
     c.min_order_size = 10.0;
 
     let (_o, i, m, _k, mut e, mut coord) = make(c);
-    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
-    coord.pair_arb_round_gate_until = Instant::now() - Duration::from_secs(1);
     let _ = i.send(InventoryState::default());
 
     let h = tokio::spawn(coord.run());
@@ -4343,7 +4404,6 @@ async fn test_hard_close_entry_below_keep_prefers_maker_repair_when_time_allows(
 #[tokio::test]
 async fn test_balanced_mid_pricing() {
     let (_o, _i, m, _k, mut e, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
-    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
     let h = tokio::spawn(coord.run());
     let _ = m.send(bt(0.44, 0.46, 0.48, 0.52));
 
@@ -4394,8 +4454,8 @@ async fn test_inventory_cost_clamp_disables_side_when_ceiling_below_tick() {
         "YES should be disabled when inventory clamp ceiling is below tick"
     );
     assert!(
-        !saw_no,
-        "NO side should be suppressed when add would only worsen imbalance without pair/open-edge improvement"
+        saw_no,
+        "NO side should remain quotable under pure hard-constraint pair_arb semantics"
     );
 
     drop(m);
@@ -4428,37 +4488,6 @@ async fn test_balanced_excess_mid_capped() {
 
     drop(m);
     let _ = h.await;
-}
-
-#[test]
-fn test_pair_arb_round_suitability_waits_then_skips_imbalanced_round() {
-    let (_, _, _, _, _, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
-    let now = Instant::now();
-    coord.pair_arb_round_gate_until = now + Duration::from_secs(60);
-
-    // During the first 60s, pair_arb should only observe.
-    let observing = coord.evaluate_pair_arb_round_suitability(&book(0.11, 0.13, 0.87, 0.89), now);
-    assert!(
-        observing.is_none(),
-        "round gate should stay in observation window"
-    );
-
-    // After gate deadline, the same skewed market should be marked skipped.
-    let decided = coord.evaluate_pair_arb_round_suitability(
-        &book(0.11, 0.13, 0.87, 0.89),
-        now + Duration::from_secs(61),
-    );
-    assert_eq!(decided, Some(RoundSuitability::SkippedImbalanced));
-}
-
-#[test]
-fn test_pair_arb_round_suitability_marks_balanced_round_eligible() {
-    let (_, _, _, _, _, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
-    let now = Instant::now();
-    coord.pair_arb_round_gate_until = now;
-
-    let decided = coord.evaluate_pair_arb_round_suitability(&book(0.34, 0.36, 0.59, 0.61), now);
-    assert_eq!(decided, Some(RoundSuitability::Eligible));
 }
 
 #[test]
@@ -5128,7 +5157,6 @@ async fn test_gabagool_ofi_toxic_does_not_block_risk_reducing_unified_buy() {
     c.strategy = StrategyKind::GabagoolGrid;
 
     let (o, i, m, _k, mut e, mut coord) = make(c);
-    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
     let _ = o.send(OfiSnapshot {
         yes: SideOfi {
             ofi_score: -200.0,
@@ -5337,7 +5365,6 @@ async fn test_debounce_skips_rapid_reprice() {
     cfg.strategy = StrategyKind::PairArb;
     cfg.debounce_ms = 5000; // 5 seconds - will definitely block
     let (_o, _i, m, _k, mut e, mut coord) = make(cfg);
-    coord.pair_arb_round_suitability = Some(RoundSuitability::Eligible);
     let h = tokio::spawn(coord.run());
 
     // First tick: places bids

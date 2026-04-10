@@ -12,7 +12,6 @@
 //! 3. **Anti-Thrashing**: debounce plus toxicity recovery hold-down.
 //!    Empty book → refuse to bid (return 0.0). Never use ceiling as fallback.
 
-use std::cmp::Ordering;
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
@@ -47,9 +46,6 @@ const LIVE_OBS_HEAT_EVENTS_ALERT: u64 = 14;
 const LIVE_OBS_PAIR_ARB_HEAT_EVENTS_WARN: u64 = 20;
 const LIVE_OBS_PAIR_ARB_SOFTENED_ALERT_RATIO: f64 = 0.50;
 const LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT: u64 = 1_000;
-const PAIR_ARB_ROUND_GATE_SECS: u64 = 60;
-const PAIR_ARB_IMBALANCE_MID_THRESHOLD: f64 = 0.20;
-const PAIR_ARB_IMBALANCE_PAIR_GAP: f64 = 0.01;
 const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
@@ -116,6 +112,8 @@ pub struct CoordinatorConfig {
     pub pair_arb_tier_1_mult: f64,
     /// PairArb dominant-side avg-cost cap multiplier when |net_diff| >= 10.
     pub pair_arb_tier_2_mult: f64,
+    /// PairArb safety margin kept below pair_target when deriving VWAP ceiling.
+    pub pair_arb_pair_cost_safety_margin: f64,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
     pub market_end_ts: Option<u64>,
     /// Opt-3: Faster debounce for hedge orders (urgent, shouldn't wait 500ms).
@@ -191,6 +189,7 @@ impl Default for CoordinatorConfig {
             as_time_decay_k: 2.0, // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
             pair_arb_tier_1_mult: 0.80,
             pair_arb_tier_2_mult: 0.60,
+            pair_arb_pair_cost_safety_margin: 0.02,
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
@@ -377,6 +376,18 @@ impl CoordinatorConfig {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_2_MULT={} (must satisfy 0 <= x <= 1), using {}",
                         f, c.pair_arb_tier_2_mult
+                    );
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    c.pair_arb_pair_cost_safety_margin = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN={} (must satisfy 0 <= x < 1), using {}",
+                        f, c.pair_arb_pair_cost_safety_margin
                     );
                 }
             }
@@ -900,7 +911,10 @@ pub struct StrategyCoordinator {
     slot_last_debt_refill: [Instant; 4],
     slot_absent_clear_since: [Option<Instant>; 4],
     slot_pair_arb_state_keys: [Option<PairArbStateKey>; 4],
+    slot_pair_arb_intent_state_keys: [Option<PairArbStateKey>; 4],
     slot_pair_arb_fill_recheck_pending: [bool; 4],
+    slot_pair_arb_cross_reject_extra_ticks: [u8; 4],
+    slot_pair_arb_last_cross_rejected_action_price: [Option<f64>; 4],
     pair_arb_slot_blocked_for_ms: [u64; 4],
     pair_arb_slot_blocked_at: [Option<Instant>; 4],
     yes_target: Option<DesiredTarget>,
@@ -909,10 +923,6 @@ pub struct StrategyCoordinator {
     no_last_ts: Instant,
     /// Opt-1: Track session start for A-S time decay calculation.
     market_start: Instant,
-    pair_arb_round_gate_until: Instant,
-    pair_arb_round_suitability: Option<RoundSuitability>,
-    pair_arb_yes_mid_samples: Vec<f64>,
-    pair_arb_no_mid_samples: Vec<f64>,
     /// Per-side hold-down deadline after toxicity recovers.
     yes_toxic_hold_until: Instant,
     no_toxic_hold_until: Instant,
@@ -1003,12 +1013,6 @@ pub struct CoordinatorObsSnapshot {
     pub pair_arb_skip_utility_delta: u64,
     pub pair_arb_skip_open_edge_not_improved: u64,
     pub pair_arb_opposite_slot_blocked: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RoundSuitability {
-    Eligible,
-    SkippedImbalanced,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1149,7 +1153,10 @@ impl StrategyCoordinator {
             slot_last_debt_refill: std::array::from_fn(|_| Instant::now()),
             slot_absent_clear_since: std::array::from_fn(|_| None),
             slot_pair_arb_state_keys: std::array::from_fn(|_| None),
+            slot_pair_arb_intent_state_keys: std::array::from_fn(|_| None),
             slot_pair_arb_fill_recheck_pending: [false; 4],
+            slot_pair_arb_cross_reject_extra_ticks: [0; 4],
+            slot_pair_arb_last_cross_rejected_action_price: std::array::from_fn(|_| None),
             pair_arb_slot_blocked_for_ms: [0; 4],
             pair_arb_slot_blocked_at: [None; 4],
             yes_target: None,
@@ -1157,11 +1164,6 @@ impl StrategyCoordinator {
             yes_last_ts: Instant::now() - std::time::Duration::from_secs(60),
             no_last_ts: Instant::now() - std::time::Duration::from_secs(60),
             market_start: Instant::now(),
-            pair_arb_round_gate_until: Instant::now()
-                + Duration::from_secs(PAIR_ARB_ROUND_GATE_SECS),
-            pair_arb_round_suitability: None,
-            pair_arb_yes_mid_samples: Vec::new(),
-            pair_arb_no_mid_samples: Vec::new(),
             yes_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
             no_toxic_hold_until: Instant::now() - std::time::Duration::from_secs(60),
             was_hot_yes: false,
@@ -1921,83 +1923,6 @@ impl StrategyCoordinator {
     // Main tick
     // ═════════════════════════════════════════════════
 
-    fn median(values: &[f64]) -> Option<f64> {
-        if values.is_empty() {
-            return None;
-        }
-        let mut sorted = values.to_vec();
-        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(Ordering::Equal));
-        let mid = sorted.len() / 2;
-        if sorted.len() % 2 == 0 {
-            Some((sorted[mid - 1] + sorted[mid]) / 2.0)
-        } else {
-            Some(sorted[mid])
-        }
-    }
-
-    fn evaluate_pair_arb_round_suitability(
-        &mut self,
-        ub: &Book,
-        now: Instant,
-    ) -> Option<RoundSuitability> {
-        if self.cfg.strategy != StrategyKind::PairArb {
-            return Some(RoundSuitability::Eligible);
-        }
-        if let Some(decided) = self.pair_arb_round_suitability {
-            return Some(decided);
-        }
-
-        let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
-        let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
-        if mid_yes > 0.0 && mid_no > 0.0 {
-            self.pair_arb_yes_mid_samples.push(mid_yes);
-            self.pair_arb_no_mid_samples.push(mid_no);
-        }
-
-        if now < self.pair_arb_round_gate_until {
-            return None;
-        }
-
-        if self.pair_arb_yes_mid_samples.is_empty() || self.pair_arb_no_mid_samples.is_empty() {
-            // Fallback to current snapshot if the first minute had no valid samples.
-            if mid_yes > 0.0 && mid_no > 0.0 {
-                self.pair_arb_yes_mid_samples.push(mid_yes);
-                self.pair_arb_no_mid_samples.push(mid_no);
-            }
-        }
-
-        let yes_med = Self::median(&self.pair_arb_yes_mid_samples).unwrap_or(0.5);
-        let no_med = Self::median(&self.pair_arb_no_mid_samples).unwrap_or(0.5);
-        let min_mid = yes_med.min(no_med);
-        let sum_mid = yes_med + no_med;
-
-        let decision = if min_mid < PAIR_ARB_IMBALANCE_MID_THRESHOLD
-            && sum_mid >= self.cfg.pair_target + PAIR_ARB_IMBALANCE_PAIR_GAP
-        {
-            RoundSuitability::SkippedImbalanced
-        } else {
-            RoundSuitability::Eligible
-        };
-        self.pair_arb_round_suitability = Some(decision);
-
-        info!(
-            "🧭 PairArb suitability decided: {:?} | samples={} yes_med={:.3} no_med={:.3} min_mid={:.3} sum_mid={:.3} pair_target={:.3}",
-            decision,
-            self.pair_arb_yes_mid_samples
-                .len()
-                .min(self.pair_arb_no_mid_samples.len()),
-            yes_med,
-            no_med,
-            min_mid,
-            sum_mid,
-            self.cfg.pair_target,
-        );
-
-        self.pair_arb_yes_mid_samples.clear();
-        self.pair_arb_no_mid_samples.clear();
-        Some(decision)
-    }
-
     async fn tick(&mut self) {
         let now = Instant::now();
         self.decay_maker_friction(now);
@@ -2166,28 +2091,6 @@ impl StrategyCoordinator {
             return;
         }
 
-        if self.cfg.strategy == StrategyKind::PairArb {
-            match self.evaluate_pair_arb_round_suitability(&ub, now) {
-                None => {
-                    // First 60s are observation-only for round suitability.
-                    return;
-                }
-                Some(RoundSuitability::SkippedImbalanced) => {
-                    // Keep the rest of the round silent once marked unsuitable.
-                    if self.yes_target.is_some() {
-                        self.clear_target(Side::Yes, CancelReason::InventoryLimit)
-                            .await;
-                    }
-                    if self.no_target.is_some() {
-                        self.clear_target(Side::No, CancelReason::InventoryLimit)
-                            .await;
-                    }
-                    return;
-                }
-                Some(RoundSuitability::Eligible) => {}
-            }
-        }
-
         // Priority 4: Strategy quote + unified flow-risk overlay + execution.
         let metrics = self.derive_inventory_metrics(&decision_inv);
         let input = StrategyTickInput {
@@ -2310,14 +2213,53 @@ impl StrategyCoordinator {
 
     fn handle_execution_feedback(&mut self, feedback: ExecutionFeedback) {
         match feedback {
-            ExecutionFeedback::PostOnlyCrossed { slot, ts } => {
-                let friction = self.maker_friction_mut(slot.side);
-                friction.extra_safety_ticks = friction.extra_safety_ticks.saturating_add(1).min(3);
-                friction.last_cross_reject_ts = Some(ts);
-                debug!(
-                    "🪵 Maker friction {:?}: crossed-book reject -> extra_safety_ticks={}",
-                    slot.side, friction.extra_safety_ticks
-                );
+            ExecutionFeedback::PostOnlyCrossed {
+                slot,
+                ts,
+                rejected_action_price,
+            } => {
+                if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+                    let idx = slot.index();
+                    self.slot_pair_arb_cross_reject_extra_ticks[idx] = self
+                        .slot_pair_arb_cross_reject_extra_ticks[idx]
+                        .saturating_add(1);
+                    self.slot_pair_arb_last_cross_rejected_action_price[idx] =
+                        Some(rejected_action_price);
+                    debug!(
+                        "🧭 pair_arb cross reject sticky margin | slot={} extra_ticks={} rejected_action_price={:.4}",
+                        slot.as_str(),
+                        self.slot_pair_arb_cross_reject_extra_ticks[idx],
+                        rejected_action_price,
+                    );
+                } else {
+                    let side_extra_safety_ticks = {
+                        let friction = self.maker_friction_mut(slot.side);
+                        friction.extra_safety_ticks =
+                            friction.extra_safety_ticks.saturating_add(1).min(3);
+                        friction.last_cross_reject_ts = Some(ts);
+                        friction.extra_safety_ticks
+                    };
+                    debug!(
+                        "🪵 Maker friction {:?}: crossed-book reject -> extra_safety_ticks={}",
+                        slot.side, side_extra_safety_ticks
+                    );
+                }
+            }
+            ExecutionFeedback::OrderAccepted { slot, ts: _ } => {
+                if self.cfg.strategy == StrategyKind::PairArb
+                    && slot.direction == TradeDirection::Buy
+                {
+                    let idx = slot.index();
+                    if self.slot_pair_arb_cross_reject_extra_ticks[idx] > 0 {
+                        debug!(
+                            "🧭 pair_arb cross reject sticky margin cleared | slot={} extra_ticks={}",
+                            slot.as_str(),
+                            self.slot_pair_arb_cross_reject_extra_ticks[idx],
+                        );
+                    }
+                    self.slot_pair_arb_cross_reject_extra_ticks[idx] = 0;
+                    self.slot_pair_arb_last_cross_rejected_action_price[idx] = None;
+                }
             }
             ExecutionFeedback::SlotBlocked {
                 slot,

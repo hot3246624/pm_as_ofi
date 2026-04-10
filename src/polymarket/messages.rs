@@ -144,6 +144,9 @@ pub struct TradeIntent {
     pub size: f64,
     pub price: Option<f64>,
     pub purpose: TradePurpose,
+    /// Local estimate of unresolved matched buy notional (USDC) used by executor
+    /// affordability precheck. Non-pair_arb paths keep this as 0.0.
+    pub local_unreleased_matched_notional_usdc: f64,
 }
 
 // ─────────────────────────────────────────────────────────
@@ -288,6 +291,11 @@ impl DesiredTarget {
 pub enum OrderManagerCmd {
     /// Update the desired target for an order slot.
     SetTarget(DesiredTarget),
+    /// Pair_arb-only metadata for executor affordability precheck.
+    SetPairArbHeadroom {
+        slot: OrderSlot,
+        local_unreleased_matched_notional_usdc: f64,
+    },
     /// Clear desired target for a slot and preserve cancel reason.
     ClearTarget {
         slot: OrderSlot,
@@ -423,7 +431,13 @@ pub struct SlotReleaseEvent {
 #[derive(Debug, Clone)]
 pub enum ExecutionFeedback {
     /// Venue rejected a post-only order because it would have crossed the book.
-    PostOnlyCrossed { slot: OrderSlot, ts: Instant },
+    PostOnlyCrossed {
+        slot: OrderSlot,
+        ts: Instant,
+        rejected_action_price: f64,
+    },
+    /// Venue accepted a post-only order; strategy-side sticky reject margin can clear.
+    OrderAccepted { slot: OrderSlot, ts: Instant },
     /// Executor repeatedly refused placement because a slot still has tracked open orders.
     /// This is used by strategy-side risk guards (e.g. pair_arb opposite-slot fuse).
     SlotBlocked {

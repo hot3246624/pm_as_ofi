@@ -34,6 +34,7 @@ enum SideTakerState {
 pub struct SlotTracker {
     pub slot: OrderSlot,
     pub desired: Option<DesiredTarget>,
+    pub pair_arb_local_unreleased_matched_notional_usdc: f64,
     pub clear_reason: CancelReason,
     pub state: OrderState,
     pub last_action: Instant,
@@ -45,6 +46,7 @@ impl SlotTracker {
         Self {
             slot,
             desired: None,
+            pair_arb_local_unreleased_matched_notional_usdc: 0.0,
             clear_reason: CancelReason::InventoryLimit,
             state: OrderState::Idle,
             last_action: Instant::now(),
@@ -163,6 +165,13 @@ impl OrderManager {
                             self.pump_slot(slot).await;
                             self.pump_side_taker(slot.side).await;
                         }
+                        Some(OrderManagerCmd::SetPairArbHeadroom {
+                            slot,
+                            local_unreleased_matched_notional_usdc,
+                        }) => {
+                            self.tracker_mut(slot).pair_arb_local_unreleased_matched_notional_usdc =
+                                local_unreleased_matched_notional_usdc.max(0.0);
+                        }
                         Some(OrderManagerCmd::ClearTarget { slot, reason }) => {
                             self.handle_clear(slot, reason).await;
                             self.pump_slot(slot).await;
@@ -214,6 +223,7 @@ impl OrderManager {
     async fn handle_clear(&mut self, slot: OrderSlot, reason: CancelReason) {
         let tracker = self.tracker_mut(slot);
         tracker.desired = None;
+        tracker.pair_arb_local_unreleased_matched_notional_usdc = 0.0;
         tracker.clear_reason = reason;
     }
 
@@ -239,6 +249,7 @@ impl OrderManager {
             size,
             price: None,
             purpose,
+            local_unreleased_matched_notional_usdc: 0.0,
         });
     }
 
@@ -246,6 +257,7 @@ impl OrderManager {
         for slot in OrderSlot::ALL {
             let tracker = self.tracker_mut(slot);
             tracker.desired = None;
+            tracker.pair_arb_local_unreleased_matched_notional_usdc = 0.0;
             tracker.clear_reason = CancelReason::Shutdown;
         }
         self.side_takers = [SideTakerState::Idle, SideTakerState::Idle];
@@ -447,11 +459,15 @@ impl OrderManager {
                                 BidReason::Provide => TradePurpose::Provide,
                                 BidReason::Hedge => TradePurpose::Hedge,
                             },
+                            local_unreleased_matched_notional_usdc: self
+                                .tracker(slot)
+                                .pair_arb_local_unreleased_matched_notional_usdc,
                         },
                     };
                     let tracker = self.tracker_mut(slot);
                     tracker.state = OrderState::PendingSubmit(desired.clone());
                     tracker.last_action = Instant::now();
+                    tracker.pair_arb_local_unreleased_matched_notional_usdc = 0.0;
                     let _ = self.exec_tx.send(cmd).await;
                 }
             }
