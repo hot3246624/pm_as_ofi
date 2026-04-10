@@ -394,6 +394,10 @@ pub enum OrderResult {
     },
     /// Order placement failed — Coordinator should reset the slot.
     OrderFailed { slot: OrderSlot, cooldown_ms: u64 },
+    /// Executor still sees tracked live orders on this slot.
+    /// OMS should reconcile by canceling the stale live slot, not by treating this
+    /// as a fresh place failure.
+    SlotBusy { slot: OrderSlot },
     /// Order fully filled — Coordinator should release the slot for new orders.
     OrderFilled { slot: OrderSlot },
     /// One-shot taker hedge finished submission path (accepted by venue).
@@ -420,6 +424,14 @@ pub struct SlotReleaseEvent {
 pub enum ExecutionFeedback {
     /// Venue rejected a post-only order because it would have crossed the book.
     PostOnlyCrossed { slot: OrderSlot, ts: Instant },
+    /// Executor repeatedly refused placement because a slot still has tracked open orders.
+    /// This is used by strategy-side risk guards (e.g. pair_arb opposite-slot fuse).
+    SlotBlocked {
+        slot: OrderSlot,
+        tracked_orders: usize,
+        blocked_for_ms: u64,
+        ts: Instant,
+    },
 }
 
 /// Rejection class for placement failures.

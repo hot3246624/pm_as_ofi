@@ -1,194 +1,170 @@
-## Pair_arb 两阶段成交语义收敛计划（修复 MATCHED/FAILED 状态不同步）
+# Pair_arb 全链路职责收敛计划 V2
 
-### Summary
-当前主问题不是 `pair_arb` 数学本身，而是单一库存真相把 `MATCHED` 和 `FAILED` 混成了一条即时事实，导致：
+## Summary
+`pair_arb` 收敛目标不是“更简单”，而是**单一策略脑 + 单一发布制度 + 明确执行约束**。
 
-- `MATCHED` 过早放松风险约束
-- `FAILED` 迟到后又把库存拉回去
-- 旧单在错误状态下被保留或仅靠普通撤单路径失效
-- `OMS` 与 `Coordinator` 的槽位活跃状态出现 split-brain
+本轮固定基线：
+- 策略：`pair_arb`
+- 市场：`BTC 15m`
+- 风险参数：沿用当前 live `.env`，`tier1/tier2 = 0.70 / 0.30`
+- 不新增绝对价格地板
+- 不引入 taker / HardClose / 市价去风险
 
-本轮固定采用 **两阶段成交语义**，但不是“等 `CONFIRMED` 才行动”。  
-核心原则锁死为：
+最终架构分工锁死为三层：
+- **策略层**：只算连续 `strategic_target`
+- **状态层**：只维护离散 `PairArbStateKey`
+- **执行层**：只决定 live order 是否仍代表当前状态下的目标，并负责 post-only 落地
 
-- `MATCHED` 可以立即让系统 **更保守**
-- `MATCHED` 不可以立即让系统 **更激进/更放松**
-- `CONFIRMED` 才允许正式释放风险约束
-- `FAILED` 只回滚 provisional 状态，不再让错误真相先污染整套决策
-
-### Key Changes
-#### 1. Inventory 改为 `settled + provisional` 双视图
-把当前单一 [InventoryState](/Users/hot/web3Scientist/pm_as_ofi/src/polymarket/messages.rs:219) 升级为一个统一快照，例如：
-
-- `settled`: 最终可信库存
-- `working`: `settled + unresolved matched fills`
-- `pending_fills`: 仅内部追踪，按 `order_id + side + direction + size` 维护 unresolved matched
+## Key Changes
+### 1. 策略层只保留一个连续目标价
+`pair_arb` 继续只算 `strategic_target`，价格链固定为：
+1. A-S 基础价
+2. 三段 skew
+3. tier avg-cost cap（当前基线 `0.70 / 0.30`）
+4. OFI subordinate shaping
+5. `VWAP ceiling`
+6. `safe_price`
 
 固定语义：
-- `Matched`
-  - 只进入 `pending_fills`
-  - 更新 `working`
-  - 不直接并入 `settled`
-- `Confirmed`
-  - 若存在同 key pending：从 pending 提升到 settled
-  - 若无 pending：按 confirmed-first 容错直接并入 settled
-- `Failed`
-  - 只撤销 pending 对 `working` 的影响
-  - 不再从 `settled` 里“反删除”已最终确认的库存
-- `Merge`
-  - 同步作用于 `settled` 与 `working`
-  - merge 后 pending 仍保留，但要重新映射剩余可解释库存
+- `strategic_target` 是策略层唯一权威，不直接等于交易所挂单价
+- 不再在策略层引入：
+  - `PairProgressRegime`
+  - `fragile`
+  - `state improvement reanchor`
+  - `opposite-slot blocked`
+- `pairing / reducing` 与 `risk-increasing` 的区别，只保留在执行层发布规则里
 
-#### 2. 策略与执行改成“非对称权限”
-`pair_arb` 不等待 `CONFIRMED` 才工作，但不同动作读取不同库存视图。
+### 2. 状态层只保留离散状态，不再派生第二套策略语义
+唯一状态键固定为：
+- `dominant_side = Yes | No | Flat`
+- `net_bucket = Flat | Low | Mid | High`
+- `soft_close_active = bool`
+
+状态变化触发器固定为：
+- `Matched`
+- `Failed rollback`
+- `Merge sync`
+- `SoftClose entered`
+- `Round reset`
+
+固定语义：
+- `|net_diff|` 到/穿越 `5 / 10 / 0`，必定导致 `state_key` 变化
+- `Merge sync` 只视为 inventory-change 事件，不再衍生额外策略模式
+- `settled / working / fragile`、`PairProgressState / Stalled` 继续可保留在 accounting / diagnostics，但不再进入 `pair_arb` 主报价逻辑
+
+### 3. 发布制度改为 band-driven，而不是 raw target-driven
+为避免 `fresh target` 的细小上移或下移都在下层放大成 churn，执行层不再对 raw `strategic_target` 逐 tick 追踪。
 
 固定规则：
-- **会增加风险 / 放松约束** 的动作，只能基于 `settled`
-  - dominant-side relief
-  - net bucket 改善
-  - risk-fill anchor reset
-  - 主仓侧旧单继续 retain
-  - 解除 stalled / 高失衡 admission
-  - 上调主仓侧报价
-- **会降低风险 / 增强保守性** 的动作，可以基于 `working`
-  - 缺失侧 pairing quote
-  - 状态恶化后的旧单 invalidation
-  - 进入高失衡 / stalled
-  - 继续压低主仓侧价格
-  - SoftClose 阻断
-- 直接结果：
-  - `NO matched` 不能立刻让 `YES` 旧危险单获得保留资格
-  - 但 `YES matched` 可以立刻促使系统去补 `NO`
+- 先由策略层给出连续 `strategic_target`
+- 执行层只根据 **角色 + band** 判定是否 `Republish`
 
-#### 3. `pair_arb` 状态机按双视图拆分
-当前 `pair_arb_state_key / PairProgressState / StateImprovementReanchor / invalidation check` 统一吃单一 `InventoryState`。本轮收敛为：
+角色规则固定为：
 
-- `Risk state key` 用 `settled`
-  - `dominant_side`
-  - `net_bucket`
-  - `pair progress improvement`
-  - risk-fill anchor reset
-- `Safety/invalidation state` 用 `working`
-  - 当前 live quote 是否因更坏库存已不合法
-  - 是否要立刻撤掉/重发主仓侧旧单
-  - 是否进入 `Stalled`
+- `RiskIncreasing`
+  - upward：`retain`
+  - downward：仅当 `strategic_target <= live_target - 2 ticks` 时 `Republish`
+  - `state_key` 变化：强制重评
 
-固定要求：
-- `StateImprovementReanchor` 只接受 **settled improvement**
-- `FillTriggeredInvalidationCheck` 接受 **working worsening**
-- `MATCHED` 只能触发保守方向的重检，不能触发 relief
+- `PairingOrReducing`
+  - 只要 `|strategic_target - live_target| > 3 ticks` 才 `Republish`
+  - `<= 3 ticks` 统一 `retain`
+  - `state_key` 变化：强制重评
 
-#### 4. 槽位生命周期改成单一真相，消除 OMS/Coordinator split-brain
-当前 `OMS` 在 `OrderFilled` 时会把 slot 置 `Idle`，但 `Coordinator` 仍可能保留 `slot_targets`。  
-这轮必须引入 Coordinator 侧的 **slot soft release**。
+这条规则是**双向带宽**，不是只管 upward。
+因此：
+- 小幅上移不会风暴
+- 小幅下移也不会风暴
+- 真正跨状态或明显偏离时才重发
 
-固定行为：
-- 以下事件一旦发生，Coordinator 必须同步 soft release 对应槽位：
-  - `OrderFilled`
-  - reconcile missing-on-exchange release
-  - 明确 slot no-longer-live 的 terminal event
-- `soft release` 只清：
-  - 当前已发布 live target
-  - 当前 slot active 标记
-- `soft release` 不清：
-  - `pair_arb` policy continuity
-  - recheck pending
-  - risk/progress state
-- `clear/full reset` 仍只保留给：
-  - source blocked
-  - invalid state
-  - round cleanup
+### 4. post-only 只在动作时生效，不再拖着 pairing 腿追跌
+执行层拆成两层价格：
+- `strategic_target`
+- `action_price`
+
+固定语义：
+- `strategic_target`：策略真实意图价
+- `action_price`：只有在真实 `place/reprice` 时，为满足 post-only 才执行 `min(strategic_target, ask - margin)`
 
 结果：
-- 交易所无单时，Coordinator 不再误以为 slot 仍 active
-- 缺失腿不会因为本地旧 target 残留而错过立即重建
+- pairing 腿不再因为市场继续下跌，就被长期 ask-1tick 拖着往下跑
+- same-side 与 pairing 的“执行价”约束不再反向篡改“策略价”
 
-#### 5. `Matched -> Failed` 不再走“先放松、后反悔”
-对于本次 `04-08` 场景，系统需要保证：
+### 5. `admissible` 收缩成纯硬约束检查
+`pair_arb_quote_still_admissible()` 保留，但只检查硬约束：
+- inventory limit
+- `SoftClose`
+- OFI suppress
+- tier cap
+- `VWAP ceiling`
+- `simulate_buy` 有效性
 
-- `NO matched`
-  - 可以触发缺失腿/风险重检
-  - 不能让主仓侧 `YES@0.32` 因“看起来 net=0”而继续被视为安全
-- `NO failed`
-  - 只移除 provisional relief
-  - 立即触发 working worsening invalidation
-  - 若 live order 已无效，走 `Republish`，不是普通慢路径等待
+移出 retain 阶段的内容：
+- `utility_delta`
+- `open_edge_improvement`
+- “改善 locked pnl 就特许保留”之类的第二套策略逻辑
 
-也就是说，本轮不追求把 `t2` 再压到极限，而是先把 `t1` 对策略的伤害从结构上消掉。
+这些只属于“生成新候选”的策略层，不再属于“旧单可否保留”的执行层。
 
-#### 6. 可观测性补齐
-新增明确指标与日志，避免以后再靠猜：
+### 6. 删除 `pair_arb` 常态路径中的 opposite-slot fuse
+`pair_arb_opposite_slot_blocked()` 不再参与常态 `slot_quote_allowed / reject_reason`。
 
-- `matched_pending_events`
-- `confirmed_promotions`
-- `failed_pending_reverts`
-- `slot_soft_release_events`
-- `risk_relief_blocked_by_provisional`
-- `working_worsening_invalidation`
-- `fill_status_conflict(order_id, first=Matched, later=Failed)`
+固定处理：
+- 该机制从主决策链中移除
+- 若保留，只保留为 metrics / debug 观测
+- 当前库存风险继续由：
+  - tier cap
+  - `VWAP ceiling`
+  - `state_key`
+  - `SoftClose`
+  控制
 
-日志每次打印：
-- `settled_net_diff`
-- `working_net_diff`
-- `pending_yes_qty`
-- `pending_no_qty`
-- `decision_view={settled|working}`
-- `slot_live_on_exchange`
-- `slot_target_present_local`
+理由：
+- 它是执行层 emergency patch，不是优雅的策略语义
+- 在你当前 `0.70 / 0.30` 基线下，继续把它放在主路径只会制造职责混乱
 
-### Public Interfaces / Types
-新增或升级最小接口：
+### 7. 文档与配置统一
+统一文档和运行基线：
+- `STRATEGY_PAIR_ARB_ZH.md` 改成唯一可信说明
+- `CONFIG_REFERENCE_ZH.md` 与 `.env.example` 同步到当前锁定基线，避免再出现 `0.80 / 0.60` 与 live `.env` 脱节
+- 文档明确写死：
+  - `strategic_target` 与 `action_price` 的区别
+  - `Merge sync` 只是 inventory-change，不是额外策略模式
+  - `pairing` 与 `same-side` 的差异只发生在发布规则，不发生在第二套状态机里
 
-- `InventorySnapshot`
-  - `settled: InventoryState`
-  - `working: InventoryState`
-- `PendingFillRecord`
-- `InventoryViewKind::{Settled, Working}`
-- `soft_release_slot_target(...)`
-- `FillLifecycleMetrics`
-  - `matched_pending`
-  - `confirmed`
-  - `failed_reverted`
+## Test Plan
+1. **双向小漂移不 churn**
+- `strategic_target` 小幅上/下移动 `<= band`
+- 不得触发 `Republish`
+- downward 也必须验证，不能只测 upward
 
-策略输入从单一 `&InventoryState` 升级为 `&InventorySnapshot` 或等价的双视图访问接口。  
-不新增 `.env` 参数，不修改 `pair_arb` 价格链、tier 参数、OFI、SoftClose 哲学。
+2. **5/10/0 状态切换**
+- `|net_diff|` 穿越 `5 / 10 / 0`
+- 历史 live quotes 必须重评
+- 不允许旧单跨 bucket 留存
 
-### Test Plan
-1. **Matched 不再立即放松风险**
-- 初始 `YES-heavy`
-- 缺失侧 `NO matched` 到来但未 confirmed
-- 主仓侧旧 `YES` 单不得因 provisional relief 被 retain
-- dominant-side relief / bucket improvement 不得触发
+3. **Pairing 腿不再追跌**
+- 市场继续单边下行时
+- `pairing` 腿的 `strategic_target` 保持由策略决定
+- 只有真实动作时才 clamp 到 post-only safe 价格
+- 不得再出现 “策略价也被 ask-1tick 持续拉低”
 
-2. **Matched 仍允许快速保守动作**
-- `YES matched` 让 `working` 风险更高
-- 缺失侧 `NO` pairing quote 仍可立即生成
-- stalled / invalidation 可立即生效
+4. **same-side 保守语义保留**
+- `risk-increasing` upward 继续 no-chase
+- 但 downward 明显偏离时必须重发
+- 不允许一直保留过时高价单
 
-3. **Failed 只回滚 provisional**
-- `Matched -> Failed` 同 order id
-- `working` 回退，`settled` 不被错误污染
-- 若该回退使 live quote 不合法，立即 `Republish`
+5. **Merge sync**
+- 如果 surviving side 未清零且 VWAP 不变
+- 仍只视为 inventory-change trigger
+- 不允许引入额外的策略模式或特殊 reanchor
 
-4. **Confirmed promotion**
-- `Matched -> Confirmed`
-- pending 正确提升到 settled
-- 之后才允许 relief/reanchor/reset risk anchors
+6. **移除 opposite-slot fuse 后回放**
+- 高失衡场景下，风险仍由 tier cap / `VWAP ceiling` / `SoftClose` 控住
+- 不得出现因为移除 fuse 就重新放大 same-side 风险的副作用
 
-5. **Slot soft release**
-- `OrderFilled` 后 OMS `Idle`
-- Coordinator 同步 soft release
-- 同价或近价缺失腿下一 tick 可立即重建
-- 不再出现“前端没单，Coordinator 还认为 active”的状态
-
-6. **04-08 回放验收**
-- `NO matched` 后 `YES@0.32` 不能再因为 provisional `net=0` 获得保留
-- 即便 `NO failed` 迟到约 9.7s，系统也不会在这段时间里把 risk relief 当真
-- 收盘前不再因为同类 provisional relief 把残仓放大到 `net=10`
-
-### Assumptions
-- 主线继续 `pair_arb + BTC 15m`
-- 本轮不重写 `pair_arb` 数学，不讨论 tier 参数是否再压低
-- 当前第一矛盾是成交状态语义和槽位生命周期，不是撤单速度本身
-- `MATCHED` 仍然有价值，但只能用于“更保守”，不能用于“更放松”
-- 若这轮完成后 live 仍明显亏损，再评估是否是 `pair_arb + BTC 15m` 的策略边界，而不是继续修 correctness
+## Assumptions
+- 当前 live 验证基线锁定为 `PM_PAIR_ARB_TIER_1_MULT=0.70`、`PM_PAIR_ARB_TIER_2_MULT=0.30`
+- 这轮不再继续扩展 `PairProgressState`、`fragile`、`settled/working` 对 `pair_arb` 的影响
+- 这轮不把 `debounce_ms`、`reprice_threshold` 当第一优先级；先把职责边界理顺
+- 这轮不做更激进的库存参数调整，除非职责收敛后 live 仍证明主仓侧 build 过于激进

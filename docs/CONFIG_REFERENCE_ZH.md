@@ -47,18 +47,18 @@
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 | `PM_AS_SKEW_FACTOR` | `0.06` | 三段库存 skew 的基础强度（pair_arb） |
 | `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
-| `PM_PAIR_ARB_TIER_1_MULT` | `0.80` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
-| `PM_PAIR_ARB_TIER_2_MULT` | `0.60` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_1_MULT` | `0.70` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_2_MULT` | `0.30` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
 
 验证时建议同时观察两组日志：
 - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
 - `LIVE_OBS`：执行稳定性与 `pair_arb_softened_ratio`
 
-`pair_arb` 当前成交最终性实现（固定内部常量，不开放 env）：
-- inventory 三层语义：`settled / working / fragile`
-- `MATCHED` 先进入 pending，只更新 `working`
-- `FAILED` 只回滚 pending，不回滚已 settled 部分
-- `timeout promotion = 15s`：`MATCHED` 超时未失败则提升到 `settled`
+`pair_arb` 当前报价主语义（固定内部行为，不开放 env）：
+- 策略主脑只读单一实时库存（`Matched` 即时生效，`Failed` 立即回滚，`Merge` 做校正）
+- 状态切换仍以 `dominant_side / net_bucket / soft_close_active` 为骨架
+- live quote 保留语义是 `same-side` 状态驱动、`pairing` 带宽驱动（up `>2` / down `>3` ticks）
+- 成交最终性相关统计仍保留在 accounting / diagnostics，不再直接驱动 `pair_arb` 报价
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 

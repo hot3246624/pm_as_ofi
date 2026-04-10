@@ -18,7 +18,8 @@
       "WebFetch(domain:nitter.net)",
       "WebFetch(domain:webcache.googleusercontent.com)",
       "WebFetch(domain:polymarketanalytics.com)",
-      "WebFetch(domain:polymarketwhales.info)"
+      "WebFetch(domain:polymarketwhales.info)",
+      "Bash(awk -F 'fn' '{print NR, $2}')"
     ]
   }
 }

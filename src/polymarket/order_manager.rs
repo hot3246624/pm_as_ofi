@@ -128,6 +128,11 @@ impl OrderManager {
                             self.pump_slot(slot).await;
                             self.pump_side_taker(slot.side).await;
                         }
+                        Some(OrderResult::SlotBusy { slot }) => {
+                            self.handle_slot_busy(slot).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
                         Some(OrderResult::OrderFilled { slot }) => {
                             self.handle_filled(slot).await;
                             self.pump_slot(slot).await;
@@ -269,6 +274,23 @@ impl OrderManager {
                 cooldown_ms / 1000,
             );
         }
+    }
+
+    async fn handle_slot_busy(&mut self, slot: OrderSlot) {
+        let tracker = self.tracker_mut(slot);
+        warn!(
+            "⛔ OMS: {} SlotBusy — switching to PendingCancel to recover stale live slot",
+            slot.as_str()
+        );
+        tracker.state = OrderState::PendingCancel(None);
+        tracker.last_action = Instant::now();
+        let _ = self
+            .exec_tx
+            .send(ExecutionCmd::CancelSlot {
+                slot,
+                reason: CancelReason::Reprice,
+            })
+            .await;
     }
 
     async fn handle_filled(&mut self, slot: OrderSlot) {
@@ -658,6 +680,56 @@ mod tests {
                 Ok(None) | Err(_) => panic!("timed out waiting for delayed NO sell ExecuteIntent"),
             }
         }
+
+        drop(cmd_tx);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_slot_busy_transitions_to_cancel_instead_of_retry_loop() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, mut exec_rx) = mpsc::channel(16);
+        let (result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
+        let h = tokio::spawn(om.run());
+
+        let slot = OrderSlot::YES_BUY;
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                slot,
+                0.39,
+                5.0,
+                BidReason::Provide,
+            )))
+            .await;
+
+        let first = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(first, ExecutionCmd::ExecuteIntent { .. }));
+
+        let _ = result_tx.send(OrderResult::SlotBusy { slot }).await;
+
+        let second = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(
+            second,
+            ExecutionCmd::CancelSlot {
+                slot: OrderSlot::YES_BUY,
+                reason: CancelReason::Reprice,
+            }
+        ));
+
+        let no_more = timeout(Duration::from_millis(250), exec_rx.recv()).await;
+        assert!(
+            no_more.is_err(),
+            "slot busy should not immediately fall back into another ExecuteIntent"
+        );
 
         drop(cmd_tx);
         let _ = h.await;

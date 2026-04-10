@@ -27,6 +27,10 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 
 pub type AuthClient = ClobClient<Authenticated<polymarket_client_sdk::auth::Normal>>;
 const CROSS_BOOK_COOLDOWN_MS: u64 = 1_000;
+const DUST_REMAINING_SHARES: f64 = 0.10;
+const SLOT_BLOCKED_FEEDBACK_INTERVAL_MS: u64 = 1_000;
+const SLOT_LOCK_RECOVERY_MIN_BLOCK_MS: u64 = 8_000;
+const SLOT_LOCK_RECOVERY_RETRY_MS: u64 = 5_000;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,9 +120,62 @@ pub struct Executor {
     marketable_buy_autodetect: bool,
     /// Guarded on-demand reconcile throttle for side-lock refusal path.
     last_guard_reconcile_ts: Instant,
+    /// Continuous slot-lock window started when place attempts are refused due to tracked live orders.
+    slot_blocked_since: [Option<Instant>; 4],
+    /// Last time slot-lock feedback was emitted to coordinator (per-slot rate limit).
+    slot_last_blocked_feedback: [Option<Instant>; 4],
+    /// Last time we attempted a forced cancel recovery for a blocked slot.
+    slot_last_forced_cancel_attempt: [Instant; 4],
 }
 
 impl Executor {
+    fn is_residual_dust(remaining: f64) -> bool {
+        remaining <= DUST_REMAINING_SHARES + 1e-9
+    }
+
+    fn prune_slot_dust_locally(&mut self, slot: OrderSlot) -> usize {
+        let local = self.slot_orders_mut(slot);
+        let before = local.len();
+        local.retain(|_, remaining| !Self::is_residual_dust(*remaining));
+        before.saturating_sub(local.len())
+    }
+
+    fn slot_blocked_duration(&mut self, slot: OrderSlot, now: Instant) -> Duration {
+        let idx = slot.index();
+        let since = self.slot_blocked_since[idx].get_or_insert(now);
+        now.saturating_duration_since(*since)
+    }
+
+    fn reset_slot_blocked_state(&mut self, slot: OrderSlot) {
+        let idx = slot.index();
+        self.slot_blocked_since[idx] = None;
+        self.slot_last_blocked_feedback[idx] = None;
+    }
+
+    async fn emit_slot_blocked_feedback(
+        &mut self,
+        slot: OrderSlot,
+        tracked_orders: usize,
+        blocked_for: Duration,
+        now: Instant,
+    ) {
+        let idx = slot.index();
+        let can_emit = self.slot_last_blocked_feedback[idx]
+            .map(|ts| ts.elapsed() >= Duration::from_millis(SLOT_BLOCKED_FEEDBACK_INTERVAL_MS))
+            .unwrap_or(true);
+        if !can_emit {
+            return;
+        }
+        self.slot_last_blocked_feedback[idx] = Some(now);
+        self.emit_execution_feedback(ExecutionFeedback::SlotBlocked {
+            slot,
+            tracked_orders,
+            blocked_for_ms: blocked_for.as_millis().min(u128::from(u64::MAX)) as u64,
+            ts: now,
+        })
+        .await;
+    }
+
     pub fn new(
         cfg: ExecutorConfig,
         client: Option<AuthClient>,
@@ -150,6 +207,11 @@ impl Executor {
             open_orders: std::array::from_fn(|_| HashMap::new()),
             last_buy_fill_ts: [None, None],
             last_buy_place_ts: [None, None],
+            slot_blocked_since: [None; 4],
+            slot_last_blocked_feedback: [None; 4],
+            slot_last_forced_cancel_attempt: std::array::from_fn(|_| {
+                Instant::now() - Duration::from_secs(60)
+            }),
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
             marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
                 .ok()
@@ -241,6 +303,51 @@ impl Executor {
         &mut self.open_orders[slot.index()]
     }
 
+    async fn cancel_remote_dust_orders_for_slot(
+        &mut self,
+        slot: OrderSlot,
+        remote: &mut HashMap<String, f64>,
+    ) {
+        let dust_orders: Vec<(String, f64)> = remote
+            .iter()
+            .filter_map(|(id, remaining)| {
+                if Self::is_residual_dust(*remaining) {
+                    Some((id.clone(), *remaining))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if dust_orders.is_empty() {
+            return;
+        }
+
+        let mut canceled_dust_ids: Vec<String> = Vec::new();
+        for (id, remaining) in &dust_orders {
+            warn!(
+                "🧹 Reconcile: {} order {}… residual {:.4} <= dust floor {:.2}; canceling and ignoring for slot lock",
+                slot.as_str(),
+                &id[..8.min(id.len())],
+                remaining,
+                DUST_REMAINING_SHARES
+            );
+            let canceled = self.handle_cancel_order(id, CancelReason::Reprice).await;
+            if !canceled {
+                warn!(
+                    "⚠️ Reconcile: dust cancel failed for {} order {}…; slot may remain guarded until next reconcile",
+                    slot.as_str(),
+                    &id[..8.min(id.len())],
+                );
+            } else {
+                canceled_dust_ids.push(id.clone());
+            }
+        }
+
+        for id in canceled_dust_ids {
+            remote.remove(&id);
+        }
+    }
+
     fn side_order_count(&self, side: Side) -> usize {
         OrderSlot::side_slots(side)
             .into_iter()
@@ -253,10 +360,9 @@ impl Executor {
     // ─────────────────────────────────────────────────
 
     async fn reconcile_open_orders(&mut self) {
-        let client = match self.client.as_ref() {
-            Some(c) => c,
-            None => return,
-        };
+        if self.client.is_none() {
+            return;
+        }
 
         let market_id = match self.cfg.market_id.parse::<alloy::primitives::B256>() {
             Ok(id) => id,
@@ -293,7 +399,13 @@ impl Executor {
         let mut mode = self.reconcile_fetch_mode;
         let mut remote_by_slot = loop {
             match self
-                .fetch_remote_open_orders(client, mode, market_id, yes_id, no_id)
+                .fetch_remote_open_orders(
+                    self.client.as_ref().expect("client checked above"),
+                    mode,
+                    market_id,
+                    yes_id,
+                    no_id,
+                )
                 .await
             {
                 Ok(orders) => {
@@ -332,6 +444,10 @@ impl Executor {
         };
 
         for slot in OrderSlot::ALL {
+            if let Some(remote) = remote_by_slot.get_mut(&slot) {
+                self.cancel_remote_dust_orders_for_slot(slot, remote).await;
+            }
+
             let remote = remote_by_slot.remove(&slot).unwrap_or_default();
             let mut removed: Vec<String> = Vec::new();
             let mut newly_seen: Vec<(String, f64)> = Vec::new();
@@ -370,6 +486,9 @@ impl Executor {
                     &id[..8.min(id.len())],
                     rem
                 );
+            }
+            if self.slot_orders(slot).is_empty() {
+                self.reset_slot_blocked_state(slot);
             }
         }
     }
@@ -501,7 +620,7 @@ impl Executor {
         let orig = ord.original_size.to_f64().unwrap_or(0.0);
         let matched = ord.size_matched.to_f64().unwrap_or(0.0);
         let remaining = (orig - matched).max(0.0);
-        if remaining > 1e-9 {
+        if !Self::is_residual_dust(remaining) {
             remote_by_slot
                 .entry(slot)
                 .or_default()
@@ -549,6 +668,9 @@ impl Executor {
                     &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
+                if orders.is_empty() {
+                    self.reset_slot_blocked_state(slot);
+                }
                 // Notify Coordinator: slot is now free
                 let _ = self.result_tx.send(OrderResult::OrderFilled { slot }).await;
             }
@@ -559,14 +681,17 @@ impl Executor {
         let orders = self.slot_orders_mut(slot);
         if let Some(remaining) = orders.get_mut(&fill.order_id) {
             *remaining -= fill.filled_size;
-            if *remaining <= 0.0 {
+            if *remaining <= 0.0 || Self::is_residual_dust(*remaining) {
                 orders.remove(&fill.order_id);
                 info!(
-                    "📋 Lifecycle: {} order {}… fully filled — removed ({} remaining on slot)",
+                    "📋 Lifecycle: {} order {}… fully filled/dust-closed — removed ({} remaining on slot)",
                     slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
                     orders.len(),
                 );
+                if orders.is_empty() {
+                    self.reset_slot_blocked_state(slot);
+                }
                 // AUDIT FIX: Notify Coordinator that the slot is free for new orders
                 let _ = self.result_tx.send(OrderResult::OrderFilled { slot }).await;
             } else {
@@ -654,9 +779,23 @@ impl Executor {
             return;
         }
 
+        let dust_pruned = self.prune_slot_dust_locally(slot);
+        if dust_pruned > 0 {
+            warn!(
+                "🧹 Pre-place guard: pruned {} dust-tracked order(s) on {} before placement",
+                dust_pruned,
+                slot.as_str(),
+            );
+            let _ = self.result_tx.send(OrderResult::OrderFilled { slot }).await;
+        }
+
         // Slot-keyed maker model: only this exact slot is mutually exclusive.
         let existing_count = self.slot_orders(slot).len();
         if existing_count > 0 {
+            let now = Instant::now();
+            let blocked_for = self.slot_blocked_duration(slot, now);
+            self.emit_slot_blocked_feedback(slot, existing_count, blocked_for, now)
+                .await;
             warn!(
                 "🚫 Refusing PlacePostOnlyBid {}@{:.3}: {} tracked order(s) still open on slot",
                 slot.as_str(),
@@ -670,17 +809,25 @@ impl Executor {
                 self.last_guard_reconcile_ts = Instant::now();
                 self.reconcile_open_orders().await;
             }
-            let _ = self
-                .result_tx
-                .send(OrderResult::OrderFailed {
-                    slot,
-                    // Short backoff to avoid tight retry loops when OMS and
-                    // executor are temporarily out-of-sync on live orders.
-                    cooldown_ms: 2_000,
-                })
-                .await;
+            let idx = slot.index();
+            if !self.cfg.dry_run
+                && self.client.is_some()
+                && blocked_for >= Duration::from_millis(SLOT_LOCK_RECOVERY_MIN_BLOCK_MS)
+                && self.slot_last_forced_cancel_attempt[idx].elapsed()
+                    >= Duration::from_millis(SLOT_LOCK_RECOVERY_RETRY_MS)
+            {
+                self.slot_last_forced_cancel_attempt[idx] = now;
+                warn!(
+                    "🧯 Slot lock recovery: canceling tracked orders on {} after {}ms blocked",
+                    slot.as_str(),
+                    blocked_for.as_millis()
+                );
+                self.handle_cancel_slot(slot, CancelReason::Reprice).await;
+            }
+            let _ = self.result_tx.send(OrderResult::SlotBusy { slot }).await;
             return;
         }
+        self.reset_slot_blocked_state(slot);
 
         let notional = (price * size).max(0.0);
         if direction == TradeDirection::Buy
@@ -1138,6 +1285,8 @@ impl Executor {
                 failed_count,
                 order_ids.len(),
             );
+            let _ = self.result_tx.send(OrderResult::SlotBusy { slot }).await;
+            return;
         }
 
         let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
@@ -1163,11 +1312,6 @@ impl Executor {
             reason,
         );
 
-        // ISSUE 6 FIX: Track failures. On partial failure the failed orders remain
-        // in open_orders (handle_cancel_order keeps them), which prevents Executor
-        // from placing a replacement until they are resolved. CancelAck is always
-        // sent to unblock OMS — the open_orders guard in handle_place_bid acts as
-        // the safety net against double-placement on stuck orders.
         let mut failed_count = 0usize;
         for id in &order_ids {
             if !self.handle_cancel_order(id, reason).await {
@@ -1177,13 +1321,17 @@ impl Executor {
 
         if failed_count > 0 {
             warn!(
-                "⚠️ CancelSide {:?}: {}/{} cancel(s) failed — those orders remain tracked in open_orders (placement guard active)",
+                "⚠️ CancelSide {:?}: {}/{} cancel(s) failed — emitting SlotBusy for still-tracked slots",
                 side, failed_count, order_ids.len(),
             );
         }
 
         for slot in OrderSlot::side_slots(side) {
-            let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+            if self.slot_orders(slot).is_empty() {
+                let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+            } else {
+                let _ = self.result_tx.send(OrderResult::SlotBusy { slot }).await;
+            }
         }
     }
 
@@ -1745,6 +1893,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     use super::{ExecutionCmd, Executor, ExecutorConfig, OrderResult, ReconcileFetchMode};
+    use crate::polymarket::messages::{
+        CancelReason, FillEvent, FillStatus, OrderSlot, TradeDirection,
+    };
     use crate::polymarket::types::Side;
 
     fn test_executor() -> Executor {
@@ -1814,5 +1965,83 @@ mod tests {
 
         exec.last_buy_fill_ts[Side::No.index()] = Some(Instant::now() - Duration::from_secs(6));
         assert!(!exec.is_recent_same_side_buy_fill(Side::No));
+    }
+
+    #[tokio::test]
+    async fn matched_partial_fill_under_dust_floor_releases_slot() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(4);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: false,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            None,
+            None,
+        );
+
+        let slot = OrderSlot::NO_BUY;
+        exec.slot_orders_mut(slot).insert("ord-1".to_string(), 0.11);
+        exec.handle_fill_notification(&FillEvent {
+            order_id: "ord-1".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Buy,
+            filled_size: 0.02,
+            price: 0.46,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        })
+        .await;
+
+        assert!(exec.slot_orders(slot).is_empty());
+        let evt = result_rx
+            .try_recv()
+            .expect("OrderFilled expected for dust-closed slot");
+        assert!(matches!(evt, OrderResult::OrderFilled { slot: s } if s == slot));
+    }
+
+    #[tokio::test]
+    async fn cancel_slot_without_client_returns_cancel_ack_and_clears_tracking() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: false,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            None,
+            None,
+        );
+
+        let slot = OrderSlot::YES_BUY;
+        exec.slot_orders_mut(slot)
+            .insert("ord-local".to_string(), 5.0);
+        exec.handle_cancel_slot(slot, CancelReason::Reprice).await;
+
+        let first = result_rx.recv().await.expect("order result expected");
+        assert!(matches!(first, OrderResult::CancelAck { slot: s } if s == slot));
+        assert!(exec.slot_orders(slot).is_empty());
     }
 }

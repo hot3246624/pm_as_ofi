@@ -1,147 +1,282 @@
-# PLAN_Codex 深度分析评估报告
-
-## 一、事故复盘：实盘日志验证
-
-通过 04-08 日志，精确还原了 PLAN_Codex 描述的场景：
-
-关键时序（每行对应日志行号）：
-
-- **03:47:06**  NO 5.00@0.59 Matched (96fef2) → net=0.0  ← 看起来平衡
-- **03:47:18**  metrics: net_diff=0.00 Healthy           ← 系统以为已配对
-- **03:47:34**  NO 5.00@0.54 Matched (39dc67) → YES=5, NO=10, net=-5
-- **03:47:34**  YES 5.00@0.37 Matched (a05526) → YES=10, NO=10, net=0    ← 双侧同时匹配
-- **03:47:34**  Reconcile: NO_BUY 39dc67 missing on exchange → slot freed ← reconcile 抢先释放槽位
-- **03:47:34**  OMS: YES_BUY OrderFilled → Slot freed
-- **03:47:38**  ← 仅 4 秒后 → coordinator 下单 YES@0.32 (基于 net=0 的 working 视图)
-- **03:47:43**  NO 5.00@0.54 Failed (39dc67) → YES=10, NO=5, net=5.0
-- **03:47:43**  YES 5.00@0.32 Matched (06a67b) → YES=15, NO=5, net=10.0  ← 131ms 内填入！取消令在 03:47:43.829 发出，fill 在 03:47:43.960 到达
-
-此后系统陷入 net=10 / Stalled，反复出现 NO 的 Matched→Failed 循环：
-
-| 订单 | Matched | Failed | 间隔 |
-| :--- | :--- | :--- | :--- |
-| 0xead99f | 03:46:13 | 03:46:17 | 4.4s |
-| 0xb35d85 | 03:46:49 | 03:46:53 | 4.0s |
-| 0x39dc67 | 03:47:34 | 03:47:43 | 9.7s ← 致命窗口 |
-| 0x0827a5 | 03:49:47 | 03:49:54 | 7.6s |
-| 0xd6137e | 03:50:22 | 03:50:27 | 5.0s |
-| 0x46551f | 03:50:56 | 03:51:02 | 6.3s |
-
-PLAN_Codex 的问题定位完全准确。
-
----
-
-## 二、计划各部分逐项评分
-
-### 变更 1：双视图库存（settled + working）
-
-- **核心逻辑**：正确 ✅
-- **实现假设**：存在重大缺陷 ❌
-
-**致命发现**：Polymarket User WS 从未发送 Confirmed 事件。
-
-# 跨所有真实交易日志的 status=Confirmed 计数
-- polymarket.log.2026-04-07-real: 0
-- polymarket.log.2026-04-03-real: 0
-- polymarket.log.2026-04-02-real: 0
-- polymarket.log.2026-04-08:      0
-
-`user_ws.rs:324` 映射了 `"MINED" | "CONFIRMED" → FillStatus::Confirmed`，但这两种 event type 在实盘中从未出现。Polymarket 的实际协议是：Matched 即生效，Failed 才是异常事件。没有独立的 Confirmed 流。
-
-**后果**：如果严格按计划实现，settled 视图将永远为空，系统将永久拒绝所有"激进"方向的操作（relief、reanchor、新的 dominant-side 买单），等同于完全停止做市。
-
-**必须修正**：将 Confirmed 触发替换为超时自动晋升（基于观测数据，15–20s 未见 Failed 则晋升为 settled）。
-
----
-
-### 变更 2：非对称权限模型
-
-逻辑正确 ✅，是计划中最有价值的设计原则。
-
-**具体映射**：
-- 放松约束（dominant relief、bucket 改善、risk fill anchor reset） → 仅读 settled ✅
-- 增加保守性（missing-leg pairing、invalidation、stalled 判断） → 读 working ✅
-
-一个需要细化的点：当 settled 长期滞后（超时晋升前），系统会在较长时间内拒绝补充 missing leg 的 NO 单。由于 NO 单本身是"保守行动"（降低 YES-heavy 敞口），应该用 working 视图决策，这点计划说对了。
-
----
-
-### 变更 3：状态机双视图拆分
-
-正确 ✅
-- `StateImprovementReanchor` → settled improvement：防止 provisional relief 触发 anchor reset
-- `FillTriggeredInvalidationCheck` → working worsening：匹配 NO 的 Matched→Failed 后要立即触发
-
-04-08 事故中，如果 `StateImprovementReanchor` 只接受 settled（而非 working net=0），YES@0.32 就不会被允许下单。
-
----
-
-### 变更 4：槽位生命周期修正（Slot Soft Release）
-
-必要但非根因 ⚠️
-
-04-08 事故中，槽位释放实际是 reconcile 触发的，不是 CONFIRMED：
-- 03:47:34.390  Reconcile: NO_BUY 39dc67 missing on exchange → releasing slot
-- 03:47:34.394  OMS: NO_BUY OrderFilled -> Slot freed
-- 03:47:34.394  OMS: YES_BUY OrderFilled -> Slot freed
-
-Reconcile 判定"exchange 无单"后主动释放，与此同时 NO fill 仍处于 provisional Matched 状态。槽位释放本身不是错误（确实需要重建报价），但释放后立刻下单 YES@0.32 才是错误。
-
-根因仍是视图问题：槽位空闲 + working 视图显示 net=0 → 系统认为可以重新下 YES 单。若改为 settled 视图（YES=5, NO=0, net=5.0 → YES-heavy），则拒绝下新的 YES 买单。
-
-Soft Release 机制改进的真正价值在于：防止 slot_active 状态与 exchange 状态出现 split-brain（exchange 无单但 Coordinator 认为 active），这会导致缺失腿无法及时重建。这个修正有独立价值。
-
----
-
-### 变更 5：Matched→Failed 不再"先放松再反悔"
-
-正确 ✅，且包含了一个很好的操作改进：
-
-> **NO failed → working worsening invalidation → Republish**（而不是普通撤单慢路径）
-
-这个即时 Republish 机制可以将 YES@0.32 这类危险单在 Failed 到达时立刻撤销，缩短暴露窗口。不过在 04-08 事故中，131ms 的竞态条件（取消令 03:47:43.829，fill 03:47:43.960）仍然无法被软件层完全消除。计划的价值在于防止 YES@0.32 被下单，而不是加速撤单。
-
----
-
-### 变更 6：可观测性
-
-优秀 ✅，特别是：
-- `decision_view={settled|working}`    ← 让每个决策可追溯
-- `slot_live_on_exchange vs slot_target_present_local`  ← split-brain 诊断
-- `fill_status_conflict(order_id, first=Matched, later=Failed)`  ← 异常模式追踪
-
-这类可观测性在事后分析中价值极高，也方便验证计划实施是否生效。
-
----
-
-## 三、计划遗漏/需补充的内容
-
-### 遗漏 1（严重）：Confirmed 事件不存在
-如上分析，计划必须加入超时晋升机制：
-Matched 后 T=15–20s 内无 Failed → 自动晋升为 settled。基于实测数据，所有 Failed 事件均在 10s 内到达，因此 15s 超时安全。
-
-### 遗漏 2：Reconcile 侧的 provisional 感知
-Reconcile 在 "missing on exchange" 时释放槽位是正确的，但释放前应该检查该槽位是否有尚未 settle 的 pending fill。如果 NO 槽位有 pending fill (Matched，未超时)，reconcile "missing" 发现可能是交易所状态还未刷新，不应立即释放为 Idle。
-
-### 遗漏 3：重复 Matched→Failed 的市场微结构问题
-04-08 的 6 次连续 NO Matched→Failed 并非随机，而是系统性问题（链上流动性或价格水平导致 NO 在该价位无法真实成交）。计划不处理这个底层问题，但加入一个计数器（同一 slot 在 N 次 Matched→Failed 后触发 admission 降级或价格收缩）会有帮助。
-
----
-
-## 四、总体评估
-
-| 维度 | 评分 | 说明 |
-| :--- | :--- | :--- |
-| 问题诊断准确性 | 9/10 | 完全复现日志事故，根因正确 |
-| 架构设计合理性 | 8/10 | 非对称权限模型正确，slot 治理有价值 |
-| 实现可行性 | 5/10 | Confirmed 假设在 Polymarket 上不成立 |
-| 完整性 | 7/10 | 遗漏 timeout-promotion 机制，reconcile 交互 |
-| 测试计划质量 | 7/10 | 覆盖核心场景，但 Test 4 依赖不存在的 Confirmed |
-| 可观测性 | 9/10 | 全面，实用 |
-
-**结论**：计划框架正确，核心设计原则（settled 只允许激进操作、working 允许保守操作）是解决这类问题的正确方向。但在 Polymarket 环境下，Confirmed 事件永远不会来这一实证发现让计划的整个 settled 层无法运作。
-
-**最重要的修订项**：在实现前，将 settled 的推进触发从 `FillStatus::Confirmed` 改为：
-> **"Matched fill 存在超过 T=15s 且未被 Failed 撤销" → 自动晋升为 settled。**
-
-这一改动不影响计划的其他部分，但是它是整个双视图体系能否真正工作的前提。
+     │ PLAN_Codex V2 深度评估与实施计划                                        │
+     │                                                                         │
+     │ Context                                                                 │
+     │                                                                         │
+     │ 用户要求对 docs/PLAN_Codex.md（V2                                       │
+     │ 版本）进行深度分析评估。本次评估基于：                                  │
+     │ - 代码探索（pair_arb.rs、coordinator_order_io.rs、coordinator_execution │
+     │ .rs、executor.rs、coordinator_tests.rs）                                │
+     │ - 2026-04-09 实盘日志暴露的三个根本问题（Ghost Order / RETAIN /         │
+     │ 未对冲单侧积累）                                                        │
+     │ - 2026-04-08 实盘分析的已有结论                                         │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 代码现状与 V2 计划对照                                                  │
+     │                                                                         │
+     │ 1. 已经正确实现的部分（V2 确认即可）                                    │
+     │                                                                         │
+     │ V2 节: 状态层三字段                                                     │
+     │ 代码现状: PairArbStateKey { dominant_side, net_bucket,                  │
+     │ soft_close_active } 已在                                                │
+     │   coordinator_execution.rs:105-132 存在                                 │
+     │ 结论: ✅ 无需改动结构                                                   │
+     │ ────────────────────────────────────────                                │
+     │ V2 节: PairingOrReducing 2-tick retain                                  │
+     │ 代码现状: coordinator_order_io.rs ~410: upward_ticks <= 2.0 + 1e-9 →    │
+     │ retain                                                                  │
+     │ 结论: ✅ 基础逻辑已有，但阈值 V2 改成 3 ticks                           │
+     │ ────────────────────────────────────────                                │
+     │ V2 节: strategic_target 不受 action_price 污染                          │
+     │ 代码现状: pair_arb.rs:186-201 risk-increasing 侧才做 post-only          │
+     │ clamp，pairing                                                          │
+     │   侧保留 strategic target                                               │
+     │ 结论: ✅ 设计意图已存在，只需规范化                                     │
+     │ ────────────────────────────────────────                                │
+     │ V2 节: 状态变化触发强制重评                                             │
+     │ 代码现状: pair_arb_state_changed = true → RETAIN 条件不满足             │
+     │ 结论: ✅ 已实现                                                         │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 2. V2 核心修改项（有代码基础，需要定向改动）                            │
+     │                                                                         │
+     │ 2a. RiskIncreasing 侧缺失 downward republish（最高价值单点修改）        │
+     │                                                                         │
+     │ 现状（coordinator_order_io.rs ~410）：                                  │
+     │ Some(PairArbRiskEffect::RiskIncreasing) => (true,                       │
+     │ "same_side_no_chase"),                                                  │
+     │ // ← 无论 upward 还是 downward，一律 retain                             │
+     │                                                                         │
+     │ 问题：当网络故障期间市场大幅下行，risk-increasing 腿仍挂着 stale        │
+     │ 高价单（因为 price > slot_price 是 upward，触发                         │
+     │ RETAIN），导致成交价远离当前市场。                                      │
+     │                                                                         │
+     │ V2 期望：                                                               │
+     │ - upward：retain                                                        │
+     │ - downward >= 2 ticks：Republish                                        │
+     │                                                                         │
+     │ 所需修改：coordinator_order_io.rs ~410，约 8 行，增加 downward_ticks    │
+     │ 分支。                                                                  │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 2b. PairingOrReducing band 阈值从 2 → 3 ticks                           │
+     │                                                                         │
+     │ 现状：upward_ticks <= 2.0 + 1e-9 → retain（单向，只管 upward）          │
+     │                                                                         │
+     │ V2 期望：双向 3-tick band（|strategic_target - live_target| > 3 ticks   │
+     │ 才 Republish）                                                          │
+     │                                                                         │
+     │ 所需修改：coordinator_order_io.rs ~410，将单向 upward                   │
+     │ 判断改为双向绝对值 > 3 ticks。                                          │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 2c. action_price clamp 显式分离                                         │
+     │                                                                         │
+     │ 现状：risk-increasing 侧在 pair_arb.rs:186-201 已有 maker               │
+     │ clamp，但命名不清晰，pairing 侧也可能被意外 clamp。                     │
+     │                                                                         │
+     │ V2 期望：action_price 只在 place/reprice 动作时才计算，不反向污染       │
+     │ strategic_target 存储值。                                               │
+     │                                                                         │
+     │ 所需修改：pair_arb.rs ~186-201，确保 maker clamp                        │
+     │ 只在"真实下单路径"执行，strategic_target 字段不被覆写。                 │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 2d. admissible 收缩为纯硬约束                                           │
+     │                                                                         │
+     │ 现状：pair_arb_quote_still_admissible() 中包含                          │
+     │ utility_delta、open_edge_improvement 等第二套策略逻辑影响 retain 决策。 │
+     │                                                                         │
+     │ V2 期望：这些移出 admissible，只留：inventory limit、SoftClose、OFI     │
+     │ suppress、tier cap、VWAP、simulate_buy。                                │
+     │                                                                         │
+     │ 所需修改：coordinator_execution.rs admissible 检查路径，剥离            │
+     │ utility/open_edge 逻辑。                                                │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 2e. fragile / PairProgressState 从主报价路径退出                        │
+     │                                                                         │
+     │ 现状：                                                                  │
+     │ - fragile 变化 → fill_recheck_pending = true → RETAIN 条件不满足 →      │
+     │ 触发重评                                                                │
+     │ - PairProgressRegime::Stalled 可能影响某些路径                          │
+     │                                                                         │
+     │ V2 期望：这些保留在 accounting/diagnostics，不进入主报价决策。          │
+     │                                                                         │
+     │ 风险点：fragile 目前是 fill_recheck 的主要触发源。移除后，fill          │
+     │ 事件必须通过 state_key 变化来触发重评，需验证 fill → state_key          │
+     │ 变化链路是否覆盖所有场景。                                              │
+     │                                                                         │
+     │ 所需修改：coordinator_metrics.rs 中 fragile 触发 fill_recheck           │
+     │ 的路径，需先验证 fill → net_diff → state_key 变化能否完全替代。         │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 3. V2 中存在分歧的一项（建议调整）                                      │
+     │                                                                         │
+     │ Section 6：移除 opposite-slot fuse                                      │
+     │                                                                         │
+     │ V2 立场：pair_arb_opposite_slot_blocked() 是"执行层 emergency           │
+     │ patch"，从主决策链移除，只保留 metrics/debug。                          │
+     │                                                                         │
+     │ 代码现状（coordinator_execution.rs ~1062-1079）：                       │
+     │ - 仅在 High bucket（net_diff >= 10）+ risk-increasing 时触发            │
+     │ - 30s 阻断窗口，10s TTL                                                 │
+     │ - 触发源：executor 发出 ExecutionFeedback::SlotBlocked                  │
+     │                                                                         │
+     │ 问题：April 9 的 NO slot 被 Ghost Order 封锁 7 分钟，期间 YES 在        │
+     │ 0.30、0.15 继续累积，形成 net_diff=10 的单侧风险。当前 fuse 在 net_diff │
+     │  已经 >=10 时才触发，相当于亡羊补牢。                                   │
+     │                                                                         │
+     │ 分歧不在于"fuse 好不好"，而在于"用什么替代"：                           │
+     │                                                                         │
+     │ ┌─────────────┬──────────────────────┬───────────────────────────────── │
+     │ ───┐                                                                    │
+     │ │    方案     │         描述         │                风险              │
+     │    │                                                                    │
+     │ ├─────────────┼──────────────────────┼───────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ V2：直接移  │ tier cap + VWAP +    │ 若 slot                          │
+     │ 被物理封锁，这三者都是价格 │                                            │
+     │ │ 除          │ SoftClose 兜底       │ 端约束，对执行端无效             │
+     │    │                                                                    │
+     │ ├─────────────┼──────────────────────┼───────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │ 保留（改为  │ 继续记录 SlotBlocked │                                  │
+     │    │                                                                    │
+     │ │ 纯          │ ，但不影响主路径     │ 等于移除，不解决问题             │
+     │    │                                                                    │
+     │ │ metrics）   │                      │                                  │
+     │    │                                                                    │
+     │ ├─────────────┼──────────────────────┼───────────────────────────────── │
+     │ ───┤                                                                    │
+     │ │             │ coordinator 感知     │                                  │
+     │    │                                                                    │
+     │ │ 升级替代（  │ SlotBusy 持续时长 →  │ 策略层语义，不是 executor        │
+     │    │                                                                    │
+     │ │ 推荐）      │ 主动降低对侧         │ emergency patch                  │
+     │    │                                                                    │
+     │ │             │ risk-increasing 意愿 │                                  │
+     │    │                                                                    │
+     │ └─────────────┴──────────────────────┴───────────────────────────────── │
+     │ ───┘                                                                    │
+     │                                                                         │
+     │ 推荐方案：coordinator 在收到连续 SlotBusy { slot } 时，记录             │
+     │ slot_persistently_busy_since，当 busy_duration > 15s 时，对侧           │
+     │ risk-increasing 候选的 strategic_target 设为                            │
+     │ None（不下单），pairing/reducing 继续允许。这是策略层语义，不依赖       │
+     │ executor 的 emergency flag。                                            │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 必须先修复的 Executor 层 Bug（V2 前提）                                 │
+     │                                                                         │
+     │ Ghost Order Root Cause（reconcile_open_orders ~436-439）                │
+     │                                                                         │
+     │ 代码现状：                                                              │
+     │ // reconcile 时，无论 dust cancel 是否成功，都从 remote mapping 删除    │
+     │ if let Some(remote) = remote_by_slot.get_mut(&slot) {                   │
+     │     for (id, _) in dust_orders {                                        │
+     │         remote.remove(&id);   // ← cancel 失败时也删！                  │
+     │     }                                                                   │
+     │ }                                                                       │
+     │                                                                         │
+     │ 后果：cancel 失败 → dust 从 remote_by_slot 删除 →                       │
+     │ 本地/远端同步逻辑误以为订单已消失 → 本地 tracked 删除 → 下一轮          │
+     │ reconcile 重新发现 → 永无止境循环，且 slot 时而释放时而再锁。           │
+     │                                                                         │
+     │ 注意：handle_fill_notification 和 handle_cancel_slot                    │
+     │ 本身的逻辑已经是正确的（cancel 失败 → SlotBusy，fill + dust →           │
+     │ 自动删除）。问题只在 reconcile 的这个分支。                             │
+     │                                                                         │
+     │ 修复：只有 cancel 成功后才从 remote_by_slot 移除 dust order。cancel     │
+     │ 失败时保留在 remote，让后续的本地/远端同步逻辑保留本地 tracked 状态。   │
+     │                                                                         │
+     │ 文件：executor.rs，约 5 行修改（reconcile_open_orders 的 dust cancel    │
+     │ 循环）。                                                                │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 推荐实施顺序                                                            │
+     │                                                                         │
+     │ Phase 0（前提，应先于 V2 主体）                                         │
+     │                                                                         │
+     │ E1. executor.rs reconcile dust cancel 修复                              │
+     │ - 文件：src/polymarket/executor.rs                                      │
+     │ - 位置：reconcile_open_orders ~436-439                                  │
+     │ - 改动：cancel 失败时不从 remote_by_slot 删除 dust order                │
+     │ - 约 5 行                                                               │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Phase 1（V2 核心，高价值低风险）                                        │
+     │                                                                         │
+     │ C1. RiskIncreasing downward republish                                   │
+     │ - 文件：src/polymarket/coordinator_order_io.rs                          │
+     │ - 位置：~410，RETAIN match 逻辑                                         │
+     │ - 改动：RiskIncreasing 分支增加 downward >= 2 ticks 的 Republish 路径   │
+     │ - 约 8 行                                                               │
+     │                                                                         │
+     │ C2. PairingOrReducing band 扩展为双向 3-tick                            │
+     │ - 文件：src/polymarket/coordinator_order_io.rs                          │
+     │ - 位置：~410，PairingOrReducing 分支                                    │
+     │ - 改动：单向 upward 2-tick → 双向 |delta| > 3 ticks                     │
+     │ - 约 5 行                                                               │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Phase 2（中等复杂度，独立可验证）                                       │
+     │                                                                         │
+     │ C3. action_price / strategic_target 显式分离                            │
+     │ - 文件：src/polymarket/strategy/pair_arb.rs                             │
+     │ - 位置：~186-201，role-aware maker clamp                                │
+     │ - 确保 clamp 只在 place 动作时计算，不写回 strategic_target 字段        │
+     │                                                                         │
+     │ C4. admissible 剥离 utility/open_edge                                   │
+     │ - 文件：src/polymarket/coordinator_execution.rs                         │
+     │ - 位置：admissible 检查路径                                             │
+     │ - 约 10-15 行，需要确认 utility_delta 移除后 skip_util 计数仍保留       │
+     │                                                                         │
+     │ ---                                                                     │
+     │ Phase 3（最高风险，需验证 fill_recheck 替代链）                         │
+     │                                                                         │
+     │ C5. fragile 退出主报价路径                                              │
+     │ - 先验证：fill → net_diff 变化 → state_key 变化 →                       │
+     │ pair_arb_state_changed 是否覆盖所有 fragile 触发的场景                  │
+     │ - 若覆盖完整：coordinator_metrics.rs 中 fragile 触发                    │
+     │ fill_recheck_pending 的路径可以移除                                     │
+     │ - 若不完整：需要补充 fill event 直接触发 state_key 重算的路径           │
+     │                                                                         │
+     │ C6. opposite-slot fuse 升级为策略层 SlotBusy 感知                       │
+     │ - 文件：src/polymarket/coordinator_execution.rs 或 coordinator.rs       │
+     │ - 新增：slot_persistently_busy_since[2]: Option<Instant>                │
+     │ - 当 SlotBusy 持续 > 15s，对侧 risk-increasing 的 strategic_target →    │
+     │ None                                                                    │
+     │ - 替代现有 pair_arb_opposite_slot_blocked() 并移除旧逻辑                │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 验证步骤                                                                │
+     │                                                                         │
+     │ Phase 0 验证                                                            │
+     │                                                                         │
+     │ 1. cargo check                                                          │
+     │ 2. dry-run：reconcile 不再循环发现同一 dust order                       │
+     │                                                                         │
+     │ Phase 1 验证                                                            │
+     │                                                                         │
+     │ 1. cargo test --lib pair_arb（目标：148 / 148 通过）                    │
+     │ 2. 新增测试：                                                           │
+     │   - test_risk_increasing_republishes_on_downward_2tick_drift            │
+     │   - test_pairing_retains_within_3tick_band_both_directions              │
+     │ 3. dry-run：log 中不再出现 stale price 下 RiskIncreasing 单长期挂账     │
+     │                                                                         │
+     │ Phase 3 验证                                                            │
+     │                                                                         │
+     │ 1. 回放 April 9 场景：Ghost Order → SlotBusy 持续 > 15s → 对侧停止      │
+     │ risk-increasing                                                         │
+     │ 2. 确认 net_diff 不再继续单侧累积                                       │
+     │                                                                         │
+     │ ---                                                                     │
+     │ 与上轮计划（April 8）的关系                                             │
+     │                                                                         │
+     │ ┌──────────────────────────┬──────────────────────────────────────┐     │
+     │ │       April 8 Bug        │                 状态                 │     │
+     │ ├──────────────────────────┼──────────────────────────────────────┤     │
+     │ │ Bug #1 skip_inv 误计     │ 独立于 V2，可在 Phase 1 之外单独修复 │     │
+     │ ├──────────────────────────┼──────────────────────────────────────┤     │
+     │ │ 观察 #3 pair_cost 超成本 │ 待确认，不阻塞 V2                    │     │
+     │ └──────────────────────────┴──────────────────────────────────────┘   

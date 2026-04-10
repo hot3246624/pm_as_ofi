@@ -5,47 +5,72 @@ use super::*;
 impl StrategyCoordinator {
     pub(super) async fn handle_slot_release_event(&mut self, event: SlotReleaseEvent) {
         self.soft_release_slot_target(event.slot);
+        let idx = event.slot.index();
+        self.pair_arb_slot_blocked_for_ms[idx] = 0;
+        self.pair_arb_slot_blocked_at[idx] = None;
     }
 
-    fn pair_arb_reanchor_gap_ticks(bucket: PairArbNetBucket) -> Option<f64> {
-        match bucket {
-            PairArbNetBucket::Flat | PairArbNetBucket::Low => Some(1.0),
-            PairArbNetBucket::Mid => Some(2.0),
-            PairArbNetBucket::High => None,
-        }
-    }
-
-    fn pair_arb_should_reanchor_upward(
+    fn pair_arb_should_force_pairing_upward_republish(
         &self,
+        inv: &InventoryState,
         slot: OrderSlot,
-        prev_state: Option<PairArbStateKey>,
-        state_key: PairArbStateKey,
         current_price: f64,
         fresh_price: f64,
+        size: f64,
     ) -> bool {
         if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
             return false;
         }
-        let Some(prev_state) = prev_state else {
-            return false;
-        };
-        if fresh_price <= current_price + 1e-9 {
-            return false;
-        }
-
-        let dominant_relief =
-            prev_state.dominant_side == Some(slot.side) && state_key.dominant_side != Some(slot.side);
-        let bucket_improved =
-            Self::pair_arb_net_bucket_rank(state_key.net_bucket)
-                < Self::pair_arb_net_bucket_rank(prev_state.net_bucket);
-        if !dominant_relief && !bucket_improved {
+        let risk_effect =
+            crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
+                inv, slot.side, size,
+            );
+        if !matches!(
+            risk_effect,
+            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing
+        ) {
             return false;
         }
+        let tick = self.cfg.tick_size.max(1e-9);
+        let delta_ticks = (fresh_price - current_price) / tick;
+        delta_ticks > 2.0 + 1e-9
+    }
 
-        let Some(gap_ticks) = Self::pair_arb_reanchor_gap_ticks(state_key.net_bucket) else {
-            return false;
-        };
-        fresh_price > current_price + gap_ticks * self.cfg.tick_size.max(1e-9) + 1e-9
+    pub(super) fn pair_arb_should_force_freshness_republish(
+        &self,
+        inv: &InventoryState,
+        slot: OrderSlot,
+        current_price: f64,
+        fresh_price: f64,
+        size: f64,
+    ) -> (bool, &'static str, f64) {
+        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
+            return (false, "non_pair_arb", 0.0);
+        }
+        let tick = self.cfg.tick_size.max(1e-9);
+        let delta_ticks = (fresh_price - current_price) / tick;
+        let risk_effect =
+            crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
+                inv, slot.side, size,
+            );
+        match risk_effect {
+            // Same-side risk-increasing leg is state-driven:
+            // no continuous freshness reprice inside the same state bucket.
+            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing => {
+                (false, "risk_increasing_state_driven", delta_ticks.abs())
+            }
+            // Pairing/reducing leg uses an asymmetric role band:
+            // upward > 2 ticks must reprice; downward > 3 ticks must reprice.
+            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing => {
+                if delta_ticks > 2.0 + 1e-9 {
+                    (true, "pairing_upward_freshness_drift", delta_ticks)
+                } else if delta_ticks < -3.0 - 1e-9 {
+                    (true, "pairing_downward_freshness_drift", delta_ticks.abs())
+                } else {
+                    (false, "pairing_within_band", delta_ticks.abs())
+                }
+            }
+        }
     }
 
     pub(super) fn pair_arb_state_key(
@@ -158,7 +183,7 @@ impl StrategyCoordinator {
     pub(super) fn pair_arb_quote_still_admissible(
         &self,
         inv: &InventoryState,
-        ub: &Book,
+        _ub: &Book,
         slot: OrderSlot,
         price: f64,
         size: f64,
@@ -198,11 +223,10 @@ impl StrategyCoordinator {
             Side::Yes => self.ofi_rx.borrow().yes,
             Side::No => self.ofi_rx.borrow().no,
         };
-        let ofi_decision =
-            crate::polymarket::strategy::pair_arb::PairArbStrategy::ofi_decision(
-                Some(side_ofi),
-                risk_effect,
-            );
+        let ofi_decision = crate::polymarket::strategy::pair_arb::PairArbStrategy::ofi_decision(
+            Some(side_ofi),
+            risk_effect,
+        );
         if ofi_decision.suppress {
             return false;
         }
@@ -248,55 +272,7 @@ impl StrategyCoordinator {
         if ceiling <= self.cfg.tick_size + eps || price > ceiling + eps {
             return false;
         }
-
-        let current_metrics = self.derive_inventory_metrics(inv);
-        let current_utility = self.utility_for_inventory(inv, &current_metrics, ub);
-        let current_open_edge = self.open_edge_for_inventory(inv, &current_metrics, ub);
-        let Some(projected) = self.simulate_buy(inv, slot.side, size, price) else {
-            return false;
-        };
-
-        let improves_locked_pnl =
-            projected.metrics.paired_locked_pnl > current_metrics.paired_locked_pnl + eps;
-        let improves_pair_cost = current_metrics.paired_qty > eps
-            && projected.metrics.paired_qty > eps
-            && projected.metrics.pair_cost + eps < current_metrics.pair_cost;
-        let reaches_target_pair = projected.metrics.paired_qty > eps
-            && projected.metrics.pair_cost <= self.cfg.pair_target + eps;
-        if improves_locked_pnl || improves_pair_cost || reaches_target_pair {
-            return true;
-        }
-        if !risk_increasing {
-            return true;
-        }
-
-        let projected_utility = self.utility_for_inventory(
-            &projected.projected_inventory,
-            &projected.metrics,
-            ub,
-        );
-        let utility_delta = projected_utility - current_utility;
-        let min_utility_delta = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_utility_delta_for_risk_increasing(
-            current_metrics.paired_qty,
-            inv.net_diff.abs(),
-            size,
-            self.cfg.tick_size,
-        );
-        if utility_delta + eps < min_utility_delta {
-            return false;
-        }
-
-        let projected_open_edge = self.open_edge_for_inventory(
-            &projected.projected_inventory,
-            &projected.metrics,
-            ub,
-        );
-        let min_open_edge_improvement = crate::polymarket::strategy::pair_arb::PairArbStrategy::min_open_edge_improvement_for_risk_increasing(
-            inv.net_diff.abs(),
-            size,
-            self.cfg.tick_size,
-        );
-        projected_open_edge - current_open_edge + eps >= min_open_edge_improvement
+        self.simulate_buy(inv, slot.side, size, price).is_some()
     }
 
     fn pair_arb_should_retain_existing(
@@ -315,6 +291,22 @@ impl StrategyCoordinator {
         let prev_state = self.slot_pair_arb_state_keys[idx];
         let state_changed = prev_state.is_some() && prev_state != Some(state_key);
         let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
+        let force_pairing_upward_republish = self.pair_arb_should_force_pairing_upward_republish(
+            inv,
+            slot,
+            current.price,
+            intent.price,
+            intent.size,
+        );
+        let (force_freshness_republish, freshness_reason, freshness_delta_ticks) = self
+            .pair_arb_should_force_freshness_republish(
+                inv,
+                slot,
+                current.price,
+                intent.price,
+                intent.size,
+            );
+        let upward_ticks = ((intent.price - current.price) / self.cfg.tick_size.max(1e-9)).max(0.0);
         let still_admissible = !(state_changed || fill_recheck)
             || self.pair_arb_quote_still_admissible(
                 inv,
@@ -324,17 +316,9 @@ impl StrategyCoordinator {
                 current.size,
                 phase,
             );
-        let needs_reanchor = fill_recheck
-            && self.pair_arb_should_reanchor_upward(
-                slot,
-                prev_state,
-                state_key,
-                current.price,
-                intent.price,
-            );
-        if state_changed || fill_recheck {
+        if state_changed || fill_recheck || force_pairing_upward_republish {
             debug!(
-                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} still_admissible={} state_improvement_reanchor={}",
+                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} still_admissible={} pairing_upward_force_republish={} upward_ticks={:.2}",
                 slot.as_str(),
                 state_changed,
                 fill_recheck,
@@ -342,10 +326,21 @@ impl StrategyCoordinator {
                 state_key.dominant_side,
                 state_key.soft_close_active,
                 still_admissible,
-                needs_reanchor,
+                force_pairing_upward_republish,
+                upward_ticks,
             );
         }
-        if !still_admissible || needs_reanchor {
+        if force_freshness_republish {
+            debug!(
+                "🧭 pair_arb freshness reprice | slot={} reason={} freshness_delta_ticks={:.2} fresh={:.4} live={:.4}",
+                slot.as_str(),
+                freshness_reason,
+                freshness_delta_ticks,
+                intent.price,
+                current.price,
+            );
+        }
+        if !still_admissible || force_pairing_upward_republish || force_freshness_republish {
             return false;
         }
 
@@ -777,6 +772,18 @@ impl StrategyCoordinator {
         };
 
         if let Some(intent) = intent {
+            if self.cfg.strategy == StrategyKind::PairArb
+                && slot.direction == TradeDirection::Buy
+                && self.pair_arb_should_force_pairing_upward_republish(
+                    inv,
+                    slot,
+                    current.price,
+                    intent.price,
+                    intent.size,
+                )
+            {
+                return RetentionDecision::Republish;
+            }
             if self.keep_slot_target_if_safe(inv, ub, slot, Some(intent), phase) {
                 self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                 return RetentionDecision::Retain;
@@ -784,8 +791,7 @@ impl StrategyCoordinator {
             return RetentionDecision::Republish;
         }
 
-        if self.cfg.strategy != StrategyKind::GlftMm
-            && self.cfg.strategy != StrategyKind::PairArb
+        if self.cfg.strategy != StrategyKind::GlftMm && self.cfg.strategy != StrategyKind::PairArb
             || !matches!(reject_reason, CancelReason::Reprice)
             || phase != EndgamePhase::Normal
         {
@@ -821,12 +827,10 @@ impl StrategyCoordinator {
                     state_key.soft_close_active,
                     !admissible,
                 );
-                if admissible && self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
-                    self.slot_pair_arb_state_keys[idx] = Some(state_key);
-                    self.slot_pair_arb_fill_recheck_pending[idx] = false;
-                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
-                    return RetentionDecision::Retain;
-                }
+                // PairArb fresh-target authority:
+                // when state changed or fill-recheck is pending and strategy emits no intent,
+                // do not keep old orders solely because they are maker-safe.
+                // They are stale against current strategy state by definition.
                 self.slot_absent_clear_since[idx] = None;
                 return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
             }
@@ -960,8 +964,8 @@ impl StrategyCoordinator {
                     <= inv.net_diff.abs() + 1e-6)
     }
 
-    fn slot_quote_allowed(
-        &self,
+    pub(super) fn slot_quote_allowed(
+        &mut self,
         inv: &InventoryState,
         slot: OrderSlot,
         intent: Option<StrategyIntent>,
@@ -1024,6 +1028,28 @@ impl StrategyCoordinator {
             Side::No => ofi.no,
         };
         side_ofi.blocks(slot.direction)
+    }
+
+    #[allow(dead_code)]
+    fn pair_arb_opposite_slot_blocked(&self, side: Side) -> bool {
+        if self.cfg.strategy != StrategyKind::PairArb {
+            return false;
+        }
+        let opposite = match side {
+            Side::Yes => Side::No,
+            Side::No => Side::Yes,
+        };
+        let slot = OrderSlot::new(opposite, TradeDirection::Buy);
+        let idx = slot.index();
+        let Some(last_ts) = self.pair_arb_slot_blocked_at[idx] else {
+            return false;
+        };
+        if last_ts.elapsed()
+            > std::time::Duration::from_millis(super::PAIR_ARB_OPPOSITE_SLOT_BLOCK_TTL_MS)
+        {
+            return false;
+        }
+        self.pair_arb_slot_blocked_for_ms[idx] >= super::PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS
     }
 
     pub(super) fn decide_provide_side_action(

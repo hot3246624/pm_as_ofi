@@ -45,6 +45,16 @@
 
 若旧单不符合新状态约束，执行 `Republish`（重报价），而不是让旧单跨 bucket 长期留存。
 
+### 2.4 风控边界（无额外 slot 熔断分支）
+
+`pair_arb` 常态路径不再引入“对侧 slot 锁死即阻断另一侧报价”的额外熔断语义。  
+库存风险继续由主策略硬约束负责：
+
+- `max_net_diff`
+- `tier avg-cost cap`
+- `VWAP ceiling`
+- `SoftClose`
+
 ---
 
 ## 3. 价格链（保持 pair-cost-first）
@@ -68,10 +78,64 @@
 ### 执行语义（重要）
 
 - `same-side risk-increasing buy`：
-  - 继续 `no-chase`（新价更高时默认 retain）
+  - 继续 `no-chase`
+  - 同一状态桶内不做连续 freshness 重发
+  - 只在离散状态变化（`dominant_side/net_bucket/soft_close`）或 fill 重评触发时重发
 - `pairing / risk-reducing buy`：
-  - 若新价比 live 价高超过 `2 ticks`，允许 upward republish
-  - `<=2 ticks` 的微小上行仍 retain，避免抖动
+  - upward `> 2 ticks` 时允许 `Republish`
+  - downward `> 3 ticks` 时允许 `Republish`
+  - 其余小幅漂移仍 retain，避免抖动
+
+补充：
+- 当发生 `state_key_changed` 或 `fill_recheck_pending` 且该 slot 本 tick 没有新 intent 时，
+  不再仅因 “maker-safe” 保留旧单；会按 soft clear 退出，让下一次 fresh target 生效。
+
+### `fresh target` 是什么
+
+`fresh target` 不是“立刻要发到交易所的价格”，而是当前 tick 基于：
+
+- 最新 `strategy_inventory`
+- 最新盘口
+- 当前 `PairArbStateKey`
+- 当前 `pair_target / VWAP ceiling / tier cap / OFI / SoftClose`
+
+重新算出来的**战略目标价**。
+
+真实发单价还要再经过一层执行动作约束：
+
+- `pairing / risk-reducing buy`：只在真实 place / reprice 时做 post-only clamp
+- `same-side risk-increasing buy`：保持 no-chase
+
+所以“`fresh target` 偏离 live 价超过角色带宽”并不等于每 tick 都会 reprice；它还要同时经过：
+
+- 角色判定（`pairing` 还是 `risk_increasing`）
+- `state_key_changed / fill_recheck_pending`
+- role-specific retain 规则
+- debounce / publish band
+
+之后才会真的进入 `Republish`。
+
+### 哪些事件会触发重评/重发
+
+`pair_arb` 不会因为任意微小价格波动就强制重评。离散重评触发器是：
+
+- `Matched`
+- `Failed`
+- `Merge sync`
+- `SoftClose` 进入
+- 新 round 开始
+
+此外，`pairing / risk-reducing` 腿保留带宽重发：
+- `|fresh - live|` 穿越角色带宽（up `>2` / down `>3` ticks）时可重发  
+- `same-side risk-increasing` 腿不走这条连续重发路径
+
+### slot busy 保护
+
+如果 executor 发现该 slot 其实还有 tracked live order：
+
+- 不再把它当成普通 `OrderFailed`
+- OMS 会进入 `PendingCancel` 并主动发 `CancelSlot`
+- 也就是说，这属于**生命周期恢复**，不是新的策略价格判断
 
 ---
 
