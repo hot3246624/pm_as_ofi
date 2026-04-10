@@ -10,32 +10,6 @@ impl StrategyCoordinator {
         self.pair_arb_slot_blocked_at[idx] = None;
     }
 
-    fn pair_arb_should_force_pairing_upward_republish(
-        &self,
-        inv: &InventoryState,
-        slot: OrderSlot,
-        current_price: f64,
-        fresh_price: f64,
-        size: f64,
-    ) -> bool {
-        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
-            return false;
-        }
-        let risk_effect =
-            crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
-                inv, slot.side, size,
-            );
-        if !matches!(
-            risk_effect,
-            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing
-        ) {
-            return false;
-        }
-        let tick = self.cfg.tick_size.max(1e-9);
-        let delta_ticks = (fresh_price - current_price) / tick;
-        delta_ticks > 2.0 + 1e-9
-    }
-
     pub(super) fn pair_arb_should_force_freshness_republish(
         &self,
         inv: &InventoryState,
@@ -59,16 +33,10 @@ impl StrategyCoordinator {
             crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing => {
                 (false, "risk_increasing_state_driven", delta_ticks.abs())
             }
-            // Pairing/reducing leg uses an asymmetric role band:
-            // upward > 2 ticks must reprice; downward > 3 ticks must reprice.
+            // Pairing/reducing leg is also state/event-driven:
+            // hold between discrete state triggers (fill/failed/merge/phase/reset).
             crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing => {
-                if delta_ticks > 2.0 + 1e-9 {
-                    (true, "pairing_upward_freshness_drift", delta_ticks)
-                } else if delta_ticks < -3.0 - 1e-9 {
-                    (true, "pairing_downward_freshness_drift", delta_ticks.abs())
-                } else {
-                    (false, "pairing_within_band", delta_ticks.abs())
-                }
+                (false, "pairing_holds_between_triggers", delta_ticks.abs())
             }
         }
     }
@@ -291,13 +259,6 @@ impl StrategyCoordinator {
         let prev_state = self.slot_pair_arb_state_keys[idx];
         let state_changed = prev_state.is_some() && prev_state != Some(state_key);
         let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
-        let force_pairing_upward_republish = self.pair_arb_should_force_pairing_upward_republish(
-            inv,
-            slot,
-            current.price,
-            intent.price,
-            intent.size,
-        );
         let (force_freshness_republish, freshness_reason, freshness_delta_ticks) = self
             .pair_arb_should_force_freshness_republish(
                 inv,
@@ -306,7 +267,6 @@ impl StrategyCoordinator {
                 intent.price,
                 intent.size,
             );
-        let upward_ticks = ((intent.price - current.price) / self.cfg.tick_size.max(1e-9)).max(0.0);
         let still_admissible = !(state_changed || fill_recheck)
             || self.pair_arb_quote_still_admissible(
                 inv,
@@ -316,9 +276,9 @@ impl StrategyCoordinator {
                 current.size,
                 phase,
             );
-        if state_changed || fill_recheck || force_pairing_upward_republish {
+        if state_changed || fill_recheck {
             debug!(
-                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} still_admissible={} pairing_upward_force_republish={} upward_ticks={:.2}",
+                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} still_admissible={}",
                 slot.as_str(),
                 state_changed,
                 fill_recheck,
@@ -326,8 +286,6 @@ impl StrategyCoordinator {
                 state_key.dominant_side,
                 state_key.soft_close_active,
                 still_admissible,
-                force_pairing_upward_republish,
-                upward_ticks,
             );
         }
         if force_freshness_republish {
@@ -340,7 +298,7 @@ impl StrategyCoordinator {
                 current.price,
             );
         }
-        if !still_admissible || force_pairing_upward_republish || force_freshness_republish {
+        if !still_admissible || force_freshness_republish {
             return false;
         }
 
@@ -351,13 +309,13 @@ impl StrategyCoordinator {
         if self.keep_existing_maker_if_safe(
             inv,
             slot.side,
-            intent.direction,
-            intent.price,
-            intent.size,
-            intent.price,
+            current.direction,
+            current.price,
+            current.size,
+            current.price,
             best_bid,
             best_ask,
-            intent.reason,
+            current.reason,
         ) {
             self.slot_pair_arb_state_keys[idx] = Some(state_key);
             self.slot_pair_arb_fill_recheck_pending[idx] = false;
@@ -772,16 +730,11 @@ impl StrategyCoordinator {
         };
 
         if let Some(intent) = intent {
-            if self.cfg.strategy == StrategyKind::PairArb
-                && slot.direction == TradeDirection::Buy
-                && self.pair_arb_should_force_pairing_upward_republish(
-                    inv,
-                    slot,
-                    current.price,
-                    intent.price,
-                    intent.size,
-                )
-            {
+            if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+                if self.pair_arb_should_retain_existing(inv, ub, slot, intent, phase) {
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    return RetentionDecision::Retain;
+                }
                 return RetentionDecision::Republish;
             }
             if self.keep_slot_target_if_safe(inv, ub, slot, Some(intent), phase) {

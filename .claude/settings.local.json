@@ -19,7 +19,8 @@
       "WebFetch(domain:webcache.googleusercontent.com)",
       "WebFetch(domain:polymarketanalytics.com)",
       "WebFetch(domain:polymarketwhales.info)",
-      "Bash(awk -F 'fn' '{print NR, $2}')"
+      "Bash(awk -F 'fn' '{print NR, $2}')",
+      "Bash(awk -F':' '{print $2}')"
     ]
   }
 }

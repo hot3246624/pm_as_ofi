@@ -380,10 +380,8 @@ impl StrategyCoordinator {
                 needs_reprice = true;
             }
             // PairArb is BUY-only and pair-cost-first:
-            // - same-side risk-increasing leg is state-driven (no continuous
-            //   freshness reprice inside one state bucket)
-            // - pairing/reducing leg uses an asymmetric role band:
-            //   upward > 2 ticks, downward > 3 ticks
+            // both candidate roles are state/event-driven and hold between
+            // discrete triggers (fill/failed/merge/phase/reset).
             if needs_reprice
                 && self.cfg.strategy == StrategyKind::PairArb
                 && slot_direction == Some(slot.direction)
@@ -400,13 +398,7 @@ impl StrategyCoordinator {
                     ) => (true, "same_side_state_driven"),
                     Some(
                         crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing,
-                    ) => {
-                        if delta_ticks > 0.0 + 1e-9 {
-                            (delta_ticks <= 2.0 + 1e-9, "small_pairing_up_drift")
-                        } else {
-                            (delta_ticks >= -3.0 - 1e-9, "small_pairing_down_drift")
-                        }
-                    }
+                    ) => (true, "pairing_holds_between_triggers"),
                     None => (true, "same_side_no_chase"),
                 };
                 if retain && !pair_arb_force_freshness_republish {
@@ -423,28 +415,9 @@ impl StrategyCoordinator {
                     return;
                 }
                 debug!(
-                    "🔁 PairArb freshness reprice {:?}: candidate_role={:?} pairing_upward_reprice={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                    slot,
-                    pair_arb_risk_effect,
-                    matches!(
-                        pair_arb_risk_effect,
-                        Some(
-                            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing
-                        )
-                    ) && delta_ticks > 0.0 + 1e-9,
-                    price,
-                    slot_price,
-                    delta_ticks,
+                    "🔁 PairArb freshness reprice {:?}: candidate_role={:?} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                    slot, pair_arb_risk_effect, price, slot_price, delta_ticks,
                 );
-                if matches!(
-                    pair_arb_risk_effect,
-                    Some(
-                        crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing
-                    )
-                ) {
-                    self.stats.pair_arb_pairing_upward_reprice =
-                        self.stats.pair_arb_pairing_upward_reprice.saturating_add(1);
-                }
             }
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
                 let shadow_age = self

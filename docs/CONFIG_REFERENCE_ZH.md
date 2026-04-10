@@ -57,7 +57,7 @@
 `pair_arb` 当前报价主语义（固定内部行为，不开放 env）：
 - 策略主脑只读单一实时库存（`Matched` 即时生效，`Failed` 立即回滚，`Merge` 做校正）
 - 状态切换仍以 `dominant_side / net_bucket / soft_close_active` 为骨架
-- live quote 保留语义是 `same-side` 状态驱动、`pairing` 带宽驱动（up `>2` / down `>3` ticks）
+- live quote 保留语义统一为离散状态驱动（`Matched/Failed/Merge/SoftClose/round reset` + `state_key` 变化）；不再基于连续 `up/down ticks` 漂移重发
 - 成交最终性相关统计仍保留在 accounting / diagnostics，不再直接驱动 `pair_arb` 报价
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）

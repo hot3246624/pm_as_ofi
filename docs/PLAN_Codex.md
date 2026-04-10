@@ -1,170 +1,114 @@
-# Pair_arb 全链路职责收敛计划 V2
+## Pair_arb 重发语义收敛计划（采纳 `PLAN_Claude_temp`）
 
-## Summary
-`pair_arb` 收敛目标不是“更简单”，而是**单一策略脑 + 单一发布制度 + 明确执行约束**。
+### Summary
+把 `pair_arb` 的发布语义彻底收敛为“离散库存事件驱动”，不再让 `pairing/reducing` 因连续价格漂移触发重发。
 
-本轮固定基线：
-- 策略：`pair_arb`
-- 市场：`BTC 15m`
-- 风险参数：沿用当前 live `.env`，`tier1/tier2 = 0.70 / 0.30`
-- 不新增绝对价格地板
-- 不引入 taker / HardClose / 市价去风险
+最终语义固定为：
+- `RiskIncreasing`：状态驱动
+- `PairingOrReducing`：也改为状态/事件驱动
+- 两次离散触发之间，已有 live 单默认 retain
+- 不再使用 `pairing up>2 / down>3` 的连续 band 重发
 
-最终架构分工锁死为三层：
-- **策略层**：只算连续 `strategic_target`
-- **状态层**：只维护离散 `PairArbStateKey`
-- **执行层**：只决定 live order 是否仍代表当前状态下的目标，并负责 post-only 落地
-
-## Key Changes
-### 1. 策略层只保留一个连续目标价
-`pair_arb` 继续只算 `strategic_target`，价格链固定为：
-1. A-S 基础价
-2. 三段 skew
-3. tier avg-cost cap（当前基线 `0.70 / 0.30`）
-4. OFI subordinate shaping
-5. `VWAP ceiling`
-6. `safe_price`
-
-固定语义：
-- `strategic_target` 是策略层唯一权威，不直接等于交易所挂单价
-- 不再在策略层引入：
-  - `PairProgressRegime`
-  - `fragile`
-  - `state improvement reanchor`
-  - `opposite-slot blocked`
-- `pairing / reducing` 与 `risk-increasing` 的区别，只保留在执行层发布规则里
-
-### 2. 状态层只保留离散状态，不再派生第二套策略语义
-唯一状态键固定为：
-- `dominant_side = Yes | No | Flat`
-- `net_bucket = Flat | Low | Mid | High`
-- `soft_close_active = bool`
-
-状态变化触发器固定为：
+### Key Changes
+#### 1. 统一 `pair_arb` 的重发触发源
+`pair_arb` 的重评/重发只允许由以下离散事件触发：
 - `Matched`
-- `Failed rollback`
+- `Failed`
 - `Merge sync`
 - `SoftClose entered`
 - `Round reset`
+- `PairArbStateKey` 变化
+  - `dominant_side`
+  - `net_bucket`
+  - `soft_close_active`
 
-固定语义：
-- `|net_diff|` 到/穿越 `5 / 10 / 0`，必定导致 `state_key` 变化
-- `Merge sync` 只视为 inventory-change 事件，不再衍生额外策略模式
-- `settled / working / fragile`、`PairProgressState / Stalled` 继续可保留在 accounting / diagnostics，但不再进入 `pair_arb` 主报价逻辑
+这意味着：
+- 不再因为市场在两次 fill 之间上下波动 `2/3 ticks` 就重发
+- partial fill 不需要单独定义“多少才进入监控”
+- 每一次 fill 事件本身就是唯一的精确重评节点
 
-### 3. 发布制度改为 band-driven，而不是 raw target-driven
-为避免 `fresh target` 的细小上移或下移都在下层放大成 churn，执行层不再对 raw `strategic_target` 逐 tick 追踪。
+#### 2. 移除 `PairingOrReducing` 的连续 freshness reprice
+在 [coordinator_execution.rs](/Users/hot/web3Scientist/pm_as_ofi/src/polymarket/coordinator_execution.rs)：
+- `pair_arb_should_force_pairing_upward_republish(...)` 对 `PairingOrReducing` 返回 `false`
+- `pair_arb_should_force_freshness_republish(...)` 对 `PairingOrReducing` 返回 `(false, "pairing_holds_between_triggers", 0.0)`
 
-固定规则：
-- 先由策略层给出连续 `strategic_target`
-- 执行层只根据 **角色 + band** 判定是否 `Republish`
+在 [coordinator_order_io.rs](/Users/hot/web3Scientist/pm_as_ofi/src/polymarket/coordinator_order_io.rs)：
+- 删除 `PairingOrReducing` 的 `upward > 2 ticks / downward > 3 ticks` retain-vs-republish 分支
+- 改为：
+  - `RiskIncreasing`：`same_side_state_driven`
+  - `PairingOrReducing`：`pairing_holds_between_triggers`
 
-角色规则固定为：
+#### 3. 保留当前离散库存脑，不新增第二套状态机
+继续保留当前 `PairArbStateKey`：
+- `dominant_side`
+- `net_bucket = Flat / Low / Mid / High`
+- `soft_close_active`
 
-- `RiskIncreasing`
-  - upward：`retain`
-  - downward：仅当 `strategic_target <= live_target - 2 ticks` 时 `Republish`
-  - `state_key` 变化：强制重评
+并继续保持：
+- `|net_diff|` 到/穿越 `5 / 10 / 0` 时强制重评
+- `net_diff = 0` 时恢复 flat-state 双边基线
+- 旧 tier-limited 单不得跨状态残留
 
-- `PairingOrReducing`
-  - 只要 `|strategic_target - live_target| > 3 ticks` 才 `Republish`
-  - `<= 3 ticks` 统一 `retain`
-  - `state_key` 变化：强制重评
+不新增：
+- 新的 band
+- 新的 brake
+- 新的 fragile 主路径
+- 新的对冲专用小状态机
 
-这条规则是**双向带宽**，不是只管 upward。
-因此：
-- 小幅上移不会风暴
-- 小幅下移也不会风暴
-- 真正跨状态或明显偏离时才重发
+#### 4. `VWAP ceiling / tier cap / OFI / SoftClose` 保持职责不变
+保留当前价格链：
+1. A-S 基础价
+2. 三段 skew
+3. tier avg-cost cap
+4. same-side OFI subordinate shaping
+5. `VWAP ceiling`
+6. maker clamp
+7. `safe_price`
+8. `simulate_buy`
 
-### 4. post-only 只在动作时生效，不再拖着 pairing 腿追跌
-执行层拆成两层价格：
-- `strategic_target`
-- `action_price`
+固定职责：
+- `VWAP ceiling`：pair-cost 硬约束
+- `tier cap`：主仓侧高失衡离散上限
+- OFI：只塑形 `RiskIncreasing`
+- `SoftClose`：最后 `45s` 只阻断 `same-side risk-increasing buy`
 
-固定语义：
-- `strategic_target`：策略真实意图价
-- `action_price`：只有在真实 `place/reprice` 时，为满足 post-only 才执行 `min(strategic_target, ask - margin)`
+#### 5. 文档同步
+更新 [STRATEGY_PAIR_ARB_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/STRATEGY_PAIR_ARB_ZH.md)：
+- 明确写死：
+  - `pair_arb` 的重发不是连续价格跟踪
+  - `pairing/reducing` 也只由离散库存事件驱动
+  - 两次 fill 之间默认 retain
+- 删除任何仍暗示 `pairing up2/down3` 的描述
 
-结果：
-- pairing 腿不再因为市场继续下跌，就被长期 ask-1tick 拖着往下跑
-- same-side 与 pairing 的“执行价”约束不再反向篡改“策略价”
+### Test Plan
+1. `PairingOrReducing` 不再连续追价
+- 同一 `state_key` 下，市场上下波动 `2-3 ticks`
+- `pairing` live 单保持不动
+- 不触发 freshness reprice
 
-### 5. `admissible` 收缩成纯硬约束检查
-`pair_arb_quote_still_admissible()` 保留，但只检查硬约束：
-- inventory limit
-- `SoftClose`
-- OFI suppress
-- tier cap
-- `VWAP ceiling`
-- `simulate_buy` 有效性
+2. fill 事件触发唯一重评
+- partial fill `3/5`
+- 立刻重评一次并更新 live quote
+- 后续无新 fill 时，即使 baseline 波动，也不再重发
 
-移出 retain 阶段的内容：
-- `utility_delta`
-- `open_edge_improvement`
-- “改善 locked pnl 就特许保留”之类的第二套策略逻辑
+3. `5 / 10 / 0` 状态切换
+- `net_diff` 穿越 `5 / 10`
+- fresh target 切到对应 tier
+- 历史单必须重评
+- `net_diff -> 0` 时恢复 flat-state
 
-这些只属于“生成新候选”的策略层，不再属于“旧单可否保留”的执行层。
+4. `Failed` 回滚
+- `Matched` 后收到 `Failed`
+- 回滚 inventory
+- 若 `state_key` 变化则重评/重发
+- 不引入第二套 fragile 报价脑
 
-### 6. 删除 `pair_arb` 常态路径中的 opposite-slot fuse
-`pair_arb_opposite_slot_blocked()` 不再参与常态 `slot_quote_allowed / reject_reason`。
+5. SoftClose
+- 最后 `45s`
+- 只允许 pairing/reducing
+- 不再继续扩大单边敞口
 
-固定处理：
-- 该机制从主决策链中移除
-- 若保留，只保留为 metrics / debug 观测
-- 当前库存风险继续由：
-  - tier cap
-  - `VWAP ceiling`
-  - `state_key`
-  - `SoftClose`
-  控制
-
-理由：
-- 它是执行层 emergency patch，不是优雅的策略语义
-- 在你当前 `0.70 / 0.30` 基线下，继续把它放在主路径只会制造职责混乱
-
-### 7. 文档与配置统一
-统一文档和运行基线：
-- `STRATEGY_PAIR_ARB_ZH.md` 改成唯一可信说明
-- `CONFIG_REFERENCE_ZH.md` 与 `.env.example` 同步到当前锁定基线，避免再出现 `0.80 / 0.60` 与 live `.env` 脱节
-- 文档明确写死：
-  - `strategic_target` 与 `action_price` 的区别
-  - `Merge sync` 只是 inventory-change，不是额外策略模式
-  - `pairing` 与 `same-side` 的差异只发生在发布规则，不发生在第二套状态机里
-
-## Test Plan
-1. **双向小漂移不 churn**
-- `strategic_target` 小幅上/下移动 `<= band`
-- 不得触发 `Republish`
-- downward 也必须验证，不能只测 upward
-
-2. **5/10/0 状态切换**
-- `|net_diff|` 穿越 `5 / 10 / 0`
-- 历史 live quotes 必须重评
-- 不允许旧单跨 bucket 留存
-
-3. **Pairing 腿不再追跌**
-- 市场继续单边下行时
-- `pairing` 腿的 `strategic_target` 保持由策略决定
-- 只有真实动作时才 clamp 到 post-only safe 价格
-- 不得再出现 “策略价也被 ask-1tick 持续拉低”
-
-4. **same-side 保守语义保留**
-- `risk-increasing` upward 继续 no-chase
-- 但 downward 明显偏离时必须重发
-- 不允许一直保留过时高价单
-
-5. **Merge sync**
-- 如果 surviving side 未清零且 VWAP 不变
-- 仍只视为 inventory-change trigger
-- 不允许引入额外的策略模式或特殊 reanchor
-
-6. **移除 opposite-slot fuse 后回放**
-- 高失衡场景下，风险仍由 tier cap / `VWAP ceiling` / `SoftClose` 控住
-- 不得出现因为移除 fuse 就重新放大 same-side 风险的副作用
-
-## Assumptions
-- 当前 live 验证基线锁定为 `PM_PAIR_ARB_TIER_1_MULT=0.70`、`PM_PAIR_ARB_TIER_2_MULT=0.30`
-- 这轮不再继续扩展 `PairProgressState`、`fragile`、`settled/working` 对 `pair_arb` 的影响
-- 这轮不把 `debounce_ms`、`reprice_threshold` 当第一优先级；先把职责边界理顺
-- 这轮不做更激进的库存参数调整，除非职责收敛后 live 仍证明主仓侧 build 过于激进
+### Assumptions
+- 当前第一矛盾不是 tier 参数，而是 `pairing/reducing` 被错误地连续带宽化
+- `PLAN_Claude_temp` 的核心判断成立：对 `pairing` 来说，fill 之间的 `2/3 tick` baseline 漂移主要是噪声，不应主导发布
+- 本轮不新增任何新参数，不继续扩张状态机

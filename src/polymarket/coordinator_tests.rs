@@ -1864,7 +1864,7 @@ async fn test_pair_arb_state_bucket_change_republishes_higher_buy_bid() {
 }
 
 #[tokio::test]
-async fn test_pair_arb_pairing_side_allows_upward_reprice_when_drift_exceeds_two_ticks() {
+async fn test_pair_arb_pairing_side_holds_between_state_triggers_on_upward_drift() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     config.debounce_ms = 0;
@@ -1898,16 +1898,16 @@ async fn test_pair_arb_pairing_side_allows_upward_reprice_when_drift_exceeds_two
         .await;
 
     match timeout(Duration::from_millis(50), er.recv()).await {
-        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
-            assert_eq!(target.slot(), slot);
-            assert!((target.price - 0.39).abs() < 1e-9);
-        }
-        other => panic!("expected upward reprice for pairing side, got {:?}", other),
+        Err(_) => {}
+        other => panic!(
+            "expected no upward reprice for pairing side between state triggers, got {:?}",
+            other
+        ),
     }
 }
 
 #[tokio::test]
-async fn test_pair_arb_pairing_side_retains_small_upward_drift_within_two_ticks() {
+async fn test_pair_arb_pairing_side_retains_small_upward_drift_between_triggers() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     config.debounce_ms = 0;
@@ -1936,7 +1936,7 @@ async fn test_pair_arb_pairing_side_retains_small_upward_drift_within_two_ticks(
     coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
     coord.no_last_ts = Instant::now() - Duration::from_secs(2);
 
-    // +2 ticks should still retain for pairing leg to avoid micro-churn.
+    // Pairing leg remains state/event-driven and should retain between triggers.
     coord
         .slot_place_or_reprice(slot, 0.37, 5.0, BidReason::Provide, None)
         .await;
@@ -1944,14 +1944,14 @@ async fn test_pair_arb_pairing_side_retains_small_upward_drift_within_two_ticks(
     match timeout(Duration::from_millis(50), er.recv()).await {
         Err(_) => {}
         other => panic!(
-            "expected no upward reprice for pairing side within 2 ticks, got {:?}",
+            "expected no upward reprice for pairing side between state triggers, got {:?}",
             other
         ),
     }
 }
 
 #[tokio::test]
-async fn test_pair_arb_pairing_side_retains_small_downward_drift_within_three_ticks() {
+async fn test_pair_arb_pairing_side_retains_small_downward_drift_between_triggers() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     config.debounce_ms = 0;
@@ -1987,14 +1987,14 @@ async fn test_pair_arb_pairing_side_retains_small_downward_drift_within_three_ti
     match timeout(Duration::from_millis(50), er.recv()).await {
         Err(_) => {}
         other => panic!(
-            "expected no downward reprice for pairing side within 3 ticks, got {:?}",
+            "expected no downward reprice for pairing side between state triggers, got {:?}",
             other
         ),
     }
 }
 
 #[tokio::test]
-async fn test_pair_arb_pairing_side_reprices_downward_beyond_three_ticks() {
+async fn test_pair_arb_pairing_side_holds_on_large_downward_drift_between_triggers() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     config.debounce_ms = 0;
@@ -2028,12 +2028,9 @@ async fn test_pair_arb_pairing_side_reprices_downward_beyond_three_ticks() {
         .await;
 
     match timeout(Duration::from_millis(50), er.recv()).await {
-        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
-            assert_eq!(target.slot(), slot);
-            assert!((target.price - 0.36).abs() < 1e-9);
-        }
+        Err(_) => {}
         other => panic!(
-            "expected downward reprice for pairing side beyond 3 ticks, got {:?}",
+            "expected no downward reprice for pairing side between state triggers, got {:?}",
             other
         ),
     }
@@ -2106,7 +2103,7 @@ fn test_pair_arb_opposite_slot_blocked_does_not_gate_pair_arb_quotes() {
 }
 
 #[test]
-fn test_pair_arb_retention_republishes_pairing_side_on_large_downward_drift() {
+fn test_pair_arb_retention_republishes_pairing_side_when_resting_quote_is_not_post_only_safe() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     let (_o, _i, _m, _k, _er, mut coord) = make(config);
@@ -2148,12 +2145,13 @@ fn test_pair_arb_retention_republishes_pairing_side_on_large_downward_drift() {
     );
     assert!(
         matches!(decision, RetentionDecision::Republish),
-        "pairing side should republish when fresh target drifts downward by more than 2 ticks"
+        "pairing side should republish when the resting quote is no longer post-only safe"
     );
 }
 
 #[test]
-fn test_pair_arb_retention_republishes_risk_increasing_side_on_downward_drift() {
+fn test_pair_arb_retention_republishes_risk_increasing_side_when_resting_quote_is_not_post_only_safe()
+{
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     let (_o, _i, _m, _k, _er, mut coord) = make(config);
@@ -2195,12 +2193,12 @@ fn test_pair_arb_retention_republishes_risk_increasing_side_on_downward_drift() 
     );
     assert!(
         matches!(decision, RetentionDecision::Republish),
-        "risk-increasing side should republish when fresh target drifts downward by more than 1 tick"
+        "risk-increasing side should republish when the resting quote is no longer post-only safe"
     );
 }
 
 #[test]
-fn test_pair_arb_retention_republishes_pairing_side_on_large_upward_drift_without_state_change() {
+fn test_pair_arb_retention_keeps_pairing_side_on_large_upward_drift_without_state_change() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     let (_o, _i, _m, _k, _er, mut coord) = make(config);
@@ -2241,8 +2239,8 @@ fn test_pair_arb_retention_republishes_pairing_side_on_large_upward_drift_withou
         EndgamePhase::Normal,
     );
     assert!(
-        matches!(decision, RetentionDecision::Republish),
-        "pairing side should republish when fresh target drifts >2 ticks upward even without state-key change"
+        matches!(decision, RetentionDecision::Retain),
+        "pairing side should retain between state triggers even on large upward drift"
     );
 }
 

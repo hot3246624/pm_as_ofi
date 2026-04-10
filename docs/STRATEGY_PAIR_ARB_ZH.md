@@ -20,18 +20,27 @@
 
 策略不再使用 `settled / pending / fragile` 驱动报价分支。
 
-### 2.2 阶梯逻辑（按 `|net_diff|`）
+### 2.2 阶梯逻辑（按状态键）
 
-- `|net_diff| = 0`：
-  - 回到 flat-state，按市场 + `pair_target` 发送双边买单
-- `0 < |net_diff| < 5`：
-  - 仍是轻偏置双边
-- `5 <= |net_diff| < 10`：
-  - 主仓侧进入 `tier1` ceiling
-- `|net_diff| >= 10`：
-  - 主仓侧进入 `tier2` ceiling
+`pair_arb` 不是盯着某个精确净仓值，而是盯住 `PairArbStateKey`：
 
-一旦 `|net_diff|` 到达/穿越 `5` 或 `10`，下一单就按新梯度上限计算。
+- `dominant_side`: `Yes | No | None`
+- `net_bucket`: `Flat | Low(<5) | Mid(<10) | High(>=10)`
+- `soft_close_active`: `true | false`
+
+定价语义：
+
+- `net_bucket=Flat/Low`：轻偏置双边
+- `net_bucket=Mid`：主仓侧进入 `tier1` ceiling
+- `net_bucket=High`：主仓侧进入 `tier2` ceiling
+
+触发语义：
+
+- `net_bucket` 穿越（`5/10`）会触发强制重评
+- `dominant_side` 翻转（符号变化）会触发强制重评
+- `soft_close_active` 变化会触发强制重评
+
+`net_diff≈0` 只是 `dominant_side=None` 的特殊情况，实盘可能因跳越不稳定停留在精确 `0`。
 
 ### 2.3 状态变化后的旧单处理
 
@@ -43,7 +52,7 @@
 - `SoftClose` 进入
 - 新 round 开始
 
-若旧单不符合新状态约束，执行 `Republish`（重报价），而不是让旧单跨 bucket 长期留存。
+若旧单不符合新状态约束，执行 `Republish`（重报价），而不是让旧单跨状态长期留存。
 
 ### 2.4 风控边界（无额外 slot 熔断分支）
 
@@ -82,9 +91,8 @@
   - 同一状态桶内不做连续 freshness 重发
   - 只在离散状态变化（`dominant_side/net_bucket/soft_close`）或 fill 重评触发时重发
 - `pairing / risk-reducing buy`：
-  - upward `> 2 ticks` 时允许 `Republish`
-  - downward `> 3 ticks` 时允许 `Republish`
-  - 其余小幅漂移仍 retain，避免抖动
+  - 与 same-side 一样，采用离散状态驱动
+  - 在两次离散触发之间默认 retain，不做连续 tick 漂移重发
 
 补充：
 - 当发生 `state_key_changed` 或 `fill_recheck_pending` 且该 slot 本 tick 没有新 intent 时，
@@ -125,9 +133,8 @@
 - `SoftClose` 进入
 - 新 round 开始
 
-此外，`pairing / risk-reducing` 腿保留带宽重发：
-- `|fresh - live|` 穿越角色带宽（up `>2` / down `>3` ticks）时可重发  
-- `same-side risk-increasing` 腿不走这条连续重发路径
+在两个离散触发之间，`pairing / risk-reducing` 与 `same-side risk-increasing` 都默认 retain；
+不再因为连续 `fresh-live` tick 漂移触发重发。
 
 ### slot busy 保护
 
@@ -167,7 +174,7 @@ OFI 不参与状态机切换，不定义 `5/10` 阶梯，不替代 `pair_target`
 
 重点观察四项：
 
-1. `|net_diff|` 穿越 `5/10` 后，下一单是否立即切到对应 tier ceiling
-2. `net_diff` 回到 `0` 后，是否恢复 flat-state 双边报价
-3. 配对腿旧单是否在状态变化后及时 republish，而非长期滞留
+1. `net_bucket` 穿越 `5/10` 后，下一单是否立即切到对应 tier ceiling
+2. `dominant_side` 翻转或 `net_bucket` 改善后，是否按新状态重评而非保留旧状态报价
+3. 配对腿旧单是否在离散触发后及时 republish，而非长期滞留
 4. 最后 `45s` 是否只出现 pairing/reducing，不再继续扩大单边
