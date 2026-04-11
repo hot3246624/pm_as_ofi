@@ -1,4 +1,4 @@
-use tracing::debug;
+use tracing::{debug, info};
 
 use super::*;
 
@@ -44,10 +44,10 @@ impl StrategyCoordinator {
     pub(super) fn pair_arb_state_key(
         &self,
         inv: &InventoryState,
-        phase: EndgamePhase,
+        _phase: EndgamePhase,
     ) -> PairArbStateKey {
         let abs_net = inv.net_diff.abs();
-        let net_bucket = if abs_net <= 1e-9 {
+        let net_bucket = if abs_net <= PAIR_ARB_NET_EPS {
             PairArbNetBucket::Flat
         } else if abs_net < 5.0 {
             PairArbNetBucket::Low
@@ -56,9 +56,9 @@ impl StrategyCoordinator {
         } else {
             PairArbNetBucket::High
         };
-        let dominant_side = if inv.net_diff > 1e-9 {
+        let dominant_side = if inv.net_diff > PAIR_ARB_NET_EPS {
             Some(Side::Yes)
-        } else if inv.net_diff < -1e-9 {
+        } else if inv.net_diff < -PAIR_ARB_NET_EPS {
             Some(Side::No)
         } else {
             None
@@ -66,7 +66,7 @@ impl StrategyCoordinator {
         PairArbStateKey {
             dominant_side,
             net_bucket,
-            soft_close_active: phase >= EndgamePhase::SoftClose,
+            risk_open_cutoff_active: self.pair_arb_risk_open_cutoff_active(),
         }
     }
 
@@ -79,23 +79,25 @@ impl StrategyCoordinator {
         if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
             return false;
         }
-        if inv.net_diff.abs() + 1e-6 < 10.0 {
-            return false;
-        }
         let risk_effect =
             crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
                 inv, slot.side, size,
             );
         if !matches!(
             risk_effect,
-            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing
+                crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing
         ) {
             return false;
         }
-        matches!(
-            self.pair_arb_progress_regime(inv, std::time::Instant::now()),
-            PairProgressRegime::Stalled
-        )
+        if inv.net_diff.abs() + PAIR_ARB_NET_EPS < 10.0 {
+            return false;
+        }
+        let since = self
+            .pair_arb_progress_state
+            .last_pair_progress_at
+            .unwrap_or(self.market_start);
+        std::time::Instant::now().saturating_duration_since(since)
+            >= std::time::Duration::from_secs(60)
     }
 
     // Policy-3: Execution (hedge/provide dispatch)
@@ -231,28 +233,22 @@ impl StrategyCoordinator {
         }
 
         let eps = 1e-9;
-        if slot.side == Side::Yes && inv.net_diff >= 5.0 && inv.yes_avg_cost > 0.0 {
-            let mult = if inv.net_diff >= 10.0 {
-                self.cfg.pair_arb_tier_2_mult
-            } else {
-                self.cfg.pair_arb_tier_1_mult
-            };
-            if price > inv.yes_avg_cost * mult + eps {
-                return false;
-            }
-        }
-        if slot.side == Side::No && inv.net_diff <= -5.0 && inv.no_avg_cost > 0.0 {
-            let mult = if inv.net_diff <= -10.0 {
-                self.cfg.pair_arb_tier_2_mult
-            } else {
-                self.cfg.pair_arb_tier_1_mult
-            };
-            if price > inv.no_avg_cost * mult + eps {
+        if let Some(cap) =
+            crate::polymarket::strategy::pair_arb::PairArbStrategy::tier_cap_price_for_candidate(
+                inv,
+                slot.side,
+                size,
+                risk_effect,
+                self.cfg.pair_arb_tier_1_mult,
+                self.cfg.pair_arb_tier_2_mult,
+            )
+        {
+            if price > cap + eps {
                 return false;
             }
         }
 
-        let effective_pair_cost_margin = if inv.net_diff.abs() < 1e-9 {
+        let effective_pair_cost_margin = if inv.net_diff.abs() < PAIR_ARB_NET_EPS {
             0.0
         } else {
             self.cfg.pair_arb_pair_cost_safety_margin
@@ -328,13 +324,13 @@ impl StrategyCoordinator {
             );
         if state_changed || fill_recheck {
             debug!(
-                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} still_admissible={}",
+                "🧭 pair_arb retain recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} risk_open_cutoff_active={} still_admissible={}",
                 slot.as_str(),
                 state_changed,
                 fill_recheck,
                 state_key.net_bucket,
                 state_key.dominant_side,
-                state_key.soft_close_active,
+                state_key.risk_open_cutoff_active,
                 still_admissible,
             );
         }
@@ -365,7 +361,9 @@ impl StrategyCoordinator {
             && (current.price - intent.price).abs() <= self.cfg.tick_size.max(1e-9)
             && (current.size - intent.size).abs() <= 0.1;
         if state_changed && !state_aligned {
-            debug!(
+            self.stats.pair_arb_state_forced_republish =
+                self.stats.pair_arb_state_forced_republish.saturating_add(1);
+            info!(
                 "🧭 pair_arb_state_forced_republish | slot={} prev_state={:?} current_state={:?} live={:.4}@{:.2} fresh={:.4}@{:.2}",
                 slot.as_str(),
                 prev_state,
@@ -698,6 +696,11 @@ impl StrategyCoordinator {
             if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
                 self.slot_pair_arb_intent_state_keys[slot.index()] =
                     intent.map(|_| self.pair_arb_state_key(inv, phase));
+                self.slot_pair_arb_intent_epochs[slot.index()] =
+                    intent.map(|_| self.pair_arb_decision_epoch);
+            } else {
+                self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+                self.slot_pair_arb_intent_epochs[slot.index()] = None;
             }
             if intent.is_some() {
                 self.slot_absent_clear_since[slot.index()] = None;
@@ -880,13 +883,13 @@ impl StrategyCoordinator {
                     phase,
                 );
                 debug!(
-                    "🧭 pair_arb absent-intent recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} softclose_blocked={} state_change_republish={}",
+                "🧭 pair_arb absent-intent recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} risk_open_cutoff_active={} state_change_republish={}",
                     slot.as_str(),
                     state_changed,
                     fill_recheck,
                     state_key.net_bucket,
                     state_key.dominant_side,
-                    state_key.soft_close_active,
+                    state_key.risk_open_cutoff_active,
                     !admissible,
                 );
                 if admissible && self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {

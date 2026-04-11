@@ -21,10 +21,22 @@ impl StrategyCoordinator {
             self.last_endgame_phase = st.endgame_phase;
         }
         if self.cfg.strategy == StrategyKind::PairArb {
-            if phase_changed {
+            let risk_open_cutoff_active = self.pair_arb_risk_open_cutoff_active();
+            let risk_open_cutoff_changed =
+                risk_open_cutoff_active != self.pair_arb_last_risk_open_cutoff_active;
+            if phase_changed || risk_open_cutoff_changed {
                 self.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()] = true;
                 self.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()] = true;
+                self.pair_arb_bump_decision_epoch("phase_or_risk_window_changed");
             }
+            if risk_open_cutoff_changed {
+                info!(
+                    "🧭 pair_arb risk_open_cutoff_changed={} (t-{}s)",
+                    risk_open_cutoff_active,
+                    self.seconds_to_market_end().unwrap_or_default(),
+                );
+            }
+            self.pair_arb_last_risk_open_cutoff_active = risk_open_cutoff_active;
             if st.endgame_phase >= EndgamePhase::SoftClose {
                 // PairArb only adopts the minimal SoftClose semantics:
                 // block risk-increasing buys late in the round, but keep
@@ -261,14 +273,13 @@ impl StrategyCoordinator {
 
     pub(super) fn pair_arb_soft_close_blocks_side(&self, inv: &InventoryState, side: Side) -> bool {
         let deadband = 0.5 * self.cfg.bid_size;
-        if inv.net_diff.abs() <= deadband + 1e-9 {
+        if inv.net_diff.abs() <= deadband + PAIR_ARB_NET_EPS {
             return true;
         }
-        let eps = 1e-6;
-        if inv.net_diff > eps {
+        if inv.net_diff > PAIR_ARB_NET_EPS {
             return side == Side::Yes;
         }
-        if inv.net_diff < -eps {
+        if inv.net_diff < -PAIR_ARB_NET_EPS {
             return side == Side::No;
         }
         false

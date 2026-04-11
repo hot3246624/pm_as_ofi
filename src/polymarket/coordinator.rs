@@ -50,6 +50,7 @@ const LIVE_OBS_PAIR_ARB_HEAT_EVENTS_WARN: u64 = 20;
 const LIVE_OBS_PAIR_ARB_SOFTENED_ALERT_RATIO: f64 = 0.50;
 const LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT: u64 = 1_000;
 const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
+pub(crate) const PAIR_ARB_NET_EPS: f64 = 1e-6;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
@@ -654,6 +655,8 @@ struct Stats {
     pair_arb_skip_utility_delta: u64,
     pair_arb_skip_open_edge_not_improved: u64,
     pair_arb_opposite_slot_blocked: u64,
+    pair_arb_stale_target_dropped: u64,
+    pair_arb_state_forced_republish: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -917,6 +920,8 @@ pub struct StrategyCoordinator {
     slot_absent_clear_since: [Option<Instant>; 4],
     slot_pair_arb_state_keys: [Option<PairArbStateKey>; 4],
     slot_pair_arb_intent_state_keys: [Option<PairArbStateKey>; 4],
+    slot_pair_arb_intent_epochs: [Option<u64>; 4],
+    slot_pair_arb_target_epochs: [Option<u64>; 4],
     slot_pair_arb_fill_recheck_pending: [bool; 4],
     slot_pair_arb_cross_reject_extra_ticks: [u8; 4],
     slot_pair_arb_last_cross_rejected_action_price: [Option<f64>; 4],
@@ -946,6 +951,8 @@ pub struct StrategyCoordinator {
     last_metrics_log_ts: Instant,
     pair_arb_gate_last_log_ts: Instant,
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
+    pair_arb_decision_epoch: u64,
+    pair_arb_last_risk_open_cutoff_active: bool,
     last_settled_inv_snapshot: InventoryState,
     last_working_inv_snapshot: InventoryState,
     pair_arb_progress_state: PairProgressState,
@@ -1018,6 +1025,8 @@ pub struct CoordinatorObsSnapshot {
     pub pair_arb_skip_utility_delta: u64,
     pub pair_arb_skip_open_edge_not_improved: u64,
     pub pair_arb_opposite_slot_blocked: u64,
+    pub pair_arb_stale_target_dropped: u64,
+    pub pair_arb_state_forced_republish: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1032,7 +1041,7 @@ pub(crate) enum PairArbNetBucket {
 pub(crate) struct PairArbStateKey {
     pub(crate) dominant_side: Option<Side>,
     pub(crate) net_bucket: PairArbNetBucket,
-    pub(crate) soft_close_active: bool,
+    pub(crate) risk_open_cutoff_active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1161,6 +1170,8 @@ impl StrategyCoordinator {
             slot_absent_clear_since: std::array::from_fn(|_| None),
             slot_pair_arb_state_keys: std::array::from_fn(|_| None),
             slot_pair_arb_intent_state_keys: std::array::from_fn(|_| None),
+            slot_pair_arb_intent_epochs: std::array::from_fn(|_| None),
+            slot_pair_arb_target_epochs: std::array::from_fn(|_| None),
             slot_pair_arb_fill_recheck_pending: [false; 4],
             slot_pair_arb_cross_reject_extra_ticks: [0; 4],
             slot_pair_arb_last_cross_rejected_action_price: std::array::from_fn(|_| None),
@@ -1187,6 +1198,8 @@ impl StrategyCoordinator {
             last_metrics_log_ts,
             pair_arb_gate_last_log_ts: now,
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
+            pair_arb_decision_epoch: 0,
+            pair_arb_last_risk_open_cutoff_active: false,
             last_settled_inv_snapshot: InventoryState::default(),
             last_working_inv_snapshot: InventoryState::default(),
             pair_arb_progress_state: PairProgressState::default(),
@@ -1316,14 +1329,14 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
             self.stats.policy_transition_events, self.stats.policy_noop_ticks,
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
-            self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked,
+            self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked, self.stats.pair_arb_stale_target_dropped, self.stats.pair_arb_state_forced_republish,
             self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none, self.stats.pair_arb_skip_utility_delta, self.stats.pair_arb_skip_open_edge_not_improved,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
@@ -1377,6 +1390,8 @@ impl StrategyCoordinator {
             pair_arb_skip_utility_delta: self.stats.pair_arb_skip_utility_delta,
             pair_arb_skip_open_edge_not_improved: self.stats.pair_arb_skip_open_edge_not_improved,
             pair_arb_opposite_slot_blocked: self.stats.pair_arb_opposite_slot_blocked,
+            pair_arb_stale_target_dropped: self.stats.pair_arb_stale_target_dropped,
+            pair_arb_state_forced_republish: self.stats.pair_arb_state_forced_republish,
         };
         let _ = obs_tx.send(snapshot);
     }

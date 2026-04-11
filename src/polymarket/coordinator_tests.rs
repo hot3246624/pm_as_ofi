@@ -554,7 +554,7 @@ fn test_recent_cross_reject_disables_glft_keep_band() {
 }
 
 #[test]
-fn test_pair_arb_quote_still_admissible_uses_zero_margin_in_flat_state() {
+fn test_pair_arb_quote_still_admissible_uses_current_bucket_tier_semantics() {
     let (_, _, _, _, _, coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
     let flat = InventoryState {
         yes_qty: 5.0,
@@ -569,7 +569,16 @@ fn test_pair_arb_quote_still_admissible_uses_zero_margin_in_flat_state() {
         &flat,
         &ub,
         OrderSlot::YES_BUY,
-        0.55,
+        0.32,
+        5.0,
+        EndgamePhase::Normal,
+    ));
+    // Flat state should not pre-apply tier1 based on full-size projection.
+    assert!(coord.pair_arb_quote_still_admissible(
+        &flat,
+        &ub,
+        OrderSlot::YES_BUY,
+        0.42,
         5.0,
         EndgamePhase::Normal,
     ));
@@ -2328,7 +2337,7 @@ fn test_pair_arb_absent_intent_state_change_soft_clears_even_if_maker_safe() {
     coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
         dominant_side: Some(Side::Yes),
         net_bucket: PairArbNetBucket::Mid,
-        soft_close_active: false,
+        risk_open_cutoff_active: false,
     });
 
     let inv = InventoryState {
@@ -2394,6 +2403,109 @@ fn test_pair_arb_progress_regime_enters_stalled_after_no_progress() {
 }
 
 #[test]
+fn test_pair_arb_progress_updates_on_working_only_advance() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.bid_size = 5.0;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+    let now = Instant::now();
+
+    coord.pair_arb_progress_state.last_pair_progress_at = Some(now - Duration::from_secs(120));
+    coord.pair_arb_progress_state.last_pair_progress_paired_qty = 0.0;
+
+    let snapshot = InventorySnapshot {
+        settled: InventoryState::default(),
+        working: InventoryState {
+            yes_qty: 5.0,
+            yes_avg_cost: 0.41,
+            no_qty: 5.0,
+            no_avg_cost: 0.47,
+            net_diff: 0.0,
+            ..Default::default()
+        },
+        pending_yes_qty: 0.0,
+        pending_no_qty: 0.0,
+        fragile: true,
+    };
+    coord.observe_pair_arb_inventory_transition(&snapshot, now);
+
+    assert_eq!(
+        coord.pair_arb_progress_state.last_pair_progress_at,
+        Some(now),
+        "working-only paired progress should refresh stalled timer even when settled is unchanged"
+    );
+    assert!(
+        (coord.pair_arb_progress_state.last_pair_progress_paired_qty - 5.0).abs()
+            < PAIR_ARB_NET_EPS
+    );
+    assert_eq!(
+        coord.pair_arb_decision_epoch, 1,
+        "working-only inventory transition should still bump decision epoch"
+    );
+}
+
+#[test]
+fn test_pair_arb_progress_delta_scales_with_bid_size() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.bid_size = 10.0; // progress delta = max(10*0.2, 0.25) = 2.0
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+    let now = Instant::now();
+
+    coord.pair_arb_progress_state.last_pair_progress_at = None;
+    coord.pair_arb_progress_state.last_pair_progress_paired_qty = 0.0;
+
+    let small_progress = InventorySnapshot {
+        settled: InventoryState::default(),
+        working: InventoryState {
+            yes_qty: 1.0,
+            yes_avg_cost: 0.40,
+            no_qty: 1.0,
+            no_avg_cost: 0.42,
+            net_diff: 0.0,
+            ..Default::default()
+        },
+        pending_yes_qty: 0.0,
+        pending_no_qty: 0.0,
+        fragile: true,
+    };
+    coord.observe_pair_arb_inventory_transition(&small_progress, now);
+    assert!(
+        coord.pair_arb_progress_state.last_pair_progress_at.is_none(),
+        "paired progress below bid-size scaled threshold should not refresh progress clock"
+    );
+    assert!(
+        coord.pair_arb_progress_state.last_pair_progress_paired_qty.abs() < PAIR_ARB_NET_EPS,
+        "paired progress marker should stay unchanged when delta is below threshold"
+    );
+
+    let large_progress = InventorySnapshot {
+        settled: InventoryState::default(),
+        working: InventoryState {
+            yes_qty: 2.1,
+            yes_avg_cost: 0.40,
+            no_qty: 2.1,
+            no_avg_cost: 0.42,
+            net_diff: 0.0,
+            ..Default::default()
+        },
+        pending_yes_qty: 0.0,
+        pending_no_qty: 0.0,
+        fragile: true,
+    };
+    coord.observe_pair_arb_inventory_transition(&large_progress, now + Duration::from_secs(1));
+    assert_eq!(
+        coord.pair_arb_progress_state.last_pair_progress_at,
+        Some(now + Duration::from_secs(1)),
+        "paired progress should update once scaled threshold is crossed"
+    );
+    assert!(
+        (coord.pair_arb_progress_state.last_pair_progress_paired_qty - 2.1).abs()
+            < PAIR_ARB_NET_EPS
+    );
+}
+
+#[test]
 fn test_pair_arb_fill_recheck_rechecks_absent_intent_even_without_state_change() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
@@ -2411,7 +2523,7 @@ fn test_pair_arb_fill_recheck_rechecks_absent_intent_even_without_state_change()
     coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
         dominant_side: Some(Side::Yes),
         net_bucket: PairArbNetBucket::High,
-        soft_close_active: false,
+        risk_open_cutoff_active: false,
     });
     coord.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
 
@@ -2460,7 +2572,7 @@ fn test_pair_arb_absent_intent_clears_stalled_high_risk_increasing_order() {
     coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
         dominant_side: Some(Side::Yes),
         net_bucket: PairArbNetBucket::High,
-        soft_close_active: false,
+        risk_open_cutoff_active: false,
     });
     coord.pair_arb_progress_state.last_pair_progress_at = Some(Instant::now() - Duration::from_secs(61));
 
@@ -2509,7 +2621,7 @@ fn test_pair_arb_absent_intent_keeps_stalled_pairing_leg() {
     coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
         dominant_side: Some(Side::Yes),
         net_bucket: PairArbNetBucket::High,
-        soft_close_active: false,
+        risk_open_cutoff_active: false,
     });
     coord.pair_arb_progress_state.last_pair_progress_at = Some(Instant::now() - Duration::from_secs(61));
 
@@ -2568,7 +2680,7 @@ async fn test_pair_arb_state_improvement_reanchors_higher_quote_after_fill() {
     coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
         dominant_side: Some(Side::No),
         net_bucket: PairArbNetBucket::Low,
-        soft_close_active: false,
+        risk_open_cutoff_active: false,
     });
     coord.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
 
@@ -2622,7 +2734,7 @@ async fn test_pair_arb_worsening_reanchors_missing_side_quote() {
     coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
         dominant_side: Some(Side::No),
         net_bucket: PairArbNetBucket::Low,
-        soft_close_active: false,
+        risk_open_cutoff_active: false,
     });
     coord.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
 
@@ -2644,6 +2756,31 @@ async fn test_pair_arb_worsening_reanchors_missing_side_quote() {
             other
         ),
     }
+}
+
+#[tokio::test]
+async fn test_pair_arb_stale_target_epoch_is_dropped_before_place() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+    let inv = InventoryState::default();
+    let _ = i.send(inv);
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_pair_arb_intent_state_keys[slot.index()] =
+        Some(coord.pair_arb_state_key(&inv, EndgamePhase::Normal));
+    coord.slot_pair_arb_intent_epochs[slot.index()] = Some(1);
+    coord.pair_arb_decision_epoch = 2;
+
+    coord
+        .slot_place_or_reprice(slot, 0.45, 5.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(50), er.recv()).await.is_err(),
+        "stale target epoch should be dropped before any place/reprice command"
+    );
+    assert_eq!(coord.stats.pair_arb_stale_target_dropped, 1);
 }
 
 #[test]

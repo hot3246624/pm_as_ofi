@@ -4,11 +4,28 @@ use tracing::{debug, info};
 
 use super::*;
 
-const PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA: f64 = 1.0;
+const PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_RATIO: f64 = 0.2;
+const PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_FLOOR: f64 = 0.25;
 const PAIR_ARB_STALLED_SECS: u64 = 60;
-const FLOAT_INV_EPS: f64 = 1e-6;
+const FLOAT_INV_EPS: f64 = PAIR_ARB_NET_EPS;
 
 impl StrategyCoordinator {
+    fn pair_arb_progress_min_paired_qty_delta(&self) -> f64 {
+        (self.cfg.bid_size * PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_RATIO)
+            .max(PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_FLOOR)
+    }
+
+    pub(super) fn pair_arb_bump_decision_epoch(&mut self, reason: &'static str) {
+        if self.cfg.strategy != StrategyKind::PairArb {
+            return;
+        }
+        self.pair_arb_decision_epoch = self.pair_arb_decision_epoch.saturating_add(1);
+        debug!(
+            "🧭 pair_arb_decision_epoch={} reason={}",
+            self.pair_arb_decision_epoch, reason
+        );
+    }
+
     pub(crate) fn pair_arb_net_bucket_for_abs(abs_net: f64) -> PairArbNetBucket {
         if abs_net <= FLOAT_INV_EPS {
             PairArbNetBucket::Flat
@@ -75,11 +92,13 @@ impl StrategyCoordinator {
     fn pair_arb_reset_risk_fill_anchor(&mut self, side: Side) {
         match side {
             Side::Yes => {
-                self.pair_arb_progress_state.last_risk_increasing_fill_price_yes = None;
+                self.pair_arb_progress_state
+                    .last_risk_increasing_fill_price_yes = None;
                 self.pair_arb_progress_state.last_risk_fill_net_bucket_yes = None;
             }
             Side::No => {
-                self.pair_arb_progress_state.last_risk_increasing_fill_price_no = None;
+                self.pair_arb_progress_state
+                    .last_risk_increasing_fill_price_no = None;
                 self.pair_arb_progress_state.last_risk_fill_net_bucket_no = None;
             }
         }
@@ -115,8 +134,27 @@ impl StrategyCoordinator {
             return;
         }
 
+        self.pair_arb_bump_decision_epoch("inventory_transition");
         self.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()] = true;
         self.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()] = true;
+
+        // Pair-progress drives stalled gating; it must follow working inventory
+        // even when settled inventory has not changed yet.
+        let working_metrics = self.derive_inventory_metrics(&working);
+        let progress_delta = self.pair_arb_progress_min_paired_qty_delta();
+        if working_metrics.paired_qty + FLOAT_INV_EPS
+            < self.pair_arb_progress_state.last_pair_progress_paired_qty
+        {
+            // Rebase after rollback/reconcile so progress detection cannot get stuck.
+            self.pair_arb_progress_state.last_pair_progress_paired_qty = working_metrics.paired_qty;
+        }
+        if working_metrics.paired_qty
+            >= self.pair_arb_progress_state.last_pair_progress_paired_qty + progress_delta
+                - FLOAT_INV_EPS
+        {
+            self.pair_arb_progress_state.last_pair_progress_at = Some(now);
+            self.pair_arb_progress_state.last_pair_progress_paired_qty = working_metrics.paired_qty;
+        }
 
         if !settled_changed {
             self.last_working_inv_snapshot = working;
@@ -159,15 +197,6 @@ impl StrategyCoordinator {
         }
 
         let prev_metrics = self.derive_inventory_metrics(&prev);
-        let current_metrics = self.derive_inventory_metrics(&inv);
-        if current_metrics.paired_qty
-            >= self.pair_arb_progress_state.last_pair_progress_paired_qty
-                + PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA
-                - FLOAT_INV_EPS
-        {
-            self.pair_arb_progress_state.last_pair_progress_at = Some(now);
-            self.pair_arb_progress_state.last_pair_progress_paired_qty = current_metrics.paired_qty;
-        }
 
         let prev_abs = prev.net_diff.abs();
         let curr_abs = inv.net_diff.abs();
@@ -178,7 +207,8 @@ impl StrategyCoordinator {
                 inv.yes_qty,
                 inv.yes_avg_cost,
             ) {
-                self.pair_arb_progress_state.last_risk_increasing_fill_price_yes = Some(price);
+                self.pair_arb_progress_state
+                    .last_risk_increasing_fill_price_yes = Some(price);
                 self.pair_arb_progress_state.last_risk_fill_net_bucket_yes = Some(curr_bucket);
             }
             if let Some(price) = Self::pair_arb_detect_buy_fill_price(
@@ -187,7 +217,8 @@ impl StrategyCoordinator {
                 inv.no_qty,
                 inv.no_avg_cost,
             ) {
-                self.pair_arb_progress_state.last_risk_increasing_fill_price_no = Some(price);
+                self.pair_arb_progress_state
+                    .last_risk_increasing_fill_price_no = Some(price);
                 self.pair_arb_progress_state.last_risk_fill_net_bucket_no = Some(curr_bucket);
             }
         }
