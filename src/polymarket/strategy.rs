@@ -140,6 +140,7 @@ impl StrategyQuotes {
             .pair_arb_skip_open_edge_not_improved
             .saturating_add(1);
     }
+
 }
 
 impl StrategyKind {

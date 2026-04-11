@@ -34,6 +34,20 @@
 - `net_bucket=Mid`：主仓侧进入 `tier1` ceiling
 - `net_bucket=High`：主仓侧仍有 `tier2` 理论上限；当 `pair_progress_regime=Stalled` 时，`risk-increasing` 新单在准入层被阻断（只允许对侧配对）
 
+`tier` 对 `risk-increasing` 的收紧阈值与状态桶解耦：
+
+- 仅对 `risk-increasing` 候选生效
+- 当前 `|net_diff| >= 3.5` 触发 `tier1`（提前于状态桶）
+- 当前 `|net_diff| >= 8` 触发 `tier2`（提前于状态桶）
+- 全局 `net_bucket` 仍按 `5/10` 切换
+
+因此非整数边界行为是连续且可解释的，例如：
+
+- 当前 `|net_diff|=3.4`：仍不进 `tier1`
+- 当前 `|net_diff|=3.9`：`risk-increasing` 已进入 `tier1`，但 `net_bucket` 仍可能在 `Low`
+- 当前 `|net_diff|=8.0` 或 `8.5`：`risk-increasing` 已进入 `tier2`，`net_bucket` 仍按 `5/10` 决定
+- 只有 fill 让当前 `|net_diff|` 穿越 `5/10` 后，状态桶才切换
+
 触发语义：
 
 - `net_bucket` 穿越（`5/10`）会触发强制重评
@@ -170,7 +184,7 @@ OFI 继续使用当前引擎，但只做从属塑形：
   - `toxic`：`-2 ticks`
   - `toxic + saturated`：suppress
 
-OFI 不参与状态机切换，不定义 `5/10` 阶梯，不替代 `pair_target` 主目标。
+OFI 不参与状态机切换，不定义 `5/10` 状态阶梯，不替代 `pair_target` 主目标。
 
 ---
 
@@ -178,7 +192,7 @@ OFI 不参与状态机切换，不定义 `5/10` 阶梯，不替代 `pair_target`
 
 重点观察四项：
 
-1. `net_bucket` 穿越 `5/10` 后，下一单是否立即切到对应 tier ceiling
+1. `net_bucket` 穿越 `5/10` 后，下一单是否立即切到对应状态语义
 2. `dominant_side` 翻转或 `net_bucket` 改善后，是否按新状态重评而非保留旧状态报价
 3. 配对腿旧单是否在离散触发后及时 republish，而非长期滞留
 4. 最后 `45s` 是否只出现 pairing/reducing，不再继续扩大单边

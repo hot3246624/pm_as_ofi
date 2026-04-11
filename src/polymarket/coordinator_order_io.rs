@@ -75,6 +75,14 @@ impl StrategyCoordinator {
         } else {
             None
         };
+        let pair_arb_expected_epoch = if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+        {
+            self.slot_pair_arb_intent_epochs[slot.index()]
+        } else {
+            None
+        };
         let pair_arb_current_state = if self.cfg.strategy == StrategyKind::PairArb
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
@@ -85,16 +93,53 @@ impl StrategyCoordinator {
         } else {
             None
         };
-        if let (Some(expected_state), Some(current_state)) =
-            (pair_arb_expected_state, pair_arb_current_state)
+        let pair_arb_current_epoch = if self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+        {
+            Some(self.pair_arb_decision_epoch)
+        } else {
+            None
+        };
+        if let (Some(expected_epoch), Some(current_epoch)) =
+            (pair_arb_expected_epoch, pair_arb_current_epoch)
+        {
+            if expected_epoch != current_epoch {
+                self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+                self.slot_pair_arb_intent_epochs[slot.index()] = None;
+                self.stats.pair_arb_stale_target_dropped =
+                    self.stats.pair_arb_stale_target_dropped.saturating_add(1);
+                info!(
+                    "🧭 pair_arb_stale_target_dropped | slot={} pair_arb_target_epoch={} pair_arb_current_epoch={} target_price={:.4} target_size={:.2}",
+                    slot.as_str(),
+                    expected_epoch,
+                    current_epoch,
+                    price,
+                    size,
+                );
+                return;
+            }
+        }
+        if let (Some(expected_state), Some(current_state), Some(expected_epoch), Some(current_epoch)) =
+            (
+                pair_arb_expected_state,
+                pair_arb_current_state,
+                pair_arb_expected_epoch,
+                pair_arb_current_epoch,
+            )
         {
             self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+            self.slot_pair_arb_intent_epochs[slot.index()] = None;
             if expected_state != current_state {
-                debug!(
-                    "🧭 pair_arb_stale_target_dropped | slot={} expected_state={:?} current_state={:?} target_price={:.4} target_size={:.2}",
+                self.stats.pair_arb_stale_target_dropped =
+                    self.stats.pair_arb_stale_target_dropped.saturating_add(1);
+                info!(
+                    "🧭 pair_arb_stale_target_dropped | slot={} expected_state={:?} current_state={:?} pair_arb_target_epoch={} pair_arb_current_epoch={} target_price={:.4} target_size={:.2}",
                     slot.as_str(),
                     expected_state,
                     current_state,
+                    expected_epoch,
+                    current_epoch,
                     price,
                     size,
                 );
@@ -105,6 +150,7 @@ impl StrategyCoordinator {
             && slot.direction == TradeDirection::Buy
         {
             self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+            self.slot_pair_arb_intent_epochs[slot.index()] = None;
         }
         if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
             price = self.glft_clamp_slot_target_price(slot, price);
@@ -842,6 +888,8 @@ impl StrategyCoordinator {
         self.slot_last_publish_reason[slot.index()] = None;
         self.slot_pair_arb_state_keys[slot.index()] = None;
         self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+        self.slot_pair_arb_target_epochs[slot.index()] = None;
+        self.slot_pair_arb_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         match scope {
             SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
@@ -881,6 +929,8 @@ impl StrategyCoordinator {
         self.slot_shadow_since[slot.index()] = None;
         self.slot_last_publish_reason[slot.index()] = None;
         self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+        self.slot_pair_arb_target_epochs[slot.index()] = None;
+        self.slot_pair_arb_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
         self.soft_reset_slot_publish_state(slot);
         match slot {
@@ -1028,7 +1078,10 @@ impl StrategyCoordinator {
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()] =
                 Some(self.pair_arb_state_key(&inv, phase));
+            self.slot_pair_arb_target_epochs[slot.index()] = Some(self.pair_arb_decision_epoch);
             self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
+        } else {
+            self.slot_pair_arb_target_epochs[slot.index()] = None;
         }
         self.sync_buy_side_wrapper(slot);
 
