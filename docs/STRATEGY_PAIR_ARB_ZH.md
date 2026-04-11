@@ -32,7 +32,7 @@
 
 - `net_bucket=Flat/Low`：轻偏置双边
 - `net_bucket=Mid`：主仓侧进入 `tier1` ceiling
-- `net_bucket=High`：主仓侧进入 `tier2` ceiling
+- `net_bucket=High`：主仓侧仍有 `tier2` 理论上限；当 `pair_progress_regime=Stalled` 时，`risk-increasing` 新单在准入层被阻断（只允许对侧配对）
 
 触发语义：
 
@@ -73,22 +73,25 @@
 1. 市场中价基础报价（含 A-S/skew）
 2. 主仓侧 `tier avg-cost cap`
 3. OFI 软塑形（仅 same-side risk-increasing）
-4. `VWAP ceiling`（pair target 约束）
+4. `VWAP ceiling`（基于 `pair_target - pair_cost_safety_margin` 的 pair-cost 约束）
 5. maker 安全夹层（`same-side` 在策略层持续 clamp；`pairing` 在执行动作时 clamp）
-6. `simulate_buy` 与效用筛选
+6. `simulate_buy` 硬约束校验
 
 约束优先级：
 
 - 风险和库存硬约束优先
 - `tier cap` 与 `VWAP ceiling` 是同侧加仓上限
 - `pairing / risk-reducing` 不受 same-side `tier cap` 误伤
+- `|net_diff| >= 10` 且 `pair_progress_regime=Stalled` 时，`risk-increasing` 新单不再放行，仅允许对侧配对腿推进
 - 配对腿的战略目标价不再被持续 `ask-1tick` 下拉；仅在真实 place/reprice 动作时做 post-only 安全夹层
+- 旧状态 target 若晚到（状态戳落后于当前 `PairArbStateKey`）会直接丢弃，不允许真实下单
 
 ### 执行语义（重要）
 
 - `same-side risk-increasing buy`：
   - 继续 `no-chase`
   - 同一状态桶内不做连续 freshness 重发
+  - `High bucket + Stalled` 下不再新增 `risk-increasing` 订单
   - 只在离散状态变化（`dominant_side/net_bucket/soft_close`）或 fill 重评触发时重发
 - `pairing / risk-reducing buy`：
   - 与 same-side 一样，采用离散状态驱动
@@ -97,6 +100,7 @@
 补充：
 - 当发生 `state_key_changed` 或 `fill_recheck_pending` 且该 slot 本 tick 没有新 intent 时，
   不再仅因 “maker-safe” 保留旧单；会按 soft clear 退出，让下一次 fresh target 生效。
+- `state_key_changed` 时，若 fresh target 与 live 目标不一致，会直接触发 `Republish`（不再仅看 admissible）。
 
 ### `fresh target` 是什么
 

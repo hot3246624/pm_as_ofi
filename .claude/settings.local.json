@@ -20,7 +20,10 @@
       "WebFetch(domain:polymarketanalytics.com)",
       "WebFetch(domain:polymarketwhales.info)",
       "Bash(awk -F 'fn' '{print NR, $2}')",
-      "Bash(awk -F':' '{print $2}')"
+      "Bash(awk -F':' '{print $2}')",
+      "Bash(sed 's/\\\\x1b\\\\[[0-9;]*m//g')",
+      "Read(//tmp/**)",
+      "Bash(wc:*)"
     ]
   }
 }

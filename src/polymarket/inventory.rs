@@ -164,10 +164,6 @@ impl InventoryManager {
         );
     }
 
-    fn working_state(&self) -> InventoryState {
-        self.snapshot.working
-    }
-
     fn log_fill_snapshot(&self, fill: &FillEvent) {
         info!(
             "📦 Fill: slot={} {:?} {:.2}@{:.3} status={:?} id={} → settled YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4} || working YES={:.1}@{:.4} NO={:.1}@{:.4} | net={:.1} cost={:.4} pending_yes={:.2} pending_no={:.2} fragile={}",
@@ -262,10 +258,14 @@ impl InventoryManager {
             return;
         }
 
-        let current = self.working_state();
+        let materialized_pending = self.materialize_pending_for_merge();
+        let current = Self::recompute_state_from_records(&self.settled_ledger);
         let available_full_set = current.yes_qty.min(current.no_qty).max(0.0);
         let amount = requested.min(available_full_set);
         if amount <= f64::EPSILON {
+            if materialized_pending {
+                self.recompute_snapshot();
+            }
             return;
         }
 
@@ -283,6 +283,33 @@ impl InventoryManager {
         });
 
         self.recompute_snapshot();
+    }
+
+    fn materialize_pending_for_merge(&mut self) -> bool {
+        if self.pending_fills.is_empty() {
+            return false;
+        }
+
+        let mut promoted_yes = 0.0;
+        let mut promoted_no = 0.0;
+        for pending in self.pending_fills.drain(..) {
+            match pending.side {
+                Side::Yes => promoted_yes += pending.size.abs(),
+                Side::No => promoted_no += pending.size.abs(),
+            }
+            self.settled_ledger.push(FillRecord {
+                side: pending.side,
+                direction: pending.direction,
+                size: pending.size,
+                price: pending.price,
+            });
+        }
+
+        info!(
+            "📦 Merge materialized pending fills into settled | promoted_yes={:.2} promoted_no={:.2}",
+            promoted_yes, promoted_no,
+        );
+        true
     }
 
     fn recompute_snapshot(&mut self) {
@@ -570,6 +597,52 @@ mod tests {
         assert!((im.snapshot.settled.no_qty - 6.0).abs() < 1e-9);
         assert!((im.snapshot.settled.yes_avg_cost - 0.40).abs() < 1e-9);
         assert!((im.snapshot.settled.no_avg_cost - 0.58).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merge_sync_consumes_pending_without_leaving_phantom_working_residual() {
+        let mut im = make_manager();
+        let yes = FillEvent {
+            order_id: "yes-1".to_string(),
+            side: Side::Yes,
+            direction: TradeDirection::Buy,
+            filled_size: 15.0,
+            price: 0.50,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        };
+        let no = FillEvent {
+            order_id: "no-1".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Buy,
+            filled_size: 10.0,
+            price: 0.41,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        };
+        let pending_no = FillEvent {
+            order_id: "no-2".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Buy,
+            filled_size: 5.0,
+            price: 0.51,
+            status: FillStatus::Matched,
+            ts: Instant::now(),
+        };
+
+        im.apply_fill(&yes);
+        im.apply_fill(&no);
+        im.apply_fill(&pending_no);
+        assert!((im.snapshot.working.net_diff - 0.0).abs() < 1e-9);
+        assert!((im.snapshot.pending_no_qty - 5.0).abs() < 1e-9);
+        assert!(im.snapshot.fragile);
+
+        im.apply_merge(15.0, "m2");
+        assert!(im.snapshot.working.net_diff.abs() < 1e-9);
+        assert!(im.snapshot.settled.net_diff.abs() < 1e-9);
+        assert!(im.snapshot.pending_no_qty.abs() < 1e-9);
+        assert!(im.snapshot.pending_yes_qty.abs() < 1e-9);
+        assert!(!im.snapshot.fragile);
     }
 
     #[test]

@@ -134,13 +134,6 @@ impl StrategyQuotes {
             .saturating_add(1);
     }
 
-    pub(crate) fn note_pair_arb_skip_utility_delta(&mut self) {
-        self.diagnostics.pair_arb_skip_utility_delta = self
-            .diagnostics
-            .pair_arb_skip_utility_delta
-            .saturating_add(1);
-    }
-
     pub(crate) fn note_pair_arb_skip_open_edge_not_improved(&mut self) {
         self.diagnostics.pair_arb_skip_open_edge_not_improved = self
             .diagnostics

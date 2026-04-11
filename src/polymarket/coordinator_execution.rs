@@ -70,6 +70,34 @@ impl StrategyCoordinator {
         }
     }
 
+    fn pair_arb_should_block_stalled_risk_increasing(
+        &self,
+        inv: &InventoryState,
+        slot: OrderSlot,
+        size: f64,
+    ) -> bool {
+        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
+            return false;
+        }
+        if inv.net_diff.abs() + 1e-6 < 10.0 {
+            return false;
+        }
+        let risk_effect =
+            crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
+                inv, slot.side, size,
+            );
+        if !matches!(
+            risk_effect,
+            crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing
+        ) {
+            return false;
+        }
+        matches!(
+            self.pair_arb_progress_regime(inv, std::time::Instant::now()),
+            PairProgressRegime::Stalled
+        )
+    }
+
     // Policy-3: Execution (hedge/provide dispatch)
     pub(super) async fn execute_quotes(
         &mut self,
@@ -186,6 +214,9 @@ impl StrategyCoordinator {
         {
             return false;
         }
+        if self.pair_arb_should_block_stalled_risk_increasing(inv, slot, size) {
+            return false;
+        }
 
         let side_ofi = match slot.side {
             Side::Yes => self.ofi_rx.borrow().yes,
@@ -221,9 +252,15 @@ impl StrategyCoordinator {
             }
         }
 
+        let effective_pair_cost_margin = if inv.net_diff.abs() < 1e-9 {
+            0.0
+        } else {
+            self.cfg.pair_arb_pair_cost_safety_margin
+        };
         let ceiling = match slot.side {
             Side::Yes => crate::polymarket::strategy::pair_arb::PairArbStrategy::vwap_ceiling(
                 self.cfg.pair_target,
+                effective_pair_cost_margin,
                 inv.no_avg_cost,
                 inv.yes_qty,
                 inv.yes_avg_cost,
@@ -231,6 +268,7 @@ impl StrategyCoordinator {
             ),
             Side::No => crate::polymarket::strategy::pair_arb::PairArbStrategy::vwap_ceiling(
                 self.cfg.pair_target,
+                effective_pair_cost_margin,
                 inv.yes_avg_cost,
                 inv.no_qty,
                 inv.no_avg_cost,
@@ -267,7 +305,19 @@ impl StrategyCoordinator {
                 intent.price,
                 intent.size,
             );
-        let still_admissible = !(state_changed || fill_recheck)
+        if self.pair_arb_should_block_stalled_risk_increasing(inv, slot, intent.size) {
+            debug!(
+                "🧭 pair_arb stalled-risk republish | slot={} live={:.4}@{:.2} fresh={:.4}@{:.2} net_diff={:.2}",
+                slot.as_str(),
+                current.price,
+                current.size,
+                intent.price,
+                intent.size,
+                inv.net_diff,
+            );
+            return false;
+        }
+        let still_admissible = !fill_recheck
             || self.pair_arb_quote_still_admissible(
                 inv,
                 ub,
@@ -297,6 +347,35 @@ impl StrategyCoordinator {
                 intent.price,
                 current.price,
             );
+        }
+        let upward_stale = (state_changed || fill_recheck)
+            && intent.price > current.price + 3.0 * self.cfg.tick_size.max(1e-9);
+        if upward_stale {
+            debug!(
+                "🧭 pair_arb upward stale reprice | slot={} fresh={:.4} live={:.4} gap_ticks={:.2}",
+                slot.as_str(),
+                intent.price,
+                current.price,
+                (intent.price - current.price) / self.cfg.tick_size.max(1e-9),
+            );
+            return false;
+        }
+        let state_aligned = (current.direction == intent.direction)
+            && (current.reason == intent.reason)
+            && (current.price - intent.price).abs() <= self.cfg.tick_size.max(1e-9)
+            && (current.size - intent.size).abs() <= 0.1;
+        if state_changed && !state_aligned {
+            debug!(
+                "🧭 pair_arb_state_forced_republish | slot={} prev_state={:?} current_state={:?} live={:.4}@{:.2} fresh={:.4}@{:.2}",
+                slot.as_str(),
+                prev_state,
+                state_key,
+                current.price,
+                current.size,
+                intent.price,
+                intent.size,
+            );
+            return false;
         }
         if !still_admissible || force_freshness_republish {
             return false;
@@ -616,6 +695,10 @@ impl StrategyCoordinator {
                 Side::Yes => yes_toxic_blocked,
                 Side::No => no_toxic_blocked,
             };
+            if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+                self.slot_pair_arb_intent_state_keys[slot.index()] =
+                    intent.map(|_| self.pair_arb_state_key(inv, phase));
+            }
             if intent.is_some() {
                 self.slot_absent_clear_since[slot.index()] = None;
             }
@@ -761,7 +844,33 @@ impl StrategyCoordinator {
             let prev_state = self.slot_pair_arb_state_keys[idx];
             let state_changed = prev_state.is_some() && prev_state != Some(state_key);
             let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
-            if state_changed || fill_recheck {
+            if self.pair_arb_should_block_stalled_risk_increasing(inv, slot, current.size) {
+                debug!(
+                    "🧭 pair_arb stalled-risk clear | slot={} net_diff={:.2} regime={:?} live={:.4}@{:.2}",
+                    slot.as_str(),
+                    inv.net_diff,
+                    self.pair_arb_progress_regime(inv, now),
+                    current.price,
+                    current.size,
+                );
+                self.slot_absent_clear_since[idx] = None;
+                self.slot_pair_arb_state_keys[idx] = Some(state_key);
+                self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
+            }
+            if state_changed {
+                debug!(
+                    "🧭 pair_arb absent-intent state change clear | slot={} prev_state={:?} current_state={:?}",
+                    slot.as_str(),
+                    prev_state,
+                    state_key,
+                );
+                self.slot_absent_clear_since[idx] = None;
+                self.slot_pair_arb_state_keys[idx] = Some(state_key);
+                self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
+            }
+            if fill_recheck {
                 let admissible = self.pair_arb_quote_still_admissible(
                     inv,
                     ub,
@@ -780,11 +889,14 @@ impl StrategyCoordinator {
                     state_key.soft_close_active,
                     !admissible,
                 );
-                // PairArb fresh-target authority:
-                // when state changed or fill-recheck is pending and strategy emits no intent,
-                // do not keep old orders solely because they are maker-safe.
-                // They are stale against current strategy state by definition.
+                if admissible && self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
+                    self.slot_pair_arb_state_keys[idx] = Some(state_key);
+                    self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    return RetentionDecision::Retain;
+                }
                 self.slot_absent_clear_since[idx] = None;
+                self.slot_pair_arb_fill_recheck_pending[idx] = false;
                 return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
             }
             let since = self.slot_absent_clear_since[idx].get_or_insert(now);

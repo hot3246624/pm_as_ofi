@@ -30,6 +30,9 @@ const GLFT_SOURCE_RECOVERY_SETTLE_MIN_MS: u64 = 1_800;
 const GLFT_SOURCE_RECOVERY_SETTLE_MAX_MS: u64 = 12_000;
 const GLFT_SOURCE_BLOCK_RETAIN_HOLD_MS: u64 = 2_500;
 const GLFT_SOURCE_BLOCK_RETAIN_HOLD_BINANCE_MS: u64 = 1_500;
+// Require stale to persist briefly before clearing live targets.
+// This avoids cancel/reprovide ping-pong during short WS reconnect flaps.
+const BOOK_SIDE_STALE_CLEAR_HOLD_MS: u64 = 2_500;
 const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
 const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
 const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
@@ -889,6 +892,8 @@ pub struct StrategyCoordinator {
     /// P5 FIX: Per-side timestamps to catch single-side staleness.
     last_valid_ts_yes: Instant,
     last_valid_ts_no: Instant,
+    yes_stale_since: Option<Instant>,
+    no_stale_since: Option<Instant>,
     slot_targets: [Option<DesiredTarget>; 4],
     slot_last_ts: [Instant; 4],
     slot_shadow_targets: [Option<DesiredTarget>; 4],
@@ -1129,6 +1134,8 @@ impl StrategyCoordinator {
             last_valid_book: Book::default(),
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
+            yes_stale_since: None,
+            no_stale_since: None,
             slot_targets: std::array::from_fn(|_| None),
             slot_last_ts: std::array::from_fn(|_| {
                 Instant::now() - std::time::Duration::from_secs(60)
@@ -1427,11 +1434,13 @@ impl StrategyCoordinator {
             self.last_valid_book.yes_bid = yb;
             self.last_valid_book.yes_ask = ya;
             self.last_valid_ts_yes = Instant::now();
+            self.yes_stale_since = None;
         }
         if nb > 0.0 && na > 0.0 {
             self.last_valid_book.no_bid = nb;
             self.last_valid_book.no_ask = na;
             self.last_valid_ts_no = Instant::now();
+            self.no_stale_since = None;
         }
     }
 
@@ -1440,6 +1449,20 @@ impl StrategyCoordinator {
     fn is_book_stale(&self) -> bool {
         let limit = std::time::Duration::from_secs(30);
         self.last_valid_ts_yes.elapsed() > limit || self.last_valid_ts_no.elapsed() > limit
+    }
+
+    fn stale_side_actionable(
+        now: Instant,
+        side_stale_raw: bool,
+        stale_since: &mut Option<Instant>,
+    ) -> bool {
+        if !side_stale_raw {
+            *stale_since = None;
+            return false;
+        }
+        let since = stale_since.get_or_insert(now);
+        now.saturating_duration_since(*since)
+            >= Duration::from_millis(BOOK_SIDE_STALE_CLEAR_HOLD_MS)
     }
 
     /// Get usable book (current if valid, otherwise last_valid fallback).
@@ -1990,8 +2013,12 @@ impl StrategyCoordinator {
         // ── Environmental Health Check ──
         let ttl = Duration::from_millis(self.cfg.stale_ttl_ms);
 
-        let yes_stale = now.duration_since(self.last_valid_ts_yes) > ttl;
-        let no_stale = now.duration_since(self.last_valid_ts_no) > ttl;
+        let yes_stale_raw = now.duration_since(self.last_valid_ts_yes) > ttl;
+        let no_stale_raw = now.duration_since(self.last_valid_ts_no) > ttl;
+        let yes_stale_actionable =
+            Self::stale_side_actionable(now, yes_stale_raw, &mut self.yes_stale_since);
+        let no_stale_actionable =
+            Self::stale_side_actionable(now, no_stale_raw, &mut self.no_stale_since);
         let is_hot_yes = ofi.yes.is_hot;
         let is_hot_no = ofi.no.is_hot;
         let is_toxic_yes = ofi.yes.is_toxic;
@@ -2045,7 +2072,7 @@ impl StrategyCoordinator {
         }
 
         // Priority 2: Per-side Toxic/Stale guard (independent of book availability)
-        if yes_toxic_blocked || yes_stale {
+        if yes_toxic_blocked || yes_stale_actionable {
             for slot in OrderSlot::side_slots(Side::Yes) {
                 if self.slot_target_active(slot) {
                     if yes_toxic_blocked {
@@ -2064,7 +2091,7 @@ impl StrategyCoordinator {
                 }
             }
         }
-        if no_toxic_blocked || no_stale {
+        if no_toxic_blocked || no_stale_actionable {
             for slot in OrderSlot::side_slots(Side::No) {
                 if self.slot_target_active(slot) {
                     if no_toxic_blocked {
@@ -2108,8 +2135,8 @@ impl StrategyCoordinator {
         self.apply_flow_risk(
             &working_inv,
             &mut quotes,
-            yes_stale,
-            no_stale,
+            yes_stale_raw,
+            no_stale_raw,
             yes_toxic_blocked,
             no_toxic_blocked,
         );
@@ -2117,8 +2144,8 @@ impl StrategyCoordinator {
             &working_inv,
             &ub,
             quotes,
-            yes_stale,
-            no_stale,
+            yes_stale_raw,
+            no_stale_raw,
             yes_toxic_blocked,
             no_toxic_blocked,
         )

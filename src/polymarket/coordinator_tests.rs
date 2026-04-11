@@ -2441,6 +2441,101 @@ fn test_pair_arb_fill_recheck_rechecks_absent_intent_even_without_state_change()
     );
 }
 
+#[test]
+fn test_pair_arb_absent_intent_clears_stalled_high_risk_increasing_order() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+
+    let slot = OrderSlot::YES_BUY;
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.20,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.yes_target = Some(target);
+    coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: Some(Side::Yes),
+        net_bucket: PairArbNetBucket::High,
+        soft_close_active: false,
+    });
+    coord.pair_arb_progress_state.last_pair_progress_at = Some(Instant::now() - Duration::from_secs(61));
+
+    let inv = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.30,
+        no_qty: 0.0,
+        no_avg_cost: 0.0,
+        net_diff: 10.0,
+        ..Default::default()
+    };
+    let ub = book(0.19, 0.21, 0.79, 0.80);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(
+            decision,
+            RetentionDecision::Clear(CancelReason::Reprice, SlotResetScope::Soft)
+        ),
+        "stalled high-bucket risk-increasing order should not be retained while absent intent"
+    );
+}
+
+#[test]
+fn test_pair_arb_absent_intent_keeps_stalled_pairing_leg() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    let (_o, _i, _m, _k, _er, mut coord) = make(config);
+
+    let slot = OrderSlot::NO_BUY;
+    let target = DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.60,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    coord.slot_targets[slot.index()] = Some(target.clone());
+    coord.no_target = Some(target);
+    coord.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: Some(Side::Yes),
+        net_bucket: PairArbNetBucket::High,
+        soft_close_active: false,
+    });
+    coord.pair_arb_progress_state.last_pair_progress_at = Some(Instant::now() - Duration::from_secs(61));
+
+    let inv = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.30,
+        no_qty: 0.0,
+        no_avg_cost: 0.0,
+        net_diff: 10.0,
+        ..Default::default()
+    };
+    let ub = book(0.19, 0.21, 0.59, 0.61);
+    let decision = coord.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        None,
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(
+        matches!(decision, RetentionDecision::Retain),
+        "stalled guard must not clear pairing/reducing leg when absent intent"
+    );
+}
+
 #[tokio::test]
 async fn test_pair_arb_state_improvement_reanchors_higher_quote_after_fill() {
     let mut config = cfg();

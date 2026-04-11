@@ -487,6 +487,23 @@ impl PairArbStrategy {
             );
             return false;
         }
+        if matches!(risk_effect, PairArbRiskEffect::RiskIncreasing)
+            && inv.net_diff.abs() + FLOAT_EPS >= TIER_2_NET_DIFF
+            && matches!(
+                coordinator.pair_arb_progress_regime(inv, std::time::Instant::now()),
+                crate::polymarket::coordinator::PairProgressRegime::Stalled
+            )
+        {
+            debug!(
+                "🧭 pair_arb_stalled_risk_blocked=true side={} candidate_role={} price={:.4} size={:.2} net_diff={:.2}",
+                side.as_str(),
+                risk_effect.as_str(),
+                price,
+                size,
+                inv.net_diff,
+            );
+            return false;
+        }
 
         let Some(_projected) = coordinator.simulate_buy(inv, side, size, price) else {
             quotes.note_pair_arb_skip_simulate_buy_none();

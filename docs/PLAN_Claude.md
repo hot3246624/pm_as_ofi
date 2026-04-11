@@ -1,230 +1,165 @@
-重构后策略全面评估
-
-  执行摘要
-
-  重构整体方向正确，Phase 0（Executor 层）修复完整，策略层核心收敛大幅推进。存在
-  两处设计层面的偏差需要明确，以及一个未覆盖的场景需要确认。
-
-  ---
-  一、Executor 层（Phase 0）：完整修复 ✅
-
-  所有 April 9 Ghost Order 根因已修复：
-
-  ┌────────────────────────────┬─────────┬──────────────────────────────────┐
-  │           修复项           │ 实现状  │             关键代码             │
-  │                            │   态    │                                  │
-  ├────────────────────────────┼─────────┼──────────────────────────────────┤
-  │ Dust Cancel 失败不从       │ ✅      │ cancel_remote_dust_orders_for_sl │
-  │ remote_by_slot 删除        │ 已修复  │ ot() 只在 cancel 成功时          │
-  │                            │         │ remote.remove(&id)               │
-  ├────────────────────────────┼─────────┼──────────────────────────────────┤
-  │ is_residual_dust 门控 fill │ ✅      │ DUST_REMAINING_SHARES =          │
-  │  notification              │ 已实现  │ 0.10，handle_fill_notification   │
-  │                            │         │ 双条件判断                       │
-  ├────────────────────────────┼─────────┼──────────────────────────────────┤
-  │ handle_cancel_slot         │ ✅      │ cancel 有一个失败 →              │
-  │ 失败返回 SlotBusy          │ 已修复  │ SlotBusy，全部成功才发 CancelAck │
-  ├────────────────────────────┼─────────┼──────────────────────────────────┤
-  │ Slot Lock Recovery         │ ✅ 新增 │ 阻塞 8s 后强制 cancel，5s        │
-  │                            │         │ 重试间隔                         │
-  ├────────────────────────────┼─────────┼──────────────────────────────────┤
-  │ ExecutionFeedback::SlotBlo │ ✅ 新增 │ 让 Coordinator                   │
-  │ cked                       │         │ 感知持续阻塞，有频率限制防止风暴 │
-  └────────────────────────────┴─────────┴──────────────────────────────────┘
-
-  Ghost Order 场景在下次 reconcile 时可被 cancel_remote_dust_orders_for_slot
-  清理，即使 cancel 失败也保留在 remote_by_slot
-  中以供下轮重试。这个设计是正确的。
-
-  ---
-  二、策略层核心收敛：基本达成，有两处偏差
-
-  2.1 PairArbStateKey 三字段结构 ✅
-
-  PairArbStateKey { dominant_side, net_bucket, soft_close_active }
-
-  与 PLAN_Codex V2 Section 2 完全一致。Bucket 边界
-  Flat/Low(<5)/Mid(<10)/High(≥10) 正确。
-
-  ---
-  2.2 Band-driven 发布制度 ⚠️  实现与计划存在偏差
-
-  PairingOrReducing（coordinator_order_io.rs ~404）：
-
-  if delta_ticks > 0.0 + 1e-9 {
-      (delta_ticks <= 2.0 + 1e-9, "small_pairing_up_drift")   // 上行: > 2 tick
-  → Republish
-  } else {
-      (delta_ticks >= -3.0 - 1e-9, "small_pairing_down_drift") // 下行: < -3
-  tick → Republish
-  }
-
-  实现：不对称双向带宽（上 2 tick / 下 3 tick）。PLAN_Codex V2 Section 3
-  写的是对称 3-tick band。这个偏差看起来是故意的设计决策（配对腿更容易向上追、更
-  难向下追），但需要你明确确认，因为文档和代码不一致。
-
-  RiskIncreasing（coordinator_order_io.rs ~399）：
-
-  Some(PairArbRiskEffect::RiskIncreasing) => (true, "same_side_state_driven"),
-  // 无论 upward 还是 downward 均 retain
-
-  同时 pair_arb_should_force_freshness_republish 对 RiskIncreasing 也返回
-  false。
-
-  实现选择：RiskIncreasing 完全由状态机驱动，不响应价格漂移。这与 PLAN_Codex V2
-  Section 3 的说法矛盾：
-
-  ▎ "downward：仅当 strategic_target <= live_target - 2 ticks 时 Republish"
-
-  代码里有一个测试明确验证了这个行为：test_pair_arb_risk_increasing_retains_when
-  _fresh_target_moves_down_two_ticks — 即 fresh_target 下移 2 tick 时
-  RiskIncreasing 仍然 retain。这是有意为之的。
-
-  这个设计选择的影响分析：
-
-  场景: market 下行 20 tick，YES 单还挂着
-  当前行为: 保留原价，直到状态 bucket 变
-  风险评估: Post-only 单不会成交（市场离太远），实际无害
-  ────────────────────────────────────────
-  场景: market 上行后 state bucket 变（如 net_diff 穿 5），YES 单在旧低价
-  当前行为: 状态触发重评，fresh target 重新计算
-  风险评估: ✅ 覆盖
-  ────────────────────────────────────────
-  场景: market 小幅震荡，state 不变，YES 单偏离 < bucket 边界
-  当前行为: 始终 retain
-  风险评估: 可能挂着偏离市场的单无法成交，但也不会成交亏损
-
-  结论：状态驱动策略对 RiskIncreasing 更为保守，可以接受。但需要在
-  STRATEGY_PAIR_ARB_ZH.md 中明确写清这个选择，而不是沿用 V2 文档的"下行 2 tick
-  Republish"说法。
-
-  ---
-  2.3 strategic_target vs action_price 分离 ✅ 基本实现
-
-  pair_arb.rs:186-201 中：
-  - RiskIncreasing：raw_yes/raw_no = min(raw_yes, ask - margin)（在计算时就
-  clamp）
-  - PairingOrReducing：保留 strategic target，post-only safety 在 order IO
-  阶段应用
-
-  设计意图已实现。但术语层面：代码注释用的是 "strategic_target" 和
-  "action_price" 概念，STRATEGY_PAIR_ARB_ZH.md 仍用"fresh
-  target"和"真实发单价"——文档未正式定义这两个术语，会造成阅读混淆。
-
-  ---
-  2.4 opposite-slot fuse 移除 ✅
-
-  pair_arb_opposite_slot_blocked() 已标记
-  #[allow(dead_code)]，PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS / TTL_MS 常量也标记
-  #[allow(dead_code)]，未在 slot_quote_allowed() 或主决策链中调用。
-
-  同时新增了 ExecutionFeedback::SlotBlocked 作为观测替代。测试
-  test_pair_arb_opposite_slot_blocked_does_not_gate_pair_arb_quotes
-  验证了这一点。
-
-  ---
-  2.5 admissible 收缩为纯硬约束
-
-  Agent 未明确报告 utility_delta / open_edge_improvement 是否从 retain
-  路径移除。这是 V2 Section 5 的要求，需要直接确认：当前
-  pair_arb_quote_still_admissible() 或等价路径里是否还有 utility_delta
-  检查会影响 retain 决策？
-
-  ---
-  2.6 fragile / PairProgressState 状态
-
-  fragile 仍然通过 rescind_with_fill_recheck() 设置 fill_recheck_pending =
-  true，绕过 RETAIN 逻辑触发重评。这在 5
-  个触发器（Matched/Failed/Merge/SoftClose/Round reset）框架内是合理的，属于
-  fill 事件触发机制，不是第二套策略逻辑。但 PairProgressRegime::Stalled
-  的路径是否还影响报价需要确认。
-
-  ---
-  三、测试覆盖评估
-
-  ┌─────────────┬───────┬───────────────────────────────────────────────────┐
-  │    场景     │ 覆盖  │                      测试名                       │
-  │             │ 状态  │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ 双向小漂移  │       │ test_pair_arb_pairing_side_retains_small_*_drift_ │
-  │ 不 churn    │ ✅    │ * (4个)                                           │
-  │ (pairing)   │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ 5/10/0      │       │                                                   │
-  │ bucket 切换 │ ✅    │ test_pair_arb_state_bucket_change_*               │
-  │ 强制重评    │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ RiskIncreas │       │                                                   │
-  │ ing 不追价  │ ✅    │ test_pair_arb_risk_increasing_retains_when_fresh_ │
-  │ （含下行    │       │ target_moves_down_two_ticks                       │
-  │ retain）    │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ pairing 腿  │       │ test_pair_arb_retention_republishes_pairing_side_ │
-  │ 下行大漂移  │ ✅    │ on_large_downward_drift                           │
-  │ Republish   │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ opposite-sl │       │ test_pair_arb_opposite_slot_blocked_does_not_gate │
-  │ ot fuse 不  │ ✅    │ _pair_arb_quotes                                  │
-  │ 再影响主链  │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ SoftClose   │ ✅    │ test_pair_arb_soft_close_deadband_* (多个)        │
-  │ deadband    │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ Ghost Order │       │                                                   │
-  │  / Slot     │ ⚠️     │ 无单元测试验证 PendingCancel → CancelSlot →       │
-  │ Busy        │ 缺失  │ CancelAck 完整链路                                │
-  │ 恢复流程    │       │                                                   │
-  ├─────────────┼───────┼───────────────────────────────────────────────────┤
-  │ Merge sync  │       │                                                   │
-  │ 不衍生额外  │ ⚠️  弱 │ 有正向 accounting 测试，缺 negative case          │
-  │ 策略模式    │       │                                                   │
-  └─────────────┴───────┴───────────────────────────────────────────────────┘
-
-  ---
-  四、待确认事项（3 项）
+  结论验证结果                                                      
                                                                                 
-  Q1（设计澄清）：RiskIncreasing 的 "state-driven only"
-  策略是有意为之吗？如果是，应该更新 STRATEGY_PAIR_ARB_ZH.md                    
-  将其明确写入，并删除 V2 文档中"下行 2 tick Republish"的说法。
+  你的结论大体正确，但有一处机制细节需要更精确的定位，以及一个未提及的结构性发现
+  。                                                                            
                                                                                 
-  Q2（设计澄清）：PairingOrReducing 的不对称带宽（上 2 tick / 下 3              
-  tick）是有意为之吗？还是应该统一为 V2 的对称 3 tick？
+  ---                                                                           
+  一、完整验证    
                                                                                 
-  Q3（代码确认）：utility_delta 和 open_edge_improvement 是否已从 retain        
-  决策路径移除（V2 Section 5 要求）？
+  结论 1：merge/pending 正确 ✓
                                                                                 
-  ---                                                   
-  五、遗留的已知问题
+  第一轮（行 243-244）、第二轮（行 1191）均确认：merge 前已将 pending 促进为    
+  settled，merge 后 pending=0/fragile=false，残仓是真实库存，不是 phantom。     
                                                                                 
-  ┌────────────────────────────────────────┬───────────┬────────────────────┐
-  │                  问题                  │   来源    │        状态        │   
-  ├────────────────────────────────────────┼───────────┼────────────────────┤
-  │ skip_inv 误计 EndgameRiskGate（Bug     │ April 8   │ 未修复，仅统计误报 │   
-  │ #1）                                   │ 分析      │                    │
-  ├────────────────────────────────────────┼───────────┼────────────────────┤   
-  │ PairProgressRegime::Stalled            │ April 9   │ 需确认             │
-  │ 是否仍影响报价                         │ 分析      │                    │   
-  ├────────────────────────────────────────┼───────────┼────────────────────┤
-  │ 文档术语不一致（strategic_target /     │ V2        │ 未同步             │   
-  │ action_price）                         │ Section 7 │                    │   
-  └────────────────────────────────────────┴───────────┴────────────────────┘
-                                                                                
-  ---                                                   
-  六、总结
-
-  ┌────────────────────┬──────┬─────────────────────────────────────────────┐
-  │        层级        │ 评分 │                    说明                     │
-  ├────────────────────┼──────┼─────────────────────────────────────────────┤   
-  │ Executor 层（Phase │ 9/10 │ Ghost order 根因修复完整，机制健壮          │
-  │  0）               │      │                                             │   
-  ├────────────────────┼──────┼─────────────────────────────────────────────┤   
-  │ 策略层核心收敛     │ 8/10 │ 三字段状态机、band-driven 发布、fuse        │   
-  │                    │      │ 移除均已完成                                │   
-  ├────────────────────┼──────┼─────────────────────────────────────────────┤   
-  │ 设计与文档一致性   │ 6/10 │ RiskIncreasing 和 PairingOrReducing 带宽与  │
-  │                    │      │ V2 计划有偏差，需同步文档                   │   
-  ├────────────────────┼──────┼─────────────────────────────────────────────┤
-  │ 测试覆盖           │ 8/10 │ 策略场景覆盖完整，Executor 链路测试缺失     │   
-  └────────────────────┴──────┴─────────────────────────────────────────────┘   
+  结论 2：配对后重新开成大残仓 ✓（且比你描述的更清晰）                          
   
-  请先确认 Q1/Q2 两个设计问题，然后我可以帮你同步文档或补充缺失的测试。
+  第二轮时间线精确还原：                                                        
+                  
+  12:53:19  merge sync → settled net=0.0, pending=0, fragile=false              
+  12:53:33  residual_qty=0.01, net_diff=0.01（几乎完全平仓）                    
+            realized_pair_locked_pnl=1.9320                                     
+                                                                                
+  12:53:34  YES@0.310 新单挂出  ← 系统自动再开仓                                
+  12:54:02  YES 5@0.310 成交                                                    
+  12:54:03  YES@0.210 挂出（基于新状态）                                        
+  12:54:21  YES 2.59@0.210 + 2.40@0.210 成交                                    
+                                                                                
+  12:59:49  residual_qty=10, worst_case=-2.6033                                 
+                                                                                
+  从 net_diff≈0 到重新累积 10 单 YES 仓位，只用了不到 7 分钟。                  
+                  
+  结论 3：balance/allowance 真实存在 ✓                                          
+                  
+  行 222-234 确认两次连续的 balance 拒绝（YES 和 NO 均被拒），且拒绝原因是"sum  
+  of matched orders = 11000000"——是未释放的已成交资金占用造成的。
+                                                                                
+  结论 4：OFI/churn/utility-edge 不是主凶 ✓                                     
+  
+  两轮 toxic_events=0 / kill_events=0 / skip_util=0 /                           
+  skip_edge=0，这三条路径均未干扰结果。
+                                                                                
+  ---             
+  二、cross-reject storm 的精确根因（补充你的分析）
+                                                   
+  你的结论说"执行层有 cross-book
+  问题"是对的，但现在可以更精确地说明为什么它持续了 6 次：                      
+  
+  观测（行 1275-1326）：YES@0.430 被原样重发 6 次，价格从未改变：               
+                  
+  12:52:54 → YES@0.430 → cross reject                                           
+  12:52:55 → YES@0.430 → cross reject                                           
+  12:52:57 → YES@0.430 → cross reject
+  12:52:59 → YES@0.430 → cross reject                                           
+  12:53:01 → YES@0.430 → cross reject                                           
+  12:53:02 → YES@0.430 → cross reject
+                                                                                
+  根因：extra_safety_ticks 机制（每次 reject +1 tick margin）本应让 action_price
+   逐步下降，但它失效了。                                                       
+                                                                                
+  失效条件：action_price = min(strategic_target, best_ask - margin)。如果       
+  coordinator 的 self.book.yes_ask 显示的是 ~0.475（而实际 exchange ask 已是
+  0.430），那么：                                                               
+                  
+  - extra_ticks=3：cap = 0.475 - 0.035 = 0.440 > strategic_target(0.430)        
+  - 故 action_price = 0.430，始终由 strategic_target 决定，margin 不生效
+                                                                                
+  真正需要的修复：不是"用 fresh book"（coordinator                              
+  认为自己在用），而是基于拒绝价格本身步降：                                    
+                                                                                
+  ▎ 当 YES@P 被 cross-reject 后，下一次 action_price 必须 ≤ P - 1tick，无论 book
+  ▎  怎么说
+                                                                                
+  即：if recent_cross_reject: action_price = min(action_price,                  
+  last_rejected_price - tick_size)
+                                                                                
+  这条逻辑比"fresh book"更可靠，因为它不依赖 WS 延迟状态。                      
+  
+  ---                                                                           
+  三、最核心的结构问题（你的判断完全正确）
+                                                                                
+  经济性验证（对两轮数据的精确核算）：
+                                                                                
+  ┌──────────────────────────┬─────────┬─────────┐
+  │                          │ Round 1 │ Round 2 │                              
+  ├──────────────────────────┼─────────┼─────────┤
+  │ realized_pair_locked_pnl │ +2.273  │ +1.932  │
+  ├──────────────────────────┼─────────┼─────────┤
+  │ 残仓 worst_case          │ -2.818  │ -2.603  │                              
+  ├──────────────────────────┼─────────┼─────────┤                              
+  │ 净期望（假设 YES 输）    │ -0.545  │ -0.671  │                              
+  └──────────────────────────┴─────────┴─────────┘                              
+                  
+  在 max_net_diff=15, bid_size=5 下，每次单侧填满的暴露量是 3 轮 × 5 = 15       
+  份。以第二轮为例：
+                                                                                
+  YES avg_cost = 0.2602（10份）
+  如果市场收 0：每份损失 = 0.2602 USDC                                          
+  总损失 = 10 × 0.2602 = 2.60 USDC                                              
+  已锁利润 = 1.93 USDC                                                          
+  净损失 = 0.67 USDC                                                            
+                                                                                
+  这个结构下，一次"系统在已配对后重新开出 10 份单腿"就能吃掉整轮收益并超出。    
+  
+  为什么系统在 12:53:34 重新开仓？                                              
+                  
+  状态分析：                                                                    
+  - net_diff = 0.01（dust，理论上 flat）
+  - net_bucket = Low（0 < 0.01 < 5）                                            
+  - YES 侧为 RiskIncreasing（买 YES 会使 net_diff 从 0.01 → 5.01）
+  - no_qty ≈ 0 → VWAP ceiling for YES 不生效（no_qty <= EPSILON 跳过）          
+  - YES_ask 大约在 0.31-0.32 范围 → A-S 定价：bid ≈ 0.31                        
+                                                                                
+  没有任何机制阻止这个新开仓。策略不知道自己刚刚完成了一轮配对、刚锁住了 1.93   
+  USDC。                                                                        
+                                                                                
+  ---                                                                           
+  四、关于参数经济性的补充判断
+                                                                                
+  你的结论"在 pair_target=0.97 / max_net_diff=15
+  下策略经济性危险"是正确的，但可以更精确：                                     
+                  
+  每次 pair 赚多少 vs 允许的单腿风险是多少：                                    
+                  
+  单次配对利润 = (1.0 - pair_cost) × bid_size ≈ (1.0 - 0.93) × 5 = 0.35         
+  USDC（每对）                                                                  
+  
+  max_net_diff=15 时允许的最大单腿暴露：                                        
+  如果以 avg_cost=0.26 买入 10 份 YES
+  worst_case = 10 × 0.26 = 2.6 USDC（全损）                                     
+                                                                                
+  需要多少对子才能覆盖：2.6 / 0.35 ≈ 7.4 对子                                   
+  但每轮最多只配 ~6 对（bid_size=5, max_net_diff=15 → max pairs/round ≈ 6×5=30  
+  份, locked=~2 USDC）                                                          
+                  
+  即使整轮全部配完，单次不好的残仓就能吃掉整轮利润，这说明参数组合下 risk/reward
+   是不利的。     
+                                                                                
+  ---             
+  五、总结：认可程度与一处精确化
+                                                                                
+  ┌────────────────────────┬────────┬──────────────────────────────────────┐
+  │          结论          │  认可  │                 备注                 │    
+  ├────────────────────────┼────────┼──────────────────────────────────────┤
+  │ merge/pending          │ ✅ 完  │ 日志逐行确认                         │    
+  │ 正确，不是幽灵仓       │ 全认可 │                                      │
+  ├────────────────────────┼────────┼──────────────────────────────────────┤    
+  │ 配对后重新开成大残仓是 │ ✅ 完  │ 第二轮时间线极清晰                   │    
+  │ 主凶                   │ 全认可 │                                      │    
+  ├────────────────────────┼────────┼──────────────────────────────────────┤    
+  │ balance/allowance      │ ✅ 完  │ 行 222-237                           │
+  │ 是真实执行伤害         │ 全认可 │                                      │    
+  ├────────────────────────┼────────┼──────────────────────────────────────┤
+  │ cross-reject storm     │ ✅ 完  │ 但根因更精确：WS book stale 导致     │    
+  │ 是真实执行伤害         │ 全认可 │ extra_safety_ticks 失效，修复要用"基 │
+  │                        │        │ 于拒绝价格步降"而非"fresh book"      │
+  ├────────────────────────┼────────┼──────────────────────────────────────┤
+  │ 不是                   │ ✅ 完  │ shutdown 数据明确                    │
+  │ OFI/churn/utility-edge │ 全认可 │                                      │    
+  ├────────────────────────┼────────┼──────────────────────────────────────┤
+  │ 策略经济性不成立       │ ✅ 完  │ 两轮数据都支持，risk/reward 倒置     │    
+  │                        │ 全认可 │                                      │    
+  └────────────────────────┴────────┴──────────────────────────────────────┘
+                                                                                
+  最重要的一句话：策略的核心矛盾是——它没有"已完成本轮配对目标后停止再开仓"的语义
+  。在市场临近结束时，任何新的 RiskIncreasing
+  开仓都是用有限的剩余时间赌一个无上限的方向性风险。
