@@ -28,6 +28,8 @@
 - `net_bucket`: `Flat | Low(<5) | Mid(<10) | High(>=10)`
 - `risk_open_cutoff_active`: `true | false`
 
+其中 `risk_open_cutoff_active` 由 `PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS` 驱动：当剩余时间 `<= cutoff` 时变为 `true`，阻断新的 `risk-increasing`。
+
 定价语义：
 
 - `net_bucket=Flat/Low`：轻偏置双边

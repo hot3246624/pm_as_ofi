@@ -127,6 +127,7 @@
 | `PM_ENDGAME_SOFT_CLOSE_SECS` | `45` | 共享阶段参数；`pair_arb` 在 SoftClose 下阻断 risk-increasing，且 `|net_diff|<=bid_size/2` 时停止新开买单 |
 | `PM_ENDGAME_HARD_CLOSE_SECS` | `30` | 共享阶段参数 |
 | `PM_ENDGAME_FREEZE_SECS` | `2` | 共享阶段参数 |
+| `PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS` | `240` | `pair_arb` 独立开窗参数；当剩余时间 `<= cutoff` 时阻断新的 risk-increasing |
 
 说明：
 - `pair_arb` 当前已去掉方向对冲 overlay 与尾盘强制市价去风险路径。

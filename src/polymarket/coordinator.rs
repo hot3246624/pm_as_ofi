@@ -118,6 +118,9 @@ pub struct CoordinatorConfig {
     pub pair_arb_tier_2_mult: f64,
     /// PairArb safety margin kept below pair_target when deriving VWAP ceiling.
     pub pair_arb_pair_cost_safety_margin: f64,
+    /// PairArb risk-open cutoff window (seconds to market end).
+    /// Remaining <= this threshold blocks new risk-increasing buys.
+    pub pair_arb_risk_open_cutoff_secs: u64,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
     pub market_end_ts: Option<u64>,
     /// Opt-3: Faster debounce for hedge orders (urgent, shouldn't wait 500ms).
@@ -194,6 +197,7 @@ impl Default for CoordinatorConfig {
             pair_arb_tier_1_mult: 0.80,
             pair_arb_tier_2_mult: 0.60,
             pair_arb_pair_cost_safety_margin: 0.02,
+            pair_arb_risk_open_cutoff_secs: 180,
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
@@ -394,6 +398,11 @@ impl CoordinatorConfig {
                         f, c.pair_arb_pair_cost_safety_margin
                     );
                 }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                c.pair_arb_risk_open_cutoff_secs = secs;
             }
         }
         if let Ok(v) = std::env::var("PM_HEDGE_DEBOUNCE_MS") {
@@ -1238,12 +1247,13 @@ impl StrategyCoordinator {
 
     pub async fn run(mut self) {
         info!(
-            "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s edge(keep/exit)={:.2}/{:.2} dry={}",
+            "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s pair_arb_risk_open_cutoff={}s edge(keep/exit)={:.2}/{:.2} dry={}",
             self.cfg.strategy.as_str(),
             self.cfg.pair_target, self.cfg.open_pair_band, self.cfg.bid_size, self.cfg.dip_buy_max_entry_price, self.cfg.tick_size,
             self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms,
             self.cfg.strategy_metrics_log_secs,
             self.cfg.endgame_soft_close_secs, self.cfg.endgame_hard_close_secs, self.cfg.endgame_freeze_secs, self.cfg.endgame_maker_repair_min_secs,
+            self.cfg.pair_arb_risk_open_cutoff_secs,
             self.cfg.endgame_edge_keep_mult, self.cfg.endgame_edge_exit_mult,
             self.cfg.dry_run,
         );

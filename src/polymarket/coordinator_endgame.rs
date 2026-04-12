@@ -2,8 +2,6 @@ use tracing::info;
 
 use super::*;
 
-const PAIR_ARB_RISK_OPEN_CUTOFF_SECS: u64 = 180;
-
 impl StrategyCoordinator {
     pub(super) fn apply_endgame_controls(
         &mut self,
@@ -142,7 +140,7 @@ impl StrategyCoordinator {
             return false;
         }
         self.seconds_to_market_end()
-            .map(|remaining| remaining <= PAIR_ARB_RISK_OPEN_CUTOFF_SECS)
+            .map(|remaining| remaining <= self.cfg.pair_arb_risk_open_cutoff_secs)
             .unwrap_or(false)
     }
 

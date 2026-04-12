@@ -1641,11 +1641,12 @@ fn log_config_self_check(
         coord.toxic_recovery_hold_ms
     );
     info!(
-        "   endgame windows: soft={}s hard={}s freeze={}s maker_repair_min={}s edge(keep/exit)={:.2}/{:.2}",
+        "   endgame windows: soft={}s hard={}s freeze={}s maker_repair_min={}s pair_arb_risk_open_cutoff={}s edge(keep/exit)={:.2}/{:.2}",
         coord.endgame_soft_close_secs,
         coord.endgame_hard_close_secs,
         coord.endgame_freeze_secs,
         coord.endgame_maker_repair_min_secs,
+        coord.pair_arb_risk_open_cutoff_secs,
         coord.endgame_edge_keep_mult,
         coord.endgame_edge_exit_mult
     );
