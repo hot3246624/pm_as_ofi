@@ -12,7 +12,7 @@
 
 ### 2.1 单一策略状态脑
 
-策略报价只读一个库存视图（`strategy_inventory`）：
+策略报价只读一个库存视图（`working inventory`）：
 
 - `Matched`：立即更新库存，立即影响下一单报价
 - `Failed`：反向回滚库存，立即影响下一单报价
@@ -26,13 +26,13 @@
 
 - `dominant_side`: `Yes | No | None`
 - `net_bucket`: `Flat | Low(<5) | Mid(<10) | High(>=10)`
-- `soft_close_active`: `true | false`
+- `risk_open_cutoff_active`: `true | false`
 
 定价语义：
 
 - `net_bucket=Flat/Low`：轻偏置双边
 - `net_bucket=Mid`：主仓侧进入 `tier1` ceiling
-- `net_bucket=High`：主仓侧仍有 `tier2` 理论上限；当 `pair_progress_regime=Stalled` 时，`risk-increasing` 新单在准入层被阻断（只允许对侧配对）
+- `net_bucket=High`：主仓侧仍有 `tier2` 理论上限；风险收紧继续由 `tier cap + VWAP ceiling + simulate_buy + endgame` 负责
 
 `tier` 对 `risk-increasing` 的收紧阈值与状态桶解耦：
 
@@ -52,7 +52,7 @@
 
 - `net_bucket` 穿越（`5/10`）会触发强制重评
 - `dominant_side` 翻转（符号变化）会触发强制重评
-- `soft_close_active` 变化会触发强制重评
+- `risk_open_cutoff_active` 变化会触发强制重评
 
 `net_diff≈0` 只是 `dominant_side=None` 的特殊情况，实盘可能因跳越不稳定停留在精确 `0`。
 
@@ -96,7 +96,7 @@
 - 风险和库存硬约束优先
 - `tier cap` 与 `VWAP ceiling` 是同侧加仓上限
 - `pairing / risk-reducing` 不受 same-side `tier cap` 误伤
-- `|net_diff| >= 10` 且 `pair_progress_regime=Stalled` 时，`risk-increasing` 新单不再放行，仅允许对侧配对腿推进
+- `pair_progress_regime` 只保留在指标日志里，不参与运行时阻断
 - 配对腿的战略目标价不再被持续 `ask-1tick` 下拉；仅在真实 place/reprice 动作时做 post-only 安全夹层
 - 旧状态 target 若晚到（状态戳落后于当前 `PairArbStateKey`）会直接丢弃，不允许真实下单
 
@@ -105,7 +105,6 @@
 - `same-side risk-increasing buy`：
   - 继续 `no-chase`
   - 同一状态桶内不做连续 freshness 重发
-  - `High bucket + Stalled` 下不再新增 `risk-increasing` 订单
   - 只在离散状态变化（`dominant_side/net_bucket/soft_close`）或 fill 重评触发时重发
 - `pairing / risk-reducing buy`：
   - 与 same-side 一样，采用离散状态驱动
@@ -153,6 +152,10 @@
 
 在两个离散触发之间，`pairing / risk-reducing` 与 `same-side risk-increasing` 都默认 retain；
 不再因为连续 `fresh-live` tick 漂移触发重发。
+
+补充执行修正：
+- `cross reject` 后会进入 slot 级 `reprice_pending`，下一次动作价必须严格低于上次被拒价至少 `1 tick`
+- 同一 `prev_state -> current_state` 的 `state_forced_republish` 会被 latch 去重，直到 `accept/clear/release` 才解锁
 
 ### slot busy 保护
 

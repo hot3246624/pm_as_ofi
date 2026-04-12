@@ -138,8 +138,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_fill_recheck_pending[OrderSlot::YES_BUY.index()] = true;
         self.slot_pair_arb_fill_recheck_pending[OrderSlot::NO_BUY.index()] = true;
 
-        // Pair-progress drives stalled gating; it must follow working inventory
-        // even when settled inventory has not changed yet.
+        // Pair-progress is diagnostics-only; keep it on working inventory so
+        // telemetry stays aligned with the strategy brain.
         let working_metrics = self.derive_inventory_metrics(&working);
         let progress_delta = self.pair_arb_progress_min_paired_qty_delta();
         if working_metrics.paired_qty + FLOAT_INV_EPS

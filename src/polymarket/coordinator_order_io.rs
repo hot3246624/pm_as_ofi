@@ -67,6 +67,10 @@ impl StrategyCoordinator {
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
             && self.slot_pair_arb_fill_recheck_pending[slot.index()];
+        let pair_arb_cross_reject_reprice_pending = self.cfg.strategy == StrategyKind::PairArb
+            && reason == BidReason::Provide
+            && slot.direction == TradeDirection::Buy
+            && self.slot_pair_arb_cross_reject_reprice_pending[slot.index()];
         let pair_arb_expected_state = if self.cfg.strategy == StrategyKind::PairArb
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
@@ -436,6 +440,9 @@ impl StrategyCoordinator {
                 || slot_direction != Some(slot.direction)
                 || price_gap_triggers_reprice
                 || (slot_size - size).abs() > 0.1;
+            if pair_arb_cross_reject_reprice_pending {
+                needs_reprice = true;
+            }
             let pair_arb_risk_effect = if self.cfg.strategy == StrategyKind::PairArb
                 && reason == BidReason::Provide
                 && slot.direction == TradeDirection::Buy
@@ -474,6 +481,7 @@ impl StrategyCoordinator {
                 && slot.direction == TradeDirection::Buy
                 && !pair_arb_state_changed
                 && !pair_arb_fill_recheck_pending
+                && !pair_arb_cross_reject_reprice_pending
             {
                 let tick = self.cfg.tick_size.max(1e-9);
                 let delta_ticks = (price - slot_price) / tick;
@@ -891,6 +899,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_target_epochs[slot.index()] = None;
         self.slot_pair_arb_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
+        self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
+        self.slot_pair_arb_state_republish_latched[slot.index()] = false;
         match scope {
             SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
             SlotResetScope::Full => self.full_reset_slot_publish_state(slot),
@@ -932,6 +942,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_target_epochs[slot.index()] = None;
         self.slot_pair_arb_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
+        self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
+        self.slot_pair_arb_state_republish_latched[slot.index()] = false;
         self.soft_reset_slot_publish_state(slot);
         match slot {
             OrderSlot::YES_BUY => self.yes_target = None,

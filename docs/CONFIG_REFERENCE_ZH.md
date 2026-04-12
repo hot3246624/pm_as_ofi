@@ -35,8 +35,8 @@
 | --- | --- | --- |
 | `PM_STRATEGY` | `pair_arb` | 当前验证主线 |
 | `PM_BID_SIZE` | `5.0` | 单次挂单份额 |
-| `PM_MAX_NET_DIFF` | `10.0` | 盘中净仓硬上限（当前 15m canary 基线） |
-| `PM_PAIR_TARGET` | `0.98` | 组合成本目标线（pair_arb 核心参数） |
+| `PM_MAX_NET_DIFF` | `15.0` | 盘中净仓硬上限（当前 15m live 基线） |
+| `PM_PAIR_TARGET` | `0.97` | 组合成本目标线（pair_arb 核心参数） |
 | `PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN` | `0.02` | `VWAP ceiling` 使用的安全边际，真实上限基于 `pair_target - margin` |
 | `PM_TICK_SIZE` | `0.01` | 价格粒度 |
 | `PM_POST_ONLY_SAFETY_TICKS` | `2.0` | maker 安全垫基础退让 |
@@ -48,8 +48,8 @@
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 | `PM_AS_SKEW_FACTOR` | `0.06` | 三段库存 skew 的基础强度（pair_arb） |
 | `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
-| `PM_PAIR_ARB_TIER_1_MULT` | `0.70` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
-| `PM_PAIR_ARB_TIER_2_MULT` | `0.30` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_1_MULT` | `0.60` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_2_MULT` | `0.20` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
 
 验证时建议同时观察两组日志：
 - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
@@ -57,10 +57,10 @@
 
 `pair_arb` 当前报价主语义（固定内部行为，不开放 env）：
 - 策略主脑只读单一实时库存（`Matched` 即时生效，`Failed` 立即回滚，`Merge` 做校正）
-- 状态切换仍以 `dominant_side / net_bucket / soft_close_active` 为骨架
+- 状态切换仍以 `dominant_side / net_bucket / risk_open_cutoff_active` 为骨架
 - live quote 保留语义统一为离散状态驱动（`Matched/Failed/Merge/SoftClose/round reset` + `state_key` 变化）；不再基于连续 `up/down ticks` 漂移重发
 - `state_key` 变化时强制重评；旧状态 target 不得跨状态继续 place/reprice
-- `|net_diff| >= 10` 且 `pair_progress_regime=Stalled` 时，同侧 `risk-increasing` 新单被阻断，仅允许对侧配对推进
+- `pair_progress_regime` 只保留为观测指标，不参与运行时报价阻断
 - 已移除 `Round Suitability` 与 `utility/open_edge` 二次收益过滤，候选保留只看硬约束链路
 - 成交最终性相关统计仍保留在 accounting / diagnostics，不再直接驱动 `pair_arb` 报价
 

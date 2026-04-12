@@ -8,6 +8,8 @@ impl StrategyCoordinator {
         let idx = event.slot.index();
         self.pair_arb_slot_blocked_for_ms[idx] = 0;
         self.pair_arb_slot_blocked_at[idx] = None;
+        self.slot_pair_arb_cross_reject_reprice_pending[idx] = false;
+        self.slot_pair_arb_state_republish_latched[idx] = false;
     }
 
     pub(super) fn pair_arb_should_force_freshness_republish(
@@ -68,36 +70,6 @@ impl StrategyCoordinator {
             net_bucket,
             risk_open_cutoff_active: self.pair_arb_risk_open_cutoff_active(),
         }
-    }
-
-    fn pair_arb_should_block_stalled_risk_increasing(
-        &self,
-        inv: &InventoryState,
-        slot: OrderSlot,
-        size: f64,
-    ) -> bool {
-        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
-            return false;
-        }
-        let risk_effect =
-            crate::polymarket::strategy::pair_arb::PairArbStrategy::candidate_risk_effect(
-                inv, slot.side, size,
-            );
-        if !matches!(
-            risk_effect,
-                crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing
-        ) {
-            return false;
-        }
-        if inv.net_diff.abs() + PAIR_ARB_NET_EPS < 10.0 {
-            return false;
-        }
-        let since = self
-            .pair_arb_progress_state
-            .last_pair_progress_at
-            .unwrap_or(self.market_start);
-        std::time::Instant::now().saturating_duration_since(since)
-            >= std::time::Duration::from_secs(60)
     }
 
     // Policy-3: Execution (hedge/provide dispatch)
@@ -216,10 +188,6 @@ impl StrategyCoordinator {
         {
             return false;
         }
-        if self.pair_arb_should_block_stalled_risk_increasing(inv, slot, size) {
-            return false;
-        }
-
         let side_ofi = match slot.side {
             Side::Yes => self.ofi_rx.borrow().yes,
             Side::No => self.ofi_rx.borrow().no,
@@ -293,6 +261,8 @@ impl StrategyCoordinator {
         let prev_state = self.slot_pair_arb_state_keys[idx];
         let state_changed = prev_state.is_some() && prev_state != Some(state_key);
         let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
+        let cross_reject_reprice_pending =
+            self.slot_pair_arb_cross_reject_reprice_pending[idx];
         let (force_freshness_republish, freshness_reason, freshness_delta_ticks) = self
             .pair_arb_should_force_freshness_republish(
                 inv,
@@ -301,15 +271,14 @@ impl StrategyCoordinator {
                 intent.price,
                 intent.size,
             );
-        if self.pair_arb_should_block_stalled_risk_increasing(inv, slot, intent.size) {
+        if cross_reject_reprice_pending {
             debug!(
-                "🧭 pair_arb stalled-risk republish | slot={} live={:.4}@{:.2} fresh={:.4}@{:.2} net_diff={:.2}",
+                "🧭 pair_arb cross-reject pending republish | slot={} live={:.4}@{:.2} fresh={:.4}@{:.2}",
                 slot.as_str(),
                 current.price,
                 current.size,
                 intent.price,
                 intent.size,
-                inv.net_diff,
             );
             return false;
         }
@@ -361,20 +330,24 @@ impl StrategyCoordinator {
             && (current.price - intent.price).abs() <= self.cfg.tick_size.max(1e-9)
             && (current.size - intent.size).abs() <= 0.1;
         if state_changed && !state_aligned {
-            self.stats.pair_arb_state_forced_republish =
-                self.stats.pair_arb_state_forced_republish.saturating_add(1);
-            info!(
-                "🧭 pair_arb_state_forced_republish | slot={} prev_state={:?} current_state={:?} live={:.4}@{:.2} fresh={:.4}@{:.2}",
-                slot.as_str(),
-                prev_state,
-                state_key,
-                current.price,
-                current.size,
-                intent.price,
-                intent.size,
-            );
+            if !self.slot_pair_arb_state_republish_latched[idx] {
+                self.slot_pair_arb_state_republish_latched[idx] = true;
+                self.stats.pair_arb_state_forced_republish =
+                    self.stats.pair_arb_state_forced_republish.saturating_add(1);
+                info!(
+                    "🧭 pair_arb_state_forced_republish | slot={} prev_state={:?} current_state={:?} live={:.4}@{:.2} fresh={:.4}@{:.2}",
+                    slot.as_str(),
+                    prev_state,
+                    state_key,
+                    current.price,
+                    current.size,
+                    intent.price,
+                    intent.size,
+                );
+            }
             return false;
         }
+        self.slot_pair_arb_state_republish_latched[idx] = false;
         if !still_admissible || force_freshness_republish {
             return false;
         }
@@ -707,6 +680,11 @@ impl StrategyCoordinator {
             }
 
             if intent.is_none() {
+                if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy
+                {
+                    self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
+                    self.slot_pair_arb_state_republish_latched[slot.index()] = false;
+                }
                 if self.slot_target_active(slot) {
                     match self.evaluate_slot_retention(
                         inv,
@@ -847,20 +825,6 @@ impl StrategyCoordinator {
             let prev_state = self.slot_pair_arb_state_keys[idx];
             let state_changed = prev_state.is_some() && prev_state != Some(state_key);
             let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
-            if self.pair_arb_should_block_stalled_risk_increasing(inv, slot, current.size) {
-                debug!(
-                    "🧭 pair_arb stalled-risk clear | slot={} net_diff={:.2} regime={:?} live={:.4}@{:.2}",
-                    slot.as_str(),
-                    inv.net_diff,
-                    self.pair_arb_progress_regime(inv, now),
-                    current.price,
-                    current.size,
-                );
-                self.slot_absent_clear_since[idx] = None;
-                self.slot_pair_arb_state_keys[idx] = Some(state_key);
-                self.slot_pair_arb_fill_recheck_pending[idx] = false;
-                return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
-            }
             if state_changed {
                 debug!(
                     "🧭 pair_arb absent-intent state change clear | slot={} prev_state={:?} current_state={:?}",
@@ -871,6 +835,7 @@ impl StrategyCoordinator {
                 self.slot_absent_clear_since[idx] = None;
                 self.slot_pair_arb_state_keys[idx] = Some(state_key);
                 self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                self.slot_pair_arb_state_republish_latched[idx] = false;
                 return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
             }
             if fill_recheck {
@@ -895,11 +860,13 @@ impl StrategyCoordinator {
                 if admissible && self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
                     self.slot_pair_arb_state_keys[idx] = Some(state_key);
                     self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                    self.slot_pair_arb_state_republish_latched[idx] = false;
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     return RetentionDecision::Retain;
                 }
                 self.slot_absent_clear_since[idx] = None;
                 self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                self.slot_pair_arb_state_republish_latched[idx] = false;
                 return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
             }
             let since = self.slot_absent_clear_since[idx].get_or_insert(now);
@@ -913,11 +880,13 @@ impl StrategyCoordinator {
             if self.keep_slot_target_if_safe(inv, ub, slot, None, phase) {
                 self.slot_pair_arb_state_keys[idx] = Some(state_key);
                 self.slot_pair_arb_fill_recheck_pending[idx] = false;
+                self.slot_pair_arb_state_republish_latched[idx] = false;
                 self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                 return RetentionDecision::Retain;
             }
 
             self.slot_absent_clear_since[idx] = None;
+            self.slot_pair_arb_state_republish_latched[idx] = false;
             return RetentionDecision::Clear(reject_reason, SlotResetScope::Soft);
         }
 

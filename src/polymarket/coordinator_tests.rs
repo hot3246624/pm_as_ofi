@@ -501,6 +501,7 @@ fn test_pair_arb_cross_reject_sticky_margin_increases_and_clears_on_accept() {
         rejected_action_price: 0.44,
     });
     assert_eq!(c.slot_pair_arb_cross_reject_extra_ticks[slot.index()], 1);
+    assert!(c.slot_pair_arb_cross_reject_reprice_pending[slot.index()]);
     let widened = c.pair_arb_action_price_for_post_only(slot, 0.44, 5.0, BidReason::Provide);
     assert!(
         (widened - (base - c.cfg.tick_size)).abs() < 1e-9,
@@ -513,8 +514,69 @@ fn test_pair_arb_cross_reject_sticky_margin_increases_and_clears_on_accept() {
         ts: Instant::now(),
     });
     assert_eq!(c.slot_pair_arb_cross_reject_extra_ticks[slot.index()], 0);
+    assert!(!c.slot_pair_arb_cross_reject_reprice_pending[slot.index()]);
     let reset = c.pair_arb_action_price_for_post_only(slot, 0.44, 5.0, BidReason::Provide);
     assert!((reset - base).abs() < 1e-9);
+}
+
+#[test]
+fn test_pair_arb_state_forced_republish_is_latched() {
+    let (_, _, _, _, _, mut c) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let slot = OrderSlot::YES_BUY;
+    c.book = book(0.23, 0.24, 0.75, 0.76);
+    c.slot_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    c.yes_target = c.slot_targets[slot.index()].clone();
+    c.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: None,
+        net_bucket: PairArbNetBucket::Flat,
+        risk_open_cutoff_active: false,
+    });
+
+    let inv = InventoryState {
+        yes_qty: 10.0,
+        yes_avg_cost: 0.30,
+        no_qty: 5.0,
+        no_avg_cost: 0.75,
+        net_diff: 5.0,
+        ..Default::default()
+    };
+    let intent = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.24,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    let ub = c.book;
+
+    let d1 = c.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        Some(intent),
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(matches!(d1, RetentionDecision::Republish));
+    assert_eq!(c.stats.pair_arb_state_forced_republish, 1);
+    assert!(c.slot_pair_arb_state_republish_latched[slot.index()]);
+
+    let d2 = c.evaluate_slot_retention(
+        &inv,
+        &ub,
+        slot,
+        Some(intent),
+        CancelReason::Reprice,
+        EndgamePhase::Normal,
+    );
+    assert!(matches!(d2, RetentionDecision::Republish));
+    assert_eq!(c.stats.pair_arb_state_forced_republish, 1);
 }
 
 #[test]
@@ -2554,7 +2616,7 @@ fn test_pair_arb_fill_recheck_rechecks_absent_intent_even_without_state_change()
 }
 
 #[test]
-fn test_pair_arb_absent_intent_clears_stalled_high_risk_increasing_order() {
+fn test_pair_arb_absent_intent_no_longer_clears_only_from_stalled_progress() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     let (_o, _i, _m, _k, _er, mut coord) = make(config);
@@ -2594,11 +2656,8 @@ fn test_pair_arb_absent_intent_clears_stalled_high_risk_increasing_order() {
         EndgamePhase::Normal,
     );
     assert!(
-        matches!(
-            decision,
-            RetentionDecision::Clear(CancelReason::Reprice, SlotResetScope::Soft)
-        ),
-        "stalled high-bucket risk-increasing order should not be retained while absent intent"
+        matches!(decision, RetentionDecision::Retain),
+        "stalled-progress diagnostics alone should not force a clear on pair_arb runtime path"
     );
 }
 

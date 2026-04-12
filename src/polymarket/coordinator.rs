@@ -925,6 +925,8 @@ pub struct StrategyCoordinator {
     slot_pair_arb_fill_recheck_pending: [bool; 4],
     slot_pair_arb_cross_reject_extra_ticks: [u8; 4],
     slot_pair_arb_last_cross_rejected_action_price: [Option<f64>; 4],
+    slot_pair_arb_cross_reject_reprice_pending: [bool; 4],
+    slot_pair_arb_state_republish_latched: [bool; 4],
     pair_arb_slot_blocked_for_ms: [u64; 4],
     pair_arb_slot_blocked_at: [Option<Instant>; 4],
     yes_target: Option<DesiredTarget>,
@@ -1175,6 +1177,8 @@ impl StrategyCoordinator {
             slot_pair_arb_fill_recheck_pending: [false; 4],
             slot_pair_arb_cross_reject_extra_ticks: [0; 4],
             slot_pair_arb_last_cross_rejected_action_price: std::array::from_fn(|_| None),
+            slot_pair_arb_cross_reject_reprice_pending: [false; 4],
+            slot_pair_arb_state_republish_latched: [false; 4],
             pair_arb_slot_blocked_for_ms: [0; 4],
             pair_arb_slot_blocked_at: [None; 4],
             yes_target: None,
@@ -2267,6 +2271,8 @@ impl StrategyCoordinator {
                         .saturating_add(1);
                     self.slot_pair_arb_last_cross_rejected_action_price[idx] =
                         Some(rejected_action_price);
+                    self.slot_pair_arb_cross_reject_reprice_pending[idx] = true;
+                    self.slot_pair_arb_fill_recheck_pending[idx] = true;
                     debug!(
                         "🧭 pair_arb cross reject sticky margin | slot={} extra_ticks={} rejected_action_price={:.4}",
                         slot.as_str(),
@@ -2301,6 +2307,8 @@ impl StrategyCoordinator {
                     }
                     self.slot_pair_arb_cross_reject_extra_ticks[idx] = 0;
                     self.slot_pair_arb_last_cross_rejected_action_price[idx] = None;
+                    self.slot_pair_arb_cross_reject_reprice_pending[idx] = false;
+                    self.slot_pair_arb_state_republish_latched[idx] = false;
                 }
             }
             ExecutionFeedback::SlotBlocked {
