@@ -2,7 +2,7 @@ use tracing::info;
 
 use super::*;
 
-const PAIR_ARB_RISK_OPEN_CUTOFF_SECS: u64 = 90;
+const PAIR_ARB_RISK_OPEN_CUTOFF_SECS: u64 = 180;
 
 impl StrategyCoordinator {
     pub(super) fn apply_endgame_controls(

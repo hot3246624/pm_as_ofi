@@ -520,6 +520,33 @@ fn test_pair_arb_cross_reject_sticky_margin_increases_and_clears_on_accept() {
 }
 
 #[test]
+fn test_pair_arb_cross_reject_retry_price_steps_down_monotonically() {
+    let (_, _, _, _, _, mut c) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    c.book = book(0.30, 0.31, 0.66, 0.67);
+    let slot = OrderSlot::NO_BUY;
+    let tick = c.cfg.tick_size.max(1e-9);
+
+    let mut prev_action = c.pair_arb_action_price_for_post_only(slot, 0.66, 5.0, BidReason::Provide);
+    for _ in 0..6 {
+        c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
+            slot,
+            ts: Instant::now(),
+            rejected_action_price: prev_action,
+        });
+        assert!(
+            c.slot_pair_arb_cross_reject_reprice_pending[slot.index()],
+            "cross reject must force pending reprice"
+        );
+        let next_action = c.pair_arb_action_price_for_post_only(slot, 0.66, 5.0, BidReason::Provide);
+        assert!(
+            next_action <= prev_action - tick + 1e-9,
+            "action price must step down by >= 1 tick after cross reject: prev={prev_action:.4} next={next_action:.4} tick={tick:.4}"
+        );
+        prev_action = next_action;
+    }
+}
+
+#[test]
 fn test_pair_arb_state_forced_republish_is_latched() {
     let (_, _, _, _, _, mut c) = make(with_strategy(cfg(), StrategyKind::PairArb));
     let slot = OrderSlot::YES_BUY;
@@ -577,6 +604,64 @@ fn test_pair_arb_state_forced_republish_is_latched() {
     );
     assert!(matches!(d2, RetentionDecision::Republish));
     assert_eq!(c.stats.pair_arb_state_forced_republish, 1);
+}
+
+#[test]
+fn test_pair_arb_state_forced_republish_stays_single_under_repeated_rechecks() {
+    let (_, _, _, _, _, mut c) = make(with_strategy(cfg(), StrategyKind::PairArb));
+    let slot = OrderSlot::NO_BUY;
+    c.book = book(0.23, 0.24, 0.75, 0.76);
+    c.slot_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.55,
+        size: 5.0,
+        reason: BidReason::Provide,
+    });
+    c.no_target = c.slot_targets[slot.index()].clone();
+    c.slot_pair_arb_state_keys[slot.index()] = Some(PairArbStateKey {
+        dominant_side: Some(Side::Yes),
+        net_bucket: PairArbNetBucket::Mid,
+        risk_open_cutoff_active: false,
+    });
+
+    let inv = InventoryState {
+        yes_qty: 9.0,
+        yes_avg_cost: 0.40,
+        no_qty: 5.0,
+        no_avg_cost: 0.55,
+        net_diff: 4.0,
+        ..Default::default()
+    };
+    let intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.53,
+        size: 5.0,
+        reason: BidReason::Provide,
+    };
+    let ub = c.book;
+
+    for _ in 0..64 {
+        let d = c.evaluate_slot_retention(
+            &inv,
+            &ub,
+            slot,
+            Some(intent),
+            CancelReason::Reprice,
+            EndgamePhase::Normal,
+        );
+        assert!(matches!(d, RetentionDecision::Republish));
+    }
+
+    assert_eq!(
+        c.stats.pair_arb_state_forced_republish, 1,
+        "state-forced republish must be latched and counted once until ack/clear"
+    );
+    assert!(
+        c.slot_pair_arb_state_republish_latched[slot.index()],
+        "latch should remain set while still waiting for replace to complete"
+    );
 }
 
 #[test]
