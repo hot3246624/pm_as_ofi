@@ -652,8 +652,6 @@ struct Stats {
     pair_arb_keep_candidates: u64,
     pair_arb_skip_inventory_gate: u64,
     pair_arb_skip_simulate_buy_none: u64,
-    pair_arb_skip_utility_delta: u64,
-    pair_arb_skip_open_edge_not_improved: u64,
     pair_arb_opposite_slot_blocked: u64,
     pair_arb_stale_target_dropped: u64,
     pair_arb_state_forced_republish: u64,
@@ -666,8 +664,6 @@ struct PairArbGateLogSnapshot {
     keep_candidates: u64,
     skip_inventory_gate: u64,
     skip_simulate_buy_none: u64,
-    skip_utility_delta: u64,
-    skip_open_edge_not_improved: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1024,8 +1020,6 @@ pub struct CoordinatorObsSnapshot {
     pub pair_arb_keep_candidates: u64,
     pub pair_arb_skip_inventory_gate: u64,
     pub pair_arb_skip_simulate_buy_none: u64,
-    pub pair_arb_skip_utility_delta: u64,
-    pub pair_arb_skip_open_edge_not_improved: u64,
     pub pair_arb_opposite_slot_blocked: u64,
     pub pair_arb_stale_target_dropped: u64,
     pub pair_arb_state_forced_republish: u64,
@@ -1333,7 +1327,7 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={} skip_util={} skip_edge={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
@@ -1341,7 +1335,7 @@ impl StrategyCoordinator {
             self.stats.cancel_toxic, self.stats.cancel_stale, self.stats.cancel_inv, self.stats.cancel_reprice,
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked, self.stats.pair_arb_stale_target_dropped, self.stats.pair_arb_state_forced_republish,
-            self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none, self.stats.pair_arb_skip_utility_delta, self.stats.pair_arb_skip_open_edge_not_improved,
+            self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
@@ -1391,8 +1385,6 @@ impl StrategyCoordinator {
             pair_arb_keep_candidates: self.stats.pair_arb_keep_candidates,
             pair_arb_skip_inventory_gate: self.stats.pair_arb_skip_inventory_gate,
             pair_arb_skip_simulate_buy_none: self.stats.pair_arb_skip_simulate_buy_none,
-            pair_arb_skip_utility_delta: self.stats.pair_arb_skip_utility_delta,
-            pair_arb_skip_open_edge_not_improved: self.stats.pair_arb_skip_open_edge_not_improved,
             pair_arb_opposite_slot_blocked: self.stats.pair_arb_opposite_slot_blocked,
             pair_arb_stale_target_dropped: self.stats.pair_arb_stale_target_dropped,
             pair_arb_state_forced_republish: self.stats.pair_arb_state_forced_republish,
@@ -1421,14 +1413,6 @@ impl StrategyCoordinator {
             .stats
             .pair_arb_skip_simulate_buy_none
             .saturating_add(quotes.diagnostics.pair_arb_skip_simulate_buy_none as u64);
-        self.stats.pair_arb_skip_utility_delta = self
-            .stats
-            .pair_arb_skip_utility_delta
-            .saturating_add(quotes.diagnostics.pair_arb_skip_utility_delta as u64);
-        self.stats.pair_arb_skip_open_edge_not_improved = self
-            .stats
-            .pair_arb_skip_open_edge_not_improved
-            .saturating_add(quotes.diagnostics.pair_arb_skip_open_edge_not_improved as u64);
     }
 
     pub(super) fn execution_toxic_block_applies(&self) -> bool {
@@ -1633,24 +1617,7 @@ impl StrategyCoordinator {
     fn emit_live_observability_tags(&self) {
         let replace_ratio = Self::obs_ratio(self.stats.replace_events, self.stats.placed);
         let reprice_ratio_raw = Self::obs_ratio(self.stats.cancel_reprice, self.stats.placed);
-        let pair_arb_edge_explained_reprice = if self.cfg.strategy == StrategyKind::PairArb {
-            self.stats
-                .cancel_reprice
-                .min(self.stats.pair_arb_skip_open_edge_not_improved)
-        } else {
-            0
-        };
-        let pair_arb_unexplained_reprice = self
-            .stats
-            .cancel_reprice
-            .saturating_sub(pair_arb_edge_explained_reprice);
-        let reprice_ratio = if self.cfg.strategy == StrategyKind::PairArb {
-            // PairArb can legitimately clear+republish from strategy skip_edge (intent=None)
-            // without actual chase behavior. Alert only on unexplained reprice churn.
-            Self::obs_ratio(pair_arb_unexplained_reprice, self.stats.placed)
-        } else {
-            reprice_ratio_raw
-        };
+        let reprice_ratio = reprice_ratio_raw;
         let elapsed_secs = self.market_start.elapsed().as_secs_f64().max(1.0);
         let replace_per_min = (self.stats.replace_events as f64) * 60.0 / elapsed_secs;
         let low_sample = self.stats.placed < LIVE_OBS_MIN_PLACED_SAMPLE;
@@ -1712,9 +1679,7 @@ impl StrategyCoordinator {
             .stats
             .pair_arb_keep_candidates
             .saturating_add(self.stats.pair_arb_skip_inventory_gate)
-            .saturating_add(self.stats.pair_arb_skip_simulate_buy_none)
-            .saturating_add(self.stats.pair_arb_skip_utility_delta)
-            .saturating_add(self.stats.pair_arb_skip_open_edge_not_improved);
+            .saturating_add(self.stats.pair_arb_skip_simulate_buy_none);
         let pair_arb_softened_ratio = Self::obs_ratio(
             self.stats.pair_arb_ofi_softened_quotes,
             pair_arb_gate_attempts,
@@ -1766,9 +1731,6 @@ impl StrategyCoordinator {
         if lvl_reprice >= LiveObsLevel::Warn {
             flags.push("reprice_ratio");
         }
-        if self.cfg.strategy == StrategyKind::PairArb && pair_arb_edge_explained_reprice > 0 {
-            flags.push("reprice_edge_explained");
-        }
         if lvl_ref_blocked >= LiveObsLevel::Warn {
             flags.push("reference_blocked_ms");
         }
@@ -1788,7 +1750,7 @@ impl StrategyCoordinator {
         };
 
         let msg = format!(
-            "🏷️ LIVE_OBS[{}] placed={} sample_floor={} replace_ratio={:.2}({}) replace_per_min={:.2}({}) reprice_ratio={:.2}({}) reprice_ratio_raw={:.2} edge_explained={} ref_blocked_ms={}({};scope={}) heat_events={}({}) pair_arb_softened_ratio={:.2} toxic_events={} kill_events={} source_blocked={}({}) flags={}",
+            "🏷️ LIVE_OBS[{}] placed={} sample_floor={} replace_ratio={:.2}({}) replace_per_min={:.2}({}) reprice_ratio={:.2}({}) reprice_ratio_raw={:.2} ref_blocked_ms={}({};scope={}) heat_events={}({}) pair_arb_softened_ratio={:.2} toxic_events={} kill_events={} source_blocked={}({}) flags={}",
             round_level.as_tag(),
             self.stats.placed,
             LIVE_OBS_MIN_PLACED_SAMPLE,
@@ -1799,7 +1761,6 @@ impl StrategyCoordinator {
             reprice_ratio,
             lvl_reprice.as_tag(),
             reprice_ratio_raw,
-            pair_arb_edge_explained_reprice,
             self.stats.reference_blocked_ms,
             lvl_ref_blocked.as_tag(),
             ref_block_scope,

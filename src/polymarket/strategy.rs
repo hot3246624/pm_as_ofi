@@ -56,8 +56,6 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_keep_candidates: u8,
     pub(crate) pair_arb_skip_inventory_gate: u8,
     pub(crate) pair_arb_skip_simulate_buy_none: u8,
-    pub(crate) pair_arb_skip_utility_delta: u8,
-    pub(crate) pair_arb_skip_open_edge_not_improved: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -131,13 +129,6 @@ impl StrategyQuotes {
         self.diagnostics.pair_arb_skip_simulate_buy_none = self
             .diagnostics
             .pair_arb_skip_simulate_buy_none
-            .saturating_add(1);
-    }
-
-    pub(crate) fn note_pair_arb_skip_open_edge_not_improved(&mut self) {
-        self.diagnostics.pair_arb_skip_open_edge_not_improved = self
-            .diagnostics
-            .pair_arb_skip_open_edge_not_improved
             .saturating_add(1);
     }
 

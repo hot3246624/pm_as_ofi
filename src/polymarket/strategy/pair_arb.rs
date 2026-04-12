@@ -10,7 +10,6 @@ use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, Strateg
 pub(crate) struct PairArbStrategy;
 
 pub(crate) static PAIR_ARB_STRATEGY: PairArbStrategy = PairArbStrategy;
-const FLOAT_EPS: f64 = 1e-9;
 const TIER_1_NET_DIFF: f64 = 5.0;
 const TIER_2_NET_DIFF: f64 = 10.0;
 const RISK_INCR_TIER_1_NET_DIFF: f64 = 3.5;
@@ -18,10 +17,6 @@ const RISK_INCR_TIER_2_NET_DIFF: f64 = 8.0;
 const EARLY_SKEW_MULT: f64 = 0.35;
 const OFI_HOT_ADJUST_TICKS: f64 = 1.0;
 const OFI_TOXIC_ADJUST_TICKS: f64 = 2.0;
-const RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT: f64 = -0.5;
-const RISK_INCR_LOW_NET_MIN_UTILITY_MULT: f64 = 0.5;
-const HIGH_IMBALANCE_UTILITY_MULT: f64 = 2.0;
-const HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT: f64 = 0.5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PairArbRiskEffect {
@@ -319,7 +314,7 @@ impl PairArbStrategy {
     ) -> f64 {
         let guarded_target = (pair_target - safety_margin).max(0.0);
         let legacy = guarded_target - opp_avg;
-        if same_qty <= FLOAT_EPS || bid_size <= FLOAT_EPS {
+        if same_qty <= PAIR_ARB_NET_EPS || bid_size <= PAIR_ARB_NET_EPS {
             return legacy;
         }
 
@@ -338,7 +333,7 @@ impl PairArbStrategy {
         size: f64,
     ) -> PairArbRiskEffect {
         let projected = Self::projected_abs_net_diff(inv.net_diff, side, size);
-        if projected <= inv.net_diff.abs() + FLOAT_EPS {
+        if projected <= inv.net_diff.abs() + PAIR_ARB_NET_EPS {
             PairArbRiskEffect::PairingOrReducing
         } else {
             PairArbRiskEffect::RiskIncreasing
@@ -365,9 +360,9 @@ impl PairArbStrategy {
         }
         let _ = size;
         let current_abs = inv.net_diff.abs();
-        let mult = if current_abs + FLOAT_EPS >= RISK_INCR_TIER_2_NET_DIFF {
+        let mult = if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_2_NET_DIFF {
             tier_2_mult
-        } else if current_abs + FLOAT_EPS >= RISK_INCR_TIER_1_NET_DIFF {
+        } else if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_1_NET_DIFF {
             tier_1_mult
         } else {
             return None;
@@ -432,64 +427,6 @@ impl PairArbStrategy {
             return base * (EARLY_SKEW_MULT + (1.0 - EARLY_SKEW_MULT) * ramp) * time_decay;
         }
         base * time_decay
-    }
-
-    pub(crate) fn apply_tier_avg_cost_cap(
-        inv: &crate::polymarket::messages::InventoryState,
-        mut raw_yes: f64,
-        mut raw_no: f64,
-        tier_1_mult: f64,
-        tier_2_mult: f64,
-    ) -> (f64, f64) {
-        if inv.net_diff >= TIER_1_NET_DIFF && inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 {
-            let mult = if inv.net_diff >= TIER_2_NET_DIFF {
-                tier_2_mult
-            } else {
-                tier_1_mult
-            };
-            raw_yes = raw_yes.min(inv.yes_avg_cost * mult);
-        }
-        if inv.net_diff <= -TIER_1_NET_DIFF && inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
-            let mult = if inv.net_diff <= -TIER_2_NET_DIFF {
-                tier_2_mult
-            } else {
-                tier_1_mult
-            };
-            raw_no = raw_no.min(inv.no_avg_cost * mult);
-        }
-        (raw_yes, raw_no)
-    }
-
-    pub(crate) fn min_utility_delta_for_risk_increasing(
-        current_paired_qty: f64,
-        abs_net_diff: f64,
-        size: f64,
-        tick_size: f64,
-    ) -> f64 {
-        let base = size * tick_size.max(1e-9);
-        if current_paired_qty <= FLOAT_EPS && abs_net_diff <= FLOAT_EPS {
-            return RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT * base;
-        }
-        if abs_net_diff + FLOAT_EPS < size {
-            return RISK_INCR_LOW_NET_MIN_UTILITY_MULT * base;
-        }
-        if abs_net_diff + FLOAT_EPS >= RISK_INCR_TIER_2_NET_DIFF {
-            return HIGH_IMBALANCE_UTILITY_MULT * base;
-        }
-        base
-    }
-
-    pub(crate) fn min_open_edge_improvement_for_risk_increasing(
-        abs_net_diff: f64,
-        size: f64,
-        tick_size: f64,
-    ) -> f64 {
-        let base = size * tick_size.max(1e-9);
-        if abs_net_diff + FLOAT_EPS >= RISK_INCR_TIER_2_NET_DIFF {
-            HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT * base
-        } else {
-            FLOAT_EPS
-        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -578,42 +515,6 @@ mod tests {
     }
 
     #[test]
-    fn test_tier_avg_cost_cap_applies_on_dominant_side() {
-        let tier_1_mult = 0.80;
-        let tier_2_mult = 0.60;
-        let inv_yes = InventoryState {
-            yes_qty: 15.0,
-            yes_avg_cost: 0.45,
-            no_qty: 0.0,
-            no_avg_cost: 0.0,
-            net_diff: 10.0,
-            ..Default::default()
-        };
-        let (yes_capped, no_unchanged) = PairArbStrategy::apply_tier_avg_cost_cap(
-            &inv_yes,
-            0.60,
-            0.40,
-            tier_1_mult,
-            tier_2_mult,
-        );
-        assert!((yes_capped - (0.45 * tier_2_mult)).abs() < 1e-9);
-        assert!((no_unchanged - 0.40).abs() < 1e-9);
-
-        let inv_no = InventoryState {
-            no_qty: 10.0,
-            no_avg_cost: 0.50,
-            yes_qty: 0.0,
-            yes_avg_cost: 0.0,
-            net_diff: -6.0,
-            ..Default::default()
-        };
-        let (yes_unchanged, no_capped) =
-            PairArbStrategy::apply_tier_avg_cost_cap(&inv_no, 0.30, 0.60, tier_1_mult, tier_2_mult);
-        assert!((yes_unchanged - 0.30).abs() < 1e-9);
-        assert!((no_capped - (0.50 * tier_1_mult)).abs() < 1e-9);
-    }
-
-    #[test]
     fn test_vwap_ceiling_equals_legacy_when_same_qty_is_zero() {
         let legacy = 0.98 - 0.40;
         let ceiling = PairArbStrategy::vwap_ceiling(0.98, 0.0, 0.40, 0.0, 0.35, 5.0);
@@ -667,8 +568,15 @@ mod tests {
             net_diff: 10.0,
             ..Default::default()
         };
-        let (tier_capped_yes, _) =
-            PairArbStrategy::apply_tier_avg_cost_cap(&inv, 0.95, 0.20, 0.80, 0.60);
+        let tier_capped_yes = PairArbStrategy::tier_cap_price_for_candidate(
+            &inv,
+            Side::Yes,
+            5.0,
+            PairArbRiskEffect::RiskIncreasing,
+            0.80,
+            0.60,
+        )
+        .expect("tier cap");
         let vwap_yes_ceiling = PairArbStrategy::vwap_ceiling(
             0.98,
             0.0,
@@ -741,48 +649,6 @@ mod tests {
         );
         assert_eq!(decision.adjust_ticks, 0.0);
         assert!(!decision.suppress);
-    }
-
-    #[test]
-    fn test_min_utility_delta_for_risk_increasing_bootstrap_and_low_net() {
-        let size = 5.0;
-        let tick = 0.01;
-        let base = size * tick;
-
-        let bootstrap =
-            PairArbStrategy::min_utility_delta_for_risk_increasing(0.0, 0.0, size, tick);
-        assert!((bootstrap - (RISK_INCR_BOOTSTRAP_MIN_UTILITY_MULT * base)).abs() < 1e-9);
-
-        let low_net = PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 4.0, size, tick);
-        assert!((low_net - (RISK_INCR_LOW_NET_MIN_UTILITY_MULT * base)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_min_utility_delta_for_risk_increasing_full_threshold_after_low_net() {
-        let size = 5.0;
-        let tick = 0.01;
-        let base = size * tick;
-
-        let full = PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 5.0, size, tick);
-        assert!((full - base).abs() < 1e-9);
-
-        let high_imbalance =
-            PairArbStrategy::min_utility_delta_for_risk_increasing(5.0, 8.0, size, tick);
-        assert!((high_imbalance - (HIGH_IMBALANCE_UTILITY_MULT * base)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn test_min_open_edge_improvement_tightens_in_high_imbalance() {
-        let size = 5.0;
-        let tick = 0.01;
-        let base = size * tick;
-
-        let normal =
-            PairArbStrategy::min_open_edge_improvement_for_risk_increasing(5.0, size, tick);
-        assert!(normal <= FLOAT_EPS * 2.0);
-
-        let high = PairArbStrategy::min_open_edge_improvement_for_risk_increasing(8.0, size, tick);
-        assert!((high - (HIGH_IMBALANCE_OPEN_EDGE_IMPROVE_MULT * base)).abs() < 1e-9);
     }
 
     #[test]
