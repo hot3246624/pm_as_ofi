@@ -456,14 +456,16 @@ impl StrategyCoordinator {
             } else {
                 None
             };
+            let mut pair_arb_freshness_reason = "none";
             let pair_arb_force_freshness_republish = if self.cfg.strategy == StrategyKind::PairArb
                 && slot.direction == TradeDirection::Buy
                 && slot_direction == Some(slot.direction)
                 && (slot_size - size).abs() <= 0.1
             {
                 let inv = self.current_working_inventory();
-                let (force, _, _) = self
+                let (force, force_reason, _) = self
                     .pair_arb_should_force_freshness_republish(&inv, slot, slot_price, price, size);
+                pair_arb_freshness_reason = force_reason;
                 force
             } else {
                 false
@@ -508,8 +510,8 @@ impl StrategyCoordinator {
                     return;
                 }
                 debug!(
-                    "🔁 PairArb freshness reprice {:?}: candidate_role={:?} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                    slot, pair_arb_risk_effect, price, slot_price, delta_ticks,
+                    "🔁 PairArb freshness reprice {:?}: candidate_role={:?} reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                    slot, pair_arb_risk_effect, pair_arb_freshness_reason, price, slot_price, delta_ticks,
                 );
             }
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
@@ -706,6 +708,14 @@ impl StrategyCoordinator {
                     || (slot_size - size).abs() > 0.1;
             }
             if needs_reprice {
+                if pair_arb_force_freshness_republish
+                    && pair_arb_freshness_reason == "pairing_timed_up_reprice"
+                {
+                    self.stats.pair_arb_pairing_upward_reprice = self
+                        .stats
+                        .pair_arb_pairing_upward_reprice
+                        .saturating_add(1);
+                }
                 let action_price =
                     self.pair_arb_action_price_for_post_only(slot, price, size, reason);
                 if self.cfg.strategy == StrategyKind::PairArb && publish_reason.is_none() {

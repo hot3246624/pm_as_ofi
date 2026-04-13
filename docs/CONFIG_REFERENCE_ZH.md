@@ -35,7 +35,7 @@
 | --- | --- | --- |
 | `PM_STRATEGY` | `pair_arb` | 当前验证主线 |
 | `PM_BID_SIZE` | `5.0` | 单次挂单份额 |
-| `PM_MAX_NET_DIFF` | `15.0` | 盘中净仓硬上限（当前 15m live 基线） |
+| `PM_MAX_NET_DIFF` | `5.0` | 盘中净仓硬上限（当前 15m canary 基线） |
 | `PM_PAIR_TARGET` | `0.97` | 组合成本目标线（pair_arb 核心参数） |
 | `PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN` | `0.02` | `VWAP ceiling` 使用的安全边际，真实上限基于 `pair_target - margin` |
 | `PM_TICK_SIZE` | `0.01` | 价格粒度 |
@@ -157,7 +157,7 @@
 | `PM_RECYCLE_MAX_MERGES_PER_ROUND` | `2` | 单轮最大 merge 次数 |
 | `PM_RECYCLE_LOW_WATER_USDC` | `6.0` | 低水位门槛 |
 | `PM_RECYCLE_TARGET_FREE_USDC` | `18.0` | 回补目标 |
-| `PM_RECYCLE_MIN_BATCH_USDC` | `10.0` | 最小批量 |
+| `PM_RECYCLE_MIN_BATCH_USDC` | `5.0` | 最小批量（降低 4.99-lot 回收死锁概率） |
 | `PM_RECYCLE_MAX_BATCH_USDC` | `30.0` | 最大批量 |
 | `PM_RECYCLE_SHORTFALL_MULT` | `1.2` | 缺口放大倍率 |
 | `PM_RECYCLE_MIN_EXECUTABLE_USDC` | `5.0` | 低于该金额不执行 |

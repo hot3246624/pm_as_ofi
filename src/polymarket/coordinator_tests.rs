@@ -2129,6 +2129,53 @@ async fn test_pair_arb_pairing_side_holds_between_state_triggers_on_upward_drift
 }
 
 #[tokio::test]
+async fn test_pair_arb_pairing_side_timed_upward_reprice_after_stale_window() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+
+    let inv = InventoryState {
+        yes_qty: 20.0,
+        yes_avg_cost: 0.58,
+        no_qty: 5.0,
+        no_avg_cost: 0.35,
+        net_diff: 15.0,
+        ..Default::default()
+    };
+    let _ = i.send(inv);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.35, 5.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial NO SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(12);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(12);
+
+    // Pairing leg gets a slow timed upward refresh after stale window.
+    coord
+        .slot_place_or_reprice(slot, 0.39, 5.0, BidReason::Provide, None)
+        .await;
+
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.slot(), slot);
+            assert!((target.price - 0.39).abs() < 1e-9);
+        }
+        other => panic!(
+            "expected timed upward republish for stale pairing side, got {:?}",
+            other
+        ),
+    }
+}
+
+#[tokio::test]
 async fn test_pair_arb_pairing_side_retains_small_upward_drift_between_triggers() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;

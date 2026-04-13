@@ -35,10 +35,17 @@ impl StrategyCoordinator {
             crate::polymarket::strategy::pair_arb::PairArbRiskEffect::RiskIncreasing => {
                 (false, "risk_increasing_state_driven", delta_ticks.abs())
             }
-            // Pairing/reducing leg is also state/event-driven:
-            // hold between discrete state triggers (fill/failed/merge/phase/reset).
+            // Pairing/reducing leg is event-driven plus a slow timed upward
+            // freshness check to avoid long stale quotes in drifting books.
             crate::polymarket::strategy::pair_arb::PairArbRiskEffect::PairingOrReducing => {
-                (false, "pairing_holds_between_triggers", delta_ticks.abs())
+                let slot_age = self.slot_last_ts(slot).elapsed();
+                let timed_reprice_due = slot_age >= std::time::Duration::from_secs(8);
+                let upward_stale = delta_ticks >= 3.0 - 1e-9;
+                if timed_reprice_due && upward_stale {
+                    (true, "pairing_timed_up_reprice", delta_ticks)
+                } else {
+                    (false, "pairing_holds_between_triggers", delta_ticks.abs())
+                }
             }
         }
     }

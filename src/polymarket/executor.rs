@@ -118,6 +118,8 @@ pub struct Executor {
     marketable_buy_cooldown_ms: u64,
     /// Whether to auto-learn marketable BUY min-notional from exchange errors.
     marketable_buy_autodetect: bool,
+    /// Fallback lot size for small BUY+Provide retries (read from PM_BID_SIZE).
+    provide_size_fallback_bid_size: f64,
     /// Guarded on-demand reconcile throttle for side-lock refusal path.
     last_guard_reconcile_ts: Instant,
     /// Continuous slot-lock window started when place attempts are refused due to tracked live orders.
@@ -226,6 +228,11 @@ impl Executor {
             marketable_buy_autodetect: std::env::var("PM_MIN_MARKETABLE_AUTO_DETECT")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(true),
+            provide_size_fallback_bid_size: std::env::var("PM_BID_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .filter(|v| *v > 0.0)
+                .unwrap_or(5.0),
             last_guard_reconcile_ts: Instant::now() - Duration::from_secs(60),
         }
     }
@@ -990,12 +997,66 @@ impl Executor {
                     }
                 }
 
+                let mut err_text = format!("{:#}", final_err);
+                let mut err_text_lower = err_text.to_ascii_lowercase();
+                let fallback_bid_size =
+                    ((self.provide_size_fallback_bid_size * 100.0).floor() / 100.0).max(0.0);
+                let should_retry_with_fallback = direction == TradeDirection::Buy
+                    && reason == BidReason::Provide
+                    && size + 1e-9 < fallback_bid_size
+                    && fallback_bid_size >= 0.01
+                    && (Self::is_marketable_min_error(&err_text_lower)
+                        || Self::is_validation_error(&err_text_lower));
+                if should_retry_with_fallback {
+                    warn!(
+                        "🧭 Pairing small-size fallback retry {:?} {:?}@{:.3}: {:.2} -> {:.2}",
+                        direction, side, price, size, fallback_bid_size
+                    );
+                    match self
+                        .place_post_only_order(side, direction, price, fallback_bid_size)
+                        .await
+                    {
+                        Ok(order_id) => {
+                            info!(
+                                "✅ Order placed after small-size fallback: {:?} {:?}@{:.3} size={:.2} id={}",
+                                direction, side, price, fallback_bid_size, order_id
+                            );
+                            if direction == TradeDirection::Buy {
+                                self.last_buy_place_ts[side.index()] = Some(Instant::now());
+                            }
+                            self.slot_orders_mut(slot).insert(order_id, fallback_bid_size);
+                            self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
+                                slot,
+                                ts: Instant::now(),
+                            })
+                            .await;
+                            let _ = self
+                                .result_tx
+                                .send(OrderResult::OrderPlaced {
+                                    slot,
+                                    target: DesiredTarget {
+                                        side,
+                                        direction,
+                                        price,
+                                        size: fallback_bid_size,
+                                        reason,
+                                    },
+                                })
+                                .await;
+                            return;
+                        }
+                        Err(retry_err) => {
+                            final_err = retry_err;
+                            err_text = format!("{:#}", final_err);
+                            err_text_lower = err_text.to_ascii_lowercase();
+                        }
+                    }
+                }
+
                 warn!(
                     "❌ Failed to place PostOnly {:?} {:?}: {:?}",
                     direction, side, final_err
                 );
-                let err_text = format!("{:#}", final_err);
-                let err_text_lower = err_text.to_ascii_lowercase();
                 if self.marketable_buy_autodetect {
                     if let Some(min_notional) =
                         Self::extract_min_marketable_notional(&err_text_lower)

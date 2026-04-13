@@ -1,297 +1,400 @@
-# Pair-Arb 策略深度评估报告
+# PLAN_Codex 四态状态机方案深度评估
 
-> 基于 April 10–11 全部实盘日志的定量分析  
-> 分析范围：6 个 Session，9 个有效 Round，137 笔成交
-
----
-
-## 一、全局 P&L 汇总
-
-### 1.1 逐轮详细损益
-
-| Session | Round | 时间 (UTC) | paired_qty | realized_pnl | residual_qty | worst_case | 残仓方向 | 市场结果 | 实际残仓P&L | 总P&L |
-|---------|-------|------------|------------|--------------|--------------|------------|----------|----------|-------------|-------|
-| 10-real | R1 | 03:16–03:30 | 10 | +2.25 | 15 YES | -4.05 | YES dominant | NO 胜 (est_value=$0) | **-6.30** | **-4.05** |
-| 10-real2 | R1 | 08:00–08:15 | 10 | +0.83 | 10 NO | -4.30 | NO dominant | YES 胜 (est_value=$0) | **-4.30** | **-3.47** |
-| 10-real3 | R1+R2 | 12:30–12:45 | 30 | +2.27 | 15 NO | -2.82 | NO dominant | ？(no candidates) | **≈-2.82** | **≈-0.55** |
-| 10-real3 | R3 | 12:45–13:00 | 30 | +1.93 | 10 YES | -2.60 | YES dominant | NO 胜 (est_value=$0) | **-2.60** | **-0.67** |
-| 10-real4 | R1 | 16:13–16:30 | 0 | 0 | 0 | 0 | — | — | 0 | **0** |
-| 11-real | R1 | 04:00–04:15 | 10+10 | +1.03+6.40 | 0.01 | +6.40 | ≈flat | — | ≈0 | **+7.43** |
-| 11-real | R2 | 04:15–04:30 | 15 | +0.91 | 2.17 YES | -0.55 | YES | NO 胜 (no candidates) | **-0.55** | **+0.36** |
-| 11-real | R3 | 04:30–04:45 | 0 | 0 | 10 NO | -4.00 | NO dominant | YES 胜 (est_value=$0) | **-4.00** | **-4.00** |
-| 11-real2 | R1 | 16:15–16:30 | 10+5 | +0.70+0.39 | 5 NO | -1.82 | NO dominant | YES 胜 (est_value=$5) | **≈-2.21** | **≈-1.12** |
-| 11-real2 | R2 | 16:30–16:45 | 5 | +0.35 | 10 NO | -4.45 | NO dominant | NO 胜 (no candidates) | **≈-4.45** | **≈-4.10** |
-| 11-real2 | R3 | 16:45–17:00 | 10 | +0.62 | 10 YES | -2.31 | YES dominant | YES 胜 (no candidates) | **≈-2.31** | **≈-1.69** |
-
-### 1.2 汇总统计
-
-| 指标 | 数值 |
-|------|------|
-| **总配对利润** (realized_pair_locked_pnl) | **+17.48 USDC** |
-| **总残仓损失** (worst_case 实现) | **≈-29.34 USDC** |
-| **净 P&L（估算）** | **≈-11.86 USDC** |
-| 总成交笔数 | 137 |
-| 总配对数量 | ~135 对 (paired + realized) |
-| 每对平均利润 | ~0.13 USDC/对 |
-| 残仓发生率 | 9/10 有效轮 = **90%** |
-| 残仓判断正确率 | 仅 1/9 轮残仓无损（R1 11-real 的 ≈flat）|
-
-> [!CAUTION]
-> **配对利润:残仓损失比 = 1:1.68**。策略的核心盈利机制（配对）是正 EV 的，但残仓风险完全覆盖了配对利润，导致整体净亏损。
+> 基于当前代码（2026-04-13）、`.env` 实际配置、April 12 实盘日志、PLAN_Claude 分析对照
 
 ---
 
-## 二、策略有效性评估
+## 一、方案概要与当前配置对照
 
-### 2.1 配对机制（Pair Lock）：✅ 有效
+### PLAN_Codex 提出的 5 个核心改造
 
-配对机制本身运行良好：
-- **pair_cost 平均 ≈ 0.78**（远低于 pair_target=0.97）
-- 每对平均利润 ~0.13 USDC，在极端波动时（如 11-real R1）可达 0.64 USDC/对
-- Merge 和 claim 机制正常运作，资金回收链路畅通
+| # | 改造内容 | 核心目的 |
+|---|---------|---------|
+| 1 | 主次目标分离：主=最小化残仓，次=pair_cost≤target | 改变优化目标 |
+| 2 | 四态状态机：Probe→Build→Complete→Lock | 严格阶段控制 |
+| 3 | 配对腿事件+定时重报，移除no-chase约束 | 提升配对效率 |
+| 4 | 动态库存上限：按剩余时间收缩 | 时间衰减风控 |
+| 5 | T-90禁止新风险腿 + T-30 taker 收口 | 强制收敛 |
 
-数学验证：
+### 关键发现：`.env` 已经大幅偏离 April 12 时的配置
+
+```diff
+# April 12 实盘配置 → 当前 .env
+- PM_MAX_NET_DIFF=15          → PM_MAX_NET_DIFF=5.0         ✅ 已改
+- PM_PAIR_ARB_TIER_1_MULT=0.80 → PM_PAIR_ARB_TIER_1_MULT=0.50  ✅ 已改
+- PM_PAIR_ARB_TIER_2_MULT=0.60 → PM_PAIR_ARB_TIER_2_MULT=0.15  ✅ 已改
+- PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS=180 → =240              ✅ 已改
+- PM_RECYCLE_MIN_BATCH_USDC=10.0 → =5.0                     ✅ 已改
 ```
-若 pair_cost = 0.78，pair_target = 0.97
-理论利润/对 = 0.97 - 0.78 = 0.19 USDC  
-实际利润/对 = 0.13 USDC（考虑 safety_margin 和非对称成交）
-利润率 = 13.4%  ← 对于 maker 策略，这是合理的
-```
-
-### 2.2 残仓控制：❌ 严重失效
-
-| 失败模式 | 发生次数 | 典型损失 |
-|----------|----------|----------|
-| 单向趋势中连续填单→大残仓 | 6/10 轮 | 2.3-6.3 USDC |
-| 级联即时成交（0.1-0.5s 内连续扫） | 2/10 轮 | 4.0 USDC |
-| 平仓后立即重开仓 | 1/10 轮 | 0.55 USDC |
-| 到期前新开仓未受限 | 2/10 轮 | ~ |
-
-**残仓的核心矛盾**：
-```
-残仓 EV = Σ(residual_qty × avg_cost) × P(方向正确) - Σ(residual_qty × avg_cost) × P(方向错误)
-```
-
-在 BTC up/down 15m 市场中，残仓方向正确率仅约 **11%**（1/9），远低于 50%。这不是随机结果，而是**逆向选择**的结构性表现：
 
 > [!IMPORTANT]
-> **逆向选择机制**：当市场趋势性地向一个方向移动时，策略的 maker bid 被知情交易者（informed takers）持续填单。策略持有的残仓恰好是市场要抛弃的一侧。这在 15 分钟到期的高波动市场中尤为严重。
-
-### 2.3 执行效率：⚠️ 存在严重浪费
-
-| 问题 | 数据 | 影响 |
-|------|------|------|
-| Cross-reject 风暴 | 11-real2 中 302 次 | 每个 reject 浪费 1.5-2s，总计 ~9 分钟执行窗口被废 |
-| Forced republish 过于频繁 | 11-real2 中 17,720 次 | 日志膨胀 20K 行，可能增加延迟 |
-| headroom_blocked 导致跳过配对 | 11-real R2 | 有余额但被 matched 占用 → 错过配对机会 |
+> **这些配置变化极其关键**。PLAN_Codex 在 `max_net_diff=15` 的语境下提出，但当前已降至 5。这从根本上改变了方案的价值计算——很多问题已被配置解决。
 
 ---
 
-## 三、关键 Bug 对 P&L 的定量影响
+## 二、逐条深度技术分析
 
-### 3.1 Working Inventory Bug（P0）
+### 2.1 改造一：主次目标分离
 
-**影响的轮次**：11-real R3（NO@0.41→NO@0.39，578ms 内无梯度）
+**PLAN_Codex 原文**：主目标=最小化残仓，次目标=pair_cost≤pair_target
 
-日志证据：
-```
-04:30:04  NO@0.410 挂单
-04:30:07  NO@0.410 成交（110ms 即时成交）
-04:30:07  NO@0.390 挂单（fill-triggered reprice，仅降 2 ticks）
-04:30:07  NO@0.390 成交（200ms 再次即时成交）
-→ net_diff = -10，10份 NO 残仓，最终 P&L = -4.00 USDC
-```
+**当前代码实际行为**（`pair_arb.rs:47-250`）：
+- 定价逻辑：`raw = mid - excess/2 - skew_shift`，本质是追求 pair_cost≤pair_target
+- VWAP ceiling（L160-223）：严格限制 YES/NO 买价使得 pair_cost 不超标
+- Tier cap（L90-109）：在 risk_increasing 时降低报价以减少深仓成本
+- `should_keep_candidate`（L432-492）：inventory gate + risk_open_cutoff + simulate_buy
 
-**若 working inventory 正确**：第一笔 NO@0.41 成交后，tier cap 应将第二笔 NO 价格从 0.39 降至 0.41×0.70=0.287。以 0.287 挂单可能不会即时成交（书中卖盘可能 > 0.287），从而避免整个 -4.00 USDC 损失。
+**评估**：
 
-**估算挽回**：~4.0 USDC（占总亏损的 34%）
+当前代码的**实际优先级**已经是：
+1. **Inventory gate**（`can_place_strategy_intent` → max_net_diff=5 硬限）→ 先卡库存
+2. **VWAP ceiling** → 保证 pair_cost
+3. **Tier cap** → 降低深仓成本
+4. **Skew shift** → 偏移报价向缺失腿
 
-### 3.2 Cross-Reject 步降缺失（P1）
+**结论**：在 `max_net_diff=5` 下，"最小化残仓"已经通过硬限实现了。5 份残仓 × avg_cost 0.45 = $2.25 最大损失，与典型 5-10 对配对利润（$0.5-$1.5）处于可比范围。目标分离的**理论价值仍在**，但**紧迫性大幅降低**。
 
-11-real2 R1 中的 cross-reject 暴风：
-```
-16:26:29 ~ 16:27:05  约 36 秒内持续 cross-reject YES bids
-→ 浪费了宝贵的配对窗口
-→ 最终 R1 残仓 5 NO（worst_case = -1.82）
-```
-
-**若步降有效**：更快地成交 YES bid → 可能减少 NO 残仓，估算挽回 ~1.0 USDC
-
-### 3.3 Flat-state 冷却缺失（P0）
-
-11-real R2：
-```
-04:25:46  net_diff=0（完全平仓，15 对已锁利润 +0.91）
-04:25:55  YES@0.310 成交（9 秒后立即重开仓！）
-→ 产生 2.17 YES 残仓，worst_case = -0.55
-```
-
-**若有 30s flat cooldown**：不会在到期前 4 分钟重新开仓，保住 +0.91 USDC。
-
-**估算挽回**：~0.55 USDC
+> [!NOTE]
+> 核心的目标对立是：追求更多配对 vs 控制残仓。当 max_net_diff=5 时，残仓天花板已经很低，这个矛盾被钝化了。
 
 ---
 
-## 四、策略盈利的数学条件分析
+### 2.2 改造二：四态状态机 Probe→Build→Complete→Lock
 
-### 4.1 盈利等式
+**这是 PLAN_Codex 的核心提案，需要最深入的分析。**
+
+#### 2.2.1 与现有状态机的对比
+
+当前代码已有**两层**状态机制：
+
+**层 1：PairArbStateKey**（`coordinator_execution.rs:46-72`）
+```rust
+PairArbStateKey {
+    dominant_side: Option<Side>,     // YES/NO/None
+    net_bucket: PairArbNetBucket,    // Flat/Low/Mid/High
+    risk_open_cutoff_active: bool,
+}
+```
+- Flat: |net_diff| ≤ ε
+- Low: |net_diff| < 5
+- Mid: |net_diff| < 10
+- High: |net_diff| ≥ 10
+
+**层 2：EndgamePhase**（`coordinator.rs:586-591`）
+```rust
+enum EndgamePhase {
+    Normal,    // 全功能
+    SoftClose, // 禁止 risk-increasing
+    HardClose, // 仅允许 hedge
+    Freeze,    // 冻结
+}
+```
+
+#### 2.2.2 关键发现：max_net_diff=5 导致现有状态机大部分失效
 
 ```
-Net EV = N_pairs × (pair_target - pair_cost) - R_residual × avg_cost × P(lose)
-```
+代码中的 bucket 阈值（硬编码）：
+  Flat:  |net| ≤ ε
+  Low:   |net| < 5.0
+  Mid:   |net| < 10.0    ← max_net_diff=5 → 永远到不了
+  High:  |net| ≥ 10.0   ← max_net_diff=5 → 永远到不了
 
-其中：
-- `N_pairs`：每轮配对数量
-- `pair_cost`：实际配对成本
-- `R_residual`：残仓数量
-- `P(lose)`：残仓方向错误的概率
-
-### 4.2 盈亏平衡分析
-
-当前参数下（pair_target=0.97, avg pair_cost=0.78, avg residual=10份, avg residual_cost=0.35）：
-
-```
-需要满足：
-N_pairs × 0.19 > R_residual × 0.35 × P(lose)
-→ N_pairs > 10 × 0.35 × P(lose) / 0.19
-→ 若 P(lose)=0.50 → N_pairs > 9.2 对（每轮需至少 9 对配对）
-→ 若 P(lose)=0.80（逆向选择下）→ N_pairs > 14.7 对
-→ 若 P(lose)=0.89（实际观测值）→ N_pairs > 16.4 对
+RISK_INCR 阈值（硬编码）：
+  tier_1: |net| ≥ 3.5    ← 仍可触发（容量 3.5~5.0）
+  tier_2: |net| ≥ 8.0    ← max_net_diff=5 → 永远到不了
 ```
 
 > [!WARNING]
-> 在当前 max_net_diff=15、bid_size=5 的配置下，每轮最多配 15/5=3 批次 ≈ 15 对。考虑到 merge 延迟和余额循环，实际每轮 10-15 对。要在 P(lose)=0.89 下盈利，每轮需要 16+ 对配对且零残仓——这在 15 分钟窗口内几乎不可能。
+> **在 max_net_diff=5 的配置下**：
+> - `PairArbNetBucket::Mid` 和 `High` 从不出现
+> - `RISK_INCR_TIER_2_NET_DIFF=8.0` 永远不触发
+> - `tier_2_mult=0.15` 永远不生效
+> - `pair_arb_quote_still_admissible` 中的 SoftClose risk_increasing 检查是唯一的endgame保护
+>
+> 整个 tier 系统的大半是死代码。
 
-### 4.3 降低残仓风险后的盈利可能性
+#### 2.2.3 PLAN_Codex 四态映射到当前架构
 
-| 参数变更 | max_residual | 最坏损失 | 需配对数 (P_lose=0.7) | 可行性 |
-|----------|-------------|----------|----------------------|--------|
-| 现状 (net=15) | 15×0.35=5.25 | 5.25 | 19 对 | ❌ 不可行 |
-| net=10 | 10×0.40=4.00 | 4.00 | 15 对 | ⚠️ 边界 |
-| net=5 | 5×0.45=2.25 | 2.25 | 8 对 | ✅ 基本可行 |
-| net=5 + fix bugs | 5×0.35=1.75 | 1.75 | 6 对 | ✅ 较可行 |
+| PLAN_Codex 状态 | 语义 | 现有最近似机制 | 差距 |
+|----------------|------|-------------|------|
+| **Probe** | 初始探测，双向挂单 | `Flat` bucket + Normal phase | ≈已有 |
+| **Build** | 一侧有成交，开始建仓 | `Low` bucket | ≈已有 |
+| **Complete** | 达到一定配对量，停止risk-increasing | **无** | ❌ 核心缺口 |
+| **Lock** | 完全禁止风险，只做缺失腿 | `SoftClose` phase | ≈部分有 |
 
----
+**Complete 状态是真正的新增价值**：当已配对足够多时（比如 paired_qty ≥ 10），主动停止同侧 risk-increasing，不等到 endgame SoftClose。
 
-## 五、最成功轮次的深度分析
+#### 2.2.4 Complete 状态的数学价值分析
 
-### 5.1 April 11 R1 (11-real)：+7.43 USDC — 最佳表现
+场景：双向市场中策略已配对 10 对，pair_cost=0.93
+- 配对利润：10 × (1.0 - 0.93) = **+$0.70**
+- 此时如果继续挂单被填到 max_net_diff=5 的残仓：
+  - 残仓损失 worst_case = 5 × 0.45 = **-$2.25**
+  - 抵消 3.2 轮配对利润
 
-这是策略唯一一次大幅盈利的轮次：
+但在 max_net_diff=5 下：
+- 总可能配对量 = bid_size × 2 / min_fill = 有限（资金约$13只够2-3次循环）
+- 达到 "Complete" 的条件本身就意味着已经消耗了大部分时间
+- 而 `risk_open_cutoff=240s`（T-4min）已经在轮末提供了类似保护
 
-```
-BTC 急跌 → YES(UP) 从 ~0.66 暴跌至 0.06
-策略的 PairingOrReducing YES bids 在 0.08 和 0.06 接到成交
-pair_cost = 0.29(NO) + 0.07(YES) = 0.36
-利润 = (1.0 - 0.36) × 10 = +6.40 USDC（无残仓！）
-```
-
-**关键观察**：
-- 这轮盈利来源于**极端波动**（YES 跌幅 90%），而非中间价位的 spread 收割
-- 策略设计的 tier 阶梯（tier1=0.70）在极端情况下提供了巨大折扣
-- 残仓几乎为零（0.01），说明极端波动时配对反而更容易
-
-**结论**：策略的"暴跌反弹"设计在极端事件中是有效的，但这类事件的发生频率很低。
-
-### 5.2 稳定配对的轮次：10-real3 R1+R2
-
-```
-R1: 30 对配对，pair_cost 分散（NO: 0.36→0.22→0.07, YES: 0.64→0.75）
-R2: 多次双向填单，成功完成 30 对配对，realized_pnl = +1.93
-```
-
-这个轮次展示了策略在**双向波动**市场中的理想运行模式——两腿交替成交，VWAP 保持低位。
+**结论**：Complete 状态在 max_net_diff=15 时**至关重要**（阻止从 5 继续堆到 15）。在 max_net_diff=5 时**仍有价值但边际递减**——因为从 0 到 5 的损失（$2.25）已经处于单轮利润可覆盖的范围。
 
 ---
 
-## 六、重大风险评估
+### 2.3 改造三：配对腿事件+定时重报
 
-### 6.1 结构性风险（Strategy-Level）
+**PLAN_Codex 原文**：fill/cross-reject/每N秒 都允许向上重报，不再被 no-chase 约束
 
-| 风险 | 严重程度 | 描述 |
-|------|---------|------|
-| **逆向选择** | 🔴 极高 | Maker 在趋势市场中持续被 informed taker 攻击，残仓系统性地偏向输的一侧 |
-| **残仓/配对比失衡** | 🔴 极高 | 当前 max_net_diff=15 允许残仓损失高达 5-6 USDC，需要 30+ 对配对才能覆盖 |
-| **市场选择不当** | 🟡 中 | BTC 15m up/down 波动性极高（YES 可在 5 分钟内从 0.66→0.06），增加了残仓方向风险 |
-| **到期结算二元性** | 🟡 中 | Binary 市场结算（0 或 1）使残仓变成纯方向赌博，无 mid-price 退出机制 |
+**当前代码行为**（`coordinator_execution.rs:15-43`）：
+```rust
+fn pair_arb_should_force_freshness_republish(...) {
+    match risk_effect {
+        RiskIncreasing => (false, "risk_increasing_state_driven", ...),
+        PairingOrReducing => (false, "pairing_holds_between_triggers", ...),
+    }
+}
+```
 
-### 6.2 实现风险（Implementation-Level）
+两侧**都不做连续freshness reprice**，完全依赖状态键变化的事件驱动（fill → net_bucket/dominant_side 变化 → state_key changed → republish）。
 
-| 风险 | 严重程度 | 描述 |
-|------|---------|------|
-| **Working inventory 盲区** | 🔴 P0 | 已确认，导致级联无梯度成交 |
-| **Cross-reject 风暴** | 🟡 P1 | 302 次 reject = 9 分钟窗口浪费，但不直接损失资金 |
-| **Republish 过载** | 🟡 P1 | 17,720 次 forced_republish 可能增加延迟 |
-| **Flat 冷却缺失** | 🟠 P0 | 平仓后立即重开仓 → 新残仓暴露 |
-| **Merge 延迟** | 🟡 P1 | 余额被 matched 订单占用，阻塞配对 |
+**实际效果**：
+- ✅ Fill 事件触发 republish：通过 `fill_recheck_pending` 已实现
+- ✅ Cross-reject 触发：通过 `cross_reject_reprice_pending` 已实现
+- ❌ 定时 N 秒重报：**未实现**
+- ❌ 向上 reprice（pairing 腿追涨）：被 `pairing_holds_between_triggers` 阻止
+
+**评估**：
+
+定时重报的价值取决于市场微观结构：
+- 在 BTC 15min 市场中，价格在 15 分钟内持续漂移
+- 如果 NO 已填但 YES 配对腿挂在 0.52，市场 YES mid 漂到 0.55
+- 没有定时重报 → YES@0.52 可能永远不被填（ask 已上移）
+- 有定时重报 → 每 N 秒检查并上移到 0.55，增加配对概率
+
+**但有副作用**：向上追价增加了 pair_cost，可能使 pair_cost > pair_target
+
+**结论**：在配对腿上实现适度的定时重报（如每 5-10s）有正期望值，但需与 VWAP ceiling 配合。这是**中等优先级**的改进，不是架构重构。
 
 ---
 
-## 七、改进建议（优先级排序）
+### 2.4 改造四：动态库存上限
 
-### P0：立即执行（预期挽回：~5-8 USDC/session）
+**PLAN_Codex 原文**：不是固定 15，而是按剩余时间收缩（T-180/T-90/T-45 分段降档）
 
-#### 1. 降低 max_net_diff 到 5
+**当前机制**：
+- `max_net_diff=5`（固定）
+- `risk_open_cutoff=240s`（T-4min 后完全禁止 risk-increasing）
+- `EndgamePhase::SoftClose`（T-35s）
+- `.env` 中无动态 max_net_diff
+
+**评估**：
+
+在 max_net_diff=15 时，动态降档（15→10→5）是关键的风控手段。
+
+但在 max_net_diff=5 时：
+- 已经是最低档了，再降只能到 0（即不交易）
+- 降到 3 或 2 会严重限制双向配对能力
+
 ```
-当前：max_net_diff=15 → 最大残仓损失 ≈ $5-6
-改为：max_net_diff=5  → 最大残仓损失 ≈ $1.5-2.0
+max_net_diff=5 + risk_open_cutoff=240s 已经实现了：
+  T-900~T-240s: max_net=5, 正常交易
+  T-240~T-35s:  max_net=5, 禁止 risk-increasing
+  T-35~T-12s:   SoftClose, 禁止所有 risk-increasing
+  T-12~T-2s:    HardClose, 仅 hedge
+  T-2~T-0s:     Freeze
 ```
-这是**单项最有效的改动**。每轮最坏损失从 5-6 降至 1.5-2.0 USDC，使配对利润（~1-2 USDC/轮）有可能覆盖残仓损失。
 
-#### 2. 修复 Working Inventory Bug
-确保 `apply_tier_avg_cost_cap` 使用 working inventory（包含 pending fills），防止级联无梯度成交。
-
-#### 3. 实现 Flat-state 冷却（30s）
-net_diff 归零后禁止 RiskIncreasing 开新仓 30 秒，保护已锁利润。
-
-### P1：尽快实施（预期改善执行效率）
-
-#### 4. Cross-reject 强制步降
-在 cross-book reject 后强制将挂单价降低 3+ ticks，消除 302 次 reject 风暴。
-
-#### 5. High bucket 无条件禁止 RiskIncreasing
-当前仅在 Stalled≥60s 时生效 → 改为 |net_diff|≥10 立即生效。
-
-### P2：中长期优化
-
-#### 6. 市场波动性筛选
-避免极高波动性市场（如 BTC 15m），优先选择波动率适中的市场以降低逆向选择风险。
-
-#### 7. 残仓主动退出
-在到期前 45-90s，对残仓实施 taker 市价卖出，避免二元结算的全额损失。
+**结论**：动态降档在 max_net_diff=5 下**价值极低**，当前的 `risk_open_cutoff + EndgamePhase` 组合已经提供了等效的时间衰减保护。
 
 ---
 
-## 八、结论
+### 2.5 改造五：T-90 禁止新风险腿 + T-30 taker 收口
 
-### 策略是否有效？
+**当前实现**：
+- T-240s（risk_open_cutoff=240）：禁止 risk-increasing ✅
+- T-35s（SoftClose）：禁止所有 risk-increasing ✅
+- T-12s（HardClose）：禁止 provide，允许 hedge ✅
+- T-30s taker 收口：**未实现** ❌
+
+**评估**：
+
+T-90 禁止新风险腿 → `risk_open_cutoff=240s` 已经比这更保守（T-240 就禁了）。
+
+T-30 taker 收口才是真正的新功能：
+- 当轮末仍有残仓时，以 taker 方式卖出残仓
+- 消除方向性到期风险
+- **但存在重大问题**：taker 订单需要付 spread + fee，在低流动性时成本很高
+
+Taker 收口的数学门槛：
+```
+残仓 qty=5, avg_cost=0.45
+如果市场 bid=0.40 → sell@0.40 → 损失 5×(0.45-0.40) = -$0.25
+如果市场 bid=0.30 → sell@0.30 → 损失 5×(0.45-0.30) = -$0.75
+如果不卖 → 50% 概率损失 5×0.45 = -$2.25, 50% 概率获利 5×0.55 = +$2.75
+E[hold] = 0.5×2.75 - 0.5×2.25 = +$0.25
+```
+
+除非残仓方向已经明确劣势（如 YES 价格跌到 0.10），否则持有的期望值可能高于 taker 平仓。只有当 `market_probability` 远离 0.5 时，taker 平仓才有正期望。
+
+**结论**：Taker 收口在理论上有价值，但实现复杂度高（需要新的 taker 逻辑），且期望值高度依赖市场状态。**建议推迟到所有 maker 层面优化完成后再考虑**。
+
+---
+
+## 三、PLAN_Codex vs 已有配置修复的增量价值评估
+
+### 3.1 April 12 → 当前配置的 EV 变化
+
+基于 PLAN_Claude 的反事实分析框架：
+
+| 配置状态 | EV/轮 | 计算依据 |
+|---------|-------|---------|
+| April 12 原配 (net=15, tier1=0.80, tier2=0.60) | **-1.24 USDC** | PLAN_Claude 四-基准 |
+| 仅改 net=5 | **+0.02 USDC** | PLAN_Claude 方案B |
+| net=5 + tier1=0.50 + tier2=0.15 | **+0.15~0.30 USDC** | 更保守出价减少深仓成本 |
+| + risk_cutoff=240 + recycle_min=5 | **+0.25~0.40 USDC** | PLAN_Claude 方案D |
+
+### 3.2 PLAN_Codex 四态状态机的额外增量
+
+在上述已优化配置基础上：
+
+| 改造 | 增量 EV/轮 | 实现复杂度 | 风险 |
+|------|-----------|-----------|------|
+| Complete 状态（配对够了就停 risk-incr）| +0.05~0.10 | **高**（新状态机 + 200行代码） | 中：可能漏判提前停止 |
+| 配对腿定时重报 | +0.05~0.15 | **中**（30行代码） | 低：VWAP ceiling 兜底 |
+| 动态 max_net_diff | ≈0 | 低 | 低：但价值几乎为零 |
+| T-30 taker 收口 | +0.10~0.20 | **极高**（新 taker 逻辑 + 500行） | 高：taker 成本+滑点 |
+
+**四态状态机全部实现的 EV 增量：约 +0.20~0.45 USDC/轮**
+
+对比 **已有配置变化** 的 EV 增量：约 **+1.50 USDC/轮**（从 -1.24 到 +0.25）
 
 > [!IMPORTANT]
-> **配对机制本身是有效的、正 EV 的**。但策略整体目前**不盈利**，原因在于残仓控制失效。这是一个可以修复的工程问题，而不是策略设计的根本缺陷。
+> **结论：配置修复带来了 ~85% 的 EV 改善，PLAN_Codex 状态机在此基础上的边际贡献约 15%**。
+>
+> 但状态机引入的代码复杂度（预估 500-800 行新增/修改）和回归风险不可忽视。
 
-### 能否实现盈利？
+---
 
-**在以下条件同时满足时，策略可以盈利**：
-1. `max_net_diff ≤ 5`（限制最大残仓敞口）
-2. Working inventory bug 修复（防止级联）
-3. Flat cooldown 实现（保护已锁利润）
-4. Cross-reject 步降实现（提升执行效率）
+## 四、验收标准可行性评估
 
-**预期效果**：
+PLAN_Codex 提出的三个验收标准：
+
+### 4.1 `E[L_residual] <= 0.03 × E[Q_pair]`
+
+**翻译**：期望残仓损失 ≤ 期望配对数量的 3%
+
+以当前配置估算（max_net_diff=5, pair_target=0.97）：
 ```
-修复前：每轮 EV ≈ 1.5(配对) - 3.3(残仓) = -1.8 USDC
-修复后：每轮 EV ≈ 1.2(配对↓少量) - 0.8(残仓↓大幅) = +0.4 USDC
+E[Q_pair] ≈ 10 份/轮（保守估计）
+0.03 × 10 = 0.30 USDC   ← 允许的最大残仓损失
 
-注：配对利润因 max_net_diff 降低会略减（fewer pairing opportunities），
-但残仓损失的降幅远大于配对利润的减少。
+当前 E[L_residual] ≈ 5/8概率 × 5份 × 0.45 avg_cost × 0.5输的概率
+                    = 0.625 × 2.25 × 0.5 = 0.70 USDC
 ```
 
-### 核心指标要求
+**当前差距**：0.70 vs 0.30，差 2.3 倍。
+**可行性**：在 max_net_diff=5 下**非常困难**。需要将残仓发生率从 5/8 降到 2/8，或者大幅提高配对量。Complete 状态可以帮助，但不足以跨越这个门槛。
 
-| 指标 | 当前 | 目标 |
+> [!CAUTION]
+> 这个验收标准在 BTC 15min 市场上**可能不可达**。单向趋势的结构性频率（~50%）意味着残仓是不可消除的。要满足此标准，需要切换到波动率更低的市场或大幅延长时间窗口。
+
+### 4.2 `round-end residual_value: p50 ≤ 0.3, p90 ≤ 0.8`
+
+- p50（50%情况下残仓价值≤$0.30）：在 max_net_diff=5, 完美配对率 3/8=37.5% 的情况下，p50 处于残仓轮 → 残仓价值 ≈ 3-5份 × 0.2-0.4 = $0.6-2.0
+- 当前**不满足** p50≤0.3
+
+但如果提高完美配对率到 60%（通过配对腿重报等优化）：
+- p50 落在完美配对轮 → residual_value=0 → **满足**
+- 但 p90 仍可能 ≈ $2.25（max_net_diff=5 的 worst case）
+
+**部分可达**，但 p90≤0.8（即 90% 情况下残仓≤$0.80）几乎不可能——这要求只有 10% 的轮次产生超过 $0.80 的残仓。
+
+### 4.3 `T-90 后不再新增风险腿成交`
+
+当前 `risk_open_cutoff=240s`（T-4min），比 T-90s **更保守**。
+
+**已满足**（T-240 > T-90）✅
+
+---
+
+## 五、实施建议：分层渐进而非一次性重构
+
+### 推荐方案：三阶段渐进优化
+
+#### Phase 0：验证当前配置（0 代码改动）⬅️ 立即执行
+
+运行 2-3 个实盘 session，验证 max_net_diff=5 + tier1=0.50 + tier2=0.15 + cutoff=240s + recycle=5.0 的组合效果。
+
+**预期**：EV 从 -1.24 提升到 +0.25/轮左右。如果数据验证为正 EV，后续优化的紧迫性大幅降低。
+
+#### Phase 1：低复杂度高价值改进（约 50 行代码）
+
+1. **配对腿定时 reprice**（`pair_arb.rs` + `coordinator_execution.rs`）
+   - 每 8-10 秒检查配对腿是否偏离市场 ≥ 3 ticks
+   - 如果偏离且新价格仍在 VWAP ceiling 内，触发 republish
+   - 预期 EV：+0.05~0.15/轮
+
+2. **Fix B 无条件化**（`coordinator_execution.rs`）
+   - 在 max_net_diff=5 下，`RISK_INCR_TIER_2=8.0` 永远不触发
+   - 建议将 RISK_INCR_TIER_2 降至 4.5（或直接用 max_net_diff-0.5 作为阈值）
+   - 这样在 net_diff=4.5 时就停止 risk-increasing，留 0.5 的缓冲
+   - **效果等同于 Complete 状态的 80%**，但只需 5 行代码
+
+3. **Bucket 阈值对齐**
+   - 当前 `Low<5, Mid<10, High>=10` 在 max_net_diff=5 时大部分失效
+   - 建议：`Low<2.5, Mid<4, High>=4`（与 max_net_diff=5 对齐）
+   - 或者直接基于 `net_diff / max_net_diff` 的比例来判断
+
+#### Phase 2：Complete 状态（可选，约 150 行代码）
+
+仅在 Phase 0/1 的实盘数据仍显示残仓问题过大时执行：
+
+1. 新增 `PairArbRoundState` 枚举（Probe/Build/Complete）
+2. 在 `compute_quotes` 中根据 `paired_qty / bid_size` 比值判断状态
+3. Complete 触发条件：`paired_qty >= N × bid_size`（如 N=2，即配对 ≥ 10 份）
+4. Complete 行为：所有 risk-increasing 报价设为 0
+
+**不建议实现 Lock 状态**——它与 SoftClose 功能重叠。
+
+#### Phase 3：Taker 收口（远期）
+
+仅在策略验证为稳定正 EV 后考虑。需要：
+- 新的 taker 订单类型支持
+- 残仓方向性判断逻辑
+- 成本/滑点建模
+
+---
+
+## 六、与 PLAN_Claude 的交叉验证
+
+| 维度 | PLAN_Claude 结论 | PLAN_Codex 提案 | 评估 |
+|------|----------------|----------------|------|
+| 核心问题 | 残仓损失: 配对利润 = 3.7:1 | 需要四态状态机 | PLAN_Claude 的配置修复已解决 70%+ |
+| 最高杠杆 | max_net_diff=5（零代码） | 动态库存上限 | **PLAN_Claude 正确**，已实施 |
+| 第二杠杆 | Recycler min_batch 修复 | 配对腿重报 | 两者互补，不冲突 |
+| 第三杠杆 | Fix B 无条件化 | Complete 状态 | 功能等价，但 Fix B 成本低 100 倍 |
+| Taker 收口 | P2 长期考虑 | T-30 必须有 | **PLAN_Claude 更务实** |
+
+---
+
+## 七、最终结论
+
+### 方案评级
+
+| 维度 | 评分 | 说明 |
 |------|------|------|
-| 残仓/配对利润比 | 1:1.68 (亏) | < 1:1 (盈) |
-| 残仓方向正确率 | 11% | ≥ 40% 或残仓控制在 $2 以内 |
-| max_net_diff | 15 | 5 |
-| 每轮平均配对数 | ~14 | ≥ 6 (在 net=5 下) |
-| Cross-reject 率 | 302次/session | < 30次/session |
+| 问题诊断准确性 | ⭐⭐⭐⭐⭐ | 残仓最小化作为主目标完全正确 |
+| 解决方案适当性 | ⭐⭐⭐ | 四态状态机过度工程化，大部分价值可通过配置+小改动获得 |
+| 实施风险 | ⭐⭐ | 500-800 行新代码的回归风险高，在实盘系统中危险 |
+| 成本效益比 | ⭐⭐ | 边际 EV ≈ +0.20-0.45/轮，但需 1-2 天开发 + 测试 |
+| 与当前配置的时效性 | ⭐⭐ | 方案在 net=15 时设计，net=5 下价值大幅缩水 |
+
+### 一句话结论
+
+> **PLAN_Codex 的诊断完全正确（残仓是核心矛盾），但在 max_net_diff 已降至 5 的当前配置下，四态状态机的实施是过度工程化。建议用 Phase 0（验证配置）+ Phase 1（50 行代码微调）替代，获取 80%+ 的预期收益，风险降低 90%。**
+
+### 建议的下一步
+
+1. **立即**：用当前 `.env` 配置跑 2-3 个实盘 session，收集 EV 数据
+2. **数据驱动决策**：如果 EV > 0 → Phase 1 微调；如果 EV < 0 → 重新评估是否需要 Phase 2
+3. **不要先写 Complete 状态**：等实盘数据说话

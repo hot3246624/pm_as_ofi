@@ -109,8 +109,11 @@
   - 同一状态桶内不做连续 freshness 重发
   - 只在离散状态变化（`dominant_side/net_bucket/soft_close`）或 fill 重评触发时重发
 - `pairing / risk-reducing buy`：
-  - 与 same-side 一样，采用离散状态驱动
-  - 在两次离散触发之间默认 retain，不做连续 tick 漂移重发
+  - 以离散状态驱动为主
+  - 额外启用慢速定时向上重评：同一 slot 超过 `8s` 且 `fresh-live >= 3 ticks` 时允许一次 `Republish`
+  - 不做连续逐 tick 追价；定时窗内默认 retain
+  - 下单份数按 `d = |net_diff|` 动态取值（2 位小数）；若该值量化后不可执行（`<0.01`），回退到 `bid_size`
+  - `SoftClose` 下保持死区：若 `d <= bid_size/2`，两侧都不再补仓
 
 补充：
 - 当发生 `state_key_changed` 或 `fill_recheck_pending` 且该 slot 本 tick 没有新 intent 时，
@@ -144,7 +147,7 @@
 
 ### 哪些事件会触发重评/重发
 
-`pair_arb` 不会因为任意微小价格波动就强制重评。离散重评触发器是：
+`pair_arb` 不会因为任意微小价格波动就强制重评。主触发器是离散事件：
 
 - `Matched`
 - `Failed`
@@ -152,8 +155,9 @@
 - `SoftClose` 进入
 - 新 round 开始
 
-在两个离散触发之间，`pairing / risk-reducing` 与 `same-side risk-increasing` 都默认 retain；
-不再因为连续 `fresh-live` tick 漂移触发重发。
+在两个离散触发之间：
+- `same-side risk-increasing` 默认 retain，不做连续漂移重发
+- `pairing / risk-reducing` 默认 retain，但允许慢速定时向上重评（`8s + 3 ticks`）
 
 补充执行修正：
 - `cross reject` 后会进入 slot 级 `reprice_pending`，下一次动作价必须严格低于上次被拒价至少 `1 tick`

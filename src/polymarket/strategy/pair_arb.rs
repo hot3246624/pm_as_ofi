@@ -81,8 +81,10 @@ impl QuoteStrategy for PairArbStrategy {
             raw_no -= overflow / 2.0;
         }
 
-        let yes_risk_effect = Self::candidate_risk_effect(inv, Side::Yes, cfg.bid_size);
-        let no_risk_effect = Self::candidate_risk_effect(inv, Side::No, cfg.bid_size);
+        let yes_size = Self::candidate_size_for_side(inv, Side::Yes, cfg.bid_size);
+        let no_size = Self::candidate_size_for_side(inv, Side::No, cfg.bid_size);
+        let yes_risk_effect = Self::candidate_risk_effect(inv, Side::Yes, yes_size);
+        let no_risk_effect = Self::candidate_risk_effect(inv, Side::No, no_size);
 
         // 1b) Tiered avg-cost cap for same-side risk-increasing candidate.
         // Tier for risk-increasing leg enters earlier (3.5/8) than the global
@@ -90,7 +92,7 @@ impl QuoteStrategy for PairArbStrategy {
         if let Some(yes_cap) = Self::tier_cap_price_for_candidate(
             inv,
             Side::Yes,
-            cfg.bid_size,
+            yes_size,
             yes_risk_effect,
             cfg.pair_arb_tier_1_mult,
             cfg.pair_arb_tier_2_mult,
@@ -100,7 +102,7 @@ impl QuoteStrategy for PairArbStrategy {
         if let Some(no_cap) = Self::tier_cap_price_for_candidate(
             inv,
             Side::No,
-            cfg.bid_size,
+            no_size,
             no_risk_effect,
             cfg.pair_arb_tier_1_mult,
             cfg.pair_arb_tier_2_mult,
@@ -173,7 +175,7 @@ impl QuoteStrategy for PairArbStrategy {
                 inv.no_avg_cost,
                 inv.yes_qty,
                 inv.yes_avg_cost,
-                cfg.bid_size,
+                yes_size,
             );
             raw_yes = f64::min(raw_yes, yes_ceiling);
             if effective_pair_cost_margin > 1e-9 && raw_yes < raw_yes_before - 1e-9 {
@@ -201,7 +203,7 @@ impl QuoteStrategy for PairArbStrategy {
                 inv.yes_avg_cost,
                 inv.no_qty,
                 inv.no_avg_cost,
-                cfg.bid_size,
+                no_size,
             );
             raw_no = f64::min(raw_no, no_ceiling);
             if effective_pair_cost_margin > 1e-9 && raw_no < raw_no_before - 1e-9 {
@@ -256,14 +258,14 @@ impl QuoteStrategy for PairArbStrategy {
                     current_open_edge,
                     Side::Yes,
                     bid_yes,
-                    cfg.bid_size,
+                    yes_size,
                 )
             {
                 quotes.set(StrategyIntent {
                     side: Side::Yes,
                     direction: TradeDirection::Buy,
                     price: bid_yes,
-                    size: cfg.bid_size,
+                    size: yes_size,
                     reason: BidReason::Provide,
                 });
             }
@@ -286,14 +288,14 @@ impl QuoteStrategy for PairArbStrategy {
                     current_open_edge,
                     Side::No,
                     bid_no,
-                    cfg.bid_size,
+                    no_size,
                 )
             {
                 quotes.set(StrategyIntent {
                     side: Side::No,
                     direction: TradeDirection::Buy,
                     price: bid_no,
-                    size: cfg.bid_size,
+                    size: no_size,
                     reason: BidReason::Provide,
                 });
             }
@@ -304,6 +306,40 @@ impl QuoteStrategy for PairArbStrategy {
 }
 
 impl PairArbStrategy {
+    pub(crate) fn candidate_size_for_side(
+        inv: &crate::polymarket::messages::InventoryState,
+        side: Side,
+        bid_size: f64,
+    ) -> f64 {
+        if bid_size <= PAIR_ARB_NET_EPS {
+            return bid_size.max(0.0);
+        }
+        let dominant = if inv.net_diff > PAIR_ARB_NET_EPS {
+            Some(Side::Yes)
+        } else if inv.net_diff < -PAIR_ARB_NET_EPS {
+            Some(Side::No)
+        } else {
+            None
+        };
+        let pairing_side = dominant.map(|d| match d {
+            Side::Yes => Side::No,
+            Side::No => Side::Yes,
+        });
+        if pairing_side == Some(side) {
+            // Pairing leg uses current residual first; if it quantizes to an
+            // unexecutable lot, fall back to base bid size.
+            let d = inv.net_diff.abs().max(0.0);
+            let sized = (d * 100.0).floor() / 100.0;
+            if sized >= 0.01 {
+                sized
+            } else {
+                bid_size
+            }
+        } else {
+            bid_size
+        }
+    }
+
     pub(crate) fn vwap_ceiling(
         pair_target: f64,
         safety_margin: f64,
@@ -740,5 +776,36 @@ mod tests {
                 None => assert!(cap.is_none()),
             }
         }
+    }
+
+    #[test]
+    fn test_candidate_size_uses_abs_net_for_pairing_side() {
+        let inv = InventoryState {
+            net_diff: 10.0,
+            ..Default::default()
+        };
+        let yes_size = PairArbStrategy::candidate_size_for_side(&inv, Side::Yes, 5.0);
+        let no_size = PairArbStrategy::candidate_size_for_side(&inv, Side::No, 5.0);
+        assert!((yes_size - 5.0).abs() < 1e-9);
+        assert!((no_size - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_candidate_size_supports_fractional_pairing_and_lot_floor_fallback() {
+        let inv = InventoryState {
+            net_diff: -2.17,
+            ..Default::default()
+        };
+        let yes_size = PairArbStrategy::candidate_size_for_side(&inv, Side::Yes, 5.0);
+        let no_size = PairArbStrategy::candidate_size_for_side(&inv, Side::No, 5.0);
+        assert!((yes_size - 2.17).abs() < 1e-9);
+        assert!((no_size - 5.0).abs() < 1e-9);
+
+        let tiny = InventoryState {
+            net_diff: 0.004,
+            ..Default::default()
+        };
+        let tiny_pairing = PairArbStrategy::candidate_size_for_side(&tiny, Side::No, 5.0);
+        assert!((tiny_pairing - 5.0).abs() < 1e-9);
     }
 }
