@@ -216,6 +216,7 @@ impl StrategyCoordinator {
                 slot.side,
                 size,
                 risk_effect,
+                self.cfg.pair_arb.tier_mode,
                 self.cfg.pair_arb.tier_1_mult,
                 self.cfg.pair_arb.tier_2_mult,
             )

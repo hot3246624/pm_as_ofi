@@ -1,3 +1,4 @@
+use crate::polymarket::coordinator::PairArbTierMode;
 use crate::polymarket::coordinator::StrategyCoordinator;
 use crate::polymarket::coordinator::StrategyInventoryMetrics;
 use crate::polymarket::coordinator::PAIR_ARB_NET_EPS;
@@ -94,6 +95,7 @@ impl QuoteStrategy for PairArbStrategy {
             Side::Yes,
             yes_size,
             yes_risk_effect,
+            cfg.pair_arb.tier_mode,
             cfg.pair_arb.tier_1_mult,
             cfg.pair_arb.tier_2_mult,
         ) {
@@ -104,6 +106,7 @@ impl QuoteStrategy for PairArbStrategy {
             Side::No,
             no_size,
             no_risk_effect,
+            cfg.pair_arb.tier_mode,
             cfg.pair_arb.tier_1_mult,
             cfg.pair_arb.tier_2_mult,
         ) {
@@ -388,6 +391,7 @@ impl PairArbStrategy {
         side: Side,
         size: f64,
         risk_effect: PairArbRiskEffect,
+        tier_mode: PairArbTierMode,
         tier_1_mult: f64,
         tier_2_mult: f64,
     ) -> Option<f64> {
@@ -396,12 +400,32 @@ impl PairArbStrategy {
         }
         let _ = size;
         let current_abs = inv.net_diff.abs();
-        let mult = if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_2_NET_DIFF {
-            tier_2_mult
-        } else if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_1_NET_DIFF {
-            tier_1_mult
-        } else {
-            return None;
+        let mult = match tier_mode {
+            PairArbTierMode::Discrete => {
+                if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_2_NET_DIFF {
+                    tier_2_mult
+                } else if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_1_NET_DIFF {
+                    tier_1_mult
+                } else {
+                    return None;
+                }
+            }
+            PairArbTierMode::Continuous => {
+                if current_abs <= PAIR_ARB_NET_EPS {
+                    return None;
+                }
+                if current_abs <= RISK_INCR_TIER_1_NET_DIFF {
+                    let ratio = (current_abs / RISK_INCR_TIER_1_NET_DIFF).clamp(0.0, 1.0);
+                    1.0 + (tier_1_mult - 1.0) * ratio
+                } else if current_abs < RISK_INCR_TIER_2_NET_DIFF {
+                    let ratio = ((current_abs - RISK_INCR_TIER_1_NET_DIFF)
+                        / (RISK_INCR_TIER_2_NET_DIFF - RISK_INCR_TIER_1_NET_DIFF))
+                        .clamp(0.0, 1.0);
+                    tier_1_mult + (tier_2_mult - tier_1_mult) * ratio
+                } else {
+                    tier_2_mult
+                }
+            }
         };
         match side {
             Side::Yes if inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 => {
@@ -609,6 +633,7 @@ mod tests {
             Side::Yes,
             5.0,
             PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Discrete,
             0.80,
             0.60,
         )
@@ -700,6 +725,7 @@ mod tests {
             Side::No,
             5.0,
             PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Discrete,
             0.70,
             0.30,
         );
@@ -719,6 +745,7 @@ mod tests {
             Side::No,
             5.0,
             PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Discrete,
             0.70,
             0.30,
         );
@@ -739,6 +766,7 @@ mod tests {
             Side::No,
             5.0,
             PairArbRiskEffect::PairingOrReducing,
+            PairArbTierMode::Discrete,
             0.70,
             0.30,
         );
@@ -765,6 +793,7 @@ mod tests {
                 Side::No,
                 5.0,
                 PairArbRiskEffect::RiskIncreasing,
+                PairArbTierMode::Discrete,
                 0.70,
                 0.30,
             );
@@ -776,6 +805,50 @@ mod tests {
                 None => assert!(cap.is_none()),
             }
         }
+    }
+
+    #[test]
+    fn test_tier_cap_continuous_mode_scales_smoothly_from_flat() {
+        let inv = InventoryState {
+            no_qty: 10.0,
+            no_avg_cost: 0.40,
+            net_diff: -1.75, // 50% of first segment (0 -> 3.5)
+            ..Default::default()
+        };
+        let cap = PairArbStrategy::tier_cap_price_for_candidate(
+            &inv,
+            Side::No,
+            5.0,
+            PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Continuous,
+            0.70,
+            0.30,
+        );
+        // multiplier = 1 + (0.70 - 1.0) * 0.5 = 0.85
+        assert!(cap.is_some());
+        assert!((cap.unwrap_or_default() - 0.34).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_tier_cap_continuous_mode_interpolates_between_tiers() {
+        let inv = InventoryState {
+            no_qty: 10.0,
+            no_avg_cost: 0.40,
+            net_diff: -5.75, // midpoint between 3.5 and 8.0
+            ..Default::default()
+        };
+        let cap = PairArbStrategy::tier_cap_price_for_candidate(
+            &inv,
+            Side::No,
+            5.0,
+            PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Continuous,
+            0.70,
+            0.30,
+        );
+        // midpoint multiplier = 0.50
+        assert!(cap.is_some());
+        assert!((cap.unwrap_or_default() - 0.20).abs() < 1e-9);
     }
 
     #[test]
