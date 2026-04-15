@@ -32,6 +32,21 @@ pub enum MarketDataMsg {
         size: f64,
         ts: Instant,
     },
+    /// Winner-side hint for post-close strategies.
+    WinnerHint {
+        side: Side,
+        source: WinnerHintSource,
+        ref_price: f64,
+        observed_price: f64,
+        ts: Instant,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WinnerHintSource {
+    Chainlink,
+    Gamma,
+    BookInference,
 }
 
 /// Taker aggressor direction.
@@ -124,12 +139,14 @@ pub enum TradePurpose {
     Hedge,
     Reduce,
     Exit,
+    /// FAK/taker snipe fired immediately on Chainlink winner hint in oracle_lag_sniping.
+    OracleLagSnipe,
 }
 
 impl TradePurpose {
     pub fn as_bid_reason(self) -> BidReason {
         match self {
-            Self::Provide => BidReason::Provide,
+            Self::Provide | Self::OracleLagSnipe => BidReason::Provide,
             Self::Hedge | Self::Reduce | Self::Exit => BidReason::Hedge,
         }
     }

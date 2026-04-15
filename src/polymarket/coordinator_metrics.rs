@@ -426,6 +426,11 @@ impl StrategyCoordinator {
         price: f64,
         reason: BidReason,
     ) -> bool {
+        // OracleLagSniping has near-certain winner knowledge from Chainlink; the
+        // pair-arb symmetric-risk floor assumes unknown outcome and does not apply.
+        if self.cfg.strategy == StrategyKind::OracleLagSniping {
+            return true;
+        }
         let floor = self.outcome_floor_pnl();
         if !floor.is_finite() {
             return true;

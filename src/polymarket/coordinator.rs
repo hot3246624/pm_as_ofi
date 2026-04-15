@@ -51,6 +51,8 @@ const LIVE_OBS_PAIR_ARB_SOFTENED_ALERT_RATIO: f64 = 0.50;
 const LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT: u64 = 1_000;
 const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
 pub(crate) const PAIR_ARB_NET_EPS: f64 = 1e-6;
+pub(crate) const ORACLE_LAG_NO_TAKER_ABOVE_PRICE: f64 = 0.993;
+pub(crate) const ORACLE_LAG_SUBMIT_SLA_MS: i64 = 1_500;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
@@ -70,6 +72,28 @@ mod coordinator_pricing;
 // ─────────────────────────────────────────────────────────
 // Config
 // ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone)]
+pub struct PairArbStrategyConfig {
+    /// PairArb dominant-side avg-cost cap multiplier when |net_diff| is in tier-1.
+    pub tier_1_mult: f64,
+    /// PairArb dominant-side avg-cost cap multiplier when |net_diff| is in tier-2.
+    pub tier_2_mult: f64,
+    /// PairArb safety margin kept below pair_target when deriving VWAP ceiling.
+    pub pair_cost_safety_margin: f64,
+    /// PairArb risk-open cutoff window (seconds to market end).
+    /// Remaining <= this threshold blocks new risk-increasing buys.
+    pub risk_open_cutoff_secs: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct OracleLagSnipingStrategyConfig {
+    /// Post-close strategy live window (seconds after market end).
+    pub window_secs: u64,
+    /// Runtime market guard for post-close strategy.
+    /// This is set by main loop per-round to enforce HYPE-only rollout.
+    pub market_enabled: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct CoordinatorConfig {
@@ -112,15 +136,10 @@ pub struct CoordinatorConfig {
     /// Time-decay amplifier k. Effective skew_factor = as_skew_factor * (1 + k * elapsed_frac).
     /// 0.0 disables decay. Default: 2.0 (up to 3× at expiry).
     pub as_time_decay_k: f64,
-    /// PairArb dominant-side avg-cost cap multiplier when 5 <= |net_diff| < 10.
-    pub pair_arb_tier_1_mult: f64,
-    /// PairArb dominant-side avg-cost cap multiplier when |net_diff| >= 10.
-    pub pair_arb_tier_2_mult: f64,
-    /// PairArb safety margin kept below pair_target when deriving VWAP ceiling.
-    pub pair_arb_pair_cost_safety_margin: f64,
-    /// PairArb risk-open cutoff window (seconds to market end).
-    /// Remaining <= this threshold blocks new risk-increasing buys.
-    pub pair_arb_risk_open_cutoff_secs: u64,
+    /// PairArb strategy-specific runtime config.
+    pub pair_arb: PairArbStrategyConfig,
+    /// Post-close HYPE strategy-specific runtime config.
+    pub oracle_lag_sniping: OracleLagSnipingStrategyConfig,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
     pub market_end_ts: Option<u64>,
     /// Opt-3: Faster debounce for hedge orders (urgent, shouldn't wait 500ms).
@@ -194,10 +213,16 @@ impl Default for CoordinatorConfig {
             glft_ofi_spread_beta: 1.00,
             glft_min_half_spread_ticks: 5.0,
             as_time_decay_k: 2.0, // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
-            pair_arb_tier_1_mult: 0.80,
-            pair_arb_tier_2_mult: 0.60,
-            pair_arb_pair_cost_safety_margin: 0.02,
-            pair_arb_risk_open_cutoff_secs: 180,
+            pair_arb: PairArbStrategyConfig {
+                tier_1_mult: 0.80,
+                tier_2_mult: 0.60,
+                pair_cost_safety_margin: 0.02,
+                risk_open_cutoff_secs: 180,
+            },
+            oracle_lag_sniping: OracleLagSnipingStrategyConfig {
+                window_secs: 120,
+                market_enabled: false,
+            },
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
@@ -367,11 +392,11 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_1_MULT") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..=1.0).contains(&f) {
-                    c.pair_arb_tier_1_mult = f;
+                    c.pair_arb.tier_1_mult = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_1_MULT={} (must satisfy 0 <= x <= 1), using {}",
-                        f, c.pair_arb_tier_1_mult
+                        f, c.pair_arb.tier_1_mult
                     );
                 }
             }
@@ -379,11 +404,11 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_2_MULT") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..=1.0).contains(&f) {
-                    c.pair_arb_tier_2_mult = f;
+                    c.pair_arb.tier_2_mult = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_2_MULT={} (must satisfy 0 <= x <= 1), using {}",
-                        f, c.pair_arb_tier_2_mult
+                        f, c.pair_arb.tier_2_mult
                     );
                 }
             }
@@ -391,18 +416,23 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..1.0).contains(&f) {
-                    c.pair_arb_pair_cost_safety_margin = f;
+                    c.pair_arb.pair_cost_safety_margin = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN={} (must satisfy 0 <= x < 1), using {}",
-                        f, c.pair_arb_pair_cost_safety_margin
+                        f, c.pair_arb.pair_cost_safety_margin
                     );
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.pair_arb_risk_open_cutoff_secs = secs;
+                c.pair_arb.risk_open_cutoff_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_POST_CLOSE_WINDOW_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                c.oracle_lag_sniping.window_secs = secs;
             }
         }
         if let Ok(v) = std::env::var("PM_HEDGE_DEBOUNCE_MS") {
@@ -958,6 +988,17 @@ pub struct StrategyCoordinator {
     last_metrics_log_ts: Instant,
     pair_arb_gate_last_log_ts: Instant,
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
+    post_close_winner_side: Option<Side>,
+    post_close_winner_source: Option<WinnerHintSource>,
+    post_close_winner_ref_price: f64,
+    post_close_winner_observed_price: f64,
+    post_close_winner_ts: Option<Instant>,
+    oracle_lag_first_submit_logged: bool,
+    /// Set to true after the first FAK/taker order is dispatched for OracleLagSniping.
+    /// Prevents a second WinnerHint (from the slower source) from firing a duplicate FAK.
+    oracle_lag_fak_dispatched: bool,
+    /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
+    last_post_close_snapshot_ts: Option<Instant>,
     pair_arb_decision_epoch: u64,
     pair_arb_last_risk_open_cutoff_active: bool,
     last_settled_inv_snapshot: InventoryState,
@@ -1205,6 +1246,14 @@ impl StrategyCoordinator {
             last_metrics_log_ts,
             pair_arb_gate_last_log_ts: now,
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
+            post_close_winner_side: None,
+            post_close_winner_source: None,
+            post_close_winner_ref_price: 0.0,
+            post_close_winner_observed_price: 0.0,
+            post_close_winner_ts: None,
+            oracle_lag_first_submit_logged: false,
+            oracle_lag_fak_dispatched: false,
+            last_post_close_snapshot_ts: None,
             pair_arb_decision_epoch: 0,
             pair_arb_last_risk_open_cutoff_active: false,
             last_settled_inv_snapshot: InventoryState::default(),
@@ -1245,6 +1294,27 @@ impl StrategyCoordinator {
         &self.cfg
     }
 
+    pub(crate) fn post_close_winner_side(&self) -> Option<Side> {
+        self.post_close_winner_side
+    }
+
+    /// True when the clock has passed market_end_ts and we are still within
+    /// the oracle_lag_sniping post-close window (e.g. 120 s).
+    pub(crate) fn is_in_post_close_window(&self) -> bool {
+        let Some(end_ts) = self.cfg.market_end_ts else {
+            return false;
+        };
+        let window = self.cfg.oracle_lag_sniping.window_secs;
+        if window == 0 {
+            return false;
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now >= end_ts && now < end_ts.saturating_add(window)
+    }
+
     pub async fn run(mut self) {
         info!(
             "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s pair_arb_risk_open_cutoff={}s edge(keep/exit)={:.2}/{:.2} dry={}",
@@ -1253,7 +1323,7 @@ impl StrategyCoordinator {
             self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms,
             self.cfg.strategy_metrics_log_secs,
             self.cfg.endgame_soft_close_secs, self.cfg.endgame_hard_close_secs, self.cfg.endgame_freeze_secs, self.cfg.endgame_maker_repair_min_secs,
-            self.cfg.pair_arb_risk_open_cutoff_secs,
+            self.cfg.pair_arb.risk_open_cutoff_secs,
             self.cfg.endgame_edge_keep_mult, self.cfg.endgame_edge_exit_mult,
             self.cfg.dry_run,
         );
@@ -2062,7 +2132,16 @@ impl StrategyCoordinator {
         }
 
         // Priority 2: Per-side Toxic/Stale guard (independent of book availability)
-        if yes_toxic_blocked || yes_stale_actionable {
+        //
+        // OracleLagSniping: suppress stale cancels inside the post-close window.
+        // After market close the CLOB stops sending book ticks — that is expected
+        // behaviour, not a data problem. Cancelling the maker order here would
+        // create a futile cancel-resubmit loop (see analysis 2026-04-15).
+        // Toxic-flow cancels are still applied even in post-close (circuit breaker).
+        let post_close_stale_immune = self.cfg.strategy == StrategyKind::OracleLagSniping
+            && self.is_in_post_close_window();
+
+        if yes_toxic_blocked || (yes_stale_actionable && !post_close_stale_immune) {
             for slot in OrderSlot::side_slots(Side::Yes) {
                 if self.slot_target_active(slot) {
                     if yes_toxic_blocked {
@@ -2081,7 +2160,7 @@ impl StrategyCoordinator {
                 }
             }
         }
-        if no_toxic_blocked || no_stale_actionable {
+        if no_toxic_blocked || (no_stale_actionable && !post_close_stale_immune) {
             for slot in OrderSlot::side_slots(Side::No) {
                 if self.slot_target_active(slot) {
                     if no_toxic_blocked {
@@ -2106,6 +2185,46 @@ impl StrategyCoordinator {
         if ub.yes_bid <= 0.0 || ub.no_bid <= 0.0 {
             self.stats.skipped_empty_book += 1;
             return;
+        }
+
+        // Post-close book snapshot: 500 ms rate-limited, OracleLagSniping only.
+        // Emits per-tick book state so we can audit ask availability in the post-close window.
+        if self.cfg.strategy == StrategyKind::OracleLagSniping
+            && self.is_in_post_close_window()
+        {
+            let emit = match self.last_post_close_snapshot_ts {
+                None => true,
+                Some(prev) => prev.elapsed() >= Duration::from_millis(500),
+            };
+            if emit {
+                self.last_post_close_snapshot_ts = Some(now);
+                let winner_side = self.post_close_winner_side;
+                let (winner_bid, winner_ask) = match winner_side {
+                    Some(Side::Yes) => (ub.yes_bid, ub.yes_ask),
+                    Some(Side::No) => (ub.no_bid, ub.no_ask),
+                    None => (0.0, 0.0),
+                };
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as i64;
+                let market_end_ms = self
+                    .cfg
+                    .market_end_ts
+                    .map(|ts| (ts as i64).saturating_mul(1_000));
+                let t_post_close_ms = market_end_ms.map(|end| now_ms.saturating_sub(end));
+                info!(
+                    "📖 post_close_book_tick | t_post_close_ms={:?} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4} winner_side={:?} winner_bid={:.4} winner_ask={:.4} has_winner_ask={} stale_no={}",
+                    t_post_close_ms,
+                    ub.yes_bid, ub.yes_ask,
+                    ub.no_bid, ub.no_ask,
+                    winner_side,
+                    winner_bid,
+                    winner_ask,
+                    winner_ask > 0.0,
+                    no_stale_raw,
+                );
+            }
         }
 
         // Priority 4: Strategy quote + unified flow-risk overlay + execution.
@@ -2235,11 +2354,12 @@ impl StrategyCoordinator {
                 ts,
                 rejected_action_price,
             } => {
-                if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+                if self.cfg.strategy == StrategyKind::PairArb
+                    && slot.direction == TradeDirection::Buy
+                {
                     let idx = slot.index();
-                    self.slot_pair_arb_cross_reject_extra_ticks[idx] = self
-                        .slot_pair_arb_cross_reject_extra_ticks[idx]
-                        .saturating_add(1);
+                    self.slot_pair_arb_cross_reject_extra_ticks[idx] =
+                        self.slot_pair_arb_cross_reject_extra_ticks[idx].saturating_add(1);
                     self.slot_pair_arb_last_cross_rejected_action_price[idx] =
                         Some(rejected_action_price);
                     self.slot_pair_arb_cross_reject_reprice_pending[idx] = true;

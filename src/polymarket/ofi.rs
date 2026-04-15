@@ -925,6 +925,9 @@ impl OfiEngine {
                                 self.reference_mid_yes = reference_mid_yes;
                             }
                         }
+                        Some(MarketDataMsg::WinnerHint { .. }) => {
+                            // Winner hints are consumed by post-close strategy only.
+                        }
                         None => break, // Channel closed
                     }
                 }

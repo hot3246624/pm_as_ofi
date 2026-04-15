@@ -123,7 +123,9 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn should_execute_directional_hedges(&self, st: &ExecutionState) -> bool {
-        if self.cfg.strategy == StrategyKind::PairArb {
+        if self.cfg.strategy == StrategyKind::PairArb
+            || self.cfg.strategy == StrategyKind::OracleLagSniping
+        {
             return false;
         }
         match self.cfg.strategy.execution_mode() {
@@ -214,8 +216,8 @@ impl StrategyCoordinator {
                 slot.side,
                 size,
                 risk_effect,
-                self.cfg.pair_arb_tier_1_mult,
-                self.cfg.pair_arb_tier_2_mult,
+                self.cfg.pair_arb.tier_1_mult,
+                self.cfg.pair_arb.tier_2_mult,
             )
         {
             if price > cap + eps {
@@ -226,7 +228,7 @@ impl StrategyCoordinator {
         let effective_pair_cost_margin = if inv.net_diff.abs() < PAIR_ARB_NET_EPS {
             0.0
         } else {
-            self.cfg.pair_arb_pair_cost_safety_margin
+            self.cfg.pair_arb.pair_cost_safety_margin
         };
         let ceiling = match slot.side {
             Side::Yes => crate::polymarket::strategy::pair_arb::PairArbStrategy::vwap_ceiling(
@@ -268,8 +270,7 @@ impl StrategyCoordinator {
         let prev_state = self.slot_pair_arb_state_keys[idx];
         let state_changed = prev_state.is_some() && prev_state != Some(state_key);
         let fill_recheck = self.slot_pair_arb_fill_recheck_pending[idx];
-        let cross_reject_reprice_pending =
-            self.slot_pair_arb_cross_reject_reprice_pending[idx];
+        let cross_reject_reprice_pending = self.slot_pair_arb_cross_reject_reprice_pending[idx];
         let (force_freshness_republish, freshness_reason, freshness_delta_ticks) = self
             .pair_arb_should_force_freshness_republish(
                 inv,
@@ -687,7 +688,8 @@ impl StrategyCoordinator {
             }
 
             if intent.is_none() {
-                if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy
+                if self.cfg.strategy == StrategyKind::PairArb
+                    && slot.direction == TradeDirection::Buy
                 {
                     self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
                     self.slot_pair_arb_state_republish_latched[slot.index()] = false;

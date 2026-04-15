@@ -94,8 +94,8 @@ impl QuoteStrategy for PairArbStrategy {
             Side::Yes,
             yes_size,
             yes_risk_effect,
-            cfg.pair_arb_tier_1_mult,
-            cfg.pair_arb_tier_2_mult,
+            cfg.pair_arb.tier_1_mult,
+            cfg.pair_arb.tier_2_mult,
         ) {
             raw_yes = raw_yes.min(yes_cap);
         }
@@ -104,8 +104,8 @@ impl QuoteStrategy for PairArbStrategy {
             Side::No,
             no_size,
             no_risk_effect,
-            cfg.pair_arb_tier_1_mult,
-            cfg.pair_arb_tier_2_mult,
+            cfg.pair_arb.tier_1_mult,
+            cfg.pair_arb.tier_2_mult,
         ) {
             raw_no = raw_no.min(no_cap);
         }
@@ -165,7 +165,7 @@ impl QuoteStrategy for PairArbStrategy {
         let effective_pair_cost_margin = if inv.net_diff.abs() < PAIR_ARB_NET_EPS {
             0.0
         } else {
-            cfg.pair_arb_pair_cost_safety_margin
+            cfg.pair_arb.pair_cost_safety_margin
         };
         if inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
             let raw_yes_before = raw_yes;

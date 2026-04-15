@@ -46,6 +46,13 @@ impl StrategyCoordinator {
             }
             return;
         }
+        if self.cfg.strategy == StrategyKind::OracleLagSniping {
+            // Post-close strategy runs strictly after market end for a short window.
+            // It should not inherit normal pre-close endgame gates.
+            st.endgame_phase = EndgamePhase::Normal;
+            self.edge_hold_state = None;
+            return;
+        }
         if st.endgame_phase >= EndgamePhase::SoftClose {
             // Tail mode: stop risk-increasing intents but keep non-increasing maker repair alive.
             self.apply_tail_risk_gate(inv, st);
@@ -140,7 +147,7 @@ impl StrategyCoordinator {
             return false;
         }
         self.seconds_to_market_end()
-            .map(|remaining| remaining <= self.cfg.pair_arb_risk_open_cutoff_secs)
+            .map(|remaining| remaining <= self.cfg.pair_arb.risk_open_cutoff_secs)
             .unwrap_or(false)
     }
 

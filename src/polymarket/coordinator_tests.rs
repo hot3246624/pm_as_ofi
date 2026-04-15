@@ -280,8 +280,8 @@ fn test_pair_arb_uses_working_inventory_for_tiered_yes_cap() {
     c.strategy = StrategyKind::PairArb;
     c.bid_size = 5.0;
     c.max_net_diff = 15.0;
-    c.pair_arb_tier_1_mult = 0.75;
-    c.pair_arb_tier_2_mult = 0.50;
+    c.pair_arb.tier_1_mult = 0.75;
+    c.pair_arb.tier_2_mult = 0.50;
 
     let settled = InventoryState {
         yes_qty: 5.0,
@@ -307,7 +307,7 @@ fn test_pair_arb_uses_working_inventory_for_tiered_yes_cap() {
         fragile: false,
     };
 
-    let tier_1_mult = c.pair_arb_tier_1_mult;
+    let tier_1_mult = c.pair_arb.tier_1_mult;
     let quotes = pair_arb_quotes_with_snapshot(
         c,
         settled,
@@ -333,8 +333,8 @@ fn test_pair_arb_execution_recheck_rejects_stale_same_side_quote_from_working_in
     config.strategy = StrategyKind::PairArb;
     config.bid_size = 5.0;
     config.max_net_diff = 15.0;
-    config.pair_arb_tier_1_mult = 0.75;
-    config.pair_arb_tier_2_mult = 0.50;
+    config.pair_arb.tier_1_mult = 0.75;
+    config.pair_arb.tier_2_mult = 0.50;
     let (_o, i, _m, _k, _er, coord) = make(config);
 
     let settled = InventoryState {
@@ -526,7 +526,8 @@ fn test_pair_arb_cross_reject_retry_price_steps_down_monotonically() {
     let slot = OrderSlot::NO_BUY;
     let tick = c.cfg.tick_size.max(1e-9);
 
-    let mut prev_action = c.pair_arb_action_price_for_post_only(slot, 0.66, 5.0, BidReason::Provide);
+    let mut prev_action =
+        c.pair_arb_action_price_for_post_only(slot, 0.66, 5.0, BidReason::Provide);
     for _ in 0..6 {
         c.handle_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
             slot,
@@ -537,7 +538,8 @@ fn test_pair_arb_cross_reject_retry_price_steps_down_monotonically() {
             c.slot_pair_arb_cross_reject_reprice_pending[slot.index()],
             "cross reject must force pending reprice"
         );
-        let next_action = c.pair_arb_action_price_for_post_only(slot, 0.66, 5.0, BidReason::Provide);
+        let next_action =
+            c.pair_arb_action_price_for_post_only(slot, 0.66, 5.0, BidReason::Provide);
         assert!(
             next_action <= prev_action - tick + 1e-9,
             "action price must step down by >= 1 tick after cross reject: prev={prev_action:.4} next={next_action:.4} tick={tick:.4}"
@@ -2365,10 +2367,7 @@ fn test_pair_arb_opposite_slot_blocked_does_not_gate_pair_arb_quotes() {
         yes_allowed,
         "risk-increasing YES buy should be decided by pair_arb pricing constraints, not opposite-slot fuse"
     );
-    assert!(
-        no_allowed,
-        "pairing/reducing NO buy should remain allowed"
-    );
+    assert!(no_allowed, "pairing/reducing NO buy should remain allowed");
 }
 
 #[test]
@@ -2419,8 +2418,8 @@ fn test_pair_arb_retention_republishes_pairing_side_when_resting_quote_is_not_po
 }
 
 #[test]
-fn test_pair_arb_retention_republishes_risk_increasing_side_when_resting_quote_is_not_post_only_safe()
-{
+fn test_pair_arb_retention_republishes_risk_increasing_side_when_resting_quote_is_not_post_only_safe(
+) {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;
     let (_o, _i, _m, _k, _er, mut coord) = make(config);
@@ -2665,11 +2664,18 @@ fn test_pair_arb_progress_delta_scales_with_bid_size() {
     };
     coord.observe_pair_arb_inventory_transition(&small_progress, now);
     assert!(
-        coord.pair_arb_progress_state.last_pair_progress_at.is_none(),
+        coord
+            .pair_arb_progress_state
+            .last_pair_progress_at
+            .is_none(),
         "paired progress below bid-size scaled threshold should not refresh progress clock"
     );
     assert!(
-        coord.pair_arb_progress_state.last_pair_progress_paired_qty.abs() < PAIR_ARB_NET_EPS,
+        coord
+            .pair_arb_progress_state
+            .last_pair_progress_paired_qty
+            .abs()
+            < PAIR_ARB_NET_EPS,
         "paired progress marker should stay unchanged when delta is below threshold"
     );
 
@@ -2768,7 +2774,8 @@ fn test_pair_arb_absent_intent_no_longer_clears_only_from_stalled_progress() {
         net_bucket: PairArbNetBucket::High,
         risk_open_cutoff_active: false,
     });
-    coord.pair_arb_progress_state.last_pair_progress_at = Some(Instant::now() - Duration::from_secs(61));
+    coord.pair_arb_progress_state.last_pair_progress_at =
+        Some(Instant::now() - Duration::from_secs(61));
 
     let inv = InventoryState {
         yes_qty: 10.0,
@@ -2814,7 +2821,8 @@ fn test_pair_arb_absent_intent_keeps_stalled_pairing_leg() {
         net_bucket: PairArbNetBucket::High,
         risk_open_cutoff_active: false,
     });
-    coord.pair_arb_progress_state.last_pair_progress_at = Some(Instant::now() - Duration::from_secs(61));
+    coord.pair_arb_progress_state.last_pair_progress_at =
+        Some(Instant::now() - Duration::from_secs(61));
 
     let inv = InventoryState {
         yes_qty: 10.0,

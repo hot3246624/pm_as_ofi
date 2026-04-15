@@ -13,6 +13,7 @@ pub mod gabagool_grid;
 pub mod glft_mm;
 pub mod pair_arb;
 pub mod phase_builder;
+pub mod post_close_hype;
 
 pub(crate) trait QuoteStrategy: Send + Sync {
     fn kind(&self) -> StrategyKind;
@@ -31,6 +32,7 @@ pub enum StrategyKind {
     PairArb,
     DipBuy,
     PhaseBuilder,
+    OracleLagSniping,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,7 +133,6 @@ impl StrategyQuotes {
             .pair_arb_skip_simulate_buy_none
             .saturating_add(1);
     }
-
 }
 
 impl StrategyKind {
@@ -147,6 +148,13 @@ impl StrategyKind {
             "pair_arb" | "pairarb" | "pair-arb" => Some(Self::PairArb),
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
+            "oracle_lag_sniping"
+            | "oraclelagsniping"
+            | "oracle-lag-sniping"
+            | "post_close_hype"
+            | "postclose_hype"
+            | "post-close-hype"
+            | "hype_post_close" => Some(Self::OracleLagSniping),
             _ => None,
         }
     }
@@ -163,6 +171,7 @@ impl StrategyKind {
             Self::PairArb => "pair_arb",
             Self::DipBuy => "dip_buy",
             Self::PhaseBuilder => "phase_builder",
+            Self::OracleLagSniping => "oracle_lag_sniping",
         }
     }
 
@@ -171,6 +180,7 @@ impl StrategyKind {
             Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {
                 StrategyExecutionMode::UnifiedBuys
             }
+            Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
             Self::DipBuy | Self::PhaseBuilder => StrategyExecutionMode::DirectionalHedgeOverlay,
         }
@@ -231,13 +241,14 @@ pub(crate) struct StrategyRegistry;
 
 impl StrategyRegistry {
     fn entries() -> &'static [&'static dyn QuoteStrategy] {
-        static ENTRIES: [&'static dyn QuoteStrategy; 6] = [
+        static ENTRIES: [&'static dyn QuoteStrategy; 7] = [
             &gabagool_grid::GABAGOOL_GRID_STRATEGY,
             &gabagool_corridor::GABAGOOL_CORRIDOR_STRATEGY,
             &glft_mm::GLFT_MM_STRATEGY,
             &pair_arb::PAIR_ARB_STRATEGY,
             &dip_buy::DIP_BUY_STRATEGY,
             &phase_builder::PHASE_BUILDER_STRATEGY,
+            &post_close_hype::POST_CLOSE_HYPE_STRATEGY,
         ];
         &ENTRIES
     }
@@ -281,6 +292,14 @@ mod tests {
             StrategyKind::parse("phase-builder"),
             Some(StrategyKind::PhaseBuilder)
         );
+        assert_eq!(
+            StrategyKind::parse("post_close_hype"),
+            Some(StrategyKind::OracleLagSniping)
+        );
+        assert_eq!(
+            StrategyKind::parse("oracle_lag_sniping"),
+            Some(StrategyKind::OracleLagSniping)
+        );
         assert_eq!(StrategyKind::parse("unknown"), None);
     }
 
@@ -293,5 +312,6 @@ mod tests {
         assert!(names.contains(&"pair_arb"));
         assert!(names.contains(&"dip_buy"));
         assert!(names.contains(&"phase_builder"));
+        assert!(names.contains(&"oracle_lag_sniping"));
     }
 }

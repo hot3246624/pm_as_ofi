@@ -23,7 +23,17 @@
       "Bash(awk -F':' '{print $2}')",
       "Bash(sed 's/\\\\x1b\\\\[[0-9;]*m//g')",
       "Read(//tmp/**)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(awk 'NR>=94 && NR<=140')",
+      "Bash(cargo check:*)",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/markets?slug=hype-updown-5m-1776236100\" -v)",
+      "Bash(curl -s \"https://polymarket.com/api/equity/price-to-beat/hype-updown-5m-1776242100\")",
+      "Bash(curl -s \"https://polymarket.com/api/equity/price-to-beat/wti-up-or-down-on-april-7-2026\")",
+      "Bash(curl -s \"https://polymarket.com/api/equity/price-to-beat/hype-up-or-down-on-april-15-2026\")",
+      "Bash(curl -s \"https://polymarket.com/api/equity/price-to-beat/hype-updown-5m\")",
+      "Bash(curl -s \"https://gamma-api.polymarket.com/events?slug=hype-updown-5m-1776242100\")",
+      "Bash(time curl:*)",
+      "Bash(curl -s https://polymarket.com/api/equity/price-to-beat/__TRACKED_VAR__)"
     ]
   }
 }

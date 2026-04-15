@@ -28,6 +28,10 @@
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | REST 对账周期 |
 | `PM_COORD_WATCHDOG_MS` | `500` | 无行情时的风控心跳 |
 | `PM_STRATEGY_METRICS_LOG_SECS` | `15` | 指标日志周期 |
+| `PM_POST_CLOSE_WINDOW_SECS` | `120` | 仅 `oracle_lag_sniping` 使用：收盘后继续运行的窗口（秒） |
+| `PM_POST_CLOSE_CHAINLINK_WS_URL` | `wss://ws-live-data.polymarket.com` | 仅 `oracle_lag_sniping` 使用：Chainlink RTDS 地址 |
+| `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS` | `8` | 仅 `oracle_lag_sniping` 使用：收盘后等待 Chainlink 胜负提示的最大秒数 |
+| `PM_POST_CLOSE_GAMMA_POLL_MS` | `300` | 仅 `oracle_lag_sniping` 使用：Chainlink 未命中时 Gamma 兜底轮询间隔 |
 
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 
@@ -63,6 +67,21 @@
 - `pair_progress_regime` 只保留为观测指标，不参与运行时报价阻断
 - 已移除 `Round Suitability` 与 `utility/open_edge` 二次收益过滤，候选保留只看硬约束链路
 - 成交最终性相关统计仍保留在 accounting / diagnostics，不再直接驱动 `pair_arb` 报价
+
+补充：`oracle_lag_sniping`（HYPE-only 试验策略）
+- 建议单独设置：
+  - `PM_STRATEGY=oracle_lag_sniping`（兼容旧别名 `post_close_hype`）
+  - `POLYMARKET_MARKET_SLUG=hype-updown-5m`
+  - `PM_POST_CLOSE_WINDOW_SECS=120`
+  - `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS=8`
+  - `PM_POST_CLOSE_GAMMA_POLL_MS=300`
+- 运行语义：
+  - 先监听 Chainlink RTDS（`crypto_prices_chainlink`）判定胜方并发送 WinnerHint；
+  - 若 `+N` 秒内未拿到 Chainlink 胜方提示，则自动切到 Gamma 兜底；
+  - 仅在市场结束后窗口内尝试胜方 BUY 报价；非 HYPE 5m 轮次保持静默。
+  - 胜方价格 `>0.993` 时不做 taker；maker 仍允许挂单。
+- 实盘前操作清单见：
+  - [ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md)
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 
