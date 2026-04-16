@@ -2497,16 +2497,39 @@ fn extract_all_chainlink_points(value: &Value, target_symbol: &str, out: &mut Ve
                 }
             }
 
-            for key in ["data", "payload", "message"] {
-                if let Some(child) = map.get(key) {
-                    extract_all_chainlink_points(child, target_symbol, out);
-                }
-            }
+            // Recurse into all child values exactly once (no duplicate key enumeration).
             for child in map.values() {
                 extract_all_chainlink_points(child, target_symbol, out);
             }
         }
         _ => {}
+    }
+}
+
+/// Parse the RTDS initial-batch format: {"payload":{"data":[{"timestamp":T,"value":V},...]}}.
+/// Items in the data array have no "symbol" field — they are bare price-points from our
+/// subscription, so any item with a valid price+timestamp is a valid tick for this symbol.
+fn extract_chainlink_bare_batch(value: &Value, out: &mut Vec<(f64, u64)>) {
+    let Some(data) = value
+        .get("payload")
+        .and_then(|p| p.get("data"))
+        .and_then(|d| d.as_array())
+    else {
+        return;
+    };
+    for item in data {
+        let Some(price) = ["value", "price", "p"]
+            .iter()
+            .find_map(|k| item.get(*k).and_then(parse_f64_value))
+            .filter(|v| *v > 0.0)
+        else {
+            continue;
+        };
+        let ts_ms = ["timestamp", "ts", "t", "time"]
+            .iter()
+            .find_map(|k| item.get(*k).and_then(parse_unix_ms_value))
+            .unwrap_or_else(unix_now_millis_u64);
+        out.push((price, ts_ms));
     }
 }
 
@@ -2516,6 +2539,10 @@ fn parse_chainlink_all_ticks(text: &str, target_symbol: &str) -> Vec<(f64, u64)>
     };
     let mut out = Vec::new();
     extract_all_chainlink_points(&value, target_symbol, &mut out);
+    if out.is_empty() {
+        // Fallback: RTDS initial batch — bare {timestamp, value} items with no symbol field.
+        extract_chainlink_bare_batch(&value, &mut out);
+    }
     out
 }
 
@@ -2732,7 +2759,13 @@ async fn run_post_close_winner_hint_listener(
                 detect_ms.saturating_sub(market_end_ms),
             );
             let _ = cl_tx
-                .send((WinnerHintSource::Chainlink, side, open_ref, close_px, detect_ms))
+                .send((
+                    WinnerHintSource::Chainlink,
+                    side,
+                    open_ref,
+                    close_px,
+                    detect_ms,
+                ))
                 .await;
         }
         // Chainlink deadline exceeded without result — task ends silently; Gamma may still win.
@@ -2861,7 +2894,11 @@ async fn run_post_close_winner_hint_listener(
                         first_ms.saturating_sub(market_end_ms),
                     )
                 };
-            let faster_source = if first_ms <= second_ms { first_source } else { second_source };
+            let faster_source = if first_ms <= second_ms {
+                first_source
+            } else {
+                second_source
+            };
             let source_delta_ms = first_ms.abs_diff(second_ms);
             info!(
                 "📊 post_close_source_comparison | slug={} chainlink_side={:?} gamma_side={:?} agree={} faster={:?} source_delta_ms={} chainlink_latency_ms={} gamma_latency_ms={}",
@@ -2912,28 +2949,27 @@ async fn run_chainlink_winner_hint(
     let mut open_point: Option<(f64, u64)> = None;
     let mut close_point: Option<(f64, u64)> = None;
     let mut reconnect_backoff = Duration::from_millis(300);
+    // Track when we first successfully connected to RTDS.
+    // The 30s open_point guard is relative to connection time, NOT round_start_ts:
+    // connecting late (e.g., 120s into a round) is fine — the initial RTDS batch may contain
+    // the round_start tick. We only give up if we've been connected for 30s with no start tick.
+    let mut connected_at: Option<std::time::Instant> = None;
+    let mut logged_raw = false; // log raw RTDS message only once
 
     while unix_now_secs() <= hard_deadline_ts {
-        // Guard: abort if we're past round_start + 30s and still have no open_point.
-        // This prevents using a mid-round price as the reference.
-        if open_point.is_none() {
-            let elapsed = unix_now_secs().saturating_sub(round_start_ts);
-            if elapsed > 30 {
-                warn!(
-                    "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found, aborting",
-                    target_symbol, round_start_ts, elapsed,
-                );
-                return None;
-            }
-        }
-
-        let connect = tokio::time::timeout(Duration::from_secs(3), connect_async(&ws_url)).await;
+        let connect = tokio::time::timeout(Duration::from_secs(5), connect_async(&ws_url)).await;
         let Ok(Ok((ws, _resp))) = connect else {
             sleep(reconnect_backoff).await;
-            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(4));
             continue;
         };
         reconnect_backoff = Duration::from_millis(300);
+        connected_at.get_or_insert_with(std::time::Instant::now);
+        let elapsed_since_start = unix_now_secs().saturating_sub(round_start_ts);
+        info!(
+            "📡 rtds_connected | symbol={} round_start_ts={} elapsed_since_start={}s",
+            target_symbol, round_start_ts, elapsed_since_start,
+        );
         let (mut write, mut read) = ws.split();
 
         let subscribe_msg = json!({
@@ -2962,15 +2998,19 @@ async fn run_chainlink_winner_hint(
                 Ok(Some(Ok(m))) => m,
                 Ok(Some(Err(_))) | Ok(None) => break,
                 Err(_) => {
-                    // Timeout: also check the 30s open_point guard on each idle cycle.
+                    // Timeout: abort only if we've been CONNECTED for >30s with no open_point.
+                    // This handles the case where the round_start tick is genuinely absent from
+                    // both the initial batch and live feed (e.g., RTDS gap at round boundary).
                     if open_point.is_none() {
-                        let elapsed = unix_now_secs().saturating_sub(round_start_ts);
-                        if elapsed > 30 {
-                            warn!(
-                                "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found, aborting",
-                                target_symbol, round_start_ts, elapsed,
-                            );
-                            return None;
+                        if let Some(t) = connected_at {
+                            if t.elapsed() > Duration::from_secs(30) {
+                                let elapsed = unix_now_secs().saturating_sub(round_start_ts);
+                                warn!(
+                                    "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed_since_start={}s connected_for={}s — no exact round_start tick in batch or live feed, aborting",
+                                    target_symbol, round_start_ts, elapsed, t.elapsed().as_secs(),
+                                );
+                                return None;
+                            }
                         }
                     }
                     continue;
@@ -2986,30 +3026,53 @@ async fn run_chainlink_winner_hint(
             };
 
             // Parse ALL ticks in this message (handles both single ticks and batch payloads).
+            // Log the first raw message once per connection for format verification.
+            if !logged_raw {
+                logged_raw = true;
+                let preview: String = text.chars().take(400).collect();
+                info!(
+                    "🔬 rtds_raw_msg | symbol={} round_start_ts={} preview={}",
+                    target_symbol, round_start_ts, preview,
+                );
+            }
             let ticks = parse_chainlink_all_ticks(&text, &target_symbol);
             if ticks.is_empty() {
                 continue;
             }
 
+            // Log first successful batch for diagnostics.
+            if open_point.is_none() && close_point.is_none() {
+                let ts_range: Vec<String> = ticks.iter()
+                    .take(5)
+                    .map(|(p, t)| format!("{:.4}@{}", p, t))
+                    .collect();
+                info!(
+                    "🔬 rtds_batch | symbol={} n={} samples=[{}]",
+                    target_symbol, ticks.len(), ts_range.join(", ")
+                );
+            }
+
             for (price, ts_ms) in &ticks {
                 let (price, ts_ms) = (*price, *ts_ms);
 
-                // open_ref: exact match ts_ms == round_start_ms (= priceToBeat).
-                // The RTDS sends one tick per second; round boundaries are always 1s-aligned.
-                if open_point.is_none() && ts_ms == start_ms {
+                // open_ref: tick closest to round_start_ms within ±1000ms.
+                // RTDS sends 1 tick/sec but timestamps may not be exactly ms-aligned on boundaries.
+                if open_point.is_none() && ts_ms.abs_diff(start_ms) <= 1_000 {
                     open_point = Some((price, ts_ms));
+                    let delta_ms = (ts_ms as i64) - (start_ms as i64);
                     info!(
-                        "⏱️ chainlink_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} exact=true",
-                        unix_now_millis_u64(), target_symbol, round_start_ts, ts_ms, price,
+                        "⏱️ chainlink_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} delta_from_start_ms={}",
+                        unix_now_millis_u64(), target_symbol, round_start_ts, ts_ms, price, delta_ms,
                     );
                 }
 
-                // close: exact match ts_ms == round_end_ms.
-                if open_point.is_some() && close_point.is_none() && ts_ms == end_ms {
+                // close: tick closest to round_end_ms within ±1000ms.
+                if open_point.is_some() && close_point.is_none() && ts_ms.abs_diff(end_ms) <= 1_000 {
                     close_point = Some((price, ts_ms));
+                    let delta_ms = (ts_ms as i64) - (end_ms as i64);
                     info!(
-                        "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} exact=true",
-                        unix_now_millis_u64(), target_symbol, round_end_ts, ts_ms, price,
+                        "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} delta_from_end_ms={}",
+                        unix_now_millis_u64(), target_symbol, round_end_ts, ts_ms, price, delta_ms,
                     );
                 }
             }

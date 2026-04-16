@@ -1130,8 +1130,9 @@ impl StrategyCoordinator {
                         let within_1p5s = delta_from_end_ms
                             .map(|d| (0..=ORACLE_LAG_SUBMIT_SLA_MS).contains(&d))
                             .unwrap_or(false);
-                        let winner_to_submit_ms =
-                            self.post_close_winner_ts.map(|t| t.elapsed().as_millis() as u64);
+                        let winner_to_submit_ms = self
+                            .post_close_winner_ts
+                            .map(|t| t.elapsed().as_millis() as u64);
                         if self.oracle_lag_fak_dispatched {
                             // Second source arrived — log comparison only, do NOT re-fire FAK.
                             info!(

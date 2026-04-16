@@ -80,6 +80,7 @@ struct Config {
     risk_open_cutoff_secs: f64,
     pair_cost_safety_margin: f64,
     as_skew_factor: f64,
+    initial_balance: f64,
     fill_model: FillModel,
 }
 
@@ -96,6 +97,7 @@ impl Default for Config {
             risk_open_cutoff_secs: 240.0,
             pair_cost_safety_margin: 0.02,
             as_skew_factor: 0.06,
+            initial_balance: f64::INFINITY,
             fill_model: FillModel::Conservative,
         }
     }
@@ -589,6 +591,7 @@ fn run_backtest(conn: &Connection, cfg: Config, limit: usize) -> anyhow::Result<
         let mut active_yes_size = 0.0;
         let mut active_no_bid = 0.0;
         let mut active_no_size = 0.0;
+        let mut available_balance = cfg.initial_balance;
         let mut last_quote_ts: i64 = 0;
         let mut fills = 0u64;
 
@@ -602,19 +605,35 @@ fn run_backtest(conn: &Connection, cfg: Config, limit: usize) -> anyhow::Result<
             }
 
             if active_yes_bid > 0.0 && check_fill(active_yes_bid, tick.ask_up, cfg.fill_model) {
-                inv.update_after_fill(true, active_yes_size, active_yes_bid);
-                active_yes_bid = 0.0;
-                active_yes_size = 0.0;
-                last_quote_ts = 0;
-                fills = fills.saturating_add(1);
+                let cost = active_yes_size * active_yes_bid;
+                if cost <= available_balance + 1e-9 {
+                    inv.update_after_fill(true, active_yes_size, active_yes_bid);
+                    available_balance -= cost;
+                    active_yes_bid = 0.0;
+                    active_yes_size = 0.0;
+                    last_quote_ts = 0;
+                    fills = fills.saturating_add(1);
+                } else {
+                    active_yes_bid = 0.0;
+                    active_yes_size = 0.0;
+                    last_quote_ts = 0;
+                }
             }
 
             if active_no_bid > 0.0 && check_fill(active_no_bid, tick.ask_down, cfg.fill_model) {
-                inv.update_after_fill(false, active_no_size, active_no_bid);
-                active_no_bid = 0.0;
-                active_no_size = 0.0;
-                last_quote_ts = 0;
-                fills = fills.saturating_add(1);
+                let cost = active_no_size * active_no_bid;
+                if cost <= available_balance + 1e-9 {
+                    inv.update_after_fill(false, active_no_size, active_no_bid);
+                    available_balance -= cost;
+                    active_no_bid = 0.0;
+                    active_no_size = 0.0;
+                    last_quote_ts = 0;
+                    fills = fills.saturating_add(1);
+                } else {
+                    active_no_bid = 0.0;
+                    active_no_size = 0.0;
+                    last_quote_ts = 0;
+                }
             }
 
             if tick.ts - last_quote_ts >= 2 {
@@ -728,6 +747,7 @@ fn main() -> anyhow::Result<()> {
              --tier-mode <disabled|discrete|continuous[,..]>\n\
              --fill-model <conservative|aggressive[,..]>\n\
              --cutoff <secs[,..]>\n\
+             --initial-balance <v>\n\
              --margin <v[,..]>\n"
         );
         return Ok(());
@@ -747,6 +767,13 @@ fn main() -> anyhow::Result<()> {
     let tier2s = parse_vec_f64(get_arg("--tier2"), 0.15).map_err(anyhow::Error::msg)?;
     let cutoffs = parse_vec_f64(get_arg("--cutoff"), 240.0).map_err(anyhow::Error::msg)?;
     let margins = parse_vec_f64(get_arg("--margin"), 0.02).map_err(anyhow::Error::msg)?;
+    let initial_balance = get_arg("--initial-balance")
+        .map(|v| {
+            v.parse::<f64>()
+                .map_err(|e| anyhow::anyhow!("failed to parse --initial-balance '{v}': {e}"))
+        })
+        .transpose()?
+        .unwrap_or(f64::INFINITY);
     let fill_models = parse_vec::<FillModel>(get_arg("--fill-model"), FillModel::Conservative)
         .map_err(anyhow::Error::msg)?;
     let tier_modes = parse_vec::<TierMode>(get_arg("--tier-mode"), TierMode::Discrete)
@@ -787,6 +814,7 @@ fn main() -> anyhow::Result<()> {
                                             tier_2_mult: tier2,
                                             risk_open_cutoff_secs: cutoff,
                                             pair_cost_safety_margin: margin,
+                                            initial_balance,
                                             tier_mode,
                                             fill_model,
                                             ..Config::default()
@@ -813,7 +841,7 @@ fn main() -> anyhow::Result<()> {
                                         };
 
                                         println!(
-                                            "RUN#{run_id:03} net={:.1} target={:.3} bid={:.2} tier={:.2}/{:.2} mode={} cutoff={:.0}s margin={:.3} fill={} | windows={} fills={} pnl={:+.2} avg={:+.4} residual_loss_rate={:.1}% win/loss/zero={}/{}/{} avg_win={:+.3} avg_loss={:+.3}",
+                                            "RUN#{run_id:03} net={:.1} target={:.3} bid={:.2} tier={:.2}/{:.2} mode={} cutoff={:.0}s margin={:.3} bal={} fill={} | windows={} fills={} pnl={:+.2} avg={:+.4} residual_loss_rate={:.1}% win/loss/zero={}/{}/{} avg_win={:+.3} avg_loss={:+.3}",
                                             cfg.max_net_diff,
                                             cfg.pair_target,
                                             cfg.bid_size,
@@ -822,6 +850,11 @@ fn main() -> anyhow::Result<()> {
                                             cfg.tier_mode,
                                             cfg.risk_open_cutoff_secs,
                                             cfg.pair_cost_safety_margin,
+                                            if cfg.initial_balance.is_finite() {
+                                                format!("{:.2}", cfg.initial_balance)
+                                            } else {
+                                                "inf".to_string()
+                                            },
                                             cfg.fill_model,
                                             agg.windows_tested,
                                             agg.total_fills,
