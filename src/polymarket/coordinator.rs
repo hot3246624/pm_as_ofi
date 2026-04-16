@@ -92,6 +92,7 @@ pub struct PairArbStrategyConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PairArbTierMode {
+    Disabled,
     Discrete,
     Continuous,
 }
@@ -99,6 +100,7 @@ pub enum PairArbTierMode {
 impl PairArbTierMode {
     pub fn as_str(self) -> &'static str {
         match self {
+            Self::Disabled => "disabled",
             Self::Discrete => "discrete",
             Self::Continuous => "continuous",
         }
@@ -106,10 +108,23 @@ impl PairArbTierMode {
 
     fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "false" => Some(Self::Disabled),
             "discrete" | "step" | "bucket" => Some(Self::Discrete),
             "continuous" | "smooth" | "non_discrete" | "nondiscrete" => Some(Self::Continuous),
             _ => None,
         }
+    }
+
+    pub fn tier_cap_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub fn tiered_inventory_curve_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub fn multi_bucket_state_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
     }
 }
 
@@ -446,7 +461,7 @@ impl CoordinatorConfig {
                 c.pair_arb.tier_mode = mode;
             } else {
                 warn!(
-                    "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_MODE={} (supported: discrete|continuous), using {}",
+                    "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_MODE={} (supported: disabled|discrete|continuous), using {}",
                     v,
                     c.pair_arb.tier_mode.as_str()
                 );

@@ -40,6 +40,7 @@ impl fmt::Display for FillModel {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TierMode {
+    Disabled,
     Discrete,
     Continuous,
 }
@@ -49,6 +50,7 @@ impl FromStr for TierMode {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "false" => Ok(Self::Disabled),
             "discrete" | "step" | "bucket" => Ok(Self::Discrete),
             "continuous" | "smooth" | "non_discrete" | "nondiscrete" => Ok(Self::Continuous),
             other => Err(format!("unsupported tier mode: {other}")),
@@ -59,6 +61,7 @@ impl FromStr for TierMode {
 impl fmt::Display for TierMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            TierMode::Disabled => write!(f, "disabled"),
             TierMode::Discrete => write!(f, "discrete"),
             TierMode::Continuous => write!(f, "continuous"),
         }
@@ -257,6 +260,7 @@ fn tier_cap_price(
 
     let abs_net = inv.net_diff.abs();
     let mult = match tier_mode {
+        TierMode::Disabled => return None,
         TierMode::Discrete => {
             if abs_net + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_2_NET_DIFF {
                 Some(tier_2_mult)
@@ -313,7 +317,15 @@ fn safe_price(price: f64, tick: f64) -> f64 {
     p.min(0.99)
 }
 
-fn effective_skew_factor(base: f64, abs_net_diff: f64, time_decay: f64) -> f64 {
+fn effective_skew_factor(
+    base: f64,
+    abs_net_diff: f64,
+    time_decay: f64,
+    tier_mode: TierMode,
+) -> f64 {
+    if matches!(tier_mode, TierMode::Disabled) {
+        return base * time_decay;
+    }
     if abs_net_diff < TIER_1_NET_DIFF {
         return base * EARLY_SKEW_MULT;
     }
@@ -338,7 +350,12 @@ fn compute_quotes(cfg: Config, inv: Inventory, tick: Tick, total_window_sec: f64
     let elapsed = total_window_sec - tick.remaining_sec;
     let time_decay = 1.0 + (elapsed / total_window_sec) * 0.6;
 
-    let effective_skew = effective_skew_factor(cfg.as_skew_factor, inv.net_diff.abs(), time_decay);
+    let effective_skew = effective_skew_factor(
+        cfg.as_skew_factor,
+        inv.net_diff.abs(),
+        time_decay,
+        cfg.tier_mode,
+    );
     let skew_shift = skew * effective_skew;
 
     let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
@@ -708,7 +725,7 @@ fn main() -> anyhow::Result<()> {
              --bid-size <v[,v2,...]>\n\
              --tier1 <v[,v2,...]>\n\
              --tier2 <v[,v2,...]>\n\
-             --tier-mode <discrete|continuous[,..]>\n\
+             --tier-mode <disabled|discrete|continuous[,..]>\n\
              --fill-model <conservative|aggressive[,..]>\n\
              --cutoff <secs[,..]>\n\
              --margin <v[,..]>\n"
