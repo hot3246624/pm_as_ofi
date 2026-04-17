@@ -58,6 +58,10 @@ pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
 /// Cooldown between consecutive FAK dispatches. Covers post_order roundtrip + IOC settle.
 pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
 pub(crate) const ORACLE_LAG_SUBMIT_SLA_MS: i64 = 1_500;
+/// Per-round cap on FAK dispatches (first-shot + all re-entries combined).
+/// Protects against runaway re-entry when the book doesn't deplete as expected
+/// (e.g. dry-run, sluggish market, or stale winner_ask reads).
+pub(crate) const ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND: u8 = 3;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
@@ -1007,6 +1011,9 @@ pub struct StrategyCoordinator {
     ///   2. Gate re-entry: after FAK (IOC auto-cancels remainder), allow another FAK
     ///      once cooldown expires AND the price condition still holds.
     oracle_lag_fak_last_dispatch: Option<Instant>,
+    /// Per-round counter of FAK dispatches (first-shot + re-entries).
+    /// Naturally resets because each round spawns a fresh coordinator.
+    oracle_lag_fak_shots_this_round: u8,
     /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
     last_post_close_snapshot_ts: Option<Instant>,
     pair_arb_decision_epoch: u64,
@@ -1272,6 +1279,7 @@ impl StrategyCoordinator {
             post_close_winner_ts: None,
             oracle_lag_first_submit_logged: false,
             oracle_lag_fak_last_dispatch: None,
+            oracle_lag_fak_shots_this_round: 0,
             last_post_close_snapshot_ts: None,
             pair_arb_decision_epoch: 0,
             pair_arb_last_risk_open_cutoff_active: false,

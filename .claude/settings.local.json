@@ -33,7 +33,12 @@
       "Bash(curl -s \"https://polymarket.com/api/equity/price-to-beat/hype-updown-5m\")",
       "Bash(curl -s \"https://gamma-api.polymarket.com/events?slug=hype-updown-5m-1776242100\")",
       "Bash(time curl:*)",
-      "Bash(curl -s https://polymarket.com/api/equity/price-to-beat/__TRACKED_VAR__)"
+      "Bash(curl -s https://polymarket.com/api/equity/price-to-beat/__TRACKED_VAR__)",
+      "Bash(awk '/14:49:5|14:50:0|14:50:1/' /Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-17)",
+      "Bash(awk '/oracle_lag_fak_reentry|chainlink_result_ready/' /Users/hot/web3Scientist/pm_as_ofi/logs/polymarket.log.2026-04-17)",
+      "Bash(awk -F'T' '{print substr\\($2,1,5\\)}')",
+      "Bash(awk -F'T' '{print substr\\($2,1,8\\)}')",
+      "Bash(awk '{print $2, $1}')"
     ]
   }
 }

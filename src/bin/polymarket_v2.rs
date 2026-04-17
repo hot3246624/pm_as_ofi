@@ -2924,6 +2924,19 @@ fn take_prewarmed_open(symbol: &str, round_start_ms: u64) -> Option<(f64, u64)> 
     guard.remove(&(symbol.to_string(), round_start_ms))
 }
 
+/// Peek the prewarmed tick for a given ms-aligned timestamp without consuming it.
+///
+/// Use case: winner-hint listener's own WS subscription may drop the exact close tick
+/// (at ts_ms == end_ms) while the *next round's* prewarm listener — which subscribes
+/// to the same stream and stores the tick at end_ms as its open — successfully receives
+/// it. This function lets the winner-hint listener fall back to the prewarm-observed tick
+/// before declaring deadline_exhausted. Non-consuming so the next round's winner-hint can
+/// still `take_prewarmed_open` the same entry as *its* open reference.
+fn peek_prewarmed_tick(symbol: &str, ts_ms: u64) -> Option<(f64, u64)> {
+    let guard = chainlink_prewarmed_open_map().lock().ok()?;
+    guard.get(&(symbol.to_string(), ts_ms)).copied()
+}
+
 fn map_outcome_label_to_side(label: &str) -> Option<Side> {
     let lower = label.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -3884,6 +3897,52 @@ async fn run_chainlink_winner_hint(
         }
     }
 
+    // Fallback: if our own WS missed the exact close tick, consult the prewarm cache.
+    // The next round's prewarm listener subscribes to the same stream and stores the
+    // tick at end_ms as its "open". If it succeeded, we can recover close_t from there.
+    let recovered_close = if close_point.is_none() {
+        peek_prewarmed_tick(&target_symbol, end_ms)
+    } else {
+        None
+    };
+    if let Some((close, close_ts_ms)) = recovered_close {
+        info!(
+            "🔄 chainlink_close_recovered_from_prewarm | symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} — own WS missed the tick, using next-round prewarm observation",
+            target_symbol, round_end_ts, close_ts_ms, close,
+        );
+        let prev_round_close_live = cached_prev_round_close(&target_symbol, start_ms);
+        let prev_round_close = prev_round_close_live.or(prev_round_close_snapshot);
+        if let Some((open_ref_px, open_ts_ms)) = open_point {
+            let side = if close >= open_ref_px {
+                Side::Yes
+            } else {
+                Side::No
+            };
+            info!(
+                "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_exact_close_recovered",
+                unix_now_millis_u64(),
+                target_symbol, side, open_ref_px, open_ts_ms, close, close_ts_ms,
+            );
+            set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+            return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+        }
+        if let Some((open_ref_px, open_ts_ms)) = prev_round_close {
+            let side = if close >= open_ref_px {
+                Side::Yes
+            } else {
+                Side::No
+            };
+            info!(
+                "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_prev_close_fallback_close_recovered",
+                unix_now_millis_u64(),
+                target_symbol, side, open_ref_px, open_ts_ms, close, close_ts_ms,
+            );
+            set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+            return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, false));
+        }
+        set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+    }
+
     let prev_round_close_live = cached_prev_round_close(&target_symbol, start_ms);
     let prev_round_close = prev_round_close_live.or(prev_round_close_snapshot);
     emit_alignment_probe(
@@ -3899,7 +3958,7 @@ async fn run_chainlink_winner_hint(
         open_minus_1s,
         open_plus_1s,
         prev_round_close,
-        close_point,
+        close_point.or(recovered_close),
     );
     None
 }

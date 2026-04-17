@@ -1163,13 +1163,56 @@ impl StrategyCoordinator {
                                 "🛡️ oracle_lag_fak_skip_fallback_open | side={:?} source={:?} winner_ask={:.4} — open_ref not from exact round_start tick, holding fire",
                                 side, source, winner_ask,
                             );
-                        } else if winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
+                        } else if self.oracle_lag_fak_shots_this_round
+                            >= crate::polymarket::coordinator::ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND
+                        {
                             info!(
-                                "⚡ oracle_lag_fak_attempt | side={:?} winner_ask={:.4} threshold={:.4} size={:.2} delta_from_end_ms={:?} within_1p5s={} winner_to_submit_ms={:?} source={:?} dry={}",
+                                "🚫 oracle_lag_fak_cap_reached | side={:?} shots={} cap={} winner_ask={:.4} — round cap reached on first-shot path",
+                                side,
+                                self.oracle_lag_fak_shots_this_round,
+                                crate::polymarket::coordinator::ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND,
+                                winner_ask,
+                            );
+                        } else if winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
+                            self.oracle_lag_fak_shots_this_round =
+                                self.oracle_lag_fak_shots_this_round.saturating_add(1);
+                            let (winner_bid, loser_bid, loser_ask) = match side {
+                                Side::Yes => (
+                                    self.book.yes_bid,
+                                    self.book.no_bid,
+                                    self.book.no_ask,
+                                ),
+                                Side::No => (
+                                    self.book.no_bid,
+                                    self.book.yes_bid,
+                                    self.book.yes_ask,
+                                ),
+                            };
+                            info!(
+                                "⚡ oracle_lag_fak_attempt | side={:?} winner_ask={:.4} threshold={:.4} size={:.2} delta_from_end_ms={:?} within_1p5s={} winner_to_submit_ms={:?} source={:?} shots={}/{} dry={}",
                                 side, winner_ask, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
                                 self.cfg.bid_size,
                                 delta_from_end_ms, within_1p5s, winner_to_submit_ms,
-                                source, self.cfg.dry_run,
+                                source,
+                                self.oracle_lag_fak_shots_this_round,
+                                crate::polymarket::coordinator::ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND,
+                                self.cfg.dry_run,
+                            );
+                            info!(
+                                "📋 oracle_lag_fak_book_snapshot | winner_side={:?} winner_bid={:.4} winner_ask={:.4} loser_bid={:.4} loser_ask={:.4} pair_sum_asks={:.4}",
+                                side,
+                                winner_bid,
+                                winner_ask,
+                                loser_bid,
+                                loser_ask,
+                                winner_ask + loser_ask,
+                            );
+                            info!(
+                                "📨 oracle_lag_fak_order_payload | side={:?} direction=Buy type=FAK limit_price={:.4} size={:.2} purpose=OracleLagSnipe dry={}",
+                                side,
+                                crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE,
+                                self.cfg.bid_size,
+                                self.cfg.dry_run,
                             );
                             self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
                             self.dispatch_taker_intent(
@@ -1207,7 +1250,8 @@ impl StrategyCoordinator {
     ///   - winner_ask in (0, ORACLE_LAG_NO_TAKER_ABOVE_PRICE)
     pub(super) async fn maybe_oracle_lag_fak_reentry(&mut self) {
         use crate::polymarket::coordinator::{
-            ORACLE_LAG_FAK_COOLDOWN_MS, ORACLE_LAG_FAK_LIMIT_PRICE, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+            ORACLE_LAG_FAK_COOLDOWN_MS, ORACLE_LAG_FAK_LIMIT_PRICE,
+            ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
         };
 
         if self.cfg.strategy != StrategyKind::OracleLagSniping
@@ -1242,6 +1286,10 @@ impl StrategyCoordinator {
                 return;
             }
         }
+        // Per-round cap: bounded total shots (first + re-entries) per round.
+        if self.oracle_lag_fak_shots_this_round >= ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND {
+            return;
+        }
         let winner_ask = match side {
             Side::Yes => self.book.yes_ask,
             Side::No => self.book.no_ask,
@@ -1249,13 +1297,29 @@ impl StrategyCoordinator {
         if !(winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE) {
             return;
         }
+        self.oracle_lag_fak_shots_this_round =
+            self.oracle_lag_fak_shots_this_round.saturating_add(1);
+        let (winner_bid, loser_bid, loser_ask) = match side {
+            Side::Yes => (self.book.yes_bid, self.book.no_bid, self.book.no_ask),
+            Side::No => (self.book.no_bid, self.book.yes_bid, self.book.yes_ask),
+        };
         info!(
-            "♻️ oracle_lag_fak_reentry | side={:?} winner_ask={:.4} threshold={:.4} size={:.2} dry={}",
+            "♻️ oracle_lag_fak_reentry | side={:?} winner_ask={:.4} threshold={:.4} size={:.2} shots={}/{} dry={}",
             side,
             winner_ask,
             ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
             self.cfg.bid_size,
+            self.oracle_lag_fak_shots_this_round,
+            ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND,
             self.cfg.dry_run,
+        );
+        info!(
+            "📋 oracle_lag_fak_book_snapshot | winner_side={:?} winner_bid={:.4} winner_ask={:.4} loser_bid={:.4} loser_ask={:.4} pair_sum_asks={:.4}",
+            side, winner_bid, winner_ask, loser_bid, loser_ask, winner_ask + loser_ask,
+        );
+        info!(
+            "📨 oracle_lag_fak_order_payload | side={:?} direction=Buy type=FAK limit_price={:.4} size={:.2} purpose=OracleLagSnipe dry={}",
+            side, ORACLE_LAG_FAK_LIMIT_PRICE, self.cfg.bid_size, self.cfg.dry_run,
         );
         self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
         self.dispatch_taker_intent(
