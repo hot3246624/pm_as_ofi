@@ -52,6 +52,11 @@ const LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT: u64 = 1_000;
 const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
 pub(crate) const PAIR_ARB_NET_EPS: f64 = 1e-6;
 pub(crate) const ORACLE_LAG_NO_TAKER_ABOVE_PRICE: f64 = 0.993;
+pub(crate) const ORACLE_LAG_FAK_LIMIT_PRICE: f64 = 0.992;
+/// Micro-tick boundary: when winner side has only bids and top bid ≥ this, step by 0.001; otherwise 0.01.
+pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
+/// Cooldown between consecutive FAK dispatches. Covers post_order roundtrip + IOC settle.
+pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
 pub(crate) const ORACLE_LAG_SUBMIT_SLA_MS: i64 = 1_500;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
@@ -220,7 +225,8 @@ impl Default for CoordinatorConfig {
                 risk_open_cutoff_secs: 180,
             },
             oracle_lag_sniping: OracleLagSnipingStrategyConfig {
-                window_secs: 120,
+                // ~Polymarket liquidity lifecycle post-close (all resting orders cleared by then).
+                window_secs: 105,
                 market_enabled: false,
             },
             market_end_ts: None,
@@ -990,13 +996,17 @@ pub struct StrategyCoordinator {
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
     post_close_winner_side: Option<Side>,
     post_close_winner_source: Option<WinnerHintSource>,
+    post_close_winner_open_is_exact: Option<bool>,
     post_close_winner_ref_price: f64,
     post_close_winner_observed_price: f64,
     post_close_winner_ts: Option<Instant>,
     oracle_lag_first_submit_logged: bool,
-    /// Set to true after the first FAK/taker order is dispatched for OracleLagSniping.
-    /// Prevents a second WinnerHint (from the slower source) from firing a duplicate FAK.
-    oracle_lag_fak_dispatched: bool,
+    /// Timestamp of the last FAK dispatch for OracleLagSniping.
+    /// Used for two purposes:
+    ///   1. Suppress duplicate-hint firing (2nd source arriving within cooldown).
+    ///   2. Gate re-entry: after FAK (IOC auto-cancels remainder), allow another FAK
+    ///      once cooldown expires AND the price condition still holds.
+    oracle_lag_fak_last_dispatch: Option<Instant>,
     /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
     last_post_close_snapshot_ts: Option<Instant>,
     pair_arb_decision_epoch: u64,
@@ -1014,6 +1024,9 @@ pub struct StrategyCoordinator {
     ofi_rx: watch::Receiver<OfiSnapshot>,
     inv_rx: watch::Receiver<InventorySnapshot>,
     md_rx: watch::Receiver<MarketDataMsg>,
+    /// Dedicated one-shot winner-hint channel for oracle_lag_sniping.
+    /// Kept separate from `md_rx` watch channel to avoid coalescing loss under high WS tick rate.
+    winner_hint_rx: mpsc::Receiver<MarketDataMsg>,
     glft_rx: watch::Receiver<GlftSignalSnapshot>,
     om_tx: mpsc::Sender<OrderManagerCmd>,
     /// Opt-4: Direct high-priority kill channel from OFI Engine.
@@ -1126,12 +1139,14 @@ impl StrategyCoordinator {
         let (_dead_kill_tx, dead_kill_rx) = mpsc::channel(1);
         let (_dead_feedback_tx, dead_feedback_rx) = mpsc::channel(1);
         let (_dead_release_tx, dead_release_rx) = mpsc::channel(1);
+        let (_dead_winner_hint_tx, dead_winner_hint_rx) = mpsc::channel(1);
         let (_dead_glft_tx, dead_glft_rx) = watch::channel(GlftSignalSnapshot::default());
         Self::with_aux_rx(
             cfg,
             ofi_rx,
             inv_rx,
             md_rx,
+            dead_winner_hint_rx,
             dead_glft_rx,
             om_tx,
             dead_kill_rx,
@@ -1151,12 +1166,14 @@ impl StrategyCoordinator {
     ) -> Self {
         let (_dead_feedback_tx, dead_feedback_rx) = mpsc::channel(1);
         let (_dead_release_tx, dead_release_rx) = mpsc::channel(1);
+        let (_dead_winner_hint_tx, dead_winner_hint_rx) = mpsc::channel(1);
         let (_dead_glft_tx, dead_glft_rx) = watch::channel(GlftSignalSnapshot::default());
         Self::with_aux_rx(
             cfg,
             ofi_rx,
             inv_rx,
             md_rx,
+            dead_winner_hint_rx,
             dead_glft_rx,
             om_tx,
             kill_rx,
@@ -1170,6 +1187,7 @@ impl StrategyCoordinator {
         ofi_rx: watch::Receiver<OfiSnapshot>,
         inv_rx: watch::Receiver<InventorySnapshot>,
         md_rx: watch::Receiver<MarketDataMsg>,
+        winner_hint_rx: mpsc::Receiver<MarketDataMsg>,
         glft_rx: watch::Receiver<GlftSignalSnapshot>,
         om_tx: mpsc::Sender<OrderManagerCmd>,
         kill_rx: mpsc::Receiver<KillSwitchSignal>,
@@ -1248,11 +1266,12 @@ impl StrategyCoordinator {
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
             post_close_winner_side: None,
             post_close_winner_source: None,
+            post_close_winner_open_is_exact: None,
             post_close_winner_ref_price: 0.0,
             post_close_winner_observed_price: 0.0,
             post_close_winner_ts: None,
             oracle_lag_first_submit_logged: false,
-            oracle_lag_fak_dispatched: false,
+            oracle_lag_fak_last_dispatch: None,
             last_post_close_snapshot_ts: None,
             pair_arb_decision_epoch: 0,
             pair_arb_last_risk_open_cutoff_active: false,
@@ -1268,6 +1287,7 @@ impl StrategyCoordinator {
             ofi_rx,
             inv_rx,
             md_rx,
+            winner_hint_rx,
             glft_rx,
             om_tx,
             kill_rx,
@@ -1296,6 +1316,33 @@ impl StrategyCoordinator {
 
     pub(crate) fn post_close_winner_side(&self) -> Option<Side> {
         self.post_close_winner_side
+    }
+
+    /// Oracle-lag trading should only act on fully-qualified Chainlink hints.
+    /// Returns `(winner_side, open_ref_price, final_price)` when all fields are present.
+    pub(crate) fn post_close_chainlink_winner(&self) -> Option<(Side, f64, f64)> {
+        let side = self.post_close_winner_side()?;
+        if self.post_close_winner_source != Some(WinnerHintSource::Chainlink) {
+            return None;
+        }
+        // First-round / fallback protection: skip trading when open_ref did not
+        // come from the exact round_start Chainlink tick (prev_close /
+        // frontend_open_fallback). These paths are semantically correct but
+        // typically indicate cold-start — add an extra ~300ms of HTTP hop and
+        // should not risk FAK capital.
+        if self.post_close_winner_open_is_exact != Some(true) {
+            return None;
+        }
+        let ref_price = self.post_close_winner_ref_price;
+        let final_price = self.post_close_winner_observed_price;
+        if !ref_price.is_finite()
+            || !final_price.is_finite()
+            || ref_price <= 0.0
+            || final_price <= 0.0
+        {
+            return None;
+        }
+        Some((side, ref_price, final_price))
     }
 
     /// True when the clock has passed market_end_ts and we are still within
@@ -1361,6 +1408,14 @@ impl StrategyCoordinator {
 
                 Some(release) = self.slot_release_rx.recv() => {
                     self.handle_slot_release_event(release).await;
+                    self.tick().await;
+                    self.emit_obs_snapshot();
+                }
+
+                // Oracle-lag winner hint: dedicated channel (non-watch) so one-shot hint
+                // cannot be overwritten by high-frequency BookTick updates.
+                Some(hint_msg) = self.winner_hint_rx.recv() => {
+                    self.handle_market_data(hint_msg).await;
                     self.tick().await;
                     self.emit_obs_snapshot();
                 }
@@ -2138,8 +2193,8 @@ impl StrategyCoordinator {
         // behaviour, not a data problem. Cancelling the maker order here would
         // create a futile cancel-resubmit loop (see analysis 2026-04-15).
         // Toxic-flow cancels are still applied even in post-close (circuit breaker).
-        let post_close_stale_immune = self.cfg.strategy == StrategyKind::OracleLagSniping
-            && self.is_in_post_close_window();
+        let post_close_stale_immune =
+            self.cfg.strategy == StrategyKind::OracleLagSniping && self.is_in_post_close_window();
 
         if yes_toxic_blocked || (yes_stale_actionable && !post_close_stale_immune) {
             for slot in OrderSlot::side_slots(Side::Yes) {
@@ -2189,9 +2244,7 @@ impl StrategyCoordinator {
 
         // Post-close book snapshot: 500 ms rate-limited, OracleLagSniping only.
         // Emits per-tick book state so we can audit ask availability in the post-close window.
-        if self.cfg.strategy == StrategyKind::OracleLagSniping
-            && self.is_in_post_close_window()
-        {
+        if self.cfg.strategy == StrategyKind::OracleLagSniping && self.is_in_post_close_window() {
             let emit = match self.last_post_close_snapshot_ts {
                 None => true,
                 Some(prev) => prev.elapsed() >= Duration::from_millis(500),
@@ -2240,6 +2293,8 @@ impl StrategyCoordinator {
             glft: glft_snapshot.as_ref(),
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
+        // Oracle-lag FAK re-entry runs alongside maker quoting (different execution path).
+        self.maybe_oracle_lag_fak_reentry().await;
         self.record_strategy_quote_diagnostics(&quotes);
         self.apply_flow_risk(
             &working_inv,

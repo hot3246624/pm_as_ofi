@@ -281,11 +281,13 @@ mod tests {
         let (_kill_tx, kill_rx) = tokio::sync::mpsc::channel(1);
         let (_feedback_tx, feedback_rx) = tokio::sync::mpsc::channel(1);
         let (_release_tx, release_rx) = tokio::sync::mpsc::channel::<SlotReleaseEvent>(1);
+        let (_winner_hint_tx, winner_hint_rx) = tokio::sync::mpsc::channel(1);
         StrategyCoordinator::with_aux_rx(
             cfg,
             ofi_rx,
             inv_rx,
             md_rx,
+            winner_hint_rx,
             glft_rx,
             om_tx,
             kill_rx,

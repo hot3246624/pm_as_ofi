@@ -1,6 +1,8 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use crate::polymarket::coordinator::{Book, StrategyCoordinator};
+use crate::polymarket::coordinator::{
+    ORACLE_LAG_MICRO_TICK_BID_BOUNDARY, ORACLE_LAG_NO_TAKER_ABOVE_PRICE, StrategyCoordinator,
+};
 use crate::polymarket::messages::{BidReason, TradeDirection};
 use crate::polymarket::types::Side;
 
@@ -10,15 +12,17 @@ pub(crate) struct PostCloseHypeStrategy;
 
 pub(crate) static POST_CLOSE_HYPE_STRATEGY: PostCloseHypeStrategy = PostCloseHypeStrategy;
 
-const POST_CLOSE_WINNER_MIN_BID: f64 = 0.90;
-const POST_CLOSE_LOSER_MAX_BID: f64 = 0.20;
-const POST_CLOSE_HINT_GRACE_SECS: u64 = 2;
-
 impl QuoteStrategy for PostCloseHypeStrategy {
     fn kind(&self) -> StrategyKind {
         StrategyKind::OracleLagSniping
     }
 
+    /// Winner-side decision tree (maker branch only; FAK is dispatched by coordinator_order_io):
+    ///   empty book (no asks, no bids)   → skip (no StrategyQuotes)
+    ///   asks[0] < 0.993                 → skip (FAK path owns this case)
+    ///   asks[0] ≥ 0.993                 → maker @ asks[0] - effective_tick
+    ///   no asks, bids[0] ≥ 0.94         → maker @ bids[0] + 0.001
+    ///   no asks, bids[0] < 0.94         → maker @ bids[0] + 0.01
     fn compute_quotes(
         &self,
         coordinator: &StrategyCoordinator,
@@ -32,14 +36,8 @@ impl QuoteStrategy for PostCloseHypeStrategy {
             return StrategyQuotes::default();
         }
 
-        let side = if let Some(side) = coordinator.post_close_winner_side() {
-            Some(side)
-        } else if post_close_elapsed_secs(cfg.market_end_ts) >= Some(POST_CLOSE_HINT_GRACE_SECS) {
-            infer_winner_side(input.book)
-        } else {
-            return StrategyQuotes::default();
-        };
-        let Some(side) = side else {
+        let Some((side, _open_ref, _final_price)) = coordinator.post_close_chainlink_winner()
+        else {
             return StrategyQuotes::default();
         };
 
@@ -47,21 +45,30 @@ impl QuoteStrategy for PostCloseHypeStrategy {
             Side::Yes => (input.book.yes_bid, input.book.yes_ask),
             Side::No => (input.book.no_bid, input.book.no_ask),
         };
-        if best_ask <= 0.0 {
-            return StrategyQuotes::default();
-        }
 
-        let tick = effective_tick(best_bid, best_ask, cfg.tick_size.max(1e-9));
-        let ceiling = (1.0 - tick).max(tick);
-        let strategic_target = if best_bid > 0.0 {
-            (best_bid + tick).min(ceiling)
+        let fallback_tick = cfg.tick_size.max(1e-9);
+        let tick = effective_tick(best_bid, best_ask, fallback_tick);
+
+        let maker_price = if best_ask > 0.0 {
+            if best_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
+                // FAK branch owns this case; maker stands down.
+                return StrategyQuotes::default();
+            }
+            (best_ask - tick).max(0.0)
+        } else if best_bid > 0.0 {
+            let step = if best_bid >= ORACLE_LAG_MICRO_TICK_BID_BOUNDARY {
+                0.001
+            } else {
+                0.01
+            };
+            let ceiling = (1.0 - tick).max(tick);
+            (best_bid + step).min(ceiling)
         } else {
-            tick
+            // empty book — no reference, skip.
+            return StrategyQuotes::default();
         };
-        let action_price = strategic_target.min((best_ask - tick).max(0.0));
-        // Oracle lag sniping keeps maker quotes enabled even above 0.993.
-        // "no taker above 0.993" is handled by strategy mode (maker-only here).
-        if action_price <= 0.0 {
+
+        if maker_price <= 0.0 {
             return StrategyQuotes::default();
         }
 
@@ -69,7 +76,7 @@ impl QuoteStrategy for PostCloseHypeStrategy {
         quotes.set(StrategyIntent {
             side,
             direction: TradeDirection::Buy,
-            price: action_price,
+            price: maker_price,
             size: cfg.bid_size,
             reason: BidReason::Provide,
         });
@@ -88,35 +95,6 @@ fn is_in_post_close_window(market_end_ts: Option<u64>, window_secs: u64) -> bool
     now >= end_ts && now < end_ts.saturating_add(window_secs)
 }
 
-fn post_close_elapsed_secs(market_end_ts: Option<u64>) -> Option<u64> {
-    let end_ts = market_end_ts?;
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_secs();
-    if now < end_ts {
-        None
-    } else {
-        Some(now - end_ts)
-    }
-}
-
-fn infer_winner_side(book: &Book) -> Option<Side> {
-    if book.yes_bid >= POST_CLOSE_WINNER_MIN_BID
-        && book.no_bid <= POST_CLOSE_LOSER_MAX_BID
-        && book.yes_bid > book.no_bid
-    {
-        return Some(Side::Yes);
-    }
-    if book.no_bid >= POST_CLOSE_WINNER_MIN_BID
-        && book.yes_bid <= POST_CLOSE_LOSER_MAX_BID
-        && book.no_bid > book.yes_bid
-    {
-        return Some(Side::No);
-    }
-    None
-}
-
 fn effective_tick(best_bid: f64, best_ask: f64, fallback: f64) -> f64 {
     // Polymarket switches to 0.001 when price > 0.96 or < 0.04.
     if best_bid > 0.96 || best_ask > 0.96 || (best_bid > 0.0 && best_bid < 0.04) {
@@ -129,28 +107,6 @@ fn effective_tick(best_bid: f64, best_ask: f64, fallback: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_infer_winner_side_yes() {
-        let book = Book {
-            yes_bid: 0.98,
-            yes_ask: 0.99,
-            no_bid: 0.02,
-            no_ask: 0.03,
-        };
-        assert_eq!(infer_winner_side(&book), Some(Side::Yes));
-    }
-
-    #[test]
-    fn test_infer_winner_side_no() {
-        let book = Book {
-            yes_bid: 0.03,
-            yes_ask: 0.04,
-            no_bid: 0.97,
-            no_ask: 0.98,
-        };
-        assert_eq!(infer_winner_side(&book), Some(Side::No));
-    }
 
     #[test]
     fn test_effective_tick_uses_micro_tick_near_extremes() {

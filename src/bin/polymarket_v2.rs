@@ -15,6 +15,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -2283,6 +2284,8 @@ fn round_claim_missing_requirements(
 }
 
 const POST_CLOSE_CHAINLINK_WS_URL_DEFAULT: &str = "wss://ws-live-data.polymarket.com";
+const CHAINLINK_DATA_STREAMS_PRICE_API_DEFAULT: &str = "https://priceapi.dataengine.chain.link";
+const DATA_STREAMS_CONNECT_TIMEOUT_MS: u64 = 2_500;
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -2320,6 +2323,76 @@ fn post_close_chainlink_max_wait_secs() -> u64 {
         .unwrap_or(8)
 }
 
+fn env_nonempty_var(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        env::var(name).ok().and_then(|v| {
+            let trimmed = v.trim().trim_matches('"').trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+    })
+}
+
+fn chainlink_data_streams_user_id() -> Option<String> {
+    env_nonempty_var(&[
+        "chainlink_data_streams_user_id",
+        "CHAINLINK_DATA_STREAMS_USER_ID",
+    ])
+}
+
+fn chainlink_data_streams_api_key() -> Option<String> {
+    env_nonempty_var(&[
+        "chainlink_data_streams_api_key",
+        "chainlink_data_streamsapi_key",
+        "CHAINLINK_DATA_STREAMS_API_KEY",
+    ])
+}
+
+fn chainlink_data_streams_price_api_base_url() -> String {
+    env_nonempty_var(&[
+        "PM_POST_CLOSE_DATA_STREAMS_PRICE_API_URL",
+        "CHAINLINK_DATA_STREAMS_PRICE_API_URL",
+        "chainlink_data_streams_price_api_url",
+    ])
+    .unwrap_or_else(|| CHAINLINK_DATA_STREAMS_PRICE_API_DEFAULT.to_string())
+}
+
+fn chainlink_data_streams_enabled() -> bool {
+    chainlink_data_streams_user_id().is_some() && chainlink_data_streams_api_key().is_some()
+}
+
+fn data_streams_symbol_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let (base, quote) = chainlink_symbol.split_once('/')?;
+    let base = base.trim();
+    let quote = quote.trim();
+    if base.is_empty() || quote.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}{}",
+        base.to_ascii_uppercase(),
+        quote.to_ascii_uppercase()
+    ))
+}
+
+fn normalize_data_streams_price(raw: f64) -> Option<f64> {
+    if !raw.is_finite() || raw <= 0.0 {
+        return None;
+    }
+    // Candlestick/streaming payloads often emit fixed-point numbers around 1e21 for crypto prices.
+    if raw.abs() >= 1.0e15 {
+        let scaled = raw / 1.0e18;
+        if scaled.is_finite() && scaled > 0.0 {
+            return Some(scaled);
+        }
+    }
+    Some(raw)
+}
+
+#[allow(dead_code)]
 fn post_close_gamma_poll_ms() -> u64 {
     env::var("PM_POST_CLOSE_GAMMA_POLL_MS")
         .ok()
@@ -2361,6 +2434,103 @@ fn parse_f64_value(v: &Value) -> Option<f64> {
     v.as_f64()
         .or_else(|| v.as_str().and_then(|s| s.trim().parse::<f64>().ok()))
         .filter(|x| x.is_finite())
+}
+
+#[derive(Debug, Deserialize)]
+struct DataStreamsAuthorizeEnvelope {
+    d: Option<DataStreamsAuthorizeData>,
+    #[allow(dead_code)]
+    s: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DataStreamsAuthorizeData {
+    access_token: String,
+    #[allow(dead_code)]
+    expiration: Option<u64>,
+}
+
+static DATA_STREAMS_TOKEN_CACHE: OnceLock<Mutex<Option<(String, u64)>>> = OnceLock::new();
+
+fn data_streams_token_cache() -> &'static Mutex<Option<(String, u64)>> {
+    DATA_STREAMS_TOKEN_CACHE.get_or_init(|| Mutex::new(None))
+}
+
+fn cached_data_streams_token(now_ms: u64) -> Option<String> {
+    let guard = data_streams_token_cache().lock().ok()?;
+    let (tok, exp_ms) = guard.as_ref()?;
+    // Refresh at least 30s before expiry.
+    if *exp_ms > now_ms.saturating_add(30_000) {
+        Some(tok.clone())
+    } else {
+        None
+    }
+}
+
+fn store_data_streams_token(token: String, expiration_unix_s: Option<u64>) {
+    let exp_ms = expiration_unix_s
+        .map(|s| s.saturating_mul(1_000))
+        // Default TTL if server omits expiration: 5 minutes from now.
+        .unwrap_or_else(|| unix_now_millis_u64().saturating_add(5 * 60 * 1_000));
+    if let Ok(mut guard) = data_streams_token_cache().lock() {
+        *guard = Some((token, exp_ms));
+    }
+}
+
+async fn data_streams_authorize_token() -> Option<String> {
+    let t0 = unix_now_millis_u64();
+    if let Some(tok) = cached_data_streams_token(t0) {
+        return Some(tok);
+    }
+    let user_id = chainlink_data_streams_user_id()?;
+    let api_key = chainlink_data_streams_api_key()?;
+    let base = chainlink_data_streams_price_api_base_url();
+    let url = format!("{}/api/v1/authorize", base.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(DATA_STREAMS_CONNECT_TIMEOUT_MS))
+        .build()
+        .ok()?;
+    let resp = client
+        .post(url)
+        .json(&json!({
+            "login": user_id,
+            "password": api_key,
+        }))
+        .send()
+        .await
+        .ok()?;
+    let t_resp = unix_now_millis_u64();
+    let body = resp.json::<DataStreamsAuthorizeEnvelope>().await.ok()?;
+    let data = body.d?;
+    let token = data.access_token;
+    if token.trim().is_empty() {
+        return None;
+    }
+    let t_done = unix_now_millis_u64();
+    info!(
+        "⏱️ data_streams_authorize_timing | post_ms={} parse_ms={} total_ms={} exp_unix_s={:?}",
+        t_resp.saturating_sub(t0),
+        t_done.saturating_sub(t_resp),
+        t_done.saturating_sub(t0),
+        data.expiration,
+    );
+    store_data_streams_token(token.clone(), data.expiration);
+    Some(token)
+}
+
+fn parse_data_streams_tick(line: &str, target_symbol: &str) -> Option<(f64, u64)> {
+    let value = serde_json::from_str::<Value>(line).ok()?;
+    if value.get("heartbeat").is_some() {
+        return None;
+    }
+    let symbol = value.get("i")?.as_str()?.trim().to_ascii_uppercase();
+    if symbol != target_symbol {
+        return None;
+    }
+    let ts_s = parse_u64_value(value.get("t")?)?;
+    let raw_price = parse_f64_value(value.get("p")?)?;
+    let price = normalize_data_streams_price(raw_price)?;
+    Some((price, ts_s))
 }
 
 fn parse_unix_ms_value(v: &Value) -> Option<u64> {
@@ -2519,6 +2689,241 @@ fn parse_chainlink_all_ticks(text: &str, target_symbol: &str) -> Vec<(f64, u64)>
     out
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ChainlinkRoundAlignmentProbe {
+    unix_ms: u64,
+    symbol: String,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    start_ms: u64,
+    end_ms: u64,
+    open_t: Option<f64>,
+    open_t_minus_1s: Option<f64>,
+    open_t_plus_1s: Option<f64>,
+    open_prev_round_close: Option<f64>,
+    prev_round_close_ts_ms: Option<u64>,
+    close_t: Option<f64>,
+    winner_t: Option<String>,
+    winner_t_minus_1s: Option<String>,
+    winner_t_plus_1s: Option<String>,
+    winner_prev_round_close: Option<String>,
+    selected_rule: Option<String>,
+    note: String,
+}
+
+fn chainlink_round_alignment_path() -> PathBuf {
+    PathBuf::from("logs/chainlink_round_alignment.jsonl")
+}
+
+fn chainlink_last_close_cache_path() -> PathBuf {
+    PathBuf::from("logs/chainlink_last_close_cache.json")
+}
+
+fn append_chainlink_round_alignment_probe(probe: &ChainlinkRoundAlignmentProbe) {
+    let path = chainlink_round_alignment_path();
+    let file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "⚠️ chainlink_round_alignment write open failed: path={} err={}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let mut writer = BufWriter::new(file);
+    let line = match serde_json::to_string(probe) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("⚠️ chainlink_round_alignment serialize failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = writeln!(writer, "{}", line) {
+        warn!("⚠️ chainlink_round_alignment write failed: {}", e);
+    }
+}
+
+fn winner_from_open_close(open: Option<f64>, close: Option<f64>) -> Option<Side> {
+    let open = open?;
+    let close = close?;
+    Some(if close >= open { Side::Yes } else { Side::No })
+}
+
+fn side_label(side: Option<Side>) -> Option<String> {
+    side.map(|s| format!("{:?}", s))
+}
+
+type LastCloseMap = HashMap<String, (u64, f64)>;
+static CHAINLINK_LAST_CLOSE: OnceLock<Mutex<LastCloseMap>> = OnceLock::new();
+
+fn chainlink_last_close_map() -> &'static Mutex<LastCloseMap> {
+    CHAINLINK_LAST_CLOSE.get_or_init(|| Mutex::new(load_last_chainlink_close_cache()))
+}
+
+fn get_last_chainlink_close(symbol: &str) -> Option<(u64, f64)> {
+    let guard = chainlink_last_close_map().lock().ok()?;
+    guard.get(symbol).copied()
+}
+
+fn set_last_chainlink_close(symbol: &str, ts_ms: u64, price: f64) {
+    if let Ok(mut guard) = chainlink_last_close_map().lock() {
+        guard.insert(symbol.to_string(), (ts_ms, price));
+        let snapshot = guard.clone();
+        drop(guard);
+        persist_last_chainlink_close_cache(&snapshot);
+    }
+}
+
+fn load_last_chainlink_close_cache() -> LastCloseMap {
+    let path = chainlink_last_close_cache_path();
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    match serde_json::from_str::<LastCloseMap>(&raw) {
+        Ok(map) => {
+            info!(
+                "🧠 Loaded chainlink last-close cache | path={} symbols={}",
+                path.display(),
+                map.len()
+            );
+            map
+        }
+        Err(e) => {
+            warn!(
+                "⚠️ Failed to parse chainlink last-close cache | path={} err={}",
+                path.display(),
+                e
+            );
+            HashMap::new()
+        }
+    }
+}
+
+fn persist_last_chainlink_close_cache(map: &LastCloseMap) {
+    let path = chainlink_last_close_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let tmp = path.with_extension("json.tmp");
+    let Ok(payload) = serde_json::to_vec(map) else {
+        return;
+    };
+    if fs::write(&tmp, payload).is_err() {
+        return;
+    }
+    if fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
+fn cached_prev_round_close(symbol: &str, round_start_ms: u64) -> Option<(f64, u64)> {
+    get_last_chainlink_close(symbol)
+        .filter(|(ts_ms, _)| ts_ms.abs_diff(round_start_ms) <= 1_000)
+        .map(|(ts_ms, px)| (px, ts_ms))
+}
+
+#[derive(Debug, Deserialize)]
+struct FrontendCryptoPriceResp {
+    #[serde(rename = "openPrice")]
+    open_price: Option<f64>,
+    timestamp: Option<u64>,
+    completed: Option<bool>,
+    incomplete: Option<bool>,
+    cached: Option<bool>,
+}
+
+fn epoch_secs_to_rfc3339_utc(secs: u64) -> Option<String> {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0).map(|dt| {
+        dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            .replace("+00:00", "Z")
+    })
+}
+
+fn frontend_symbol_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let base = chainlink_symbol.split('/').next()?.trim();
+    if base.is_empty() {
+        None
+    } else {
+        Some(base.to_ascii_uppercase())
+    }
+}
+
+fn frontend_variant_from_round_len_secs(round_len_secs: u64) -> Option<&'static str> {
+    match round_len_secs {
+        300 => Some("fiveminute"),
+        900 => Some("fifteenminute"),
+        3_600 => Some("hourly"),
+        14_400 => Some("fourhour"),
+        _ => None,
+    }
+}
+
+async fn fetch_frontend_crypto_open_price(
+    chainlink_symbol: &str,
+    round_start_ts: u64,
+    round_end_ts: u64,
+) -> Option<(f64, u64)> {
+    let symbol = frontend_symbol_from_chainlink_symbol(chainlink_symbol)?;
+    let round_len_secs = round_end_ts.saturating_sub(round_start_ts);
+    let variant = frontend_variant_from_round_len_secs(round_len_secs)?;
+    let event_start_time = epoch_secs_to_rfc3339_utc(round_start_ts)?;
+    let end_date = epoch_secs_to_rfc3339_utc(round_end_ts)?;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_millis(1_500))
+        .build()
+        .ok()?;
+    let resp = client
+        .get("https://polymarket.com/api/crypto/crypto-price")
+        .query(&[
+            ("symbol", symbol.as_str()),
+            ("eventStartTime", event_start_time.as_str()),
+            ("variant", variant),
+            ("endDate", end_date.as_str()),
+        ])
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let payload = resp.json::<FrontendCryptoPriceResp>().await.ok()?;
+    let open_price = payload.open_price.filter(|p| p.is_finite() && *p > 0.0)?;
+    let api_ts_ms = payload.timestamp.unwrap_or_else(unix_now_millis_u64);
+    info!(
+        "🧭 frontend_open_fallback_hit | symbol={} variant={} start={} end={} open={:.6} completed={:?} incomplete={:?} cached={:?}",
+        symbol,
+        variant,
+        event_start_time,
+        end_date,
+        open_price,
+        payload.completed,
+        payload.incomplete,
+        payload.cached,
+    );
+    Some((open_price, api_ts_ms))
+}
+
+type PrewarmedOpenMap = HashMap<(String, u64), (f64, u64)>;
+static CHAINLINK_PREWARMED_OPEN: OnceLock<Mutex<PrewarmedOpenMap>> = OnceLock::new();
+
+fn chainlink_prewarmed_open_map() -> &'static Mutex<PrewarmedOpenMap> {
+    CHAINLINK_PREWARMED_OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn set_prewarmed_open(symbol: &str, round_start_ms: u64, price: f64, ts_ms: u64) {
+    if let Ok(mut guard) = chainlink_prewarmed_open_map().lock() {
+        guard.insert((symbol.to_string(), round_start_ms), (price, ts_ms));
+    }
+}
+
+fn take_prewarmed_open(symbol: &str, round_start_ms: u64) -> Option<(f64, u64)> {
+    let mut guard = chainlink_prewarmed_open_map().lock().ok()?;
+    guard.remove(&(symbol.to_string(), round_start_ms))
+}
+
 fn map_outcome_label_to_side(label: &str) -> Option<Side> {
     let lower = label.trim().to_ascii_lowercase();
     if lower.is_empty() {
@@ -2618,6 +3023,7 @@ fn extract_gamma_winner_side(market: &Value) -> Option<(Side, f64)> {
 
 /// Fetch the winner from Gamma's /events endpoint (correct for hype-updown markets).
 /// /markets?slug= returns [] for these markets; /events?slug= has the nested market data.
+#[allow(dead_code)]
 async fn fetch_gamma_winner_hint(slug: &str) -> Option<(Side, f64)> {
     let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
     let client = reqwest::Client::builder()
@@ -2640,6 +3046,7 @@ async fn fetch_gamma_winner_hint(slug: &str) -> Option<(Side, f64)> {
 
 /// Fetch the Chainlink reference price ("Price to beat") for a round at t-10s.
 /// Available from Gamma /events eventMetadata.priceToBeat before the round ends.
+#[allow(dead_code)]
 async fn fetch_gamma_price_to_beat(slug: &str) -> Option<f64> {
     let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
     let client = reqwest::Client::builder()
@@ -2657,6 +3064,83 @@ async fn fetch_gamma_price_to_beat(slug: &str) -> Option<f64> {
         .filter(|p| *p > 0.0)
 }
 
+async fn run_chainlink_open_prewarm(symbol: &str, round_start_ts: u64, hard_deadline_ts: u64) {
+    let ws_url = post_close_chainlink_ws_url();
+    let target_symbol = normalize_chainlink_symbol(symbol);
+    let start_ms = round_start_ts.saturating_mul(1_000);
+    let mut reconnect_backoff = Duration::from_millis(300);
+
+    while unix_now_secs() <= hard_deadline_ts {
+        let connect = tokio::time::timeout(Duration::from_secs(3), connect_async(&ws_url)).await;
+        let Ok(Ok((ws, _resp))) = connect else {
+            sleep(reconnect_backoff).await;
+            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+            continue;
+        };
+        reconnect_backoff = Duration::from_millis(300);
+        let (mut write, mut read) = ws.split();
+
+        let subscribe_msg = json!({
+            "action": "subscribe",
+            "subscriptions": [{
+                "topic": "crypto_prices_chainlink",
+                "type": "*",
+                "filters": format!("{{\"symbol\":\"{}\"}}", target_symbol),
+            }]
+        });
+        if write
+            .send(Message::Text(subscribe_msg.to_string().into()))
+            .await
+            .is_err()
+        {
+            sleep(reconnect_backoff).await;
+            continue;
+        }
+
+        loop {
+            if unix_now_secs() > hard_deadline_ts {
+                break;
+            }
+            let next = tokio::time::timeout(Duration::from_millis(700), read.next()).await;
+            let msg = match next {
+                Ok(Some(Ok(m))) => m,
+                Ok(Some(Err(_))) | Ok(None) => break,
+                Err(_) => continue,
+            };
+            let text = match msg {
+                Message::Text(t) => t.to_string(),
+                Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                },
+                _ => continue,
+            };
+            let ticks = parse_chainlink_all_ticks(&text, &target_symbol);
+            if ticks.is_empty() {
+                continue;
+            }
+            for (price, ts_ms) in ticks {
+                if ts_ms == start_ms {
+                    set_prewarmed_open(&target_symbol, start_ms, price, ts_ms);
+                    info!(
+                        "⏱️ chainlink_open_prewarm_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6}",
+                        unix_now_millis_u64(),
+                        target_symbol,
+                        round_start_ts,
+                        ts_ms,
+                        price,
+                    );
+                    return;
+                }
+            }
+        }
+    }
+    warn!(
+        "⚠️ chainlink_open_prewarm_missed | symbol={} round_start_ts={} deadline_ts={}",
+        target_symbol, round_start_ts, hard_deadline_ts
+    );
+}
+
 fn snapshot_book(msg: &MarketDataMsg) -> Option<(f64, f64, f64, f64)> {
     match msg {
         MarketDataMsg::BookTick {
@@ -2671,7 +3155,7 @@ fn snapshot_book(msg: &MarketDataMsg) -> Option<(f64, f64, f64, f64)> {
 }
 
 async fn run_post_close_winner_hint_listener(
-    coord_tx: watch::Sender<MarketDataMsg>,
+    winner_hint_tx: mpsc::Sender<MarketDataMsg>,
     coord_md_rx: watch::Receiver<MarketDataMsg>,
     slug: String,
     yes_asset_id: String,
@@ -2691,31 +3175,15 @@ async fn run_post_close_winner_hint_listener(
     let market_end_ms = round_end_ts.saturating_mul(1_000);
     let chainlink_wait_secs = post_close_chainlink_max_wait_secs();
     let chainlink_deadline_ts = round_end_ts.saturating_add(chainlink_wait_secs);
-    let gamma_deadline_ts = round_end_ts.saturating_add(post_close_window_secs);
-    let poll_ms = post_close_gamma_poll_ms();
 
-    // ── Dual-source concurrent race ──
-    // Chainlink WS: starts IMMEDIATELY so the RTDS initial batch covers round_start_ts.
-    //   The exact tick at ts_ms == round_start_ms IS priceToBeat (= previous round's close price).
-    //   Connecting at round_start ensures the initial batch (~60-220s of history) includes that
-    //   boundary tick; close tick (ts_ms == round_end_ms) arrives live ~1s after close.
-    // Gamma REST: waits until t+0 before first poll (no result possible before close).
-    // The FIRST source to confirm emits WinnerHint → coordinator fires FAK immediately.
-    // The SECOND source logs a comparison entry; oracle_lag_fak_dispatched prevents duplicate FAK.
-    //
-    // Channel capacity=2 so both tasks can send without blocking.
-    // (source, side, ref_price, observed_price, detect_unix_ms)
-    type HintResult = (WinnerHintSource, Side, f64, f64, u64);
-    let (result_tx, mut result_rx) = mpsc::channel::<HintResult>(2);
-
-    // Task 1: Chainlink WS — starts IMMEDIATELY at round_start_ts.
-    // Early connection ensures the RTDS initial batch contains the round_start tick (= priceToBeat).
-    // open_ref: exact ts_ms == round_start_ms; close: exact ts_ms == round_end_ms.
+    // Chainlink-only decision path:
+    // - Runtime decision uses Chainlink RTDS only.
+    // - Gamma is validation-only and intentionally excluded from trading path.
+    // Task starts IMMEDIATELY so RTDS backfill has best chance to include open_t.
     let cl_symbol = symbol.clone();
-    let cl_tx = result_tx.clone();
     let cl_slug = slug.clone();
-    tokio::spawn(async move {
-        if let Some((side, open_ref, close_px, open_ts_ms, close_ts_ms)) =
+    let chainlink_task = tokio::spawn(async move {
+        if let Some((side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
             run_chainlink_winner_hint(
                 &cl_symbol,
                 round_start_ts,
@@ -2726,21 +3194,26 @@ async fn run_post_close_winner_hint_listener(
         {
             let detect_ms = unix_now_millis_u64();
             info!(
-                "⏱️ chainlink_result_ready | slug={} symbol={} side={:?} open_ref={:.6} close={:.6} open_ts_ms={} close_ts_ms={} detect_ms={} latency_from_end_ms={}",
-                cl_slug, cl_symbol, side, open_ref, close_px,
+                "⏱️ chainlink_result_ready | slug={} symbol={} side={:?} open_exact={} open_ref={:.6} close={:.6} open_ts_ms={} close_ts_ms={} detect_ms={} latency_from_end_ms={}",
+                cl_slug, cl_symbol, side, open_is_exact, open_ref, close_px,
                 open_ts_ms, close_ts_ms, detect_ms,
                 detect_ms.saturating_sub(market_end_ms),
             );
-            let _ = cl_tx
-                .send((WinnerHintSource::Chainlink, side, open_ref, close_px, detect_ms))
-                .await;
+            return Some((
+                WinnerHintSource::Chainlink,
+                side,
+                open_ref,
+                close_px,
+                detect_ms,
+                open_is_exact,
+            ));
         }
-        // Chainlink deadline exceeded without result — task ends silently; Gamma may still win.
+        None
     });
 
-    // ── Wait until t-10s for book snapshot + Gamma diagnostic fetch ──
+    // ── Wait until t-10s for book snapshot ──
     // The Chainlink task is already running; this sleep only gates the pre-close book snapshot
-    // and the diagnostic priceToBeat log (no impact on FAK decision).
+    // (no impact on decision).
     let preclose_ts = round_end_ts.saturating_sub(10);
     let now_secs = unix_now_secs();
     if preclose_ts > now_secs {
@@ -2758,172 +3231,461 @@ async fn run_post_close_winner_hint_listener(
         yes_bid, yes_ask, no_bid, no_ask,
     );
 
-    // [Diagnostic only] Gamma eventMetadata.priceToBeat for cross-validation after round close.
-    // Note: this field is populated ~300-400s AFTER round end; at t-10s it is always None.
-    // The true priceToBeat is captured via RTDS exact tick (ts_ms == round_start_ms) above.
-    let price_to_beat_diag = fetch_gamma_price_to_beat(&slug).await;
-    match price_to_beat_diag {
-        Some(ptb) => info!(
-            "📊 price_to_beat_diagnostic | unix_ms={} slug={} price_to_beat={:.6} source=Gamma t_minus_s={} note=diagnostic_only",
-            unix_now_millis_u64(), slug, ptb,
-            round_end_ts.saturating_sub(unix_now_secs()),
-        ),
-        None => info!(
-            "📊 price_to_beat_diagnostic | unix_ms={} slug={} result=unavailable source=Gamma t_minus_s={} note=expected_before_300s_post_close",
-            unix_now_millis_u64(), slug,
-            round_end_ts.saturating_sub(unix_now_secs()),
-        ),
-    }
+    info!(
+        "📊 post_close_validation_source | slug={} decision=chainlink_only gamma_polling=disabled data_streams_enabled={} data_streams_base={}",
+        slug,
+        chainlink_data_streams_enabled(),
+        chainlink_data_streams_price_api_base_url()
+    );
 
-    // Task 2: Gamma REST polling — waits until market close before first poll.
-    // After close Gamma typically resolves within ~36s (resolved via UMA/Chainlink oracle).
-    let gm_slug = slug.clone();
-    let gm_tx = result_tx; // consuming the original: channel closes when both tasks drop senders
-    tokio::spawn(async move {
-        // Sleep until market closes — no point polling before then.
-        let now = unix_now_secs();
-        if round_end_ts > now {
-            sleep(Duration::from_secs(round_end_ts - now)).await;
+    // ── Chainlink result → emit WinnerHint ──
+    let first = match chainlink_task.await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            warn!(
+                "⚠️ post_close winner hint unresolved within window for {} (end={} window={}s)",
+                slug, round_end_ts, post_close_window_secs
+            );
+            return;
         }
-        while unix_now_secs() <= gamma_deadline_ts {
-            if let Some((side, px)) = fetch_gamma_winner_hint(&gm_slug).await {
-                let detect_ms = unix_now_millis_u64();
-                info!(
-                    "⏱️ gamma_result_ready | slug={} side={:?} price={:.6} detect_ms={} latency_from_end_ms={}",
-                    gm_slug, side, px, detect_ms,
-                    detect_ms.saturating_sub(market_end_ms),
-                );
-                let _ = gm_tx
-                    .send((WinnerHintSource::Gamma, side, px, px, detect_ms))
-                    .await;
-                return;
-            }
-            sleep(Duration::from_millis(poll_ms)).await;
+        Err(e) => {
+            warn!(
+                "⚠️ post_close chainlink task join error for {}: {}",
+                slug, e
+            );
+            return;
         }
-        // Gamma window exhausted without result — task ends silently.
-    });
+    };
+    let (first_source, first_side, first_ref, first_obs, first_ms, first_open_exact) = first;
 
-    // ── First result → emit WinnerHint ──
-    let Some((first_source, first_side, first_ref, first_obs, first_ms)) = result_rx.recv().await
-    else {
+    if first_ms.saturating_sub(market_end_ms) > post_close_window_secs.saturating_mul(1_000) {
         warn!(
-            "⚠️ post_close winner hint unresolved within window for {} (end={} window={}s)",
-            slug, round_end_ts, post_close_window_secs
+            "⚠️ post_close winner hint late for {} (end={} window={}s detect_lag_ms={}) — skipping",
+            slug,
+            round_end_ts,
+            post_close_window_secs,
+            first_ms.saturating_sub(market_end_ms)
         );
         return;
-    };
+    }
 
     let (yes_bid, yes_ask, no_bid, no_ask) =
         snapshot_book(&coord_md_rx.borrow().clone()).unwrap_or((0.0, 0.0, 0.0, 0.0));
     info!(
-        "⏱️ post_close_emit_winner_hint | unix_ms={} source={:?} slug={} side={:?} ref_price={:.4} observed_price={:.4} latency_from_end_ms={} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4}",
-        unix_now_millis_u64(), first_source, slug, first_side, first_ref, first_obs,
+        "⏱️ post_close_emit_winner_hint | unix_ms={} source={:?} open_exact={} slug={} side={:?} ref_price={:.4} observed_price={:.4} latency_from_end_ms={} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4}",
+        unix_now_millis_u64(), first_source, first_open_exact, slug, first_side, first_ref, first_obs,
         first_ms.saturating_sub(market_end_ms),
         yes_bid, yes_ask, no_bid, no_ask,
     );
-    let _ = coord_tx.send(MarketDataMsg::WinnerHint {
+    let hint_msg = MarketDataMsg::WinnerHint {
         side: first_side,
         source: first_source,
         ref_price: first_ref,
         observed_price: first_obs,
+        open_is_exact: first_open_exact,
         ts: Instant::now(),
-    });
-
-    // ── Second result → comparison log only ──
-    // Wait up to the remaining window; the coordinator will ignore the duplicate WinnerHint
-    // because oracle_lag_fak_dispatched is already set.
-    let remaining_secs = gamma_deadline_ts.saturating_sub(unix_now_secs());
-    if remaining_secs == 0 {
-        info!(
-            "📊 post_close_source_comparison | slug={} faster={:?} slower=window_expired — no time left for second source",
-            slug, first_source,
-        );
-        return;
-    }
-
-    match tokio::time::timeout(Duration::from_secs(remaining_secs), result_rx.recv()).await {
-        Ok(Some((second_source, second_side, _ref2, _obs2, second_ms))) => {
-            let agree = first_side == second_side;
-            // Map each source to its latency for the structured log.
-            let (chainlink_side, chainlink_latency_ms, gamma_side, gamma_latency_ms) =
-                if first_source == WinnerHintSource::Chainlink {
-                    (
-                        first_side,
-                        first_ms.saturating_sub(market_end_ms),
-                        second_side,
-                        second_ms.saturating_sub(market_end_ms),
-                    )
-                } else {
-                    (
-                        second_side,
-                        second_ms.saturating_sub(market_end_ms),
-                        first_side,
-                        first_ms.saturating_sub(market_end_ms),
-                    )
-                };
-            let faster_source = if first_ms <= second_ms { first_source } else { second_source };
-            let source_delta_ms = first_ms.abs_diff(second_ms);
+    };
+    match tokio::time::timeout(Duration::from_millis(500), winner_hint_tx.send(hint_msg)).await {
+        Ok(Ok(())) => {
             info!(
-                "📊 post_close_source_comparison | slug={} chainlink_side={:?} gamma_side={:?} agree={} faster={:?} source_delta_ms={} chainlink_latency_ms={} gamma_latency_ms={}",
-                slug, chainlink_side, gamma_side, agree, faster_source, source_delta_ms,
-                chainlink_latency_ms, gamma_latency_ms,
-            );
-            if !agree {
-                warn!(
-                    "⚠️ post_close_source_mismatch | slug={} chainlink_side={:?} gamma_side={:?} — sources disagree on winner!",
-                    slug, chainlink_side, gamma_side,
-                );
-            }
-        }
-        Ok(None) => {
-            info!(
-                "📊 post_close_source_comparison | slug={} faster={:?} slower=no_result — second source did not resolve",
-                slug, first_source,
+                "⏱️ post_close_winner_hint_dispatched_ok | slug={} source={:?} side={:?}",
+                slug, first_source, first_side
             );
         }
-        Err(_timeout) => {
-            info!(
-                "📊 post_close_source_comparison | slug={} faster={:?} slower=timeout — second source timed out before window end",
-                slug, first_source,
+        Ok(Err(e)) => {
+            warn!(
+                "⚠️ post_close winner hint dispatch failed for {}: {}",
+                slug, e
+            );
+        }
+        Err(_) => {
+            warn!(
+                "⚠️ post_close winner hint dispatch timeout for {} (500ms)",
+                slug
             );
         }
     }
 }
 
+async fn run_data_streams_winner_hint(
+    symbol: &str,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    hard_deadline_ts: u64,
+) -> Option<(Side, f64, f64, u64, u64, bool)> {
+    let Some(stream_symbol) = data_streams_symbol_from_chainlink_symbol(symbol) else {
+        warn!(
+            "⚠️ data_streams_symbol_invalid | chainlink_symbol={}",
+            symbol
+        );
+        return None;
+    };
+    let chainlink_symbol = normalize_chainlink_symbol(symbol);
+    let start_ms = round_start_ts.saturating_mul(1_000);
+    let end_ms = round_end_ts.saturating_mul(1_000);
+    let mut open_point: Option<(f64, u64)> = take_prewarmed_open(&chainlink_symbol, start_ms);
+    if let Some((px, ts_ms)) = open_point {
+        info!(
+            "⏱️ data_streams_open_prewarm_hit | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6}",
+            unix_now_millis_u64(),
+            chainlink_symbol,
+            round_start_ts,
+            ts_ms,
+            px,
+        );
+    }
+    let prev_round_close_snapshot = cached_prev_round_close(&chainlink_symbol, start_ms);
+    let mut close_point: Option<(f64, u64)> = None;
+
+    let t_fn_enter = unix_now_millis_u64();
+    let t_auth_start = unix_now_millis_u64();
+    let Some(access_token) = data_streams_authorize_token().await else {
+        warn!(
+            "⚠️ data_streams_authorize_failed | symbol={} round_start_ts={} round_end_ts={}",
+            stream_symbol, round_start_ts, round_end_ts
+        );
+        return None;
+    };
+    let t_auth_done = unix_now_millis_u64();
+
+    let base = chainlink_data_streams_price_api_base_url();
+    let url = format!(
+        "{}/api/v1/streaming?symbol={}",
+        base.trim_end_matches('/'),
+        stream_symbol
+    );
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(DATA_STREAMS_CONNECT_TIMEOUT_MS))
+        // Do not set a global request timeout for streaming; use local loop deadline control.
+        .build()
+        .ok()?;
+    let t_connect_start = unix_now_millis_u64();
+    let mut resp = match client
+        .get(url)
+        .header("Authorization", format!("Bearer {}", access_token))
+        .header("Connection", "keep-alive")
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            warn!(
+                "⚠️ data_streams_stream_connect_failed | symbol={} err={}",
+                stream_symbol, e
+            );
+            return None;
+        }
+    };
+    let t_connect_done = unix_now_millis_u64();
+    info!(
+        "⏱️ data_streams_winner_hint_timing_phase1 | symbol={} round_end_ts={} fn_enter_ms={} auth_ms={} connect_ms={} enter_to_connected_ms={} now_vs_end_ms={}",
+        stream_symbol,
+        round_end_ts,
+        t_fn_enter,
+        t_auth_done.saturating_sub(t_auth_start),
+        t_connect_done.saturating_sub(t_connect_start),
+        t_connect_done.saturating_sub(t_fn_enter),
+        (t_connect_done as i128) - (end_ms as i128),
+    );
+    if !resp.status().is_success() {
+        warn!(
+            "⚠️ data_streams_stream_http_status | symbol={} status={}",
+            stream_symbol,
+            resp.status()
+        );
+        return None;
+    }
+
+    let mut line_buf = String::new();
+    let mut first_chunk_logged = false;
+    let mut first_tick_logged = false;
+    while unix_now_secs() <= hard_deadline_ts {
+        let next = tokio::time::timeout(Duration::from_millis(700), resp.chunk()).await;
+        let chunk = match next {
+            Ok(Ok(Some(c))) => c,
+            Ok(Ok(None)) => break,
+            Ok(Err(e)) => {
+                warn!(
+                    "⚠️ data_streams_stream_read_error | symbol={} err={}",
+                    stream_symbol, e
+                );
+                break;
+            }
+            Err(_) => continue,
+        };
+        if !first_chunk_logged {
+            first_chunk_logged = true;
+            let now_ms = unix_now_millis_u64();
+            info!(
+                "⏱️ data_streams_first_chunk | symbol={} round_end_ts={} unix_ms={} since_connect_ms={} since_end_ms={}",
+                stream_symbol,
+                round_end_ts,
+                now_ms,
+                now_ms.saturating_sub(t_connect_done),
+                (now_ms as i128) - (end_ms as i128),
+            );
+        }
+
+        line_buf.push_str(&String::from_utf8_lossy(&chunk));
+
+        loop {
+            let Some(newline_idx) = line_buf.find('\n') else {
+                if line_buf.len() > 16 * 1024 {
+                    line_buf.clear();
+                }
+                break;
+            };
+            let line = line_buf[..newline_idx].trim().to_string();
+            line_buf.drain(..=newline_idx);
+            if line.is_empty() {
+                continue;
+            }
+            let Some((price, ts_s)) = parse_data_streams_tick(&line, &stream_symbol) else {
+                continue;
+            };
+            let ts_ms = ts_s.saturating_mul(1_000);
+            if !first_tick_logged {
+                first_tick_logged = true;
+                let now_ms = unix_now_millis_u64();
+                info!(
+                    "⏱️ data_streams_first_tick | symbol={} round_end_ts={} unix_ms={} tick_ts_ms={} since_connect_ms={} tick_lag_vs_end_ms={}",
+                    stream_symbol,
+                    round_end_ts,
+                    now_ms,
+                    ts_ms,
+                    now_ms.saturating_sub(t_connect_done),
+                    (now_ms as i128) - (end_ms as i128),
+                );
+            }
+            if open_point.is_none() && ts_ms == start_ms {
+                open_point = Some((price, ts_ms));
+                info!(
+                    "⏱️ data_streams_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} exact=true",
+                    unix_now_millis_u64(),
+                    chainlink_symbol,
+                    round_start_ts,
+                    ts_ms,
+                    price,
+                );
+            }
+            if close_point.is_none() && ts_ms == end_ms {
+                close_point = Some((price, ts_ms));
+                info!(
+                    "⏱️ data_streams_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} exact=true",
+                    unix_now_millis_u64(),
+                    chainlink_symbol,
+                    round_end_ts,
+                    ts_ms,
+                    price,
+                );
+            }
+            if let Some((close, close_ts_ms)) = close_point {
+                let prev_round_close_live = cached_prev_round_close(&chainlink_symbol, start_ms);
+                let prev_round_close = prev_round_close_live.or(prev_round_close_snapshot);
+                if let Some((open_ref_px, open_ts_ms)) = open_point {
+                    let side = if close >= open_ref_px {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    info!(
+                        "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=data_streams_exact",
+                        unix_now_millis_u64(),
+                        chainlink_symbol,
+                        side,
+                        open_ref_px,
+                        open_ts_ms,
+                        close,
+                        close_ts_ms,
+                    );
+                    set_last_chainlink_close(&chainlink_symbol, close_ts_ms, close);
+                    return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+                }
+                if let Some((open_ref_px, open_ts_ms)) = prev_round_close {
+                    let side = if close >= open_ref_px {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    info!(
+                        "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=data_streams_prev_close_fallback",
+                        unix_now_millis_u64(),
+                        chainlink_symbol,
+                        side,
+                        open_ref_px,
+                        open_ts_ms,
+                        close,
+                        close_ts_ms,
+                    );
+                    set_last_chainlink_close(&chainlink_symbol, close_ts_ms, close);
+                    return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, false));
+                }
+                if let Some((open_ref_px, api_ts_ms)) = fetch_frontend_crypto_open_price(
+                    &chainlink_symbol,
+                    round_start_ts,
+                    round_end_ts,
+                )
+                .await
+                {
+                    let side = if close >= open_ref_px {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    info!(
+                        "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=data_streams_frontend_open_fallback api_ts_ms={}",
+                        unix_now_millis_u64(),
+                        chainlink_symbol,
+                        side,
+                        open_ref_px,
+                        start_ms,
+                        close,
+                        close_ts_ms,
+                        api_ts_ms,
+                    );
+                    set_last_chainlink_close(&chainlink_symbol, close_ts_ms, close);
+                    return Some((side, open_ref_px, close, start_ms, close_ts_ms, false));
+                }
+                set_last_chainlink_close(&chainlink_symbol, close_ts_ms, close);
+                warn!(
+                    "⚠️ data_streams_close_ready_but_open_missing | symbol={} round_start_ts={} round_end_ts={} has_open_t={} has_prev_close={} has_frontend_open=false has_final=true — keeping decision unresolved",
+                    chainlink_symbol,
+                    round_start_ts,
+                    round_end_ts,
+                    open_point.is_some(),
+                    prev_round_close.is_some(),
+                );
+                return None;
+            }
+        }
+    }
+
+    warn!(
+        "⚠️ data_streams_winner_hint_unresolved | symbol={} round_start_ts={} round_end_ts={} deadline_ts={}",
+        chainlink_symbol, round_start_ts, round_end_ts, hard_deadline_ts
+    );
+    None
+}
+
 /// Listen on Chainlink RTDS WS and return (side, open_ref, close_price, open_ts_ms, close_ts_ms).
 ///
-/// Must be called at or before round_start_ts so the RTDS initial batch contains the
-/// tick at exactly ts == round_start_ms (= priceToBeat). The close tick at ts == round_end_ms
-/// is captured after market close (~1.3s latency). Both timestamps are exact second-aligned
-/// boundaries — the RTDS pushes one tick per second so both always exist.
+/// Cold-start guard:
+/// emit winner only when final(close_t) exists and one opening reference exists:
+/// - exact `open_t` at round start (preferred), OR
+/// - cached `prev_close` for `round_start` (fallback).
+/// - frontend `openPrice` API fallback (last fallback).
 ///
-/// Returns None if the open tick (ts == round_start_ms) is not found within 30s of
-/// round_start_ts — this prevents using a stale mid-round price as the reference.
+/// If both opening references are missing, keep decision unresolved (no order).
 async fn run_chainlink_winner_hint(
     symbol: &str,
     round_start_ts: u64,
     round_end_ts: u64,
     hard_deadline_ts: u64,
-) -> Option<(Side, f64, f64, u64, u64)> {
+) -> Option<(Side, f64, f64, u64, u64, bool)> {
+    if chainlink_data_streams_enabled() {
+        if let Some(hit) =
+            run_data_streams_winner_hint(symbol, round_start_ts, round_end_ts, hard_deadline_ts)
+                .await
+        {
+            return Some(hit);
+        }
+        warn!(
+            "⚠️ chainlink_data_streams_unresolved_fallback_rtds | symbol={} round_start_ts={} round_end_ts={}",
+            symbol, round_start_ts, round_end_ts
+        );
+    }
+
     let ws_url = post_close_chainlink_ws_url();
     let target_symbol = normalize_chainlink_symbol(symbol);
     let start_ms = round_start_ts.saturating_mul(1_000);
     let end_ms = round_end_ts.saturating_mul(1_000);
-    let mut open_point: Option<(f64, u64)> = None;
+    let mut open_point: Option<(f64, u64)> = take_prewarmed_open(&target_symbol, start_ms);
+    if let Some((px, ts_ms)) = open_point {
+        info!(
+            "⏱️ chainlink_open_prewarm_hit | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6}",
+            unix_now_millis_u64(),
+            target_symbol,
+            round_start_ts,
+            ts_ms,
+            px,
+        );
+    }
+    let mut open_minus_1s: Option<(f64, u64)> = None;
+    let mut open_plus_1s: Option<(f64, u64)> = None;
+    let prev_round_close_snapshot = cached_prev_round_close(&target_symbol, start_ms);
     let mut close_point: Option<(f64, u64)> = None;
     let mut reconnect_backoff = Duration::from_millis(300);
+    let mut open_missing_warned = false;
+
+    let emit_alignment_probe = |note: &str,
+                                selected_rule: Option<&str>,
+                                open_point: Option<(f64, u64)>,
+                                open_minus_1s: Option<(f64, u64)>,
+                                open_plus_1s: Option<(f64, u64)>,
+                                prev_round_close: Option<(f64, u64)>,
+                                close_point: Option<(f64, u64)>| {
+        let winner_t =
+            winner_from_open_close(open_point.map(|(p, _)| p), close_point.map(|(p, _)| p));
+        let winner_t_minus_1s =
+            winner_from_open_close(open_minus_1s.map(|(p, _)| p), close_point.map(|(p, _)| p));
+        let winner_t_plus_1s =
+            winner_from_open_close(open_plus_1s.map(|(p, _)| p), close_point.map(|(p, _)| p));
+        let winner_prev_round_close = winner_from_open_close(
+            prev_round_close.map(|(p, _)| p),
+            close_point.map(|(p, _)| p),
+        );
+        let probe = ChainlinkRoundAlignmentProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            start_ms,
+            end_ms,
+            open_t: open_point.map(|(p, _)| p),
+            open_t_minus_1s: open_minus_1s.map(|(p, _)| p),
+            open_t_plus_1s: open_plus_1s.map(|(p, _)| p),
+            open_prev_round_close: prev_round_close.map(|(p, _)| p),
+            prev_round_close_ts_ms: prev_round_close.map(|(_, ts)| ts),
+            close_t: close_point.map(|(p, _)| p),
+            winner_t: side_label(winner_t),
+            winner_t_minus_1s: side_label(winner_t_minus_1s),
+            winner_t_plus_1s: side_label(winner_t_plus_1s),
+            winner_prev_round_close: side_label(winner_prev_round_close),
+            selected_rule: selected_rule.map(|s| s.to_string()),
+            note: note.to_string(),
+        };
+        info!(
+            "🧪 chainlink_round_alignment | symbol={} start={} end={} note={} selected_rule={:?} open_t={:?} open_t-1s={:?} open_t+1s={:?} open_prev_close={:?}@{:?} close_t={:?} winner_t={:?} winner_t-1={:?} winner_t+1={:?} winner_prev={:?}",
+            probe.symbol,
+            probe.round_start_ts,
+            probe.round_end_ts,
+            probe.note,
+            probe.selected_rule,
+            probe.open_t,
+            probe.open_t_minus_1s,
+            probe.open_t_plus_1s,
+            probe.open_prev_round_close,
+            probe.prev_round_close_ts_ms,
+            probe.close_t,
+            probe.winner_t,
+            probe.winner_t_minus_1s,
+            probe.winner_t_plus_1s,
+            probe.winner_prev_round_close,
+        );
+        append_chainlink_round_alignment_probe(&probe);
+    };
 
     while unix_now_secs() <= hard_deadline_ts {
-        // Guard: abort if we're past round_start + 30s and still have no open_point.
-        // This prevents using a mid-round price as the reference.
+        // Guard: if we're past round_start + 30s and still missing exact open,
+        // keep listening (for alignment diagnostics) but warn only once.
         if open_point.is_none() {
             let elapsed = unix_now_secs().saturating_sub(round_start_ts);
-            if elapsed > 30 {
+            if elapsed > 30 && !open_missing_warned {
+                open_missing_warned = true;
                 warn!(
-                    "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found, aborting",
+                    "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found yet; continue collecting for alignment",
                     target_symbol, round_start_ts, elapsed,
                 );
-                return None;
             }
         }
 
@@ -2965,12 +3727,12 @@ async fn run_chainlink_winner_hint(
                     // Timeout: also check the 30s open_point guard on each idle cycle.
                     if open_point.is_none() {
                         let elapsed = unix_now_secs().saturating_sub(round_start_ts);
-                        if elapsed > 30 {
+                        if elapsed > 30 && !open_missing_warned {
+                            open_missing_warned = true;
                             warn!(
-                                "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found, aborting",
+                                "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found yet; continue collecting for alignment",
                                 target_symbol, round_start_ts, elapsed,
                             );
-                            return None;
                         }
                     }
                     continue;
@@ -3003,9 +3765,14 @@ async fn run_chainlink_winner_hint(
                         unix_now_millis_u64(), target_symbol, round_start_ts, ts_ms, price,
                     );
                 }
+                if open_minus_1s.is_none() && ts_ms == start_ms.saturating_sub(1_000) {
+                    open_minus_1s = Some((price, ts_ms));
+                }
+                if open_plus_1s.is_none() && ts_ms == start_ms.saturating_add(1_000) {
+                    open_plus_1s = Some((price, ts_ms));
+                }
 
-                // close: exact match ts_ms == round_end_ms.
-                if open_point.is_some() && close_point.is_none() && ts_ms == end_ms {
+                if close_point.is_none() && ts_ms == end_ms {
                     close_point = Some((price, ts_ms));
                     info!(
                         "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} exact=true",
@@ -3014,25 +3781,126 @@ async fn run_chainlink_winner_hint(
                 }
             }
 
-            // Emit result when both points are captured.
-            if let (Some((open_ref_px, open_ts_ms)), Some((close, close_ts_ms))) =
-                (open_point, close_point)
-            {
-                let side = if close >= open_ref_px {
-                    Side::Yes
+            // Emit result when close is captured.
+            if let Some((close, close_ts_ms)) = close_point {
+                let prev_round_close_live = cached_prev_round_close(&target_symbol, start_ms);
+                let prev_round_close = prev_round_close_live.or(prev_round_close_snapshot);
+                let selected_rule = if open_point.is_some() {
+                    Some("t_exact")
+                } else if prev_round_close.is_some() {
+                    Some("prev_round_close")
                 } else {
-                    Side::No
+                    None
                 };
-                info!(
-                    "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_exact",
-                    unix_now_millis_u64(), target_symbol, side,
-                    open_ref_px, open_ts_ms, close, close_ts_ms,
+
+                emit_alignment_probe(
+                    if open_point.is_some() {
+                        "close_captured_exact_open_available"
+                    } else if prev_round_close.is_some() {
+                        "close_captured_prev_close_fallback"
+                    } else {
+                        "close_captured_exact_open_missing"
+                    },
+                    selected_rule,
+                    open_point,
+                    open_minus_1s,
+                    open_plus_1s,
+                    prev_round_close,
+                    close_point,
                 );
-                return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms));
+
+                if let Some((open_ref_px, open_ts_ms)) = open_point {
+                    let side = if close >= open_ref_px {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    info!(
+                        "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_exact",
+                        unix_now_millis_u64(),
+                        target_symbol,
+                        side,
+                        open_ref_px,
+                        open_ts_ms,
+                        close,
+                        close_ts_ms,
+                    );
+                    set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+                    return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+                }
+                if let Some((open_ref_px, open_ts_ms)) = prev_round_close {
+                    let side = if close >= open_ref_px {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    info!(
+                        "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_prev_close_fallback",
+                        unix_now_millis_u64(),
+                        target_symbol,
+                        side,
+                        open_ref_px,
+                        open_ts_ms,
+                        close,
+                        close_ts_ms,
+                    );
+                    set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+                    return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, false));
+                }
+                if let Some((open_ref_px, api_ts_ms)) =
+                    fetch_frontend_crypto_open_price(&target_symbol, round_start_ts, round_end_ts)
+                        .await
+                {
+                    let side = if close >= open_ref_px {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    info!(
+                        "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=frontend_open_fallback api_ts_ms={}",
+                        unix_now_millis_u64(),
+                        target_symbol,
+                        side,
+                        open_ref_px,
+                        start_ms,
+                        close,
+                        close_ts_ms,
+                        api_ts_ms,
+                    );
+                    set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+                    return Some((side, open_ref_px, close, start_ms, close_ts_ms, false));
+                }
+                set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+                warn!(
+                    "⚠️ chainlink_close_ready_but_open_missing | symbol={} round_start_ts={} round_end_ts={} has_open_t={} has_prev_close={} has_frontend_open=false has_final=true — keeping decision unresolved",
+                    target_symbol,
+                    round_start_ts,
+                    round_end_ts,
+                    open_point.is_some(),
+                    prev_round_close.is_some(),
+                );
+                return None;
             }
         }
     }
 
+    let prev_round_close_live = cached_prev_round_close(&target_symbol, start_ms);
+    let prev_round_close = prev_round_close_live.or(prev_round_close_snapshot);
+    emit_alignment_probe(
+        "deadline_exhausted",
+        if open_point.is_some() {
+            Some("t_exact")
+        } else if prev_round_close.is_some() {
+            Some("prev_round_close")
+        } else {
+            None
+        },
+        open_point,
+        open_minus_1s,
+        open_plus_1s,
+        prev_round_close,
+        close_point,
+    );
     None
 }
 
@@ -4799,6 +5667,7 @@ async fn main() -> anyhow::Result<()> {
         let (glft_watch_tx, glft_watch_rx) = watch::channel(GlftSignalSnapshot::default());
         let (coord_obs_tx, coord_obs_rx) = watch::channel(CoordinatorObsSnapshot::default());
         let (slot_release_tx, slot_release_rx) = mpsc::channel::<SlotReleaseEvent>(64);
+        let (winner_hint_tx, winner_hint_rx) = mpsc::channel::<MarketDataMsg>(16);
 
         let mut validation_stop_tx: Option<oneshot::Sender<()>> = None;
         let mut validation_handle: Option<tokio::task::JoinHandle<RoundValidationSummary>> = None;
@@ -4830,7 +5699,7 @@ async fn main() -> anyhow::Result<()> {
         let (kill_tx, kill_rx) = mpsc::channel::<KillSwitchSignal>(4);
 
         if oracle_lag_sniping_active {
-            let hint_tx = coord_md_tx.clone();
+            let hint_tx = winner_hint_tx.clone();
             let hint_md_rx = coord_md_rx.clone();
             let hint_slug = slug.clone();
             let hint_yes_asset_id = yes_asset_id.clone();
@@ -4855,6 +5724,50 @@ async fn main() -> anyhow::Result<()> {
                 )
                 .await;
             }));
+
+            if let Some(prewarm_symbol) = chainlink_symbol_from_slug(&slug) {
+                // Cold-start protection: on session bootstrap, also launch prewarm for the CURRENT
+                // round if it hasn't started yet OR just started a few seconds ago. Chainlink WS
+                // only streams new ticks, so if round_start is already > ~5s in the past we won't
+                // catch the exact tick (first-round protection via open_is_exact=false applies).
+                let now_secs = unix_now_secs();
+                let current_round_start_ts = hint_round_start_ts;
+                // Keep a small tolerance: if we're within 10s past round_start, the tick may still
+                // arrive late or a followup tick at the same ts may re-hit. Past that, skip.
+                if now_secs.saturating_add(10) >= current_round_start_ts
+                    && now_secs <= current_round_start_ts.saturating_add(10)
+                {
+                    let current_prewarm_deadline_ts = current_round_start_ts.saturating_add(20);
+                    info!(
+                        "🧠 chainlink_open_prewarm_start (current-round cold-start) | symbol={} round_start_ts={} deadline_ts={} now={}",
+                        prewarm_symbol, current_round_start_ts, current_prewarm_deadline_ts, now_secs
+                    );
+                    let sym = prewarm_symbol.clone();
+                    session_handles.push(tokio::spawn(async move {
+                        run_chainlink_open_prewarm(
+                            &sym,
+                            current_round_start_ts,
+                            current_prewarm_deadline_ts,
+                        )
+                        .await;
+                    }));
+                }
+                // Next-round prewarm (normal path): capture exact open before round N+1 starts.
+                let next_round_start_ts = hint_round_end_ts;
+                let prewarm_deadline_ts = next_round_start_ts.saturating_add(20);
+                info!(
+                    "🧠 chainlink_open_prewarm_start | symbol={} next_round_start_ts={} deadline_ts={}",
+                    prewarm_symbol, next_round_start_ts, prewarm_deadline_ts
+                );
+                session_handles.push(tokio::spawn(async move {
+                    run_chainlink_open_prewarm(
+                        &prewarm_symbol,
+                        next_round_start_ts,
+                        prewarm_deadline_ts,
+                    )
+                    .await;
+                }));
+            }
         }
 
         let inv = InventoryManager::new(inv_cfg.clone(), inv_event_rx, inv_watch_tx);
@@ -4889,6 +5802,7 @@ async fn main() -> anyhow::Result<()> {
             ofi_watch_rx,
             inv_watch_rx,
             coord_md_rx,
+            winner_hint_rx,
             glft_watch_rx,
             om_tx.clone(),
             kill_rx,
@@ -5339,6 +6253,57 @@ mod tests {
             Some("hype/usd".to_string())
         );
         assert_eq!(chainlink_symbol_from_slug(""), None);
+    }
+
+    #[test]
+    fn test_frontend_symbol_from_chainlink_symbol() {
+        assert_eq!(
+            frontend_symbol_from_chainlink_symbol("hype/usd"),
+            Some("HYPE".to_string())
+        );
+        assert_eq!(
+            frontend_symbol_from_chainlink_symbol("btc/usd"),
+            Some("BTC".to_string())
+        );
+        assert_eq!(frontend_symbol_from_chainlink_symbol(""), None);
+    }
+
+    #[test]
+    fn test_data_streams_symbol_from_chainlink_symbol() {
+        assert_eq!(
+            data_streams_symbol_from_chainlink_symbol("hype/usd"),
+            Some("HYPEUSD".to_string())
+        );
+        assert_eq!(
+            data_streams_symbol_from_chainlink_symbol("btc/usd"),
+            Some("BTCUSD".to_string())
+        );
+        assert_eq!(data_streams_symbol_from_chainlink_symbol(""), None);
+    }
+
+    #[test]
+    fn test_parse_data_streams_tick_scales_fixed_point_price() {
+        let line = r#"{"f":"t","i":"HYPEUSD","p":2.50e19,"t":1776148200,"s":1}"#;
+        let tick = parse_data_streams_tick(line, "HYPEUSD");
+        assert_eq!(tick, Some((25.0, 1_776_148_200)));
+    }
+
+    #[test]
+    fn test_frontend_variant_from_round_len_secs() {
+        assert_eq!(
+            frontend_variant_from_round_len_secs(300),
+            Some("fiveminute")
+        );
+        assert_eq!(
+            frontend_variant_from_round_len_secs(900),
+            Some("fifteenminute")
+        );
+        assert_eq!(frontend_variant_from_round_len_secs(3_600), Some("hourly"));
+        assert_eq!(
+            frontend_variant_from_round_len_secs(14_400),
+            Some("fourhour")
+        );
+        assert_eq!(frontend_variant_from_round_len_secs(123), None);
     }
 
     #[test]

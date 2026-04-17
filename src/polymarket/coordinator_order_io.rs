@@ -974,6 +974,7 @@ impl StrategyCoordinator {
         direction: TradeDirection,
         size: f64,
         purpose: TradePurpose,
+        limit_price: Option<f64>,
     ) {
         let rounded = (size * 100.0).floor() / 100.0;
         if rounded < 0.01 {
@@ -1020,6 +1021,7 @@ impl StrategyCoordinator {
                 direction,
                 size: rounded,
                 purpose,
+                limit_price,
             })
             .await;
     }
@@ -1045,6 +1047,7 @@ impl StrategyCoordinator {
                 TradeDirection::Sell,
                 sell_size,
                 TradePurpose::Exit,
+                None,
             )
             .await;
         }
@@ -1064,6 +1067,7 @@ impl StrategyCoordinator {
                 TradeDirection::Buy,
                 shortfall,
                 TradePurpose::Exit,
+                None,
             )
             .await;
         }
@@ -1090,26 +1094,36 @@ impl StrategyCoordinator {
                 source,
                 ref_price,
                 observed_price,
+                open_is_exact,
                 ts,
             } => {
                 let changed = self.post_close_winner_side != Some(side)
-                    || self.post_close_winner_source != Some(source);
+                    || self.post_close_winner_source != Some(source)
+                    || self.post_close_winner_open_is_exact != Some(open_is_exact);
                 self.post_close_winner_side = Some(side);
                 self.post_close_winner_source = Some(source);
+                self.post_close_winner_open_is_exact = Some(open_is_exact);
                 self.post_close_winner_ref_price = ref_price;
                 self.post_close_winner_observed_price = observed_price;
                 self.post_close_winner_ts = Some(ts);
                 if changed {
+                    let fak_in_flight = self
+                        .oracle_lag_fak_last_dispatch
+                        .map(|t| {
+                            t.elapsed()
+                                < std::time::Duration::from_millis(
+                                    crate::polymarket::coordinator::ORACLE_LAG_FAK_COOLDOWN_MS,
+                                )
+                        })
+                        .unwrap_or(false);
                     info!(
-                        "🏁 post_close winner hint | side={:?} source={:?} observed={:.4} ref={:.4} fak_already_dispatched={}",
-                        side, source, observed_price, ref_price, self.oracle_lag_fak_dispatched,
+                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} fak_in_flight={}",
+                        side, source, open_is_exact, observed_price, ref_price, fak_in_flight,
                     );
                     // Immediately fire FAK when winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE.
                     // This runs in the same async batch as hint receipt (winner_to_submit_ms ≈ 0).
                     // Maker fallback is handled by the next tick() via compute_quotes.
-                    //
-                    // Guard: if a second source (Gamma/Chainlink) emits WinnerHint after the
-                    // first one already fired a FAK, we must NOT fire again — only log comparison.
+                    // Re-entry after IOC auto-cancel is handled by maybe_oracle_lag_fak_reentry() on ticks.
                     if self.cfg.strategy == StrategyKind::OracleLagSniping
                         && self.cfg.oracle_lag_sniping.market_enabled
                     {
@@ -1130,13 +1144,24 @@ impl StrategyCoordinator {
                         let within_1p5s = delta_from_end_ms
                             .map(|d| (0..=ORACLE_LAG_SUBMIT_SLA_MS).contains(&d))
                             .unwrap_or(false);
-                        let winner_to_submit_ms =
-                            self.post_close_winner_ts.map(|t| t.elapsed().as_millis() as u64);
-                        if self.oracle_lag_fak_dispatched {
-                            // Second source arrived — log comparison only, do NOT re-fire FAK.
+                        let winner_to_submit_ms = self
+                            .post_close_winner_ts
+                            .map(|t| t.elapsed().as_millis() as u64);
+                        if fak_in_flight {
+                            // Another dispatch is still within cooldown (e.g. 2nd source arrived fast).
                             info!(
-                                "🔁 oracle_lag_second_source | side={:?} source={:?} winner_ask={:.4} delta_from_end_ms={:?} winner_to_submit_ms={:?} — FAK already dispatched, skipping duplicate",
+                                "🔁 oracle_lag_second_source | side={:?} source={:?} winner_ask={:.4} delta_from_end_ms={:?} winner_to_submit_ms={:?} — FAK within cooldown, skipping",
                                 side, source, winner_ask, delta_from_end_ms, winner_to_submit_ms,
+                            );
+                        } else if !open_is_exact {
+                            // First-round / fallback protection: open_ref is from
+                            // prev_close or frontend API. Data is semantically
+                            // correct but cold-start path is slower by ~300ms
+                            // and higher-risk. Skip FAK; maker path is also
+                            // gated by post_close_chainlink_winner().
+                            info!(
+                                "🛡️ oracle_lag_fak_skip_fallback_open | side={:?} source={:?} winner_ask={:.4} — open_ref not from exact round_start tick, holding fire",
+                                side, source, winner_ask,
                             );
                         } else if winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
                             info!(
@@ -1146,12 +1171,13 @@ impl StrategyCoordinator {
                                 delta_from_end_ms, within_1p5s, winner_to_submit_ms,
                                 source, self.cfg.dry_run,
                             );
-                            self.oracle_lag_fak_dispatched = true;
+                            self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
                             self.dispatch_taker_intent(
                                 side,
                                 TradeDirection::Buy,
                                 self.cfg.bid_size,
                                 TradePurpose::OracleLagSnipe,
+                                Some(crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE),
                             )
                             .await;
                         } else {
@@ -1165,6 +1191,81 @@ impl StrategyCoordinator {
                 }
             }
         }
+    }
+
+    /// Per-tick FAK re-entry for oracle_lag_sniping.
+    ///
+    /// When a prior FAK @ 0.992 sweeps partially (or not at all) and the market price
+    /// crosses above 0.992, CLOB IOC auto-cancels the remainder. If the new best_ask is
+    /// still below the 0.993 threshold and USDC is available, we re-fire another FAK.
+    ///
+    /// Called from the main tick(); self-gated:
+    ///   - strategy must be OracleLagSniping and market_enabled
+    ///   - inside post_close window
+    ///   - winner side known AND open_is_exact (same guard as first-shot FAK)
+    ///   - ORACLE_LAG_FAK_COOLDOWN_MS has elapsed since last dispatch
+    ///   - winner_ask in (0, ORACLE_LAG_NO_TAKER_ABOVE_PRICE)
+    pub(super) async fn maybe_oracle_lag_fak_reentry(&mut self) {
+        use crate::polymarket::coordinator::{
+            ORACLE_LAG_FAK_COOLDOWN_MS, ORACLE_LAG_FAK_LIMIT_PRICE, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+        };
+
+        if self.cfg.strategy != StrategyKind::OracleLagSniping
+            || !self.cfg.oracle_lag_sniping.market_enabled
+        {
+            return;
+        }
+        // Window guard: mirror post_close_hype::is_in_post_close_window.
+        let Some(end_ts) = self.cfg.market_end_ts else {
+            return;
+        };
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if now_secs < end_ts
+            || now_secs >= end_ts.saturating_add(self.cfg.oracle_lag_sniping.window_secs)
+        {
+            return;
+        }
+        // Require fully-qualified winner hint (same gate as post_close_chainlink_winner).
+        let Some((side, _ref, _final)) = self.post_close_chainlink_winner() else {
+            return;
+        };
+        // First-round protection: same guard used by the first-shot dispatcher.
+        if self.post_close_winner_open_is_exact != Some(true) {
+            return;
+        }
+        // Cooldown.
+        if let Some(last) = self.oracle_lag_fak_last_dispatch {
+            if last.elapsed() < std::time::Duration::from_millis(ORACLE_LAG_FAK_COOLDOWN_MS) {
+                return;
+            }
+        }
+        let winner_ask = match side {
+            Side::Yes => self.book.yes_ask,
+            Side::No => self.book.no_ask,
+        };
+        if !(winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE) {
+            return;
+        }
+        info!(
+            "♻️ oracle_lag_fak_reentry | side={:?} winner_ask={:.4} threshold={:.4} size={:.2} dry={}",
+            side,
+            winner_ask,
+            ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+            self.cfg.bid_size,
+            self.cfg.dry_run,
+        );
+        self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
+        self.dispatch_taker_intent(
+            side,
+            TradeDirection::Buy,
+            self.cfg.bid_size,
+            TradePurpose::OracleLagSnipe,
+            Some(ORACLE_LAG_FAK_LIMIT_PRICE),
+        )
+        .await;
     }
 
     pub(super) async fn place_slot(

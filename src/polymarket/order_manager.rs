@@ -182,8 +182,9 @@ impl OrderManager {
                             direction,
                             size,
                             purpose,
+                            limit_price,
                         }) => {
-                            self.handle_one_shot_taker(side, direction, size, purpose).await;
+                            self.handle_one_shot_taker(side, direction, size, purpose, limit_price).await;
                             for slot in OrderSlot::side_slots(side) {
                                 self.pump_slot(slot).await;
                             }
@@ -233,6 +234,7 @@ impl OrderManager {
         direction: TradeDirection,
         size: f64,
         purpose: TradePurpose,
+        limit_price: Option<f64>,
     ) {
         if size <= 0.0 {
             return;
@@ -247,7 +249,7 @@ impl OrderManager {
             direction,
             urgency: TradeUrgency::TakerFak,
             size,
-            price: None,
+            price: limit_price,
             purpose,
             local_unreleased_matched_notional_usdc: 0.0,
         });
@@ -536,6 +538,7 @@ mod tests {
                 direction: TradeDirection::Buy,
                 size: 2.0,
                 purpose: TradePurpose::Hedge,
+                limit_price: None,
             })
             .await;
 
@@ -597,6 +600,7 @@ mod tests {
                 direction: TradeDirection::Buy,
                 size: 2.0,
                 purpose: TradePurpose::Hedge,
+                limit_price: None,
             })
             .await;
 

@@ -38,6 +38,9 @@ pub enum MarketDataMsg {
         source: WinnerHintSource,
         ref_price: f64,
         observed_price: f64,
+        /// True iff open_ref came from the exact round_start Chainlink tick
+        /// (prewarm or live RTDS), not a fallback (prev_close / frontend API).
+        open_is_exact: bool,
         ts: Instant,
     },
 }
@@ -320,11 +323,14 @@ pub enum OrderManagerCmd {
     },
     /// Queue a one-shot taker hedge on a side.
     /// OMS will cancel same-side resting orders first, then submit the taker order.
+    /// `limit_price=Some(p)` → IOC limit-FAK at p (SDK limit_order + FAK); sweeps only levels ≤ p on buy / ≥ p on sell.
+    /// `limit_price=None` → legacy market-FAK path (SDK market_order + FAK); walks book depth to calculate cutoff.
     OneShotTakerHedge {
         side: Side,
         direction: TradeDirection,
         size: f64,
         purpose: TradePurpose,
+        limit_price: Option<f64>,
     },
     /// Emergency cancel all targets & orders globally.
     CancelAll,

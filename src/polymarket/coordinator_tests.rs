@@ -98,6 +98,7 @@ fn make_with_glft(
     let (k, kr) = mpsc::channel(16);
     let (_f, fr) = mpsc::channel(16);
     let (_r, rr) = mpsc::channel(16);
+    let (_w, wr) = mpsc::channel(16);
     (
         o,
         TestInventoryTx(i),
@@ -105,7 +106,7 @@ fn make_with_glft(
         g,
         k,
         er,
-        StrategyCoordinator::with_aux_rx(c, or, ir, mr, gr, e, kr, fr, rr),
+        StrategyCoordinator::with_aux_rx(c, or, ir, mr, wr, gr, e, kr, fr, rr),
     )
 }
 

@@ -264,7 +264,7 @@ impl Executor {
                             self.handle_place_bid(side, direction, price, size, reason, 0.0).await;
                         }
                         Some(ExecutionCmd::PlaceTakerHedge { side, direction, size }) => {
-                            self.handle_place_taker(side, direction, size, TradePurpose::Hedge).await;
+                            self.handle_place_taker(side, direction, size, TradePurpose::Hedge, None).await;
                         }
                         Some(ExecutionCmd::CancelOrder { order_id, reason }) => {
                             let _ = self.handle_cancel_order(&order_id, reason).await;
@@ -746,8 +746,14 @@ impl Executor {
                 .await;
             }
             TradeUrgency::TakerFak => {
-                self.handle_place_taker(intent.side, intent.direction, intent.size, intent.purpose)
-                    .await;
+                self.handle_place_taker(
+                    intent.side,
+                    intent.direction,
+                    intent.size,
+                    intent.purpose,
+                    intent.price,
+                )
+                .await;
             }
         }
     }
@@ -1180,11 +1186,12 @@ impl Executor {
         direction: TradeDirection,
         size: f64,
         purpose: TradePurpose,
+        limit_price: Option<f64>,
     ) {
         let size = Self::normalize_taker_size_for_market_buy(size);
         info!(
-            "📤 TAKER {:?} {:?} size={:.2} purpose={:?}",
-            direction, side, size, purpose
+            "📤 TAKER {:?} {:?} size={:.2} purpose={:?} limit_price={:?}",
+            direction, side, size, purpose, limit_price
         );
 
         // CLOB lot-size floor (2dp). Skip impossible requests without retry storm.
@@ -1237,7 +1244,7 @@ impl Executor {
             return;
         }
 
-        match self.place_taker_order(side, direction, size).await {
+        match self.place_taker_order(side, direction, size, limit_price).await {
             Ok(order_id) => {
                 info!(
                     "✅ Taker accepted: {:?} {:?} size={:.2} id={}",
@@ -1635,6 +1642,7 @@ impl Executor {
         side: Side,
         direction: TradeDirection,
         size: f64,
+        limit_price: Option<f64>,
     ) -> anyhow::Result<String> {
         use polymarket_client_sdk::clob::types::{
             Amount, OrderStatusType, OrderType, Side as SdkSide,
@@ -1656,26 +1664,54 @@ impl Executor {
         let token_id_uint =
             alloy::primitives::U256::from_str_radix(token_id, 10).context("Invalid token_id")?;
 
-        // Market/FAK path: keep share size aligned to CLOB lot precision (2dp).
+        // Lot size: CLOB max lot precision = 2dp.
         let size_rounded = (size * 100.0).floor() / 100.0;
         if size_rounded < 0.01 {
             anyhow::bail!("size {:.6} rounds to 0 at 2dp — skipping", size);
         }
-        let shares = rust_decimal::Decimal::from_f64(size_rounded)
-            .ok_or_else(|| anyhow::anyhow!("Invalid taker size"))?;
-        let amount = Amount::shares(shares).expect("Valid amount");
 
-        let order = client
-            .market_order()
-            .token_id(token_id_uint)
-            .amount(amount)
-            .side(match direction {
-                TradeDirection::Buy => SdkSide::Buy,
-                TradeDirection::Sell => SdkSide::Sell,
-            })
-            .order_type(OrderType::FAK)
-            .build()
-            .await?;
+        let sdk_side = match direction {
+            TradeDirection::Buy => SdkSide::Buy,
+            TradeDirection::Sell => SdkSide::Sell,
+        };
+
+        // Two FAK paths:
+        //   limit_price=Some(p)  → IOC limit at p: sweeps levels ≤ p (buy) / ≥ p (sell); remainder auto-cancels.
+        //   limit_price=None     → market FAK: SDK walks book depth to compute cutoff (legacy hedge path).
+        let order = if let Some(p) = limit_price {
+            if !(0.0..1.0).contains(&self.cfg.tick_size) {
+                anyhow::bail!("invalid tick_size={}", self.cfg.tick_size);
+            }
+            // Align price to the strictest CLOB tick. Around 0.96/0.04 boundary it's 0.001.
+            // For oracle_lag_sniping we want 0.992 → scale 3 is always acceptable.
+            let price_rounded = (p * 1000.0).round() / 1000.0;
+            let price_decimal = rust_decimal::Decimal::from_f64(price_rounded)
+                .ok_or_else(|| anyhow::anyhow!("Invalid FAK limit price"))?;
+            let size_decimal = rust_decimal::Decimal::from_f64(size_rounded)
+                .ok_or_else(|| anyhow::anyhow!("Invalid FAK size"))?;
+            client
+                .limit_order()
+                .token_id(token_id_uint)
+                .price(price_decimal)
+                .size(size_decimal)
+                .side(sdk_side)
+                .order_type(OrderType::FAK)
+                .post_only(false)
+                .build()
+                .await?
+        } else {
+            let shares = rust_decimal::Decimal::from_f64(size_rounded)
+                .ok_or_else(|| anyhow::anyhow!("Invalid taker size"))?;
+            let amount = Amount::shares(shares).expect("Valid amount");
+            client
+                .market_order()
+                .token_id(token_id_uint)
+                .amount(amount)
+                .side(sdk_side)
+                .order_type(OrderType::FAK)
+                .build()
+                .await?
+        };
 
         let signed = client.sign(signer, order).await?;
         let response = client.post_order(signed).await?;
