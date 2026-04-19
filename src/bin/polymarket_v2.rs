@@ -4975,9 +4975,87 @@ async fn run_market_ws_with_wall_guard(
     }
 }
 
+/// In-process supervisor: one tokio runtime, one ChainlinkHub (covering the union
+/// of all prefixes' Chainlink symbols), one JoinSet spawning run_prefix_worker
+/// per slug. Replaces the OS-process supervisor when PM_INPROC_SUPERVISOR=1.
+/// Designed for the 30+ market scale where N OS-processes × per-process overhead
+/// becomes prohibitive.
+async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
+    info!(
+        "🧩 in-proc multi-market supervisor enabled | workers={} prefixes={}",
+        prefixes.len(),
+        prefixes.join(",")
+    );
+
+    let coord_cfg = CoordinatorConfig::from_env();
+    let shared_hub = if coord_cfg.strategy == StrategyKind::OracleLagSniping {
+        let mut hub_symbols: HashSet<String> = HashSet::new();
+        for prefix in &prefixes {
+            if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
+                hub_symbols.insert(format!("{}/usd", sym));
+            } else {
+                warn!(
+                    "⚠️ in-proc supervisor: could not derive symbol from prefix='{}' — this slug will not have a Chainlink feed",
+                    prefix
+                );
+            }
+        }
+        if hub_symbols.is_empty() {
+            None
+        } else {
+            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+            log_symbols.sort();
+            info!(
+                "🛰️ shared chainlink_hub starting | symbols={}",
+                log_symbols.join(",")
+            );
+            Some(ChainlinkHub::spawn(hub_symbols))
+        }
+    } else {
+        None
+    };
+
+    let mut joinset: tokio::task::JoinSet<(String, anyhow::Result<()>)> =
+        tokio::task::JoinSet::new();
+    for prefix in prefixes {
+        let ctx = Arc::new(WorkerCtx {
+            slug: prefix.clone(),
+            chainlink_hub: shared_hub.clone(),
+        });
+        let slug = prefix.clone();
+        joinset.spawn(async move {
+            let res = run_prefix_worker(Some(ctx)).await;
+            (slug, res)
+        });
+        info!("🚀 in-proc worker spawned | slug={}", prefix);
+    }
+
+    while let Some(joined) = joinset.join_next().await {
+        match joined {
+            Ok((slug, Ok(()))) => {
+                info!("🏁 in-proc worker exited cleanly | slug={}", slug);
+            }
+            Ok((slug, Err(e))) => {
+                warn!("⚠️ in-proc worker returned error | slug={} err={}", slug, e);
+            }
+            Err(join_err) => {
+                warn!("⚠️ in-proc worker task join error: {}", join_err);
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run_multi_market_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
     if prefixes.is_empty() {
         return Ok(());
+    }
+    let inproc = env::var("PM_INPROC_SUPERVISOR")
+        .ok()
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if inproc {
+        return run_inproc_supervisor(prefixes).await;
     }
     let exe = std::env::current_exe()?;
     info!(
@@ -5635,11 +5713,22 @@ async fn main() -> anyhow::Result<()> {
     if !is_multi_market_child && multi_market_prefixes.len() > 1 {
         return run_multi_market_supervisor(multi_market_prefixes).await;
     }
-    run_prefix_worker().await
+    run_prefix_worker(None).await
 }
 
-async fn run_prefix_worker() -> anyhow::Result<()> {
-    let base_settings = Settings::from_env()?;
+/// Shared handles passed from the in-proc supervisor to each per-slug worker.
+/// When present, overrides env-based slug resolution and lets every worker
+/// share one ChainlinkHub (one WS connection, N symbol subscriptions).
+struct WorkerCtx {
+    slug: String,
+    chainlink_hub: Option<Arc<ChainlinkHub>>,
+}
+
+async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
+    let mut base_settings = Settings::from_env()?;
+    if let Some(c) = &ctx {
+        base_settings.market_slug = Some(c.slug.clone());
+    }
     let raw_slug = base_settings
         .market_slug
         .clone()
@@ -5659,7 +5748,9 @@ async fn run_prefix_worker() -> anyhow::Result<()> {
     let inv_cfg_base = InventoryConfig::from_env();
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg_base = CoordinatorConfig::from_env();
-    let chainlink_hub = if coord_cfg_base.strategy == StrategyKind::OracleLagSniping {
+    let chainlink_hub = if let Some(c) = &ctx {
+        c.chainlink_hub.clone()
+    } else if coord_cfg_base.strategy == StrategyKind::OracleLagSniping {
         let mut hub_symbols = HashSet::new();
         for base in oracle_lag_symbol_universe.hub_symbols() {
             hub_symbols.insert(format!("{}/usd", base));
