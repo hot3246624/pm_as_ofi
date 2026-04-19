@@ -27,6 +27,10 @@ source .env
 # 全集, supervisor 就不会 narrow 每个子进程 -> 每个 hub 仍订阅全部 7 个 symbol,
 # 退回到之前的 49-订阅 burst 情况.
 unset PM_ORACLE_LAG_SYMBOL_UNIVERSE
+# 同理: 若 .env 设置了 POLYMARKET_MARKET_SLUG (单市场测试残留), 在 inproc 模式下
+# 会导致所有 7 个 worker 的日志全部写入该 slug 对应的日志文件, 使 hype 等日志暴增.
+# 清除后, inproc supervisor 会写入 polymarket.log (无 slug 前缀), 各 symbol 日志干净.
+unset POLYMARKET_MARKET_SLUG
 
 # 市场 slug 前缀列表
 # oracle_lag_sniping 要求 timeframe=5m (见 oracle_lag_symbol_from_slug).

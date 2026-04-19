@@ -2880,22 +2880,27 @@ impl ChainlinkHub {
                 };
                 reconnect_backoff = Duration::from_millis(300);
                 let (mut write, mut read) = ws.split();
-                for sym in &subscribe_symbols {
-                    let subscribe_msg = json!({
-                        "action": "subscribe",
-                        "subscriptions": [{
+                // Batch ALL symbols into one subscribe message so the server
+                // activates every subscription atomically. Sending N separate
+                // subscribe messages causes the server to only honor the last
+                // one, silently dropping the rest.
+                let subs: Vec<serde_json::Value> = subscribe_symbols
+                    .iter()
+                    .map(|sym| {
+                        json!({
                             "topic": "crypto_prices_chainlink",
                             "type": "*",
                             "filters": format!("{{\"symbol\":\"{}\"}}", sym),
-                        }]
-                    });
-                    if write
-                        .send(Message::Text(subscribe_msg.to_string().into()))
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
+                        })
+                    })
+                    .collect();
+                let subscribe_msg = json!({ "action": "subscribe", "subscriptions": subs });
+                if write
+                    .send(Message::Text(subscribe_msg.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    continue; // reconnect
                 }
                 loop {
                     let next = tokio::time::timeout(Duration::from_millis(1500), read.next()).await;
