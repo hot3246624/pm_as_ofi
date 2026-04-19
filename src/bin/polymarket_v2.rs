@@ -5627,11 +5627,6 @@ async fn main() -> anyhow::Result<()> {
     info!("  Auto-Discovery + Market Rotation");
     info!("═══════════════════════════════════════════════════");
 
-    let base_settings = Settings::from_env()?;
-    let raw_slug = base_settings
-        .market_slug
-        .clone()
-        .unwrap_or_else(|| "btc-updown-15m".to_string());
     let is_multi_market_child = env::var("PM_MULTI_MARKET_CHILD")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -5640,6 +5635,15 @@ async fn main() -> anyhow::Result<()> {
     if !is_multi_market_child && multi_market_prefixes.len() > 1 {
         return run_multi_market_supervisor(multi_market_prefixes).await;
     }
+    run_prefix_worker().await
+}
+
+async fn run_prefix_worker() -> anyhow::Result<()> {
+    let base_settings = Settings::from_env()?;
+    let raw_slug = base_settings
+        .market_slug
+        .clone()
+        .unwrap_or_else(|| "btc-updown-15m".to_string());
     let prefix_mode = is_prefix_slug(&raw_slug);
 
     if prefix_mode {
@@ -7036,6 +7040,7 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
