@@ -5,3 +5,6 @@ Cargo.lock
 
 # Log files (may contain sensitive credentials)
 logs/
+
+# Runtime pid files from start_markets.sh
+pids/

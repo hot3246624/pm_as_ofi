@@ -1,5 +1,8 @@
 #!/bin/bash
 # Polymarket V2 多市场做市器启动脚本
+# 单进程 + 多市场 supervisor (PM_MULTI_MARKET_PREFIXES)
+# supervisor 会为每个 prefix 自动设置 PM_ORACLE_LAG_SYMBOL_UNIVERSE=<own symbol>,
+# 每个子进程的 ChainlinkHub 只订阅自己的 symbol, 避免 49 个订阅 burst 触发 TLS 限流.
 set -e
 
 GREEN='\033[0;32m'
@@ -7,7 +10,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}🚀 Starting Polymarket V2 Market Maker${NC}"
+echo -e "${GREEN}🚀 Starting Polymarket V2 Market Maker (supervisor mode)${NC}"
 echo ""
 
 # 检查 .env 文件
@@ -19,17 +22,28 @@ fi
 
 source .env
 
-# 市场 slug 前缀列表（V2 使用前缀模式自动轮转）
+# 关键: 清理 PM_ORACLE_LAG_SYMBOL_UNIVERSE, 让 supervisor 为每个子进程自动设置
+# 它自己的 symbol (run_multi_market_supervisor 的 is_err() 分支). 若 .env 里设置了
+# 全集, supervisor 就不会 narrow 每个子进程 -> 每个 hub 仍订阅全部 7 个 symbol,
+# 退回到之前的 49-订阅 burst 情况.
+unset PM_ORACLE_LAG_SYMBOL_UNIVERSE
+
+# 市场 slug 前缀列表
+# oracle_lag_sniping 要求 timeframe=5m (见 oracle_lag_symbol_from_slug).
 MARKETS=(
-    "btc-updown-15m"
-    "eth-updown-15m"
-    "sol-updown-15m"
+    "btc-updown-5m"
+    "eth-updown-5m"
+    "sol-updown-5m"
+    "bnb-updown-5m"
+    "hype-updown-5m"
+    "doge-updown-5m"
+    "xrp-updown-5m"
 )
+
+PREFIXES=$(IFS=,; echo "${MARKETS[*]}")
 
 mkdir -p logs
 mkdir -p pids
-
-# 清理旧的 PID 文件
 rm -f pids/*.pid
 
 echo -e "${YELLOW}Markets to run:${NC}"
@@ -53,25 +67,21 @@ else
 fi
 echo ""
 
-# 启动每个市场
-for market in "${MARKETS[@]}"; do
-    echo -e "${GREEN}Starting V2 maker for:${NC} $market"
+LOG_FILE="logs/supervisor-$(date +%Y%m%d-%H%M%S).log"
 
-    POLYMARKET_MARKET_SLUG="$market" \
-    PM_DRY_RUN="$DRY_RUN_FLAG" \
-    RUST_LOG=info \
-    nohup cargo run --bin polymarket_v2 --release \
-        > logs/${market}.log 2>&1 &
+echo -e "${GREEN}Starting supervisor with prefixes:${NC} $PREFIXES"
+echo -e "${GREEN}Log:${NC} $LOG_FILE"
 
-    PID=$!
-    echo $PID > pids/${market}.pid
+PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
+PM_DRY_RUN="$DRY_RUN_FLAG" \
+RUST_LOG=info \
+nohup cargo run --bin polymarket_v2 --release \
+    > "$LOG_FILE" 2>&1 &
 
-    echo -e "  ${GREEN}✓${NC} PID: $PID -> logs/${market}.log"
+SUPERVISOR_PID=$!
+echo $SUPERVISOR_PID > pids/supervisor.pid
 
-    # 避免同时启动导致 API 限流
-    sleep 2
-done
-
+echo -e "  ${GREEN}✓${NC} supervisor PID: $SUPERVISOR_PID"
 echo ""
-echo -e "${GREEN}✅ All markets started. Use stop_markets.sh to stop.${NC}"
-echo -e "${YELLOW}Logs: tail -f logs/<slug>.log${NC}"
+echo -e "${GREEN}✅ Supervisor started. Use stop_markets.sh to stop.${NC}"
+echo -e "${YELLOW}Tail log: tail -f $LOG_FILE${NC}"

@@ -57,7 +57,6 @@ pub(crate) const ORACLE_LAG_FAK_LIMIT_PRICE: f64 = 0.992;
 pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
 /// Cooldown between consecutive FAK dispatches. Covers post_order roundtrip + IOC settle.
 pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
-pub(crate) const ORACLE_LAG_SUBMIT_SLA_MS: i64 = 1_500;
 /// Per-round cap on FAK dispatches (first-shot + all re-entries combined).
 /// Protects against runaway re-entry when the book doesn't deplete as expected
 /// (e.g. dry-run, sluggish market, or stale winner_ask reads).
@@ -100,7 +99,7 @@ pub struct OracleLagSnipingStrategyConfig {
     /// Post-close strategy live window (seconds after market end).
     pub window_secs: u64,
     /// Runtime market guard for post-close strategy.
-    /// This is set by main loop per-round to enforce HYPE-only rollout.
+    /// This is set by main loop per-round from slug + symbol-universe gating.
     pub market_enabled: bool,
 }
 
@@ -1326,11 +1325,27 @@ impl StrategyCoordinator {
         self.post_close_winner_side
     }
 
+    fn oracle_lag_allow_fallback_open_in_dry_run(&self) -> bool {
+        if !self.cfg.dry_run {
+            return false;
+        }
+        std::env::var("PM_ORACLE_LAG_DRYRUN_ALLOW_FALLBACK_OPEN")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                !(v == "0" || v == "false" || v == "no" || v == "off")
+            })
+            .unwrap_or(true)
+    }
+
     /// Oracle-lag trading should only act on fully-qualified Chainlink hints.
     /// Returns `(winner_side, open_ref_price, final_price)` when all fields are present.
     pub(crate) fn post_close_chainlink_winner(&self) -> Option<(Side, f64, f64)> {
         let side = self.post_close_winner_side()?;
-        if self.post_close_winner_source != Some(WinnerHintSource::Chainlink) {
+        let allow_fallback_open = self.oracle_lag_allow_fallback_open_in_dry_run();
+        if self.post_close_winner_source != Some(WinnerHintSource::Chainlink)
+            && !allow_fallback_open
+        {
             return None;
         }
         // First-round / fallback protection: skip trading when open_ref did not
@@ -1338,7 +1353,7 @@ impl StrategyCoordinator {
         // frontend_open_fallback). These paths are semantically correct but
         // typically indicate cold-start — add an extra ~300ms of HTTP hop and
         // should not risk FAK capital.
-        if self.post_close_winner_open_is_exact != Some(true) {
+        if self.post_close_winner_open_is_exact != Some(true) && !allow_fallback_open {
             return None;
         }
         let ref_price = self.post_close_winner_ref_price;
@@ -1354,7 +1369,7 @@ impl StrategyCoordinator {
     }
 
     /// True when the clock has passed market_end_ts and we are still within
-    /// the oracle_lag_sniping post-close window (e.g. 120 s).
+    /// the oracle_lag_sniping post-close window.
     pub(crate) fn is_in_post_close_window(&self) -> bool {
         let Some(end_ts) = self.cfg.market_end_ts else {
             return false;
@@ -2259,12 +2274,28 @@ impl StrategyCoordinator {
             };
             if emit {
                 self.last_post_close_snapshot_ts = Some(now);
+                let raw_book = self.book;
                 let winner_side = self.post_close_winner_side;
                 let (winner_bid, winner_ask) = match winner_side {
-                    Some(Side::Yes) => (ub.yes_bid, ub.yes_ask),
-                    Some(Side::No) => (ub.no_bid, ub.no_ask),
+                    Some(Side::Yes) => (raw_book.yes_bid, raw_book.yes_ask),
+                    Some(Side::No) => (raw_book.no_bid, raw_book.no_ask),
                     None => (0.0, 0.0),
                 };
+                let winner_tick = if winner_bid > ORACLE_LAG_MICRO_TICK_BID_BOUNDARY
+                    || winner_ask > 0.96
+                    || (winner_bid > 0.0 && winner_bid < 0.04)
+                {
+                    0.001
+                } else {
+                    self.cfg.tick_size.max(1e-9)
+                };
+                let winner_spread_ticks = if winner_bid > 0.0 && winner_ask > 0.0 {
+                    (winner_ask - winner_bid) / winner_tick
+                } else {
+                    0.0
+                };
+                let winner_ask_tradable = winner_ask > 0.0
+                    && (winner_bid <= 0.0 || winner_ask > winner_bid + 0.5 * winner_tick + 1e-9);
                 let now_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -2275,14 +2306,16 @@ impl StrategyCoordinator {
                     .map(|ts| (ts as i64).saturating_mul(1_000));
                 let t_post_close_ms = market_end_ms.map(|end| now_ms.saturating_sub(end));
                 info!(
-                    "📖 post_close_book_tick | t_post_close_ms={:?} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4} winner_side={:?} winner_bid={:.4} winner_ask={:.4} has_winner_ask={} stale_no={}",
+                    "📖 post_close_book_tick | t_post_close_ms={:?} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4} winner_side={:?} winner_bid={:.4} winner_ask={:.4} has_winner_ask={} winner_ask_tradable={} winner_spread_ticks={:.2} stale_no={}",
                     t_post_close_ms,
-                    ub.yes_bid, ub.yes_ask,
-                    ub.no_bid, ub.no_ask,
+                    raw_book.yes_bid, raw_book.yes_ask,
+                    raw_book.no_bid, raw_book.no_ask,
                     winner_side,
                     winner_bid,
                     winner_ask,
                     winner_ask > 0.0,
+                    winner_ask_tradable,
+                    winner_spread_ticks,
                     no_stale_raw,
                 );
             }

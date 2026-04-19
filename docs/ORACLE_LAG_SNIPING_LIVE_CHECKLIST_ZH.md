@@ -1,12 +1,13 @@
 # oracle_lag_sniping 实盘前检查清单
 
-适用范围：`PM_STRATEGY=oracle_lag_sniping`（兼容旧别名 `post_close_hype`），当前仅支持 `hype-updown-5m`。
+适用范围：`PM_STRATEGY=oracle_lag_sniping`（兼容旧别名 `post_close_hype`），当前支持 `PM_ORACLE_LAG_SYMBOL_UNIVERSE` 中的 `*-updown-5m`。
 
 ## 1. 启动前参数检查
 
 - `PM_STRATEGY=oracle_lag_sniping`
-- `POLYMARKET_MARKET_SLUG=hype-updown-5m`
-- `PM_POST_CLOSE_WINDOW_SECS=120`
+- `POLYMARKET_MARKET_SLUG=btc-updown-5m`（或其他 `*-updown-5m`）
+- `PM_ORACLE_LAG_SYMBOL_UNIVERSE=hype,btc,eth,sol,bnb,doge,xrp`（或 `*`）
+- `PM_POST_CLOSE_WINDOW_SECS=105`
 - `PM_POST_CLOSE_CHAINLINK_WS_URL=wss://ws-live-data.polymarket.com`（默认可不填）
 - `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS=8`
 - `PM_POST_CLOSE_GAMMA_POLL_MS=300`

@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::polymarket::coordinator::{
-    ORACLE_LAG_MICRO_TICK_BID_BOUNDARY, ORACLE_LAG_NO_TAKER_ABOVE_PRICE, StrategyCoordinator,
+    StrategyCoordinator, ORACLE_LAG_MICRO_TICK_BID_BOUNDARY, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
 };
 use crate::polymarket::messages::{BidReason, TradeDirection};
 use crate::polymarket::types::Side;

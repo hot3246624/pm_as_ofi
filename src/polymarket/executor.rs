@@ -1030,7 +1030,8 @@ impl Executor {
                             if direction == TradeDirection::Buy {
                                 self.last_buy_place_ts[side.index()] = Some(Instant::now());
                             }
-                            self.slot_orders_mut(slot).insert(order_id, fallback_bid_size);
+                            self.slot_orders_mut(slot)
+                                .insert(order_id, fallback_bid_size);
                             self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
                                 slot,
                                 ts: Instant::now(),
@@ -1244,7 +1245,10 @@ impl Executor {
             return;
         }
 
-        match self.place_taker_order(side, direction, size, limit_price).await {
+        match self
+            .place_taker_order(side, direction, size, limit_price)
+            .await
+        {
             Ok(order_id) => {
                 info!(
                     "✅ Taker accepted: {:?} {:?} size={:.2} id={}",

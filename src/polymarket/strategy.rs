@@ -148,13 +148,10 @@ impl StrategyKind {
             "pair_arb" | "pairarb" | "pair-arb" => Some(Self::PairArb),
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
-            "oracle_lag_sniping"
-            | "oraclelagsniping"
-            | "oracle-lag-sniping"
-            | "post_close_hype"
-            | "postclose_hype"
-            | "post-close-hype"
-            | "hype_post_close" => Some(Self::OracleLagSniping),
+            "oracle_lag_sniping" | "oraclelagsniping" | "oracle-lag-sniping"
+            | "post_close_hype" | "postclose_hype" | "post-close-hype" | "hype_post_close" => {
+                Some(Self::OracleLagSniping)
+            }
             _ => None,
         }
     }
