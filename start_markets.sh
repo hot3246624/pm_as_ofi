@@ -72,7 +72,12 @@ LOG_FILE="logs/supervisor-$(date +%Y%m%d-%H%M%S).log"
 echo -e "${GREEN}Starting supervisor with prefixes:${NC} $PREFIXES"
 echo -e "${GREEN}Log:${NC} $LOG_FILE"
 
+# PM_INPROC_SUPERVISOR=1 selects the in-process (Stage D) path:
+# one tokio runtime, one shared ChainlinkHub, per-slug tasks inside
+# a JoinSet. The legacy OS-process supervisor is used when this is
+# unset — it still works but doesn't scale past ~10 markets.
 PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
+PM_INPROC_SUPERVISOR=1 \
 PM_DRY_RUN="$DRY_RUN_FLAG" \
 RUST_LOG=info \
 nohup cargo run --bin polymarket_v2 --release \

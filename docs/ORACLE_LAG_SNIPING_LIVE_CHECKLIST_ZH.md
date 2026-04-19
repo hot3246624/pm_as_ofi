@@ -68,3 +68,19 @@
 
 - `logs/polymarket.log.*`
 - 关键时间点 winner hint 与 place/reprice 片段
+
+## 7. 精度核验 CSV（推荐）
+
+为避免被日志显示精度误导，导出分析 CSV 时应优先使用 `chainlink_result_ready` 的高精度开/收盘值：
+
+```bash
+python3 scripts/export_multi_dryrun_csv.py \
+  --logs "logs/polymarket.*-updown-5m.log.2026-04-19" \
+  --out docs/stage_g_multi_dryrun.csv
+```
+
+CSV 会额外给出：
+- `delta_close_minus_open`
+- `winner_by_delta`
+- `winner_match_logged`
+- `precision_source`

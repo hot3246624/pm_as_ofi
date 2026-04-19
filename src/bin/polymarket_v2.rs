@@ -15,6 +15,7 @@ use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
+use std::net::TcpListener;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -3031,6 +3032,27 @@ fn side_label(side: Option<Side>) -> Option<String> {
 type LastCloseMap = HashMap<String, (u64, f64)>;
 static CHAINLINK_LAST_CLOSE: OnceLock<Mutex<LastCloseMap>> = OnceLock::new();
 
+// Global hint dedup: key = "{slug}:{round_end_ts}:{side}", value = first detect_ms.
+// Guards against duplicate winner-hint emits from stale pre-resolve races or dual processes.
+static HINT_DEDUP: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+fn hint_dedup_map() -> &'static Mutex<HashMap<String, u64>> {
+    HINT_DEDUP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn hint_dedup_key(slug: &str, round_end_ts: u64, side: Side) -> String {
+    format!("{}:{}:{:?}", slug, round_end_ts, side)
+}
+/// Returns true if this is a fresh emit; false if already emitted (duplicate).
+fn hint_dedup_try_insert(slug: &str, round_end_ts: u64, side: Side, detect_ms: u64) -> bool {
+    let key = hint_dedup_key(slug, round_end_ts, side);
+    if let Ok(mut guard) = hint_dedup_map().lock() {
+        if guard.contains_key(&key) {
+            return false;
+        }
+        guard.insert(key, detect_ms);
+    }
+    true
+}
+
 fn chainlink_last_close_map() -> &'static Mutex<LastCloseMap> {
     CHAINLINK_LAST_CLOSE.get_or_init(|| Mutex::new(load_last_chainlink_close_cache()))
 }
@@ -3812,7 +3834,7 @@ async fn run_post_close_winner_hint_listener(
     let winner_ask_book = fmt_price_opt(nonzero_price_opt(winner_ask_raw));
     let winner_ask_eff = fmt_price_opt(post_close_effective_ask_opt(winner_bid, winner_ask_raw));
     info!(
-        "⏱️ post_close_emit_winner_hint | unix_ms={} final_detect_unix_ms={} source={:?} open_exact={} slug={} side={:?} ref_price={:.4} observed_price={:.4} frontend_open={:?} frontend_close={:?} frontend_ts_ms={:?} frontend_completed={:?} frontend_cached={:?} latency_from_end_ms={} book_age_ms={} book_capture_mode={} winner_bid={:.4} winner_ask_raw={:.4} winner_ask_book={} winner_ask_eff={} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4}",
+        "⏱️ post_close_emit_winner_hint | unix_ms={} final_detect_unix_ms={} source={:?} open_exact={} slug={} side={:?} ref_price={:.9} observed_price={:.9} frontend_open={:?} frontend_close={:?} frontend_ts_ms={:?} frontend_completed={:?} frontend_cached={:?} latency_from_end_ms={} book_age_ms={} book_capture_mode={} winner_bid={:.4} winner_ask_raw={:.4} winner_ask_book={} winner_ask_eff={} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4}",
         unix_now_millis_u64(), final_detect_unix_ms, first_source, first_open_exact, slug, first_side, first_ref, first_obs,
         frontend_open, frontend_close, frontend_ts_ms, frontend_completed, frontend_cached,
         first_ms.saturating_sub(market_end_ms),
@@ -3821,6 +3843,15 @@ async fn run_post_close_winner_hint_listener(
         winner_bid, winner_ask_raw, winner_ask_book, winner_ask_eff,
         snap_emit.yes_bid, snap_emit.yes_ask, snap_emit.no_bid, snap_emit.no_ask,
     );
+    // Dedup guard: drop duplicate hints from stale preload races or dual processes.
+    if !hint_dedup_try_insert(&slug, round_end_ts, first_side, final_detect_unix_ms) {
+        warn!(
+            "⚠️ post_close_hint_duplicate_suppressed | slug={} round_end_ts={} side={:?} — already dispatched by another instance",
+            slug, round_end_ts, first_side
+        );
+        return;
+    }
+
     let hint_msg = MarketDataMsg::WinnerHint {
         side: first_side,
         source: first_source,
@@ -5030,16 +5061,29 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
         info!("🚀 in-proc worker spawned | slug={}", prefix);
     }
 
-    while let Some(joined) = joinset.join_next().await {
-        match joined {
-            Ok((slug, Ok(()))) => {
-                info!("🏁 in-proc worker exited cleanly | slug={}", slug);
+    loop {
+        tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => {
+                warn!("🛑 in-proc supervisor received ctrl-c — aborting all workers");
+                joinset.abort_all();
+                // Drain so tasks get a chance to log their abort
+                while joinset.join_next().await.is_some() {}
+                return Ok(());
             }
-            Ok((slug, Err(e))) => {
-                warn!("⚠️ in-proc worker returned error | slug={} err={}", slug, e);
-            }
-            Err(join_err) => {
-                warn!("⚠️ in-proc worker task join error: {}", join_err);
+            maybe = joinset.join_next() => {
+                match maybe {
+                    Some(Ok((slug, Ok(())))) => {
+                        info!("🏁 in-proc worker exited cleanly | slug={}", slug);
+                    }
+                    Some(Ok((slug, Err(e)))) => {
+                        warn!("⚠️ in-proc worker returned error | slug={} err={}", slug, e);
+                    }
+                    Some(Err(join_err)) => {
+                        warn!("⚠️ in-proc worker task join error: {}", join_err);
+                    }
+                    None => break, // all workers finished
+                }
             }
         }
     }
@@ -5672,6 +5716,38 @@ async fn run_market_ws(
 }
 
 // ─────────────────────────────────────────────────────────
+// Per-slug process lock: binds a loopback TCP port derived from the slug.
+// Prevents two OS processes from running oracle-lag-sniping for the same
+// slug simultaneously. Automatically released when the process exits or
+// the guard is dropped.
+// ─────────────────────────────────────────────────────────
+
+struct SlugLock {
+    _listener: TcpListener,
+    port: u16,
+}
+
+fn slug_lock_port(slug: &str) -> u16 {
+    let mut h: u32 = 0x811c9dc5u32;
+    for b in slug.bytes() {
+        h = h.wrapping_mul(0x01000193).wrapping_add(b as u32);
+    }
+    // Dynamic/private port range: 49152–59999 (10848 slots)
+    49152 + (h % 10848) as u16
+}
+
+fn try_acquire_slug_lock(slug: &str) -> Option<SlugLock> {
+    let port = slug_lock_port(slug);
+    match TcpListener::bind(format!("127.0.0.1:{}", port)) {
+        Ok(listener) => Some(SlugLock {
+            _listener: listener,
+            port,
+        }),
+        Err(_) => None,
+    }
+}
+
+// ─────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────
 
@@ -5748,6 +5824,33 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     let inv_cfg_base = InventoryConfig::from_env();
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg_base = CoordinatorConfig::from_env();
+    // Slug lock: standalone mode only (ctx=None = single OS-process worker).
+    // In inproc mode the supervisor IS the single process, so no cross-process
+    // conflict is possible and we skip the lock.
+    let _slug_lock = if ctx.is_none()
+        && prefix_mode
+        && coord_cfg_base.strategy == StrategyKind::OracleLagSniping
+    {
+        match try_acquire_slug_lock(&raw_slug) {
+            Some(lock) => {
+                info!(
+                    "🔒 slug_lock acquired | slug={} port={}",
+                    raw_slug, lock.port
+                );
+                Some(lock)
+            }
+            None => {
+                let port = slug_lock_port(&raw_slug);
+                anyhow::bail!(
+                    "🚨 slug_lock_conflict: another process is already running oracle_lag_sniping for slug='{}' (port {}). Exiting to prevent duplicate orders.",
+                    raw_slug, port
+                );
+            }
+        }
+    } else {
+        None
+    };
+
     let chainlink_hub = if let Some(c) = &ctx {
         c.chainlink_hub.clone()
     } else if coord_cfg_base.strategy == StrategyKind::OracleLagSniping {
