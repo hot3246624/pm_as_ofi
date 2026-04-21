@@ -38,12 +38,19 @@ pub enum MarketDataMsg {
         source: WinnerHintSource,
         ref_price: f64,
         observed_price: f64,
+        /// UNIX ms when exact winner final was detected by listener.
+        final_detect_unix_ms: u64,
+        /// UNIX ms when WinnerHint was emitted by listener.
+        emit_unix_ms: u64,
         /// Winner-side best bid observed by post-close evidence collector.
         /// 0.0 means "unknown".
         winner_bid: f64,
         /// Winner-side best ask observed by post-close evidence collector.
         /// 0.0 means "no ask observed".
         winner_ask_raw: f64,
+        /// UNIX ms of the evidence snapshot used for winner-side book.
+        /// 0 means "unknown".
+        winner_evidence_recv_ms: u64,
         /// Evidence source used to build winner-side top-of-book.
         /// Typical values: "ws_partial" / "clob_rest" / "none".
         winner_book_source: &'static str,

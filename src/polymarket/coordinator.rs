@@ -63,7 +63,7 @@ pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
 pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
 /// Hint-side fallback freshness guard (ms). If hint evidence is older than this,
 /// do not use it for execution pricing when live winner-side book is missing.
-pub(crate) const ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS: u64 = 250;
+pub(crate) const ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS: u64 = 1200;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
@@ -1076,6 +1076,9 @@ pub struct StrategyCoordinator {
     post_close_winner_open_is_exact: Option<bool>,
     post_close_winner_ref_price: f64,
     post_close_winner_observed_price: f64,
+    post_close_winner_final_detect_unix_ms: Option<u64>,
+    post_close_winner_emit_unix_ms: Option<u64>,
+    post_close_winner_evidence_recv_ms: Option<u64>,
     post_close_winner_ts: Option<Instant>,
     oracle_lag_first_submit_logged: bool,
     /// Timestamp of the last FAK dispatch for OracleLagSniping.
@@ -1362,6 +1365,9 @@ impl StrategyCoordinator {
             post_close_winner_open_is_exact: None,
             post_close_winner_ref_price: 0.0,
             post_close_winner_observed_price: 0.0,
+            post_close_winner_final_detect_unix_ms: None,
+            post_close_winner_emit_unix_ms: None,
+            post_close_winner_evidence_recv_ms: None,
             post_close_winner_ts: None,
             oracle_lag_first_submit_logged: false,
             oracle_lag_fak_last_dispatch: None,

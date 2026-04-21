@@ -1226,8 +1226,11 @@ impl StrategyCoordinator {
                 source,
                 ref_price,
                 observed_price,
+                final_detect_unix_ms,
+                emit_unix_ms,
                 winner_bid: hint_winner_bid,
                 winner_ask_raw: hint_winner_ask_raw,
+                winner_evidence_recv_ms,
                 winner_book_source,
                 winner_distance_to_final_ms,
                 open_is_exact,
@@ -1241,6 +1244,9 @@ impl StrategyCoordinator {
                 self.post_close_winner_open_is_exact = Some(open_is_exact);
                 self.post_close_winner_ref_price = ref_price;
                 self.post_close_winner_observed_price = observed_price;
+                self.post_close_winner_final_detect_unix_ms = Some(final_detect_unix_ms);
+                self.post_close_winner_emit_unix_ms = Some(emit_unix_ms);
+                self.post_close_winner_evidence_recv_ms = Some(winner_evidence_recv_ms);
                 self.post_close_winner_ts = Some(ts);
                 if changed {
                     let fak_in_flight = self
@@ -1253,8 +1259,17 @@ impl StrategyCoordinator {
                         })
                         .unwrap_or(false);
                     info!(
-                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} fak_in_flight={}",
-                        side, source, open_is_exact, observed_price, ref_price, fak_in_flight,
+                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} fak_in_flight={} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={}",
+                        side,
+                        source,
+                        open_is_exact,
+                        observed_price,
+                        ref_price,
+                        fak_in_flight,
+                        final_detect_unix_ms,
+                        emit_unix_ms,
+                        winner_evidence_recv_ms,
+                        winner_distance_to_final_ms,
                     );
                     // Immediately fire a single FAK attempt when winner_ask < threshold.
                     // This runs in the same async batch as hint receipt (winner_to_submit_ms ≈ 0).
@@ -1299,16 +1314,20 @@ impl StrategyCoordinator {
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
-                            .as_millis() as i64;
-                        let market_end_ms = self
-                            .cfg
-                            .market_end_ts
-                            .map(|t| (t as i64).saturating_mul(1_000));
+                            .as_millis() as u64;
+                        let market_end_ms = self.cfg.market_end_ts.map(|t| t.saturating_mul(1_000));
                         let delta_from_end_ms =
                             market_end_ms.map(|end_ms| now_ms.saturating_sub(end_ms));
                         let winner_to_submit_ms = self
                             .post_close_winner_ts
                             .map(|t| t.elapsed().as_millis() as u64);
+                        let final_detect_to_submit_ms = now_ms.saturating_sub(final_detect_unix_ms);
+                        let emit_to_submit_ms = now_ms.saturating_sub(emit_unix_ms);
+                        let evidence_to_submit_ms = if winner_evidence_recv_ms > 0 {
+                            Some(now_ms.saturating_sub(winner_evidence_recv_ms))
+                        } else {
+                            None
+                        };
                         let allow_fallback_open = self.oracle_lag_allow_fallback_open_for_dry_run();
                         if fak_in_flight {
                             // Another dispatch is still within cooldown (e.g. 2nd source arrived fast).
@@ -1364,10 +1383,13 @@ impl StrategyCoordinator {
                                 Side::No => (self.book.yes_bid, self.book.yes_ask),
                             };
                             info!(
-                                "⚡ oracle_lag_fak_attempt_single_shot | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} size={:.2} delta_from_end_ms={:?} winner_to_submit_ms={:?} source={:?} shots={} dry={}",
+                                "⚡ oracle_lag_fak_attempt_single_shot | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} size={:.2} delta_from_end_ms={:?} winner_to_submit_ms={:?} final_detect_to_submit_ms={} emit_to_submit_ms={} evidence_to_submit_ms={:?} source={:?} shots={} dry={}",
                                 side, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
                                 fak_size,
                                 delta_from_end_ms, winner_to_submit_ms,
+                                final_detect_to_submit_ms,
+                                emit_to_submit_ms,
+                                evidence_to_submit_ms,
                                 source,
                                 self.oracle_lag_fak_shots_this_round,
                                 self.cfg.dry_run,
@@ -1582,25 +1604,41 @@ impl StrategyCoordinator {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as i64;
+            .as_millis() as u64;
         let market_end_ts = self.cfg.market_end_ts;
-        let market_end_ms = market_end_ts.map(|ts| (ts as i64).saturating_mul(1_000));
+        let market_end_ms = market_end_ts.map(|ts| ts.saturating_mul(1_000));
         let delta_from_end_ms = market_end_ms.map(|end_ms| now_ms.saturating_sub(end_ms));
         let winner_to_submit_ms = self
             .post_close_winner_ts
             .map(|ts| ts.elapsed().as_millis() as u64);
+        let final_detect_to_submit_ms = self
+            .post_close_winner_final_detect_unix_ms
+            .map(|ms| now_ms.saturating_sub(ms));
+        let emit_to_submit_ms = self
+            .post_close_winner_emit_unix_ms
+            .map(|ms| now_ms.saturating_sub(ms));
+        let evidence_to_submit_ms = self.post_close_winner_evidence_recv_ms.and_then(|ms| {
+            if ms > 0 {
+                Some(now_ms.saturating_sub(ms))
+            } else {
+                None
+            }
+        });
         let notional_usdc = price * size;
         let first_submit = !self.oracle_lag_first_submit_logged;
         if first_submit {
             self.oracle_lag_first_submit_logged = true;
         }
         info!(
-            "⏱️ oracle_lag_submit_latency | first_submit={} unix_ms={} market_end_ts={:?} delta_from_end_ms={:?} winner_to_submit_ms={:?} winner_side={:?} winner_source={:?} slot={} side={:?} direction={:?} type=Limit replacing={} price={:.4} size={:.2} notional_usdc={:.4}",
+            "⏱️ oracle_lag_submit_latency | first_submit={} unix_ms={} market_end_ts={:?} delta_from_end_ms={:?} winner_to_submit_ms={:?} final_detect_to_submit_ms={:?} emit_to_submit_ms={:?} evidence_to_submit_ms={:?} winner_side={:?} winner_source={:?} slot={} side={:?} direction={:?} type=Limit replacing={} price={:.4} size={:.2} notional_usdc={:.4}",
             first_submit,
             now_ms,
             market_end_ts,
             delta_from_end_ms,
             winner_to_submit_ms,
+            final_detect_to_submit_ms,
+            emit_to_submit_ms,
+            evidence_to_submit_ms,
             self.post_close_winner_side,
             self.post_close_winner_source,
             slot.as_str(),
