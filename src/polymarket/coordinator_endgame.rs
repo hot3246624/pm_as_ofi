@@ -18,7 +18,7 @@ impl StrategyCoordinator {
             );
             self.last_endgame_phase = st.endgame_phase;
         }
-        if self.cfg.strategy == StrategyKind::PairArb {
+        if self.cfg.strategy.is_pair_arb() {
             let risk_open_cutoff_active = self.pair_arb_risk_open_cutoff_active();
             let risk_open_cutoff_changed =
                 risk_open_cutoff_active != self.pair_arb_last_risk_open_cutoff_active;
@@ -46,7 +46,7 @@ impl StrategyCoordinator {
             }
             return;
         }
-        if self.cfg.strategy == StrategyKind::OracleLagSniping {
+        if self.cfg.strategy.is_oracle_lag_sniping() {
             // Post-close strategy runs strictly after market end for a short window.
             // It should not inherit normal pre-close endgame gates.
             st.endgame_phase = EndgamePhase::Normal;
@@ -143,7 +143,7 @@ impl StrategyCoordinator {
     }
 
     pub(crate) fn pair_arb_risk_open_cutoff_active(&self) -> bool {
-        if self.cfg.strategy != StrategyKind::PairArb {
+        if !self.cfg.strategy.is_pair_arb() {
             return false;
         }
         self.seconds_to_market_end()
@@ -268,7 +268,7 @@ impl StrategyCoordinator {
         let Some(intent) = intent else {
             return true;
         };
-        if self.cfg.strategy == StrategyKind::PairArb {
+        if self.cfg.strategy.is_pair_arb() {
             return !self.pair_arb_soft_close_blocks_side(inv, intent.side);
         }
         let cur_abs = inv.net_diff.abs();

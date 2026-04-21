@@ -25,6 +25,7 @@ import csv
 import glob
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -254,7 +255,7 @@ def fetch_frontend_round_prices(symbol: str, round_start_ts: int) -> FrontendApi
         },
     )
     try:
-        with urlopen(req, timeout=8) as resp:
+        with urlopen(req, timeout=4) as resp:
             body = resp.read().decode("utf-8", errors="ignore")
             data = json.loads(body)
     except Exception:
@@ -306,6 +307,17 @@ def main() -> int:
         "--out",
         default="docs/stage_g_multi_dryrun.csv",
         help="Output CSV path (default: docs/stage_g_multi_dryrun.csv)",
+    )
+    ap.add_argument(
+        "--skip-api",
+        action="store_true",
+        help="Skip live frontend API fetch; use only log-captured frontend data",
+    )
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=20,
+        help="Parallel workers for frontend API fetch (default: 20)",
     )
     args = ap.parse_args()
 
@@ -390,16 +402,36 @@ def main() -> int:
 
     out_rows = list(dedup.values())
 
-    # Refresh frontend open/close via current endpoint (validation-only).
+    # Refresh frontend open/close via current endpoint (parallel fetch).
     frontend_cache: Dict[Tuple[str, int], FrontendApiRow] = {}
+    if not args.skip_api:
+        keys_to_fetch = []
+        for row in out_rows:
+            try:
+                round_start_ts = int(row["round_start_ts"])
+            except Exception:
+                round_start_ts = 0
+            key = (row["symbol"], round_start_ts)
+            if key not in frontend_cache and round_start_ts > 0 and row["symbol"]:
+                frontend_cache[key] = None  # placeholder
+                keys_to_fetch.append(key)
+        print(f"fetching {len(keys_to_fetch)} frontend API rounds with {args.workers} workers …")
+        with ThreadPoolExecutor(max_workers=args.workers) as pool:
+            futures = {pool.submit(fetch_frontend_round_prices, sym, ts): (sym, ts)
+                       for sym, ts in keys_to_fetch}
+            for fut in as_completed(futures):
+                key = futures[fut]
+                try:
+                    frontend_cache[key] = fut.result()
+                except Exception:
+                    frontend_cache[key] = FrontendApiRow(None, None, None, None, None)
+        print("frontend API fetch done.")
     for row in out_rows:
         try:
             round_start_ts = int(row["round_start_ts"])
         except Exception:
             round_start_ts = 0
         key = (row["symbol"], round_start_ts)
-        if key not in frontend_cache and round_start_ts > 0 and row["symbol"]:
-            frontend_cache[key] = fetch_frontend_round_prices(row["symbol"], round_start_ts)
         fr = frontend_cache.get(key, FrontendApiRow(None, None, None, None, None))
         f_delta = None
         f_side = ""

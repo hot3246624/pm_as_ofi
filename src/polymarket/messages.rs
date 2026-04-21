@@ -38,10 +38,29 @@ pub enum MarketDataMsg {
         source: WinnerHintSource,
         ref_price: f64,
         observed_price: f64,
+        /// Winner-side best bid observed by post-close evidence collector.
+        /// 0.0 means "unknown".
+        winner_bid: f64,
+        /// Winner-side best ask observed by post-close evidence collector.
+        /// 0.0 means "no ask observed".
+        winner_ask_raw: f64,
+        /// Evidence source used to build winner-side top-of-book.
+        /// Typical values: "ws_partial" / "clob_rest" / "none".
+        winner_book_source: &'static str,
+        /// Absolute |evidence_recv_ms - final_detect_ms| in milliseconds.
+        winner_distance_to_final_ms: u64,
         /// True iff open_ref came from the exact round_start Chainlink tick
         /// (prewarm or live RTDS), not a fallback (prev_close / frontend API).
         open_is_exact: bool,
         ts: Instant,
+    },
+    /// Sent by cross-market arbiter to every coordinator for a given round.
+    /// Delivered via the same `winner_hint_rx` channel as `WinnerHint`.
+    OracleLagSelection {
+        round_end_ts: u64,
+        selected: bool,
+        rank: u8,
+        reason: &'static str,
     },
 }
 
@@ -385,6 +404,9 @@ pub enum ExecutionCmd {
 pub enum BidReason {
     /// Providing liquidity on both sides (balanced inventory).
     Provide,
+    /// Oracle-lag sniping maker fallback provide.
+    /// Semantically provide-like, but kept explicit to avoid strategy coupling in executor sizing.
+    OracleLagProvide,
     /// Hedging: placing a bid on the missing leg to complete the pair.
     Hedge,
 }

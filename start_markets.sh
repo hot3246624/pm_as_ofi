@@ -80,9 +80,12 @@ echo -e "${GREEN}Log:${NC} $LOG_FILE"
 # one tokio runtime, one shared ChainlinkHub, per-slug tasks inside
 # a JoinSet. The legacy OS-process supervisor is used when this is
 # unset — it still works but doesn't scale past ~10 markets.
+# oracle_lag_sniping: 市场收盘后 book 自然无更新，3s 默认 stale TTL 会阻断所有收盘后下单。
+# 30s 与硬关闭阈值 (is_book_stale) 对齐，oracle_lag 策略在开盘期间不报价，延长不影响常规风险控制。
 PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
 PM_INPROC_SUPERVISOR=1 \
 PM_DRY_RUN="$DRY_RUN_FLAG" \
+PM_STALE_TTL_MS=30000 \
 RUST_LOG=info \
 nohup cargo run --bin polymarket_v2 --release \
     > "$LOG_FILE" 2>&1 &

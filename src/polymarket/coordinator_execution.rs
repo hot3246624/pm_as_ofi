@@ -20,7 +20,7 @@ impl StrategyCoordinator {
         fresh_price: f64,
         size: f64,
     ) -> (bool, &'static str, f64) {
-        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
+        if !self.cfg.strategy.is_pair_arb() || slot.direction != TradeDirection::Buy {
             return (false, "non_pair_arb", 0.0);
         }
         let tick = self.cfg.tick_size.max(1e-9);
@@ -123,9 +123,7 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn should_execute_directional_hedges(&self, st: &ExecutionState) -> bool {
-        if self.cfg.strategy == StrategyKind::PairArb
-            || self.cfg.strategy == StrategyKind::OracleLagSniping
-        {
+        if self.cfg.strategy.is_pair_arb() || self.cfg.strategy.is_oracle_lag_sniping() {
             return false;
         }
         match self.cfg.strategy.execution_mode() {
@@ -168,7 +166,7 @@ impl StrategyCoordinator {
         size: f64,
         phase: EndgamePhase,
     ) -> bool {
-        if self.cfg.strategy != StrategyKind::PairArb || slot.direction != TradeDirection::Buy {
+        if !self.cfg.strategy.is_pair_arb() || slot.direction != TradeDirection::Buy {
             return true;
         }
 
@@ -640,7 +638,7 @@ impl StrategyCoordinator {
         yes_toxic_blocked: bool,
         no_toxic_blocked: bool,
     ) {
-        if self.cfg.strategy == StrategyKind::GlftMm {
+        if self.cfg.strategy.is_glft_mm() {
             let glft = *self.glft_rx.borrow();
             if !self.glft_is_tradeable_snapshot(glft) {
                 let retain_short_source_block =
@@ -674,7 +672,7 @@ impl StrategyCoordinator {
                 Side::Yes => yes_toxic_blocked,
                 Side::No => no_toxic_blocked,
             };
-            if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+            if self.cfg.strategy.is_pair_arb() && slot.direction == TradeDirection::Buy {
                 self.slot_pair_arb_intent_state_keys[slot.index()] =
                     intent.map(|_| self.pair_arb_state_key(inv, phase));
                 self.slot_pair_arb_intent_epochs[slot.index()] =
@@ -688,9 +686,7 @@ impl StrategyCoordinator {
             }
 
             if intent.is_none() {
-                if self.cfg.strategy == StrategyKind::PairArb
-                    && slot.direction == TradeDirection::Buy
-                {
+                if self.cfg.strategy.is_pair_arb() && slot.direction == TradeDirection::Buy {
                     self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
                     self.slot_pair_arb_state_republish_latched[slot.index()] = false;
                 }
@@ -803,7 +799,7 @@ impl StrategyCoordinator {
         };
 
         if let Some(intent) = intent {
-            if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+            if self.cfg.strategy.is_pair_arb() && slot.direction == TradeDirection::Buy {
                 if self.pair_arb_should_retain_existing(inv, ub, slot, intent, phase) {
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     return RetentionDecision::Retain;
@@ -817,7 +813,7 @@ impl StrategyCoordinator {
             return RetentionDecision::Republish;
         }
 
-        if self.cfg.strategy != StrategyKind::GlftMm && self.cfg.strategy != StrategyKind::PairArb
+        if !self.cfg.strategy.is_glft_mm() && !self.cfg.strategy.is_pair_arb()
             || !matches!(reject_reason, CancelReason::Reprice)
             || phase != EndgamePhase::Normal
         {
@@ -827,7 +823,7 @@ impl StrategyCoordinator {
             );
         }
 
-        if self.cfg.strategy == StrategyKind::PairArb {
+        if self.cfg.strategy.is_pair_arb() {
             let now = std::time::Instant::now();
             let idx = slot.index();
             let state_key = self.pair_arb_state_key(inv, phase);
@@ -1023,7 +1019,11 @@ impl StrategyCoordinator {
         let Some(intent) = intent else {
             return false;
         };
-        if stale {
+        // OracleLagSniping decides winner from Chainlink, not the book.
+        // Post-close books are naturally stale; blocking on staleness would
+        // suppress every post-close maker order for this strategy.
+        let stale_blocks = stale && !self.cfg.strategy.bypasses_stale_market_gate();
+        if stale_blocks {
             return false;
         }
         if toxic_blocked && self.slot_blocked_by_ofi(slot, ofi) {
@@ -1048,7 +1048,8 @@ impl StrategyCoordinator {
         phase: EndgamePhase,
         ofi: &OfiSnapshot,
     ) -> CancelReason {
-        if stale {
+        let stale_blocks = stale && !self.cfg.strategy.bypasses_stale_market_gate();
+        if stale_blocks {
             return CancelReason::StaleData;
         }
         if toxic_blocked && self.slot_blocked_by_ofi(slot, ofi) {
@@ -1078,7 +1079,7 @@ impl StrategyCoordinator {
 
     #[allow(dead_code)]
     fn pair_arb_opposite_slot_blocked(&self, side: Side) -> bool {
-        if self.cfg.strategy != StrategyKind::PairArb {
+        if !self.cfg.strategy.is_pair_arb() {
             return false;
         }
         let opposite = match side {
@@ -1151,7 +1152,7 @@ impl StrategyCoordinator {
             ProvideSideAction::Place { intent } => {
                 let slot = OrderSlot::new(side, intent.direction);
                 let phase = self.endgame_phase();
-                let should_retain = if self.cfg.strategy == StrategyKind::PairArb {
+                let should_retain = if self.cfg.strategy.is_pair_arb() {
                     self.pair_arb_should_retain_existing(inv, ub, slot, intent, phase)
                 } else {
                     let (best_bid, best_ask) = match side {
@@ -1185,7 +1186,7 @@ impl StrategyCoordinator {
                 .await;
             }
             ProvideSideAction::Clear { reason } => {
-                if self.cfg.strategy == StrategyKind::PairArb {
+                if self.cfg.strategy.is_pair_arb() {
                     let slot = OrderSlot::new(side, TradeDirection::Buy);
                     match self.evaluate_slot_retention(
                         inv,

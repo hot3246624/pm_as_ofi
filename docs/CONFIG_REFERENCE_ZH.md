@@ -32,6 +32,9 @@
 | `PM_POST_CLOSE_CHAINLINK_WS_URL` | `wss://ws-live-data.polymarket.com` | 仅 `oracle_lag_sniping` 使用：Chainlink RTDS 地址 |
 | `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS` | `8` | 仅 `oracle_lag_sniping` 使用：收盘后等待 Chainlink 胜负提示的最大秒数 |
 | `PM_POST_CLOSE_GAMMA_POLL_MS` | `300` | 仅 `oracle_lag_sniping` 使用：Chainlink 未命中时 Gamma 兜底轮询间隔 |
+| `PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED` | `false` | 仅 `oracle_lag_sniping` 使用：是否启用跨市场仲裁（默认关闭，推荐每市场独立 single-shot） |
+| `PM_ORACLE_LAG_ARBITER_COLLECTION_WINDOW_MS` | `200` | 仅在启用跨市场仲裁时有效：仲裁收集窗口（毫秒） |
+| `PM_ORACLE_LAG_ARBITER_BOOK_MAX_AGE_MS` | `250` | 仅在启用跨市场仲裁时有效：盘口新鲜度阈值（毫秒） |
 | `PM_ORACLE_LAG_SYMBOL_UNIVERSE` | `hype,btc,eth,sol,bnb,doge,xrp` | 仅 `oracle_lag_sniping` 使用：允许激活的 5m symbol 列表；`*` 表示全部 |
 | `PM_MULTI_MARKET_PREFIXES` | unset | 逗号分隔的市场前缀并发列表；设置后主进程进入 supervisor 模式并拉起多个子进程（每个前缀一个） |
 

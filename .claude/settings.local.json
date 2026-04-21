@@ -85,7 +85,17 @@
       "Bash(awk -F'[ =]' 'BEGIN{n=0;bad=0;lat=0} /winner_match_logged=false/{bad++; n++} /winner_match_logged=true/{n++} /first_submit=true/{match\\($0,\"delta_from_end_ms=\\([0-9]+\\)\",a\\); if\\(a[1]>0\\){lat+=a[1]; lc++}} END{print \"accuracy=\"\\(n-bad\\)\"/\"n, \"bad=\"bad, \"avg_lat_ms=\"int\\(lat/lc\\)}')",
       "Bash(awk -F= '{sum+=$2;n++; if\\($2>max\\)max=$2} END{print \"avg=\"int\\(sum/n\\)\"ms max=\"max\"ms n=\"n}')",
       "Bash(awk -F'T' '{print $2}')",
-      "Bash(awk -F':' '{h=$1} h>=8{print}')"
+      "Bash(awk -F':' '{h=$1} h>=8{print}')",
+      "Bash(awk -F'slug=' '{print $2}')",
+      "Bash(sort -k2)",
+      "Bash(awk -F'latency_from_end_ms=' '{print $2}')",
+      "Bash(awk 'NR==1{min=$1} {max=$1; sum+=$1; n++} END{printf \"min=%dms max=%dms avg=%dms count=%d\\\\n\", min, max, sum/n, n}')",
+      "Bash(kill 64527)",
+      "Bash(pkill -f \"polymarket_v2\")",
+      "Bash(kill 69652)",
+      "Bash(jobs -l)",
+      "Bash(kill 6908)",
+      "WebFetch(domain:polymarket.com)"
     ]
   }
 }

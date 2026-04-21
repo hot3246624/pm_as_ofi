@@ -779,8 +779,8 @@ impl GlftSignalEngine {
                 self.prune_windows(ts);
                 self.fast_refit_if_needed(ts);
             }
-            MarketDataMsg::WinnerHint { .. } => {
-                // Post-close winner hints are unrelated to GLFT signal fitting.
+            MarketDataMsg::WinnerHint { .. } | MarketDataMsg::OracleLagSelection { .. } => {
+                // Post-close control messages; GLFT engine ignores.
             }
         }
     }

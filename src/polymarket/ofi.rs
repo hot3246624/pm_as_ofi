@@ -925,8 +925,9 @@ impl OfiEngine {
                                 self.reference_mid_yes = reference_mid_yes;
                             }
                         }
-                        Some(MarketDataMsg::WinnerHint { .. }) => {
-                            // Winner hints are consumed by post-close strategy only.
+                        Some(MarketDataMsg::WinnerHint { .. })
+                        | Some(MarketDataMsg::OracleLagSelection { .. }) => {
+                            // Post-close control messages; OFI engine ignores.
                         }
                         None => break, // Channel closed
                     }

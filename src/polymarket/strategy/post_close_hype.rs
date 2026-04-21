@@ -1,7 +1,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::polymarket::coordinator::{
-    StrategyCoordinator, ORACLE_LAG_MICRO_TICK_BID_BOUNDARY, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+    StrategyCoordinator, ORACLE_LAG_MAKER_MAX_PRICE, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
 };
 use crate::polymarket::messages::{BidReason, TradeDirection};
 use crate::polymarket::types::Side;
@@ -19,10 +19,9 @@ impl QuoteStrategy for PostCloseHypeStrategy {
 
     /// Winner-side decision tree (maker branch only; FAK is dispatched by coordinator_order_io):
     ///   empty book (no asks, no bids)   → skip (no StrategyQuotes)
-    ///   asks[0] < 0.993                 → skip (FAK path owns this case)
-    ///   asks[0] ≥ 0.993                 → maker @ asks[0] - effective_tick
-    ///   no asks, bids[0] ≥ 0.94         → maker @ bids[0] + 0.001
-    ///   no asks, bids[0] < 0.94         → maker @ bids[0] + 0.01
+    ///   asks[0] <= 0.99                 → skip (FAK path owns this case)
+    ///   asks[0] > 0.99                  → maker @ asks[0] - effective_tick
+    ///   no asks                         → maker @ min(bids[0] + (1 tick / 0.1 tick), 0.991)
     fn compute_quotes(
         &self,
         coordinator: &StrategyCoordinator,
@@ -33,6 +32,9 @@ impl QuoteStrategy for PostCloseHypeStrategy {
             return StrategyQuotes::default();
         }
         if !is_in_post_close_window(cfg.market_end_ts, cfg.oracle_lag_sniping.window_secs) {
+            return StrategyQuotes::default();
+        }
+        if !coordinator.oracle_lag_is_selected() {
             return StrategyQuotes::default();
         }
 
@@ -47,21 +49,28 @@ impl QuoteStrategy for PostCloseHypeStrategy {
         };
 
         let fallback_tick = cfg.tick_size.max(1e-9);
-        let tick = effective_tick(best_bid, best_ask, fallback_tick);
+        // Use raw (non-fallback) ask for FAK/maker branch decision.
+        // usable_book() fills yes_ask from last_valid_book when current ask=0, which
+        // can make compute_quotes see a stale ask (e.g. 0.99) and wrongly defer to FAK
+        // even when there are actually no sellers post-close.
+        let raw_ask = coordinator.raw_book_ask(side);
+        let effective_ask = if raw_ask > 0.0 { best_ask } else { 0.0 };
+        let tick = effective_tick(best_bid, effective_ask, fallback_tick);
 
-        let maker_price = if best_ask > 0.0 {
-            if best_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
+        let maker_price = if effective_ask > 0.0 {
+            if effective_ask <= ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
                 // FAK branch owns this case; maker stands down.
                 return StrategyQuotes::default();
             }
-            (best_ask - tick).max(0.0)
+            (effective_ask - tick).max(0.0)
         } else if best_bid > 0.0 {
-            let step = if best_bid >= ORACLE_LAG_MICRO_TICK_BID_BOUNDARY {
-                0.001
+            // For 0.001-tick regime: +1 tick. For 0.01-tick regime: +0.1 tick.
+            let step = if tick <= 0.001 + 1e-12 {
+                tick
             } else {
-                0.01
+                tick * 0.1
             };
-            let ceiling = (1.0 - tick).max(tick);
+            let ceiling = ORACLE_LAG_MAKER_MAX_PRICE.min(1.0 - tick);
             (best_bid + step).min(ceiling)
         } else {
             // empty book — no reference, skip.
@@ -78,7 +87,7 @@ impl QuoteStrategy for PostCloseHypeStrategy {
             direction: TradeDirection::Buy,
             price: maker_price,
             size: cfg.bid_size,
-            reason: BidReason::Provide,
+            reason: BidReason::OracleLagProvide,
         });
         quotes
     }
