@@ -1129,6 +1129,12 @@ impl StrategyCoordinator {
                 if self.oracle_lag_selected_round_end_ts.is_none() || round_end_ts > current {
                     self.oracle_lag_selected_round_end_ts = Some(round_end_ts);
                     self.oracle_lag_is_selected = selected;
+                    self.oracle_lag_defer_to_round_tail = false;
+                    self.oracle_lag_fak_last_dispatch = None;
+                    self.oracle_lag_fak_shots_this_round = 0;
+                    self.oracle_lag_tail_round_done = None;
+                    self.oracle_lag_round_halted = false;
+                    self.oracle_lag_round_halt_kind = None;
                     info!(
                         "🏆 oracle_lag_arbiter_selection | round_end_ts={} selected={} rank={} reason={}",
                         round_end_ts, selected, rank, reason
@@ -1256,6 +1262,9 @@ impl StrategyCoordinator {
                     if self.cfg.strategy.is_oracle_lag_sniping()
                         && self.cfg.oracle_lag_sniping.market_enabled
                     {
+                        // Winner hint path uses single-shot taker only. If winner ask is
+                        // unavailable or above threshold, hold fire and defer to round-tail.
+                        self.oracle_lag_defer_to_round_tail = true;
                         if self.oracle_lag_round_halted {
                             info!(
                                 "⏭️ oracle_lag_winner_hint_skip | reason=round_halted side={:?} source={:?} halt_kind={:?}",
@@ -1285,6 +1294,7 @@ impl StrategyCoordinator {
                             hint_winner_bid,
                             hint_winner_ask_raw,
                             winner_book_source,
+                            winner_distance_to_final_ms,
                         );
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -1396,55 +1406,16 @@ impl StrategyCoordinator {
                                 "above_threshold"
                             };
                             info!(
-                                "⚡ oracle_lag_fak_skip | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} reason={} — will use maker",
-                                side, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                                "⚡ oracle_lag_hold_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} reason={} — wait for round-tail fallback",
+                                side,
+                                winner_bid,
+                                winner_ask,
+                                winner_ask_tradable,
+                                winner_spread_ticks,
+                                winner_book_quality_source,
+                                ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
                                 skip_reason,
                             );
-                            // no_ask / above_threshold: defer placement to compute_quotes on
-                            // the next book tick. The hint fires on a Chainlink update; by the
-                            // time the next book tick arrives (1-10 ms later), state_unified()
-                            // will call PostCloseHypeStrategy::compute_quotes() with the most
-                            // current book state, producing the correct price without racing the
-                            // book. A direct place_or_reprice here would use a stale book snapshot
-                            // and cause an immediate reprice when the book moves 1 tick at close.
-                            if skip_reason == "no_ask" {
-                                // For 0.001 tick regime: +1 tick. For 0.01 regime: +0.1 tick.
-                                let winner_tick = if winner_bid > 0.96
-                                    || winner_ask > 0.96
-                                    || (winner_bid > 0.0 && winner_bid < 0.04)
-                                    || (winner_ask > 0.0 && winner_ask < 0.04)
-                                {
-                                    0.001_f64
-                                } else {
-                                    self.cfg.tick_size.max(1e-9)
-                                };
-                                let step = if winner_tick <= 0.001 + 1e-12 {
-                                    winner_tick
-                                } else {
-                                    winner_tick * 0.1
-                                };
-                                let ceiling =
-                                    crate::polymarket::coordinator::ORACLE_LAG_MAKER_MAX_PRICE;
-                                let raw_price = if winner_bid > 0.0 {
-                                    winner_bid + step
-                                } else {
-                                    ceiling
-                                };
-                                let maker_price = raw_price.min(ceiling).max(step);
-                                let maker_size = self.oracle_lag_effective_order_size(maker_price);
-                                info!(
-                                    "📨 oracle_lag_fak_maker_payload | side={:?} direction=Buy type=Maker limit_price={:.4} size={:.2} notional_usdc={:.4} purpose=OracleLagSnipeMaker winner_bid={:.4} threshold={:.4} dry={} — deferred to compute_quotes",
-                                    side,
-                                    maker_price,
-                                    maker_size,
-                                    maker_price * maker_size,
-                                    winner_bid,
-                                    ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-                                    self.cfg.dry_run,
-                                );
-                                // Placement handled by PostCloseHypeStrategy::compute_quotes()
-                                // on the next book tick; no direct place_or_reprice here.
-                            }
                         }
                     }
                 }
@@ -1458,22 +1429,31 @@ impl StrategyCoordinator {
         hint_winner_bid: f64,
         hint_winner_ask_raw: f64,
         hint_book_source: &'static str,
+        hint_distance_to_final_ms: u64,
     ) -> (f64, f64, bool, f64, &'static str) {
         let hint_bid = hint_winner_bid.max(0.0);
         let hint_ask = hint_winner_ask_raw.max(0.0);
-        let (winner_bid, winner_ask, source) = if hint_bid > 0.0 || hint_ask > 0.0 {
+        let (book_bid, book_ask) = match side {
+            Side::Yes => (self.book.yes_bid, self.book.yes_ask),
+            Side::No => (self.book.no_bid, self.book.no_ask),
+        };
+        let live_has_winner_side = book_bid > 0.0 || book_ask > 0.0;
+        let hint_is_fresh = hint_distance_to_final_ms
+            <= crate::polymarket::coordinator::ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS;
+        let hint_has_price = hint_bid > 0.0 || hint_ask > 0.0;
+        let (winner_bid, winner_ask, source) = if live_has_winner_side {
+            (book_bid, book_ask, "live_book")
+        } else if hint_has_price && hint_is_fresh {
             let source = match hint_book_source {
-                "ws_partial" => "hint_ws_partial",
-                "clob_rest" => "hint_clob_rest",
-                _ => "hint",
+                "ws_partial" => "hint_ws_partial_fresh",
+                "clob_rest" => "hint_clob_rest_fresh",
+                _ => "hint_fresh",
             };
             (hint_bid, hint_ask, source)
+        } else if hint_has_price {
+            (0.0, 0.0, "hint_stale_ignored")
         } else {
-            let (book_bid, book_ask) = match side {
-                Side::Yes => (self.book.yes_bid, self.book.yes_ask),
-                Side::No => (self.book.no_bid, self.book.no_ask),
-            };
-            (book_bid, book_ask, "live_book")
+            (0.0, 0.0, "no_book")
         };
         let tick = if winner_bid
             > crate::polymarket::coordinator::ORACLE_LAG_MICRO_TICK_BID_BOUNDARY

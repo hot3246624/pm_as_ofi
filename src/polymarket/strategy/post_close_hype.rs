@@ -37,6 +37,9 @@ impl QuoteStrategy for PostCloseHypeStrategy {
         if !coordinator.oracle_lag_is_selected() {
             return StrategyQuotes::default();
         }
+        if coordinator.oracle_lag_defer_to_round_tail() {
+            return StrategyQuotes::default();
+        }
 
         let Some((side, _open_ref, _final_price)) = coordinator.post_close_chainlink_winner()
         else {

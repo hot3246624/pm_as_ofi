@@ -4614,39 +4614,12 @@ async fn run_post_close_winner_hint_listener(
     let (book_source, winner_bid, winner_ask_raw, evidence_recv_ms, distance_to_final_ms) =
         post_close_round_observation_from_tape(tape, first_side, first_ms);
 
-    let frontend_round = if let Some(task) = frontend_task.take() {
-        match tokio::time::timeout(Duration::from_millis(350), task).await {
-            Ok(Ok(hit)) => hit,
-            Ok(Err(err)) => {
-                warn!(
-                    "⚠️ frontend_round_task_join_error | slug={} err={}",
-                    slug, err
-                );
-                None
-            }
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
-    let (frontend_open, frontend_close, frontend_ts_ms, frontend_completed, frontend_cached) =
-        if let Some(hit) = frontend_round {
-            (
-                hit.open_price,
-                hit.close_price,
-                Some(hit.timestamp_ms),
-                hit.completed,
-                hit.cached,
-            )
-        } else {
-            (None, None, None, None, None)
-        };
     let winner_ask_book = fmt_price_opt(nonzero_price_opt(winner_ask_raw));
     let winner_ask_eff = fmt_price_opt(post_close_effective_ask_opt(winner_bid, winner_ask_raw));
     info!(
         "⏱️ post_close_emit_winner_hint | unix_ms={} final_detect_unix_ms={} source={:?} open_exact={} slug={} side={:?} ref_price={:.9} observed_price={:.9} frontend_open={:?} frontend_close={:?} frontend_ts_ms={:?} frontend_completed={:?} frontend_cached={:?} latency_from_end_ms={} book_source={} evidence_recv_ms={} distance_to_final_ms={} winner_bid={:.4} winner_ask_raw={:.4} winner_ask_book={} winner_ask_eff={}",
         unix_now_millis_u64(), final_detect_unix_ms, first_source, first_open_exact, slug, first_side, first_ref, first_obs,
-        frontend_open, frontend_close, frontend_ts_ms, frontend_completed, frontend_cached,
+        Option::<f64>::None, Option::<f64>::None, Option::<u64>::None, Option::<bool>::None, Option::<bool>::None,
         first_ms.saturating_sub(market_end_ms),
         book_source.as_str(),
         evidence_recv_ms,
@@ -4751,6 +4724,45 @@ async fn run_post_close_winner_hint_listener(
                 warn!(
                     "⚠️ post_close winner hint dispatch timeout for {} (500ms)",
                     slug
+                );
+            }
+        }
+    }
+
+    // Validation-only path: keep frontend observability, but do not block winner-hint emit.
+    if let Some(task) = frontend_task.take() {
+        match tokio::time::timeout(Duration::from_millis(350), task).await {
+            Ok(Ok(Some(hit))) => {
+                info!(
+                    "🧾 post_close_frontend_validation | slug={} symbol={} open={:?} close={:?} completed={:?} cached={:?} ts_ms={} detect_to_frontend_validation_ms={}",
+                    slug,
+                    symbol,
+                    hit.open_price,
+                    hit.close_price,
+                    hit.completed,
+                    hit.cached,
+                    hit.timestamp_ms,
+                    unix_now_millis_u64().saturating_sub(final_detect_unix_ms),
+                );
+            }
+            Ok(Ok(None)) => {
+                info!(
+                    "🧾 post_close_frontend_validation | slug={} symbol={} result=none detect_to_frontend_validation_ms={}",
+                    slug,
+                    symbol,
+                    unix_now_millis_u64().saturating_sub(final_detect_unix_ms),
+                );
+            }
+            Ok(Err(err)) => {
+                warn!(
+                    "⚠️ frontend_round_task_join_error | slug={} err={}",
+                    slug, err
+                );
+            }
+            Err(_) => {
+                info!(
+                    "🧾 post_close_frontend_validation | slug={} symbol={} result=timeout",
+                    slug, symbol
                 );
             }
         }

@@ -61,6 +61,9 @@ pub(crate) const ORACLE_LAG_MAKER_MAX_PRICE: f64 = 0.991;
 pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
 /// Cooldown between consecutive FAK dispatches. Covers post_order roundtrip + IOC settle.
 pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
+/// Hint-side fallback freshness guard (ms). If hint evidence is older than this,
+/// do not use it for execution pricing when live winner-side book is missing.
+pub(crate) const ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS: u64 = 250;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
@@ -1090,6 +1093,8 @@ pub struct StrategyCoordinator {
     /// Whether this market was selected by the cross-market arbiter for the current round.
     /// Defaults to true so single-market / no-arbiter mode is unaffected.
     oracle_lag_is_selected: bool,
+    /// Suppress strategy-level maker emits and wait for round-tail fallback action.
+    oracle_lag_defer_to_round_tail: bool,
     /// Last round where a cross-market tail action was executed.
     oracle_lag_tail_round_done: Option<u64>,
     /// Hard stop for oracle_lag_sniping current round after balance/allowance reject.
@@ -1363,6 +1368,7 @@ impl StrategyCoordinator {
             oracle_lag_fak_shots_this_round: 0,
             oracle_lag_selected_round_end_ts: None,
             oracle_lag_is_selected: true,
+            oracle_lag_defer_to_round_tail: false,
             oracle_lag_tail_round_done: None,
             oracle_lag_round_halted: false,
             oracle_lag_round_halt_kind: None,
@@ -1414,6 +1420,10 @@ impl StrategyCoordinator {
 
     pub(crate) fn oracle_lag_is_selected(&self) -> bool {
         self.oracle_lag_is_selected
+    }
+
+    pub(crate) fn oracle_lag_defer_to_round_tail(&self) -> bool {
+        self.oracle_lag_defer_to_round_tail
     }
 
     fn oracle_lag_allow_fallback_open_in_dry_run(&self) -> bool {
