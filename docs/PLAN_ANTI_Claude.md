@@ -1,149 +1,225 @@
-# Pair-Arb 策略回测报告
+# Oracle-Lag Sniping 实盘就绪评估
 
-> **数据集**: `btc5m.db` — 5,331 个 BTC 5 分钟窗口，157 万条秒级 Tick 数据
-> **时间跨度**: 2026-03-26 ~ 2026-04-14（~20 天）
-> **回测引擎**: Python 忠实重现 `pair_arb.rs` 核心逻辑（定价、VWAP ceiling、tier cap、inventory gate、risk_open_cutoff）
-
----
-
-## 一、核心结论
-
-> [!CAUTION]
-> **Pair-Arb 策略在所有测试配置下均为负期望值 (EV < 0)**。
-> 根本原因不是 bug 或配置问题，而是 **结构性逆向选择 (Adverse Selection)**：
-> 残仓方向在 97.9% 的情况下与市场结果相反。
+> 评估时间: 2026-04-21 10:30 BJT  
+> 代码版本: `v1.1.0-stable` (commit `11141f4`)  
+> 数据来源: `docs/stage_g_multi_dryrun.csv` (831 轮) + `docs/oracle_lag_dryrun_2026-04-21.csv` (28 轮)  
 
 ---
 
-## 二、配置对比结果
+## 1. Oracle 准确性 ✅ PASS
 
-| 配置 | Windows | Fills | Paired P&L | Residual P&L | **Total P&L** | **EV/窗口** | Avg Win | Avg Loss |
-|------|---------|-------|-----------|-------------|-------------|------------|---------|----------|
-| **net=15, tier1=0.80, tier2=0.60** (旧) | 5,331 | 19,385 | +2,531 | -6,101 | **-3,569** | **-0.67** | +0.65 | -3.59 |
-| **net=5, tier1=0.50, tier2=0.15** (当前) | 5,331 | 14,355 | +1,596 | -4,115 | **-2,519** | **-0.47** | +0.44 | -2.19 |
-| net=5, pair_target=0.95 | 5,331 | 11,952 | +1,815 | -3,958 | **-2,143** | **-0.40** | +0.52 | -2.13 |
+| 指标 | 数值 | 判定 |
+|------|------|------|
+| 总轮次 | 831 | — |
+| 数据源 | 100% Chainlink RTDS | ✅ 无 Gamma fallback |
+| `winner_match_logged` = true | **831/831 (100%)** | ✅ 完美 |
+| `precision_source` = `chainlink_result_ready` | 816/831 (98.2%) | ✅ |
+| `precision_source` = `post_close_emit_winner_hint` | 15/831 (1.8%) | ⚠️ 可接受（偶发缓存命中） |
+| 涵盖币种 | 7 (bnb, btc, doge, eth, hype, sol, xrp) | ✅ |
+| 每币轮次 | 118-119（均匀） | ✅ 无市场偏斜 |
+| Yes/No 分布 | Yes 431 / No 400 (52%/48%) | ✅ 近似均匀 |
 
-### 关键发现
-
-1. **net=5 比 net=15 好 29%**（EV 从 -0.67 提升到 -0.47），验证了我们 PLAN_Claude 的分析
-2. **但仍然为负 EV**——所有配置都亏损
-3. `pair_target=0.95` 每对利润更高 (0.072 vs 0.051)，但成交量下降，整体无本质改善
-
----
-
-## 三、逆向选择——残仓为什么 97.9% 的时间在亏？
-
-### 3.1 机制剖析
-
-BTC 5 分钟市场是强趋势市场——价格方向 93% 的窗口中存在显著趋势：
-
-```
-趋势分析（200 窗口样本）：
-  YES 下跌趋势 + 结果=DOWN:  91 个 (47%)  ← 我们买了 YES，YES 输了
-  YES 上涨趋势 + 结果=UP:    77 个 (40%)  ← 我们买了 NO，NO 输了
-  范围震荡:                    7 个 (3.5%) ← 唯一安全区
-  反转（趋势≠结果）:          24 个 (12%)  ← 少数救命案例
-```
-
-### 3.2 逆向选择的精确路径
-
-```
-场景：BTC 即将下跌（YES 概率从 0.50 → 0.01）
-
-时间线：
-  T-300s: YES mid=0.50, NO mid=0.50 → 我们挂 YES@0.48, NO@0.47
-  T-290s: YES ask 降到 0.46 ≤ 我们的 YES@0.48 → 被填！积累 YES 残仓
-  T-280s: YES 继续跌到 0.30 → ask 远低于新报价 → NO 变贵无法买入配对
-  T-240s: risk_open_cutoff 触发，停止新报价
-  T-0s:   结果=DOWN → YES=0 → 我们的 YES 残仓全额亏损
-
-结果：我们系统性地买入了即将归零的那一侧
-```
-
-这就是为什么残仓 win rate 只有 2.1%——我们的 Maker 订单被趋势方向的 **知情交易者 (informed takers)** 清扫。
-
-### 3.3 具体案例追踪
-
-```
-Window: outcome=DOWN, 我们持有 YES 残仓
-  YES_mid: 0.43 → 0.01 (暴跌)
-  fills: YES@0.41(rem=292s) → NO@0.54(276s) → NO@0.52(274s) → YES@0.43(251s)
-         → YES@0.41(249s) → NO@0.54(241s) → YES@0.46(239s)
-  结果: paired_pnl=+0.587, residual_pnl=-2.138, total=-1.551
-
-  解读: 虽然配对了3对赚了$0.587，但最终多出5份YES@~0.43均价,
-        结果DOWN=YES归零 → 亏了$2.138
-```
+> [!TIP]
+> **核心结论**：Chainlink RTDS 在连续 831 轮中, winner 判定与链上价格 delta 100% 吻合。这是 oracle_lag_sniping 策略最关键的前提假设，已被充分验证。
 
 ---
 
-## 四、分布分析
+## 2. 延迟分析 ✅ PASS
+
+### 2.1 `latency_from_end_ms`（收盘→hint 到达）
+
+| 百分位 | 毫秒 | 判定 |
+|--------|------|------|
+| p5 | 1,052 | — |
+| p25 | 1,186 | — |
+| **p50** | **1,376** | ✅ 远低于 1.5s 目标 |
+| p75 | 1,569 | ⚠️ 略超 1.5s |
+| **p95** | **2,007** | ⚠️ 需关注 |
+| max | 4,236 | ⚠️ 极端值（1 轮） |
+
+### 2.2 延迟分桶
+
+| 区间 | 轮次 | 占比 |
+|------|------|------|
+| ≤ 1.0s | 15 | 1.8% |
+| 1.0 - 1.2s | 216 | 26.0% |
+| **1.2 - 1.5s** | **340** | **40.9%** |
+| 1.5 - 2.0s | 216 | 26.0% |
+| > 2.0s | 44 | 5.3% |
+
+> [!NOTE]
+> **68.7% 的轮次在 1.5s 内完成 hint 检测**。考虑到 Polymarket 盘后窗口长达 105s，且竞争对手（如 goyslop1）的成交记录显示他们在关盘后 4-10 秒才开始吃单，我们的 1.4s 中位延迟具有显著的时间优势。
+>
+> **p95 = 2.0s** 的长尾主要来自 Chainlink WS 的推送间隔波动，不影响策略安全性（最多让该轮慢 0.5s 进场）。
+
+---
+
+## 3. 执行安全机制 ✅ PASS
+
+### 3.1 关键安全带
+
+| 机制 | 实现状态 | 代码位置 |
+|------|----------|----------|
+| **Slug Lock（TCP loopback）** | ✅ 已实现 | `polymarket_v2.rs:6449-6469` |
+| **FAK 单轮 1-shot cap** | ✅ `>= 1` 即停 | `coordinator_order_io.rs:1247` |
+| **Taker 价格门槛** | ✅ `ORACLE_LAG_NO_TAKER_ABOVE_PRICE = 0.990` | `coordinator.rs:55` |
+| **Dry-run 模式守卫** | ✅ `dry_taker_preview` 日志确认 | 最新日志验证 |
+| **Endgame SoftClose** | ✅ 收盘前 45s 阻断 risk-increasing | `coordinator_endgame.rs` |
+| **Post-close window** | ✅ 105s 硬限 | `.env: PM_POST_CLOSE_WINDOW_SECS=105` |
+
+### 3.2 FAK 执行路径审查
 
 ```
-P&L 分布 (5,331 窗口, net=5 当前配置):
-  Min:     -4.150 USDC
-  p5:      -2.600
-  p25:     -1.950
-  Median:  +0.250      ← 中位数为正！大部分窗口赚钱
-  p75:     +0.500
-  p95:     +0.750
-  Max:     +3.650
-
-  Win/Loss/Zero: 3,307 / 1,812 / 212
-  胜率: 62%
-  Avg Win:  +0.437 USDC
-  Avg Loss: -2.188 USDC
-
-  期望值: 0.62 × 0.437 + 0.34 × (-2.188) = 0.271 - 0.744 = -0.473 USDC ❌
+WinnerHint 到达
+  → winner_bid <= 0.990? 
+    → YES: FAK at 0.99 limit, size=5.00, 单轮最多 1 shot
+    → NO (bid > 0.990): 转 Maker 路径（GTC at 0.991）
+  → Dry-run? 
+    → YES: 输出 dry_taker_preview, 不真实下单
+    → NO: POST /order 真实提交
 ```
 
 > [!IMPORTANT]
-> 策略**胜率高达 62%**，但**盈亏比极差 (1:5)**。每赢一次只赚 $0.44，每输一次亏 $2.19。
-> 这是典型的 **"picking up pennies in front of a steamroller"** 模式。
+> **ORACLE_LAG_NO_TAKER_ABOVE_PRICE = 0.990**：当 winner_bid > 0.990 时（即盘口已经很贵），系统**不会发 FAK**，而是退回 Maker 路径挂单。这是防止在高价位白付 taker fee 的关键保护。
+>
+> 从 goyslop1 的交易分析中我们确认：99¢ 的 GTC 挂单在 Polymarket 是 **Maker 免手续费**的，而 FAK 吃 99¢ 的单子需要付 0.7% taker fee（净利润仅约 0.3%/份）。当前阈值设计合理。
+
+### 3.3 最新 Dry-Run 行为验证
+
+从 `supervisor-20260421-093236.log` 确认：
+- ✅ 42 个 Round 正常运行
+- ✅ 5 次 `dry_taker_preview` 日志（FAK 路径触发正确）
+- ✅ `WinnerHint` 全部来自 Chainlink
+- ✅ 仲裁器已**关闭**（`PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED=false`）
+- ✅ 每市场独立 single-shot 模式
 
 ---
 
-## 五、为什么回测 EV 比实盘预测更差？
+## 4. 配置审计 ✅ PASS
 
-我们之前 PLAN_Claude 估算 EV ≈ +0.02 ~ +0.40/轮。回测显示 -0.47。差异原因：
+### 4.1 当前 `.env` 关键参数
 
-1. **Claim 回收未被建模**：实盘中 Recycler merge → claim 可以回收前序轮的已配对头寸价值。回测每个窗口独立计算，无跨窗口 merge
-2. **5 分钟 vs 15 分钟**：回测数据是 BTC 5 分钟市场，实盘跑的是 15 分钟市场。5 分钟市场趋势性**更强**（结果更确定）
-3. **Conservative fill model 的局限**：Ask ≤ our_bid 意味着只在价格暴跌时成交，而暴跌本身就是趋势信号
+| 参数 | 当前值 | 评价 |
+|------|--------|------|
+| `PM_STRATEGY` | `oracle_lag_sniping` | ✅ |
+| `PM_DRY_RUN` | `true` | ✅ 安全状态 |
+| `PM_BID_SIZE` | `5.0` | ✅ 保守（$5/shot） |
+| `PM_INPROC_SUPERVISOR` | `1`（通过脚本） | ✅ 单进程多任务 |
+| `PM_MULTI_MARKET_PREFIXES` | 7 币种 | ✅ |
+| `PM_POST_CLOSE_WINDOW_SECS` | `105` | ✅ 充足窗口 |
+| `PM_POST_CLOSE_CHAINLINK_WS_URL` | `wss://ws-live-data.polymarket.com` | ✅ |
+| `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS` | `8` | ✅ |
+| `PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED` | `false` | ✅ 保守默认 |
+| `PM_ORACLE_LAG_DRYRUN_ALLOW_FALLBACK_OPEN` | `false` | ✅ 不依赖前端数据 |
+
+### 4.2 建议实盘参数
+
+```bash
+# 仅需修改这一行
+PM_DRY_RUN=false
+
+# 其余参数保持不变
+PM_BID_SIZE=5.0          # 保守起步
+PM_STRATEGY=oracle_lag_sniping
+```
+
+---
+
+## 5. 跨市场仲裁器 (Arbiter) 状态
+
+| 维度 | 状态 |
+|------|------|
+| 代码实现 | ✅ 完成（`run_cross_market_hint_arbiter`） |
+| Dry-run 验证 | ✅ 7 轮全部通过（来自 PLAN_Claude_temp.md 记录） |
+| 当前启用状态 | ❌ **已关闭**（`cross_market_arbiter_enabled=false`） |
+| 推荐 | 先以 single-shot 模式上线，稳定后再启用仲裁 |
+
+> [!NOTE]
+> 仲裁器已在之前的干跑中验证了 7 轮（btc/bnb/hype 交替选中），行为正确。但为降低首次实盘风险，建议先在**每市场独立模式**下运行。
+
+---
+
+## 6. 收益预估与风险分析
+
+### 6.1 单轮收益模型
+
+| 场景 | 买入价 | 赔付价 | Taker Fee | 净利润/份 | 5份净利润 |
+|------|--------|--------|-----------|-----------|-----------|
+| **FAK @ 0.99**（ask < 0.99） | 0.990 | 1.000 | 0.7% (≈0.007) | **$0.003** | **$0.015** |
+| **GTC Maker @ 0.99**（ask ≥ 0.99） | 0.990 | 1.000 | 0% (Maker) | **$0.010** | **$0.050** |
+| **GTC Maker @ 0.991**（no ask） | 0.991 | 1.000 | 0% (Maker) | **$0.009** | **$0.045** |
+
+### 6.2 预期轮次频率（从 dry-run 推算）
+
+- 每 5 分钟一轮，每天约 **288 轮/市场**
+- 7 市场并行 → **~2,016 轮/天**
+- 从 dry-run 日志看，`dry_taker_preview` 在 42 轮中触发了 5 次 → 约 **12%** 的轮次有可执行机会
+- 保守估计：每天 **~240 次** 下单机会
+
+### 6.3 日收益预估（保守）
+
+| 模式 | 每日机会 | 成交率 | 净利润/笔 | 日收益 |
+|------|----------|--------|-----------|--------|
+| FAK taker | 60 | 30% | $0.015 | $0.27 |
+| GTC maker | 180 | 15% | $0.050 | $1.35 |
+| **合计** | — | — | — | **~$1.6/天** |
 
 > [!WARNING]
-> 但即使考虑以上因素（修正 +0.1~0.2/窗口），策略仍然为负 EV。逆向选择是结构性问题，不会因为切换到 15 分钟市场就消失。
+> **这是极保守的估算**（PM_BID_SIZE=5, 单轮 1 shot）。goyslop1 的数据显示，他单轮投入 $1,700+，一笔赚 $17-$241。规模化是后续优化方向，不影响当前 GO/NO-GO 判断。
+
+### 6.4 风险项
+
+| 风险 | 概率 | 影响 | 缓解措施 |
+|------|------|------|----------|
+| Chainlink RTDS 延迟突增 | 低 | 错过窗口 | 105s post-close window 兜底 |
+| Winner hint 判定错误 | **极低**（0/831） | 买错方向 | 链上 delta 验证 100% 吻合 |
+| FAK 未成交（盘口空） | 中 | 无损失（FAK 自动取消） | 已有 Maker 兜底路径 |
+| 双边下单 | **零**（代码保证） | — | 单侧 winner hint 机制 |
+| 进程重复 | **零** | — | Slug lock (TCP loopback) |
+| API 429 限速 | 低 | 延迟 | 单轮 1 shot cap |
 
 ---
 
-## 六、结论与建议
+## 7. 综合评定
 
-### 6.1 Pair-Arb Maker 策略在 BTC up/down 市场中**不可行**
+### 检查清单
 
-数学上不可能盈利的原因：
-- 残仓发生率 ~35%，且 97.9% 败率
-- 平均残仓损失 ($2.19) 是平均配对利润 ($0.44) 的 **5 倍**
-- 需要 84% 以上的完美配对率才能打平，但市场结构只允许 65%
+| # | 检查项 | 状态 | 备注 |
+|---|--------|------|------|
+| 1 | Oracle 准确性 100% | ✅ | 831/831 |
+| 2 | 延迟 p50 < 1.5s | ✅ | 1,376ms |
+| 3 | 无异常双边下单 | ✅ | 代码保证 |
+| 4 | FAK shot cap 生效 | ✅ | >= 1 即停 |
+| 5 | Taker 价格门槛合理 | ✅ | 0.990 |
+| 6 | Slug lock 防重复 | ✅ | TCP loopback |
+| 7 | Dry-run 连续稳定 | ✅ | 42+ 轮无中断 |
+| 8 | 配置参数保守合理 | ✅ | BID_SIZE=5 |
+| 9 | 回退策略明确 | ✅ | 改回 DRY_RUN=true |
+| 10 | Winner hint 来源可靠 | ✅ | 100% Chainlink |
 
-### 6.2 建议方向
+### 最终判定
 
-| 方向 | 可行性 | 说明 |
-|------|--------|------|
-| ❌ 继续优化 pair_arb 参数 | 不可行 | 所有参数组合均亏损，是结构性问题 |
-| ⚠️ 切换到低波动市场 | 待验证 | 如 30min/1h 窗口，趋势性可能更弱 |
-| ✅ 转向信号驱动策略 | 推荐 | 利用 BTC 价格信号判断方向，只在有把握的方向上单腿下注 |
-| ✅ 加入 Taker 对冲 | 推荐 | 残仓达到阈值时以 Taker 方式止损 |
+> [!IMPORTANT]
+> ## 🟢 GO — 具备实盘条件
+>
+> Oracle-Lag Sniping 策略在经过 **831 轮 × 7 币种** 的 Dry-Run 验证后，所有关键指标均达标：
+> - Oracle 准确率 **100%**
+> - 延迟中位数 **1.4s**（远优于竞争对手的 4-10s 进场窗口）
+> - 执行安全带完备（1 shot cap、0.990 价格门槛、slug lock）
+> - 无系统性风险暴露
+>
+> **建议切实盘的步骤**：
+> 1. 将 `.env` 中 `PM_DRY_RUN=true` 改为 `PM_DRY_RUN=false`
+> 2. 保持 `PM_BID_SIZE=5.0`（首次实盘保守）
+> 3. 保持仲裁器关闭（`PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED=false`）
+> 4. 运行 `bash stop_markets.sh && sleep 2 && bash start_markets.sh`
+> 5. 观察首轮 `oracle_lag_submit_latency` 日志确认真实下单
+> 6. 若出现异常，立即 `PM_DRY_RUN=true` 回退
 
-### 6.3 回测工具保留
+---
 
-回测脚本已保存在 `/Users/hot/.gemini/antigravity/scratch/backtest_pair_arb.py`，支持：
-```bash
-# 基础运行
-python3 backtest_pair_arb.py --limit 100 -v
+## 附录：数据源文件
 
-# 参数扫描
-python3 backtest_pair_arb.py --max-net-diff 3 --pair-target 0.95 --bid-size 3
-
-# 全量回测
-python3 backtest_pair_arb.py
-```
+- [stage_g_multi_dryrun.csv](file:///Users/hot/web3Scientist/pm_as_ofi/docs/stage_g_multi_dryrun.csv) — 831 轮核心验证数据
+- [oracle_lag_dryrun_2026-04-21.csv](file:///Users/hot/web3Scientist/pm_as_ofi/docs/oracle_lag_dryrun_2026-04-21.csv) — 最新 28 轮细粒度数据
+- [ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md](file:///Users/hot/web3Scientist/pm_as_ofi/docs/ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md) — 实盘检查清单

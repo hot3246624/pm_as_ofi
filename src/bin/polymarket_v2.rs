@@ -3792,7 +3792,7 @@ fn nonzero_price_opt(v: f64) -> Option<f64> {
 }
 
 fn post_close_tick_size_for_price(bid: f64, ask: f64) -> f64 {
-    if bid > 0.96 || ask > 0.96 || (bid > 0.0 && bid < 0.04) {
+    if bid > 0.96 || ask > 0.96 || (bid > 0.0 && bid < 0.04) || (ask > 0.0 && ask < 0.04) {
         0.001
     } else {
         0.01
@@ -3847,6 +3847,212 @@ struct ArbiterObservation {
     hint_msg: MarketDataMsg,
     /// Channel to the market coordinator (receives WinnerHint + OracleLagSelection).
     hint_tx: mpsc::Sender<MarketDataMsg>,
+}
+
+/// Per-market final observation used by round-tail coordinator.
+/// Immediate per-market order path remains local; this stream is only for the
+/// "all markets processed" tail action.
+struct RoundTailObservation {
+    round_end_ts: u64,
+    slug: String,
+    winner_side: Side,
+    winner_bid: f64,
+    winner_ask_raw: f64,
+    winner_ask_eff: f64,
+    winner_ask_tradable: bool,
+    detect_ms: u64,
+    hint_tx: mpsc::Sender<MarketDataMsg>,
+}
+
+const ORACLE_LAG_TAIL_FAK_LIMIT_PRICE: f64 = 0.99;
+const ORACLE_LAG_TAIL_MAKER_MAX_PRICE: f64 = 0.991;
+
+/// Round-tail coordinator:
+/// - Collect one final observation per market for a given round_end_ts.
+/// - Dispatch once when all expected markets arrive or first-final timeout expires.
+/// - If any tradable ask <= 0.99 exists, send a tail Fak99 action.
+/// - Otherwise choose lowest bid and send a tail MakerBidStep action.
+async fn run_oracle_lag_round_tail_coordinator(
+    mut rx: mpsc::Receiver<RoundTailObservation>,
+    expected_market_count: usize,
+    timeout_ms: u64,
+) {
+    use std::collections::{HashMap, HashSet};
+    let mut pending: HashMap<u64, HashMap<String, RoundTailObservation>> = HashMap::new();
+    let mut deadlines: HashMap<u64, tokio::time::Instant> = HashMap::new();
+    let mut finalized_rounds: HashSet<u64> = HashSet::new();
+
+    let dispatch_round = |round_end_ts: u64,
+                          by_slug: HashMap<String, RoundTailObservation>|
+     -> Option<(MarketDataMsg, mpsc::Sender<MarketDataMsg>)> {
+        let observations: Vec<RoundTailObservation> = by_slug.into_values().collect();
+        if observations.is_empty() {
+            return None;
+        }
+
+        // Priority 1: tradable ask <= 0.99 (prefer lower ask, then earlier detect).
+        let mut ask_candidates: Vec<&RoundTailObservation> = observations
+            .iter()
+            .filter(|o| {
+                o.winner_ask_tradable
+                    && o.winner_ask_eff > 0.0
+                    && o.winner_ask_eff <= ORACLE_LAG_TAIL_FAK_LIMIT_PRICE + 1e-9
+            })
+            .collect();
+        ask_candidates.sort_by(|a, b| {
+            a.winner_ask_eff
+                .partial_cmp(&b.winner_ask_eff)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.detect_ms.cmp(&b.detect_ms))
+        });
+
+        if let Some(best) = ask_candidates.first() {
+            let msg = MarketDataMsg::OracleLagTailAction {
+                round_end_ts,
+                side: best.winner_side,
+                mode: OracleLagTailMode::Fak99,
+                limit_price: ORACLE_LAG_TAIL_FAK_LIMIT_PRICE,
+                target_slug: best.slug.clone(),
+                reason: "tail_best_tradable_ask",
+            };
+            return Some((msg, best.hint_tx.clone()));
+        }
+
+        // Priority 2: no asks → lowest bid market for maker fallback.
+        let mut bid_candidates: Vec<&RoundTailObservation> =
+            observations.iter().filter(|o| o.winner_bid > 0.0).collect();
+        bid_candidates.sort_by(|a, b| {
+            a.winner_bid
+                .partial_cmp(&b.winner_bid)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.detect_ms.cmp(&b.detect_ms))
+        });
+
+        if let Some(best) = bid_candidates.first() {
+            let tick = post_close_tick_size_for_price(best.winner_bid, best.winner_ask_raw);
+            let step = if tick <= 0.001 + 1e-12 { tick } else { tick * 0.1 };
+            let price = (best.winner_bid + step)
+                .min(ORACLE_LAG_TAIL_MAKER_MAX_PRICE)
+                .max(step);
+            let msg = MarketDataMsg::OracleLagTailAction {
+                round_end_ts,
+                side: best.winner_side,
+                mode: OracleLagTailMode::MakerBidStep,
+                limit_price: price,
+                target_slug: best.slug.clone(),
+                reason: "tail_lowest_bid_fallback",
+            };
+            return Some((msg, best.hint_tx.clone()));
+        }
+
+        None
+    };
+
+    loop {
+        let now = tokio::time::Instant::now();
+        let expired: Vec<u64> = deadlines
+            .iter()
+            .filter(|(_, &dl)| now >= dl)
+            .map(|(&ts, _)| ts)
+            .collect();
+        for round_end_ts in expired {
+            deadlines.remove(&round_end_ts);
+            if let Some(by_slug) = pending.remove(&round_end_ts) {
+                if let Some((msg, tx)) = dispatch_round(round_end_ts, by_slug) {
+                    if let Err(e) = tx.try_send(msg) {
+                        warn!(
+                            "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} err={}",
+                            round_end_ts, e
+                        );
+                    }
+                } else {
+                    info!(
+                        "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_ask_and_no_bid",
+                        round_end_ts
+                    );
+                }
+                finalized_rounds.insert(round_end_ts);
+            }
+        }
+
+        let sleep_until = deadlines.values().min().cloned();
+        if let Some(deadline) = sleep_until {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::select! {
+                biased;
+                maybe = rx.recv() => {
+                    let Some(obs) = maybe else { break; };
+                    if finalized_rounds.contains(&obs.round_end_ts) {
+                        continue;
+                    }
+                    let round_end_ts = obs.round_end_ts;
+                    let should_dispatch = {
+                        let by_slug = pending.entry(round_end_ts).or_default();
+                        by_slug.insert(obs.slug.clone(), obs);
+                        expected_market_count > 0 && by_slug.len() >= expected_market_count
+                    };
+                    if should_dispatch {
+                        let owned = pending.remove(&round_end_ts).unwrap_or_default();
+                        deadlines.remove(&round_end_ts);
+                        if let Some((msg, tx)) = dispatch_round(round_end_ts, owned) {
+                            if let Err(e) = tx.try_send(msg) {
+                                warn!(
+                                    "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} err={}",
+                                    round_end_ts, e
+                                );
+                            }
+                        } else {
+                            info!(
+                                "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_ask_and_no_bid",
+                                round_end_ts
+                            );
+                        }
+                        finalized_rounds.insert(round_end_ts);
+                    } else {
+                        deadlines.entry(round_end_ts).or_insert_with(|| {
+                            tokio::time::Instant::now()
+                                + std::time::Duration::from_millis(timeout_ms)
+                        });
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => {}
+            }
+        } else {
+            let Some(obs) = rx.recv().await else { break; };
+            if finalized_rounds.contains(&obs.round_end_ts) {
+                continue;
+            }
+            let round_end_ts = obs.round_end_ts;
+            let should_dispatch = {
+                let by_slug = pending.entry(round_end_ts).or_default();
+                by_slug.insert(obs.slug.clone(), obs);
+                expected_market_count > 0 && by_slug.len() >= expected_market_count
+            };
+            if should_dispatch {
+                let owned = pending.remove(&round_end_ts).unwrap_or_default();
+                deadlines.remove(&round_end_ts);
+                if let Some((msg, tx)) = dispatch_round(round_end_ts, owned) {
+                    if let Err(e) = tx.try_send(msg) {
+                        warn!(
+                            "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} err={}",
+                            round_end_ts, e
+                        );
+                    }
+                } else {
+                    info!(
+                        "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_ask_and_no_bid",
+                        round_end_ts
+                    );
+                }
+                finalized_rounds.insert(round_end_ts);
+            } else {
+                deadlines.entry(round_end_ts).or_insert_with(|| {
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms)
+                });
+            }
+        }
+    }
+    warn!("🛑 oracle_lag_round_tail_coordinator exited (channel closed)");
 }
 
 /// Cross-market arbiter: collects observations from all hint listeners within a
@@ -4143,6 +4349,7 @@ async fn arbiter_dispatch(
 async fn run_post_close_winner_hint_listener(
     winner_hint_tx: mpsc::Sender<MarketDataMsg>,
     arbiter_tx: Option<mpsc::Sender<ArbiterObservation>>,
+    round_tail_tx: Option<mpsc::Sender<RoundTailObservation>>,
     coord_md_rx: watch::Receiver<MarketDataMsg>,
     mut post_close_book_rx: mpsc::Receiver<PostCloseSideBookUpdate>,
     rest_url: String,
@@ -4467,6 +4674,30 @@ async fn run_post_close_winner_hint_listener(
         open_is_exact: first_open_exact,
         ts: Instant::now(),
     };
+
+    // Always report final observation to the round-tail coordinator (if enabled).
+    // This does not replace local immediate WinnerHint execution path.
+    if let Some(tail_tx) = round_tail_tx {
+        let winner_ask_eff_f64 = post_close_effective_ask_opt(winner_bid, winner_ask_raw).unwrap_or(0.0);
+        let winner_ask_tradable = winner_ask_eff_f64 > 0.0;
+        let tail_obs = RoundTailObservation {
+            round_end_ts,
+            slug: slug.clone(),
+            winner_side: first_side,
+            winner_bid,
+            winner_ask_raw,
+            winner_ask_eff: winner_ask_eff_f64,
+            winner_ask_tradable,
+            detect_ms: first_ms,
+            hint_tx: winner_hint_tx.clone(),
+        };
+        if let Err(e) = tail_tx.try_send(tail_obs) {
+            warn!(
+                "⚠️ post_close_round_tail_obs_send_failed | slug={} round_end_ts={} err={}",
+                slug, round_end_ts, e
+            );
+        }
+    }
 
     if let Some(arb_tx) = arbiter_tx {
         // Arbiter mode: wrap into ArbiterObservation and hand off to the arbiter.
@@ -5722,6 +5953,31 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
         None
     };
 
+    // Spawn round-tail coordinator for oracle_lag_sniping multi-market mode.
+    // This collects one final observation per market and dispatches exactly one
+    // tail action per round after all finals arrive (or timeout from first final).
+    let round_tail_sender: Option<mpsc::Sender<RoundTailObservation>> = if coord_cfg
+        .strategy
+        .is_oracle_lag_sniping()
+        && prefixes.len() > 1
+    {
+        let (tail_tx, tail_rx) = mpsc::channel::<RoundTailObservation>(128);
+        let tail_timeout_ms = coord_cfg.oracle_lag_sniping.arbiter_collection_window_ms.max(1);
+        tokio::spawn(run_oracle_lag_round_tail_coordinator(
+            tail_rx,
+            prefixes.len(),
+            tail_timeout_ms,
+        ));
+        info!(
+            "🎯 oracle_lag_round_tail_coordinator spawned | expected_markets={} timeout_ms={}",
+            prefixes.len(),
+            tail_timeout_ms
+        );
+        Some(tail_tx)
+    } else {
+        None
+    };
+
     let mut joinset: tokio::task::JoinSet<(String, anyhow::Result<()>)> =
         tokio::task::JoinSet::new();
     for prefix in prefixes {
@@ -5729,6 +5985,7 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
             slug: prefix.clone(),
             chainlink_hub: shared_hub.clone(),
             arbiter_tx: arbiter_sender.clone(),
+            round_tail_tx: round_tail_sender.clone(),
         });
         let slug = prefix.clone();
         joinset.spawn(async move {
@@ -5771,10 +6028,23 @@ async fn run_multi_market_supervisor(prefixes: Vec<String>) -> anyhow::Result<()
     if prefixes.is_empty() {
         return Ok(());
     }
+    // Default policy:
+    // - Oracle-lag multi-market should prefer in-proc supervisor (shared hub, lower overhead).
+    // - Operator can still override via PM_INPROC_SUPERVISOR.
+    let strategy_is_oracle_lag = env::var("PM_STRATEGY")
+        .ok()
+        .map(|v| {
+            let lv = v.trim().to_ascii_lowercase();
+            lv == "oracle_lag_sniping" || lv == "post_close_hype"
+        })
+        .unwrap_or(false);
     let inproc = env::var("PM_INPROC_SUPERVISOR")
         .ok()
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+        .map(|v| {
+            let lv = v.trim().to_ascii_lowercase();
+            lv == "1" || lv == "true" || lv == "yes" || lv == "on"
+        })
+        .unwrap_or(strategy_is_oracle_lag);
     if inproc {
         return run_inproc_supervisor(prefixes).await;
     }
@@ -6216,6 +6486,9 @@ async fn run_market_ws(
                                             MarketDataMsg::OracleLagSelection { .. } => {
                                                 // Arbiter-internal; never arrives from WS parser.
                                             }
+                                            MarketDataMsg::OracleLagTailAction { .. } => {
+                                                // Supervisor-internal; never arrives from WS parser.
+                                            }
                                         }
                                         if session_parsed_msg_count % 256 == 0 {
                                             tokio::task::yield_now().await;
@@ -6321,6 +6594,9 @@ async fn run_market_ws(
                                                     }
                                                     MarketDataMsg::OracleLagSelection { .. } => {
                                                         // Arbiter-internal; never arrives from WS parser.
+                                                    }
+                                                    MarketDataMsg::OracleLagTailAction { .. } => {
+                                                        // Supervisor-internal; never arrives from WS parser.
                                                     }
                                                 }
                                                 if session_parsed_msg_count % 256 == 0 {
@@ -6531,6 +6807,10 @@ struct WorkerCtx {
     /// Cross-market arbiter channel. When Some, hint listeners send
     /// `ArbiterObservation` to this instead of `WinnerHint` directly.
     arbiter_tx: Option<mpsc::Sender<ArbiterObservation>>,
+    /// Round-tail coordinator channel.
+    /// When Some, hint listeners report one final observation per round so
+    /// supervisor can dispatch exactly one tail action across markets.
+    round_tail_tx: Option<mpsc::Sender<RoundTailObservation>>,
 }
 
 async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
@@ -7532,10 +7812,12 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             let hint_round_end_ts = effective_end_ts;
             let hint_window_secs = coord_cfg.oracle_lag_sniping.window_secs;
             let hint_arbiter_tx = ctx.as_ref().and_then(|c| c.arbiter_tx.clone());
+            let hint_round_tail_tx = ctx.as_ref().and_then(|c| c.round_tail_tx.clone());
             session_handles.push(tokio::spawn(async move {
                 run_post_close_winner_hint_listener(
                     hint_tx,
                     hint_arbiter_tx,
+                    hint_round_tail_tx,
                     hint_md_rx,
                     hint_post_close_book_rx,
                     hint_rest_url,

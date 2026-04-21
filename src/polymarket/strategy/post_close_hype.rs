@@ -81,12 +81,17 @@ impl QuoteStrategy for PostCloseHypeStrategy {
             return StrategyQuotes::default();
         }
 
+        let size = coordinator.oracle_lag_effective_order_size(maker_price);
+        if size < 0.01 {
+            return StrategyQuotes::default();
+        }
+
         let mut quotes = StrategyQuotes::default();
         quotes.set(StrategyIntent {
             side,
             direction: TradeDirection::Buy,
             price: maker_price,
-            size: cfg.bid_size,
+            size,
             reason: BidReason::OracleLagProvide,
         });
         quotes
@@ -106,7 +111,11 @@ fn is_in_post_close_window(market_end_ts: Option<u64>, window_secs: u64) -> bool
 
 fn effective_tick(best_bid: f64, best_ask: f64, fallback: f64) -> f64 {
     // Polymarket switches to 0.001 when price > 0.96 or < 0.04.
-    if best_bid > 0.96 || best_ask > 0.96 || (best_bid > 0.0 && best_bid < 0.04) {
+    if best_bid > 0.96
+        || best_ask > 0.96
+        || (best_bid > 0.0 && best_bid < 0.04)
+        || (best_ask > 0.0 && best_ask < 0.04)
+    {
         0.001
     } else {
         fallback
@@ -120,6 +129,7 @@ mod tests {
     #[test]
     fn test_effective_tick_uses_micro_tick_near_extremes() {
         assert!((effective_tick(0.97, 0.98, 0.01) - 0.001).abs() < 1e-12);
+        assert!((effective_tick(0.00, 0.03, 0.01) - 0.001).abs() < 1e-12);
         assert!((effective_tick(0.50, 0.51, 0.01) - 0.01).abs() < 1e-12);
     }
 }

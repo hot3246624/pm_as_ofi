@@ -90,6 +90,16 @@ impl StrategyCoordinator {
         yes_toxic_blocked: bool,
         no_toxic_blocked: bool,
     ) {
+        if self.cfg.strategy.is_oracle_lag_sniping() && self.oracle_lag_round_halted {
+            // Round hard-stop after balance/allowance reject: no more trading attempts
+            // for this round; proactively clear live targets.
+            self.clear_slot_target(OrderSlot::YES_BUY, CancelReason::InventoryLimit)
+                .await;
+            self.clear_slot_target(OrderSlot::NO_BUY, CancelReason::InventoryLimit)
+                .await;
+            return;
+        }
+
         if self.cfg.strategy.execution_mode() == StrategyExecutionMode::SlotMarketMaking {
             self.execute_slot_market_making(
                 inv,

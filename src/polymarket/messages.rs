@@ -62,6 +62,27 @@ pub enum MarketDataMsg {
         rank: u8,
         reason: &'static str,
     },
+    /// Cross-market round-tail action for oracle_lag_sniping.
+    /// Dispatched once after all expected market finals are processed (or timeout).
+    OracleLagTailAction {
+        round_end_ts: u64,
+        side: Side,
+        mode: OracleLagTailMode,
+        /// Limit price to submit.
+        /// - Fak99: typically 0.99
+        /// - MakerBidStep: `min(bid0 + step, 0.991)`
+        limit_price: f64,
+        /// Slug that won tail ranking.
+        target_slug: String,
+        /// Coordinator-readable reason for logs/diagnostics.
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleLagTailMode {
+    Fak99,
+    MakerBidStep,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -489,6 +510,14 @@ pub enum ExecutionFeedback {
         slot: OrderSlot,
         tracked_orders: usize,
         blocked_for_ms: u64,
+        ts: Instant,
+    },
+    /// Placement reject observed by executor.
+    /// Used by strategy-side runtime gates (e.g. oracle_lag round halt on balance rejects).
+    PlacementRejected {
+        side: Side,
+        reason: BidReason,
+        kind: RejectKind,
         ts: Instant,
     },
 }

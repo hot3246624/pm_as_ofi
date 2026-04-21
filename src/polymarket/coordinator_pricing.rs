@@ -479,6 +479,13 @@ impl StrategyCoordinator {
         inv: &InventoryState,
         intent: Option<StrategyIntent>,
     ) -> bool {
+        if self.cfg.strategy.is_oracle_lag_sniping() && self.oracle_lag_round_halted {
+            if let Some(intent) = intent {
+                if intent.direction == TradeDirection::Buy {
+                    return false;
+                }
+            }
+        }
         match intent {
             Some(intent) => match (intent.side, intent.direction) {
                 (Side::Yes, TradeDirection::Buy) => {

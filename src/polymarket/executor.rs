@@ -902,6 +902,13 @@ impl Executor {
                     ts: Instant::now(),
                 })
                 .await;
+            self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                side,
+                reason,
+                kind: RejectKind::Validation,
+                ts: Instant::now(),
+            })
+            .await;
             let _ = self
                 .result_tx
                 .send(OrderResult::OrderFailed {
@@ -942,6 +949,13 @@ impl Executor {
                             ts: Instant::now(),
                         })
                         .await;
+                    self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                        side,
+                        reason,
+                        kind: RejectKind::BalanceOrAllowance,
+                        ts: Instant::now(),
+                    })
+                    .await;
                     let _ = self
                         .result_tx
                         .send(OrderResult::OrderFailed {
@@ -1198,6 +1212,13 @@ impl Executor {
                             ts: Instant::now(),
                         })
                         .await;
+                    self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                        side,
+                        reason,
+                        kind: reject_kind,
+                        ts: Instant::now(),
+                    })
+                    .await;
                 }
                 if is_cross_book {
                     self.emit_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
@@ -1365,6 +1386,13 @@ impl Executor {
                         ts: Instant::now(),
                     })
                     .await;
+                self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                    side,
+                    reason: purpose.as_bid_reason(),
+                    kind: reject_kind,
+                    ts: Instant::now(),
+                })
+                .await;
                 let _ = self
                     .result_tx
                     .send(OrderResult::TakerHedgeFailed { side, cooldown_ms })

@@ -926,7 +926,8 @@ impl OfiEngine {
                             }
                         }
                         Some(MarketDataMsg::WinnerHint { .. })
-                        | Some(MarketDataMsg::OracleLagSelection { .. }) => {
+                        | Some(MarketDataMsg::OracleLagSelection { .. })
+                        | Some(MarketDataMsg::OracleLagTailAction { .. }) => {
                             // Post-close control messages; OFI engine ignores.
                         }
                         None => break, // Channel closed

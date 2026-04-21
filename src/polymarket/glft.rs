@@ -779,7 +779,9 @@ impl GlftSignalEngine {
                 self.prune_windows(ts);
                 self.fast_refit_if_needed(ts);
             }
-            MarketDataMsg::WinnerHint { .. } | MarketDataMsg::OracleLagSelection { .. } => {
+            MarketDataMsg::WinnerHint { .. }
+            | MarketDataMsg::OracleLagSelection { .. }
+            | MarketDataMsg::OracleLagTailAction { .. } => {
                 // Post-close control messages; GLFT engine ignores.
             }
         }

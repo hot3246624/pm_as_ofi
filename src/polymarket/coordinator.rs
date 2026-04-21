@@ -107,6 +107,9 @@ pub struct OracleLagSnipingStrategyConfig {
     pub arbiter_collection_window_ms: u64,
     /// Book age threshold (ms) above which an observation is considered stale. Default: 250.
     pub arbiter_book_max_age_ms: u64,
+    /// Optional per-order notional cap (USDC) for oracle-lag orders.
+    /// 0.0 disables cap and uses `PM_BID_SIZE` as before.
+    pub max_order_notional_usdc: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -240,6 +243,7 @@ impl Default for CoordinatorConfig {
                 cross_market_arbiter_enabled: false,
                 arbiter_collection_window_ms: 200,
                 arbiter_book_max_age_ms: 250,
+                max_order_notional_usdc: 0.0,
             },
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
@@ -486,6 +490,18 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_ORACLE_LAG_ARBITER_BOOK_MAX_AGE_MS") {
             if let Ok(ms) = v.parse::<u64>() {
                 self.oracle_lag_sniping.arbiter_book_max_age_ms = ms;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_ORACLE_LAG_MAX_ORDER_NOTIONAL_USDC") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    self.oracle_lag_sniping.max_order_notional_usdc = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_ORACLE_LAG_MAX_ORDER_NOTIONAL_USDC={} (must satisfy x >= 0), using {}",
+                        f, self.oracle_lag_sniping.max_order_notional_usdc
+                    );
+                }
             }
         }
     }
@@ -1074,6 +1090,11 @@ pub struct StrategyCoordinator {
     /// Whether this market was selected by the cross-market arbiter for the current round.
     /// Defaults to true so single-market / no-arbiter mode is unaffected.
     oracle_lag_is_selected: bool,
+    /// Last round where a cross-market tail action was executed.
+    oracle_lag_tail_round_done: Option<u64>,
+    /// Hard stop for oracle_lag_sniping current round after balance/allowance reject.
+    oracle_lag_round_halted: bool,
+    oracle_lag_round_halt_kind: Option<RejectKind>,
     /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
     last_post_close_snapshot_ts: Option<Instant>,
     pair_arb_decision_epoch: u64,
@@ -1342,6 +1363,9 @@ impl StrategyCoordinator {
             oracle_lag_fak_shots_this_round: 0,
             oracle_lag_selected_round_end_ts: None,
             oracle_lag_is_selected: true,
+            oracle_lag_tail_round_done: None,
+            oracle_lag_round_halted: false,
+            oracle_lag_round_halt_kind: None,
             last_post_close_snapshot_ts: None,
             pair_arb_decision_epoch: 0,
             pair_arb_last_risk_open_cutoff_active: false,
@@ -1453,6 +1477,18 @@ impl StrategyCoordinator {
             .unwrap_or_default()
             .as_secs();
         now >= end_ts && now < end_ts.saturating_add(window)
+    }
+
+    /// Oracle-lag order size helper.
+    /// Base size comes from `PM_BID_SIZE`; optional notional cap can shrink it.
+    pub(crate) fn oracle_lag_effective_order_size(&self, price: f64) -> f64 {
+        let mut size = self.cfg.bid_size.max(0.0);
+        let cap = self.cfg.oracle_lag_sniping.max_order_notional_usdc;
+        if cap > 0.0 && price.is_finite() && price > 0.0 {
+            size = size.min(cap / price);
+        }
+        // Keep deterministic 2dp sizing aligned with dispatcher.
+        (size * 100.0).floor() / 100.0
     }
 
     pub async fn run(mut self) {
@@ -2587,6 +2623,26 @@ impl StrategyCoordinator {
                     tracked_orders,
                     blocked_for_ms
                 );
+            }
+            ExecutionFeedback::PlacementRejected {
+                side,
+                reason,
+                kind,
+                ts: _,
+            } => {
+                if self.cfg.strategy.is_oracle_lag_sniping()
+                    && self.cfg.oracle_lag_sniping.market_enabled
+                    && kind == RejectKind::BalanceOrAllowance
+                {
+                    if !self.oracle_lag_round_halted {
+                        warn!(
+                            "🛑 oracle_lag_round_halt | reason=balance_or_allowance_reject side={:?} bid_reason={:?} selected_round_end_ts={:?}",
+                            side, reason, self.oracle_lag_selected_round_end_ts
+                        );
+                    }
+                    self.oracle_lag_round_halted = true;
+                    self.oracle_lag_round_halt_kind = Some(kind);
+                }
             }
         }
     }
