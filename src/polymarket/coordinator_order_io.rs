@@ -10,17 +10,26 @@ use crate::polymarket::glft::{
 use super::*;
 
 impl StrategyCoordinator {
-    fn oracle_lag_allow_fallback_open_for_dry_run(&self) -> bool {
-        if !self.cfg.dry_run {
-            return false;
+    async fn clear_oracle_lag_live_maker_orders(&mut self, reason: &'static str) {
+        if !self.cfg.strategy.is_oracle_lag_sniping() {
+            return;
         }
-        std::env::var("PM_ORACLE_LAG_DRYRUN_ALLOW_FALLBACK_OPEN")
-            .ok()
-            .map(|v| {
-                let v = v.trim().to_ascii_lowercase();
-                !(v == "0" || v == "false" || v == "no" || v == "off")
-            })
-            .unwrap_or(true)
+        let mut cleared = 0u8;
+        for slot in [OrderSlot::YES_BUY, OrderSlot::NO_BUY] {
+            let is_oracle_lag_maker = self
+                .slot_target(slot)
+                .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
+            if is_oracle_lag_maker {
+                self.clear_slot_target(slot, CancelReason::Reprice).await;
+                cleared = cleared.saturating_add(1);
+            }
+        }
+        if cleared > 0 {
+            info!(
+                "🧹 oracle_lag_maker_cleanup | reason={} cleared_slots={}",
+                reason, cleared
+            );
+        }
     }
 
     // ═════════════════════════════════════════════════
@@ -1127,9 +1136,13 @@ impl StrategyCoordinator {
             } => {
                 let current = self.oracle_lag_selected_round_end_ts.unwrap_or(0);
                 if self.oracle_lag_selected_round_end_ts.is_none() || round_end_ts > current {
+                    self.clear_oracle_lag_live_maker_orders("selection_new_round")
+                        .await;
                     self.oracle_lag_selected_round_end_ts = Some(round_end_ts);
                     self.oracle_lag_is_selected = selected;
-                    self.oracle_lag_defer_to_round_tail = false;
+                    // Keep strategy-level maker path muted; round-tail action is the
+                    // single authority for post-close entry.
+                    self.oracle_lag_defer_to_round_tail = true;
                     self.oracle_lag_fak_last_dispatch = None;
                     self.oracle_lag_fak_shots_this_round = 0;
                     self.oracle_lag_tail_round_done = None;
@@ -1183,6 +1196,12 @@ impl StrategyCoordinator {
                     );
                     return;
                 }
+                if self
+                    .oracle_lag_tail_round_done
+                    .is_none_or(|prev| round_end_ts > prev)
+                {
+                    self.clear_oracle_lag_live_maker_orders("tail_new_round").await;
+                }
                 self.oracle_lag_tail_round_done = Some(round_end_ts);
                 let size = self.oracle_lag_effective_order_size(limit_price);
                 if size < 0.01 {
@@ -1198,6 +1217,36 @@ impl StrategyCoordinator {
                 );
                 match mode {
                     crate::polymarket::messages::OracleLagTailMode::Fak99 => {
+                        let (
+                            winner_bid,
+                            winner_ask,
+                            winner_ask_tradable,
+                            winner_spread_ticks,
+                            quality_source,
+                        ) = self.oracle_lag_winner_book_quality(
+                            side,
+                            0.0,
+                            0.0,
+                            "none",
+                            u64::MAX,
+                        );
+                        if !(winner_ask_tradable
+                            && winner_ask > 0.0
+                            && winner_ask <= limit_price + 1e-9)
+                        {
+                            info!(
+                                "⏭️ oracle_lag_tail_fak_skip | round_end_ts={} side={:?} reason=missing_or_untradable_winner_ask winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} limit_price={:.4}",
+                                round_end_ts,
+                                side,
+                                winner_bid,
+                                winner_ask,
+                                winner_ask_tradable,
+                                winner_spread_ticks,
+                                quality_source,
+                                limit_price,
+                            );
+                            return;
+                        }
                         self.dispatch_taker_intent(
                             side,
                             TradeDirection::Buy,
@@ -1208,9 +1257,8 @@ impl StrategyCoordinator {
                         .await;
                     }
                     crate::polymarket::messages::OracleLagTailMode::MakerBidStep => {
-                        for slot in OrderSlot::side_slots(side) {
-                            self.clear_slot_target(slot, CancelReason::Reprice).await;
-                        }
+                        self.clear_oracle_lag_live_maker_orders("tail_maker_republish")
+                            .await;
                         self.place_slot(
                             OrderSlot::new(side, TradeDirection::Buy),
                             limit_price,
@@ -1236,9 +1284,12 @@ impl StrategyCoordinator {
                 open_is_exact,
                 ts,
             } => {
+                let is_new_hint_round =
+                    self.post_close_winner_final_detect_unix_ms != Some(final_detect_unix_ms);
                 let changed = self.post_close_winner_side != Some(side)
                     || self.post_close_winner_source != Some(source)
-                    || self.post_close_winner_open_is_exact != Some(open_is_exact);
+                    || self.post_close_winner_open_is_exact != Some(open_is_exact)
+                    || is_new_hint_round;
                 self.post_close_winner_side = Some(side);
                 self.post_close_winner_source = Some(source);
                 self.post_close_winner_open_is_exact = Some(open_is_exact);
@@ -1249,37 +1300,33 @@ impl StrategyCoordinator {
                 self.post_close_winner_evidence_recv_ms = Some(winner_evidence_recv_ms);
                 self.post_close_winner_ts = Some(ts);
                 if changed {
-                    let fak_in_flight = self
-                        .oracle_lag_fak_last_dispatch
-                        .map(|t| {
-                            t.elapsed()
-                                < std::time::Duration::from_millis(
-                                    crate::polymarket::coordinator::ORACLE_LAG_FAK_COOLDOWN_MS,
-                                )
-                        })
-                        .unwrap_or(false);
                     info!(
-                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} fak_in_flight={} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={}",
+                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={} new_hint_round={}",
                         side,
                         source,
                         open_is_exact,
                         observed_price,
                         ref_price,
-                        fak_in_flight,
                         final_detect_unix_ms,
                         emit_unix_ms,
                         winner_evidence_recv_ms,
                         winner_distance_to_final_ms,
+                        is_new_hint_round,
                     );
-                    // Immediately fire a single FAK attempt when winner_ask < threshold.
-                    // This runs in the same async batch as hint receipt (winner_to_submit_ms ≈ 0).
-                    // Maker fallback is handled by the next tick() via compute_quotes.
                     if self.cfg.strategy.is_oracle_lag_sniping()
                         && self.cfg.oracle_lag_sniping.market_enabled
                     {
-                        // Winner hint path uses single-shot taker only. If winner ask is
-                        // unavailable or above threshold, hold fire and defer to round-tail.
+                        // Winner hint is now advisory only; round-tail action is the single
+                        // authority to place post-close orders for this round.
                         self.oracle_lag_defer_to_round_tail = true;
+                        if is_new_hint_round {
+                            self.clear_oracle_lag_live_maker_orders("winner_hint_new_round")
+                                .await;
+                            self.oracle_lag_fak_last_dispatch = None;
+                            self.oracle_lag_fak_shots_this_round = 0;
+                            self.oracle_lag_round_halted = false;
+                            self.oracle_lag_round_halt_kind = None;
+                        }
                         if self.oracle_lag_round_halted {
                             info!(
                                 "⏭️ oracle_lag_winner_hint_skip | reason=round_halted side={:?} source={:?} halt_kind={:?}",
@@ -1295,7 +1342,7 @@ impl StrategyCoordinator {
                             return;
                         }
                         info!(
-                            "🧭 oracle_lag_order_mode | mode=single_shot side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
+                            "🧭 oracle_lag_order_mode | mode=defer_round_tail side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
                             side, source, winner_book_source, winner_distance_to_final_ms
                         );
                         let (
@@ -1311,134 +1358,16 @@ impl StrategyCoordinator {
                             winner_book_source,
                             winner_distance_to_final_ms,
                         );
-                        let now_ms = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
-                        let market_end_ms = self.cfg.market_end_ts.map(|t| t.saturating_mul(1_000));
-                        let delta_from_end_ms =
-                            market_end_ms.map(|end_ms| now_ms.saturating_sub(end_ms));
-                        let winner_to_submit_ms = self
-                            .post_close_winner_ts
-                            .map(|t| t.elapsed().as_millis() as u64);
-                        let final_detect_to_submit_ms = now_ms.saturating_sub(final_detect_unix_ms);
-                        let emit_to_submit_ms = now_ms.saturating_sub(emit_unix_ms);
-                        let evidence_to_submit_ms = if winner_evidence_recv_ms > 0 {
-                            Some(now_ms.saturating_sub(winner_evidence_recv_ms))
-                        } else {
-                            None
-                        };
-                        let allow_fallback_open = self.oracle_lag_allow_fallback_open_for_dry_run();
-                        if fak_in_flight {
-                            // Another dispatch is still within cooldown (e.g. 2nd source arrived fast).
-                            info!(
-                                "🔁 oracle_lag_second_source | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} delta_from_end_ms={:?} winner_to_submit_ms={:?} — FAK within cooldown, skipping",
-                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source, delta_from_end_ms, winner_to_submit_ms,
-                            );
-                        } else if !open_is_exact && !allow_fallback_open {
-                            // First-round / fallback protection: open_ref is from
-                            // prev_close or frontend API. Data is semantically
-                            // correct but cold-start path is slower by ~300ms
-                            // and higher-risk. Skip FAK; maker path is also
-                            // gated by post_close_chainlink_winner().
-                            info!(
-                                "🛡️ oracle_lag_fak_skip_fallback_open | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} — open_ref not from exact round_start tick, holding fire",
-                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source,
-                            );
-                        } else if !open_is_exact && allow_fallback_open {
-                            info!(
-                                "🧪 oracle_lag_fak_allow_fallback_open_dry_run | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={}",
-                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source,
-                            );
-                        } else if self.oracle_lag_fak_shots_this_round >= 1 {
-                            info!(
-                                "🚫 oracle_lag_single_shot_exhausted | side={:?} shots={} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} — already dispatched single-shot",
-                                side,
-                                self.oracle_lag_fak_shots_this_round,
-                                winner_bid,
-                                winner_ask,
-                                winner_ask_tradable,
-                                winner_spread_ticks,
-                                winner_book_quality_source,
-                            );
-                        } else if winner_ask > 0.0 && winner_ask <= ORACLE_LAG_NO_TAKER_ABOVE_PRICE
-                        {
-                            let fak_size = self.oracle_lag_effective_order_size(
-                                crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE,
-                            );
-                            if fak_size < 0.01 {
-                                warn!(
-                                    "⚠️ oracle_lag_fak_skip | side={:?} reason=size_below_lot_floor computed_size={:.4} cap_usdc={:.4} bid_size={:.4}",
-                                    side,
-                                    fak_size,
-                                    self.cfg.oracle_lag_sniping.max_order_notional_usdc,
-                                    self.cfg.bid_size,
-                                );
-                                return;
-                            }
-                            self.oracle_lag_fak_shots_this_round =
-                                self.oracle_lag_fak_shots_this_round.saturating_add(1);
-                            let (loser_bid, loser_ask) = match side {
-                                Side::Yes => (self.book.no_bid, self.book.no_ask),
-                                Side::No => (self.book.yes_bid, self.book.yes_ask),
-                            };
-                            info!(
-                                "⚡ oracle_lag_fak_attempt_single_shot | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} size={:.2} delta_from_end_ms={:?} winner_to_submit_ms={:?} final_detect_to_submit_ms={} emit_to_submit_ms={} evidence_to_submit_ms={:?} source={:?} shots={} dry={}",
-                                side, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-                                fak_size,
-                                delta_from_end_ms, winner_to_submit_ms,
-                                final_detect_to_submit_ms,
-                                emit_to_submit_ms,
-                                evidence_to_submit_ms,
-                                source,
-                                self.oracle_lag_fak_shots_this_round,
-                                self.cfg.dry_run,
-                            );
-                            info!(
-                                "📋 oracle_lag_fak_book_snapshot | winner_side={:?} winner_bid={:.4} winner_ask={:.4} loser_bid={:.4} loser_ask={:.4} pair_sum_asks={:.4}",
-                                side,
-                                winner_bid,
-                                winner_ask,
-                                loser_bid,
-                                loser_ask,
-                                winner_ask + loser_ask,
-                            );
-                            info!(
-                                "📨 oracle_lag_fak_order_payload | side={:?} direction=Buy type=FAK limit_price={:.4} size={:.2} notional_usdc={:.4} purpose=OracleLagSnipe dry={}",
-                                side,
-                                crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE,
-                                fak_size,
-                                crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE
-                                    * fak_size,
-                                self.cfg.dry_run,
-                            );
-                            self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
-                            self.dispatch_taker_intent(
-                                side,
-                                TradeDirection::Buy,
-                                fak_size,
-                                TradePurpose::OracleLagSnipe,
-                                Some(crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE),
-                            )
-                            .await;
-                        } else {
-                            let skip_reason = if winner_ask <= 0.0 {
-                                "no_ask"
-                            } else {
-                                "above_threshold"
-                            };
-                            info!(
-                                "⚡ oracle_lag_hold_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} reason={} — wait for round-tail fallback",
-                                side,
-                                winner_bid,
-                                winner_ask,
-                                winner_ask_tradable,
-                                winner_spread_ticks,
-                                winner_book_quality_source,
-                                ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-                                skip_reason,
-                            );
-                        }
+                        info!(
+                            "⚡ oracle_lag_hold_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} reason=defer_to_round_tail",
+                            side,
+                            winner_bid,
+                            winner_ask,
+                            winner_ask_tradable,
+                            winner_spread_ticks,
+                            winner_book_quality_source,
+                            ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                        );
                     }
                 }
             }

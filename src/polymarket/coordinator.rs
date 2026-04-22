@@ -53,14 +53,10 @@ const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
 pub(crate) const PAIR_ARB_NET_EPS: f64 = 1e-6;
 /// Oracle-lag taker threshold: fire FAK only when winner ask <= 0.99.
 pub(crate) const ORACLE_LAG_NO_TAKER_ABOVE_PRICE: f64 = 0.990;
-/// FAK limit cap must not exceed taker threshold.
-pub(crate) const ORACLE_LAG_FAK_LIMIT_PRICE: f64 = 0.990;
 /// Maker fallback hard ceiling in post-close winner-side logic.
 pub(crate) const ORACLE_LAG_MAKER_MAX_PRICE: f64 = 0.991;
 /// Micro-tick boundary: when winner side has only bids and top bid ≥ this, step by 0.001; otherwise 0.01.
 pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
-/// Cooldown between consecutive FAK dispatches. Covers post_order roundtrip + IOC settle.
-pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
 /// Hint-side fallback freshness guard (ms). If hint evidence is older than this,
 /// do not use it for execution pricing when live winner-side book is missing.
 pub(crate) const ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS: u64 = 1200;
@@ -2334,6 +2330,19 @@ impl StrategyCoordinator {
         // Both cases must be exempt from stale guards; toxic-flow cancels still apply.
         let post_close_stale_immune =
             self.cfg.strategy.is_oracle_lag_sniping() && self.is_in_post_close_window();
+
+        // Oracle-lag maker lifecycle: once we leave post-close window, force-clear any
+        // residual oracle-lag maker BUY targets so they cannot leak into the next round.
+        if self.cfg.strategy.is_oracle_lag_sniping() && !self.is_in_post_close_window() {
+            for slot in [OrderSlot::YES_BUY, OrderSlot::NO_BUY] {
+                let should_clear = self
+                    .slot_target(slot)
+                    .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
+                if should_clear {
+                    self.clear_slot_target(slot, CancelReason::Reprice).await;
+                }
+            }
+        }
 
         // Priority 1: 30s Staleness Guard (Critical Shutdown)
         if self.is_book_stale() && !post_close_stale_immune {
