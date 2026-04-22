@@ -14,6 +14,7 @@ impl StrategyCoordinator {
         if !self.cfg.strategy.is_oracle_lag_sniping() {
             return;
         }
+        self.oracle_lag_maker_state_key = None;
         let mut cleared = 0u8;
         for slot in [OrderSlot::YES_BUY, OrderSlot::NO_BUY] {
             let is_oracle_lag_maker = self
@@ -920,6 +921,9 @@ impl StrategyCoordinator {
         if !active {
             return;
         }
+        let was_oracle_lag_maker = self
+            .slot_target(slot)
+            .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
         self.note_cancel_reason(reason);
 
         self.slot_targets[slot.index()] = None;
@@ -943,6 +947,9 @@ impl StrategyCoordinator {
             _ => {}
         }
         self.sync_buy_side_wrapper(slot);
+        if was_oracle_lag_maker {
+            self.oracle_lag_maker_state_key = None;
+        }
 
         debug!("🗑️ Cancel {} ({:?}, {:?})", slot.as_str(), reason, scope);
         self.stats.cancel_events = self.stats.cancel_events.saturating_add(1);
@@ -966,6 +973,9 @@ impl StrategyCoordinator {
         if self.slot_targets[slot.index()].is_none() {
             return;
         }
+        let was_oracle_lag_maker = self
+            .slot_target(slot)
+            .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
         self.slot_targets[slot.index()] = None;
         self.slot_shadow_targets[slot.index()] = None;
         self.slot_shadow_since[slot.index()] = None;
@@ -983,6 +993,9 @@ impl StrategyCoordinator {
             _ => {}
         }
         self.sync_buy_side_wrapper(slot);
+        if was_oracle_lag_maker {
+            self.oracle_lag_maker_state_key = None;
+        }
         debug!(
             "🧭 Soft release {} after OMS/exchange release",
             slot.as_str()
@@ -1189,10 +1202,18 @@ impl StrategyCoordinator {
                     );
                     return;
                 }
-                if self.oracle_lag_tail_round_done == Some(round_end_ts) {
+                if self
+                    .oracle_lag_tail_round_done
+                    .is_some_and(|prev| round_end_ts < prev)
+                {
                     debug!(
-                        "⏭️ oracle_lag_tail_action_duplicate | round_end_ts={} side={:?} mode={:?} target_slug={} reason={} — ignored",
-                        round_end_ts, side, mode, target_slug, reason
+                        "⏭️ oracle_lag_tail_action_stale | round_end_ts={} current_round={:?} side={:?} mode={:?} target_slug={} reason={}",
+                        round_end_ts,
+                        self.oracle_lag_tail_round_done,
+                        side,
+                        mode,
+                        target_slug,
+                        reason
                     );
                     return;
                 }
@@ -1201,6 +1222,7 @@ impl StrategyCoordinator {
                     .is_none_or(|prev| round_end_ts > prev)
                 {
                     self.clear_oracle_lag_live_maker_orders("tail_new_round").await;
+                    self.oracle_lag_maker_state_key = None;
                 }
                 self.oracle_lag_tail_round_done = Some(round_end_ts);
                 let size = self.oracle_lag_effective_order_size(limit_price);
@@ -1257,15 +1279,51 @@ impl StrategyCoordinator {
                         .await;
                     }
                     crate::polymarket::messages::OracleLagTailMode::MakerBidStep => {
-                        self.clear_oracle_lag_live_maker_orders("tail_maker_republish")
-                            .await;
-                        self.place_slot(
-                            OrderSlot::new(side, TradeDirection::Buy),
+                        let tick = self.cfg.tick_size.max(1e-9);
+                        let price_ticks = (limit_price / tick).round() as i64;
+                        let size_centi = (size * 100.0).round() as i64;
+                        let maker_state_key = format!(
+                            "{}|{}|{}|{}|{}",
+                            round_end_ts,
+                            target_slug,
+                            side.as_str(),
+                            price_ticks,
+                            size_centi
+                        );
+                        if self.oracle_lag_maker_state_key.as_deref()
+                            == Some(maker_state_key.as_str())
+                        {
+                            debug!(
+                                "⏭️ oracle_lag_tail_maker_hold | round_end_ts={} side={:?} target_slug={} limit_price={:.4} size={:.2} reason=state_unchanged",
+                                round_end_ts, side, target_slug, limit_price, size
+                            );
+                            return;
+                        }
+
+                        let slot = OrderSlot::new(side, TradeDirection::Buy);
+                        let opposite = match side {
+                            Side::Yes => OrderSlot::NO_BUY,
+                            Side::No => OrderSlot::YES_BUY,
+                        };
+                        let opposite_is_oracle_lag_maker = self
+                            .slot_target(opposite)
+                            .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
+                        if opposite_is_oracle_lag_maker {
+                            self.clear_slot_target(opposite, CancelReason::Reprice).await;
+                        }
+
+                        self.slot_place_or_reprice(
+                            slot,
                             limit_price,
                             size,
                             BidReason::OracleLagProvide,
+                            Some(format!(
+                                "oracle_lag_tail_maker | target_slug={} reason={}",
+                                target_slug, reason
+                            )),
                         )
                         .await;
+                        self.oracle_lag_maker_state_key = Some(maker_state_key);
                     }
                 }
             }

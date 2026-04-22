@@ -1094,8 +1094,11 @@ pub struct StrategyCoordinator {
     oracle_lag_is_selected: bool,
     /// Suppress strategy-level maker emits and wait for round-tail fallback action.
     oracle_lag_defer_to_round_tail: bool,
-    /// Last round where a cross-market tail action was executed.
+    /// Current round that oracle-lag tail actions belong to.
+    /// Used for stale/new-round gating only (not one-shot dedup).
     oracle_lag_tail_round_done: Option<u64>,
+    /// Last maker-tail state key to prevent same-state high-frequency clear/repost.
+    oracle_lag_maker_state_key: Option<String>,
     /// Hard stop for oracle_lag_sniping current round after balance/allowance reject.
     oracle_lag_round_halted: bool,
     oracle_lag_round_halt_kind: Option<RejectKind>,
@@ -1372,6 +1375,7 @@ impl StrategyCoordinator {
             oracle_lag_is_selected: true,
             oracle_lag_defer_to_round_tail: false,
             oracle_lag_tail_round_done: None,
+            oracle_lag_maker_state_key: None,
             oracle_lag_round_halted: false,
             oracle_lag_round_halt_kind: None,
             last_post_close_snapshot_ts: None,
