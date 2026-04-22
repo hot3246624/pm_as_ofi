@@ -261,7 +261,21 @@ impl Executor {
                             self.handle_execute_intent(intent).await;
                         }
                         Some(ExecutionCmd::PlacePostOnlyBid { side, direction, price, size, reason }) => {
-                            self.handle_place_bid(side, direction, price, size, reason, 0.0).await;
+                            let purpose = match reason {
+                                BidReason::Provide => TradePurpose::Provide,
+                                BidReason::OracleLagProvide => TradePurpose::OracleLagSnipe,
+                                BidReason::Hedge => TradePurpose::Hedge,
+                            };
+                            self.handle_place_bid(
+                                side,
+                                direction,
+                                price,
+                                size,
+                                reason,
+                                purpose,
+                                0.0,
+                            )
+                            .await;
                         }
                         Some(ExecutionCmd::PlaceTakerHedge { side, direction, size }) => {
                             self.handle_place_taker(side, direction, size, TradePurpose::Hedge, None).await;
@@ -741,6 +755,7 @@ impl Executor {
                     price,
                     intent.size,
                     intent.purpose.as_bid_reason(),
+                    intent.purpose,
                     intent.local_unreleased_matched_notional_usdc,
                 )
                 .await;
@@ -765,13 +780,37 @@ impl Executor {
         price: f64,
         size: f64,
         reason: BidReason,
+        purpose: TradePurpose,
         local_unreleased_matched_notional_usdc: f64,
     ) {
+        let mut size = size;
         let slot = OrderSlot::new(side, direction);
         let reason_str = match reason {
             BidReason::Provide => "PROVIDE",
+            BidReason::OracleLagProvide => "ORACLE_LAG_PROVIDE",
             BidReason::Hedge => "HEDGE",
         };
+
+        // Oracle-lag single-shot all-in sizing for maker fallback path.
+        // Keep this explicitly scoped by purpose to avoid affecting other strategies.
+        if direction == TradeDirection::Buy
+            && purpose == TradePurpose::OracleLagSnipe
+            && price > 0.0
+        {
+            if let Some(free_usdc) = self.cached_free_balance_usdc().await {
+                let cushion = 0.05_f64;
+                let spendable = (free_usdc - cushion).max(0.0);
+                let affordable_shares = (spendable / price).max(0.0);
+                let affordable_2dp = (affordable_shares * 100.0).floor() / 100.0;
+                let chosen = (affordable_2dp * 100.0).floor() / 100.0;
+                info!(
+                    "📐 oracle_lag_order_size | mode=maker_fallback side={:?} requested={:.2} chosen={:.2} free_usdc={:.2} spendable_usdc={:.2} price={:.4}",
+                    side, size, chosen, free_usdc, spendable, price
+                );
+                size = chosen;
+            }
+        }
+
         info!(
             "📤 {} PostOnly {:?} {:?}@{:.3} size={:.1}",
             reason_str, direction, side, price, size,
@@ -863,6 +902,13 @@ impl Executor {
                     ts: Instant::now(),
                 })
                 .await;
+            self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                side,
+                reason,
+                kind: RejectKind::Validation,
+                ts: Instant::now(),
+            })
+            .await;
             let _ = self
                 .result_tx
                 .send(OrderResult::OrderFailed {
@@ -903,6 +949,13 @@ impl Executor {
                             ts: Instant::now(),
                         })
                         .await;
+                    self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                        side,
+                        reason,
+                        kind: RejectKind::BalanceOrAllowance,
+                        ts: Instant::now(),
+                    })
+                    .await;
                     let _ = self
                         .result_tx
                         .send(OrderResult::OrderFailed {
@@ -1159,6 +1212,13 @@ impl Executor {
                             ts: Instant::now(),
                         })
                         .await;
+                    self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                        side,
+                        reason,
+                        kind: reject_kind,
+                        ts: Instant::now(),
+                    })
+                    .await;
                 }
                 if is_cross_book {
                     self.emit_execution_feedback(ExecutionFeedback::PostOnlyCrossed {
@@ -1189,7 +1249,30 @@ impl Executor {
         purpose: TradePurpose,
         limit_price: Option<f64>,
     ) {
-        let size = Self::normalize_taker_size_for_market_buy(size);
+        let mut size = Self::normalize_taker_size_for_market_buy(size);
+
+        // Oracle-lag single-shot all-in sizing:
+        // for BUY taker snipes, derive executable size from real-time free USDC
+        // at submit time instead of fixed PM_BID_SIZE.
+        if direction == TradeDirection::Buy
+            && purpose == TradePurpose::OracleLagSnipe
+            && limit_price.unwrap_or(0.0) > 0.0
+        {
+            let px_cap = limit_price.unwrap_or(0.0);
+            if let Some(free_usdc) = self.cached_free_balance_usdc().await {
+                let cushion = 0.05_f64;
+                let spendable = (free_usdc - cushion).max(0.0);
+                let affordable_shares = (spendable / px_cap).max(0.0);
+                let affordable_2dp = (affordable_shares * 100.0).floor() / 100.0;
+                let chosen = Self::normalize_taker_size_for_market_buy(affordable_2dp);
+                info!(
+                    "📐 oracle_lag_order_size | side={:?} requested={:.2} chosen={:.2} free_usdc={:.2} spendable_usdc={:.2} limit_price={:.4}",
+                    side, size, chosen, free_usdc, spendable, px_cap
+                );
+                size = chosen;
+            }
+        }
+
         info!(
             "📤 TAKER {:?} {:?} size={:.2} purpose={:?} limit_price={:?}",
             direction, side, size, purpose, limit_price
@@ -1303,6 +1386,13 @@ impl Executor {
                         ts: Instant::now(),
                     })
                     .await;
+                self.emit_execution_feedback(ExecutionFeedback::PlacementRejected {
+                    side,
+                    reason: purpose.as_bid_reason(),
+                    kind: reject_kind,
+                    ts: Instant::now(),
+                })
+                .await;
                 let _ = self
                     .result_tx
                     .send(OrderResult::TakerHedgeFailed { side, cooldown_ms })

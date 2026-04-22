@@ -172,6 +172,26 @@ impl StrategyKind {
         }
     }
 
+    #[inline]
+    pub fn is_glft_mm(self) -> bool {
+        matches!(self, Self::GlftMm)
+    }
+
+    #[inline]
+    pub fn is_pair_arb(self) -> bool {
+        matches!(self, Self::PairArb)
+    }
+
+    #[inline]
+    pub fn is_oracle_lag_sniping(self) -> bool {
+        matches!(self, Self::OracleLagSniping)
+    }
+
+    #[inline]
+    pub fn bypasses_stale_market_gate(self) -> bool {
+        self.is_oracle_lag_sniping()
+    }
+
     pub(crate) fn execution_mode(self) -> StrategyExecutionMode {
         match self {
             Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {

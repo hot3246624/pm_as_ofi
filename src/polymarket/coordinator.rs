@@ -51,16 +51,19 @@ const LIVE_OBS_PAIR_ARB_SOFTENED_ALERT_RATIO: f64 = 0.50;
 const LIVE_OBS_PAIR_ARB_MIN_GATE_ATTEMPTS_FOR_HEAT: u64 = 1_000;
 const PAIR_ARB_GATE_SUMMARY_SECS: u64 = 30;
 pub(crate) const PAIR_ARB_NET_EPS: f64 = 1e-6;
-pub(crate) const ORACLE_LAG_NO_TAKER_ABOVE_PRICE: f64 = 0.993;
-pub(crate) const ORACLE_LAG_FAK_LIMIT_PRICE: f64 = 0.992;
+/// Oracle-lag taker threshold: fire FAK only when winner ask <= 0.99.
+pub(crate) const ORACLE_LAG_NO_TAKER_ABOVE_PRICE: f64 = 0.990;
+/// FAK limit cap must not exceed taker threshold.
+pub(crate) const ORACLE_LAG_FAK_LIMIT_PRICE: f64 = 0.990;
+/// Maker fallback hard ceiling in post-close winner-side logic.
+pub(crate) const ORACLE_LAG_MAKER_MAX_PRICE: f64 = 0.991;
 /// Micro-tick boundary: when winner side has only bids and top bid ≥ this, step by 0.001; otherwise 0.01.
 pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
 /// Cooldown between consecutive FAK dispatches. Covers post_order roundtrip + IOC settle.
 pub(crate) const ORACLE_LAG_FAK_COOLDOWN_MS: u64 = 500;
-/// Per-round cap on FAK dispatches (first-shot + all re-entries combined).
-/// Protects against runaway re-entry when the book doesn't deplete as expected
-/// (e.g. dry-run, sluggish market, or stale winner_ask reads).
-pub(crate) const ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND: u8 = 3;
+/// Hint-side fallback freshness guard (ms). If hint evidence is older than this,
+/// do not use it for execution pricing when live winner-side book is missing.
+pub(crate) const ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS: u64 = 1200;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
@@ -101,6 +104,15 @@ pub struct OracleLagSnipingStrategyConfig {
     /// Runtime market guard for post-close strategy.
     /// This is set by main loop per-round from slug + symbol-universe gating.
     pub market_enabled: bool,
+    /// Enable cross-market arbiter (inproc supervisor only). Default: false.
+    pub cross_market_arbiter_enabled: bool,
+    /// Milliseconds to collect observations before arbitrating. Default: 200.
+    pub arbiter_collection_window_ms: u64,
+    /// Book age threshold (ms) above which an observation is considered stale. Default: 250.
+    pub arbiter_book_max_age_ms: u64,
+    /// Optional per-order notional cap (USDC) for oracle-lag orders.
+    /// 0.0 disables cap and uses `PM_BID_SIZE` as before.
+    pub max_order_notional_usdc: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -231,6 +243,10 @@ impl Default for CoordinatorConfig {
                 // ~Polymarket liquidity lifecycle post-close (all resting orders cleared by then).
                 window_secs: 105,
                 market_enabled: false,
+                cross_market_arbiter_enabled: false,
+                arbiter_collection_window_ms: 200,
+                arbiter_book_max_age_ms: 250,
+                max_order_notional_usdc: 0.0,
             },
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
@@ -259,43 +275,55 @@ impl Default for CoordinatorConfig {
 
 impl CoordinatorConfig {
     pub fn from_env() -> Self {
-        let mut c = Self::default();
-        c.strategy = StrategyKind::from_env_or_default(c.strategy);
+        let mut cfg = Self::default();
+        cfg.strategy = StrategyKind::from_env_or_default(cfg.strategy);
+        cfg.apply_common_env();
+        cfg.apply_glft_env();
+        cfg.apply_pair_arb_env();
+        cfg.apply_oracle_lag_env();
+        cfg.apply_hedge_env();
+        cfg.apply_runtime_env();
+        cfg.apply_endgame_env();
+        cfg.finalize_invariants();
+        cfg
+    }
+
+    fn apply_common_env(&mut self) {
         if let Ok(v) = std::env::var("PM_PAIR_TARGET") {
             if let Ok(f) = v.parse() {
-                c.pair_target = f;
+                self.pair_target = f;
             }
         }
         if let Ok(v) = std::env::var("PM_OPEN_PAIR_BAND") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..1.0).contains(&f) {
-                    c.open_pair_band = f;
+                    self.open_pair_band = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_OPEN_PAIR_BAND={} (must satisfy 0 < p < 1), using {}",
-                        f, c.open_pair_band
+                        f, self.open_pair_band
                     );
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_MAX_NET_DIFF") {
             if let Ok(f) = v.parse() {
-                c.max_net_diff = f;
+                self.max_net_diff = f;
             }
         }
         if let Ok(v) = std::env::var("PM_BID_SIZE") {
             if let Ok(f) = v.parse() {
-                c.bid_size = f;
+                self.bid_size = f;
             }
         }
         if let Ok(v) = std::env::var("PM_DIP_BUY_MAX_ENTRY_PRICE") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..1.0).contains(&f) {
-                    c.dip_buy_max_entry_price = f;
+                    self.dip_buy_max_entry_price = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_DIP_BUY_MAX_ENTRY_PRICE={} (must satisfy 0 < p < 1), using {}",
-                        f, c.dip_buy_max_entry_price
+                        f, self.dip_buy_max_entry_price
                     );
                 }
             }
@@ -303,11 +331,11 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_TICK_SIZE") {
             if let Ok(f) = v.parse() {
                 if (0.0..1.0).contains(&f) {
-                    c.tick_size = f;
+                    self.tick_size = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_TICK_SIZE={} (must satisfy 0 < tick < 1), using {}",
-                        f, c.tick_size
+                        f, self.tick_size
                     );
                 }
             }
@@ -315,97 +343,103 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_POST_ONLY_SAFETY_TICKS") {
             if let Ok(f) = v.parse::<f64>() {
                 if f > 0.0 {
-                    c.post_only_safety_ticks = f;
+                    self.post_only_safety_ticks = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_POST_ONLY_TIGHT_SPREAD_TICKS") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.post_only_tight_spread_ticks = f;
+                    self.post_only_tight_spread_ticks = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_POST_ONLY_EXTRA_TIGHT_TICKS") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.post_only_extra_tight_ticks = f;
+                    self.post_only_extra_tight_ticks = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_REPRICE_THRESHOLD") {
             if let Ok(f) = v.parse() {
-                c.reprice_threshold = f;
+                self.reprice_threshold = f;
             }
         }
         if let Ok(v) = std::env::var("PM_DEBOUNCE_MS") {
             if let Ok(f) = v.parse() {
-                c.debounce_ms = f;
+                self.debounce_ms = f;
             }
         }
         if let Ok(v) = std::env::var("PM_AS_SKEW_FACTOR") {
             if let Ok(f) = v.parse() {
-                c.as_skew_factor = f;
+                self.as_skew_factor = f;
             }
         }
+        if let Ok(v) = std::env::var("PM_AS_TIME_DECAY_K") {
+            if let Ok(f) = v.parse::<f64>() {
+                self.as_time_decay_k = f.max(0.0);
+            }
+        }
+    }
+
+    fn apply_glft_env(&mut self) {
         if let Ok(v) = std::env::var("PM_GLFT_GAMMA") {
             if let Ok(f) = v.parse::<f64>() {
                 if f > 0.0 {
-                    c.glft_gamma = f;
+                    self.glft_gamma = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_GLFT_XI") {
             if let Ok(f) = v.parse::<f64>() {
                 if f > 0.0 {
-                    c.glft_xi = f;
+                    self.glft_xi = f;
                 }
             }
         } else {
-            c.glft_xi = c.glft_gamma;
+            self.glft_xi = self.glft_gamma;
         }
-        if c.glft_xi <= 0.0 {
-            c.glft_xi = c.glft_gamma.max(1e-6);
+        if self.glft_xi <= 0.0 {
+            self.glft_xi = self.glft_gamma.max(1e-6);
         }
         if let Ok(v) = std::env::var("PM_GLFT_OFI_ALPHA") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.glft_ofi_alpha = f;
+                    self.glft_ofi_alpha = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_GLFT_OFI_SPREAD_BETA") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.glft_ofi_spread_beta = f;
+                    self.glft_ofi_spread_beta = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_MIN_HALF_SPREAD_TICKS") {
             if let Ok(f) = v.parse::<f64>() {
                 if f > 0.0 {
-                    c.glft_min_half_spread_ticks = f;
+                    self.glft_min_half_spread_ticks = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_MIN_HALF_SPREAD_TICKS={} (must be > 0), using {}",
-                        f, c.glft_min_half_spread_ticks
+                        f, self.glft_min_half_spread_ticks
                     );
                 }
             }
         }
-        if let Ok(v) = std::env::var("PM_AS_TIME_DECAY_K") {
-            if let Ok(f) = v.parse::<f64>() {
-                c.as_time_decay_k = f.max(0.0);
-            }
-        }
+    }
+
+    fn apply_pair_arb_env(&mut self) {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_1_MULT") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..=1.0).contains(&f) {
-                    c.pair_arb.tier_1_mult = f;
+                    self.pair_arb.tier_1_mult = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_1_MULT={} (must satisfy 0 <= x <= 1), using {}",
-                        f, c.pair_arb.tier_1_mult
+                        f, self.pair_arb.tier_1_mult
                     );
                 }
             }
@@ -413,11 +447,11 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_2_MULT") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..=1.0).contains(&f) {
-                    c.pair_arb.tier_2_mult = f;
+                    self.pair_arb.tier_2_mult = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_2_MULT={} (must satisfy 0 <= x <= 1), using {}",
-                        f, c.pair_arb.tier_2_mult
+                        f, self.pair_arb.tier_2_mult
                     );
                 }
             }
@@ -425,85 +459,146 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..1.0).contains(&f) {
-                    c.pair_arb.pair_cost_safety_margin = f;
+                    self.pair_arb.pair_cost_safety_margin = f;
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN={} (must satisfy 0 <= x < 1), using {}",
-                        f, c.pair_arb.pair_cost_safety_margin
+                        f, self.pair_arb.pair_cost_safety_margin
                     );
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.pair_arb.risk_open_cutoff_secs = secs;
+                self.pair_arb.risk_open_cutoff_secs = secs;
             }
         }
+    }
+
+    fn apply_oracle_lag_env(&mut self) {
         if let Ok(v) = std::env::var("PM_POST_CLOSE_WINDOW_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.oracle_lag_sniping.window_secs = secs;
+                self.oracle_lag_sniping.window_secs = secs;
             }
         }
+        if let Ok(v) = std::env::var("PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED") {
+            let lv = v.to_ascii_lowercase();
+            self.oracle_lag_sniping.cross_market_arbiter_enabled = v == "1" || lv == "true";
+        }
+        if let Ok(v) = std::env::var("PM_ORACLE_LAG_ARBITER_COLLECTION_WINDOW_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                self.oracle_lag_sniping.arbiter_collection_window_ms = ms;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_ORACLE_LAG_ARBITER_BOOK_MAX_AGE_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                self.oracle_lag_sniping.arbiter_book_max_age_ms = ms;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_ORACLE_LAG_MAX_ORDER_NOTIONAL_USDC") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    self.oracle_lag_sniping.max_order_notional_usdc = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_ORACLE_LAG_MAX_ORDER_NOTIONAL_USDC={} (must satisfy x >= 0), using {}",
+                        f, self.oracle_lag_sniping.max_order_notional_usdc
+                    );
+                }
+            }
+        }
+    }
+
+    fn apply_hedge_env(&mut self) {
         if let Ok(v) = std::env::var("PM_HEDGE_DEBOUNCE_MS") {
             if let Ok(ms) = v.parse::<u64>() {
-                c.hedge_debounce_ms = ms;
+                self.hedge_debounce_ms = ms;
             }
         }
         if let Ok(v) = std::env::var("PM_MAX_PORTFOLIO_COST") {
             if let Ok(f) = v.parse() {
-                c.max_portfolio_cost = f;
+                self.max_portfolio_cost = f;
             }
         }
         if let Ok(v) = std::env::var("PM_MIN_ORDER_SIZE") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.min_order_size = f;
+                    self.min_order_size = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_MIN_HEDGE_SIZE") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.min_hedge_size = f;
+                    self.min_hedge_size = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_HEDGE_ROUND_UP") {
-            c.hedge_round_up = v == "1" || v.to_lowercase() == "true";
+            self.hedge_round_up = v == "1" || v.to_lowercase() == "true";
         }
         if let Ok(v) = std::env::var("PM_HEDGE_MIN_MARKETABLE_NOTIONAL") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.hedge_min_marketable_notional = f;
+                    self.hedge_min_marketable_notional = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.hedge_min_marketable_max_extra = f;
+                    self.hedge_min_marketable_max_extra = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_HEDGE_MIN_MARKETABLE_MAX_EXTRA_PCT") {
             if let Ok(f) = v.parse::<f64>() {
                 if f >= 0.0 {
-                    c.hedge_min_marketable_max_extra_pct = f;
+                    self.hedge_min_marketable_max_extra_pct = f;
                 }
             }
         }
+    }
+
+    fn apply_runtime_env(&mut self) {
+        if let Ok(v) = std::env::var("PM_DRY_RUN") {
+            self.dry_run = v != "0" && v.to_lowercase() != "false";
+        }
+        if let Ok(v) = std::env::var("PM_STALE_TTL_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                self.stale_ttl_ms = ms;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COORD_WATCHDOG_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                self.watchdog_tick_ms = ms.max(50);
+            }
+        }
+        if let Ok(v) = std::env::var("PM_STRATEGY_METRICS_LOG_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                self.strategy_metrics_log_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_TOXIC_RECOVERY_HOLD_MS") {
+            if let Ok(ms) = v.parse::<u64>() {
+                self.toxic_recovery_hold_ms = ms;
+            }
+        }
+    }
+
+    fn apply_endgame_env(&mut self) {
         if let Ok(v) = std::env::var("PM_MAX_LOSS_PCT") {
             if let Ok(f) = v.parse::<f64>() {
                 if (0.0..1.0).contains(&f) {
-                    c.max_loss_pct = f;
+                    self.max_loss_pct = f;
                     warn!(
                         "⚠️ PM_MAX_LOSS_PCT is deprecated and ignored (value={:.3})",
-                        c.max_loss_pct
+                        self.max_loss_pct
                     );
                 } else {
                     warn!(
                         "⚠️ Ignoring invalid PM_MAX_LOSS_PCT={} (must satisfy 0 <= pct < 1), using {}",
-                        f, c.max_loss_pct
+                        f, self.max_loss_pct
                     );
                 }
             }
@@ -511,89 +606,68 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_ENDGAME_EDGE_KEEP_MULT") {
             if let Ok(f) = v.parse::<f64>() {
                 if f > 0.0 {
-                    c.endgame_edge_keep_mult = f;
+                    self.endgame_edge_keep_mult = f;
                 }
             }
         }
         if let Ok(v) = std::env::var("PM_ENDGAME_EDGE_EXIT_MULT") {
             if let Ok(f) = v.parse::<f64>() {
                 if f > 0.0 {
-                    c.endgame_edge_exit_mult = f;
+                    self.endgame_edge_exit_mult = f;
                 }
-            }
-        }
-        if c.endgame_edge_exit_mult > c.endgame_edge_keep_mult {
-            warn!(
-                "⚠️ Clamping PM_ENDGAME_EDGE_EXIT_MULT from {:.4} to {:.4} (must be <= keep_mult)",
-                c.endgame_edge_exit_mult, c.endgame_edge_keep_mult
-            );
-            c.endgame_edge_exit_mult = c.endgame_edge_keep_mult;
-        }
-        if let Ok(v) = std::env::var("PM_DRY_RUN") {
-            c.dry_run = v != "0" && v.to_lowercase() != "false";
-        }
-        if let Ok(v) = std::env::var("PM_STALE_TTL_MS") {
-            if let Ok(ms) = v.parse::<u64>() {
-                c.stale_ttl_ms = ms;
-            }
-        }
-        if let Ok(v) = std::env::var("PM_COORD_WATCHDOG_MS") {
-            if let Ok(ms) = v.parse::<u64>() {
-                c.watchdog_tick_ms = ms.max(50);
-            }
-        }
-        if let Ok(v) = std::env::var("PM_STRATEGY_METRICS_LOG_SECS") {
-            if let Ok(secs) = v.parse::<u64>() {
-                c.strategy_metrics_log_secs = secs;
-            }
-        }
-        if let Ok(v) = std::env::var("PM_TOXIC_RECOVERY_HOLD_MS") {
-            if let Ok(ms) = v.parse::<u64>() {
-                c.toxic_recovery_hold_ms = ms;
             }
         }
         if let Ok(v) = std::env::var("PM_ENDGAME_SOFT_CLOSE_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.endgame_soft_close_secs = secs;
+                self.endgame_soft_close_secs = secs;
             }
         }
         if let Ok(v) = std::env::var("PM_ENDGAME_HARD_CLOSE_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.endgame_hard_close_secs = secs;
+                self.endgame_hard_close_secs = secs;
             }
         }
         if let Ok(v) = std::env::var("PM_ENDGAME_FREEZE_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.endgame_freeze_secs = secs;
+                self.endgame_freeze_secs = secs;
             }
         }
         if let Ok(v) = std::env::var("PM_ENDGAME_MAKER_REPAIR_MIN_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
-                c.endgame_maker_repair_min_secs = secs;
+                self.endgame_maker_repair_min_secs = secs;
             }
         }
+    }
+
+    fn finalize_invariants(&mut self) {
+        if self.endgame_edge_exit_mult > self.endgame_edge_keep_mult {
+            warn!(
+                "⚠️ Clamping PM_ENDGAME_EDGE_EXIT_MULT from {:.4} to {:.4} (must be <= keep_mult)",
+                self.endgame_edge_exit_mult, self.endgame_edge_keep_mult
+            );
+            self.endgame_edge_exit_mult = self.endgame_edge_keep_mult;
+        }
         // Keep windows ordered: soft >= hard >= freeze.
-        if c.endgame_hard_close_secs > c.endgame_soft_close_secs {
+        if self.endgame_hard_close_secs > self.endgame_soft_close_secs {
             warn!(
                 "⚠️ Clamping PM_ENDGAME_HARD_CLOSE_SECS from {} to {} (must be <= soft-close)",
-                c.endgame_hard_close_secs, c.endgame_soft_close_secs
+                self.endgame_hard_close_secs, self.endgame_soft_close_secs
             );
-            c.endgame_hard_close_secs = c.endgame_soft_close_secs;
+            self.endgame_hard_close_secs = self.endgame_soft_close_secs;
         }
-        if c.endgame_freeze_secs > c.endgame_hard_close_secs {
+        if self.endgame_freeze_secs > self.endgame_hard_close_secs {
             warn!(
                 "⚠️ Clamping PM_ENDGAME_FREEZE_SECS from {} to {} (must be <= hard-close)",
-                c.endgame_freeze_secs, c.endgame_hard_close_secs
+                self.endgame_freeze_secs, self.endgame_hard_close_secs
             );
-            c.endgame_freeze_secs = c.endgame_hard_close_secs;
+            self.endgame_freeze_secs = self.endgame_hard_close_secs;
         }
-        if c.endgame_maker_repair_min_secs > c.endgame_hard_close_secs {
+        if self.endgame_maker_repair_min_secs > self.endgame_hard_close_secs {
             warn!(
                 "⚠️ PM_ENDGAME_MAKER_REPAIR_MIN_SECS={} exceeds hard-close window {}s; maker repair may be skipped in HardClose",
-                c.endgame_maker_repair_min_secs, c.endgame_hard_close_secs
+                self.endgame_maker_repair_min_secs, self.endgame_hard_close_secs
             );
         }
-        c
     }
 }
 
@@ -1002,6 +1076,9 @@ pub struct StrategyCoordinator {
     post_close_winner_open_is_exact: Option<bool>,
     post_close_winner_ref_price: f64,
     post_close_winner_observed_price: f64,
+    post_close_winner_final_detect_unix_ms: Option<u64>,
+    post_close_winner_emit_unix_ms: Option<u64>,
+    post_close_winner_evidence_recv_ms: Option<u64>,
     post_close_winner_ts: Option<Instant>,
     oracle_lag_first_submit_logged: bool,
     /// Timestamp of the last FAK dispatch for OracleLagSniping.
@@ -1013,6 +1090,19 @@ pub struct StrategyCoordinator {
     /// Per-round counter of FAK dispatches (first-shot + re-entries).
     /// Naturally resets because each round spawns a fresh coordinator.
     oracle_lag_fak_shots_this_round: u8,
+    /// Round end timestamp of the last OracleLagSelection received.
+    /// Guards against cross-round leakage (older selections are ignored).
+    oracle_lag_selected_round_end_ts: Option<u64>,
+    /// Whether this market was selected by the cross-market arbiter for the current round.
+    /// Defaults to true so single-market / no-arbiter mode is unaffected.
+    oracle_lag_is_selected: bool,
+    /// Suppress strategy-level maker emits and wait for round-tail fallback action.
+    oracle_lag_defer_to_round_tail: bool,
+    /// Last round where a cross-market tail action was executed.
+    oracle_lag_tail_round_done: Option<u64>,
+    /// Hard stop for oracle_lag_sniping current round after balance/allowance reject.
+    oracle_lag_round_halted: bool,
+    oracle_lag_round_halt_kind: Option<RejectKind>,
     /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
     last_post_close_snapshot_ts: Option<Instant>,
     pair_arb_decision_epoch: u64,
@@ -1275,10 +1365,19 @@ impl StrategyCoordinator {
             post_close_winner_open_is_exact: None,
             post_close_winner_ref_price: 0.0,
             post_close_winner_observed_price: 0.0,
+            post_close_winner_final_detect_unix_ms: None,
+            post_close_winner_emit_unix_ms: None,
+            post_close_winner_evidence_recv_ms: None,
             post_close_winner_ts: None,
             oracle_lag_first_submit_logged: false,
             oracle_lag_fak_last_dispatch: None,
             oracle_lag_fak_shots_this_round: 0,
+            oracle_lag_selected_round_end_ts: None,
+            oracle_lag_is_selected: true,
+            oracle_lag_defer_to_round_tail: false,
+            oracle_lag_tail_round_done: None,
+            oracle_lag_round_halted: false,
+            oracle_lag_round_halt_kind: None,
             last_post_close_snapshot_ts: None,
             pair_arb_decision_epoch: 0,
             pair_arb_last_risk_open_cutoff_active: false,
@@ -1325,6 +1424,14 @@ impl StrategyCoordinator {
         self.post_close_winner_side
     }
 
+    pub(crate) fn oracle_lag_is_selected(&self) -> bool {
+        self.oracle_lag_is_selected
+    }
+
+    pub(crate) fn oracle_lag_defer_to_round_tail(&self) -> bool {
+        self.oracle_lag_defer_to_round_tail
+    }
+
     fn oracle_lag_allow_fallback_open_in_dry_run(&self) -> bool {
         if !self.cfg.dry_run {
             return false;
@@ -1341,6 +1448,9 @@ impl StrategyCoordinator {
     /// Oracle-lag trading should only act on fully-qualified Chainlink hints.
     /// Returns `(winner_side, open_ref_price, final_price)` when all fields are present.
     pub(crate) fn post_close_chainlink_winner(&self) -> Option<(Side, f64, f64)> {
+        if !self.oracle_lag_is_selected {
+            return None;
+        }
         let side = self.post_close_winner_side()?;
         let allow_fallback_open = self.oracle_lag_allow_fallback_open_in_dry_run();
         if self.post_close_winner_source != Some(WinnerHintSource::Chainlink)
@@ -1383,6 +1493,18 @@ impl StrategyCoordinator {
             .unwrap_or_default()
             .as_secs();
         now >= end_ts && now < end_ts.saturating_add(window)
+    }
+
+    /// Oracle-lag order size helper.
+    /// Base size comes from `PM_BID_SIZE`; optional notional cap can shrink it.
+    pub(crate) fn oracle_lag_effective_order_size(&self, price: f64) -> f64 {
+        let mut size = self.cfg.bid_size.max(0.0);
+        let cap = self.cfg.oracle_lag_sniping.max_order_notional_usdc;
+        if cap > 0.0 && price.is_finite() && price > 0.0 {
+            size = size.min(cap / price);
+        }
+        // Keep deterministic 2dp sizing aligned with dispatcher.
+        (size * 100.0).floor() / 100.0
     }
 
     pub async fn run(mut self) {
@@ -1574,7 +1696,7 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn execution_toxic_block_applies(&self) -> bool {
-        self.cfg.strategy != StrategyKind::PairArb
+        !self.cfg.strategy.is_pair_arb()
     }
 
     // ═════════════════════════════════════════════════
@@ -1626,6 +1748,16 @@ impl StrategyCoordinator {
             >= Duration::from_millis(BOOK_SIDE_STALE_CLEAR_HOLD_MS)
     }
 
+    /// Raw (non-fallback) ask for the given side. Zero means no current ask.
+    /// Use this in OracleLagSniping compute_quotes to avoid stale last_valid_book
+    /// ask triggering the FAK branch when the ask has actually disappeared.
+    pub(crate) fn raw_book_ask(&self, side: crate::polymarket::types::Side) -> f64 {
+        match side {
+            crate::polymarket::types::Side::Yes => self.book.yes_ask,
+            crate::polymarket::types::Side::No => self.book.no_ask,
+        }
+    }
+
     /// Get usable book (current if valid, otherwise last_valid fallback).
     fn usable_book(&self) -> Book {
         Book {
@@ -1656,7 +1788,7 @@ impl StrategyCoordinator {
         &self,
         glft: crate::polymarket::glft::GlftSignalSnapshot,
     ) -> bool {
-        if self.cfg.strategy != StrategyKind::GlftMm {
+        if !self.cfg.strategy.is_glft_mm() {
             return true;
         }
         glft.ready
@@ -1680,7 +1812,7 @@ impl StrategyCoordinator {
         glft: crate::polymarket::glft::GlftSignalSnapshot,
         now: Instant,
     ) -> bool {
-        if self.cfg.strategy != StrategyKind::GlftMm || self.glft_is_tradeable_snapshot(glft) {
+        if !self.cfg.strategy.is_glft_mm() || self.glft_is_tradeable_snapshot(glft) {
             return false;
         }
         if !matches!(
@@ -1842,7 +1974,7 @@ impl StrategyCoordinator {
             self.stats.pair_arb_ofi_softened_quotes,
             pair_arb_gate_attempts,
         );
-        let lvl_heat = if self.cfg.strategy == StrategyKind::PairArb {
+        let lvl_heat = if self.cfg.strategy.is_pair_arb() {
             // PairArb OFI is subordinate shaping. Follow the 5-round PLAN_Claude
             // interpretation:
             // - ALERT: shaping impacts >= 50% of gate attempts
@@ -2093,12 +2225,12 @@ impl StrategyCoordinator {
         let settled_inv = inv_snapshot.settled;
         let decision_inv = working_inv;
         self.observe_pair_arb_inventory_transition(&inv_snapshot, now);
-        let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
+        let glft_snapshot = if self.cfg.strategy.is_glft_mm() {
             Some(*self.glft_rx.borrow())
         } else {
             None
         };
-        if self.cfg.strategy == StrategyKind::GlftMm
+        if self.cfg.strategy.is_glft_mm()
             && glft_snapshot.is_some_and(|snapshot| self.glft_is_tradeable_snapshot(snapshot))
         {
             self.glft_ready_seen = true;
@@ -2110,13 +2242,13 @@ impl StrategyCoordinator {
                 crate::polymarket::glft::QuoteRegime::Blocked
             )
         );
-        let track_ref_blocked = if self.cfg.strategy == StrategyKind::GlftMm {
+        let track_ref_blocked = if self.cfg.strategy.is_glft_mm() {
             self.glft_ready_seen
         } else {
             true
         };
         if let Some(snapshot) = glft_snapshot {
-            if self.cfg.strategy == StrategyKind::GlftMm {
+            if self.cfg.strategy.is_glft_mm() {
                 self.update_glft_source_recovery_state(snapshot, now);
                 if self.glft_recovery_force_clear_pending {
                     self.glft_recovery_force_clear_pending = false;
@@ -2196,8 +2328,15 @@ impl StrategyCoordinator {
             self.stats.ofi_blocked_ticks = self.stats.ofi_blocked_ticks.saturating_add(1);
         }
 
+        // OracleLagSniping post-close immunity: after market close the CLOB stops sending
+        // book ticks (expected). Strongly-directional pre-close markets may also have
+        // yes_ask=0 for 30s+ (no sellers), preventing last_valid_ts_yes from updating.
+        // Both cases must be exempt from stale guards; toxic-flow cancels still apply.
+        let post_close_stale_immune =
+            self.cfg.strategy.is_oracle_lag_sniping() && self.is_in_post_close_window();
+
         // Priority 1: 30s Staleness Guard (Critical Shutdown)
-        if self.is_book_stale() {
+        if self.is_book_stale() && !post_close_stale_immune {
             if self.yes_target.is_some() {
                 warn!("⚠️ Book expired (>30s) — clearing YES");
                 self.clear_target(Side::Yes, CancelReason::StaleData).await;
@@ -2210,14 +2349,6 @@ impl StrategyCoordinator {
         }
 
         // Priority 2: Per-side Toxic/Stale guard (independent of book availability)
-        //
-        // OracleLagSniping: suppress stale cancels inside the post-close window.
-        // After market close the CLOB stops sending book ticks — that is expected
-        // behaviour, not a data problem. Cancelling the maker order here would
-        // create a futile cancel-resubmit loop (see analysis 2026-04-15).
-        // Toxic-flow cancels are still applied even in post-close (circuit breaker).
-        let post_close_stale_immune =
-            self.cfg.strategy == StrategyKind::OracleLagSniping && self.is_in_post_close_window();
 
         if yes_toxic_blocked || (yes_stale_actionable && !post_close_stale_immune) {
             for slot in OrderSlot::side_slots(Side::Yes) {
@@ -2267,7 +2398,7 @@ impl StrategyCoordinator {
 
         // Post-close book snapshot: 500 ms rate-limited, OracleLagSniping only.
         // Emits per-tick book state so we can audit ask availability in the post-close window.
-        if self.cfg.strategy == StrategyKind::OracleLagSniping && self.is_in_post_close_window() {
+        if self.cfg.strategy.is_oracle_lag_sniping() && self.is_in_post_close_window() {
             let emit = match self.last_post_close_snapshot_ts {
                 None => true,
                 Some(prev) => prev.elapsed() >= Duration::from_millis(500),
@@ -2334,8 +2465,6 @@ impl StrategyCoordinator {
             glft: glft_snapshot.as_ref(),
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
-        // Oracle-lag FAK re-entry runs alongside maker quoting (different execution path).
-        self.maybe_oracle_lag_fak_reentry().await;
         self.record_strategy_quote_diagnostics(&quotes);
         self.apply_flow_risk(
             &working_inv,
@@ -2425,7 +2554,8 @@ impl StrategyCoordinator {
         let Some(intent) = intent else {
             return true;
         };
-        if stale {
+        let stale_blocks = stale && !self.cfg.strategy.is_oracle_lag_sniping();
+        if stale_blocks {
             return false;
         }
         if !toxic_blocked {
@@ -2450,9 +2580,7 @@ impl StrategyCoordinator {
                 ts,
                 rejected_action_price,
             } => {
-                if self.cfg.strategy == StrategyKind::PairArb
-                    && slot.direction == TradeDirection::Buy
-                {
+                if self.cfg.strategy.is_pair_arb() && slot.direction == TradeDirection::Buy {
                     let idx = slot.index();
                     self.slot_pair_arb_cross_reject_extra_ticks[idx] =
                         self.slot_pair_arb_cross_reject_extra_ticks[idx].saturating_add(1);
@@ -2481,9 +2609,7 @@ impl StrategyCoordinator {
                 }
             }
             ExecutionFeedback::OrderAccepted { slot, ts: _ } => {
-                if self.cfg.strategy == StrategyKind::PairArb
-                    && slot.direction == TradeDirection::Buy
-                {
+                if self.cfg.strategy.is_pair_arb() && slot.direction == TradeDirection::Buy {
                     let idx = slot.index();
                     if self.slot_pair_arb_cross_reject_extra_ticks[idx] > 0 {
                         debug!(
@@ -2513,6 +2639,26 @@ impl StrategyCoordinator {
                     tracked_orders,
                     blocked_for_ms
                 );
+            }
+            ExecutionFeedback::PlacementRejected {
+                side,
+                reason,
+                kind,
+                ts: _,
+            } => {
+                if self.cfg.strategy.is_oracle_lag_sniping()
+                    && self.cfg.oracle_lag_sniping.market_enabled
+                    && kind == RejectKind::BalanceOrAllowance
+                {
+                    if !self.oracle_lag_round_halted {
+                        warn!(
+                            "🛑 oracle_lag_round_halt | reason=balance_or_allowance_reject side={:?} bid_reason={:?} selected_round_end_ts={:?}",
+                            side, reason, self.oracle_lag_selected_round_end_ts
+                        );
+                    }
+                    self.oracle_lag_round_halted = true;
+                    self.oracle_lag_round_halt_kind = Some(kind);
+                }
             }
         }
     }

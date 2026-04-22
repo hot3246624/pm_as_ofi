@@ -38,11 +38,58 @@ pub enum MarketDataMsg {
         source: WinnerHintSource,
         ref_price: f64,
         observed_price: f64,
+        /// UNIX ms when exact winner final was detected by listener.
+        final_detect_unix_ms: u64,
+        /// UNIX ms when WinnerHint was emitted by listener.
+        emit_unix_ms: u64,
+        /// Winner-side best bid observed by post-close evidence collector.
+        /// 0.0 means "unknown".
+        winner_bid: f64,
+        /// Winner-side best ask observed by post-close evidence collector.
+        /// 0.0 means "no ask observed".
+        winner_ask_raw: f64,
+        /// UNIX ms of the evidence snapshot used for winner-side book.
+        /// 0 means "unknown".
+        winner_evidence_recv_ms: u64,
+        /// Evidence source used to build winner-side top-of-book.
+        /// Typical values: "ws_partial" / "clob_rest" / "none".
+        winner_book_source: &'static str,
+        /// Absolute |evidence_recv_ms - final_detect_ms| in milliseconds.
+        winner_distance_to_final_ms: u64,
         /// True iff open_ref came from the exact round_start Chainlink tick
         /// (prewarm or live RTDS), not a fallback (prev_close / frontend API).
         open_is_exact: bool,
         ts: Instant,
     },
+    /// Sent by cross-market arbiter to every coordinator for a given round.
+    /// Delivered via the same `winner_hint_rx` channel as `WinnerHint`.
+    OracleLagSelection {
+        round_end_ts: u64,
+        selected: bool,
+        rank: u8,
+        reason: &'static str,
+    },
+    /// Cross-market round-tail action for oracle_lag_sniping.
+    /// Dispatched once after all expected market finals are processed (or timeout).
+    OracleLagTailAction {
+        round_end_ts: u64,
+        side: Side,
+        mode: OracleLagTailMode,
+        /// Limit price to submit.
+        /// - Fak99: typically 0.99
+        /// - MakerBidStep: `min(bid0 + step, 0.991)`
+        limit_price: f64,
+        /// Slug that won tail ranking.
+        target_slug: String,
+        /// Coordinator-readable reason for logs/diagnostics.
+        reason: &'static str,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OracleLagTailMode {
+    Fak99,
+    MakerBidStep,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -385,6 +432,9 @@ pub enum ExecutionCmd {
 pub enum BidReason {
     /// Providing liquidity on both sides (balanced inventory).
     Provide,
+    /// Oracle-lag sniping maker fallback provide.
+    /// Semantically provide-like, but kept explicit to avoid strategy coupling in executor sizing.
+    OracleLagProvide,
     /// Hedging: placing a bid on the missing leg to complete the pair.
     Hedge,
 }
@@ -467,6 +517,14 @@ pub enum ExecutionFeedback {
         slot: OrderSlot,
         tracked_orders: usize,
         blocked_for_ms: u64,
+        ts: Instant,
+    },
+    /// Placement reject observed by executor.
+    /// Used by strategy-side runtime gates (e.g. oracle_lag round halt on balance rejects).
+    PlacementRejected {
+        side: Side,
+        reason: BidReason,
+        kind: RejectKind,
         ts: Instant,
     },
 }

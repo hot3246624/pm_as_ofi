@@ -231,10 +231,8 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn default_slot_reset_scope(&self, reason: CancelReason) -> SlotResetScope {
-        if self.cfg.strategy != StrategyKind::GlftMm {
-            return if self.cfg.strategy == StrategyKind::PairArb
-                && matches!(reason, CancelReason::Reprice)
-            {
+        if !self.cfg.strategy.is_glft_mm() {
+            return if self.cfg.strategy.is_pair_arb() && matches!(reason, CancelReason::Reprice) {
                 SlotResetScope::Soft
             } else {
                 SlotResetScope::Full
@@ -481,6 +479,13 @@ impl StrategyCoordinator {
         inv: &InventoryState,
         intent: Option<StrategyIntent>,
     ) -> bool {
+        if self.cfg.strategy.is_oracle_lag_sniping() && self.oracle_lag_round_halted {
+            if let Some(intent) = intent {
+                if intent.direction == TradeDirection::Buy {
+                    return false;
+                }
+            }
+        }
         match intent {
             Some(intent) => match (intent.side, intent.direction) {
                 (Side::Yes, TradeDirection::Buy) => {
@@ -492,7 +497,7 @@ impl StrategyCoordinator {
                             intent.price,
                             intent.reason,
                         )
-                        && (self.cfg.strategy != StrategyKind::GlftMm
+                        && (!self.cfg.strategy.is_glft_mm()
                             || self.passes_pair_cost_guard_for_buy(
                                 inv,
                                 Side::Yes,
@@ -510,7 +515,7 @@ impl StrategyCoordinator {
                             intent.price,
                             intent.reason,
                         )
-                        && (self.cfg.strategy != StrategyKind::GlftMm
+                        && (!self.cfg.strategy.is_glft_mm()
                             || self.passes_pair_cost_guard_for_buy(
                                 inv,
                                 Side::No,
@@ -567,7 +572,7 @@ impl StrategyCoordinator {
                 margin_ticks += self.cfg.post_only_extra_tight_ticks.max(0.0);
             }
         }
-        if self.cfg.strategy == StrategyKind::GlftMm {
+        if self.cfg.strategy.is_glft_mm() {
             // GLFT updates all four slots at high cadence; keep one extra safety tick
             // to reduce repeated post-only cross rejects under fast book flicker.
             margin_ticks += 1.0;
@@ -652,7 +657,9 @@ impl StrategyCoordinator {
     pub(super) fn maker_keep_band(&self, reason: BidReason) -> f64 {
         let tick = self.cfg.tick_size.max(1e-9);
         match reason {
-            BidReason::Provide => self.cfg.reprice_threshold.max(2.0 * tick),
+            BidReason::Provide | BidReason::OracleLagProvide => {
+                self.cfg.reprice_threshold.max(2.0 * tick)
+            }
             BidReason::Hedge => self.cfg.reprice_threshold.max(tick),
         }
     }
@@ -680,7 +687,7 @@ impl StrategyCoordinator {
         if (current.size - size).abs() > 0.1 {
             return false;
         }
-        if self.cfg.strategy == StrategyKind::GlftMm
+        if self.cfg.strategy.is_glft_mm()
             && reason == BidReason::Provide
             && self.recent_cross_reject(side, Duration::from_secs(2))
         {
@@ -692,7 +699,7 @@ impl StrategyCoordinator {
         // keep-band above the newly computed ceiling, as long as it is still maker-safe.
         // This suppresses needless 1-2 tick churn under fast micro-oscillation.
         let ceiling_tol = match reason {
-            BidReason::Provide => self.maker_keep_band(reason),
+            BidReason::Provide | BidReason::OracleLagProvide => self.maker_keep_band(reason),
             BidReason::Hedge => 0.0,
         };
         let max_valid_price = (1.0 - self.cfg.tick_size.max(1e-9)).max(0.0);
@@ -700,7 +707,7 @@ impl StrategyCoordinator {
         if current.price > effective_ceiling + 1e-9 {
             return false;
         }
-        let safe_limit = if self.cfg.strategy == StrategyKind::PairArb
+        let safe_limit = if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && direction == TradeDirection::Buy
         {
@@ -730,7 +737,7 @@ impl StrategyCoordinator {
         {
             return false;
         }
-        if self.cfg.strategy == StrategyKind::GlftMm {
+        if self.cfg.strategy.is_glft_mm() {
             let tick = self.cfg.tick_size.max(1e-9);
             let glft = *self.glft_rx.borrow();
             let signal_state = glft.signal_state;

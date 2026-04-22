@@ -14,6 +14,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -38,7 +39,6 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
-use pm_as_ofi::polymarket::strategy::StrategyKind;
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -1400,7 +1400,7 @@ async fn try_recycle_merge(
     let evt_reason = if let Some(evt) = reject_event {
         match evt.reason {
             BidReason::Hedge => "Hedge",
-            BidReason::Provide => "Provide",
+            BidReason::Provide | BidReason::OracleLagProvide => "Provide",
         }
     } else {
         "Headroom"
@@ -2037,50 +2037,103 @@ async fn resolve_market_by_slug(slug: &str) -> anyhow::Result<ResolvedMarket> {
 
     if let Some(markets) = resp.as_array() {
         if let Some(market) = markets.first() {
-            let market_id = market["conditionId"]
-                .as_str()
-                .or_else(|| market["condition_id"].as_str())
-                .unwrap_or_default()
-                .to_string();
-
-            let end_date_ts = market
-                .get("endDate")
-                .and_then(|v| v.as_str())
-                .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
-                .map(|dt| dt.timestamp() as u64);
-
-            let tokens = market
-                .get("clobTokenIds")
-                .or_else(|| market.get("clob_token_ids"))
-                .and_then(|v| v.as_str())
-                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok());
-
-            if let Some(ids) = tokens {
-                if ids.len() >= 2 {
-                    info!(
-                        "✅ Market resolved: {} (YES={}, NO={})",
-                        market_id,
-                        &ids[0][..8.min(ids[0].len())],
-                        &ids[1][..8.min(ids[1].len())]
-                    );
-                    return Ok((market_id, ids[0].clone(), ids[1].clone(), end_date_ts));
-                }
-            }
-
-            // Fallback: try tokens array
-            if let Some(tokens) = market.get("tokens").and_then(|v| v.as_array()) {
-                let yes = tokens.iter().find(|t| t["outcome"].as_str() == Some("Yes"));
-                let no = tokens.iter().find(|t| t["outcome"].as_str() == Some("No"));
-                if let (Some(y), Some(n)) = (yes, no) {
-                    let yes_id = y["token_id"].as_str().unwrap_or_default().to_string();
-                    let no_id = n["token_id"].as_str().unwrap_or_default().to_string();
-                    info!("✅ Market resolved via tokens: {}", market_id);
-                    return Ok((market_id, yes_id, no_id, end_date_ts));
-                }
+            if let Some(resolved) = parse_resolved_market_payload(market) {
+                info!(
+                    "✅ Market resolved via /markets: {} (YES={}, NO={})",
+                    resolved.0,
+                    &resolved.1[..8.min(resolved.1.len())],
+                    &resolved.2[..8.min(resolved.2.len())]
+                );
+                return Ok(resolved);
             }
         }
     }
     anyhow::bail!("Failed to resolve market from slug: {}", slug);
+}
+
+fn parse_resolved_market_payload(market: &Value) -> Option<ResolvedMarket> {
+    let market_id = market
+        .get("conditionId")
+        .and_then(|v| v.as_str())
+        .or_else(|| market.get("condition_id").and_then(|v| v.as_str()))?
+        .to_string();
+
+    let end_date_ts = market
+        .get("endDate")
+        .or_else(|| market.get("end_date"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp() as u64);
+
+    if let Some(ids) = market
+        .get("clobTokenIds")
+        .or_else(|| market.get("clob_token_ids"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+    {
+        if ids.len() >= 2 {
+            return Some((market_id, ids[0].clone(), ids[1].clone(), end_date_ts));
+        }
+    }
+
+    if let Some(tokens) = market.get("tokens").and_then(|v| v.as_array()) {
+        let yes = tokens.iter().find(|t| t["outcome"].as_str() == Some("Yes"));
+        let no = tokens.iter().find(|t| t["outcome"].as_str() == Some("No"));
+        if let (Some(y), Some(n)) = (yes, no) {
+            let yes_id = y["token_id"].as_str().unwrap_or_default().to_string();
+            let no_id = n["token_id"].as_str().unwrap_or_default().to_string();
+            if !yes_id.is_empty() && !no_id.is_empty() {
+                return Some((market_id, yes_id, no_id, end_date_ts));
+            }
+        }
+    }
+    None
+}
+
+async fn resolve_market_by_event_slug(slug: &str) -> anyhow::Result<ResolvedMarket> {
+    let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
+    let timeout_ms = resolve_timeout_ms();
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(timeout_ms))
+        .build()?;
+    let resp: Value = client.get(&url).send().await?.json().await?;
+    let Some(events) = resp.as_array() else {
+        anyhow::bail!("events response is not array");
+    };
+
+    for event in events {
+        let Some(markets) = event.get("markets").and_then(|v| v.as_array()) else {
+            continue;
+        };
+        if let Some(exact) = markets.iter().find(|m| {
+            m.get("slug")
+                .and_then(|v| v.as_str())
+                .map(|s| s == slug)
+                .unwrap_or(false)
+        }) {
+            if let Some(resolved) = parse_resolved_market_payload(exact) {
+                info!(
+                    "✅ Market resolved via /events exact slug: {} (YES={}, NO={})",
+                    resolved.0,
+                    &resolved.1[..8.min(resolved.1.len())],
+                    &resolved.2[..8.min(resolved.2.len())]
+                );
+                return Ok(resolved);
+            }
+        }
+        for market in markets {
+            if let Some(resolved) = parse_resolved_market_payload(market) {
+                info!(
+                    "✅ Market resolved via /events fallback: {} (YES={}, NO={})",
+                    resolved.0,
+                    &resolved.1[..8.min(resolved.1.len())],
+                    &resolved.2[..8.min(resolved.2.len())]
+                );
+                return Ok(resolved);
+            }
+        }
+    }
+    anyhow::bail!("Failed to resolve market from /events for slug: {}", slug);
 }
 
 async fn resolve_market_with_retry(slug: &str) -> anyhow::Result<ResolvedMarket> {
@@ -2091,17 +2144,25 @@ async fn resolve_market_with_retry(slug: &str) -> anyhow::Result<ResolvedMarket>
     for attempt in 1..=attempts {
         match resolve_market_by_slug(slug).await {
             Ok(m) => return Ok(m),
-            Err(e) => {
-                warn!(
-                    "❌ Resolve attempt {}/{} failed for '{}': {}",
-                    attempt, attempts, slug, e
-                );
-                last_err = Some(e);
-                if attempt < attempts {
-                    sleep(backoff).await;
-                    backoff = (backoff * 2).min(max_backoff);
+            Err(primary_err) => match resolve_market_by_event_slug(slug).await {
+                Ok(m) => return Ok(m),
+                Err(fallback_err) => {
+                    let e = anyhow::anyhow!(
+                        "markets_resolve_err={} | events_resolve_err={}",
+                        primary_err,
+                        fallback_err
+                    );
+                    warn!(
+                        "❌ Resolve attempt {}/{} failed for '{}': {}",
+                        attempt, attempts, slug, e
+                    );
+                    last_err = Some(e);
+                    if attempt < attempts {
+                        sleep(backoff).await;
+                        backoff = (backoff * 2).min(max_backoff);
+                    }
                 }
-            }
+            },
         }
     }
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("resolve failed: {}", slug)))
@@ -2152,6 +2213,62 @@ async fn fetch_min_order_size(
         }
     }
     min_size.ok_or_else(|| anyhow::anyhow!("min_order_size unavailable from order_books"))
+}
+
+async fn fetch_clob_top_of_book(
+    rest_url: &str,
+    yes_asset_id: &str,
+    no_asset_id: &str,
+) -> anyhow::Result<(f64, f64, f64, f64)> {
+    use polymarket_client_sdk::clob::types::request::OrderBookSummaryRequest;
+    use polymarket_client_sdk::clob::{Client as ClobClient, Config as ClobConfig};
+    use rust_decimal::prelude::ToPrimitive;
+
+    let parse_u256 = |raw: &str| -> anyhow::Result<alloy::primitives::U256> {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            anyhow::bail!("empty token_id");
+        }
+        if let Some(hex) = trimmed
+            .strip_prefix("0x")
+            .or_else(|| trimmed.strip_prefix("0X"))
+        {
+            alloy::primitives::U256::from_str_radix(hex, 16)
+                .map_err(|e| anyhow::anyhow!("invalid token_id hex '{}': {:?}", raw, e))
+        } else {
+            alloy::primitives::U256::from_str_radix(trimmed, 10)
+                .map_err(|e| anyhow::anyhow!("invalid token_id '{}': {:?}", raw, e))
+        }
+    };
+
+    let top_bid_ask =
+        |book: &polymarket_client_sdk::clob::types::response::OrderBookSummaryResponse| {
+            let bid = book
+                .bids
+                .iter()
+                .filter_map(|lvl| lvl.price.to_f64())
+                .fold(0.0_f64, f64::max);
+            let ask = book
+                .asks
+                .iter()
+                .filter_map(|lvl| lvl.price.to_f64())
+                .fold(f64::MAX, f64::min);
+            let ask = if ask == f64::MAX { 0.0 } else { ask };
+            (bid.max(0.0), ask.max(0.0))
+        };
+
+    let client = ClobClient::new(rest_url, ClobConfig::default())?;
+    let yes_id = parse_u256(yes_asset_id)?;
+    let no_id = parse_u256(no_asset_id)?;
+    let req_yes = OrderBookSummaryRequest::builder().token_id(yes_id).build();
+    let req_no = OrderBookSummaryRequest::builder().token_id(no_id).build();
+    let books = client.order_books(&[req_yes, req_no]).await?;
+    if books.len() < 2 {
+        anyhow::bail!("order_books returned {} entries", books.len());
+    }
+    let (yes_bid, yes_ask) = top_bid_ask(&books[0]);
+    let (no_bid, no_ask) = top_bid_ask(&books[1]);
+    Ok((yes_bid, yes_ask, no_bid, no_ask))
 }
 
 async fn maybe_log_claimable_positions(funder_address: Option<&str>, signer_address: Option<&str>) {
@@ -2860,26 +2977,28 @@ impl ChainlinkHub {
             senders: Arc::new(senders),
         });
         let ws_url = post_close_chainlink_ws_url();
-        let sender_map = hub.senders.clone();
-        let subscribe_symbols: Vec<String> = symbols.into_iter().collect();
-        tokio::spawn(async move {
-            let mut reconnect_backoff = Duration::from_millis(300);
-            let mut stat_last_log = Instant::now();
-            let mut stat_msgs: u64 = 0;
-            let mut stat_ticks: u64 = 0;
-            let mut stat_delivered: u64 = 0;
-            let mut stat_unknown_symbol: u64 = 0;
-            loop {
-                let connect =
-                    tokio::time::timeout(Duration::from_secs(3), connect_async(&ws_url)).await;
-                let Ok(Ok((ws, _resp))) = connect else {
-                    sleep(reconnect_backoff).await;
-                    reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
-                    continue;
-                };
-                reconnect_backoff = Duration::from_millis(300);
-                let (mut write, mut read) = ws.split();
-                for sym in &subscribe_symbols {
+        // One WS connection per symbol: the server only honours ONE active
+        // subscription per connection, so sharing a single connection for N
+        // symbols only delivers ticks for the last-subscribed symbol.
+        for sym in symbols {
+            let tx = hub.senders.get(&sym).expect("sender just inserted").clone();
+            let url = ws_url.clone();
+            tokio::spawn(async move {
+                let mut reconnect_backoff = Duration::from_millis(300);
+                let mut stat_last_log = Instant::now();
+                let mut stat_msgs: u64 = 0;
+                let mut stat_ticks: u64 = 0;
+                let mut stat_delivered: u64 = 0;
+                loop {
+                    let connect =
+                        tokio::time::timeout(Duration::from_secs(3), connect_async(&url)).await;
+                    let Ok(Ok((ws, _resp))) = connect else {
+                        sleep(reconnect_backoff).await;
+                        reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+                        continue;
+                    };
+                    reconnect_backoff = Duration::from_millis(300);
+                    let (mut write, mut read) = ws.split();
                     let subscribe_msg = json!({
                         "action": "subscribe",
                         "subscriptions": [{
@@ -2893,66 +3012,53 @@ impl ChainlinkHub {
                         .await
                         .is_err()
                     {
-                        break;
+                        continue;
                     }
-                }
-                loop {
-                    let next = tokio::time::timeout(Duration::from_millis(1500), read.next()).await;
-                    let msg = match next {
-                        Ok(Some(Ok(m))) => m,
-                        Ok(Some(Err(_))) | Ok(None) => break,
-                        Err(_) => continue,
-                    };
-                    let text = match msg {
-                        Message::Text(t) => t.to_string(),
-                        Message::Binary(b) => match String::from_utf8(b.to_vec()) {
-                            Ok(t) => t,
+                    loop {
+                        let next =
+                            tokio::time::timeout(Duration::from_millis(1500), read.next()).await;
+                        let msg = match next {
+                            Ok(Some(Ok(m))) => m,
+                            Ok(Some(Err(_))) | Ok(None) => break,
                             Err(_) => continue,
-                        },
-                        _ => continue,
-                    };
-                    let ticks = parse_chainlink_multi_symbol_ticks(&text);
-                    if ticks.is_empty() {
+                        };
+                        let text = match msg {
+                            Message::Text(t) => t.to_string(),
+                            Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                                Ok(t) => t,
+                                Err(_) => continue,
+                            },
+                            _ => continue,
+                        };
+                        let ticks = parse_chainlink_multi_symbol_ticks(&text);
+                        if ticks.is_empty() {
+                            stat_msgs = stat_msgs.saturating_add(1);
+                            if stat_last_log.elapsed() >= Duration::from_secs(30) {
+                                info!(
+                                    "📡 chainlink_hub_conn | symbol={} msgs={} ticks={} delivered={}",
+                                    sym, stat_msgs, stat_ticks, stat_delivered
+                                );
+                                stat_last_log = Instant::now();
+                            }
+                            continue;
+                        }
                         stat_msgs = stat_msgs.saturating_add(1);
-                        if stat_last_log.elapsed() >= Duration::from_secs(10) {
+                        stat_ticks = stat_ticks.saturating_add(ticks.len() as u64);
+                        for (_sym, price, ts_ms) in ticks {
+                            let _ = tx.send((price, ts_ms));
+                            stat_delivered = stat_delivered.saturating_add(1);
+                        }
+                        if stat_last_log.elapsed() >= Duration::from_secs(30) {
                             info!(
-                                "📡 chainlink_hub_stats | symbols={} msgs={} ticks={} delivered={} unknown_symbol={} backlog_channels={}",
-                                subscribe_symbols.join(","),
-                                stat_msgs,
-                                stat_ticks,
-                                stat_delivered,
-                                stat_unknown_symbol,
-                                sender_map.len()
+                                "📡 chainlink_hub_conn | symbol={} msgs={} ticks={} delivered={}",
+                                sym, stat_msgs, stat_ticks, stat_delivered
                             );
                             stat_last_log = Instant::now();
                         }
-                        continue;
-                    }
-                    stat_msgs = stat_msgs.saturating_add(1);
-                    stat_ticks = stat_ticks.saturating_add(ticks.len() as u64);
-                    for (sym, price, ts_ms) in ticks {
-                        if let Some(tx) = sender_map.get(&sym) {
-                            let _ = tx.send((price, ts_ms));
-                            stat_delivered = stat_delivered.saturating_add(1);
-                        } else {
-                            stat_unknown_symbol = stat_unknown_symbol.saturating_add(1);
-                        }
-                    }
-                    if stat_last_log.elapsed() >= Duration::from_secs(10) {
-                        info!(
-                            "📡 chainlink_hub_stats | symbols={} msgs={} ticks={} delivered={} unknown_symbol={} backlog_channels={}",
-                            subscribe_symbols.join(","),
-                            stat_msgs,
-                            stat_ticks,
-                            stat_delivered,
-                            stat_unknown_symbol,
-                            sender_map.len()
-                        );
-                        stat_last_log = Instant::now();
                     }
                 }
-            }
-        });
+            });
+        }
         hub
     }
 
@@ -3030,6 +3136,27 @@ fn side_label(side: Option<Side>) -> Option<String> {
 
 type LastCloseMap = HashMap<String, (u64, f64)>;
 static CHAINLINK_LAST_CLOSE: OnceLock<Mutex<LastCloseMap>> = OnceLock::new();
+
+// Global hint dedup: key = "{slug}:{round_end_ts}:{side}", value = first detect_ms.
+// Guards against duplicate winner-hint emits from stale pre-resolve races or dual processes.
+static HINT_DEDUP: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
+fn hint_dedup_map() -> &'static Mutex<HashMap<String, u64>> {
+    HINT_DEDUP.get_or_init(|| Mutex::new(HashMap::new()))
+}
+fn hint_dedup_key(slug: &str, round_end_ts: u64, side: Side) -> String {
+    format!("{}:{}:{:?}", slug, round_end_ts, side)
+}
+/// Returns true if this is a fresh emit; false if already emitted (duplicate).
+fn hint_dedup_try_insert(slug: &str, round_end_ts: u64, side: Side, detect_ms: u64) -> bool {
+    let key = hint_dedup_key(slug, round_end_ts, side);
+    if let Ok(mut guard) = hint_dedup_map().lock() {
+        if guard.contains_key(&key) {
+            return false;
+        }
+        guard.insert(key, detect_ms);
+    }
+    true
+}
 
 fn chainlink_last_close_map() -> &'static Mutex<LastCloseMap> {
     CHAINLINK_LAST_CLOSE.get_or_init(|| Mutex::new(load_last_chainlink_close_cache()))
@@ -3530,6 +3657,195 @@ struct BookSnapshot {
     ts: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PostCloseBookSource {
+    None,
+    ClobRest,
+    WsPartial,
+}
+
+impl PostCloseBookSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::ClobRest => "clob_rest",
+            Self::WsPartial => "ws_partial",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PostCloseBookEvidence {
+    source: PostCloseBookSource,
+    side: Side,
+    bid: f64,
+    ask: f64,
+    recv_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SideQuoteSnapshot {
+    bid: f64,
+    ask: f64,
+    recv_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PostCloseSideBookUpdate {
+    side: Side,
+    bid: f64,
+    ask: f64,
+    recv_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PostCloseBookEvidenceTape {
+    ws_yes: Option<SideQuoteSnapshot>,
+    ws_no: Option<SideQuoteSnapshot>,
+    rest_yes: Option<SideQuoteSnapshot>,
+    rest_no: Option<SideQuoteSnapshot>,
+}
+
+impl PostCloseBookEvidenceTape {
+    fn record(&mut self, ev: PostCloseBookEvidence) {
+        let snap = SideQuoteSnapshot {
+            bid: ev.bid.max(0.0),
+            ask: ev.ask.max(0.0),
+            recv_ms: ev.recv_ms,
+        };
+        match (ev.source, ev.side) {
+            (PostCloseBookSource::WsPartial, Side::Yes) => self.ws_yes = Some(snap),
+            (PostCloseBookSource::WsPartial, Side::No) => self.ws_no = Some(snap),
+            (PostCloseBookSource::ClobRest, Side::Yes) => self.rest_yes = Some(snap),
+            (PostCloseBookSource::ClobRest, Side::No) => self.rest_no = Some(snap),
+            (PostCloseBookSource::None, _) => {}
+        }
+    }
+
+    fn latest_for_side(self, side: Side) -> Option<(PostCloseBookSource, SideQuoteSnapshot)> {
+        let ws = match side {
+            Side::Yes => self.ws_yes,
+            Side::No => self.ws_no,
+        };
+        let rest = match side {
+            Side::Yes => self.rest_yes,
+            Side::No => self.rest_no,
+        };
+        match (ws, rest) {
+            (Some(w), Some(r)) => {
+                if w.recv_ms >= r.recv_ms {
+                    Some((PostCloseBookSource::WsPartial, w))
+                } else {
+                    Some((PostCloseBookSource::ClobRest, r))
+                }
+            }
+            (Some(w), None) => Some((PostCloseBookSource::WsPartial, w)),
+            (None, Some(r)) => Some((PostCloseBookSource::ClobRest, r)),
+            (None, None) => None,
+        }
+    }
+}
+
+fn post_close_round_observation_from_latest_view(
+    tape: PostCloseBookEvidenceTape,
+    winner_side: Side,
+    final_detect_ms: u64,
+) -> (PostCloseBookSource, f64, f64, u64, u64) {
+    if let Some((src, snap)) = tape.latest_for_side(winner_side) {
+        let dist_ms = if snap.recv_ms > final_detect_ms {
+            snap.recv_ms - final_detect_ms
+        } else {
+            final_detect_ms - snap.recv_ms
+        };
+        return (src, snap.bid, snap.ask, snap.recv_ms, dist_ms);
+    }
+    (PostCloseBookSource::None, 0.0, 0.0, 0, u64::MAX)
+}
+
+async fn run_post_close_observation_plane(
+    shared_view: Arc<Mutex<PostCloseBookEvidenceTape>>,
+    mut post_close_book_rx: mpsc::Receiver<PostCloseSideBookUpdate>,
+    rest_url: String,
+    yes_asset_id: String,
+    no_asset_id: String,
+    slug: String,
+    market_end_ms: u64,
+    hard_wait_deadline_ms: u64,
+) {
+    let mut rest_interval = tokio::time::interval(Duration::from_millis(100));
+    rest_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        if unix_now_millis_u64() >= hard_wait_deadline_ms {
+            break;
+        }
+        tokio::select! {
+            maybe_ev = post_close_book_rx.recv() => {
+                if let Some(ev) = maybe_ev {
+                    if ev.recv_ms >= market_end_ms {
+                        if let Ok(mut view) = shared_view.lock() {
+                            view.record(PostCloseBookEvidence {
+                                source: PostCloseBookSource::WsPartial,
+                                side: ev.side,
+                                bid: ev.bid,
+                                ask: ev.ask,
+                                recv_ms: ev.recv_ms,
+                            });
+                        }
+                        info!(
+                            "📚 post_close_book_evidence | slug={} source=ws_partial side={:?} bid={:.4} ask={:.4} recv_ms={} lag_from_end_ms={}",
+                            slug,
+                            ev.side,
+                            ev.bid,
+                            ev.ask,
+                            ev.recv_ms,
+                            ev.recv_ms.saturating_sub(market_end_ms),
+                        );
+                    }
+                } else {
+                    break;
+                }
+            }
+            _ = rest_interval.tick() => {
+                let now_ms = unix_now_millis_u64();
+                if now_ms >= market_end_ms {
+                    if let Ok(Ok((yes_bid, yes_ask, no_bid, no_ask))) = tokio::time::timeout(
+                        Duration::from_millis(120),
+                        fetch_clob_top_of_book(&rest_url, &yes_asset_id, &no_asset_id),
+                    ).await {
+                        if let Ok(mut view) = shared_view.lock() {
+                            view.record(PostCloseBookEvidence {
+                                source: PostCloseBookSource::ClobRest,
+                                side: Side::Yes,
+                                bid: yes_bid,
+                                ask: yes_ask,
+                                recv_ms: now_ms,
+                            });
+                            view.record(PostCloseBookEvidence {
+                                source: PostCloseBookSource::ClobRest,
+                                side: Side::No,
+                                bid: no_bid,
+                                ask: no_ask,
+                                recv_ms: now_ms,
+                            });
+                        }
+                        info!(
+                            "📚 post_close_book_evidence | slug={} source=clob_rest yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4} recv_ms={} lag_from_end_ms={}",
+                            slug,
+                            yes_bid,
+                            yes_ask,
+                            no_bid,
+                            no_ask,
+                            now_ms,
+                            now_ms.saturating_sub(market_end_ms),
+                        );
+                    }
+                }
+            }
+            _ = tokio::time::sleep(Duration::from_millis(20)) => {}
+        }
+    }
+}
+
 fn snapshot_book(msg: &MarketDataMsg) -> Option<BookSnapshot> {
     match msg {
         MarketDataMsg::BookTick {
@@ -3558,7 +3874,7 @@ fn nonzero_price_opt(v: f64) -> Option<f64> {
 }
 
 fn post_close_tick_size_for_price(bid: f64, ask: f64) -> f64 {
-    if bid > 0.96 || ask > 0.96 || (bid > 0.0 && bid < 0.04) {
+    if bid > 0.96 || ask > 0.96 || (bid > 0.0 && bid < 0.04) || (ask > 0.0 && ask < 0.04) {
         0.001
     } else {
         0.01
@@ -3587,9 +3903,544 @@ fn fmt_price_opt(v: Option<f64>) -> String {
     }
 }
 
+/// Carries a winner-hint observation from one market's hint listener to the
+/// cross-market arbiter, along with channels needed to forward the decision.
+struct ArbiterObservation {
+    round_end_ts: u64,
+    slug: String,
+    winner_side: Side,
+    winner_bid: f64,
+    winner_ask_raw: f64,
+    /// Effective tradable ask (0.0 = no tradable ask).
+    winner_ask_eff: f64,
+    winner_ask_tradable: bool,
+    /// Legacy compatibility metric. For `ws_partial` this is typically 0, for
+    /// rest-derived observations this is nearest distance to final.
+    book_age_ms: u64,
+    /// Runtime evidence source for this round's winner-side book quality.
+    book_source: PostCloseBookSource,
+    /// Unix milliseconds when the evidence sample was captured.
+    evidence_recv_ms: u64,
+    /// Absolute |evidence_recv_ms - detect_ms| in milliseconds.
+    distance_to_final_ms: u64,
+    /// Unix milliseconds at which Chainlink result was detected.
+    detect_ms: u64,
+    /// The WinnerHint to forward to the selected market's coordinator.
+    hint_msg: MarketDataMsg,
+    /// Channel to the market coordinator (receives WinnerHint + OracleLagSelection).
+    hint_tx: mpsc::Sender<MarketDataMsg>,
+}
+
+/// Per-market final observation used by round-tail coordinator.
+/// Immediate per-market order path remains local; this stream is only for the
+/// "all markets processed" tail action.
+struct RoundTailObservation {
+    round_end_ts: u64,
+    slug: String,
+    winner_side: Side,
+    winner_bid: f64,
+    winner_ask_raw: f64,
+    winner_ask_eff: f64,
+    winner_ask_tradable: bool,
+    detect_ms: u64,
+    hint_tx: mpsc::Sender<MarketDataMsg>,
+}
+
+const ORACLE_LAG_TAIL_FAK_LIMIT_PRICE: f64 = 0.99;
+const ORACLE_LAG_TAIL_MAKER_MAX_PRICE: f64 = 0.991;
+
+/// Round-tail coordinator:
+/// - Collect one final observation per market for a given round_end_ts.
+/// - Dispatch once when all expected markets arrive or first-final timeout expires.
+/// - If any tradable ask <= 0.99 exists, send a tail Fak99 action.
+/// - Otherwise choose lowest bid and send a tail MakerBidStep action.
+async fn run_oracle_lag_round_tail_coordinator(
+    mut rx: mpsc::Receiver<RoundTailObservation>,
+    expected_market_count: usize,
+    timeout_ms: u64,
+) {
+    use std::collections::{HashMap, HashSet};
+    let mut pending: HashMap<u64, HashMap<String, RoundTailObservation>> = HashMap::new();
+    let mut deadlines: HashMap<u64, tokio::time::Instant> = HashMap::new();
+    let mut finalized_rounds: HashSet<u64> = HashSet::new();
+
+    let dispatch_round = |round_end_ts: u64,
+                          by_slug: HashMap<String, RoundTailObservation>|
+     -> Option<(MarketDataMsg, mpsc::Sender<MarketDataMsg>)> {
+        let observations: Vec<RoundTailObservation> = by_slug.into_values().collect();
+        if observations.is_empty() {
+            return None;
+        }
+
+        // Priority 1: tradable ask <= 0.99 (prefer lower ask, then earlier detect).
+        let mut ask_candidates: Vec<&RoundTailObservation> = observations
+            .iter()
+            .filter(|o| {
+                o.winner_ask_tradable
+                    && o.winner_ask_eff > 0.0
+                    && o.winner_ask_eff <= ORACLE_LAG_TAIL_FAK_LIMIT_PRICE + 1e-9
+            })
+            .collect();
+        ask_candidates.sort_by(|a, b| {
+            a.winner_ask_eff
+                .partial_cmp(&b.winner_ask_eff)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.detect_ms.cmp(&b.detect_ms))
+        });
+
+        if let Some(best) = ask_candidates.first() {
+            let msg = MarketDataMsg::OracleLagTailAction {
+                round_end_ts,
+                side: best.winner_side,
+                mode: OracleLagTailMode::Fak99,
+                limit_price: ORACLE_LAG_TAIL_FAK_LIMIT_PRICE,
+                target_slug: best.slug.clone(),
+                reason: "tail_best_tradable_ask",
+            };
+            return Some((msg, best.hint_tx.clone()));
+        }
+
+        // Priority 2: no asks → lowest bid market for maker fallback.
+        let mut bid_candidates: Vec<&RoundTailObservation> =
+            observations.iter().filter(|o| o.winner_bid > 0.0).collect();
+        bid_candidates.sort_by(|a, b| {
+            a.winner_bid
+                .partial_cmp(&b.winner_bid)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.detect_ms.cmp(&b.detect_ms))
+        });
+
+        if let Some(best) = bid_candidates.first() {
+            let tick = post_close_tick_size_for_price(best.winner_bid, best.winner_ask_raw);
+            let step = if tick <= 0.001 + 1e-12 {
+                tick
+            } else {
+                tick * 0.1
+            };
+            let price = (best.winner_bid + step)
+                .min(ORACLE_LAG_TAIL_MAKER_MAX_PRICE)
+                .max(step);
+            let msg = MarketDataMsg::OracleLagTailAction {
+                round_end_ts,
+                side: best.winner_side,
+                mode: OracleLagTailMode::MakerBidStep,
+                limit_price: price,
+                target_slug: best.slug.clone(),
+                reason: "tail_lowest_bid_fallback",
+            };
+            return Some((msg, best.hint_tx.clone()));
+        }
+
+        None
+    };
+
+    loop {
+        let now = tokio::time::Instant::now();
+        let expired: Vec<u64> = deadlines
+            .iter()
+            .filter(|(_, &dl)| now >= dl)
+            .map(|(&ts, _)| ts)
+            .collect();
+        for round_end_ts in expired {
+            deadlines.remove(&round_end_ts);
+            if let Some(by_slug) = pending.remove(&round_end_ts) {
+                if let Some((msg, tx)) = dispatch_round(round_end_ts, by_slug) {
+                    if let Err(e) = tx.try_send(msg) {
+                        warn!(
+                            "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} err={}",
+                            round_end_ts, e
+                        );
+                    }
+                } else {
+                    info!(
+                        "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_ask_and_no_bid",
+                        round_end_ts
+                    );
+                }
+                finalized_rounds.insert(round_end_ts);
+            }
+        }
+
+        let sleep_until = deadlines.values().min().cloned();
+        if let Some(deadline) = sleep_until {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::select! {
+                biased;
+                maybe = rx.recv() => {
+                    let Some(obs) = maybe else { break; };
+                    if finalized_rounds.contains(&obs.round_end_ts) {
+                        continue;
+                    }
+                    let round_end_ts = obs.round_end_ts;
+                    let should_dispatch = {
+                        let by_slug = pending.entry(round_end_ts).or_default();
+                        by_slug.insert(obs.slug.clone(), obs);
+                        expected_market_count > 0 && by_slug.len() >= expected_market_count
+                    };
+                    if should_dispatch {
+                        let owned = pending.remove(&round_end_ts).unwrap_or_default();
+                        deadlines.remove(&round_end_ts);
+                        if let Some((msg, tx)) = dispatch_round(round_end_ts, owned) {
+                            if let Err(e) = tx.try_send(msg) {
+                                warn!(
+                                    "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} err={}",
+                                    round_end_ts, e
+                                );
+                            }
+                        } else {
+                            info!(
+                                "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_ask_and_no_bid",
+                                round_end_ts
+                            );
+                        }
+                        finalized_rounds.insert(round_end_ts);
+                    } else {
+                        deadlines.entry(round_end_ts).or_insert_with(|| {
+                            tokio::time::Instant::now()
+                                + std::time::Duration::from_millis(timeout_ms)
+                        });
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => {}
+            }
+        } else {
+            let Some(obs) = rx.recv().await else {
+                break;
+            };
+            if finalized_rounds.contains(&obs.round_end_ts) {
+                continue;
+            }
+            let round_end_ts = obs.round_end_ts;
+            let should_dispatch = {
+                let by_slug = pending.entry(round_end_ts).or_default();
+                by_slug.insert(obs.slug.clone(), obs);
+                expected_market_count > 0 && by_slug.len() >= expected_market_count
+            };
+            if should_dispatch {
+                let owned = pending.remove(&round_end_ts).unwrap_or_default();
+                deadlines.remove(&round_end_ts);
+                if let Some((msg, tx)) = dispatch_round(round_end_ts, owned) {
+                    if let Err(e) = tx.try_send(msg) {
+                        warn!(
+                            "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} err={}",
+                            round_end_ts, e
+                        );
+                    }
+                } else {
+                    info!(
+                        "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_ask_and_no_bid",
+                        round_end_ts
+                    );
+                }
+                finalized_rounds.insert(round_end_ts);
+            } else {
+                deadlines.entry(round_end_ts).or_insert_with(|| {
+                    tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms)
+                });
+            }
+        }
+    }
+    warn!("🛑 oracle_lag_round_tail_coordinator exited (channel closed)");
+}
+
+/// Cross-market arbiter: collects observations from all hint listeners within a
+/// configurable window, ranks by ask quality, and selects the single best market.
+async fn run_cross_market_hint_arbiter(
+    mut obs_rx: mpsc::Receiver<ArbiterObservation>,
+    expected_market_count: usize,
+    collection_window_ms: u64,
+    book_max_age_ms: u64,
+) {
+    use std::collections::{HashMap, HashSet};
+    let mut pending: HashMap<u64, HashMap<String, ArbiterObservation>> = HashMap::new();
+    // Deadline = tokio::time::Instant when the max wait expires per round.
+    let mut deadlines: HashMap<u64, tokio::time::Instant> = HashMap::new();
+    // Dedup guard: once a round is dispatched, late observations for that same
+    // round_end_ts must be dropped (prevents duplicate selected=true decisions).
+    let mut finalized_rounds: HashSet<u64> = HashSet::new();
+
+    loop {
+        // Fire any expired collection windows.
+        let now = tokio::time::Instant::now();
+        let expired: Vec<u64> = deadlines
+            .iter()
+            .filter(|(_, &dl)| now >= dl)
+            .map(|(&ts, _)| ts)
+            .collect();
+        for round_end_ts in expired {
+            deadlines.remove(&round_end_ts);
+            if let Some(observations) = pending.remove(&round_end_ts) {
+                arbiter_dispatch(
+                    observations.into_values().collect(),
+                    round_end_ts,
+                    book_max_age_ms,
+                )
+                .await;
+                finalized_rounds.insert(round_end_ts);
+            }
+        }
+
+        // Determine how long until the next deadline (if any).
+        let sleep_until = deadlines.values().min().cloned();
+
+        if let Some(deadline) = sleep_until {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            tokio::select! {
+                biased;
+                maybe = obs_rx.recv() => {
+                    match maybe {
+                        None => break,
+                        Some(obs) => {
+                            let should_dispatch = arbiter_intake(
+                                &mut pending,
+                                &mut deadlines,
+                                &mut finalized_rounds,
+                                obs,
+                                collection_window_ms,
+                                expected_market_count,
+                            );
+                            if let Some(round_end_ts) = should_dispatch {
+                                deadlines.remove(&round_end_ts);
+                                if let Some(observations) = pending.remove(&round_end_ts) {
+                                    arbiter_dispatch(
+                                        observations.into_values().collect(),
+                                        round_end_ts,
+                                        book_max_age_ms,
+                                    )
+                                    .await;
+                                    finalized_rounds.insert(round_end_ts);
+                                }
+                            }
+                        }
+                    }
+                }
+                _ = tokio::time::sleep(remaining) => { /* loop will fire expired windows */ }
+            }
+        } else {
+            match obs_rx.recv().await {
+                None => break,
+                Some(obs) => {
+                    let should_dispatch = arbiter_intake(
+                        &mut pending,
+                        &mut deadlines,
+                        &mut finalized_rounds,
+                        obs,
+                        collection_window_ms,
+                        expected_market_count,
+                    );
+                    if let Some(round_end_ts) = should_dispatch {
+                        deadlines.remove(&round_end_ts);
+                        if let Some(observations) = pending.remove(&round_end_ts) {
+                            arbiter_dispatch(
+                                observations.into_values().collect(),
+                                round_end_ts,
+                                book_max_age_ms,
+                            )
+                            .await;
+                            finalized_rounds.insert(round_end_ts);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    warn!("🛑 cross_market_hint_arbiter exited (channel closed)");
+}
+
+fn arbiter_intake(
+    pending: &mut std::collections::HashMap<
+        u64,
+        std::collections::HashMap<String, ArbiterObservation>,
+    >,
+    deadlines: &mut std::collections::HashMap<u64, tokio::time::Instant>,
+    finalized_rounds: &mut std::collections::HashSet<u64>,
+    obs: ArbiterObservation,
+    collection_window_ms: u64,
+    expected_market_count: usize,
+) -> Option<u64> {
+    let ts = obs.round_end_ts;
+    if finalized_rounds.contains(&ts) {
+        debug!(
+            "⏭️ oracle_lag_arbiter_intake_ignored_finalized | round_end_ts={} slug={}",
+            ts, obs.slug
+        );
+        return None;
+    }
+    info!(
+        "📥 oracle_lag_arbiter_intake | round_end_ts={} slug={} winner_ask_eff={:.4} winner_ask_tradable={} book_source={} distance_to_final_ms={} book_age_ms={}",
+        ts,
+        obs.slug,
+        obs.winner_ask_eff,
+        obs.winner_ask_tradable,
+        obs.book_source.as_str(),
+        obs.distance_to_final_ms,
+        obs.book_age_ms
+    );
+    let by_slug = pending.entry(ts).or_default();
+    match by_slug.get(&obs.slug) {
+        Some(existing) => {
+            let replace = obs.book_source > existing.book_source
+                || (obs.book_source == existing.book_source
+                    && obs.distance_to_final_ms < existing.distance_to_final_ms)
+                || (obs.book_source == existing.book_source
+                    && obs.distance_to_final_ms == existing.distance_to_final_ms
+                    && obs.detect_ms < existing.detect_ms);
+            if replace {
+                by_slug.insert(obs.slug.clone(), obs);
+            }
+        }
+        None => {
+            by_slug.insert(obs.slug.clone(), obs);
+        }
+    }
+
+    let observed = by_slug.len();
+    let early_dispatch = expected_market_count > 0 && observed >= expected_market_count;
+    if early_dispatch {
+        info!(
+            "🏁 oracle_lag_arbiter_round_ready | round_end_ts={} observed={} expected={} early_dispatch=true",
+            ts, observed, expected_market_count
+        );
+        return Some(ts);
+    }
+
+    deadlines.entry(ts).or_insert_with(|| {
+        tokio::time::Instant::now() + std::time::Duration::from_millis(collection_window_ms)
+    });
+    None
+}
+
+async fn arbiter_dispatch(
+    observations: Vec<ArbiterObservation>,
+    round_end_ts: u64,
+    book_max_age_ms: u64,
+) {
+    if observations.is_empty() {
+        return;
+    }
+    let n = observations.len();
+    let has_real_post_close = observations
+        .iter()
+        .any(|o| o.book_source != PostCloseBookSource::None);
+    let has_fresh = observations
+        .iter()
+        .any(|o| o.book_age_ms <= book_max_age_ms);
+
+    // Build a ranked index (ascending = best first).
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
+        let oa = &observations[a];
+        let ob = &observations[b];
+        // Real post-close evidence beats fallback-none.
+        if oa.book_source != ob.book_source {
+            return ob.book_source.cmp(&oa.book_source);
+        }
+        // Stale penalty when a fresh alternative exists.
+        let a_stale = has_fresh && oa.book_age_ms > book_max_age_ms;
+        let b_stale = has_fresh && ob.book_age_ms > book_max_age_ms;
+        match (a_stale, b_stale) {
+            (true, false) => return std::cmp::Ordering::Greater,
+            (false, true) => return std::cmp::Ordering::Less,
+            _ => {}
+        }
+        // Tradable ask beats no-ask.
+        let a_tradable = oa.winner_ask_tradable && oa.winner_ask_eff > 0.0;
+        let b_tradable = ob.winner_ask_tradable && ob.winner_ask_eff > 0.0;
+        match (a_tradable, b_tradable) {
+            (true, false) => return std::cmp::Ordering::Less,
+            (false, true) => return std::cmp::Ordering::Greater,
+            _ => {}
+        }
+        // Lower effective ask is better.
+        if (oa.winner_ask_eff - ob.winner_ask_eff).abs() > 1e-9 {
+            return oa
+                .winner_ask_eff
+                .partial_cmp(&ob.winner_ask_eff)
+                .unwrap_or(std::cmp::Ordering::Equal);
+        }
+        // Higher bid (tighter spread) is better.
+        if (oa.winner_bid - ob.winner_bid).abs() > 1e-9 {
+            return ob
+                .winner_bid
+                .partial_cmp(&oa.winner_bid)
+                .unwrap_or(std::cmp::Ordering::Equal);
+        }
+        // Closer evidence-to-final is better.
+        if oa.distance_to_final_ms != ob.distance_to_final_ms {
+            return oa.distance_to_final_ms.cmp(&ob.distance_to_final_ms);
+        }
+        // Earlier detection wins tiebreak.
+        oa.detect_ms.cmp(&ob.detect_ms)
+    });
+
+    // Winner is eligible only if it isn't itself stale (when fresh candidates exist).
+    let winner_idx = order[0];
+    let winner_stale = has_fresh && observations[winner_idx].book_age_ms > book_max_age_ms;
+    let winner_has_real_book = observations[winner_idx].book_source != PostCloseBookSource::None;
+    let winner_eligible = has_real_post_close && winner_has_real_book && !winner_stale;
+
+    for (rank_pos, &obs_idx) in order.iter().enumerate() {
+        let obs = &observations[obs_idx];
+        let rank = (rank_pos + 1) as u8;
+        let selected = winner_eligible && rank_pos == 0;
+        let reason: &'static str = if !has_real_post_close {
+            "no_real_post_close_book"
+        } else if !winner_eligible && rank_pos == 0 {
+            "no_eligible_candidate"
+        } else if selected {
+            "best_ask_eff"
+        } else {
+            "outranked"
+        };
+
+        info!(
+            "🏆 oracle_lag_arbiter_decision | round_end_ts={} slug={} rank={}/{} selected={} reason={} winner_ask_eff={:.4} winner_ask_tradable={} book_source={} distance_to_final_ms={} book_age_ms={}",
+            round_end_ts,
+            obs.slug,
+            rank,
+            n,
+            selected,
+            reason,
+            obs.winner_ask_eff,
+            obs.winner_ask_tradable,
+            obs.book_source.as_str(),
+            obs.distance_to_final_ms,
+            obs.book_age_ms
+        );
+
+        // Send OracleLagSelection first so coordinator gate is set before WinnerHint.
+        let sel_msg = MarketDataMsg::OracleLagSelection {
+            round_end_ts,
+            selected,
+            rank,
+            reason,
+        };
+        if let Err(e) = obs.hint_tx.try_send(sel_msg) {
+            warn!(
+                "⚠️ arbiter_selection_send_failed | slug={} rank={} err={}",
+                obs.slug, rank, e
+            );
+        }
+
+        // Forward WinnerHint only to the selected market.
+        if selected {
+            if let Err(e) = obs.hint_tx.try_send(obs.hint_msg.clone()) {
+                warn!(
+                    "⚠️ arbiter_hint_forward_failed | slug={} err={}",
+                    obs.slug, e
+                );
+            }
+        }
+    }
+}
+
 async fn run_post_close_winner_hint_listener(
     winner_hint_tx: mpsc::Sender<MarketDataMsg>,
+    arbiter_tx: Option<mpsc::Sender<ArbiterObservation>>,
+    round_tail_tx: Option<mpsc::Sender<RoundTailObservation>>,
     coord_md_rx: watch::Receiver<MarketDataMsg>,
+    post_close_book_rx: mpsc::Receiver<PostCloseSideBookUpdate>,
+    rest_url: String,
     chainlink_hub: Option<Arc<ChainlinkHub>>,
     slug: String,
     yes_asset_id: String,
@@ -3692,67 +4543,97 @@ async fn run_post_close_winner_hint_listener(
         chainlink_data_streams_price_api_base_url()
     );
 
-    // ── Chainlink result → emit WinnerHint ──
-    let first = match chainlink_task.await {
-        Ok(Some(v)) => v,
-        Ok(None) => {
-            let frontend_round = if let Some(task) = frontend_task.take() {
-                match tokio::time::timeout(Duration::from_millis(450), task).await {
-                    Ok(Ok(hit)) => hit,
-                    Ok(Err(err)) => {
-                        warn!(
-                            "⚠️ frontend_round_task_join_error | slug={} err={}",
-                            slug, err
-                        );
-                        None
-                    }
-                    Err(_) => None,
-                }
-            } else {
+    // ── Observation plane (book evidence) runs independently from decision plane ──
+    let hard_wait_deadline_ms =
+        market_end_ms.saturating_add(post_close_window_secs.saturating_mul(1_000));
+    let shared_execution_view = Arc::new(Mutex::new(PostCloseBookEvidenceTape::default()));
+    let obs_view = Arc::clone(&shared_execution_view);
+    let obs_slug = slug.clone();
+    let obs_rest_url = rest_url.clone();
+    let obs_yes_asset_id = yes_asset_id.clone();
+    let obs_no_asset_id = no_asset_id.clone();
+    let observation_task = tokio::spawn(async move {
+        run_post_close_observation_plane(
+            obs_view,
+            post_close_book_rx,
+            obs_rest_url,
+            obs_yes_asset_id,
+            obs_no_asset_id,
+            obs_slug,
+            market_end_ms,
+            hard_wait_deadline_ms,
+        )
+        .await;
+    });
+
+    let chainlink_result: Option<(WinnerHintSource, Side, f64, f64, u64, bool)> =
+        match chainlink_task.await {
+            Ok(Some(v)) => Some(v),
+            Ok(None) => None,
+            Err(e) => {
+                warn!(
+                    "⚠️ post_close chainlink task join error for {}: {}",
+                    slug, e
+                );
                 None
-            };
-            if let Some(hit) = frontend_round {
-                let frontend_winner = match (hit.open_price, hit.close_price) {
-                    (Some(open), Some(close)) if close >= open => Some(Side::Yes),
-                    (Some(_open), Some(_close)) => Some(Side::No),
-                    _ => None,
-                };
-                warn!(
-                    "⚠️ post_close_unresolved_observation | slug={} symbol={} reason=chainlink_unresolved frontend_open={:?} frontend_close={:?} frontend_winner={:?} frontend_completed={:?} frontend_cached={:?} frontend_ts_ms={} latency_from_end_ms={}",
-                    slug,
-                    symbol,
-                    hit.open_price,
-                    hit.close_price,
-                    frontend_winner,
-                    hit.completed,
-                    hit.cached,
-                    hit.timestamp_ms,
-                    unix_now_millis_u64().saturating_sub(market_end_ms),
-                );
-            } else {
-                warn!(
-                    "⚠️ post_close_winner_frontend_missing | slug={} symbol={} — frontend api returned no round data",
-                    slug, symbol
-                );
-                warn!(
-                    "⚠️ post_close winner hint unresolved within window for {} (end={} window={}s)",
-                    slug, round_end_ts, post_close_window_secs
-                );
-                return;
             }
+        };
+
+    // ── Chainlink result → emit WinnerHint ──
+    let first = if let Some(v) = chainlink_result {
+        v
+    } else {
+        let frontend_round = if let Some(task) = frontend_task.take() {
+            match tokio::time::timeout(Duration::from_millis(450), task).await {
+                Ok(Ok(hit)) => hit,
+                Ok(Err(err)) => {
+                    warn!(
+                        "⚠️ frontend_round_task_join_error | slug={} err={}",
+                        slug, err
+                    );
+                    None
+                }
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        if let Some(hit) = frontend_round {
+            let frontend_winner = match (hit.open_price, hit.close_price) {
+                (Some(open), Some(close)) if close >= open => Some(Side::Yes),
+                (Some(_open), Some(_close)) => Some(Side::No),
+                _ => None,
+            };
+            warn!(
+                "⚠️ post_close_unresolved_observation | slug={} symbol={} reason=chainlink_unresolved frontend_open={:?} frontend_close={:?} frontend_winner={:?} frontend_completed={:?} frontend_cached={:?} frontend_ts_ms={} latency_from_end_ms={}",
+                slug,
+                symbol,
+                hit.open_price,
+                hit.close_price,
+                frontend_winner,
+                hit.completed,
+                hit.cached,
+                hit.timestamp_ms,
+                unix_now_millis_u64().saturating_sub(market_end_ms),
+            );
+        } else {
+            warn!(
+                "⚠️ post_close_winner_frontend_missing | slug={} symbol={} — frontend api returned no round data",
+                slug, symbol
+            );
             warn!(
                 "⚠️ post_close winner hint unresolved within window for {} (end={} window={}s)",
                 slug, round_end_ts, post_close_window_secs
             );
+            observation_task.abort();
             return;
         }
-        Err(e) => {
-            warn!(
-                "⚠️ post_close chainlink task join error for {}: {}",
-                slug, e
-            );
-            return;
-        }
+        warn!(
+            "⚠️ post_close winner hint unresolved within window for {} (end={} window={}s)",
+            slug, round_end_ts, post_close_window_secs
+        );
+        observation_task.abort();
+        return;
     };
     let (first_source, first_side, first_ref, first_obs, first_ms, first_open_exact) = first;
 
@@ -3764,91 +4645,190 @@ async fn run_post_close_winner_hint_listener(
             post_close_window_secs,
             first_ms.saturating_sub(market_end_ms)
         );
+        observation_task.abort();
         return;
     }
 
-    // Snapshot from the always-running market WS cache at the exact final-detected moment.
-    // No extra wait/re-sampling: user needs "that moment's book", not post-final drift.
     let final_detect_unix_ms = unix_now_millis_u64();
-    let snap_emit = snapshot_book(&coord_md_rx.borrow().clone()).unwrap_or(BookSnapshot {
-        yes_bid: 0.0,
-        yes_ask: 0.0,
-        no_bid: 0.0,
-        no_ask: 0.0,
-        ts: Instant::now(),
-    });
+    let tape = shared_execution_view.lock().map(|g| *g).unwrap_or_default();
+    let (book_source, winner_bid, winner_ask_raw, evidence_recv_ms, distance_to_final_ms) =
+        post_close_round_observation_from_latest_view(tape, first_side, final_detect_unix_ms);
 
-    let frontend_round = if let Some(task) = frontend_task.take() {
-        match tokio::time::timeout(Duration::from_millis(350), task).await {
-            Ok(Ok(hit)) => hit,
-            Ok(Err(err)) => {
-                warn!(
-                    "⚠️ frontend_round_task_join_error | slug={} err={}",
-                    slug, err
-                );
-                None
-            }
-            Err(_) => None,
-        }
+    let winner_ask_book = fmt_price_opt(nonzero_price_opt(winner_ask_raw));
+    let winner_ask_eff = fmt_price_opt(post_close_effective_ask_opt(winner_bid, winner_ask_raw));
+    let emit_unix_ms = unix_now_millis_u64();
+    let final_detect_to_emit_ms = emit_unix_ms.saturating_sub(final_detect_unix_ms);
+    let evidence_to_emit_ms = if evidence_recv_ms > 0 {
+        Some(emit_unix_ms.saturating_sub(evidence_recv_ms))
     } else {
         None
     };
-    let (frontend_open, frontend_close, frontend_ts_ms, frontend_completed, frontend_cached) =
-        if let Some(hit) = frontend_round {
-            (
-                hit.open_price,
-                hit.close_price,
-                Some(hit.timestamp_ms),
-                hit.completed,
-                hit.cached,
-            )
-        } else {
-            (None, None, None, None, None)
-        };
-    let (winner_bid, winner_ask_raw) = match first_side {
-        Side::Yes => (snap_emit.yes_bid, snap_emit.yes_ask),
-        Side::No => (snap_emit.no_bid, snap_emit.no_ask),
-    };
-    let winner_ask_book = fmt_price_opt(nonzero_price_opt(winner_ask_raw));
-    let winner_ask_eff = fmt_price_opt(post_close_effective_ask_opt(winner_bid, winner_ask_raw));
     info!(
-        "⏱️ post_close_emit_winner_hint | unix_ms={} final_detect_unix_ms={} source={:?} open_exact={} slug={} side={:?} ref_price={:.4} observed_price={:.4} frontend_open={:?} frontend_close={:?} frontend_ts_ms={:?} frontend_completed={:?} frontend_cached={:?} latency_from_end_ms={} book_age_ms={} book_capture_mode={} winner_bid={:.4} winner_ask_raw={:.4} winner_ask_book={} winner_ask_eff={} yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4}",
-        unix_now_millis_u64(), final_detect_unix_ms, first_source, first_open_exact, slug, first_side, first_ref, first_obs,
-        frontend_open, frontend_close, frontend_ts_ms, frontend_completed, frontend_cached,
+        "⏱️ post_close_emit_winner_hint | unix_ms={} final_detect_unix_ms={} source={:?} open_exact={} slug={} side={:?} ref_price={:.9} observed_price={:.9} frontend_open={:?} frontend_close={:?} frontend_ts_ms={:?} frontend_completed={:?} frontend_cached={:?} latency_from_end_ms={} book_source={} evidence_recv_ms={} distance_to_final_ms={} winner_bid={:.4} winner_ask_raw={:.4} winner_ask_book={} winner_ask_eff={}",
+        emit_unix_ms, final_detect_unix_ms, first_source, first_open_exact, slug, first_side, first_ref, first_obs,
+        Option::<f64>::None, Option::<f64>::None, Option::<u64>::None, Option::<bool>::None, Option::<bool>::None,
         first_ms.saturating_sub(market_end_ms),
-        snap_emit.ts.elapsed().as_millis(),
-        "latest_cached_at_final",
+        book_source.as_str(),
+        evidence_recv_ms,
+        distance_to_final_ms,
         winner_bid, winner_ask_raw, winner_ask_book, winner_ask_eff,
-        snap_emit.yes_bid, snap_emit.yes_ask, snap_emit.no_bid, snap_emit.no_ask,
     );
+    info!(
+        "⏱️ oracle_lag_latency_emit | slug={} side={:?} final_detect_to_emit_ms={} evidence_to_final_ms={} evidence_to_emit_ms={:?} book_source={}",
+        slug,
+        first_side,
+        final_detect_to_emit_ms,
+        distance_to_final_ms,
+        evidence_to_emit_ms,
+        book_source.as_str(),
+    );
+    // Dedup guard: drop duplicate hints from stale preload races or dual processes.
+    if !hint_dedup_try_insert(&slug, round_end_ts, first_side, final_detect_unix_ms) {
+        warn!(
+            "⚠️ post_close_hint_duplicate_suppressed | slug={} round_end_ts={} side={:?} — already dispatched by another instance",
+            slug, round_end_ts, first_side
+        );
+        observation_task.abort();
+        return;
+    }
+
     let hint_msg = MarketDataMsg::WinnerHint {
         side: first_side,
         source: first_source,
         ref_price: first_ref,
         observed_price: first_obs,
+        final_detect_unix_ms,
+        emit_unix_ms,
+        winner_bid,
+        winner_ask_raw,
+        winner_evidence_recv_ms: evidence_recv_ms,
+        winner_book_source: book_source.as_str(),
+        winner_distance_to_final_ms: distance_to_final_ms,
         open_is_exact: first_open_exact,
         ts: Instant::now(),
     };
-    match tokio::time::timeout(Duration::from_millis(500), winner_hint_tx.send(hint_msg)).await {
-        Ok(Ok(())) => {
+
+    // Always report final observation to the round-tail coordinator (if enabled).
+    // This does not replace local immediate WinnerHint execution path.
+    if let Some(tail_tx) = round_tail_tx {
+        let winner_ask_eff_f64 =
+            post_close_effective_ask_opt(winner_bid, winner_ask_raw).unwrap_or(0.0);
+        let winner_ask_tradable = winner_ask_eff_f64 > 0.0;
+        let tail_obs = RoundTailObservation {
+            round_end_ts,
+            slug: slug.clone(),
+            winner_side: first_side,
+            winner_bid,
+            winner_ask_raw,
+            winner_ask_eff: winner_ask_eff_f64,
+            winner_ask_tradable,
+            detect_ms: first_ms,
+            hint_tx: winner_hint_tx.clone(),
+        };
+        if let Err(e) = tail_tx.try_send(tail_obs) {
+            warn!(
+                "⚠️ post_close_round_tail_obs_send_failed | slug={} round_end_ts={} err={}",
+                slug, round_end_ts, e
+            );
+        }
+    }
+
+    if let Some(arb_tx) = arbiter_tx {
+        // Arbiter mode: wrap into ArbiterObservation and hand off to the arbiter.
+        let winner_ask_eff_f64 =
+            post_close_effective_ask_opt(winner_bid, winner_ask_raw).unwrap_or(0.0);
+        let winner_ask_tradable = winner_ask_eff_f64 > 0.0;
+        let obs = ArbiterObservation {
+            round_end_ts,
+            slug: slug.clone(),
+            winner_side: first_side,
+            winner_bid,
+            winner_ask_raw,
+            winner_ask_eff: winner_ask_eff_f64,
+            winner_ask_tradable,
+            book_age_ms: distance_to_final_ms,
+            book_source,
+            evidence_recv_ms,
+            distance_to_final_ms,
+            detect_ms: first_ms,
+            hint_msg,
+            hint_tx: winner_hint_tx,
+        };
+        if let Err(e) = arb_tx.try_send(obs) {
+            warn!(
+                "⚠️ post_close_arbiter_obs_send_failed | slug={} err={}",
+                slug, e
+            );
+        } else {
             info!(
-                "⏱️ post_close_winner_hint_dispatched_ok | slug={} source={:?} side={:?}",
+                "⏱️ post_close_winner_hint_to_arbiter | slug={} source={:?} side={:?}",
                 slug, first_source, first_side
             );
         }
-        Ok(Err(e)) => {
-            warn!(
-                "⚠️ post_close winner hint dispatch failed for {}: {}",
-                slug, e
-            );
+    } else {
+        // No arbiter: send WinnerHint directly to coordinator (backward-compatible path).
+        match tokio::time::timeout(Duration::from_millis(500), winner_hint_tx.send(hint_msg)).await
+        {
+            Ok(Ok(())) => {
+                info!(
+                    "⏱️ post_close_winner_hint_dispatched_ok | slug={} source={:?} side={:?}",
+                    slug, first_source, first_side
+                );
+            }
+            Ok(Err(e)) => {
+                warn!(
+                    "⚠️ post_close winner hint dispatch failed for {}: {}",
+                    slug, e
+                );
+            }
+            Err(_) => {
+                warn!(
+                    "⚠️ post_close winner hint dispatch timeout for {} (500ms)",
+                    slug
+                );
+            }
         }
-        Err(_) => {
-            warn!(
-                "⚠️ post_close winner hint dispatch timeout for {} (500ms)",
-                slug
-            );
+    }
+
+    // Validation-only path: keep frontend observability, but do not block winner-hint emit.
+    if let Some(task) = frontend_task.take() {
+        match tokio::time::timeout(Duration::from_millis(350), task).await {
+            Ok(Ok(Some(hit))) => {
+                info!(
+                    "🧾 post_close_frontend_validation | slug={} symbol={} open={:?} close={:?} completed={:?} cached={:?} ts_ms={} detect_to_frontend_validation_ms={}",
+                    slug,
+                    symbol,
+                    hit.open_price,
+                    hit.close_price,
+                    hit.completed,
+                    hit.cached,
+                    hit.timestamp_ms,
+                    unix_now_millis_u64().saturating_sub(final_detect_unix_ms),
+                );
+            }
+            Ok(Ok(None)) => {
+                info!(
+                    "🧾 post_close_frontend_validation | slug={} symbol={} result=none detect_to_frontend_validation_ms={}",
+                    slug,
+                    symbol,
+                    unix_now_millis_u64().saturating_sub(final_detect_unix_ms),
+                );
+            }
+            Ok(Err(err)) => {
+                warn!(
+                    "⚠️ frontend_round_task_join_error | slug={} err={}",
+                    slug, err
+                );
+            }
+            Err(_) => {
+                info!(
+                    "🧾 post_close_frontend_validation | slug={} symbol={} result=timeout",
+                    slug, symbol
+                );
+            }
         }
-    };
+    }
+    observation_task.abort();
 }
 
 async fn run_data_streams_winner_hint(
@@ -4936,10 +5916,18 @@ async fn run_market_ws_with_wall_guard(
     ofi_tx: mpsc::Sender<MarketDataMsg>,
     glft_tx: mpsc::Sender<MarketDataMsg>,
     coord_tx: watch::Sender<MarketDataMsg>,
+    post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
 ) -> MarketEnd {
     let hard_cutoff_ts = end_ts.saturating_add(MARKET_WS_HARD_CUTOFF_GRACE_SECS);
-    let mut ws_task = tokio::spawn(run_market_ws(settings, ofi_tx, glft_tx, coord_tx, end_ts));
+    let mut ws_task = tokio::spawn(run_market_ws(
+        settings,
+        ofi_tx,
+        glft_tx,
+        coord_tx,
+        post_close_book_tx,
+        end_ts,
+    ));
     loop {
         tokio::select! {
             joined = &mut ws_task => {
@@ -4975,9 +5963,164 @@ async fn run_market_ws_with_wall_guard(
     }
 }
 
+/// In-process supervisor: one tokio runtime, one ChainlinkHub (covering the union
+/// of all prefixes' Chainlink symbols), one JoinSet spawning run_prefix_worker
+/// per slug. Replaces the OS-process supervisor when PM_INPROC_SUPERVISOR=1.
+/// Designed for the 30+ market scale where N OS-processes × per-process overhead
+/// becomes prohibitive.
+async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
+    info!(
+        "🧩 in-proc multi-market supervisor enabled | workers={} prefixes={}",
+        prefixes.len(),
+        prefixes.join(",")
+    );
+
+    let coord_cfg = CoordinatorConfig::from_env();
+    let shared_hub = if coord_cfg.strategy.is_oracle_lag_sniping() {
+        let mut hub_symbols: HashSet<String> = HashSet::new();
+        for prefix in &prefixes {
+            if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
+                hub_symbols.insert(format!("{}/usd", sym));
+            } else {
+                warn!(
+                    "⚠️ in-proc supervisor: could not derive symbol from prefix='{}' — this slug will not have a Chainlink feed",
+                    prefix
+                );
+            }
+        }
+        if hub_symbols.is_empty() {
+            None
+        } else {
+            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+            log_symbols.sort();
+            info!(
+                "🛰️ shared chainlink_hub starting | symbols={}",
+                log_symbols.join(",")
+            );
+            Some(ChainlinkHub::spawn(hub_symbols))
+        }
+    } else {
+        None
+    };
+
+    // Spawn cross-market arbiter when running in OracleLagSniping inproc mode.
+    let arbiter_sender: Option<mpsc::Sender<ArbiterObservation>> = if coord_cfg
+        .strategy
+        .is_oracle_lag_sniping()
+        && coord_cfg.oracle_lag_sniping.cross_market_arbiter_enabled
+    {
+        let (arb_tx, arb_rx) = mpsc::channel::<ArbiterObservation>(64);
+        let window_ms = coord_cfg.oracle_lag_sniping.arbiter_collection_window_ms;
+        let max_age_ms = coord_cfg.oracle_lag_sniping.arbiter_book_max_age_ms;
+        tokio::spawn(run_cross_market_hint_arbiter(
+            arb_rx,
+            prefixes.len(),
+            window_ms,
+            max_age_ms,
+        ));
+        info!(
+                "🏅 cross_market_hint_arbiter spawned | expected_markets={} collection_window_ms={} book_max_age_ms={}",
+                prefixes.len(), window_ms, max_age_ms
+            );
+        Some(arb_tx)
+    } else {
+        None
+    };
+
+    // Spawn round-tail coordinator for oracle_lag_sniping multi-market mode.
+    // This collects one final observation per market and dispatches exactly one
+    // tail action per round after all finals arrive (or timeout from first final).
+    let round_tail_sender: Option<mpsc::Sender<RoundTailObservation>> =
+        if coord_cfg.strategy.is_oracle_lag_sniping() && prefixes.len() > 1 {
+            let (tail_tx, tail_rx) = mpsc::channel::<RoundTailObservation>(128);
+            let tail_timeout_ms = coord_cfg
+                .oracle_lag_sniping
+                .arbiter_collection_window_ms
+                .max(1);
+            tokio::spawn(run_oracle_lag_round_tail_coordinator(
+                tail_rx,
+                prefixes.len(),
+                tail_timeout_ms,
+            ));
+            info!(
+                "🎯 oracle_lag_round_tail_coordinator spawned | expected_markets={} timeout_ms={}",
+                prefixes.len(),
+                tail_timeout_ms
+            );
+            Some(tail_tx)
+        } else {
+            None
+        };
+
+    let mut joinset: tokio::task::JoinSet<(String, anyhow::Result<()>)> =
+        tokio::task::JoinSet::new();
+    for prefix in prefixes {
+        let ctx = Arc::new(WorkerCtx {
+            slug: prefix.clone(),
+            chainlink_hub: shared_hub.clone(),
+            arbiter_tx: arbiter_sender.clone(),
+            round_tail_tx: round_tail_sender.clone(),
+        });
+        let slug = prefix.clone();
+        joinset.spawn(async move {
+            let res = run_prefix_worker(Some(ctx)).await;
+            (slug, res)
+        });
+        info!("🚀 in-proc worker spawned | slug={}", prefix);
+    }
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = tokio::signal::ctrl_c() => {
+                warn!("🛑 in-proc supervisor received ctrl-c — aborting all workers");
+                joinset.abort_all();
+                // Drain so tasks get a chance to log their abort
+                while joinset.join_next().await.is_some() {}
+                return Ok(());
+            }
+            maybe = joinset.join_next() => {
+                match maybe {
+                    Some(Ok((slug, Ok(())))) => {
+                        info!("🏁 in-proc worker exited cleanly | slug={}", slug);
+                    }
+                    Some(Ok((slug, Err(e)))) => {
+                        warn!("⚠️ in-proc worker returned error | slug={} err={}", slug, e);
+                    }
+                    Some(Err(join_err)) => {
+                        warn!("⚠️ in-proc worker task join error: {}", join_err);
+                    }
+                    None => break, // all workers finished
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn run_multi_market_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
     if prefixes.is_empty() {
         return Ok(());
+    }
+    // Default policy:
+    // - Oracle-lag multi-market should prefer in-proc supervisor (shared hub, lower overhead).
+    // - Operator can still override via PM_INPROC_SUPERVISOR.
+    let strategy_is_oracle_lag = env::var("PM_STRATEGY")
+        .ok()
+        .map(|v| {
+            let lv = v.trim().to_ascii_lowercase();
+            lv == "oracle_lag_sniping" || lv == "post_close_hype"
+        })
+        .unwrap_or(false);
+    let inproc = env::var("PM_INPROC_SUPERVISOR")
+        .ok()
+        .map(|v| {
+            let lv = v.trim().to_ascii_lowercase();
+            lv == "1" || lv == "true" || lv == "yes" || lv == "on"
+        })
+        .unwrap_or(strategy_is_oracle_lag);
+    if inproc {
+        return run_inproc_supervisor(prefixes).await;
     }
     let exe = std::env::current_exe()?;
     info!(
@@ -5108,6 +6251,7 @@ async fn run_market_ws(
     ofi_tx: mpsc::Sender<MarketDataMsg>,
     glft_tx: mpsc::Sender<MarketDataMsg>,
     coord_tx: watch::Sender<MarketDataMsg>,
+    post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
 ) -> MarketEnd {
     // Compute wall-clock deadline
@@ -5362,6 +6506,29 @@ async fn run_market_ws(
                                                     ..
                                                 } = &md_msg
                                                 {
+                                                    let recv_ms = unix_now_millis_u64();
+                                                    if yes_bid.is_finite()
+                                                        || yes_ask.is_finite()
+                                                    {
+                                                        let _ = post_close_book_tx.try_send(
+                                                            PostCloseSideBookUpdate {
+                                                                side: Side::Yes,
+                                                                bid: (*yes_bid).max(0.0),
+                                                                ask: (*yes_ask).max(0.0),
+                                                                recv_ms,
+                                                            },
+                                                        );
+                                                    }
+                                                    if no_bid.is_finite() || no_ask.is_finite() {
+                                                        let _ = post_close_book_tx.try_send(
+                                                            PostCloseSideBookUpdate {
+                                                                side: Side::No,
+                                                                bid: (*no_bid).max(0.0),
+                                                                ask: (*no_ask).max(0.0),
+                                                                recv_ms,
+                                                            },
+                                                        );
+                                                    }
                                                     if *yes_bid > 0.0 || *yes_ask > 0.0 {
                                                         session_partial_yes_book_count =
                                                             session_partial_yes_book_count
@@ -5389,6 +6556,12 @@ async fn run_market_ws(
                                             }
                                             MarketDataMsg::WinnerHint { .. } => {
                                                 let _ = coord_tx.send(md_msg.clone());
+                                            }
+                                            MarketDataMsg::OracleLagSelection { .. } => {
+                                                // Arbiter-internal; never arrives from WS parser.
+                                            }
+                                            MarketDataMsg::OracleLagTailAction { .. } => {
+                                                // Supervisor-internal; never arrives from WS parser.
                                             }
                                         }
                                         if session_parsed_msg_count % 256 == 0 {
@@ -5441,6 +6614,29 @@ async fn run_market_ws(
                                                             ..
                                                         } = &md_msg
                                                         {
+                                                            let recv_ms = unix_now_millis_u64();
+                                                            if yes_bid.is_finite()
+                                                                || yes_ask.is_finite()
+                                                            {
+                                                                let _ = post_close_book_tx.try_send(
+                                                                    PostCloseSideBookUpdate {
+                                                                        side: Side::Yes,
+                                                                        bid: (*yes_bid).max(0.0),
+                                                                        ask: (*yes_ask).max(0.0),
+                                                                        recv_ms,
+                                                                    },
+                                                                );
+                                                            }
+                                                            if no_bid.is_finite() || no_ask.is_finite() {
+                                                                let _ = post_close_book_tx.try_send(
+                                                                    PostCloseSideBookUpdate {
+                                                                        side: Side::No,
+                                                                        bid: (*no_bid).max(0.0),
+                                                                        ask: (*no_ask).max(0.0),
+                                                                        recv_ms,
+                                                                    },
+                                                                );
+                                                            }
                                                             if *yes_bid > 0.0 || *yes_ask > 0.0 {
                                                                 session_partial_yes_book_count =
                                                                     session_partial_yes_book_count
@@ -5469,6 +6665,12 @@ async fn run_market_ws(
                                                     }
                                                     MarketDataMsg::WinnerHint { .. } => {
                                                         let _ = coord_tx.send(md_msg.clone());
+                                                    }
+                                                    MarketDataMsg::OracleLagSelection { .. } => {
+                                                        // Arbiter-internal; never arrives from WS parser.
+                                                    }
+                                                    MarketDataMsg::OracleLagTailAction { .. } => {
+                                                        // Supervisor-internal; never arrives from WS parser.
                                                     }
                                                 }
                                                 if session_parsed_msg_count % 256 == 0 {
@@ -5594,6 +6796,38 @@ async fn run_market_ws(
 }
 
 // ─────────────────────────────────────────────────────────
+// Per-slug process lock: binds a loopback TCP port derived from the slug.
+// Prevents two OS processes from running oracle-lag-sniping for the same
+// slug simultaneously. Automatically released when the process exits or
+// the guard is dropped.
+// ─────────────────────────────────────────────────────────
+
+struct SlugLock {
+    _listener: TcpListener,
+    port: u16,
+}
+
+fn slug_lock_port(slug: &str) -> u16 {
+    let mut h: u32 = 0x811c9dc5u32;
+    for b in slug.bytes() {
+        h = h.wrapping_mul(0x01000193).wrapping_add(b as u32);
+    }
+    // Dynamic/private port range: 49152–59999 (10848 slots)
+    49152 + (h % 10848) as u16
+}
+
+fn try_acquire_slug_lock(slug: &str) -> Option<SlugLock> {
+    let port = slug_lock_port(slug);
+    match TcpListener::bind(format!("127.0.0.1:{}", port)) {
+        Ok(listener) => Some(SlugLock {
+            _listener: listener,
+            port,
+        }),
+        Err(_) => None,
+    }
+}
+
+// ─────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────
 
@@ -5627,11 +6861,6 @@ async fn main() -> anyhow::Result<()> {
     info!("  Auto-Discovery + Market Rotation");
     info!("═══════════════════════════════════════════════════");
 
-    let base_settings = Settings::from_env()?;
-    let raw_slug = base_settings
-        .market_slug
-        .clone()
-        .unwrap_or_else(|| "btc-updown-15m".to_string());
     let is_multi_market_child = env::var("PM_MULTI_MARKET_CHILD")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -5640,6 +6869,33 @@ async fn main() -> anyhow::Result<()> {
     if !is_multi_market_child && multi_market_prefixes.len() > 1 {
         return run_multi_market_supervisor(multi_market_prefixes).await;
     }
+    run_prefix_worker(None).await
+}
+
+/// Shared handles passed from the in-proc supervisor to each per-slug worker.
+/// When present, overrides env-based slug resolution and lets every worker
+/// share one ChainlinkHub (one WS connection, N symbol subscriptions).
+struct WorkerCtx {
+    slug: String,
+    chainlink_hub: Option<Arc<ChainlinkHub>>,
+    /// Cross-market arbiter channel. When Some, hint listeners send
+    /// `ArbiterObservation` to this instead of `WinnerHint` directly.
+    arbiter_tx: Option<mpsc::Sender<ArbiterObservation>>,
+    /// Round-tail coordinator channel.
+    /// When Some, hint listeners report one final observation per round so
+    /// supervisor can dispatch exactly one tail action across markets.
+    round_tail_tx: Option<mpsc::Sender<RoundTailObservation>>,
+}
+
+async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
+    let mut base_settings = Settings::from_env()?;
+    if let Some(c) = &ctx {
+        base_settings.market_slug = Some(c.slug.clone());
+    }
+    let raw_slug = base_settings
+        .market_slug
+        .clone()
+        .unwrap_or_else(|| "btc-updown-15m".to_string());
     let prefix_mode = is_prefix_slug(&raw_slug);
 
     if prefix_mode {
@@ -5655,7 +6911,36 @@ async fn main() -> anyhow::Result<()> {
     let inv_cfg_base = InventoryConfig::from_env();
     let ofi_cfg = OfiConfig::from_env();
     let coord_cfg_base = CoordinatorConfig::from_env();
-    let chainlink_hub = if coord_cfg_base.strategy == StrategyKind::OracleLagSniping {
+    // Slug lock: standalone mode only (ctx=None = single OS-process worker).
+    // In inproc mode the supervisor IS the single process, so no cross-process
+    // conflict is possible and we skip the lock.
+    let _slug_lock = if ctx.is_none()
+        && prefix_mode
+        && coord_cfg_base.strategy.is_oracle_lag_sniping()
+    {
+        match try_acquire_slug_lock(&raw_slug) {
+            Some(lock) => {
+                info!(
+                    "🔒 slug_lock acquired | slug={} port={}",
+                    raw_slug, lock.port
+                );
+                Some(lock)
+            }
+            None => {
+                let port = slug_lock_port(&raw_slug);
+                anyhow::bail!(
+                    "🚨 slug_lock_conflict: another process is already running oracle_lag_sniping for slug='{}' (port {}). Exiting to prevent duplicate orders.",
+                    raw_slug, port
+                );
+            }
+        }
+    } else {
+        None
+    };
+
+    let chainlink_hub = if let Some(c) = &ctx {
+        c.chainlink_hub.clone()
+    } else if coord_cfg_base.strategy.is_oracle_lag_sniping() {
         let mut hub_symbols = HashSet::new();
         for base in oracle_lag_symbol_universe.hub_symbols() {
             hub_symbols.insert(format!("{}/usd", base));
@@ -5735,7 +7020,7 @@ async fn main() -> anyhow::Result<()> {
     // Ignore dynamic percentage upsizing in GLFT mode.
     let mut dynamic_bid_pct_opt = bid_pct_opt;
     let mut dynamic_net_diff_pct_opt = net_diff_pct_opt;
-    if coord_cfg_base.strategy == StrategyKind::GlftMm
+    if coord_cfg_base.strategy.is_glft_mm()
         && (dynamic_bid_pct_opt.is_some() || dynamic_net_diff_pct_opt.is_some())
     {
         warn!(
@@ -6351,12 +7636,12 @@ async fn main() -> anyhow::Result<()> {
         apply_endgame_windows_for_interval(&mut coord_cfg, market_interval_secs);
         let mut inv_cfg = inv_cfg_base.clone();
         let oracle_lag_symbol = oracle_lag_symbol_from_slug(&slug);
-        let oracle_lag_sniping_active = coord_cfg.strategy == StrategyKind::OracleLagSniping
+        let oracle_lag_sniping_active = coord_cfg.strategy.is_oracle_lag_sniping()
             && oracle_lag_symbol
                 .as_deref()
                 .map(|sym| oracle_lag_symbol_universe.contains(sym))
                 .unwrap_or(false);
-        if coord_cfg.strategy == StrategyKind::OracleLagSniping {
+        if coord_cfg.strategy.is_oracle_lag_sniping() {
             if oracle_lag_sniping_active {
                 coord_cfg.oracle_lag_sniping.market_enabled = true;
                 info!(
@@ -6504,9 +7789,8 @@ async fn main() -> anyhow::Result<()> {
         // P0-2: Track all session spawns for cleanup on rotation
         let mut session_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let round_start_ts_ms = unix_now_ms();
-        let enable_round_validation = !dry_run
-            && coord_cfg.strategy == StrategyKind::GlftMm
-            && slug.starts_with("btc-updown-5m");
+        let enable_round_validation =
+            !dry_run && coord_cfg.strategy.is_glft_mm() && slug.starts_with("btc-updown-5m");
 
         // Fill fanout: UserWS → fill_tx → splitter → (InventoryManager, Executor)
         let (fill_tx, mut fill_rx) = mpsc::channel::<FillEvent>(64);
@@ -6553,6 +7837,8 @@ async fn main() -> anyhow::Result<()> {
         let (coord_obs_tx, coord_obs_rx) = watch::channel(CoordinatorObsSnapshot::default());
         let (slot_release_tx, slot_release_rx) = mpsc::channel::<SlotReleaseEvent>(64);
         let (winner_hint_tx, winner_hint_rx) = mpsc::channel::<MarketDataMsg>(16);
+        let (post_close_book_tx, post_close_book_rx) =
+            mpsc::channel::<PostCloseSideBookUpdate>(1024);
 
         let mut validation_stop_tx: Option<oneshot::Sender<()>> = None;
         let mut validation_handle: Option<tokio::task::JoinHandle<RoundValidationSummary>> = None;
@@ -6586,7 +7872,9 @@ async fn main() -> anyhow::Result<()> {
         if oracle_lag_sniping_active {
             let hint_tx = winner_hint_tx.clone();
             let hint_md_rx = coord_md_rx.clone();
+            let hint_post_close_book_rx = post_close_book_rx;
             let hint_chainlink_hub = chainlink_hub.clone();
+            let hint_rest_url = settings.rest_url.clone();
             let hint_slug = slug.clone();
             let hint_yes_asset_id = yes_asset_id.clone();
             let hint_no_asset_id = no_asset_id.clone();
@@ -6597,10 +7885,16 @@ async fn main() -> anyhow::Result<()> {
             };
             let hint_round_end_ts = effective_end_ts;
             let hint_window_secs = coord_cfg.oracle_lag_sniping.window_secs;
+            let hint_arbiter_tx = ctx.as_ref().and_then(|c| c.arbiter_tx.clone());
+            let hint_round_tail_tx = ctx.as_ref().and_then(|c| c.round_tail_tx.clone());
             session_handles.push(tokio::spawn(async move {
                 run_post_close_winner_hint_listener(
                     hint_tx,
+                    hint_arbiter_tx,
+                    hint_round_tail_tx,
                     hint_md_rx,
+                    hint_post_close_book_rx,
+                    hint_rest_url,
                     hint_chainlink_hub,
                     hint_slug,
                     hint_yes_asset_id,
@@ -6667,7 +7961,7 @@ async fn main() -> anyhow::Result<()> {
         let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx).with_kill_tx(kill_tx);
         session_handles.push(tokio::spawn(ofi.run()));
 
-        if coord_cfg.strategy == pm_as_ofi::polymarket::strategy::StrategyKind::GlftMm {
+        if coord_cfg.strategy.is_glft_mm() {
             if let Some(glft_cfg) =
                 GlftRuntimeConfig::from_market_slug(&slug, effective_end_ts, coord_cfg.tick_size)
             {
@@ -6798,6 +8092,7 @@ async fn main() -> anyhow::Result<()> {
             ofi_md_tx,
             glft_md_tx,
             coord_md_tx,
+            post_close_book_tx,
             ws_round_end_ts,
         )
         .await;
@@ -7041,6 +8336,7 @@ async fn main() -> anyhow::Result<()> {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::{HashMap, HashSet};
 
     fn round_summary_for_test() -> RoundValidationSummary {
         RoundValidationSummary {
@@ -7203,6 +8499,103 @@ mod tests {
                 ("eth/usd".to_string(), 2400.2, 1_776_488_226_000),
             ]
         );
+    }
+
+    fn arbiter_obs_for_test(
+        round_end_ts: u64,
+        slug: &str,
+        source: PostCloseBookSource,
+        distance_to_final_ms: u64,
+    ) -> ArbiterObservation {
+        let (hint_tx, _hint_rx) = mpsc::channel::<MarketDataMsg>(4);
+        ArbiterObservation {
+            round_end_ts,
+            slug: slug.to_string(),
+            winner_side: Side::Yes,
+            winner_bid: 0.99,
+            winner_ask_raw: 0.99,
+            winner_ask_eff: 0.99,
+            winner_ask_tradable: true,
+            book_age_ms: distance_to_final_ms,
+            book_source: source,
+            evidence_recv_ms: 1_000,
+            distance_to_final_ms,
+            detect_ms: 1_100,
+            hint_msg: MarketDataMsg::WinnerHint {
+                side: Side::Yes,
+                source: WinnerHintSource::Chainlink,
+                ref_price: 1.0,
+                observed_price: 1.01,
+                final_detect_unix_ms: 1_100,
+                emit_unix_ms: 1_120,
+                winner_bid: 0.99,
+                winner_ask_raw: 0.99,
+                winner_evidence_recv_ms: 1_000,
+                winner_book_source: "ws_partial",
+                winner_distance_to_final_ms: distance_to_final_ms,
+                open_is_exact: true,
+                ts: Instant::now(),
+            },
+            hint_tx,
+        }
+    }
+
+    #[test]
+    fn test_arbiter_ignores_observation_for_finalized_round() {
+        let mut pending: HashMap<u64, HashMap<String, ArbiterObservation>> = HashMap::new();
+        let mut deadlines: HashMap<u64, tokio::time::Instant> = HashMap::new();
+        let mut finalized: HashSet<u64> = HashSet::new();
+        finalized.insert(1_776_680_400);
+
+        let should_dispatch = arbiter_intake(
+            &mut pending,
+            &mut deadlines,
+            &mut finalized,
+            arbiter_obs_for_test(
+                1_776_680_400,
+                "btc-updown-5m-1776680100",
+                PostCloseBookSource::WsPartial,
+                10,
+            ),
+            200,
+            7,
+        );
+
+        assert!(should_dispatch.is_none());
+        assert!(pending.is_empty());
+        assert!(deadlines.is_empty());
+    }
+
+    #[test]
+    fn test_arbiter_prefers_closer_same_source_observation() {
+        let mut pending: HashMap<u64, HashMap<String, ArbiterObservation>> = HashMap::new();
+        let mut deadlines: HashMap<u64, tokio::time::Instant> = HashMap::new();
+        let mut finalized: HashSet<u64> = HashSet::new();
+        let round_end = 1_776_680_700;
+        let slug = "hype-updown-5m-1776680400";
+
+        let _ = arbiter_intake(
+            &mut pending,
+            &mut deadlines,
+            &mut finalized,
+            arbiter_obs_for_test(round_end, slug, PostCloseBookSource::WsPartial, 50),
+            200,
+            7,
+        );
+        let _ = arbiter_intake(
+            &mut pending,
+            &mut deadlines,
+            &mut finalized,
+            arbiter_obs_for_test(round_end, slug, PostCloseBookSource::WsPartial, 12),
+            200,
+            7,
+        );
+
+        let kept = pending
+            .get(&round_end)
+            .and_then(|by_slug| by_slug.get(slug))
+            .expect("expected retained observation");
+        assert_eq!(kept.distance_to_final_ms, 12);
     }
 
     #[test]

@@ -459,6 +459,7 @@ impl OrderManager {
                             price: Some(desired.price),
                             purpose: match desired.reason {
                                 BidReason::Provide => TradePurpose::Provide,
+                                BidReason::OracleLagProvide => TradePurpose::OracleLagSnipe,
                                 BidReason::Hedge => TradePurpose::Hedge,
                             },
                             local_unreleased_matched_notional_usdc: self

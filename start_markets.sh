@@ -27,6 +27,10 @@ source .env
 # 全集, supervisor 就不会 narrow 每个子进程 -> 每个 hub 仍订阅全部 7 个 symbol,
 # 退回到之前的 49-订阅 burst 情况.
 unset PM_ORACLE_LAG_SYMBOL_UNIVERSE
+# 同理: 若 .env 设置了 POLYMARKET_MARKET_SLUG (单市场测试残留), 在 inproc 模式下
+# 会导致所有 7 个 worker 的日志全部写入该 slug 对应的日志文件, 使 hype 等日志暴增.
+# 清除后, inproc supervisor 会写入 polymarket.log (无 slug 前缀), 各 symbol 日志干净.
+unset POLYMARKET_MARKET_SLUG
 
 # 市场 slug 前缀列表
 # oracle_lag_sniping 要求 timeframe=5m (见 oracle_lag_symbol_from_slug).
@@ -72,8 +76,16 @@ LOG_FILE="logs/supervisor-$(date +%Y%m%d-%H%M%S).log"
 echo -e "${GREEN}Starting supervisor with prefixes:${NC} $PREFIXES"
 echo -e "${GREEN}Log:${NC} $LOG_FILE"
 
+# PM_INPROC_SUPERVISOR=1 selects the in-process (Stage D) path:
+# one tokio runtime, one shared ChainlinkHub, per-slug tasks inside
+# a JoinSet. The legacy OS-process supervisor is used when this is
+# unset — it still works but doesn't scale past ~10 markets.
+# oracle_lag_sniping: 市场收盘后 book 自然无更新，3s 默认 stale TTL 会阻断所有收盘后下单。
+# 30s 与硬关闭阈值 (is_book_stale) 对齐，oracle_lag 策略在开盘期间不报价，延长不影响常规风险控制。
 PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
+PM_INPROC_SUPERVISOR=1 \
 PM_DRY_RUN="$DRY_RUN_FLAG" \
+PM_STALE_TTL_MS=30000 \
 RUST_LOG=info \
 nohup cargo run --bin polymarket_v2 --release \
     > "$LOG_FILE" 2>&1 &

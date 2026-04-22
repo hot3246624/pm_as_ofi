@@ -63,7 +63,7 @@ impl StrategyCoordinator {
         let now = Instant::now();
         let reprice_eps = 1e-9;
         let raw_target_price = price;
-        let pair_arb_state_changed = if self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_state_changed = if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
             && active
@@ -76,15 +76,15 @@ impl StrategyCoordinator {
         } else {
             false
         };
-        let pair_arb_fill_recheck_pending = self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_fill_recheck_pending = self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
             && self.slot_pair_arb_fill_recheck_pending[slot.index()];
-        let pair_arb_cross_reject_reprice_pending = self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_cross_reject_reprice_pending = self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
             && self.slot_pair_arb_cross_reject_reprice_pending[slot.index()];
-        let pair_arb_expected_state = if self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_expected_state = if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
         {
@@ -92,7 +92,7 @@ impl StrategyCoordinator {
         } else {
             None
         };
-        let pair_arb_expected_epoch = if self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_expected_epoch = if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
         {
@@ -100,7 +100,7 @@ impl StrategyCoordinator {
         } else {
             None
         };
-        let pair_arb_current_state = if self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_current_state = if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
         {
@@ -110,7 +110,7 @@ impl StrategyCoordinator {
         } else {
             None
         };
-        let pair_arb_current_epoch = if self.cfg.strategy == StrategyKind::PairArb
+        let pair_arb_current_epoch = if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
         {
@@ -165,14 +165,14 @@ impl StrategyCoordinator {
                 );
                 return;
             }
-        } else if self.cfg.strategy == StrategyKind::PairArb
+        } else if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
         {
             self.slot_pair_arb_intent_state_keys[slot.index()] = None;
             self.slot_pair_arb_intent_epochs[slot.index()] = None;
         }
-        if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
+        if self.cfg.strategy.is_glft_mm() && reason == BidReason::Provide {
             price = self.glft_clamp_slot_target_price(slot, price);
         }
         let target_input_price = price;
@@ -186,7 +186,7 @@ impl StrategyCoordinator {
         // GLFT contract: signal not ready => no quoting.
         // This second-line guard protects against intra-tick races where strategy
         // emitted intent from a just-live snapshot but signal regressed before IO.
-        if self.cfg.strategy == StrategyKind::GlftMm {
+        if self.cfg.strategy.is_glft_mm() {
             let glft = *self.glft_rx.borrow();
             if !self.glft_is_tradeable_snapshot(glft) {
                 if active && !self.glft_should_retain_on_short_source_block(glft, Instant::now()) {
@@ -213,7 +213,7 @@ impl StrategyCoordinator {
 
         let debounce_ms = match reason {
             BidReason::Hedge => self.cfg.hedge_debounce_ms,
-            BidReason::Provide => self.cfg.debounce_ms,
+            BidReason::Provide | BidReason::OracleLagProvide => self.cfg.debounce_ms,
         };
         let elapsed = last_ts.elapsed();
         let debounce = std::time::Duration::from_millis(debounce_ms);
@@ -226,7 +226,7 @@ impl StrategyCoordinator {
         let recovery_publish_ready =
             self.should_publish_recovery_for_slot(slot, std::time::Duration::from_secs(2), now);
 
-        if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
+        if self.cfg.strategy.is_glft_mm() && reason == BidReason::Provide {
             self.slot_place_or_reprice_glft_policy(
                 slot,
                 raw_target_price,
@@ -241,7 +241,7 @@ impl StrategyCoordinator {
             return;
         }
 
-        let force_glft_drift_reprice = self.cfg.strategy == StrategyKind::GlftMm && active && {
+        let force_glft_drift_reprice = self.cfg.strategy.is_glft_mm() && active && {
             let tick = self.cfg.tick_size.max(1e-9);
             let drift_cap = match self.glft_rx.borrow().signal_state {
                 crate::polymarket::glft::GlftSignalState::Bootstrapping
@@ -261,7 +261,7 @@ impl StrategyCoordinator {
             }
         };
 
-        if self.cfg.strategy == StrategyKind::GlftMm && active && !recent_cross_reject {
+        if self.cfg.strategy.is_glft_mm() && active && !recent_cross_reject {
             let tick = self.cfg.tick_size.max(1e-9);
             let gap = (normalized_target_price - slot_price).abs();
             if gap > tick {
@@ -284,15 +284,14 @@ impl StrategyCoordinator {
         }
         price = action_price;
 
-        let glft_snapshot = if self.cfg.strategy == StrategyKind::GlftMm {
+        let glft_snapshot = if self.cfg.strategy.is_glft_mm() {
             Some(*self.glft_rx.borrow())
         } else {
             None
         };
         let glft_quote_regime = glft_snapshot.map(|s| s.quote_regime);
         let glft_soft_stale = glft_snapshot.map(|s| s.poly_soft_stale).unwrap_or(false);
-        let glft_shadow_mode =
-            self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide;
+        let glft_shadow_mode = self.cfg.strategy.is_glft_mm() && reason == BidReason::Provide;
         let regime_stable_for_publish = if glft_shadow_mode {
             let regime_age = self
                 .update_slot_regime_state(slot, glft_quote_regime, now)
@@ -356,7 +355,7 @@ impl StrategyCoordinator {
 
         // GLFT soft throttle: avoid repricing every sub-second micro-jitter.
         // Keep fast paths for large drift and crossed-book recovery.
-        if self.cfg.strategy == StrategyKind::GlftMm
+        if self.cfg.strategy.is_glft_mm()
             && active
             && reason == BidReason::Provide
             && slot_direction == Some(slot.direction)
@@ -375,12 +374,12 @@ impl StrategyCoordinator {
         }
 
         if !active {
-            if self.cfg.strategy == StrategyKind::GlftMm {
+            if self.cfg.strategy.is_glft_mm() {
                 if !self.glft_is_tradeable_now() {
                     return;
                 }
             }
-            if self.cfg.strategy == StrategyKind::PairArb {
+            if self.cfg.strategy.is_pair_arb() {
                 publish_reason = Some(PolicyPublishCause::Initial);
             }
             if glft_shadow_mode && publish_reason.is_none() {
@@ -433,7 +432,7 @@ impl StrategyCoordinator {
             self.slot_last_publish_reason[slot.index()] = publish_reason;
             self.place_slot(slot, action_price, size, reason).await;
         } else {
-            if self.cfg.strategy == StrategyKind::GlftMm {
+            if self.cfg.strategy.is_glft_mm() {
                 if !self.glft_is_tradeable_now() {
                     self.clear_slot_target(slot, CancelReason::StaleData).await;
                     return;
@@ -442,11 +441,11 @@ impl StrategyCoordinator {
             // PairArb publish policy: widen reprice band while inventory is flat/light,
             // then tighten back to base band as net exposure grows.
             let reprice_band = self.pair_arb_effective_reprice_band(reason);
-            let cross_reprice_override = self.cfg.strategy == StrategyKind::GlftMm
+            let cross_reprice_override = self.cfg.strategy.is_glft_mm()
                 && recent_cross_reject
                 && (slot_price - price).abs() >= self.cfg.tick_size.max(1e-9) - reprice_eps;
             let price_gap = (slot_price - price).abs();
-            let price_gap_triggers_reprice = if self.cfg.strategy == StrategyKind::PairArb {
+            let price_gap_triggers_reprice = if self.cfg.strategy.is_pair_arb() {
                 price_gap > (reprice_band + reprice_eps).max(0.0)
             } else {
                 price_gap >= (reprice_band - reprice_eps).max(0.0)
@@ -459,7 +458,7 @@ impl StrategyCoordinator {
             if pair_arb_cross_reject_reprice_pending {
                 needs_reprice = true;
             }
-            let pair_arb_risk_effect = if self.cfg.strategy == StrategyKind::PairArb
+            let pair_arb_risk_effect = if self.cfg.strategy.is_pair_arb()
                 && reason == BidReason::Provide
                 && slot.direction == TradeDirection::Buy
             {
@@ -473,7 +472,7 @@ impl StrategyCoordinator {
                 None
             };
             let mut pair_arb_freshness_reason = "none";
-            let pair_arb_force_freshness_republish = if self.cfg.strategy == StrategyKind::PairArb
+            let pair_arb_force_freshness_republish = if self.cfg.strategy.is_pair_arb()
                 && slot.direction == TradeDirection::Buy
                 && slot_direction == Some(slot.direction)
                 && (slot_size - size).abs() <= 0.1
@@ -493,7 +492,7 @@ impl StrategyCoordinator {
             // both candidate roles are state/event-driven and hold between
             // discrete triggers (fill/failed/merge/phase/reset).
             if needs_reprice
-                && self.cfg.strategy == StrategyKind::PairArb
+                && self.cfg.strategy.is_pair_arb()
                 && slot_direction == Some(slot.direction)
                 && (slot_size - size).abs() <= 0.1
                 && slot.direction == TradeDirection::Buy
@@ -732,7 +731,7 @@ impl StrategyCoordinator {
                 }
                 let action_price =
                     self.pair_arb_action_price_for_post_only(slot, price, size, reason);
-                if self.cfg.strategy == StrategyKind::PairArb && publish_reason.is_none() {
+                if self.cfg.strategy.is_pair_arb() && publish_reason.is_none() {
                     publish_reason = Some(PolicyPublishCause::Policy);
                 }
                 if glft_shadow_mode && publish_reason.is_none() {
@@ -804,7 +803,7 @@ impl StrategyCoordinator {
         size: f64,
         reason: BidReason,
     ) -> f64 {
-        if self.cfg.strategy != StrategyKind::PairArb
+        if !self.cfg.strategy.is_pair_arb()
             || reason != BidReason::Provide
             || slot.direction != TradeDirection::Buy
         {
@@ -861,7 +860,7 @@ impl StrategyCoordinator {
 
     fn pair_arb_effective_reprice_band(&self, reason: BidReason) -> f64 {
         let base = self.maker_keep_band(reason);
-        if self.cfg.strategy != StrategyKind::PairArb || reason != BidReason::Provide {
+        if !self.cfg.strategy.is_pair_arb() || reason != BidReason::Provide {
             return base;
         }
         let tick = self.cfg.tick_size.max(1e-9);
@@ -997,7 +996,7 @@ impl StrategyCoordinator {
             );
             return;
         }
-        if self.cfg.strategy == StrategyKind::OracleLagSniping
+        if self.cfg.strategy.is_oracle_lag_sniping()
             && direction == TradeDirection::Buy
             && self.post_close_winner_side == Some(side)
         {
@@ -1120,11 +1119,120 @@ impl StrategyCoordinator {
                 // Trades are primarily for OFI actor; Coordinator mostly skips
                 // but we could track last trade prices here if needed.
             }
+            MarketDataMsg::OracleLagSelection {
+                round_end_ts,
+                selected,
+                rank,
+                reason,
+            } => {
+                let current = self.oracle_lag_selected_round_end_ts.unwrap_or(0);
+                if self.oracle_lag_selected_round_end_ts.is_none() || round_end_ts > current {
+                    self.oracle_lag_selected_round_end_ts = Some(round_end_ts);
+                    self.oracle_lag_is_selected = selected;
+                    self.oracle_lag_defer_to_round_tail = false;
+                    self.oracle_lag_fak_last_dispatch = None;
+                    self.oracle_lag_fak_shots_this_round = 0;
+                    self.oracle_lag_tail_round_done = None;
+                    self.oracle_lag_round_halted = false;
+                    self.oracle_lag_round_halt_kind = None;
+                    info!(
+                        "🏆 oracle_lag_arbiter_selection | round_end_ts={} selected={} rank={} reason={}",
+                        round_end_ts, selected, rank, reason
+                    );
+                } else if round_end_ts == current {
+                    debug!(
+                        "⏭️ oracle_lag_arbiter_selection_duplicate | round_end_ts={} selected={} rank={} reason={} — ignored",
+                        round_end_ts, selected, rank, reason
+                    );
+                } else {
+                    debug!(
+                        "⏭️ oracle_lag_arbiter_selection_stale | round_end_ts={} current_round={:?} — ignored",
+                        round_end_ts, self.oracle_lag_selected_round_end_ts
+                    );
+                }
+            }
+            MarketDataMsg::OracleLagTailAction {
+                round_end_ts,
+                side,
+                mode,
+                limit_price,
+                target_slug,
+                reason,
+            } => {
+                if !self.cfg.strategy.is_oracle_lag_sniping()
+                    || !self.cfg.oracle_lag_sniping.market_enabled
+                {
+                    return;
+                }
+                if self.oracle_lag_round_halted {
+                    info!(
+                        "⏭️ oracle_lag_tail_action_skip | round_end_ts={} side={:?} mode={:?} target_slug={} reason={} halt_kind={:?}",
+                        round_end_ts,
+                        side,
+                        mode,
+                        target_slug,
+                        reason,
+                        self.oracle_lag_round_halt_kind
+                    );
+                    return;
+                }
+                if self.oracle_lag_tail_round_done == Some(round_end_ts) {
+                    debug!(
+                        "⏭️ oracle_lag_tail_action_duplicate | round_end_ts={} side={:?} mode={:?} target_slug={} reason={} — ignored",
+                        round_end_ts, side, mode, target_slug, reason
+                    );
+                    return;
+                }
+                self.oracle_lag_tail_round_done = Some(round_end_ts);
+                let size = self.oracle_lag_effective_order_size(limit_price);
+                if size < 0.01 {
+                    warn!(
+                        "⚠️ oracle_lag_tail_action_skip | round_end_ts={} side={:?} mode={:?} target_slug={} reason={} limit_price={:.4} size={:.4} — below lot floor",
+                        round_end_ts, side, mode, target_slug, reason, limit_price, size
+                    );
+                    return;
+                }
+                info!(
+                    "🎯 oracle_lag_tail_action | round_end_ts={} side={:?} mode={:?} target_slug={} reason={} limit_price={:.4} size={:.2}",
+                    round_end_ts, side, mode, target_slug, reason, limit_price, size
+                );
+                match mode {
+                    crate::polymarket::messages::OracleLagTailMode::Fak99 => {
+                        self.dispatch_taker_intent(
+                            side,
+                            TradeDirection::Buy,
+                            size,
+                            TradePurpose::OracleLagSnipe,
+                            Some(limit_price),
+                        )
+                        .await;
+                    }
+                    crate::polymarket::messages::OracleLagTailMode::MakerBidStep => {
+                        for slot in OrderSlot::side_slots(side) {
+                            self.clear_slot_target(slot, CancelReason::Reprice).await;
+                        }
+                        self.place_slot(
+                            OrderSlot::new(side, TradeDirection::Buy),
+                            limit_price,
+                            size,
+                            BidReason::OracleLagProvide,
+                        )
+                        .await;
+                    }
+                }
+            }
             MarketDataMsg::WinnerHint {
                 side,
                 source,
                 ref_price,
                 observed_price,
+                final_detect_unix_ms,
+                emit_unix_ms,
+                winner_bid: hint_winner_bid,
+                winner_ask_raw: hint_winner_ask_raw,
+                winner_evidence_recv_ms,
+                winner_book_source,
+                winner_distance_to_final_ms,
                 open_is_exact,
                 ts,
             } => {
@@ -1136,6 +1244,9 @@ impl StrategyCoordinator {
                 self.post_close_winner_open_is_exact = Some(open_is_exact);
                 self.post_close_winner_ref_price = ref_price;
                 self.post_close_winner_observed_price = observed_price;
+                self.post_close_winner_final_detect_unix_ms = Some(final_detect_unix_ms);
+                self.post_close_winner_emit_unix_ms = Some(emit_unix_ms);
+                self.post_close_winner_evidence_recv_ms = Some(winner_evidence_recv_ms);
                 self.post_close_winner_ts = Some(ts);
                 if changed {
                     let fak_in_flight = self
@@ -1148,37 +1259,81 @@ impl StrategyCoordinator {
                         })
                         .unwrap_or(false);
                     info!(
-                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} fak_in_flight={}",
-                        side, source, open_is_exact, observed_price, ref_price, fak_in_flight,
+                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} fak_in_flight={} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={}",
+                        side,
+                        source,
+                        open_is_exact,
+                        observed_price,
+                        ref_price,
+                        fak_in_flight,
+                        final_detect_unix_ms,
+                        emit_unix_ms,
+                        winner_evidence_recv_ms,
+                        winner_distance_to_final_ms,
                     );
-                    // Immediately fire FAK when winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE.
+                    // Immediately fire a single FAK attempt when winner_ask < threshold.
                     // This runs in the same async batch as hint receipt (winner_to_submit_ms ≈ 0).
                     // Maker fallback is handled by the next tick() via compute_quotes.
-                    // Re-entry after IOC auto-cancel is handled by maybe_oracle_lag_fak_reentry() on ticks.
-                    if self.cfg.strategy == StrategyKind::OracleLagSniping
+                    if self.cfg.strategy.is_oracle_lag_sniping()
                         && self.cfg.oracle_lag_sniping.market_enabled
                     {
-                        let (winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks) =
-                            self.oracle_lag_winner_book_quality(side);
+                        // Winner hint path uses single-shot taker only. If winner ask is
+                        // unavailable or above threshold, hold fire and defer to round-tail.
+                        self.oracle_lag_defer_to_round_tail = true;
+                        if self.oracle_lag_round_halted {
+                            info!(
+                                "⏭️ oracle_lag_winner_hint_skip | reason=round_halted side={:?} source={:?} halt_kind={:?}",
+                                side, source, self.oracle_lag_round_halt_kind
+                            );
+                            return;
+                        }
+                        if !self.oracle_lag_is_selected {
+                            info!(
+                                "⏭️ oracle_lag_cross_market_skip | side={:?} source={:?} round_end_ts={:?} — not selected by arbiter",
+                                side, source, self.oracle_lag_selected_round_end_ts
+                            );
+                            return;
+                        }
+                        info!(
+                            "🧭 oracle_lag_order_mode | mode=single_shot side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
+                            side, source, winner_book_source, winner_distance_to_final_ms
+                        );
+                        let (
+                            winner_bid,
+                            winner_ask,
+                            winner_ask_tradable,
+                            winner_spread_ticks,
+                            winner_book_quality_source,
+                        ) = self.oracle_lag_winner_book_quality(
+                            side,
+                            hint_winner_bid,
+                            hint_winner_ask_raw,
+                            winner_book_source,
+                            winner_distance_to_final_ms,
+                        );
                         let now_ms = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
-                            .as_millis() as i64;
-                        let market_end_ms = self
-                            .cfg
-                            .market_end_ts
-                            .map(|t| (t as i64).saturating_mul(1_000));
+                            .as_millis() as u64;
+                        let market_end_ms = self.cfg.market_end_ts.map(|t| t.saturating_mul(1_000));
                         let delta_from_end_ms =
                             market_end_ms.map(|end_ms| now_ms.saturating_sub(end_ms));
                         let winner_to_submit_ms = self
                             .post_close_winner_ts
                             .map(|t| t.elapsed().as_millis() as u64);
+                        let final_detect_to_submit_ms = now_ms.saturating_sub(final_detect_unix_ms);
+                        let emit_to_submit_ms = now_ms.saturating_sub(emit_unix_ms);
+                        let evidence_to_submit_ms = if winner_evidence_recv_ms > 0 {
+                            Some(now_ms.saturating_sub(winner_evidence_recv_ms))
+                        } else {
+                            None
+                        };
                         let allow_fallback_open = self.oracle_lag_allow_fallback_open_for_dry_run();
                         if fak_in_flight {
                             // Another dispatch is still within cooldown (e.g. 2nd source arrived fast).
                             info!(
-                                "🔁 oracle_lag_second_source | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} delta_from_end_ms={:?} winner_to_submit_ms={:?} — FAK within cooldown, skipping",
-                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, delta_from_end_ms, winner_to_submit_ms,
+                                "🔁 oracle_lag_second_source | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} delta_from_end_ms={:?} winner_to_submit_ms={:?} — FAK within cooldown, skipping",
+                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source, delta_from_end_ms, winner_to_submit_ms,
                             );
                         } else if !open_is_exact && !allow_fallback_open {
                             // First-round / fallback protection: open_ref is from
@@ -1187,28 +1342,40 @@ impl StrategyCoordinator {
                             // and higher-risk. Skip FAK; maker path is also
                             // gated by post_close_chainlink_winner().
                             info!(
-                                "🛡️ oracle_lag_fak_skip_fallback_open | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} — open_ref not from exact round_start tick, holding fire",
-                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks,
+                                "🛡️ oracle_lag_fak_skip_fallback_open | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} — open_ref not from exact round_start tick, holding fire",
+                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source,
                             );
                         } else if !open_is_exact && allow_fallback_open {
                             info!(
-                                "🧪 oracle_lag_fak_allow_fallback_open_dry_run | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2}",
-                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks,
+                                "🧪 oracle_lag_fak_allow_fallback_open_dry_run | side={:?} source={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={}",
+                                side, source, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source,
                             );
-                        } else if self.oracle_lag_fak_shots_this_round
-                            >= crate::polymarket::coordinator::ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND
-                        {
+                        } else if self.oracle_lag_fak_shots_this_round >= 1 {
                             info!(
-                                "🚫 oracle_lag_fak_cap_reached | side={:?} shots={} cap={} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} — round cap reached on first-shot path",
+                                "🚫 oracle_lag_single_shot_exhausted | side={:?} shots={} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} — already dispatched single-shot",
                                 side,
                                 self.oracle_lag_fak_shots_this_round,
-                                crate::polymarket::coordinator::ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND,
                                 winner_bid,
                                 winner_ask,
                                 winner_ask_tradable,
                                 winner_spread_ticks,
+                                winner_book_quality_source,
                             );
-                        } else if winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
+                        } else if winner_ask > 0.0 && winner_ask <= ORACLE_LAG_NO_TAKER_ABOVE_PRICE
+                        {
+                            let fak_size = self.oracle_lag_effective_order_size(
+                                crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE,
+                            );
+                            if fak_size < 0.01 {
+                                warn!(
+                                    "⚠️ oracle_lag_fak_skip | side={:?} reason=size_below_lot_floor computed_size={:.4} cap_usdc={:.4} bid_size={:.4}",
+                                    side,
+                                    fak_size,
+                                    self.cfg.oracle_lag_sniping.max_order_notional_usdc,
+                                    self.cfg.bid_size,
+                                );
+                                return;
+                            }
                             self.oracle_lag_fak_shots_this_round =
                                 self.oracle_lag_fak_shots_this_round.saturating_add(1);
                             let (loser_bid, loser_ask) = match side {
@@ -1216,13 +1383,15 @@ impl StrategyCoordinator {
                                 Side::No => (self.book.yes_bid, self.book.yes_ask),
                             };
                             info!(
-                                "⚡ oracle_lag_fak_attempt | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} threshold={:.4} size={:.2} delta_from_end_ms={:?} winner_to_submit_ms={:?} source={:?} shots={}/{} dry={}",
-                                side, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-                                self.cfg.bid_size,
+                                "⚡ oracle_lag_fak_attempt_single_shot | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} size={:.2} delta_from_end_ms={:?} winner_to_submit_ms={:?} final_detect_to_submit_ms={} emit_to_submit_ms={} evidence_to_submit_ms={:?} source={:?} shots={} dry={}",
+                                side, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, winner_book_quality_source, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                                fak_size,
                                 delta_from_end_ms, winner_to_submit_ms,
+                                final_detect_to_submit_ms,
+                                emit_to_submit_ms,
+                                evidence_to_submit_ms,
                                 source,
                                 self.oracle_lag_fak_shots_this_round,
-                                crate::polymarket::coordinator::ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND,
                                 self.cfg.dry_run,
                             );
                             info!(
@@ -1238,67 +1407,37 @@ impl StrategyCoordinator {
                                 "📨 oracle_lag_fak_order_payload | side={:?} direction=Buy type=FAK limit_price={:.4} size={:.2} notional_usdc={:.4} purpose=OracleLagSnipe dry={}",
                                 side,
                                 crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE,
-                                self.cfg.bid_size,
+                                fak_size,
                                 crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE
-                                    * self.cfg.bid_size,
+                                    * fak_size,
                                 self.cfg.dry_run,
                             );
                             self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
                             self.dispatch_taker_intent(
                                 side,
                                 TradeDirection::Buy,
-                                self.cfg.bid_size,
+                                fak_size,
                                 TradePurpose::OracleLagSnipe,
                                 Some(crate::polymarket::coordinator::ORACLE_LAG_FAK_LIMIT_PRICE),
                             )
                             .await;
                         } else {
-                            let skip_reason = if winner_ask <= 0.0 { "no_ask" } else { "above_threshold" };
+                            let skip_reason = if winner_ask <= 0.0 {
+                                "no_ask"
+                            } else {
+                                "above_threshold"
+                            };
                             info!(
-                                "⚡ oracle_lag_fak_skip | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} threshold={:.4} reason={} — will use maker",
-                                side, winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                                "⚡ oracle_lag_hold_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} reason={} — wait for round-tail fallback",
+                                side,
+                                winner_bid,
+                                winner_ask,
+                                winner_ask_tradable,
+                                winner_spread_ticks,
+                                winner_book_quality_source,
+                                ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
                                 skip_reason,
                             );
-                            // no_ask fallback: post a maker bid on the winner side.
-                            // Price: improve best_bid by one tick, capped below the taker threshold
-                            // so we improve queue position without crossing into FAK territory.
-                            // above_threshold case still handled by next tick's compute_quotes.
-                            if skip_reason == "no_ask" {
-                                let tick = if self.cfg.tick_size > 0.0 {
-                                    self.cfg.tick_size
-                                } else {
-                                    0.001
-                                };
-                                let ceiling = ORACLE_LAG_NO_TAKER_ABOVE_PRICE - tick;
-                                let raw_price = if winner_bid > 0.0 {
-                                    winner_bid + tick
-                                } else {
-                                    ceiling
-                                };
-                                let maker_price = raw_price.min(ceiling).max(tick);
-                                info!(
-                                    "📨 oracle_lag_fak_maker_payload | side={:?} direction=Buy type=Maker limit_price={:.4} size={:.2} notional_usdc={:.4} purpose=OracleLagSnipeMaker winner_bid={:.4} threshold={:.4} dry={}",
-                                    side,
-                                    maker_price,
-                                    self.cfg.bid_size,
-                                    maker_price * self.cfg.bid_size,
-                                    winner_bid,
-                                    ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-                                    self.cfg.dry_run,
-                                );
-                                self.place_or_reprice(
-                                    side,
-                                    TradeDirection::Buy,
-                                    maker_price,
-                                    self.cfg.bid_size,
-                                    BidReason::Provide,
-                                    Some(format!(
-                                        "oracle_lag_fak_maker fallback | side={:?} px={:.4}",
-                                        side, maker_price
-                                    )),
-                                )
-                                .await;
-                            }
                         }
                     }
                 }
@@ -1306,118 +1445,43 @@ impl StrategyCoordinator {
         }
     }
 
-    /// Per-tick FAK re-entry for oracle_lag_sniping.
-    ///
-    /// When a prior FAK @ 0.992 sweeps partially (or not at all) and the market price
-    /// crosses above 0.992, CLOB IOC auto-cancels the remainder. If the new best_ask is
-    /// still below the 0.993 threshold and USDC is available, we re-fire another FAK.
-    ///
-    /// Called from the main tick(); self-gated:
-    ///   - strategy must be OracleLagSniping and market_enabled
-    ///   - inside post_close window
-    ///   - winner side known AND open_is_exact (same guard as first-shot FAK)
-    ///   - ORACLE_LAG_FAK_COOLDOWN_MS has elapsed since last dispatch
-    ///   - winner_ask in (0, ORACLE_LAG_NO_TAKER_ABOVE_PRICE)
-    pub(super) async fn maybe_oracle_lag_fak_reentry(&mut self) {
-        use crate::polymarket::coordinator::{
-            ORACLE_LAG_FAK_COOLDOWN_MS, ORACLE_LAG_FAK_LIMIT_PRICE,
-            ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND, ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-        };
-
-        if self.cfg.strategy != StrategyKind::OracleLagSniping
-            || !self.cfg.oracle_lag_sniping.market_enabled
-        {
-            return;
-        }
-        // Window guard: mirror post_close_hype::is_in_post_close_window.
-        let Some(end_ts) = self.cfg.market_end_ts else {
-            return;
-        };
-        let now_secs = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        if now_secs < end_ts
-            || now_secs >= end_ts.saturating_add(self.cfg.oracle_lag_sniping.window_secs)
-        {
-            return;
-        }
-        // Require fully-qualified winner hint (same gate as post_close_chainlink_winner).
-        let Some((side, _ref, _final)) = self.post_close_chainlink_winner() else {
-            return;
-        };
-        // First-round protection: same guard used by the first-shot dispatcher.
-        if self.post_close_winner_open_is_exact != Some(true)
-            && !self.oracle_lag_allow_fallback_open_for_dry_run()
-        {
-            return;
-        }
-        // Cooldown.
-        if let Some(last) = self.oracle_lag_fak_last_dispatch {
-            if last.elapsed() < std::time::Duration::from_millis(ORACLE_LAG_FAK_COOLDOWN_MS) {
-                return;
-            }
-        }
-        // Per-round cap: bounded total shots (first + re-entries) per round.
-        if self.oracle_lag_fak_shots_this_round >= ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND {
-            return;
-        }
-        let (winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks) =
-            self.oracle_lag_winner_book_quality(side);
-        if !(winner_ask > 0.0 && winner_ask < ORACLE_LAG_NO_TAKER_ABOVE_PRICE) {
-            return;
-        }
-        self.oracle_lag_fak_shots_this_round =
-            self.oracle_lag_fak_shots_this_round.saturating_add(1);
-        let (loser_bid, loser_ask) = match side {
-            Side::Yes => (self.book.no_bid, self.book.no_ask),
-            Side::No => (self.book.yes_bid, self.book.yes_ask),
-        };
-        info!(
-            "♻️ oracle_lag_fak_reentry | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} threshold={:.4} size={:.2} shots={}/{} dry={}",
-            side,
-            winner_bid,
-            winner_ask,
-            winner_ask_tradable,
-            winner_spread_ticks,
-            ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-            self.cfg.bid_size,
-            self.oracle_lag_fak_shots_this_round,
-            ORACLE_LAG_FAK_MAX_SHOTS_PER_ROUND,
-            self.cfg.dry_run,
-        );
-        info!(
-            "📋 oracle_lag_fak_book_snapshot | winner_side={:?} winner_bid={:.4} winner_ask={:.4} loser_bid={:.4} loser_ask={:.4} pair_sum_asks={:.4}",
-            side, winner_bid, winner_ask, loser_bid, loser_ask, winner_ask + loser_ask,
-        );
-        info!(
-            "📨 oracle_lag_fak_order_payload | side={:?} direction=Buy type=FAK limit_price={:.4} size={:.2} notional_usdc={:.4} purpose=OracleLagSnipe dry={}",
-            side,
-            ORACLE_LAG_FAK_LIMIT_PRICE,
-            self.cfg.bid_size,
-            ORACLE_LAG_FAK_LIMIT_PRICE * self.cfg.bid_size,
-            self.cfg.dry_run,
-        );
-        self.oracle_lag_fak_last_dispatch = Some(std::time::Instant::now());
-        self.dispatch_taker_intent(
-            side,
-            TradeDirection::Buy,
-            self.cfg.bid_size,
-            TradePurpose::OracleLagSnipe,
-            Some(ORACLE_LAG_FAK_LIMIT_PRICE),
-        )
-        .await;
-    }
-
-    fn oracle_lag_winner_book_quality(&self, side: Side) -> (f64, f64, bool, f64) {
-        let (winner_bid, winner_ask) = match side {
+    fn oracle_lag_winner_book_quality(
+        &self,
+        side: Side,
+        hint_winner_bid: f64,
+        hint_winner_ask_raw: f64,
+        hint_book_source: &'static str,
+        hint_distance_to_final_ms: u64,
+    ) -> (f64, f64, bool, f64, &'static str) {
+        let hint_bid = hint_winner_bid.max(0.0);
+        let hint_ask = hint_winner_ask_raw.max(0.0);
+        let (book_bid, book_ask) = match side {
             Side::Yes => (self.book.yes_bid, self.book.yes_ask),
             Side::No => (self.book.no_bid, self.book.no_ask),
+        };
+        let live_has_winner_side = book_bid > 0.0 || book_ask > 0.0;
+        let hint_is_fresh = hint_distance_to_final_ms
+            <= crate::polymarket::coordinator::ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS;
+        let hint_has_price = hint_bid > 0.0 || hint_ask > 0.0;
+        let (winner_bid, winner_ask, source) = if live_has_winner_side {
+            (book_bid, book_ask, "live_book")
+        } else if hint_has_price && hint_is_fresh {
+            let source = match hint_book_source {
+                "ws_partial" => "hint_ws_partial_fresh",
+                "clob_rest" => "hint_clob_rest_fresh",
+                _ => "hint_fresh",
+            };
+            (hint_bid, hint_ask, source)
+        } else if hint_has_price {
+            (0.0, 0.0, "hint_stale_ignored")
+        } else {
+            (0.0, 0.0, "no_book")
         };
         let tick = if winner_bid
             > crate::polymarket::coordinator::ORACLE_LAG_MICRO_TICK_BID_BOUNDARY
             || winner_ask > 0.96
             || (winner_bid > 0.0 && winner_bid < 0.04)
+            || (winner_ask > 0.0 && winner_ask < 0.04)
         {
             0.001
         } else {
@@ -1435,6 +1499,7 @@ impl StrategyCoordinator {
             winner_ask,
             winner_ask_tradable,
             winner_spread_ticks,
+            source,
         )
     }
 
@@ -1448,7 +1513,7 @@ impl StrategyCoordinator {
         if price <= 0.0 {
             let cancel_reason = match reason {
                 BidReason::Hedge => CancelReason::Reprice,
-                BidReason::Provide => CancelReason::InventoryLimit,
+                BidReason::Provide | BidReason::OracleLagProvide => CancelReason::InventoryLimit,
             };
             self.clear_slot_target(slot, cancel_reason).await;
             return;
@@ -1465,7 +1530,7 @@ impl StrategyCoordinator {
         let replacing = self.slot_target(slot).is_some();
         self.slot_targets[slot.index()] = Some(target.clone());
         self.slot_last_ts[slot.index()] = Instant::now();
-        if self.cfg.strategy == StrategyKind::PairArb && slot.direction == TradeDirection::Buy {
+        if self.cfg.strategy.is_pair_arb() && slot.direction == TradeDirection::Buy {
             let inv = self.current_working_inventory();
             let phase = self.endgame_phase();
             self.slot_pair_arb_state_keys[slot.index()] =
@@ -1502,7 +1567,7 @@ impl StrategyCoordinator {
             return;
         }
 
-        if self.cfg.strategy == StrategyKind::PairArb
+        if self.cfg.strategy.is_pair_arb()
             && reason == BidReason::Provide
             && slot.direction == TradeDirection::Buy
         {
@@ -1530,7 +1595,7 @@ impl StrategyCoordinator {
         reason: BidReason,
         replacing: bool,
     ) {
-        if self.cfg.strategy != StrategyKind::OracleLagSniping
+        if !self.cfg.strategy.is_oracle_lag_sniping()
             || reason != BidReason::Provide
             || slot.direction != TradeDirection::Buy
         {
@@ -1539,25 +1604,41 @@ impl StrategyCoordinator {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
-            .as_millis() as i64;
+            .as_millis() as u64;
         let market_end_ts = self.cfg.market_end_ts;
-        let market_end_ms = market_end_ts.map(|ts| (ts as i64).saturating_mul(1_000));
+        let market_end_ms = market_end_ts.map(|ts| ts.saturating_mul(1_000));
         let delta_from_end_ms = market_end_ms.map(|end_ms| now_ms.saturating_sub(end_ms));
         let winner_to_submit_ms = self
             .post_close_winner_ts
             .map(|ts| ts.elapsed().as_millis() as u64);
+        let final_detect_to_submit_ms = self
+            .post_close_winner_final_detect_unix_ms
+            .map(|ms| now_ms.saturating_sub(ms));
+        let emit_to_submit_ms = self
+            .post_close_winner_emit_unix_ms
+            .map(|ms| now_ms.saturating_sub(ms));
+        let evidence_to_submit_ms = self.post_close_winner_evidence_recv_ms.and_then(|ms| {
+            if ms > 0 {
+                Some(now_ms.saturating_sub(ms))
+            } else {
+                None
+            }
+        });
         let notional_usdc = price * size;
         let first_submit = !self.oracle_lag_first_submit_logged;
         if first_submit {
             self.oracle_lag_first_submit_logged = true;
         }
         info!(
-            "⏱️ oracle_lag_submit_latency | first_submit={} unix_ms={} market_end_ts={:?} delta_from_end_ms={:?} winner_to_submit_ms={:?} winner_side={:?} winner_source={:?} slot={} side={:?} direction={:?} type=Limit replacing={} price={:.4} size={:.2} notional_usdc={:.4}",
+            "⏱️ oracle_lag_submit_latency | first_submit={} unix_ms={} market_end_ts={:?} delta_from_end_ms={:?} winner_to_submit_ms={:?} final_detect_to_submit_ms={:?} emit_to_submit_ms={:?} evidence_to_submit_ms={:?} winner_side={:?} winner_source={:?} slot={} side={:?} direction={:?} type=Limit replacing={} price={:.4} size={:.2} notional_usdc={:.4}",
             first_submit,
             now_ms,
             market_end_ts,
             delta_from_end_ms,
             winner_to_submit_ms,
+            final_detect_to_submit_ms,
+            emit_to_submit_ms,
+            evidence_to_submit_ms,
             self.post_close_winner_side,
             self.post_close_winner_source,
             slot.as_str(),
@@ -2143,7 +2224,7 @@ impl StrategyCoordinator {
     ) {
         // GLFT slot quotes are sometimes nudged right before action (governor/keep-band).
         // Log actionable price/size so quote logs match actual place/reprice.
-        if self.cfg.strategy == StrategyKind::GlftMm && reason == BidReason::Provide {
+        if self.cfg.strategy.is_glft_mm() && reason == BidReason::Provide {
             let glft = *self.glft_rx.borrow();
             let inv = self.current_working_inventory();
             let book = self.book;
@@ -2711,7 +2792,7 @@ impl StrategyCoordinator {
         quoted_price: f64,
         target_price: f64,
     ) -> Option<(f64, f64, bool)> {
-        if self.cfg.strategy != StrategyKind::GlftMm {
+        if !self.cfg.strategy.is_glft_mm() {
             return None;
         }
         let glft = *self.glft_rx.borrow();
