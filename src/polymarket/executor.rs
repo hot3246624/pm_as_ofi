@@ -784,10 +784,10 @@ impl Executor {
         price: f64,
         size: f64,
         reason: BidReason,
-        purpose: TradePurpose,
+        _purpose: TradePurpose,
         local_unreleased_matched_notional_usdc: f64,
     ) {
-        let mut size = size;
+        let size = size;
         let slot = OrderSlot::new(side, direction);
         let reason_str = match reason {
             BidReason::Provide => "PROVIDE",
@@ -795,26 +795,23 @@ impl Executor {
             BidReason::Hedge => "HEDGE",
         };
 
-        // Oracle-lag single-shot all-in sizing for maker fallback path.
-        // Keep this explicitly scoped by purpose to avoid affecting other strategies.
-        if direction == TradeDirection::Buy
-            && purpose == TradePurpose::OracleLagSnipe
-            && price > 0.0
-        {
+        // IMPORTANT:
+        // Oracle-lag maker fallback must keep the coordinator/OMS target size unchanged.
+        // Re-sizing here (e.g. all-in by free balance) breaks desired/live size consistency
+        // and can create OrderPlaced -> Cancel(Reprice) loops.
+        if direction == TradeDirection::Buy && reason == BidReason::OracleLagProvide {
             if let Some(free_usdc) = self.oracle_lag_free_balance_snapshot_usdc() {
                 let cushion = 0.05_f64;
                 let spendable = (free_usdc - cushion).max(0.0);
-                let affordable_shares = (spendable / price).max(0.0);
+                let affordable_shares = (spendable / price.max(1e-9)).max(0.0);
                 let affordable_2dp = (affordable_shares * 100.0).floor() / 100.0;
-                let chosen = (affordable_2dp * 100.0).floor() / 100.0;
                 info!(
-                    "📐 oracle_lag_order_size | mode=maker_fallback side={:?} requested={:.2} chosen={:.2} free_usdc={:.2} spendable_usdc={:.2} price={:.4}",
-                    side, size, chosen, free_usdc, spendable, price
+                    "📐 oracle_lag_order_size | mode=maker_fallback_fixed side={:?} requested={:.2} chosen={:.2} free_usdc={:.2} spendable_usdc={:.2} affordable_shares={:.2} price={:.4}",
+                    side, size, size, free_usdc, spendable, affordable_2dp, price
                 );
-                size = chosen;
             } else {
                 info!(
-                    "📐 oracle_lag_order_size | mode=maker_fallback side={:?} requested={:.2} chosen={:.2} balance_snapshot=none",
+                    "📐 oracle_lag_order_size | mode=maker_fallback_fixed side={:?} requested={:.2} chosen={:.2} balance_snapshot=none",
                     side, size, size
                 );
             }

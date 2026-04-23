@@ -57,6 +57,14 @@ pub(crate) const ORACLE_LAG_NO_TAKER_ABOVE_PRICE: f64 = 0.990;
 pub(crate) const ORACLE_LAG_MAKER_MAX_PRICE: f64 = 0.991;
 /// Micro-tick boundary: when winner side has only bids and top bid ≥ this, step by 0.001; otherwise 0.01.
 pub(crate) const ORACLE_LAG_MICRO_TICK_BID_BOUNDARY: f64 = 0.94;
+/// Follow-up upward maker reprice minimum interval in post-close window.
+pub(crate) const ORACLE_LAG_MAKER_FOLLOWUP_MIN_INTERVAL_MS: u64 = 200;
+/// Follow-up in-flight lock (ms): after local target update/cancel activity, suppress
+/// new follow-up attempts briefly to avoid overlapping reprice waves.
+pub(crate) const ORACLE_LAG_MAKER_FOLLOWUP_INFLIGHT_LOCK_MS: u64 = 900;
+/// Same-candidate cooldown (ms): if follow-up keeps producing the same target price,
+/// hold it for a short window instead of repeatedly resubmitting identical intents.
+pub(crate) const ORACLE_LAG_MAKER_FOLLOWUP_SAME_CANDIDATE_COOLDOWN_MS: u64 = 1_500;
 /// Hint-side fallback freshness guard (ms). If hint evidence is older than this,
 /// do not use it for execution pricing when live winner-side book is missing.
 pub(crate) const ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS: u64 = 1200;
@@ -1103,6 +1111,10 @@ pub struct StrategyCoordinator {
     oracle_lag_tail_round_done: Option<u64>,
     /// Last maker-tail state key to prevent same-state high-frequency clear/repost.
     oracle_lag_maker_state_key: Option<String>,
+    /// Last timestamp we performed an upward follow-up reprice for oracle-lag maker.
+    oracle_lag_maker_followup_last_ts: Option<Instant>,
+    /// Last follow-up candidate price per slot for oracle-lag maker.
+    oracle_lag_maker_followup_last_candidate_price: [Option<f64>; 4],
     /// Hard stop for oracle_lag_sniping current round after balance/allowance reject.
     oracle_lag_round_halted: bool,
     oracle_lag_round_halt_kind: Option<RejectKind>,
@@ -1384,6 +1396,8 @@ impl StrategyCoordinator {
             oracle_lag_defer_to_round_tail: false,
             oracle_lag_tail_round_done: None,
             oracle_lag_maker_state_key: None,
+            oracle_lag_maker_followup_last_ts: None,
+            oracle_lag_maker_followup_last_candidate_price: std::array::from_fn(|_| None),
             oracle_lag_round_halted: false,
             oracle_lag_round_halt_kind: None,
             last_post_close_snapshot_ts: None,
@@ -2471,6 +2485,9 @@ impl StrategyCoordinator {
                     no_stale_raw,
                 );
             }
+        }
+        if self.cfg.strategy.is_oracle_lag_sniping() {
+            self.maybe_oracle_lag_followup_upward_reprice().await;
         }
 
         // Priority 4: Strategy quote + unified flow-risk overlay + execution.

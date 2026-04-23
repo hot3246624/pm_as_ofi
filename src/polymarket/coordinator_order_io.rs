@@ -1,4 +1,4 @@
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tracing::{debug, info, warn};
 
@@ -22,6 +22,8 @@ impl StrategyCoordinator {
             return;
         }
         self.oracle_lag_maker_state_key = None;
+        self.oracle_lag_maker_followup_last_ts = None;
+        self.oracle_lag_maker_followup_last_candidate_price = std::array::from_fn(|_| None);
         let mut cleared = 0u8;
         for slot in [OrderSlot::YES_BUY, OrderSlot::NO_BUY] {
             let is_oracle_lag_maker = self
@@ -38,6 +40,118 @@ impl StrategyCoordinator {
                 reason, cleared
             );
         }
+    }
+
+    pub(super) async fn maybe_oracle_lag_followup_upward_reprice(&mut self) {
+        if !self.cfg.strategy.is_oracle_lag_sniping()
+            || !self.cfg.oracle_lag_sniping.market_enabled
+            || !self.is_in_post_close_window()
+            || !self.oracle_lag_is_selected()
+            || self.oracle_lag_round_halted
+        {
+            return;
+        }
+        let Some(side) = self.post_close_winner_side else {
+            return;
+        };
+        let slot = OrderSlot::new(side, TradeDirection::Buy);
+        let Some(current) = self.slot_target(slot).cloned() else {
+            return;
+        };
+        if current.reason != BidReason::OracleLagProvide || current.direction != TradeDirection::Buy
+        {
+            return;
+        }
+        let (winner_bid, winner_ask) = match side {
+            Side::Yes => (self.book.yes_bid, self.book.yes_ask),
+            Side::No => (self.book.no_bid, self.book.no_ask),
+        };
+        if winner_bid <= 0.0 {
+            return;
+        }
+        let tick = if winner_bid > ORACLE_LAG_MICRO_TICK_BID_BOUNDARY
+            || winner_ask > 0.96
+            || (winner_bid > 0.0 && winner_bid < 0.04)
+            || (winner_ask > 0.0 && winner_ask < 0.04)
+        {
+            0.001
+        } else {
+            self.cfg.tick_size.max(1e-9)
+        };
+        let winner_ask_tradable = winner_ask > 0.0
+            && (winner_bid <= 0.0 || winner_ask > winner_bid + 0.5 * tick + 1e-9);
+        if winner_ask_tradable {
+            return;
+        }
+        if current.price >= ORACLE_LAG_MAKER_MAX_PRICE - 1e-9 {
+            return;
+        }
+        if self.oracle_lag_maker_followup_last_ts.is_some_and(|prev| {
+            prev.elapsed() < Duration::from_millis(ORACLE_LAG_MAKER_FOLLOWUP_MIN_INTERVAL_MS)
+        }) {
+            return;
+        }
+        if self.slot_last_ts(slot).elapsed()
+            < Duration::from_millis(ORACLE_LAG_MAKER_FOLLOWUP_INFLIGHT_LOCK_MS)
+        {
+            debug!(
+                "⏭️ oracle_lag_followup_skip | slot={} side={:?} reason=inflight_lock live={:.4}",
+                slot.as_str(),
+                side,
+                current.price
+            );
+            return;
+        }
+        let step = if tick <= 0.001 + 1e-12 { tick } else { tick * 0.1 };
+        let candidate = (winner_bid + step).min(ORACLE_LAG_MAKER_MAX_PRICE).max(step);
+        if candidate <= current.price + 0.5 * tick {
+            return;
+        }
+        if let Some(prev_candidate) = self.oracle_lag_maker_followup_last_candidate_price[slot.index()] {
+            let same_candidate = (candidate - prev_candidate).abs() <= 0.5 * tick + 1e-9;
+            if same_candidate
+                && self.oracle_lag_maker_followup_last_ts.is_some_and(|prev| {
+                    prev.elapsed()
+                        < Duration::from_millis(
+                            ORACLE_LAG_MAKER_FOLLOWUP_SAME_CANDIDATE_COOLDOWN_MS,
+                        )
+                })
+            {
+                debug!(
+                    "⏭️ oracle_lag_followup_skip | slot={} side={:?} reason=same_candidate_cooldown live={:.4} candidate={:.4} prev_candidate={:.4}",
+                    slot.as_str(),
+                    side,
+                    current.price,
+                    candidate,
+                    prev_candidate
+                );
+                return;
+            }
+        }
+
+        self.oracle_lag_maker_followup_last_ts = Some(Instant::now());
+        self.oracle_lag_maker_followup_last_candidate_price[slot.index()] = Some(candidate);
+        info!(
+            "🎯 oracle_lag_followup_upward | slot={} side={:?} live={:.4} bid={:.4} ask={:.4} next={:.4} tick={:.4}",
+            slot.as_str(),
+            side,
+            current.price,
+            winner_bid,
+            winner_ask,
+            candidate,
+            tick
+        );
+        self.slot_place_or_reprice(
+            slot,
+            candidate,
+            current.size,
+            BidReason::OracleLagProvide,
+            Some(format!(
+                "oracle_lag_followup_upward | winner_bid={:.4} winner_ask={:.4}",
+                winner_bid, winner_ask
+            )),
+        )
+        .await;
     }
 
     // ═════════════════════════════════════════════════
@@ -959,6 +1073,8 @@ impl StrategyCoordinator {
         self.sync_buy_side_wrapper(slot);
         if was_oracle_lag_maker {
             self.oracle_lag_maker_state_key = None;
+            self.oracle_lag_maker_followup_last_ts = None;
+            self.oracle_lag_maker_followup_last_candidate_price[slot.index()] = None;
         }
 
         debug!("🗑️ Cancel {} ({:?}, {:?})", slot.as_str(), reason, scope);
@@ -1005,6 +1121,8 @@ impl StrategyCoordinator {
         self.sync_buy_side_wrapper(slot);
         if was_oracle_lag_maker {
             self.oracle_lag_maker_state_key = None;
+            self.oracle_lag_maker_followup_last_ts = None;
+            self.oracle_lag_maker_followup_last_candidate_price[slot.index()] = None;
         }
         debug!(
             "🧭 Soft release {} after OMS/exchange release",
@@ -1174,6 +1292,9 @@ impl StrategyCoordinator {
                     self.oracle_lag_fak_last_dispatch = None;
                     self.oracle_lag_fak_shots_this_round = 0;
                     self.oracle_lag_tail_round_done = None;
+                    self.oracle_lag_maker_followup_last_ts = None;
+                    self.oracle_lag_maker_followup_last_candidate_price =
+                        std::array::from_fn(|_| None);
                     self.oracle_lag_round_halted = false;
                     self.oracle_lag_round_halt_kind = None;
                     self.reset_oracle_lag_hint_book_cache();
@@ -1235,10 +1356,27 @@ impl StrategyCoordinator {
                 }
                 if self
                     .oracle_lag_tail_round_done
+                    .is_some_and(|prev| round_end_ts == prev)
+                {
+                    debug!(
+                        "⏭️ oracle_lag_tail_action_skip | round_end_ts={} side={:?} mode={:?} target_slug={} reason={} duplicate_round_action=true",
+                        round_end_ts,
+                        side,
+                        mode,
+                        target_slug,
+                        reason
+                    );
+                    return;
+                }
+                if self
+                    .oracle_lag_tail_round_done
                     .is_none_or(|prev| round_end_ts > prev)
                 {
                     self.clear_oracle_lag_live_maker_orders("tail_new_round").await;
                     self.oracle_lag_maker_state_key = None;
+                    self.oracle_lag_maker_followup_last_ts = None;
+                    self.oracle_lag_maker_followup_last_candidate_price =
+                        std::array::from_fn(|_| None);
                 }
                 self.oracle_lag_tail_round_done = Some(round_end_ts);
                 let size = self.oracle_lag_effective_order_size(limit_price);
@@ -1420,6 +1558,9 @@ impl StrategyCoordinator {
                                 .await;
                             self.oracle_lag_fak_last_dispatch = None;
                             self.oracle_lag_fak_shots_this_round = 0;
+                            self.oracle_lag_maker_followup_last_ts = None;
+                            self.oracle_lag_maker_followup_last_candidate_price =
+                                std::array::from_fn(|_| None);
                             self.oracle_lag_round_halted = false;
                             self.oracle_lag_round_halt_kind = None;
                         }
