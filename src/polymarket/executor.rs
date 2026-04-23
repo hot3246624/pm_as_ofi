@@ -295,6 +295,8 @@ impl Executor {
                         Some(ExecutionCmd::ReconcileNow { reason }) => {
                             if reconcile_enabled {
                                 info!("🧭 ReconcileNow: {}", reason);
+                                // Warm balance cache off the trading hot path.
+                                let _ = self.cached_free_balance_usdc().await;
                                 self.reconcile_open_orders().await;
                             }
                         }
@@ -308,6 +310,8 @@ impl Executor {
                     }
                 }
                 _ = reconcile_tick.tick(), if reconcile_enabled => {
+                    // Warm balance cache off the trading hot path.
+                    let _ = self.cached_free_balance_usdc().await;
                     self.reconcile_open_orders().await;
                 }
             }
@@ -797,7 +801,7 @@ impl Executor {
             && purpose == TradePurpose::OracleLagSnipe
             && price > 0.0
         {
-            if let Some(free_usdc) = self.cached_free_balance_usdc().await {
+            if let Some(free_usdc) = self.oracle_lag_free_balance_snapshot_usdc() {
                 let cushion = 0.05_f64;
                 let spendable = (free_usdc - cushion).max(0.0);
                 let affordable_shares = (spendable / price).max(0.0);
@@ -808,6 +812,11 @@ impl Executor {
                     side, size, chosen, free_usdc, spendable, price
                 );
                 size = chosen;
+            } else {
+                info!(
+                    "📐 oracle_lag_order_size | mode=maker_fallback side={:?} requested={:.2} chosen={:.2} balance_snapshot=none",
+                    side, size, size
+                );
             }
         }
 
@@ -1259,7 +1268,7 @@ impl Executor {
             && limit_price.unwrap_or(0.0) > 0.0
         {
             let px_cap = limit_price.unwrap_or(0.0);
-            if let Some(free_usdc) = self.cached_free_balance_usdc().await {
+            if let Some(free_usdc) = self.oracle_lag_free_balance_snapshot_usdc() {
                 let cushion = 0.05_f64;
                 let spendable = (free_usdc - cushion).max(0.0);
                 let affordable_shares = (spendable / px_cap).max(0.0);
@@ -1270,6 +1279,11 @@ impl Executor {
                     side, size, chosen, free_usdc, spendable, px_cap
                 );
                 size = chosen;
+            } else {
+                info!(
+                    "📐 oracle_lag_order_size | side={:?} requested={:.2} chosen={:.2} balance_snapshot=none",
+                    side, size, size
+                );
             }
         }
 
@@ -1633,6 +1647,11 @@ impl Executor {
                 None
             }
         }
+    }
+
+    fn oracle_lag_free_balance_snapshot_usdc(&self) -> Option<f64> {
+        self.balance_cache_usdc
+            .filter(|v| v.is_finite() && *v > 0.0)
     }
 
     // ─────────────────────────────────────────────────

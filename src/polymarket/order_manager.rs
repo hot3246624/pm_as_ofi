@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::messages::{
     BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult, OrderSlot,
@@ -184,9 +184,18 @@ impl OrderManager {
                             purpose,
                             limit_price,
                         }) => {
+                            let oracle_lag_fast_path = matches!(purpose, TradePurpose::OracleLagSnipe)
+                                && self.side_slots_idle(side);
                             self.handle_one_shot_taker(side, direction, size, purpose, limit_price).await;
-                            for slot in OrderSlot::side_slots(side) {
-                                self.pump_slot(slot).await;
+                            if oracle_lag_fast_path {
+                                debug!(
+                                    "⚡ OMS fast one-shot taker path | side={:?} purpose={:?} reason=slots_idle_skip_side_pump",
+                                    side, purpose
+                                );
+                            } else {
+                                for slot in OrderSlot::side_slots(side) {
+                                    self.pump_slot(slot).await;
+                                }
                             }
                             self.pump_side_taker(side).await;
                         }
@@ -355,8 +364,17 @@ impl OrderManager {
         match state {
             SideTakerState::Idle => {}
             SideTakerState::Pending(intent) => {
-                if !self.side_slots_idle(side) {
+                let slots_idle = self.side_slots_idle(side);
+                let oracle_lag_fast_path =
+                    matches!(intent.purpose, TradePurpose::OracleLagSnipe);
+                if !slots_idle && !oracle_lag_fast_path {
                     return;
+                }
+                if !slots_idle && oracle_lag_fast_path {
+                    info!(
+                        "⚡ OMS fast taker dispatch | side={:?} purpose={:?} reason=oracle_lag_bypass_wait_idle",
+                        side, intent.purpose
+                    );
                 }
                 let cmd = ExecutionCmd::ExecuteIntent {
                     intent: intent.clone(),

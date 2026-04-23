@@ -1076,6 +1076,10 @@ pub struct StrategyCoordinator {
     post_close_winner_emit_unix_ms: Option<u64>,
     post_close_winner_evidence_recv_ms: Option<u64>,
     post_close_winner_ts: Option<Instant>,
+    post_close_hint_winner_bid: f64,
+    post_close_hint_winner_ask_raw: f64,
+    post_close_hint_book_source: &'static str,
+    post_close_hint_distance_to_final_ms: u64,
     oracle_lag_first_submit_logged: bool,
     /// Timestamp of the last FAK dispatch for OracleLagSniping.
     /// Used for two purposes:
@@ -1368,6 +1372,10 @@ impl StrategyCoordinator {
             post_close_winner_emit_unix_ms: None,
             post_close_winner_evidence_recv_ms: None,
             post_close_winner_ts: None,
+            post_close_hint_winner_bid: 0.0,
+            post_close_hint_winner_ask_raw: 0.0,
+            post_close_hint_book_source: "none",
+            post_close_hint_distance_to_final_ms: u64::MAX,
             oracle_lag_first_submit_logged: false,
             oracle_lag_fak_last_dispatch: None,
             oracle_lag_fak_shots_this_round: 0,
@@ -1545,6 +1553,14 @@ impl StrategyCoordinator {
                     self.emit_obs_snapshot();
                 }
 
+                // Oracle-lag winner hint: dedicated channel (non-watch) so one-shot hint
+                // cannot be overwritten by high-frequency BookTick updates.
+                Some(hint_msg) = self.winner_hint_rx.recv() => {
+                    self.handle_market_data(hint_msg).await;
+                    self.tick().await;
+                    self.emit_obs_snapshot();
+                }
+
                 Some(feedback) = self.feedback_rx.recv() => {
                     self.handle_execution_feedback(feedback);
                     self.tick().await;
@@ -1553,14 +1569,6 @@ impl StrategyCoordinator {
 
                 Some(release) = self.slot_release_rx.recv() => {
                     self.handle_slot_release_event(release).await;
-                    self.tick().await;
-                    self.emit_obs_snapshot();
-                }
-
-                // Oracle-lag winner hint: dedicated channel (non-watch) so one-shot hint
-                // cannot be overwritten by high-frequency BookTick updates.
-                Some(hint_msg) = self.winner_hint_rx.recv() => {
-                    self.handle_market_data(hint_msg).await;
                     self.tick().await;
                     self.emit_obs_snapshot();
                 }
@@ -2663,14 +2671,24 @@ impl StrategyCoordinator {
                     && self.cfg.oracle_lag_sniping.market_enabled
                     && kind == RejectKind::BalanceOrAllowance
                 {
-                    if !self.oracle_lag_round_halted {
-                        warn!(
-                            "🛑 oracle_lag_round_halt | reason=balance_or_allowance_reject side={:?} bid_reason={:?} selected_round_end_ts={:?}",
-                            side, reason, self.oracle_lag_selected_round_end_ts
+                    // Keep immediate FAK path alive across bursty multi-market finals:
+                    // allowance/headroom can transiently fail and recover within the same round.
+                    // Only halt on maker fallback rejects to avoid repeated stale rest submits.
+                    if reason == BidReason::OracleLagProvide {
+                        if !self.oracle_lag_round_halted {
+                            warn!(
+                                "🛑 oracle_lag_round_halt | reason=balance_or_allowance_reject side={:?} bid_reason={:?} selected_round_end_ts={:?}",
+                                side, reason, self.oracle_lag_selected_round_end_ts
+                            );
+                        }
+                        self.oracle_lag_round_halted = true;
+                        self.oracle_lag_round_halt_kind = Some(kind);
+                    } else {
+                        info!(
+                            "⏭️ oracle_lag_round_halt_skip | reason=balance_or_allowance_reject side={:?} bid_reason={:?} keep_winner_hint_immediate=true",
+                            side, reason
                         );
                     }
-                    self.oracle_lag_round_halted = true;
-                    self.oracle_lag_round_halt_kind = Some(kind);
                 }
             }
         }

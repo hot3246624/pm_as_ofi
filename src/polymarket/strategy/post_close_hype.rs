@@ -20,8 +20,8 @@ impl QuoteStrategy for PostCloseHypeStrategy {
     /// Winner-side decision tree (maker branch only; FAK is dispatched by coordinator_order_io):
     ///   empty book (no asks, no bids)   → skip (no StrategyQuotes)
     ///   asks[0] <= 0.99                 → skip (FAK path owns this case)
-    ///   asks[0] > 0.99                  → maker @ asks[0] - effective_tick
-    ///   no asks                         → maker @ min(bids[0] + (1 tick / 0.1 tick), 0.991)
+    ///   asks[0] > 0.99                  → maker @ min(asks[0] - effective_tick, 0.991)
+    ///   no asks                         → maker @ 0.991 (single-shot hold, no bid-chasing)
     fn compute_quotes(
         &self,
         coordinator: &StrategyCoordinator,
@@ -65,16 +65,15 @@ impl QuoteStrategy for PostCloseHypeStrategy {
                 // FAK branch owns this case; maker stands down.
                 return StrategyQuotes::default();
             }
-            (effective_ask - tick).max(0.0)
+            (effective_ask - tick).max(0.0).min(ORACLE_LAG_MAKER_MAX_PRICE)
         } else if best_bid > 0.0 {
-            // For 0.001-tick regime: +1 tick. For 0.01-tick regime: +0.1 tick.
-            let step = if tick <= 0.001 + 1e-12 {
-                tick
-            } else {
-                tick * 0.1
-            };
             let ceiling = ORACLE_LAG_MAKER_MAX_PRICE.min(1.0 - tick);
-            (best_bid + step).min(ceiling)
+            // If winner-side bid is already at/above our max maker cap, skip.
+            // Posting below the top bid in post-close is low utility and increases churn.
+            if best_bid >= ceiling - 1e-9 {
+                return StrategyQuotes::default();
+            }
+            ceiling
         } else {
             // empty book — no reference, skip.
             return StrategyQuotes::default();

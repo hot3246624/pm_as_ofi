@@ -3946,11 +3946,10 @@ struct RoundTailObservation {
     hint_tx: mpsc::Sender<MarketDataMsg>,
 }
 
-const ORACLE_LAG_TAIL_FAK_LIMIT_PRICE: f64 = 0.99;
 const ORACLE_LAG_TAIL_MAKER_MAX_PRICE: f64 = 0.991;
 
 /// Round-tail coordinator:
-/// - For each market final observation: immediately try per-market Fak99.
+/// - Collect final observations for a round.
 /// - Once all expected markets are observed (or timeout from first final):
 ///   send exactly one maker fallback (lowest winner-side bid market).
 async fn run_oracle_lag_round_tail_coordinator(
@@ -3962,7 +3961,6 @@ async fn run_oracle_lag_round_tail_coordinator(
     let mut pending: HashMap<u64, HashMap<String, RoundTailObservation>> = HashMap::new();
     let mut deadlines: HashMap<u64, tokio::time::Instant> = HashMap::new();
     let mut finalized_rounds: HashSet<u64> = HashSet::new();
-    let mut per_final_fak_dispatched: HashMap<u64, HashSet<String>> = HashMap::new();
 
     let dispatch_fallback_maker = |round_end_ts: u64,
                                    by_slug: &HashMap<String, RoundTailObservation>|
@@ -4005,36 +4003,11 @@ async fn run_oracle_lag_round_tail_coordinator(
         None
     };
 
-    let dispatch_per_final_fak = |obs: &RoundTailObservation| -> Option<(
-        MarketDataMsg,
-        mpsc::Sender<MarketDataMsg>,
-    )> {
-        if !(obs.winner_ask_tradable
-            && obs.winner_ask_eff > 0.0
-            && obs.winner_ask_eff <= ORACLE_LAG_TAIL_FAK_LIMIT_PRICE + 1e-9)
-        {
-            return None;
-        }
-        Some((
-            MarketDataMsg::OracleLagTailAction {
-                round_end_ts: obs.round_end_ts,
-                side: obs.winner_side,
-                mode: OracleLagTailMode::Fak99,
-                limit_price: ORACLE_LAG_TAIL_FAK_LIMIT_PRICE,
-                target_slug: obs.slug.clone(),
-                reason: "per_final_tradable_ask",
-            },
-            obs.hint_tx.clone(),
-        ))
-    };
-
     let finalize_round = |round_end_ts: u64,
                           pending: &mut HashMap<u64, HashMap<String, RoundTailObservation>>,
                           deadlines: &mut HashMap<u64, tokio::time::Instant>,
-                          per_final_fak_dispatched: &mut HashMap<u64, HashSet<String>>,
                           finalized_rounds: &mut HashSet<u64>| {
         deadlines.remove(&round_end_ts);
-        per_final_fak_dispatched.remove(&round_end_ts);
         if let Some(by_slug) = pending.remove(&round_end_ts) {
             if let Some((msg, tx)) = dispatch_fallback_maker(round_end_ts, &by_slug) {
                 if let Err(e) = tx.try_send(msg) {
@@ -4049,6 +4022,11 @@ async fn run_oracle_lag_round_tail_coordinator(
                     round_end_ts
                 );
             }
+        } else {
+            info!(
+                "⏭️ oracle_lag_round_tail_skip | round_end_ts={} reason=no_pending_observation",
+                round_end_ts
+            );
         }
         finalized_rounds.insert(round_end_ts);
     };
@@ -4065,7 +4043,6 @@ async fn run_oracle_lag_round_tail_coordinator(
                 round_end_ts,
                 &mut pending,
                 &mut deadlines,
-                &mut per_final_fak_dispatched,
                 &mut finalized_rounds,
             );
         }
@@ -4081,20 +4058,6 @@ async fn run_oracle_lag_round_tail_coordinator(
                         continue;
                     }
                     let round_end_ts = obs.round_end_ts;
-                    if let Some((msg, tx)) = dispatch_per_final_fak(&obs) {
-                        let should_send = per_final_fak_dispatched
-                            .entry(round_end_ts)
-                            .or_default()
-                            .insert(obs.slug.clone());
-                        if should_send {
-                            if let Err(e) = tx.try_send(msg) {
-                                warn!(
-                                    "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} slug={} err={}",
-                                    round_end_ts, obs.slug, e
-                                );
-                            }
-                        }
-                    }
                     let should_dispatch = {
                         let by_slug = pending.entry(round_end_ts).or_default();
                         by_slug.insert(obs.slug.clone(), obs);
@@ -4105,7 +4068,6 @@ async fn run_oracle_lag_round_tail_coordinator(
                             round_end_ts,
                             &mut pending,
                             &mut deadlines,
-                            &mut per_final_fak_dispatched,
                             &mut finalized_rounds,
                         );
                     } else {
@@ -4125,20 +4087,6 @@ async fn run_oracle_lag_round_tail_coordinator(
                 continue;
             }
             let round_end_ts = obs.round_end_ts;
-            if let Some((msg, tx)) = dispatch_per_final_fak(&obs) {
-                let should_send = per_final_fak_dispatched
-                    .entry(round_end_ts)
-                    .or_default()
-                    .insert(obs.slug.clone());
-                if should_send {
-                    if let Err(e) = tx.try_send(msg) {
-                        warn!(
-                            "⚠️ oracle_lag_round_tail_send_failed | round_end_ts={} slug={} err={}",
-                            round_end_ts, obs.slug, e
-                        );
-                    }
-                }
-            }
             let should_dispatch = {
                 let by_slug = pending.entry(round_end_ts).or_default();
                 by_slug.insert(obs.slug.clone(), obs);
@@ -4149,7 +4097,6 @@ async fn run_oracle_lag_round_tail_coordinator(
                     round_end_ts,
                     &mut pending,
                     &mut deadlines,
-                    &mut per_final_fak_dispatched,
                     &mut finalized_rounds,
                 );
             } else {

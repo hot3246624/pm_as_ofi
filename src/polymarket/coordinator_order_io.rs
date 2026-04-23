@@ -10,6 +10,13 @@ use crate::polymarket::glft::{
 use super::*;
 
 impl StrategyCoordinator {
+    fn reset_oracle_lag_hint_book_cache(&mut self) {
+        self.post_close_hint_winner_bid = 0.0;
+        self.post_close_hint_winner_ask_raw = 0.0;
+        self.post_close_hint_book_source = "none";
+        self.post_close_hint_distance_to_final_ms = u64::MAX;
+    }
+
     async fn clear_oracle_lag_live_maker_orders(&mut self, reason: &'static str) {
         if !self.cfg.strategy.is_oracle_lag_sniping() {
             return;
@@ -223,7 +230,10 @@ impl StrategyCoordinator {
 
         let debounce_ms = match reason {
             BidReason::Hedge => self.cfg.hedge_debounce_ms,
-            BidReason::Provide | BidReason::OracleLagProvide => self.cfg.debounce_ms,
+            BidReason::Provide => self.cfg.debounce_ms,
+            // Oracle-lag hot path: winner hint arrives late by nature, so placement
+            // must not be throttled by generic maker debounce.
+            BidReason::OracleLagProvide => 0,
         };
         let elapsed = last_ts.elapsed();
         let debounce = std::time::Duration::from_millis(debounce_ms);
@@ -1038,8 +1048,13 @@ impl StrategyCoordinator {
             }
         }
 
-        for slot in OrderSlot::side_slots(side) {
-            self.clear_slot_target(slot, CancelReason::Reprice).await;
+        // Hot-path optimization:
+        // For OracleLag one-shot taker, let OMS perform its own slot cleanup in one pass.
+        // Avoid synchronous pre-clear awaits here, which add avoidable tail latency.
+        if !matches!(purpose, TradePurpose::OracleLagSnipe) {
+            for slot in OrderSlot::side_slots(side) {
+                self.clear_slot_target(slot, CancelReason::Reprice).await;
+            }
         }
         if self.cfg.dry_run {
             let order_type = if limit_price.is_some() {
@@ -1153,14 +1168,15 @@ impl StrategyCoordinator {
                         .await;
                     self.oracle_lag_selected_round_end_ts = Some(round_end_ts);
                     self.oracle_lag_is_selected = selected;
-                    // Keep strategy-level maker path muted; round-tail action is the
-                    // single authority for post-close entry.
+                    // Prime tail fallback by default on new selected round.
+                    // WinnerHint hot path may override this and fire immediate FAK.
                     self.oracle_lag_defer_to_round_tail = true;
                     self.oracle_lag_fak_last_dispatch = None;
                     self.oracle_lag_fak_shots_this_round = 0;
                     self.oracle_lag_tail_round_done = None;
                     self.oracle_lag_round_halted = false;
                     self.oracle_lag_round_halt_kind = None;
+                    self.reset_oracle_lag_hint_book_cache();
                     info!(
                         "🏆 oracle_lag_arbiter_selection | round_end_ts={} selected={} rank={} reason={}",
                         round_end_ts, selected, rank, reason
@@ -1240,6 +1256,21 @@ impl StrategyCoordinator {
                 match mode {
                     crate::polymarket::messages::OracleLagTailMode::Fak99 => {
                         let (
+                            hint_winner_bid,
+                            hint_winner_ask_raw,
+                            hint_book_source,
+                            hint_distance_to_final_ms,
+                        ) = if self.post_close_winner_side == Some(side) {
+                            (
+                                self.post_close_hint_winner_bid,
+                                self.post_close_hint_winner_ask_raw,
+                                self.post_close_hint_book_source,
+                                self.post_close_hint_distance_to_final_ms,
+                            )
+                        } else {
+                            (0.0, 0.0, "none", u64::MAX)
+                        };
+                        let (
                             winner_bid,
                             winner_ask,
                             winner_ask_tradable,
@@ -1247,10 +1278,10 @@ impl StrategyCoordinator {
                             quality_source,
                         ) = self.oracle_lag_winner_book_quality(
                             side,
-                            0.0,
-                            0.0,
-                            "none",
-                            u64::MAX,
+                            hint_winner_bid,
+                            hint_winner_ask_raw,
+                            hint_book_source,
+                            hint_distance_to_final_ms,
                         );
                         if !(winner_ask_tradable
                             && winner_ask > 0.0
@@ -1279,19 +1310,23 @@ impl StrategyCoordinator {
                         .await;
                     }
                     crate::polymarket::messages::OracleLagTailMode::MakerBidStep => {
-                        let tick = self.cfg.tick_size.max(1e-9);
-                        let price_ticks = (limit_price / tick).round() as i64;
                         let size_centi = (size * 100.0).round() as i64;
+                        let price_ppm = (limit_price * 1_000_000.0).round() as i64;
+                        let slot = OrderSlot::new(side, TradeDirection::Buy);
+                        let slot_has_active_oracle_maker = self
+                            .slot_target(slot)
+                            .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
                         let maker_state_key = format!(
                             "{}|{}|{}|{}|{}",
                             round_end_ts,
                             target_slug,
                             side.as_str(),
-                            price_ticks,
-                            size_centi
+                            size_centi,
+                            price_ppm
                         );
                         if self.oracle_lag_maker_state_key.as_deref()
                             == Some(maker_state_key.as_str())
+                            && slot_has_active_oracle_maker
                         {
                             debug!(
                                 "⏭️ oracle_lag_tail_maker_hold | round_end_ts={} side={:?} target_slug={} limit_price={:.4} size={:.2} reason=state_unchanged",
@@ -1300,7 +1335,6 @@ impl StrategyCoordinator {
                             return;
                         }
 
-                        let slot = OrderSlot::new(side, TradeDirection::Buy);
                         let opposite = match side {
                             Side::Yes => OrderSlot::NO_BUY,
                             Side::No => OrderSlot::YES_BUY,
@@ -1357,6 +1391,10 @@ impl StrategyCoordinator {
                 self.post_close_winner_emit_unix_ms = Some(emit_unix_ms);
                 self.post_close_winner_evidence_recv_ms = Some(winner_evidence_recv_ms);
                 self.post_close_winner_ts = Some(ts);
+                self.post_close_hint_winner_bid = hint_winner_bid.max(0.0);
+                self.post_close_hint_winner_ask_raw = hint_winner_ask_raw.max(0.0);
+                self.post_close_hint_book_source = winner_book_source;
+                self.post_close_hint_distance_to_final_ms = winner_distance_to_final_ms;
                 if changed {
                     info!(
                         "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={} new_hint_round={}",
@@ -1374,9 +1412,9 @@ impl StrategyCoordinator {
                     if self.cfg.strategy.is_oracle_lag_sniping()
                         && self.cfg.oracle_lag_sniping.market_enabled
                     {
-                        // Winner hint is now advisory only; round-tail action is the single
-                        // authority to place post-close orders for this round.
-                        self.oracle_lag_defer_to_round_tail = true;
+                        // Winner hint is the immediate hot path for the first taker attempt.
+                        // Round-tail action remains as cross-market fallback only.
+                        self.oracle_lag_defer_to_round_tail = false;
                         if is_new_hint_round {
                             self.clear_oracle_lag_live_maker_orders("winner_hint_new_round")
                                 .await;
@@ -1400,7 +1438,7 @@ impl StrategyCoordinator {
                             return;
                         }
                         info!(
-                            "🧭 oracle_lag_order_mode | mode=defer_round_tail side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
+                            "🧭 oracle_lag_order_mode | mode=winner_hint_immediate side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
                             side, source, winner_book_source, winner_distance_to_final_ms
                         );
                         let (
@@ -1416,16 +1454,56 @@ impl StrategyCoordinator {
                             winner_book_source,
                             winner_distance_to_final_ms,
                         );
-                        info!(
-                            "⚡ oracle_lag_hold_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} reason=defer_to_round_tail",
-                            side,
-                            winner_bid,
-                            winner_ask,
-                            winner_ask_tradable,
-                            winner_spread_ticks,
-                            winner_book_quality_source,
-                            ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
-                        );
+                        if winner_ask_tradable
+                            && winner_ask > 0.0
+                            && winner_ask <= ORACLE_LAG_NO_TAKER_ABOVE_PRICE + 1e-9
+                        {
+                            let size =
+                                self.oracle_lag_effective_order_size(ORACLE_LAG_NO_TAKER_ABOVE_PRICE);
+                            if size >= 0.01 {
+                                info!(
+                                    "⚡ oracle_lag_winner_hint_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_spread_ticks={:.2} quality_source={} limit_price={:.4} size={:.2}",
+                                    side,
+                                    winner_bid,
+                                    winner_ask,
+                                    winner_spread_ticks,
+                                    winner_book_quality_source,
+                                    ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                                    size,
+                                );
+                                self.dispatch_taker_intent(
+                                    side,
+                                    TradeDirection::Buy,
+                                    size,
+                                    TradePurpose::OracleLagSnipe,
+                                    Some(ORACLE_LAG_NO_TAKER_ABOVE_PRICE),
+                                )
+                                .await;
+                                self.oracle_lag_fak_last_dispatch = Some(Instant::now());
+                                self.oracle_lag_fak_shots_this_round =
+                                    self.oracle_lag_fak_shots_this_round.saturating_add(1);
+                            } else {
+                                info!(
+                                    "⏭️ oracle_lag_winner_hint_skip | side={:?} reason=size_below_lot_floor winner_bid={:.4} winner_ask={:.4} quality_source={} size={:.4}",
+                                    side,
+                                    winner_bid,
+                                    winner_ask,
+                                    winner_book_quality_source,
+                                    size,
+                                );
+                            }
+                        } else {
+                            info!(
+                                "⏭️ oracle_lag_winner_hint_skip | side={:?} reason=missing_or_untradable_winner_ask winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4}",
+                                side,
+                                winner_bid,
+                                winner_ask,
+                                winner_ask_tradable,
+                                winner_spread_ticks,
+                                winner_book_quality_source,
+                                ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                            );
+                        }
                     }
                 }
             }
@@ -1450,7 +1528,18 @@ impl StrategyCoordinator {
         let hint_is_fresh = hint_distance_to_final_ms
             <= crate::polymarket::coordinator::ORACLE_LAG_HINT_FALLBACK_MAX_AGE_MS;
         let hint_has_price = hint_bid > 0.0 || hint_ask > 0.0;
-        let (winner_bid, winner_ask, source) = if live_has_winner_side {
+        let (winner_bid, winner_ask, source) = if hint_has_price && hint_is_fresh && hint_ask > 0.0
+        {
+            // Keep hint/execute source consistent for winner-side ask:
+            // when fresh hint has ask, prefer it over partially-missing live side book.
+            let source = match hint_book_source {
+                "ws_partial" => "hint_ws_partial_fresh_preferred",
+                "clob_rest" => "hint_clob_rest_fresh_preferred",
+                _ => "hint_fresh_preferred",
+            };
+            let winner_bid = if hint_bid > 0.0 { hint_bid } else { book_bid };
+            (winner_bid, hint_ask, source)
+        } else if live_has_winner_side {
             (book_bid, book_ask, "live_book")
         } else if hint_has_price && hint_is_fresh {
             let source = match hint_book_source {
