@@ -14,6 +14,9 @@ const PENDING_CANCEL_TIMEOUT: Duration = Duration::from_secs(8);
 const PENDING_TIMEOUT_COOLDOWN: Duration = Duration::from_secs(2);
 const SLOT_PUMP_HEARTBEAT: Duration = Duration::from_millis(200);
 const SELL_AVAILABLE_WARMUP: Duration = Duration::from_millis(1_500);
+const ORACLE_LAG_REPRICE_MIN_INTERVAL: Duration = Duration::from_millis(200);
+const ORACLE_LAG_REPRICE_PRICE_EPS: f64 = 5e-4;
+const ORACLE_LAG_REPRICE_SIZE_EPS: f64 = 0.05;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum OrderState {
@@ -103,6 +106,45 @@ impl OrderManager {
         OrderSlot::side_slots(side)
             .into_iter()
             .all(|slot| matches!(self.tracker(slot).state, OrderState::Idle))
+    }
+
+    fn oracle_lag_live_reprice_needed(
+        &self,
+        slot: OrderSlot,
+        live: &DesiredTarget,
+        desired: &DesiredTarget,
+    ) -> bool {
+        if live.side != desired.side || live.direction != desired.direction {
+            return true;
+        }
+
+        let size_delta = (live.size - desired.size).abs();
+        if size_delta > ORACLE_LAG_REPRICE_SIZE_EPS {
+            return true;
+        }
+
+        let price_delta = (live.price - desired.price).abs();
+        if price_delta <= ORACLE_LAG_REPRICE_PRICE_EPS {
+            return false;
+        }
+
+        let elapsed = self.tracker(slot).last_action.elapsed();
+        if elapsed < ORACLE_LAG_REPRICE_MIN_INTERVAL {
+            debug!(
+                "⏭️ OMS oracle_lag reprice suppressed | slot={} live={:.4}@{:.2} desired={:.4}@{:.2} price_delta={:.6} size_delta={:.3} elapsed_ms={}",
+                slot.as_str(),
+                live.price,
+                live.size,
+                desired.price,
+                desired.size,
+                price_delta,
+                size_delta,
+                elapsed.as_millis(),
+            );
+            return false;
+        }
+
+        true
     }
 
     fn sell_available_after(&self, side: Side) -> Option<Instant> {
@@ -279,6 +321,7 @@ impl OrderManager {
         match tracker.state {
             OrderState::PendingSubmit(_) | OrderState::Idle => {
                 tracker.state = OrderState::Live(target);
+                tracker.last_action = Instant::now();
                 info!("✅ OMS: {} OrderPlaced -> Live", slot.as_str());
             }
             _ => {}
@@ -365,8 +408,7 @@ impl OrderManager {
             SideTakerState::Idle => {}
             SideTakerState::Pending(intent) => {
                 let slots_idle = self.side_slots_idle(side);
-                let oracle_lag_fast_path =
-                    matches!(intent.purpose, TradePurpose::OracleLagSnipe);
+                let oracle_lag_fast_path = matches!(intent.purpose, TradePurpose::OracleLagSnipe);
                 if !slots_idle && !oracle_lag_fast_path {
                     return;
                 }
@@ -495,7 +537,14 @@ impl OrderManager {
             OrderState::PendingSubmit(_) => {}
             OrderState::Live(live) => {
                 if let Some(desired) = self.tracker(slot).desired.clone() {
-                    if live != desired {
+                    let should_reprice = if live.reason == BidReason::OracleLagProvide
+                        && desired.reason == BidReason::OracleLagProvide
+                    {
+                        self.oracle_lag_live_reprice_needed(slot, &live, &desired)
+                    } else {
+                        live != desired
+                    };
+                    if should_reprice {
                         let _ = self
                             .exec_tx
                             .send(ExecutionCmd::CancelSlot {

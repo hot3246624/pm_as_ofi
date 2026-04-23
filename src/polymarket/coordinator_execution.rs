@@ -823,6 +823,41 @@ impl StrategyCoordinator {
             return RetentionDecision::Republish;
         }
 
+        if self.cfg.strategy.is_oracle_lag_sniping()
+            && current.reason == BidReason::OracleLagProvide
+            && matches!(reject_reason, CancelReason::Reprice)
+            && phase == EndgamePhase::Normal
+        {
+            let keep_same_winner_side = self.is_in_post_close_window()
+                && self.oracle_lag_is_selected()
+                && !self.oracle_lag_round_halted
+                && self.post_close_winner_side == Some(slot.side);
+            if keep_same_winner_side {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                debug!(
+                    "🧭 oracle_lag retain existing maker | slot={} winner_side={:?} selected={} halted={} in_post_close={}",
+                    slot.as_str(),
+                    self.post_close_winner_side,
+                    self.oracle_lag_is_selected(),
+                    self.oracle_lag_round_halted,
+                    self.is_in_post_close_window(),
+                );
+                return RetentionDecision::Retain;
+            }
+            debug!(
+                "🧭 oracle_lag clear maker | slot={} winner_side={:?} selected={} halted={} in_post_close={}",
+                slot.as_str(),
+                self.post_close_winner_side,
+                self.oracle_lag_is_selected(),
+                self.oracle_lag_round_halted,
+                self.is_in_post_close_window(),
+            );
+            return RetentionDecision::Clear(
+                reject_reason,
+                self.default_slot_reset_scope(reject_reason),
+            );
+        }
+
         if !self.cfg.strategy.is_glft_mm() && !self.cfg.strategy.is_pair_arb()
             || !matches!(reject_reason, CancelReason::Reprice)
             || phase != EndgamePhase::Normal
