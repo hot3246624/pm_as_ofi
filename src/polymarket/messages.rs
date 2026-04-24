@@ -34,6 +34,10 @@ pub enum MarketDataMsg {
     },
     /// Winner-side hint for post-close strategies.
     WinnerHint {
+        /// Market slug this winner hint belongs to.
+        slug: String,
+        /// Stable id for this hint generation (usually final-detect timestamp).
+        hint_id: u64,
         side: Side,
         source: WinnerHintSource,
         ref_price: f64,

@@ -3970,8 +3970,10 @@ async fn run_oracle_lag_round_tail_coordinator(
             return None;
         }
 
-        let mut bid_candidates: Vec<&RoundTailObservation> =
-            observations.into_iter().filter(|o| o.winner_bid > 0.0).collect();
+        let mut bid_candidates: Vec<&RoundTailObservation> = observations
+            .into_iter()
+            .filter(|o| o.winner_bid > 0.0)
+            .collect();
         bid_candidates.sort_by(|a, b| {
             a.winner_bid
                 .partial_cmp(&b.winner_bid)
@@ -4659,6 +4661,8 @@ async fn run_post_close_winner_hint_listener(
     }
 
     let hint_msg = MarketDataMsg::WinnerHint {
+        slug: slug.clone(),
+        hint_id: final_detect_unix_ms,
         side: first_side,
         source: first_source,
         ref_price: first_ref,
@@ -8489,6 +8493,8 @@ mod tests {
             distance_to_final_ms,
             detect_ms: 1_100,
             hint_msg: MarketDataMsg::WinnerHint {
+                slug: slug.to_string(),
+                hint_id: 1_100,
                 side: Side::Yes,
                 source: WinnerHintSource::Chainlink,
                 ref_price: 1.0,

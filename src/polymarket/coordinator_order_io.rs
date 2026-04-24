@@ -78,8 +78,8 @@ impl StrategyCoordinator {
         } else {
             self.cfg.tick_size.max(1e-9)
         };
-        let winner_ask_tradable = winner_ask > 0.0
-            && (winner_bid <= 0.0 || winner_ask > winner_bid + 0.5 * tick + 1e-9);
+        let winner_ask_tradable =
+            winner_ask > 0.0 && (winner_bid <= 0.0 || winner_ask > winner_bid + 0.5 * tick + 1e-9);
         if winner_ask_tradable {
             return;
         }
@@ -102,12 +102,20 @@ impl StrategyCoordinator {
             );
             return;
         }
-        let step = if tick <= 0.001 + 1e-12 { tick } else { tick * 0.1 };
-        let candidate = (winner_bid + step).min(ORACLE_LAG_MAKER_MAX_PRICE).max(step);
+        let step = if tick <= 0.001 + 1e-12 {
+            tick
+        } else {
+            tick * 0.1
+        };
+        let candidate = (winner_bid + step)
+            .min(ORACLE_LAG_MAKER_MAX_PRICE)
+            .max(step);
         if candidate <= current.price + 0.5 * tick {
             return;
         }
-        if let Some(prev_candidate) = self.oracle_lag_maker_followup_last_candidate_price[slot.index()] {
+        if let Some(prev_candidate) =
+            self.oracle_lag_maker_followup_last_candidate_price[slot.index()]
+        {
             let same_candidate = (candidate - prev_candidate).abs() <= 0.5 * tick + 1e-9;
             if same_candidate
                 && self.oracle_lag_maker_followup_last_ts.is_some_and(|prev| {
@@ -1292,6 +1300,7 @@ impl StrategyCoordinator {
                     self.oracle_lag_fak_last_dispatch = None;
                     self.oracle_lag_fak_shots_this_round = 0;
                     self.oracle_lag_tail_round_done = None;
+                    self.oracle_lag_fak_inflight_by_slug.clear();
                     self.oracle_lag_maker_followup_last_ts = None;
                     self.oracle_lag_maker_followup_last_candidate_price =
                         std::array::from_fn(|_| None);
@@ -1372,7 +1381,8 @@ impl StrategyCoordinator {
                     .oracle_lag_tail_round_done
                     .is_none_or(|prev| round_end_ts > prev)
                 {
-                    self.clear_oracle_lag_live_maker_orders("tail_new_round").await;
+                    self.clear_oracle_lag_live_maker_orders("tail_new_round")
+                        .await;
                     self.oracle_lag_maker_state_key = None;
                     self.oracle_lag_maker_followup_last_ts = None;
                     self.oracle_lag_maker_followup_last_candidate_price =
@@ -1481,7 +1491,8 @@ impl StrategyCoordinator {
                             .slot_target(opposite)
                             .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
                         if opposite_is_oracle_lag_maker {
-                            self.clear_slot_target(opposite, CancelReason::Reprice).await;
+                            self.clear_slot_target(opposite, CancelReason::Reprice)
+                                .await;
                         }
 
                         self.slot_place_or_reprice(
@@ -1500,6 +1511,8 @@ impl StrategyCoordinator {
                 }
             }
             MarketDataMsg::WinnerHint {
+                slug,
+                hint_id,
                 side,
                 source,
                 ref_price,
@@ -1514,6 +1527,15 @@ impl StrategyCoordinator {
                 open_is_exact,
                 ts,
             } => {
+                if let Some(local_slug) = self.oracle_lag_market_slug.as_deref() {
+                    if slug != local_slug {
+                        debug!(
+                            "⏭️ oracle_lag_winner_hint_skip | reason=slug_mismatch slug={} local_slug={} side={:?} source={:?}",
+                            slug, local_slug, side, source
+                        );
+                        return;
+                    }
+                }
                 let is_new_hint_round =
                     self.post_close_winner_final_detect_unix_ms != Some(final_detect_unix_ms);
                 let changed = self.post_close_winner_side != Some(side)
@@ -1535,7 +1557,9 @@ impl StrategyCoordinator {
                 self.post_close_hint_distance_to_final_ms = winner_distance_to_final_ms;
                 if changed {
                     info!(
-                        "🏁 post_close winner hint | side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={} new_hint_round={}",
+                        "🏁 post_close winner hint | slug={} hint_id={} side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={} new_hint_round={}",
+                        slug,
+                        hint_id,
                         side,
                         source,
                         open_is_exact,
@@ -1558,6 +1582,7 @@ impl StrategyCoordinator {
                                 .await;
                             self.oracle_lag_fak_last_dispatch = None;
                             self.oracle_lag_fak_shots_this_round = 0;
+                            self.oracle_lag_fak_inflight_by_slug.remove(&slug);
                             self.oracle_lag_maker_followup_last_ts = None;
                             self.oracle_lag_maker_followup_last_candidate_price =
                                 std::array::from_fn(|_| None);
@@ -1571,39 +1596,72 @@ impl StrategyCoordinator {
                             );
                             return;
                         }
+                        if self
+                            .oracle_lag_fak_inflight_by_slug
+                            .get(&slug)
+                            .is_some_and(|v| *v == hint_id)
+                        {
+                            info!(
+                                "⏭️ oracle_lag_winner_hint_skip | reason=inflight_same_hint slug={} hint_id={} side={:?} source={:?}",
+                                slug, hint_id, side, source
+                            );
+                            return;
+                        }
+                        if self
+                            .oracle_lag_fak_inflight_by_slug
+                            .get(&slug)
+                            .is_some_and(|v| *v != hint_id)
+                        {
+                            self.oracle_lag_fak_inflight_by_slug.remove(&slug);
+                        }
                         if !self.oracle_lag_is_selected {
                             info!(
-                                "⏭️ oracle_lag_cross_market_skip | side={:?} source={:?} round_end_ts={:?} — not selected by arbiter",
-                                side, source, self.oracle_lag_selected_round_end_ts
+                                "⏭️ oracle_lag_cross_market_skip | slug={} hint_id={} side={:?} source={:?} round_end_ts={:?} — not selected by arbiter",
+                                slug, hint_id, side, source, self.oracle_lag_selected_round_end_ts
                             );
                             return;
                         }
                         info!(
-                            "🧭 oracle_lag_order_mode | mode=winner_hint_immediate side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
-                            side, source, winner_book_source, winner_distance_to_final_ms
+                            "🧭 oracle_lag_order_mode | mode=winner_hint_immediate slug={} hint_id={} side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
+                            slug, hint_id, side, source, winner_book_source, winner_distance_to_final_ms
                         );
-                        let (
-                            winner_bid,
-                            winner_ask,
-                            winner_ask_tradable,
-                            winner_spread_ticks,
-                            winner_book_quality_source,
-                        ) = self.oracle_lag_winner_book_quality(
-                            side,
-                            hint_winner_bid,
-                            hint_winner_ask_raw,
-                            winner_book_source,
-                            winner_distance_to_final_ms,
-                        );
+                        let winner_bid = hint_winner_bid.max(0.0);
+                        let winner_ask = hint_winner_ask_raw.max(0.0);
+                        let tick = if winner_bid > ORACLE_LAG_MICRO_TICK_BID_BOUNDARY
+                            || winner_ask > 0.96
+                            || (winner_bid > 0.0 && winner_bid < 0.04)
+                            || (winner_ask > 0.0 && winner_ask < 0.04)
+                        {
+                            0.001
+                        } else {
+                            self.cfg.tick_size.max(1e-9)
+                        };
+                        let winner_spread_ticks = if winner_bid > 0.0 && winner_ask > 0.0 {
+                            (winner_ask - winner_bid) / tick
+                        } else {
+                            0.0
+                        };
+                        let winner_ask_tradable = winner_ask > 0.0
+                            && (winner_bid <= 0.0 || winner_ask > winner_bid + 0.5 * tick + 1e-9);
+                        let winner_book_quality_source = match winner_book_source {
+                            "ws_partial" => "hint_ws_partial_only",
+                            "clob_rest" => "hint_clob_rest_only",
+                            "none" => "hint_none",
+                            _ => "hint_only",
+                        };
+                        let has_real_hint_source = winner_book_source != "none";
                         if winner_ask_tradable
+                            && has_real_hint_source
                             && winner_ask > 0.0
                             && winner_ask <= ORACLE_LAG_NO_TAKER_ABOVE_PRICE + 1e-9
                         {
-                            let size =
-                                self.oracle_lag_effective_order_size(ORACLE_LAG_NO_TAKER_ABOVE_PRICE);
+                            let size = self
+                                .oracle_lag_effective_order_size(ORACLE_LAG_NO_TAKER_ABOVE_PRICE);
                             if size >= 0.01 {
                                 info!(
-                                    "⚡ oracle_lag_winner_hint_fire | side={:?} winner_bid={:.4} winner_ask={:.4} winner_spread_ticks={:.2} quality_source={} limit_price={:.4} size={:.2}",
+                                    "⚡ oracle_lag_winner_hint_fire | slug={} hint_id={} side={:?} winner_bid={:.4} winner_ask={:.4} winner_spread_ticks={:.2} quality_source={} limit_price={:.4} size={:.2}",
+                                    slug,
+                                    hint_id,
                                     side,
                                     winner_bid,
                                     winner_ask,
@@ -1623,9 +1681,13 @@ impl StrategyCoordinator {
                                 self.oracle_lag_fak_last_dispatch = Some(Instant::now());
                                 self.oracle_lag_fak_shots_this_round =
                                     self.oracle_lag_fak_shots_this_round.saturating_add(1);
+                                self.oracle_lag_fak_inflight_by_slug
+                                    .insert(slug.clone(), hint_id);
                             } else {
                                 info!(
-                                    "⏭️ oracle_lag_winner_hint_skip | side={:?} reason=size_below_lot_floor winner_bid={:.4} winner_ask={:.4} quality_source={} size={:.4}",
+                                    "⏭️ oracle_lag_winner_hint_skip | slug={} hint_id={} side={:?} reason=size_below_lot_floor winner_bid={:.4} winner_ask={:.4} quality_source={} size={:.4}",
+                                    slug,
+                                    hint_id,
                                     side,
                                     winner_bid,
                                     winner_ask,
@@ -1635,7 +1697,9 @@ impl StrategyCoordinator {
                             }
                         } else {
                             info!(
-                                "⏭️ oracle_lag_winner_hint_skip | side={:?} reason=missing_or_untradable_winner_ask winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4}",
+                                "⏭️ oracle_lag_winner_hint_skip | slug={} hint_id={} side={:?} reason=missing_or_untradable_winner_ask winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4}",
+                                slug,
+                                hint_id,
                                 side,
                                 winner_bid,
                                 winner_ask,
