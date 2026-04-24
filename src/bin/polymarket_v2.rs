@@ -2961,6 +2961,8 @@ fn parse_chainlink_multi_symbol_ticks(text: &str) -> Vec<(String, f64, u64)> {
     out
 }
 
+const CHAINLINK_HUB_TICK_STALL_RECONNECT_MS: u64 = 2_000;
+
 #[derive(Clone)]
 struct ChainlinkHub {
     senders: Arc<HashMap<String, broadcast::Sender<(f64, u64)>>>,
@@ -3014,13 +3016,31 @@ impl ChainlinkHub {
                     {
                         continue;
                     }
+                    let mut last_tick_at = Instant::now();
+                    let mut last_tick_ts_ms: Option<u64> = None;
                     loop {
                         let next =
                             tokio::time::timeout(Duration::from_millis(1500), read.next()).await;
                         let msg = match next {
                             Ok(Some(Ok(m))) => m,
                             Ok(Some(Err(_))) | Ok(None) => break,
-                            Err(_) => continue,
+                            Err(_) => {
+                                let idle = last_tick_at.elapsed();
+                                if idle.as_millis() >= CHAINLINK_HUB_TICK_STALL_RECONNECT_MS as u128
+                                {
+                                    warn!(
+                                        "⚠️ chainlink_hub_tick_stall_reconnect | symbol={} idle_ms={} msgs={} ticks={} delivered={} last_tick_ts_ms={:?}",
+                                        sym,
+                                        idle.as_millis(),
+                                        stat_msgs,
+                                        stat_ticks,
+                                        stat_delivered,
+                                        last_tick_ts_ms,
+                                    );
+                                    break;
+                                }
+                                continue;
+                            }
                         };
                         let text = match msg {
                             Message::Text(t) => t.to_string(),
@@ -3040,13 +3060,50 @@ impl ChainlinkHub {
                                 );
                                 stat_last_log = Instant::now();
                             }
+                            let idle = last_tick_at.elapsed();
+                            if idle.as_millis() >= CHAINLINK_HUB_TICK_STALL_RECONNECT_MS as u128 {
+                                warn!(
+                                    "⚠️ chainlink_hub_no_tick_payload_stall | symbol={} idle_ms={} msgs={} ticks={} delivered={} last_tick_ts_ms={:?}",
+                                    sym,
+                                    idle.as_millis(),
+                                    stat_msgs,
+                                    stat_ticks,
+                                    stat_delivered,
+                                    last_tick_ts_ms,
+                                );
+                                break;
+                            }
                             continue;
                         }
                         stat_msgs = stat_msgs.saturating_add(1);
-                        stat_ticks = stat_ticks.saturating_add(ticks.len() as u64);
-                        for (_sym, price, ts_ms) in ticks {
+                        let mut matched_ticks: u64 = 0;
+                        for (tick_sym, price, ts_ms) in ticks {
+                            if normalize_chainlink_symbol(&tick_sym) != sym {
+                                continue;
+                            }
                             let _ = tx.send((price, ts_ms));
                             stat_delivered = stat_delivered.saturating_add(1);
+                            matched_ticks = matched_ticks.saturating_add(1);
+                            last_tick_at = Instant::now();
+                            last_tick_ts_ms = Some(ts_ms);
+                        }
+                        stat_ticks = stat_ticks.saturating_add(matched_ticks);
+                        if matched_ticks == 0 {
+                            let idle = last_tick_at.elapsed();
+                            if idle.as_millis()
+                                >= CHAINLINK_HUB_TICK_STALL_RECONNECT_MS as u128
+                            {
+                                warn!(
+                                    "⚠️ chainlink_hub_symbol_mismatch_stall | symbol={} idle_ms={} msgs={} ticks={} delivered={} last_tick_ts_ms={:?}",
+                                    sym,
+                                    idle.as_millis(),
+                                    stat_msgs,
+                                    stat_ticks,
+                                    stat_delivered,
+                                    last_tick_ts_ms,
+                                );
+                                break;
+                            }
                         }
                         if stat_last_log.elapsed() >= Duration::from_secs(30) {
                             info!(
@@ -5973,52 +6030,26 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
         None
     };
 
-    // Spawn cross-market arbiter when running in OracleLagSniping inproc mode.
-    let arbiter_sender: Option<mpsc::Sender<ArbiterObservation>> = if coord_cfg
-        .strategy
-        .is_oracle_lag_sniping()
-        && coord_cfg.oracle_lag_sniping.cross_market_arbiter_enabled
-    {
-        let (arb_tx, arb_rx) = mpsc::channel::<ArbiterObservation>(64);
-        let window_ms = coord_cfg.oracle_lag_sniping.arbiter_collection_window_ms;
-        let max_age_ms = coord_cfg.oracle_lag_sniping.arbiter_book_max_age_ms;
-        tokio::spawn(run_cross_market_hint_arbiter(
-            arb_rx,
-            prefixes.len(),
-            window_ms,
-            max_age_ms,
-        ));
-        info!(
-                "🏅 cross_market_hint_arbiter spawned | expected_markets={} collection_window_ms={} book_max_age_ms={}",
-                prefixes.len(), window_ms, max_age_ms
+    // Oracle-lag execution now runs per-market directly on WinnerHint hot path.
+    // Cross-market arbiter and round-tail maker fallback are intentionally disabled.
+    let arbiter_sender: Option<mpsc::Sender<ArbiterObservation>> =
+        if coord_cfg.strategy.is_oracle_lag_sniping()
+            && coord_cfg.oracle_lag_sniping.cross_market_arbiter_enabled
+        {
+            info!(
+                "⏭️ cross_market_hint_arbiter disabled for oracle_lag_sniping | requested=true"
             );
-        Some(arb_tx)
-    } else {
-        None
-    };
-
-    // Spawn round-tail coordinator for oracle_lag_sniping multi-market mode.
-    // It dispatches:
-    // - per-final immediate Fak99 attempts, then
-    // - one round-tail maker fallback after all finals (or timeout from first final).
+            None
+        } else {
+            None
+        };
     let round_tail_sender: Option<mpsc::Sender<RoundTailObservation>> =
         if coord_cfg.strategy.is_oracle_lag_sniping() && prefixes.len() > 1 {
-            let (tail_tx, tail_rx) = mpsc::channel::<RoundTailObservation>(128);
-            let tail_timeout_ms = coord_cfg
-                .oracle_lag_sniping
-                .arbiter_collection_window_ms
-                .max(1);
-            tokio::spawn(run_oracle_lag_round_tail_coordinator(
-                tail_rx,
-                prefixes.len(),
-                tail_timeout_ms,
-            ));
             info!(
-                "🎯 oracle_lag_round_tail_coordinator spawned | expected_markets={} timeout_ms={}",
-                prefixes.len(),
-                tail_timeout_ms
+                "⏭️ oracle_lag_round_tail_coordinator disabled for oracle_lag_sniping | markets={}",
+                prefixes.len()
             );
-            Some(tail_tx)
+            None
         } else {
             None
         };
