@@ -896,6 +896,10 @@ struct Stats {
     pair_arb_opposite_slot_blocked: u64,
     pair_arb_stale_target_dropped: u64,
     pair_arb_state_forced_republish: u64,
+    completion_first_seed_emitted: u64,
+    completion_first_repair_quotes: u64,
+    completion_first_skip_score_gate: u64,
+    completion_first_skip_cooldown: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -905,6 +909,14 @@ struct PairArbGateLogSnapshot {
     keep_candidates: u64,
     skip_inventory_gate: u64,
     skip_simulate_buy_none: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct CompletionFirstGateLogSnapshot {
+    seed_emitted: u64,
+    repair_quotes: u64,
+    skip_score_gate: u64,
+    skip_cooldown: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1190,6 +1202,8 @@ pub struct StrategyCoordinator {
     last_metrics_log_ts: Instant,
     pair_arb_gate_last_log_ts: Instant,
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
+    completion_first_gate_last_log_ts: Instant,
+    completion_first_gate_last_snapshot: CompletionFirstGateLogSnapshot,
     post_close_winner_side: Option<Side>,
     post_close_winner_source: Option<WinnerHintSource>,
     post_close_winner_open_is_exact: Option<bool>,
@@ -1513,6 +1527,8 @@ impl StrategyCoordinator {
             last_metrics_log_ts,
             pair_arb_gate_last_log_ts: now,
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
+            completion_first_gate_last_log_ts: now,
+            completion_first_gate_last_snapshot: CompletionFirstGateLogSnapshot::default(),
             post_close_winner_side: None,
             post_close_winner_source: None,
             post_close_winner_open_is_exact: None,
@@ -1785,6 +1801,15 @@ impl StrategyCoordinator {
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
             self.stats.skipped_debounce, self.stats.skipped_backoff, self.stats.skipped_empty_book, self.stats.skipped_inv_limit,
         );
+        if self.cfg.strategy == StrategyKind::CompletionFirst {
+            info!(
+                "🎯 CompletionFirstSummary | seed_emitted={} repair_quotes={} skip(score/cooldown)={}/{}",
+                self.stats.completion_first_seed_emitted,
+                self.stats.completion_first_repair_quotes,
+                self.stats.completion_first_skip_score_gate,
+                self.stats.completion_first_skip_cooldown,
+            );
+        }
         self.emit_obs_snapshot();
         self.emit_live_observability_tags();
     }
@@ -1857,6 +1882,22 @@ impl StrategyCoordinator {
             .stats
             .pair_arb_skip_simulate_buy_none
             .saturating_add(quotes.diagnostics.pair_arb_skip_simulate_buy_none as u64);
+        self.stats.completion_first_seed_emitted = self
+            .stats
+            .completion_first_seed_emitted
+            .saturating_add(quotes.diagnostics.completion_first_seed_emitted as u64);
+        self.stats.completion_first_repair_quotes = self
+            .stats
+            .completion_first_repair_quotes
+            .saturating_add(quotes.diagnostics.completion_first_repair_quotes as u64);
+        self.stats.completion_first_skip_score_gate = self
+            .stats
+            .completion_first_skip_score_gate
+            .saturating_add(quotes.diagnostics.completion_first_skip_score_gate as u64);
+        self.stats.completion_first_skip_cooldown = self
+            .stats
+            .completion_first_skip_cooldown
+            .saturating_add(quotes.diagnostics.completion_first_skip_cooldown as u64);
     }
 
     pub(super) fn execution_toxic_block_applies(&self) -> bool {

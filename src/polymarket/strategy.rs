@@ -60,6 +60,10 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_keep_candidates: u8,
     pub(crate) pair_arb_skip_inventory_gate: u8,
     pub(crate) pair_arb_skip_simulate_buy_none: u8,
+    pub(crate) completion_first_seed_emitted: u8,
+    pub(crate) completion_first_repair_quotes: u8,
+    pub(crate) completion_first_skip_score_gate: u8,
+    pub(crate) completion_first_skip_cooldown: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -133,6 +137,34 @@ impl StrategyQuotes {
         self.diagnostics.pair_arb_skip_simulate_buy_none = self
             .diagnostics
             .pair_arb_skip_simulate_buy_none
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_completion_first_seed_emitted(&mut self) {
+        self.diagnostics.completion_first_seed_emitted = self
+            .diagnostics
+            .completion_first_seed_emitted
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_completion_first_repair_quote(&mut self) {
+        self.diagnostics.completion_first_repair_quotes = self
+            .diagnostics
+            .completion_first_repair_quotes
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_completion_first_skip_score_gate(&mut self) {
+        self.diagnostics.completion_first_skip_score_gate = self
+            .diagnostics
+            .completion_first_skip_score_gate
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_completion_first_skip_cooldown(&mut self) {
+        self.diagnostics.completion_first_skip_cooldown = self
+            .diagnostics
+            .completion_first_skip_cooldown
             .saturating_add(1);
     }
 }

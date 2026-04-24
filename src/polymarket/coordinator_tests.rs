@@ -5109,6 +5109,7 @@ fn test_completion_first_requires_live_signal_for_new_seed() {
 
     assert!(quotes.buy_for(Side::Yes).is_none());
     assert!(quotes.buy_for(Side::No).is_none());
+    assert_eq!(quotes.diagnostics.completion_first_skip_score_gate, 1);
 }
 
 #[test]
@@ -5138,6 +5139,7 @@ fn test_completion_first_quotes_both_sides_when_signal_is_live() {
 
     assert!(quotes.buy_for(Side::Yes).is_some());
     assert!(quotes.buy_for(Side::No).is_some());
+    assert_eq!(quotes.diagnostics.completion_first_seed_emitted, 1);
 }
 
 #[test]
@@ -5172,6 +5174,7 @@ fn test_completion_first_switches_to_opposite_only_completion_mode() {
 
     assert!(quotes.buy_for(Side::Yes).is_none());
     assert!(quotes.buy_for(Side::No).is_some());
+    assert_eq!(quotes.diagnostics.completion_first_repair_quotes, 1);
 }
 
 #[test]
@@ -5239,6 +5242,7 @@ fn test_completion_first_respects_reentry_cooldown() {
 
     assert!(quotes.buy_for(Side::Yes).is_none());
     assert!(quotes.buy_for(Side::No).is_none());
+    assert_eq!(quotes.diagnostics.completion_first_skip_cooldown, 1);
 }
 
 #[tokio::test]

@@ -29,12 +29,16 @@ impl QuoteStrategy for CompletionFirstStrategy {
         }
 
         if coordinator.completion_first_reentry_cooldown_active(now) {
-            return StrategyQuotes::default();
+            let mut quotes = StrategyQuotes::default();
+            quotes.note_completion_first_skip_cooldown();
+            return quotes;
         }
 
         let score = coordinator.completion_first_score(input.book, input.ofi, now);
         if score + 1e-9 < coordinator.cfg().completion_first.score_threshold {
-            return StrategyQuotes::default();
+            let mut quotes = StrategyQuotes::default();
+            quotes.note_completion_first_skip_score_gate();
+            return quotes;
         }
 
         if inv.net_diff.abs() <= f64::EPSILON {
@@ -96,6 +100,9 @@ impl CompletionFirstStrategy {
                 size: seed_size,
                 reason: BidReason::Provide,
             });
+        }
+        if quotes.buy_for(Side::Yes).is_some() || quotes.buy_for(Side::No).is_some() {
+            quotes.note_completion_first_seed_emitted();
         }
         quotes
     }
@@ -166,6 +173,7 @@ impl CompletionFirstStrategy {
             size: repair_size,
             reason: BidReason::Provide,
         });
+        quotes.note_completion_first_repair_quote();
         quotes
     }
 

@@ -7,6 +7,21 @@ use crate::polymarket::strategy::completion_first::CompletionFirstStrategy;
 
 const FLOAT_INV_EPS: f64 = PAIR_ARB_NET_EPS;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CompletionFirstScoreBreakdown {
+    pub(crate) score: f64,
+    pub(crate) both_live: bool,
+    pub(crate) two_sided_recent: bool,
+    pub(crate) alternating_recent: bool,
+    pub(crate) spread_ok: bool,
+    pub(crate) book_centered: bool,
+    pub(crate) healthy_flow: bool,
+    pub(crate) balanced_heat: bool,
+    pub(crate) early_or_tail_window: bool,
+    pub(crate) toxic_penalty: bool,
+    pub(crate) any_side_stale: bool,
+}
+
 impl StrategyCoordinator {
     pub(super) fn observe_completion_first_inventory_transition(
         &mut self,
@@ -179,12 +194,12 @@ impl StrategyCoordinator {
         self.completion_first_state.last_taker_repair_at = Some(now);
     }
 
-    pub(crate) fn completion_first_score(
+    pub(crate) fn completion_first_score_breakdown(
         &self,
         book: &Book,
         ofi: Option<&OfiSnapshot>,
         now: Instant,
-    ) -> f64 {
+    ) -> CompletionFirstScoreBreakdown {
         let cfg = &self.cfg.completion_first;
         let tick = self.cfg.tick_size.max(1e-9);
         let trade_window = Duration::from_secs(cfg.trade_recency_secs.max(1));
@@ -285,6 +300,27 @@ impl StrategyCoordinator {
             score -= 0.20;
         }
 
-        score.clamp(0.0, 1.0)
+        CompletionFirstScoreBreakdown {
+            score: score.clamp(0.0, 1.0),
+            both_live,
+            two_sided_recent,
+            alternating_recent,
+            spread_ok,
+            book_centered,
+            healthy_flow,
+            balanced_heat,
+            early_or_tail_window: early_window || tail_window,
+            toxic_penalty,
+            any_side_stale,
+        }
+    }
+
+    pub(crate) fn completion_first_score(
+        &self,
+        book: &Book,
+        ofi: Option<&OfiSnapshot>,
+        now: Instant,
+    ) -> f64 {
+        self.completion_first_score_breakdown(book, ofi, now).score
     }
 }
