@@ -1157,19 +1157,64 @@ impl StrategyCoordinator {
             && direction == TradeDirection::Buy
             && self.post_close_winner_side == Some(side)
         {
-            let winner_bid = match side {
-                Side::Yes => self.book.yes_bid,
-                Side::No => self.book.no_bid,
-            };
+            let (winner_bid, winner_ask, winner_ask_tradable, winner_spread_ticks, quality_source) =
+                self.oracle_lag_winner_book_quality(
+                    side,
+                    self.post_close_hint_winner_bid,
+                    self.post_close_hint_winner_ask_raw,
+                    self.post_close_hint_book_source,
+                    self.post_close_hint_distance_to_final_ms,
+                );
+            // Submit-time must bind to current live book only.
+            // Hint-side evidence is useful for deciding whether to enter hot path,
+            // but execution safety requires the latest in-memory winner-side book.
+            let live_winner_book_ready = quality_source == "live_book";
             if winner_bid > ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
                 warn!(
-                    "🚫 oracle_lag_sniping taker blocked | side={:?} winner_bid={:.4} threshold={:.4} purpose={:?}",
+                    "🚫 oracle_lag_sniping taker blocked | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} purpose={:?}",
                     side,
                     winner_bid,
+                    winner_ask,
+                    winner_ask_tradable,
+                    winner_spread_ticks,
+                    quality_source,
                     ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
                     purpose
                 );
                 return;
+            }
+            if !winner_ask_tradable
+                || !live_winner_book_ready
+                || winner_ask <= 0.0
+                || winner_ask > ORACLE_LAG_NO_TAKER_ABOVE_PRICE + 1e-9
+            {
+                info!(
+                    "⏭️ oracle_lag_taker_submit_skip | side={:?} reason=submit_revalidate_failed winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} live_winner_book_ready={} threshold={:.4} purpose={:?}",
+                    side,
+                    winner_bid,
+                    winner_ask,
+                    winner_ask_tradable,
+                    winner_spread_ticks,
+                    quality_source,
+                    live_winner_book_ready,
+                    ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
+                    purpose
+                );
+                return;
+            }
+            if let Some(limit) = limit_price {
+                if limit + 1e-9 < winner_ask {
+                    info!(
+                        "⏭️ oracle_lag_taker_submit_skip | side={:?} reason=limit_below_live_ask winner_bid={:.4} winner_ask={:.4} limit={:.4} quality_source={} purpose={:?}",
+                        side,
+                        winner_bid,
+                        winner_ask,
+                        limit,
+                        quality_source,
+                        purpose
+                    );
+                    return;
+                }
             }
         }
 
