@@ -1351,15 +1351,6 @@ impl StrategyCoordinator {
                 open_is_exact,
                 ts,
             } => {
-                if let Some(local_slug) = self.oracle_lag_market_slug.as_deref() {
-                    if slug != local_slug {
-                        debug!(
-                            "⏭️ oracle_lag_winner_hint_skip | reason=slug_mismatch slug={} local_slug={} side={:?} source={:?}",
-                            slug, local_slug, side, source
-                        );
-                        return;
-                    }
-                }
                 let is_new_hint_round =
                     self.post_close_winner_final_detect_unix_ms != Some(final_detect_unix_ms);
                 let changed = self.post_close_winner_side != Some(side)

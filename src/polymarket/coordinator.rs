@@ -1099,8 +1099,6 @@ pub struct StrategyCoordinator {
     /// Per-round counter of FAK dispatches (first-shot + re-entries).
     /// Naturally resets because each round spawns a fresh coordinator.
     oracle_lag_fak_shots_this_round: u8,
-    /// Optional local market slug for oracle-lag winner-hint filtering.
-    oracle_lag_market_slug: Option<String>,
     /// Per-market per-hint in-flight lock to suppress duplicate WinnerHint-triggered FAK fires.
     /// key=slug, value=hint_id
     oracle_lag_fak_inflight_by_slug: HashMap<String, u64>,
@@ -1397,7 +1395,6 @@ impl StrategyCoordinator {
             oracle_lag_first_submit_logged: false,
             oracle_lag_fak_last_dispatch: None,
             oracle_lag_fak_shots_this_round: 0,
-            oracle_lag_market_slug: std::env::var("POLYMARKET_MARKET_SLUG").ok(),
             oracle_lag_fak_inflight_by_slug: HashMap::new(),
             oracle_lag_selected_round_end_ts: None,
             oracle_lag_is_selected: true,
