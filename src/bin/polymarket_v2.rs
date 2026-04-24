@@ -3860,6 +3860,100 @@ fn post_close_round_observation_from_latest_view(
     (PostCloseBookSource::None, 0.0, 0.0, 0, u64::MAX)
 }
 
+const ORACLE_LAG_WINNER_ASK_WINDOW_MS: u64 = 2_000;
+const ORACLE_LAG_WINNER_ASK_WINDOW_SAMPLE_MS: u64 = 50;
+
+async fn log_post_close_winner_ask_window_stats(
+    shared_view: Arc<Mutex<PostCloseBookEvidenceTape>>,
+    slug: &str,
+    winner_side: Side,
+    final_detect_ms: u64,
+) {
+    let deadline_ms = final_detect_ms.saturating_add(ORACLE_LAG_WINNER_ASK_WINDOW_MS);
+    let mut samples: u64 = 0;
+    let mut quote_samples: u64 = 0;
+    let mut post_final_quote_samples: u64 = 0;
+    let mut tradable_ask_samples: u64 = 0;
+    let mut post_final_tradable_ask_samples: u64 = 0;
+    let mut first_post_final_tradable_after_ms: Option<u64> = None;
+    let mut best_post_final_tradable_ask: Option<(f64, PostCloseBookSource, u64)> = None;
+    let mut last_source = PostCloseBookSource::None;
+    let mut last_bid = 0.0;
+    let mut last_ask = 0.0;
+    let mut last_recv_ms = 0u64;
+
+    while unix_now_millis_u64() <= deadline_ms {
+        samples = samples.saturating_add(1);
+        let tape = shared_view.lock().map(|g| *g).unwrap_or_default();
+        let (source, bid, ask, recv_ms, _dist_ms) =
+            post_close_round_observation_from_latest_view(tape, winner_side, final_detect_ms);
+        if source != PostCloseBookSource::None {
+            quote_samples = quote_samples.saturating_add(1);
+            if recv_ms >= final_detect_ms {
+                post_final_quote_samples = post_final_quote_samples.saturating_add(1);
+            }
+        }
+        last_source = source;
+        last_bid = bid;
+        last_ask = ask;
+        last_recv_ms = recv_ms;
+        if let Some(eff_ask) = post_close_effective_ask_opt(bid, ask) {
+            tradable_ask_samples = tradable_ask_samples.saturating_add(1);
+            if recv_ms >= final_detect_ms {
+                post_final_tradable_ask_samples = post_final_tradable_ask_samples.saturating_add(1);
+                let after_ms = recv_ms.saturating_sub(final_detect_ms);
+                if first_post_final_tradable_after_ms.is_none() {
+                    first_post_final_tradable_after_ms = Some(after_ms);
+                }
+                let should_replace = best_post_final_tradable_ask
+                    .map(|(best, _, _)| eff_ask < best - 1e-9)
+                    .unwrap_or(true);
+                if should_replace {
+                    best_post_final_tradable_ask = Some((eff_ask, source, after_ms));
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(
+            ORACLE_LAG_WINNER_ASK_WINDOW_SAMPLE_MS,
+        ))
+        .await;
+    }
+
+    let (best_ask, best_source, best_after_ms) = best_post_final_tradable_ask
+        .map(|(ask, src, after)| {
+            (
+                format!("{ask:.4}"),
+                src.as_str().to_string(),
+                after.to_string(),
+            )
+        })
+        .unwrap_or_else(|| ("none".to_string(), "none".to_string(), "none".to_string()));
+
+    info!(
+        "📈 oracle_lag_winner_ask_window | slug={} side={:?} window_ms={} sample_ms={} samples={} quote_samples={} post_final_quote_samples={} tradable_ask_samples={} post_final_tradable_ask_samples={} first_post_final_tradable_after_ms={} best_post_final_tradable_ask={} best_post_final_source={} best_post_final_after_ms={} last_source={} last_bid={:.4} last_ask={:.4} last_recv_ms={} final_detect_ms={}",
+        slug,
+        winner_side,
+        ORACLE_LAG_WINNER_ASK_WINDOW_MS,
+        ORACLE_LAG_WINNER_ASK_WINDOW_SAMPLE_MS,
+        samples,
+        quote_samples,
+        post_final_quote_samples,
+        tradable_ask_samples,
+        post_final_tradable_ask_samples,
+        first_post_final_tradable_after_ms
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "none".to_string()),
+        best_ask,
+        best_source,
+        best_after_ms,
+        last_source.as_str(),
+        last_bid,
+        last_ask,
+        last_recv_ms,
+        final_detect_ms,
+    );
+}
+
 async fn run_post_close_observation_plane(
     shared_view: Arc<Mutex<PostCloseBookEvidenceTape>>,
     mut post_close_book_rx: mpsc::Receiver<PostCloseSideBookUpdate>,
@@ -4896,6 +4990,15 @@ async fn run_post_close_winner_hint_listener(
             }
         }
     }
+    // Post-final marketability probe (0~2s window) for production diagnostics.
+    // This is out of trading hot-path: WinnerHint has already been dispatched.
+    log_post_close_winner_ask_window_stats(
+        Arc::clone(&shared_execution_view),
+        &slug,
+        first_side,
+        final_detect_unix_ms,
+    )
+    .await;
     observation_task.abort();
 }
 

@@ -1165,10 +1165,11 @@ impl StrategyCoordinator {
                     self.post_close_hint_book_source,
                     self.post_close_hint_distance_to_final_ms,
                 );
-            // Submit-time must bind to current live book only.
-            // Hint-side evidence is useful for deciding whether to enter hot path,
-            // but execution safety requires the latest in-memory winner-side book.
-            let live_winner_book_ready = quality_source == "live_book";
+            // Submit-time revalidation must share the same quality semantics as hint fire.
+            // Otherwise we may fire on hint quality and immediately fail submit on
+            // a stricter live-only rule (fire/submit semantic mismatch).
+            let submit_quality_eligible =
+                quality_source != "no_book" && quality_source != "hint_stale_ignored";
             if winner_bid > ORACLE_LAG_NO_TAKER_ABOVE_PRICE {
                 warn!(
                     "🚫 oracle_lag_sniping taker blocked | side={:?} winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} threshold={:.4} purpose={:?}",
@@ -1184,19 +1185,19 @@ impl StrategyCoordinator {
                 return;
             }
             if !winner_ask_tradable
-                || !live_winner_book_ready
+                || !submit_quality_eligible
                 || winner_ask <= 0.0
                 || winner_ask > ORACLE_LAG_NO_TAKER_ABOVE_PRICE + 1e-9
             {
                 info!(
-                    "⏭️ oracle_lag_taker_submit_skip | side={:?} reason=submit_revalidate_failed winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} live_winner_book_ready={} threshold={:.4} purpose={:?}",
+                    "⏭️ oracle_lag_taker_submit_skip | side={:?} reason=submit_revalidate_failed winner_bid={:.4} winner_ask={:.4} winner_ask_tradable={} winner_spread_ticks={:.2} quality_source={} submit_quality_eligible={} threshold={:.4} purpose={:?}",
                     side,
                     winner_bid,
                     winner_ask,
                     winner_ask_tradable,
                     winner_spread_ticks,
                     quality_source,
-                    live_winner_book_ready,
+                    submit_quality_eligible,
                     ORACLE_LAG_NO_TAKER_ABOVE_PRICE,
                     purpose
                 );
@@ -1479,33 +1480,20 @@ impl StrategyCoordinator {
                         "🧭 oracle_lag_order_mode | mode=winner_hint_immediate slug={} hint_id={} side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
                         slug, hint_id, side, source, winner_book_source, winner_distance_to_final_ms
                     );
-                    let winner_bid = hint_winner_bid.max(0.0);
-                    let winner_ask = hint_winner_ask_raw.max(0.0);
-                    let tick = if winner_bid > ORACLE_LAG_MICRO_TICK_BID_BOUNDARY
-                        || winner_ask > 0.96
-                        || (winner_bid > 0.0 && winner_bid < 0.04)
-                        || (winner_ask > 0.0 && winner_ask < 0.04)
-                    {
-                        0.001
-                    } else {
-                        self.cfg.tick_size.max(1e-9)
-                    };
-                    let winner_spread_ticks = if winner_bid > 0.0 && winner_ask > 0.0 {
-                        (winner_ask - winner_bid) / tick
-                    } else {
-                        0.0
-                    };
-                    let winner_ask_tradable = winner_ask > 0.0
-                        && (winner_bid <= 0.0 || winner_ask > winner_bid + 0.5 * tick + 1e-9);
-                    let winner_book_quality_source = match winner_book_source {
-                        "ws_partial" => "hint_ws_partial_only",
-                        "clob_rest" => "hint_clob_rest_only",
-                        "none" => "hint_none",
-                        _ => "hint_only",
-                    };
-                    let has_real_hint_source = winner_book_source != "none";
+                    let (
+                        winner_bid,
+                        winner_ask,
+                        winner_ask_tradable,
+                        winner_spread_ticks,
+                        winner_book_quality_source,
+                    ) = self.oracle_lag_winner_book_quality(
+                        side,
+                        hint_winner_bid,
+                        hint_winner_ask_raw,
+                        winner_book_source,
+                        winner_distance_to_final_ms,
+                    );
                     if winner_ask_tradable
-                        && has_real_hint_source
                         && winner_ask > 0.0
                         && winner_ask <= ORACLE_LAG_NO_TAKER_ABOVE_PRICE + 1e-9
                     {
