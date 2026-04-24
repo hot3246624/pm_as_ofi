@@ -1355,6 +1355,7 @@ pub(crate) struct CompletionFirstState {
     pub(crate) last_flattened_at: Option<Instant>,
     pub(crate) last_merge_at: Option<Instant>,
     pub(crate) last_seed_at: Option<Instant>,
+    pub(crate) last_taker_repair_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2656,7 +2657,9 @@ impl StrategyCoordinator {
         );
         self.execute_quotes(
             &working_inv,
+            &metrics,
             &ub,
+            Some(&ofi),
             quotes,
             yes_stale_raw,
             no_stale_raw,

@@ -19,7 +19,7 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 | 策略 | 定位 | 状态 |
 | --- | --- | --- |
 | `pair_arb` | pair cost + A-S 风格双边买入策略 | 推荐（当前验证主线） |
-| `completion_first` | completion probability + opposite-only repair + cooldown | research / canary |
+| `completion_first` | completion probability + timeout taker repair + cooldown | research / canary |
 | `glft_mm` | 真双边、slot-keyed、外锚驱动 | challenger |
 | `gabagool_grid` | buy-only utility 基线 | 可用 |
 | `gabagool_corridor` | `gabagool_grid` 的 corridor 变体 | research |

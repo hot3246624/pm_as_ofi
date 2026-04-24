@@ -142,8 +142,9 @@ Polymarket 的补腿概率，不主要来自“方向判断”，而主要来自
 
 - 取消未成交 same-side live orders
 - 停止新一轮 seed
-- 只允许 opposite completion 或保守 maker repair
-- 若启用救援路径，可在更长 TTL 后允许受限 `FAK`，但默认关闭
+- TTL 内只允许 opposite completion maker repair
+- TTL 超时后升级为价格受限的 opposite-side `FAK` repair
+- `FAK` 价格上限仍受动态 pair band 约束，不做无上限市价追单
 
 ## 5. Completion Score
 
@@ -262,7 +263,7 @@ NO 首腿成交时对称处理。
 - `post_merge_cooldown_secs`
 - `max_unmatched_notional_usdc`
 - `max_same_side_adds_before_completion`
-- `residual_repair_ttl_secs`
+- `hedge_debounce_ms`
 
 推荐初始值：
 
@@ -273,7 +274,7 @@ completion_ttl_secs             = 30
 post_merge_cooldown_secs        = 10
 max_unmatched_notional_usdc     = 35
 max_same_side_adds_before_completion = 0
-residual_repair_ttl_secs        = 45
+hedge_debounce_ms               = 100
 ```
 
 ## 9. 接入现有系统的实现建议

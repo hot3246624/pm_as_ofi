@@ -107,7 +107,8 @@
 - 运行语义：
   - flat 时只有在 completion score 过阈值后才双边 seed；
   - 首腿成交后切到 `opposite-only repair`，不再继续同侧摊低成本；
-  - residual 超过 TTL 后允许更激进的 maker repair；
+  - residual 超过 TTL 后升级为价格受限的 opposite-side `FAK` repair；
+  - `FAK` 上限价仍受动态 pair band 约束，不做无上限追单；
   - 配对完成或 merge 后进入短 cooldown，避免瞬时连续 re-entry。
 - 详细设计与自检见：
   - [STRATEGY_COMPLETION_FIRST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/STRATEGY_COMPLETION_FIRST_ZH.md)

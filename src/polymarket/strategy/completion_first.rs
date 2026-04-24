@@ -169,7 +169,7 @@ impl CompletionFirstStrategy {
         quotes
     }
 
-    fn dynamic_pair_target(
+    pub(crate) fn dynamic_pair_target(
         base_pair_target: f64,
         cfg: &crate::polymarket::coordinator::CompletionFirstStrategyConfig,
         score: f64,
@@ -187,14 +187,14 @@ impl CompletionFirstStrategy {
         target.clamp(0.05, 0.999)
     }
 
-    fn opposite(side: Side) -> Side {
+    pub(crate) fn opposite(side: Side) -> Side {
         match side {
             Side::Yes => Side::No,
             Side::No => Side::Yes,
         }
     }
 
-    fn book_for_side(book: &Book, side: Side) -> (f64, f64) {
+    pub(crate) fn book_for_side(book: &Book, side: Side) -> (f64, f64) {
         match side {
             Side::Yes => (book.yes_bid, book.yes_ask),
             Side::No => (book.no_bid, book.no_ask),

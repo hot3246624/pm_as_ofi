@@ -5242,6 +5242,148 @@ fn test_completion_first_respects_reentry_cooldown() {
 }
 
 #[tokio::test]
+async fn test_completion_first_fresh_residual_keeps_maker_repair() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let (_o, i, m, _k, mut e, mut coord) = make(c);
+    coord.completion_first_state.active_since = Some(Instant::now() - Duration::from_secs(5));
+    let _ = i.send(InventoryState {
+        yes_qty: 3.0,
+        yes_avg_cost: 0.56,
+        net_diff: 3.0,
+        ..Default::default()
+    });
+
+    let h = tokio::spawn(coord.run());
+    let _ = m.send(bt(0.58, 0.60, 0.30, 0.38));
+
+    let mut saw_repair_maker = false;
+    let mut saw_taker = false;
+    while let Ok(Some(cmd)) = timeout(Duration::from_millis(160), e.recv()).await {
+        match cmd {
+            OrderManagerCmd::SetTarget(target)
+                if target.side == Side::No && target.reason == BidReason::Provide =>
+            {
+                saw_repair_maker = true;
+            }
+            OrderManagerCmd::OneShotTakerHedge { .. } => {
+                saw_taker = true;
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        saw_repair_maker,
+        "fresh completion_first residual should keep opposite-side maker repair quote alive"
+    );
+    assert!(
+        !saw_taker,
+        "fresh completion_first residual should not escalate to taker repair before TTL"
+    );
+
+    drop(m);
+    let _ = h.await;
+}
+
+#[tokio::test]
+async fn test_completion_first_timeout_dispatches_opposite_side_taker_repair() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let (_o, i, m, _k, mut e, mut coord) = make(c);
+    let inv = InventoryState {
+        yes_qty: 3.0,
+        yes_avg_cost: 0.56,
+        net_diff: 3.0,
+        ..Default::default()
+    };
+    coord.completion_first_state.active_since = Some(Instant::now() - Duration::from_secs(45));
+    coord.completion_first_last_settled_inv_snapshot = inv;
+    coord.completion_first_last_working_inv_snapshot = inv;
+    let _ = i.send(inv);
+
+    let h = tokio::spawn(coord.run());
+    let _ = m.send(bt(0.58, 0.60, 0.30, 0.38));
+
+    let mut got_taker = None;
+    let mut saw_repair_maker = false;
+    while let Ok(Some(cmd)) = timeout(Duration::from_millis(160), e.recv()).await {
+        match cmd {
+            OrderManagerCmd::OneShotTakerHedge {
+                side,
+                direction,
+                size,
+                purpose,
+                limit_price,
+            } if side == Side::No && direction == TradeDirection::Buy => {
+                got_taker = Some((size, purpose, limit_price));
+                break;
+            }
+            OrderManagerCmd::SetTarget(target)
+                if target.side == Side::No && target.reason == BidReason::Provide =>
+            {
+                saw_repair_maker = true;
+            }
+            _ => {}
+        }
+    }
+
+    let (size, purpose, limit_price) =
+        got_taker.expect("timed-out completion_first residual should emit taker repair");
+    assert!(
+        (size - 3.0).abs() < 1e-9,
+        "timed-out taker repair should target the full residual tranche"
+    );
+    assert_eq!(purpose, TradePurpose::Hedge);
+    let limit_price = limit_price.expect("completion_first taker repair should be capped");
+    assert!(
+        (0.43..=0.45).contains(&limit_price),
+        "taker repair limit should stay inside the dynamic pair band"
+    );
+    assert!(
+        !saw_repair_maker,
+        "timed-out completion_first residual should suppress same-tick maker repair"
+    );
+
+    drop(m);
+    let _ = h.await;
+}
+
+#[tokio::test]
+async fn test_completion_first_taker_repair_debounces_repeated_ticks() {
+    let mut c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    c.hedge_debounce_ms = 10_000;
+    let (_o, i, m, _k, mut e, mut coord) = make(c);
+    let inv = InventoryState {
+        yes_qty: 3.0,
+        yes_avg_cost: 0.56,
+        net_diff: 3.0,
+        ..Default::default()
+    };
+    coord.completion_first_state.active_since = Some(Instant::now() - Duration::from_secs(45));
+    coord.completion_first_last_settled_inv_snapshot = inv;
+    coord.completion_first_last_working_inv_snapshot = inv;
+    let _ = i.send(inv);
+
+    let h = tokio::spawn(coord.run());
+    let _ = m.send(bt(0.58, 0.60, 0.30, 0.38));
+    let _ = m.send(bt(0.58, 0.60, 0.30, 0.38));
+
+    let mut taker_count = 0usize;
+    while let Ok(Some(cmd)) = timeout(Duration::from_millis(200), e.recv()).await {
+        if matches!(cmd, OrderManagerCmd::OneShotTakerHedge { .. }) {
+            taker_count += 1;
+        }
+    }
+
+    assert_eq!(
+        taker_count, 1,
+        "completion_first taker repair should debounce repeated ticks inside the repair window"
+    );
+
+    drop(m);
+    let _ = h.await;
+}
+
+#[tokio::test]
 async fn test_dip_buy_quotes_only_discounted_side() {
     let mut c = cfg();
     c.strategy = StrategyKind::DipBuy;

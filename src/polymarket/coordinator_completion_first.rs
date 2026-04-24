@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use tracing::debug;
 
 use super::*;
+use crate::polymarket::strategy::completion_first::CompletionFirstStrategy;
 
 const FLOAT_INV_EPS: f64 = PAIR_ARB_NET_EPS;
 
@@ -42,12 +43,15 @@ impl StrategyCoordinator {
         if prev_abs <= FLOAT_INV_EPS && curr_abs > FLOAT_INV_EPS {
             self.completion_first_state.active_since = Some(now);
             self.completion_first_state.last_seed_at = Some(now);
+            self.completion_first_state.last_taker_repair_at = None;
         } else if prev_abs > FLOAT_INV_EPS && curr_abs <= FLOAT_INV_EPS {
             self.completion_first_state.active_since = None;
             self.completion_first_state.last_flattened_at = Some(now);
+            self.completion_first_state.last_taker_repair_at = None;
         } else if prev_working.net_diff * working.net_diff < -FLOAT_INV_EPS {
             self.completion_first_state.active_since = Some(now);
             self.completion_first_state.last_seed_at = Some(now);
+            self.completion_first_state.last_taker_repair_at = None;
         }
 
         if settled_changed {
@@ -112,6 +116,67 @@ impl StrategyCoordinator {
                 .completion_first_state
                 .last_flattened_at
                 .is_some_and(|ts| now.saturating_duration_since(ts) < cooldown)
+    }
+
+    pub(crate) fn completion_first_taker_repair_plan(
+        &self,
+        inv: &InventoryState,
+        metrics: &StrategyInventoryMetrics,
+        book: &Book,
+        ofi: Option<&OfiSnapshot>,
+        now: Instant,
+    ) -> Option<(Side, f64, f64)> {
+        if self.cfg.strategy != StrategyKind::CompletionFirst {
+            return None;
+        }
+
+        let cfg = &self.cfg.completion_first;
+        if metrics.residual_qty <= f64::EPSILON
+            || !self
+                .completion_first_active_age(now)
+                .is_some_and(|age| age.as_secs() >= cfg.completion_ttl_secs)
+        {
+            return None;
+        }
+
+        let debounce = Duration::from_millis(self.cfg.hedge_debounce_ms.max(1));
+        if self
+            .completion_first_state
+            .last_taker_repair_at
+            .is_some_and(|ts| now.saturating_duration_since(ts) < debounce)
+        {
+            return None;
+        }
+
+        let dominant_side = metrics.dominant_side?;
+        let repair_side = CompletionFirstStrategy::opposite(dominant_side);
+        let (best_bid, best_ask) = CompletionFirstStrategy::book_for_side(book, repair_side);
+        if best_bid <= 0.0 && best_ask <= 0.0 {
+            return None;
+        }
+
+        let score = self.completion_first_score(book, ofi, now);
+        let dynamic_pair_target = CompletionFirstStrategy::dynamic_pair_target(
+            self.cfg.pair_target,
+            cfg,
+            score,
+            true,
+            true,
+        );
+        let held_avg_cost = match dominant_side {
+            Side::Yes => inv.yes_avg_cost.max(0.0),
+            Side::No => inv.no_avg_cost.max(0.0),
+        };
+        let limit_price = self.safe_price(dynamic_pair_target - held_avg_cost);
+        if limit_price <= self.cfg.tick_size + 1e-9 {
+            return None;
+        }
+
+        Some((repair_side, metrics.residual_qty, limit_price))
+    }
+
+    pub(super) fn note_completion_first_taker_repair(&mut self, now: Instant) {
+        self.completion_first_state.last_taker_repair_at = Some(now);
     }
 
     pub(crate) fn completion_first_score(
