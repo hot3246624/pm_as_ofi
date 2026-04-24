@@ -275,6 +275,37 @@ fn pair_arb_quotes_with_snapshot(
     )
 }
 
+fn completion_first_quotes<F: FnOnce(&mut StrategyCoordinator)>(
+    c: CoordinatorConfig,
+    inv: InventoryState,
+    book: Book,
+    ofi: Option<OfiSnapshot>,
+    setup: F,
+) -> StrategyQuotes {
+    let (_, _, _, _, _, mut coord) = make(with_strategy(c, StrategyKind::CompletionFirst));
+    setup(&mut coord);
+    let metrics = coord.derive_inventory_metrics(&inv);
+    StrategyKind::CompletionFirst.compute_quotes(
+        &coord,
+        StrategyTickInput {
+            inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &crate::polymarket::messages::InventorySnapshot {
+                settled: inv,
+                working: inv,
+                pending_yes_qty: 0.0,
+                pending_no_qty: 0.0,
+                fragile: false,
+            },
+            book: &book,
+            metrics: &metrics,
+            ofi: ofi.as_ref(),
+            glft: None,
+        },
+    )
+}
+
 #[test]
 fn test_pair_arb_uses_working_inventory_for_tiered_yes_cap() {
     let mut c = cfg();
@@ -5053,6 +5084,161 @@ fn test_pair_arb_pairing_buy_ignores_toxic_ofi() {
     assert!((base_yes - toxic_yes).abs() < 1e-9);
     assert_eq!(toxic.diagnostics.pair_arb_ofi_softened_quotes, 0);
     assert_eq!(toxic.diagnostics.pair_arb_ofi_suppressed_quotes, 0);
+}
+
+#[test]
+fn test_completion_first_requires_live_signal_for_new_seed() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let quotes = completion_first_quotes(
+        c,
+        InventoryState::default(),
+        book(0.47, 0.49, 0.51, 0.53),
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                heat_score: 0.6,
+                ..Default::default()
+            },
+            no: SideOfi {
+                heat_score: 0.6,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        |_| {},
+    );
+
+    assert!(quotes.buy_for(Side::Yes).is_none());
+    assert!(quotes.buy_for(Side::No).is_none());
+}
+
+#[test]
+fn test_completion_first_quotes_both_sides_when_signal_is_live() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let quotes = completion_first_quotes(
+        c,
+        InventoryState::default(),
+        book(0.47, 0.49, 0.51, 0.53),
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                heat_score: 0.8,
+                ..Default::default()
+            },
+            no: SideOfi {
+                heat_score: 0.7,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        |coord| {
+            let now = Instant::now();
+            coord.record_completion_first_trade_tick(Side::Yes, now - Duration::from_secs(2));
+            coord.record_completion_first_trade_tick(Side::No, now - Duration::from_secs(1));
+        },
+    );
+
+    assert!(quotes.buy_for(Side::Yes).is_some());
+    assert!(quotes.buy_for(Side::No).is_some());
+}
+
+#[test]
+fn test_completion_first_switches_to_opposite_only_completion_mode() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let inv = InventoryState {
+        yes_qty: 3.0,
+        yes_avg_cost: 0.56,
+        net_diff: 3.0,
+        ..Default::default()
+    };
+    let quotes = completion_first_quotes(
+        c,
+        inv,
+        book(0.58, 0.60, 0.31, 0.35),
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                heat_score: 0.8,
+                ..Default::default()
+            },
+            no: SideOfi {
+                heat_score: 0.7,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        |coord| {
+            coord.completion_first_state.active_since =
+                Some(Instant::now() - Duration::from_secs(5));
+        },
+    );
+
+    assert!(quotes.buy_for(Side::Yes).is_none());
+    assert!(quotes.buy_for(Side::No).is_some());
+}
+
+#[test]
+fn test_completion_first_timeout_pays_up_on_repair_side() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let inv = InventoryState {
+        yes_qty: 3.0,
+        yes_avg_cost: 0.56,
+        net_diff: 3.0,
+        ..Default::default()
+    };
+    let repair_book = book(0.58, 0.60, 0.30, 0.38);
+    let ofi = Some(OfiSnapshot {
+        yes: SideOfi {
+            heat_score: 0.8,
+            ..Default::default()
+        },
+        no: SideOfi {
+            heat_score: 0.7,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    let fresh = completion_first_quotes(c.clone(), inv, repair_book, ofi, |coord| {
+        coord.completion_first_state.active_since = Some(Instant::now() - Duration::from_secs(5));
+    });
+    let timed_out = completion_first_quotes(c, inv, repair_book, ofi, |coord| {
+        coord.completion_first_state.active_since = Some(Instant::now() - Duration::from_secs(45));
+    });
+
+    let fresh_px = fresh.buy_for(Side::No).expect("fresh repair quote").price;
+    let timed_out_px = timed_out
+        .buy_for(Side::No)
+        .expect("timed-out repair quote")
+        .price;
+    assert!(timed_out_px >= fresh_px);
+}
+
+#[test]
+fn test_completion_first_respects_reentry_cooldown() {
+    let c = with_strategy(cfg(), StrategyKind::CompletionFirst);
+    let quotes = completion_first_quotes(
+        c,
+        InventoryState::default(),
+        book(0.47, 0.49, 0.51, 0.53),
+        Some(OfiSnapshot {
+            yes: SideOfi {
+                heat_score: 0.8,
+                ..Default::default()
+            },
+            no: SideOfi {
+                heat_score: 0.7,
+                ..Default::default()
+            },
+            ..Default::default()
+        }),
+        |coord| {
+            let now = Instant::now();
+            coord.record_completion_first_trade_tick(Side::Yes, now - Duration::from_secs(2));
+            coord.record_completion_first_trade_tick(Side::No, now - Duration::from_secs(1));
+            coord.completion_first_state.last_flattened_at = Some(now);
+        },
+    );
+
+    assert!(quotes.buy_for(Side::Yes).is_none());
+    assert!(quotes.buy_for(Side::No).is_none());
 }
 
 #[tokio::test]

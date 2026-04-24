@@ -7,6 +7,7 @@ use super::messages::{
 };
 use super::types::Side;
 
+pub mod completion_first;
 pub mod dip_buy;
 pub mod gabagool_corridor;
 pub mod gabagool_grid;
@@ -30,6 +31,7 @@ pub enum StrategyKind {
     GabagoolCorridor,
     GlftMm,
     PairArb,
+    CompletionFirst,
     DipBuy,
     PhaseBuilder,
     OracleLagSniping,
@@ -146,6 +148,9 @@ impl StrategyKind {
             }
             "glft_mm" | "glft-mm" | "glftmm" => Some(Self::GlftMm),
             "pair_arb" | "pairarb" | "pair-arb" => Some(Self::PairArb),
+            "completion_first" | "completionfirst" | "completion-first" => {
+                Some(Self::CompletionFirst)
+            }
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
             "oracle_lag_sniping" | "oraclelagsniping" | "oracle-lag-sniping"
@@ -166,6 +171,7 @@ impl StrategyKind {
             Self::GabagoolCorridor => "gabagool_corridor",
             Self::GlftMm => "glft_mm",
             Self::PairArb => "pair_arb",
+            Self::CompletionFirst => "completion_first",
             Self::DipBuy => "dip_buy",
             Self::PhaseBuilder => "phase_builder",
             Self::OracleLagSniping => "oracle_lag_sniping",
@@ -194,7 +200,7 @@ impl StrategyKind {
 
     pub(crate) fn execution_mode(self) -> StrategyExecutionMode {
         match self {
-            Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {
+            Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb | Self::CompletionFirst => {
                 StrategyExecutionMode::UnifiedBuys
             }
             Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
@@ -258,11 +264,12 @@ pub(crate) struct StrategyRegistry;
 
 impl StrategyRegistry {
     fn entries() -> &'static [&'static dyn QuoteStrategy] {
-        static ENTRIES: [&'static dyn QuoteStrategy; 7] = [
+        static ENTRIES: [&'static dyn QuoteStrategy; 8] = [
             &gabagool_grid::GABAGOOL_GRID_STRATEGY,
             &gabagool_corridor::GABAGOOL_CORRIDOR_STRATEGY,
             &glft_mm::GLFT_MM_STRATEGY,
             &pair_arb::PAIR_ARB_STRATEGY,
+            &completion_first::COMPLETION_FIRST_STRATEGY,
             &dip_buy::DIP_BUY_STRATEGY,
             &phase_builder::PHASE_BUILDER_STRATEGY,
             &post_close_hype::POST_CLOSE_HYPE_STRATEGY,
@@ -304,6 +311,10 @@ mod tests {
         assert_eq!(StrategyKind::parse("glft-mm"), Some(StrategyKind::GlftMm));
         assert_eq!(StrategyKind::parse("pair_arb"), Some(StrategyKind::PairArb));
         assert_eq!(StrategyKind::parse("PAIR-ARB"), Some(StrategyKind::PairArb));
+        assert_eq!(
+            StrategyKind::parse("completion-first"),
+            Some(StrategyKind::CompletionFirst)
+        );
         assert_eq!(StrategyKind::parse("dipbuy"), Some(StrategyKind::DipBuy));
         assert_eq!(
             StrategyKind::parse("phase-builder"),
@@ -327,6 +338,7 @@ mod tests {
         assert!(names.contains(&"gabagool_corridor"));
         assert!(names.contains(&"glft_mm"));
         assert!(names.contains(&"pair_arb"));
+        assert!(names.contains(&"completion_first"));
         assert!(names.contains(&"dip_buy"));
         assert!(names.contains(&"phase_builder"));
         assert!(names.contains(&"oracle_lag_sniping"));

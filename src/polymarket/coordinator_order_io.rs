@@ -1270,9 +1270,10 @@ impl StrategyCoordinator {
                 self.update_book(yes_bid, yes_ask, no_bid, no_ask);
                 self.stats.ticks += 1;
             }
-            MarketDataMsg::TradeTick { .. } => {
-                // Trades are primarily for OFI actor; Coordinator mostly skips
-                // but we could track last trade prices here if needed.
+            MarketDataMsg::TradeTick {
+                market_side, ts, ..
+            } => {
+                self.record_completion_first_trade_tick(market_side, ts);
             }
             MarketDataMsg::OracleLagSelection {
                 round_end_ts,

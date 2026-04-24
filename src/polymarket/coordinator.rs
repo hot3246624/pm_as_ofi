@@ -73,6 +73,8 @@ const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_TTL_MS: u64 = 10_000;
 
+#[path = "coordinator_completion_first.rs"]
+mod coordinator_completion_first;
 #[path = "coordinator_endgame.rs"]
 mod coordinator_endgame;
 #[path = "coordinator_execution.rs"]
@@ -99,6 +101,28 @@ pub struct PairArbStrategyConfig {
     /// PairArb risk-open cutoff window (seconds to market end).
     /// Remaining <= this threshold blocks new risk-increasing buys.
     pub risk_open_cutoff_secs: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionFirstStrategyConfig {
+    /// Minimum completion-score required before opening a new tranche from flat inventory.
+    pub score_threshold: f64,
+    /// Seconds before a live single-leg tranche is considered stale and needs a tighter repair price.
+    pub completion_ttl_secs: u64,
+    /// Minimum cooldown after a tranche fully re-pairs or merge is observed.
+    pub reentry_cooldown_secs: u64,
+    /// Seconds inside which both sides must have traded to qualify as a high-completion regime.
+    pub trade_recency_secs: u64,
+    /// Seed size as a multiplier on PM_BID_SIZE.
+    pub seed_size_mult: f64,
+    /// Completion repair size as a multiplier on PM_BID_SIZE.
+    pub repair_size_mult: f64,
+    /// Maximum extra pair-cost budget unlocked by a strong completion score.
+    pub score_pair_band_bonus: f64,
+    /// Additional repair budget unlocked once completion TTL is exceeded.
+    pub timeout_pair_band_bonus: f64,
+    /// Maximum acceptable per-side spread, in ticks, for new seed entry.
+    pub max_seed_spread_ticks: f64,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +186,8 @@ pub struct CoordinatorConfig {
     pub as_time_decay_k: f64,
     /// PairArb strategy-specific runtime config.
     pub pair_arb: PairArbStrategyConfig,
+    /// Completion-first strategy-specific runtime config.
+    pub completion_first: CompletionFirstStrategyConfig,
     /// Post-close HYPE strategy-specific runtime config.
     pub oracle_lag_sniping: OracleLagSnipingStrategyConfig,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
@@ -243,6 +269,17 @@ impl Default for CoordinatorConfig {
                 pair_cost_safety_margin: 0.02,
                 risk_open_cutoff_secs: 180,
             },
+            completion_first: CompletionFirstStrategyConfig {
+                score_threshold: 0.58,
+                completion_ttl_secs: 30,
+                reentry_cooldown_secs: 10,
+                trade_recency_secs: 8,
+                seed_size_mult: 0.50,
+                repair_size_mult: 1.00,
+                score_pair_band_bonus: 0.03,
+                timeout_pair_band_bonus: 0.02,
+                max_seed_spread_ticks: 4.0,
+            },
             oracle_lag_sniping: OracleLagSnipingStrategyConfig {
                 // ~Polymarket liquidity lifecycle post-close (all resting orders cleared by then).
                 window_secs: 105,
@@ -284,6 +321,7 @@ impl CoordinatorConfig {
         cfg.apply_common_env();
         cfg.apply_glft_env();
         cfg.apply_pair_arb_env();
+        cfg.apply_completion_first_env();
         cfg.apply_oracle_lag_env();
         cfg.apply_hedge_env();
         cfg.apply_runtime_env();
@@ -475,6 +513,71 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
                 self.pair_arb.risk_open_cutoff_secs = secs;
+            }
+        }
+    }
+
+    fn apply_completion_first_env(&mut self) {
+        if let Ok(v) = std::env::var("PM_COMPLETION_SCORE_THRESHOLD") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..=1.0).contains(&f) {
+                    self.completion_first.score_threshold = f;
+                } else {
+                    warn!(
+                        "⚠️ Ignoring invalid PM_COMPLETION_SCORE_THRESHOLD={} (must satisfy 0 <= x <= 1), using {}",
+                        f, self.completion_first.score_threshold
+                    );
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_TTL_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                self.completion_first.completion_ttl_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_REENTRY_COOLDOWN_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                self.completion_first.reentry_cooldown_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_TRADE_RECENCY_SECS") {
+            if let Ok(secs) = v.parse::<u64>() {
+                self.completion_first.trade_recency_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_SEED_SIZE_MULT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    self.completion_first.seed_size_mult = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_REPAIR_SIZE_MULT") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    self.completion_first.repair_size_mult = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_SCORE_PAIR_BAND_BONUS") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    self.completion_first.score_pair_band_bonus = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_TIMEOUT_PAIR_BAND_BONUS") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    self.completion_first.timeout_pair_band_bonus = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_COMPLETION_MAX_SEED_SPREAD_TICKS") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    self.completion_first.max_seed_spread_ticks = f;
+                }
             }
         }
     }
@@ -672,6 +775,18 @@ impl CoordinatorConfig {
                 self.endgame_maker_repair_min_secs, self.endgame_hard_close_secs
             );
         }
+        self.completion_first.score_threshold =
+            self.completion_first.score_threshold.clamp(0.0, 1.0);
+        self.completion_first.seed_size_mult = self.completion_first.seed_size_mult.max(0.1);
+        self.completion_first.repair_size_mult = self.completion_first.repair_size_mult.max(0.1);
+        self.completion_first.score_pair_band_bonus =
+            self.completion_first.score_pair_band_bonus.clamp(0.0, 0.10);
+        self.completion_first.timeout_pair_band_bonus = self
+            .completion_first
+            .timeout_pair_band_bonus
+            .clamp(0.0, 0.10);
+        self.completion_first.max_seed_spread_ticks =
+            self.completion_first.max_seed_spread_ticks.max(1.0);
     }
 }
 
@@ -1125,6 +1240,10 @@ pub struct StrategyCoordinator {
     last_settled_inv_snapshot: InventoryState,
     last_working_inv_snapshot: InventoryState,
     pair_arb_progress_state: PairProgressState,
+    completion_first_last_settled_inv_snapshot: InventoryState,
+    completion_first_last_working_inv_snapshot: InventoryState,
+    completion_first_state: CompletionFirstState,
+    completion_first_trade_state: CompletionFirstTradeState,
     round_realized_pair_metrics: RoundRealizedPairMetrics,
     last_endgame_phase: EndgamePhase,
     edge_hold_state: Option<EdgeHoldState>,
@@ -1228,6 +1347,24 @@ pub(crate) struct PairProgressState {
     pub(crate) last_risk_increasing_fill_price_no: Option<f64>,
     pub(crate) last_risk_fill_net_bucket_yes: Option<PairArbNetBucket>,
     pub(crate) last_risk_fill_net_bucket_no: Option<PairArbNetBucket>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CompletionFirstState {
+    pub(crate) active_since: Option<Instant>,
+    pub(crate) last_flattened_at: Option<Instant>,
+    pub(crate) last_merge_at: Option<Instant>,
+    pub(crate) last_seed_at: Option<Instant>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CompletionFirstTradeState {
+    pub(crate) last_trade_side: Option<Side>,
+    pub(crate) last_trade_ts: Option<Instant>,
+    pub(crate) last_yes_trade_ts: Option<Instant>,
+    pub(crate) last_no_trade_ts: Option<Instant>,
+    pub(crate) alternation_streak: u8,
+    pub(crate) recent_seen: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1406,6 +1543,10 @@ impl StrategyCoordinator {
             last_settled_inv_snapshot: InventoryState::default(),
             last_working_inv_snapshot: InventoryState::default(),
             pair_arb_progress_state: PairProgressState::default(),
+            completion_first_last_settled_inv_snapshot: InventoryState::default(),
+            completion_first_last_working_inv_snapshot: InventoryState::default(),
+            completion_first_state: CompletionFirstState::default(),
+            completion_first_trade_state: CompletionFirstTradeState::default(),
             round_realized_pair_metrics: RoundRealizedPairMetrics::default(),
             last_endgame_phase: EndgamePhase::Normal,
             edge_hold_state: None,
@@ -2247,6 +2388,7 @@ impl StrategyCoordinator {
         let settled_inv = inv_snapshot.settled;
         let decision_inv = working_inv;
         self.observe_pair_arb_inventory_transition(&inv_snapshot, now);
+        self.observe_completion_first_inventory_transition(&inv_snapshot, now);
         let glft_snapshot = if self.cfg.strategy.is_glft_mm() {
             Some(*self.glft_rx.borrow())
         } else {
