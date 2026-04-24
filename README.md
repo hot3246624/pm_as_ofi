@@ -19,6 +19,7 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 | 策略 | 定位 | 状态 |
 | --- | --- | --- |
 | `pair_arb` | pair cost + A-S 风格双边买入策略 | 推荐（当前验证主线） |
+| `completion_first` | completion probability + timeout taker repair + cooldown | research / canary |
 | `glft_mm` | 真双边、slot-keyed、外锚驱动 | challenger |
 | `gabagool_grid` | buy-only utility 基线 | 可用 |
 | `gabagool_corridor` | `gabagool_grid` 的 corridor 变体 | research |
@@ -57,12 +58,13 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 
 1. `docs/STRATEGY_V2_CORE_ZH.md`
 2. `docs/STRATEGY_PAIR_ARB_ZH.md`
-3. `docs/STRATEGY_GLFT_MM_ZH.md`
-4. `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
-5. `docs/CONFIG_REFERENCE_ZH.md`
-6. `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
-7. `docs/TESTING.md`
-8. `docs/ADDING_STRATEGY_ZH.md`
+3. `docs/STRATEGY_COMPLETION_FIRST_ZH.md`
+4. `docs/STRATEGY_GLFT_MM_ZH.md`
+5. `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
+6. `docs/CONFIG_REFERENCE_ZH.md`
+7. `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
+8. `docs/TESTING.md`
+9. `docs/ADDING_STRATEGY_ZH.md`
 
 ## 当前推荐验证参数基线（pair_arb）
 

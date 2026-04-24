@@ -290,6 +290,13 @@ impl OrderManager {
         if size <= 0.0 {
             return;
         }
+        if !matches!(self.side_taker(side), SideTakerState::Idle) {
+            debug!(
+                "⏭️ OMS one-shot taker skipped | side={:?} purpose={:?} reason=waiting_receipt",
+                side, purpose
+            );
+            return;
+        }
         for slot in OrderSlot::side_slots(side) {
             let tracker = self.tracker_mut(slot);
             tracker.desired = None;
