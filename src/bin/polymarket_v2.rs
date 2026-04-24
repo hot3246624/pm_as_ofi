@@ -6882,6 +6882,20 @@ fn try_acquire_slug_lock(slug: &str) -> Option<SlugLock> {
     }
 }
 
+fn install_rustls_crypto_provider() {
+    // rustls 0.23 requires one process-level CryptoProvider.
+    // Install ring explicitly so WS/TLS tasks won't panic on provider auto-detect.
+    if rustls::crypto::ring::default_provider()
+        .install_default()
+        .is_ok()
+    {
+        info!("🔐 rustls CryptoProvider installed: ring");
+    } else {
+        // Already installed in-process (expected in some supervisor/worker paths).
+        debug!("🔐 rustls CryptoProvider already installed");
+    }
+}
+
 // ─────────────────────────────────────────────────────────
 // Main
 // ─────────────────────────────────────────────────────────
@@ -6910,6 +6924,7 @@ async fn main() -> anyhow::Result<()> {
             .with_writer(std::io::stdout.and(non_blocking))
             .init();
     }
+    install_rustls_crypto_provider();
 
     info!("═══════════════════════════════════════════════════");
     info!("  Polymarket V2 — Async Inventory Arbitrage Engine");
