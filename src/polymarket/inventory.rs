@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use super::messages::{
     FillEvent, FillStatus, InventoryEvent, InventorySnapshot, InventoryState, TradeDirection,
 };
+use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
 
 #[derive(Debug, Clone)]
@@ -85,13 +86,23 @@ pub struct InventoryManager {
     timeout_promotions: u64,
     failed_reverts: u64,
     late_failed_after_promotion: u64,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 }
 
 impl InventoryManager {
+    fn emit_inventory_event(&self, event: &str, payload: serde_json::Value) {
+        if let (Some(recorder), Some(meta)) = (&self.recorder, &self.recorder_meta) {
+            recorder.emit_own_inventory_event(meta, event, payload);
+        }
+    }
+
     pub fn new(
         cfg: InventoryConfig,
         fill_rx: mpsc::Receiver<InventoryEvent>,
         state_tx: watch::Sender<InventorySnapshot>,
+        recorder: Option<RecorderHandle>,
+        recorder_meta: Option<RecorderSessionMeta>,
     ) -> Self {
         Self {
             cfg,
@@ -105,6 +116,8 @@ impl InventoryManager {
             timeout_promotions: 0,
             failed_reverts: 0,
             late_failed_after_promotion: 0,
+            recorder,
+            recorder_meta,
         }
     }
 
@@ -127,6 +140,23 @@ impl InventoryManager {
                             self.apply_fill(&fill);
                             let _ = self.state_tx.send(self.snapshot);
                             self.log_fill_snapshot(&fill);
+                            self.emit_inventory_event(
+                                "fill_snapshot",
+                                serde_json::json!({
+                                    "slot": fill.slot().as_str(),
+                                    "side": format!("{:?}", fill.side),
+                                    "direction": format!("{:?}", fill.direction),
+                                    "size": fill.filled_size,
+                                    "price": fill.price,
+                                    "status": format!("{:?}", fill.status),
+                                    "order_id": fill.order_id,
+                                    "working_net_diff": self.snapshot.working.net_diff,
+                                    "working_portfolio_cost": self.snapshot.working.portfolio_cost,
+                                    "pending_yes_qty": self.snapshot.pending_yes_qty,
+                                    "pending_no_qty": self.snapshot.pending_no_qty,
+                                    "fragile": self.snapshot.fragile,
+                                }),
+                            );
                         }
                         InventoryEvent::Merge { full_set_size, merge_id, .. } => {
                             self.apply_merge(full_set_size, &merge_id);
@@ -142,6 +172,20 @@ impl InventoryManager {
                                 self.snapshot.pending_yes_qty,
                                 self.snapshot.pending_no_qty,
                                 self.snapshot.fragile,
+                            );
+                            self.emit_inventory_event(
+                                "merge_sync",
+                                serde_json::json!({
+                                    "full_set_size": full_set_size,
+                                    "merge_id": merge_id,
+                                    "working_net_diff": self.snapshot.working.net_diff,
+                                    "working_portfolio_cost": self.snapshot.working.portfolio_cost,
+                                    "settled_net_diff": self.snapshot.settled.net_diff,
+                                    "settled_portfolio_cost": self.snapshot.settled.portfolio_cost,
+                                    "pending_yes_qty": self.snapshot.pending_yes_qty,
+                                    "pending_no_qty": self.snapshot.pending_no_qty,
+                                    "fragile": self.snapshot.fragile,
+                                }),
                             );
                         }
                     }
@@ -516,7 +560,7 @@ mod tests {
     fn make_manager() -> InventoryManager {
         let (state_tx, _state_rx) = watch::channel(InventorySnapshot::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
-        InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx)
+        InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx, None, None)
     }
 
     #[test]

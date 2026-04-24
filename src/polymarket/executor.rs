@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use super::messages::*;
+use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
 
 use alloy::signers::local::LocalSigner;
@@ -128,6 +129,8 @@ pub struct Executor {
     slot_last_blocked_feedback: [Option<Instant>; 4],
     /// Last time we attempted a forced cancel recovery for a blocked slot.
     slot_last_forced_cancel_attempt: [Instant; 4],
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 }
 
 impl Executor {
@@ -187,6 +190,8 @@ impl Executor {
         fill_rx: mpsc::Receiver<FillEvent>,
         capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
         feedback_tx: Option<mpsc::Sender<ExecutionFeedback>>,
+        recorder: Option<RecorderHandle>,
+        recorder_meta: Option<RecorderSessionMeta>,
     ) -> Self {
         Self {
             cfg,
@@ -234,6 +239,8 @@ impl Executor {
                 .filter(|v| *v > 0.0)
                 .unwrap_or(5.0),
             last_guard_reconcile_ts: Instant::now() - Duration::from_secs(60),
+            recorder,
+            recorder_meta,
         }
     }
 
@@ -258,6 +265,17 @@ impl Executor {
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
                         Some(ExecutionCmd::ExecuteIntent { intent }) => {
+                            self.emit_order_event(
+                                "intent_sent",
+                                serde_json::json!({
+                                    "side": format!("{:?}", intent.side),
+                                    "direction": format!("{:?}", intent.direction),
+                                    "urgency": format!("{:?}", intent.urgency),
+                                    "purpose": format!("{:?}", intent.purpose),
+                                    "size": intent.size,
+                                    "price": intent.price,
+                                }),
+                            );
                             self.handle_execute_intent(intent).await;
                         }
                         Some(ExecutionCmd::PlacePostOnlyBid { side, direction, price, size, reason }) => {
@@ -278,6 +296,15 @@ impl Executor {
                             .await;
                         }
                         Some(ExecutionCmd::PlaceTakerHedge { side, direction, size }) => {
+                            self.emit_order_event(
+                                "taker_repair_sent",
+                                serde_json::json!({
+                                    "side": format!("{:?}", side),
+                                    "direction": format!("{:?}", direction),
+                                    "size": size,
+                                    "purpose": "Hedge",
+                                }),
+                            );
                             self.handle_place_taker(side, direction, size, TradePurpose::Hedge, None).await;
                         }
                         Some(ExecutionCmd::CancelOrder { order_id, reason }) => {
@@ -922,6 +949,24 @@ impl Executor {
                     cooldown_ms: self.marketable_buy_cooldown_ms,
                 })
                 .await;
+            self.emit_order_event(
+                "placement_rejected",
+                serde_json::json!({
+                    "slot": slot.as_str(),
+                    "side": format!("{:?}", side),
+                    "direction": format!("{:?}", direction),
+                    "price": price,
+                    "size": size,
+                    "reason": "marketable_notional_floor",
+                }),
+            );
+            self.emit_order_event(
+                "order_failed",
+                serde_json::json!({
+                    "slot": slot.as_str(),
+                    "cooldown_ms": self.marketable_buy_cooldown_ms,
+                }),
+            );
             return;
         }
 
@@ -969,6 +1014,24 @@ impl Executor {
                             cooldown_ms: 15_000,
                         })
                         .await;
+                    self.emit_order_event(
+                        "placement_rejected",
+                        serde_json::json!({
+                            "slot": slot.as_str(),
+                            "side": format!("{:?}", side),
+                            "direction": format!("{:?}", direction),
+                            "price": price,
+                            "size": size,
+                            "reason": "headroom_blocked",
+                        }),
+                    );
+                    self.emit_order_event(
+                        "order_failed",
+                        serde_json::json!({
+                            "slot": slot.as_str(),
+                            "cooldown_ms": 15000u64,
+                        }),
+                    );
                     return;
                 }
             }
@@ -1006,6 +1069,17 @@ impl Executor {
                         },
                     })
                     .await;
+                self.emit_order_event(
+                    "order_accepted",
+                    serde_json::json!({
+                        "slot": slot.as_str(),
+                        "side": format!("{:?}", side),
+                        "direction": format!("{:?}", direction),
+                        "price": price,
+                        "size": size,
+                        "reason": format!("{:?}", reason),
+                    }),
+                );
                 // NO FillEvent here. Fills come from User WS only.
             }
             Err(e) => {
@@ -1054,6 +1128,18 @@ impl Executor {
                                     },
                                 })
                                 .await;
+                            self.emit_order_event(
+                                "order_accepted",
+                                serde_json::json!({
+                                    "slot": slot.as_str(),
+                                    "side": format!("{:?}", side),
+                                    "direction": format!("{:?}", direction),
+                                    "price": price,
+                                    "size": size,
+                                    "reason": format!("{:?}", reason),
+                                    "retry": "tick_size",
+                                }),
+                            );
                             return;
                         }
                         Err(retry_err) => {
@@ -1109,6 +1195,18 @@ impl Executor {
                                     },
                                 })
                                 .await;
+                            self.emit_order_event(
+                                "order_accepted",
+                                serde_json::json!({
+                                    "slot": slot.as_str(),
+                                    "side": format!("{:?}", side),
+                                    "direction": format!("{:?}", direction),
+                                    "price": price,
+                                    "size": fallback_bid_size,
+                                    "reason": format!("{:?}", reason),
+                                    "retry": "fallback_bid_size",
+                                }),
+                            );
                             return;
                         }
                         Err(retry_err) => {
@@ -1239,6 +1337,25 @@ impl Executor {
                     .result_tx
                     .send(OrderResult::OrderFailed { slot, cooldown_ms })
                     .await;
+                self.emit_order_event(
+                    "placement_rejected",
+                    serde_json::json!({
+                        "slot": slot.as_str(),
+                        "side": format!("{:?}", side),
+                        "direction": format!("{:?}", direction),
+                        "price": price,
+                        "size": size,
+                        "reject_kind": format!("{:?}", reject_kind),
+                        "reason": format!("{:?}", reason),
+                    }),
+                );
+                self.emit_order_event(
+                    "order_failed",
+                    serde_json::json!({
+                        "slot": slot.as_str(),
+                        "cooldown_ms": cooldown_ms,
+                    }),
+                );
             }
         }
     }
@@ -1299,6 +1416,13 @@ impl Executor {
                 .result_tx
                 .send(OrderResult::TakerHedgeDone { side })
                 .await;
+            self.emit_order_event(
+                "order_failed",
+                serde_json::json!({
+                    "slot": OrderSlot::new(side, direction).as_str(),
+                    "reason": "taker_size_below_lot_floor",
+                }),
+            );
             return;
         }
 
@@ -1311,6 +1435,16 @@ impl Executor {
                 .result_tx
                 .send(OrderResult::TakerHedgeDone { side })
                 .await;
+            self.emit_order_event(
+                "taker_repair_sent",
+                serde_json::json!({
+                    "side": format!("{:?}", side),
+                    "direction": format!("{:?}", direction),
+                    "size": size,
+                    "limit_price": limit_price,
+                    "dry_run": true,
+                }),
+            );
             return;
         }
 
@@ -1347,6 +1481,18 @@ impl Executor {
                 info!(
                     "✅ Taker accepted: {:?} {:?} size={:.2} id={}",
                     direction, side, size, order_id
+                );
+                self.emit_order_event(
+                    "order_accepted",
+                    serde_json::json!({
+                        "slot": OrderSlot::new(side, direction).as_str(),
+                        "side": format!("{:?}", side),
+                        "direction": format!("{:?}", direction),
+                        "size": size,
+                        "limit_price": limit_price,
+                        "purpose": format!("{:?}", purpose),
+                        "order_id": order_id,
+                    }),
                 );
                 let _ = self
                     .result_tx
@@ -1408,6 +1554,25 @@ impl Executor {
                     .result_tx
                     .send(OrderResult::TakerHedgeFailed { side, cooldown_ms })
                     .await;
+                self.emit_order_event(
+                    "placement_rejected",
+                    serde_json::json!({
+                        "slot": OrderSlot::new(side, direction).as_str(),
+                        "side": format!("{:?}", side),
+                        "direction": format!("{:?}", direction),
+                        "size": size,
+                        "purpose": format!("{:?}", purpose),
+                        "reject_kind": format!("{:?}", reject_kind),
+                    }),
+                );
+                self.emit_order_event(
+                    "order_failed",
+                    serde_json::json!({
+                        "slot": OrderSlot::new(side, direction).as_str(),
+                        "cooldown_ms": cooldown_ms,
+                        "purpose": format!("{:?}", purpose),
+                    }),
+                );
             }
         }
     }
@@ -1418,6 +1583,13 @@ impl Executor {
 
     async fn handle_cancel_order(&mut self, order_id: &str, reason: CancelReason) -> bool {
         info!("🗑️ Cancel order {} (reason={:?})", order_id, reason);
+        self.emit_order_event(
+            "cancel_sent",
+            serde_json::json!({
+                "order_id": order_id,
+                "reason": format!("{:?}", reason),
+            }),
+        );
 
         if self.cfg.dry_run || self.client.is_none() {
             // DRY-RUN: remove from tracking immediately
@@ -1437,6 +1609,13 @@ impl Executor {
                         orders.remove(order_id);
                     }
                     info!("✅ Order canceled: {}", order_id);
+                    self.emit_order_event(
+                        "cancel_ack",
+                        serde_json::json!({
+                            "order_id": order_id,
+                            "reason": format!("{:?}", reason),
+                        }),
+                    );
                     return true;
                 }
                 Err(e) => {
@@ -1456,6 +1635,14 @@ impl Executor {
 
         if order_ids.is_empty() {
             let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+            self.emit_order_event(
+                "cancel_ack",
+                serde_json::json!({
+                    "slot": slot.as_str(),
+                    "reason": format!("{:?}", reason),
+                    "empty": true,
+                }),
+            );
             return;
         }
 
@@ -1485,6 +1672,14 @@ impl Executor {
         }
 
         let _ = self.result_tx.send(OrderResult::CancelAck { slot }).await;
+        self.emit_order_event(
+            "cancel_ack",
+            serde_json::json!({
+                "slot": slot.as_str(),
+                "reason": format!("{:?}", reason),
+                "empty": false,
+            }),
+        );
     }
 
     async fn handle_cancel_side(&mut self, side: Side, reason: CancelReason) {
@@ -1585,6 +1780,12 @@ impl Executor {
     async fn emit_reject_event(&self, evt: PlacementRejectEvent) {
         if let Some(tx) = &self.capital_tx {
             let _ = tx.send(evt).await;
+        }
+    }
+
+    fn emit_order_event(&self, event: &str, payload: serde_json::Value) {
+        if let (Some(recorder), Some(meta)) = (&self.recorder, &self.recorder_meta) {
+            recorder.emit_own_order_event(meta, event, payload);
         }
     }
 
@@ -2148,6 +2349,8 @@ mod tests {
             fill_rx,
             None,
             None,
+            None,
+            None,
         )
     }
 
@@ -2218,6 +2421,8 @@ mod tests {
             fill_rx,
             None,
             None,
+            None,
+            None,
         );
 
         let slot = OrderSlot::NO_BUY;
@@ -2260,6 +2465,8 @@ mod tests {
             cmd_rx,
             result_tx,
             fill_rx,
+            None,
+            None,
             None,
             None,
         );

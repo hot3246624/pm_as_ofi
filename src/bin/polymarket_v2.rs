@@ -39,6 +39,7 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
+use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta};
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -2348,6 +2349,8 @@ async fn run_round_claim_window(
     funder_address: Option<&str>,
     signer_address: Option<&str>,
     private_key: Option<&str>,
+    recorder: Option<&RecorderHandle>,
+    recorder_meta: Option<&RecorderSessionMeta>,
 ) -> anyhow::Result<()> {
     if !cfg.enabled {
         info!("💸 Round claim runner skipped: PM_AUTO_CLAIM disabled");
@@ -2439,6 +2442,23 @@ async fn run_round_claim_window(
         .await
         {
             Ok(outcome) => {
+                if let (Some(rec), Some(meta)) = (recorder, recorder_meta) {
+                    rec.emit_redeem_result(
+                        meta,
+                        json!({
+                            "kind": "round_claim_attempt",
+                            "attempt": attempts,
+                            "elapsed_secs": start.elapsed().as_secs(),
+                            "positions": outcome.positions,
+                            "candidates": outcome.candidates,
+                            "claimed": outcome.claimed,
+                            "dry_run": cfg.dry_run,
+                            "scope": runner_cfg.scope.as_str(),
+                            "preferred_condition": preferred_condition.map(|v| v.to_string()),
+                            "fallback_global": fallback_global,
+                        }),
+                    );
+                }
                 info!(
                     "💸 Round claim result: positions={} candidates={} claimed={} dry_run={}",
                     outcome.positions, outcome.candidates, outcome.claimed, cfg.dry_run
@@ -2463,6 +2483,17 @@ async fn run_round_claim_window(
             Err(e) => {
                 errors += 1;
                 last_error = Some(format!("{:?}", e));
+                if let (Some(rec), Some(meta)) = (recorder, recorder_meta) {
+                    rec.emit_redeem_result(
+                        meta,
+                        json!({
+                            "kind": "round_claim_error",
+                            "attempt": attempts,
+                            "elapsed_secs": start.elapsed().as_secs(),
+                            "error": format!("{:?}", e),
+                        }),
+                    );
+                }
                 warn!(
                     "⚠️ Round claim retry failed at +{}s: {:?}",
                     start.elapsed().as_secs(),
@@ -2477,8 +2508,20 @@ async fn run_round_claim_window(
         runner_cfg.window.as_secs(),
         attempts,
         errors,
-        last_error.unwrap_or_else(|| "none".to_string())
+        last_error.clone().unwrap_or_else(|| "none".to_string())
     );
+    if let (Some(rec), Some(meta)) = (recorder, recorder_meta) {
+        rec.emit_redeem_result(
+            meta,
+            json!({
+                "kind": "round_claim_sla_exhausted",
+                "window_secs": runner_cfg.window.as_secs(),
+                "attempts": attempts,
+                "errors": errors,
+                "last_error": last_error,
+            }),
+        );
+    }
     Ok(())
 }
 
@@ -3090,9 +3133,7 @@ impl ChainlinkHub {
                         stat_ticks = stat_ticks.saturating_add(matched_ticks);
                         if matched_ticks == 0 {
                             let idle = last_tick_at.elapsed();
-                            if idle.as_millis()
-                                >= CHAINLINK_HUB_TICK_STALL_RECONNECT_MS as u128
-                            {
+                            if idle.as_millis() >= CHAINLINK_HUB_TICK_STALL_RECONNECT_MS as u128 {
                                 warn!(
                                     "⚠️ chainlink_hub_symbol_mismatch_stall | symbol={} idle_ms={} msgs={} ticks={} delivered={} last_tick_ts_ms={:?}",
                                     sym,
@@ -5945,6 +5986,8 @@ async fn run_market_ws_with_wall_guard(
     coord_tx: watch::Sender<MarketDataMsg>,
     post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
     let hard_cutoff_ts = end_ts.saturating_add(MARKET_WS_HARD_CUTOFF_GRACE_SECS);
     let mut ws_task = tokio::spawn(run_market_ws(
@@ -5954,6 +5997,8 @@ async fn run_market_ws_with_wall_guard(
         coord_tx,
         post_close_book_tx,
         end_ts,
+        recorder,
+        recorder_meta,
     ));
     loop {
         tokio::select! {
@@ -6036,9 +6081,7 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
         if coord_cfg.strategy.is_oracle_lag_sniping()
             && coord_cfg.oracle_lag_sniping.cross_market_arbiter_enabled
         {
-            info!(
-                "⏭️ cross_market_hint_arbiter disabled for oracle_lag_sniping | requested=true"
-            );
+            info!("⏭️ cross_market_hint_arbiter disabled for oracle_lag_sniping | requested=true");
             None
         } else {
             None
@@ -6255,6 +6298,8 @@ async fn run_market_ws(
     coord_tx: watch::Sender<MarketDataMsg>,
     post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
     // Compute wall-clock deadline
     let now_unix = SystemTime::now()
@@ -6471,6 +6516,9 @@ async fn run_market_ws(
                                     session_text_msg_count =
                                         session_text_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
+                                    if let (Some(rec), Some(meta)) = (&recorder, &recorder_meta) {
+                                        rec.record_market_ws_raw(meta, &text);
+                                    }
 
                                     let (parsed, unknown_events, parse_drops) =
                                         parse_ws_payload(&settings, &text);
@@ -6580,6 +6628,11 @@ async fn run_market_ws(
 
                                     match std::str::from_utf8(&bytes) {
                                         Ok(text) => {
+                                            if let (Some(rec), Some(meta)) =
+                                                (&recorder, &recorder_meta)
+                                            {
+                                                rec.record_market_ws_raw(meta, text);
+                                            }
                                             let (parsed, unknown_events, parse_drops) =
                                                 parse_ws_payload(&settings, text);
                                             session_unknown_event_count = session_unknown_event_count
@@ -6960,6 +7013,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     let mut auto_claim_cfg = AutoClaimConfig::from_env();
     let round_claim_cfg = RoundClaimRunnerConfig::from_env();
     let recycle_cfg = CapitalRecycleConfig::from_env();
+    let recorder = RecorderHandle::from_env();
     let mut auto_claim_state = AutoClaimState::default();
     let mut round_claim_task: Option<tokio::task::JoinHandle<()>> = None;
 
@@ -7791,6 +7845,13 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         // P0-2: Track all session spawns for cleanup on rotation
         let mut session_handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
         let round_start_ts_ms = unix_now_ms();
+        let recorder_meta = RecorderSessionMeta {
+            slug: slug.clone(),
+            condition_id: market_id.clone(),
+            market_id: market_id.clone(),
+            strategy: coord_cfg.strategy.as_str().to_string(),
+            dry_run,
+        };
         let enable_round_validation =
             !dry_run && coord_cfg.strategy.is_glft_mm() && slug.starts_with("btc-updown-5m");
 
@@ -7957,7 +8018,13 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             }
         }
 
-        let inv = InventoryManager::new(inv_cfg.clone(), inv_event_rx, inv_watch_tx);
+        let inv = InventoryManager::new(
+            inv_cfg.clone(),
+            inv_event_rx,
+            inv_watch_tx,
+            recorder.enabled().then_some(recorder.clone()),
+            recorder.enabled().then_some(recorder_meta.clone()),
+        );
         session_handles.push(tokio::spawn(inv.run()));
 
         let ofi = OfiEngine::new(ofi_cfg.clone(), ofi_md_rx, ofi_watch_tx).with_kill_tx(kill_tx);
@@ -8034,6 +8101,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             exec_fill_rx,
             Some(capital_tx),
             Some(feedback_tx),
+            recorder.enabled().then_some(recorder.clone()),
+            recorder.enabled().then_some(recorder_meta.clone()),
         );
         let executor_handle = tokio::spawn(executor.run());
         let executor_abort = executor_handle.abort_handle();
@@ -8056,7 +8125,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     no_asset_id: no_asset_id.clone(),
                 },
                 fill_tx,
-            );
+            )
+            .with_recorder(recorder.clone(), recorder_meta.clone());
             session_handles.push(tokio::spawn(user_ws.run()));
             info!("👤 User WS Listener spawned (real fills only)");
         } else {
@@ -8089,6 +8159,9 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         } else {
             effective_end_ts
         };
+        if recorder.enabled() {
+            recorder.emit_session_start(&recorder_meta, ws_round_end_ts);
+        }
         let reason = run_market_ws_with_wall_guard(
             settings,
             ofi_md_tx,
@@ -8096,8 +8169,13 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             coord_md_tx,
             post_close_book_tx,
             ws_round_end_ts,
+            recorder.enabled().then_some(recorder.clone()),
+            recorder.enabled().then_some(recorder_meta.clone()),
         )
         .await;
+        if recorder.enabled() {
+            recorder.emit_session_end(&recorder_meta, &format!("{:?}", reason));
+        }
         info!("🏁 Market ended: {:?}", reason);
         if let MarketEnd::WsDegraded {
             consecutive_failures,
@@ -8110,6 +8188,16 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             );
         }
         let market_settled = matches!(reason, MarketEnd::Expired);
+        if market_settled && recorder.enabled() {
+            recorder.emit_own_inventory_event(
+                &recorder_meta,
+                "market_resolved",
+                json!({
+                    "reason": format!("{:?}", reason),
+                    "round_end_ts": ws_round_end_ts,
+                }),
+            );
+        }
 
         let _ = om_tx.send(OrderManagerCmd::CancelAll).await;
         // Drop om_tx so the OrderManager channel closes
@@ -8230,6 +8318,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             let claim_funder = funder_address.clone();
             let claim_signer = signer_address.clone();
             let claim_pk = base_settings.private_key.clone();
+            let claim_recorder = recorder.enabled().then_some(recorder.clone());
+            let claim_recorder_meta = recorder.enabled().then_some(recorder_meta.clone());
             round_claim_task = Some(tokio::spawn(async move {
                 let mut round_state = AutoClaimState::default();
                 if let Err(e) = run_round_claim_window(
@@ -8240,6 +8330,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     claim_funder.as_deref(),
                     claim_signer.as_deref(),
                     claim_pk.as_deref(),
+                    claim_recorder.as_ref(),
+                    claim_recorder_meta.as_ref(),
                 )
                 .await
                 {

@@ -24,6 +24,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 use super::messages::{FillEvent, FillStatus, TradeDirection};
+use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -55,6 +56,8 @@ pub struct UserWsConfig {
 pub struct UserWsListener {
     cfg: UserWsConfig,
     fill_tx: mpsc::Sender<FillEvent>,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 }
 
 /// Cross-reconnect dedup cache for fill events.
@@ -132,7 +135,22 @@ impl DedupCache {
 
 impl UserWsListener {
     pub fn new(cfg: UserWsConfig, fill_tx: mpsc::Sender<FillEvent>) -> Self {
-        Self { cfg, fill_tx }
+        Self {
+            cfg,
+            fill_tx,
+            recorder: None,
+            recorder_meta: None,
+        }
+    }
+
+    pub fn with_recorder(
+        mut self,
+        recorder: RecorderHandle,
+        recorder_meta: RecorderSessionMeta,
+    ) -> Self {
+        self.recorder = Some(recorder);
+        self.recorder_meta = Some(recorder_meta);
+        self
     }
 
     /// Actor main loop. Connects to User WS with auth, listens for trades.
@@ -242,6 +260,9 @@ impl UserWsListener {
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
+                    if let (Some(recorder), Some(meta)) = (&self.recorder, &self.recorder_meta) {
+                        recorder.record_user_ws_raw(meta, &text);
+                    }
                     if let Ok(value) = serde_json::from_str::<Value>(&text) {
                         // Handle arrays (batched events)
                         let values = if value.is_array() {
