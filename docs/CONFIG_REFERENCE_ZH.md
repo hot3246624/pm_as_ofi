@@ -31,6 +31,10 @@
 | `PM_POST_CLOSE_WINDOW_SECS` | `105` | 仅 `oracle_lag_sniping` 使用：收盘后继续运行的窗口（秒） |
 | `PM_POST_CLOSE_CHAINLINK_WS_URL` | `wss://ws-live-data.polymarket.com` | 仅 `oracle_lag_sniping` 使用：Chainlink RTDS 地址 |
 | `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS` | `8` | 仅 `oracle_lag_sniping` 使用：收盘后等待 Chainlink 胜负提示的最大秒数 |
+| `PM_SELF_BUILT_PRICE_AGG_ENABLED` | `true` | 仅 `oracle_lag_sniping` 使用：启用自建价格聚合器（失败自动回退 legacy exact） |
+| `PM_SELF_BUILT_PRICE_AGG_OPEN_TOLERANCE_MS` | `1200` | 仅 `oracle_lag_sniping` 使用：open 候选与 round_start 的最大容忍偏差（毫秒） |
+| `PM_SELF_BUILT_PRICE_AGG_CLOSE_TOLERANCE_MS` | `1500` | 仅 `oracle_lag_sniping` 使用：close 候选与 round_end 的最大容忍偏差（毫秒） |
+| `PM_SELF_BUILT_PRICE_AGG_MIN_CONFIDENCE` | `0.80` | 仅 `oracle_lag_sniping` 使用：聚合器最小置信度阈值 |
 | `PM_POST_CLOSE_GAMMA_POLL_MS` | `300` | 仅 `oracle_lag_sniping` 使用：Chainlink 未命中时 Gamma 兜底轮询间隔 |
 | `PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED` | `false` | 仅 `oracle_lag_sniping` 使用：是否启用跨市场仲裁（默认关闭，推荐每市场独立 single-shot） |
 | `PM_ORACLE_LAG_ARBITER_COLLECTION_WINDOW_MS` | `200` | 仅在启用跨市场仲裁时有效：仲裁收集窗口（毫秒） |

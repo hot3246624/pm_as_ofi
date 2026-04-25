@@ -2550,6 +2550,9 @@ fn round_claim_missing_requirements(
 const POST_CLOSE_CHAINLINK_WS_URL_DEFAULT: &str = "wss://ws-live-data.polymarket.com";
 const CHAINLINK_DATA_STREAMS_PRICE_API_DEFAULT: &str = "https://priceapi.dataengine.chain.link";
 const DATA_STREAMS_CONNECT_TIMEOUT_MS: u64 = 2_500;
+const SELF_BUILT_AGG_OPEN_TOLERANCE_MS_DEFAULT: u64 = 1_200;
+const SELF_BUILT_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 1_500;
+const SELF_BUILT_AGG_MIN_CONFIDENCE_DEFAULT: f64 = 0.80;
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -2585,6 +2588,45 @@ fn post_close_chainlink_max_wait_secs() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v.clamp(1, 30))
         .unwrap_or(8)
+}
+
+fn env_bool(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
+fn self_built_price_agg_enabled() -> bool {
+    env_bool("PM_SELF_BUILT_PRICE_AGG_ENABLED", true)
+}
+
+fn self_built_price_agg_open_tolerance_ms() -> u64 {
+    env::var("PM_SELF_BUILT_PRICE_AGG_OPEN_TOLERANCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(100, 5_000))
+        .unwrap_or(SELF_BUILT_AGG_OPEN_TOLERANCE_MS_DEFAULT)
+}
+
+fn self_built_price_agg_close_tolerance_ms() -> u64 {
+    env::var("PM_SELF_BUILT_PRICE_AGG_CLOSE_TOLERANCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(100, 5_000))
+        .unwrap_or(SELF_BUILT_AGG_CLOSE_TOLERANCE_MS_DEFAULT)
+}
+
+fn self_built_price_agg_min_confidence() -> f64 {
+    env::var("PM_SELF_BUILT_PRICE_AGG_MIN_CONFIDENCE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(SELF_BUILT_AGG_MIN_CONFIDENCE_DEFAULT)
 }
 
 fn env_nonempty_var(names: &[&str]) -> Option<String> {
@@ -3005,21 +3047,26 @@ fn parse_chainlink_multi_symbol_ticks(text: &str) -> Vec<(String, f64, u64)> {
 }
 
 const CHAINLINK_HUB_TICK_STALL_RECONNECT_MS: u64 = 2_000;
+const CHAINLINK_HUB_RECENT_TICKS_PER_SYMBOL: usize = 16_384;
 
 #[derive(Clone)]
 struct ChainlinkHub {
     senders: Arc<HashMap<String, broadcast::Sender<(f64, u64)>>>,
+    recent_ticks: Arc<Mutex<HashMap<String, VecDeque<(f64, u64)>>>>,
 }
 
 impl ChainlinkHub {
     fn spawn(symbols: HashSet<String>) -> Arc<Self> {
         let mut senders = HashMap::new();
+        let mut recent_ticks = HashMap::new();
         for sym in &symbols {
             let (tx, _rx) = broadcast::channel::<(f64, u64)>(2048);
             senders.insert(sym.clone(), tx);
+            recent_ticks.insert(sym.clone(), VecDeque::new());
         }
         let hub = Arc::new(Self {
             senders: Arc::new(senders),
+            recent_ticks: Arc::new(Mutex::new(recent_ticks)),
         });
         let ws_url = post_close_chainlink_ws_url();
         // One WS connection per symbol: the server only honours ONE active
@@ -3027,6 +3074,7 @@ impl ChainlinkHub {
         // symbols only delivers ticks for the last-subscribed symbol.
         for sym in symbols {
             let tx = hub.senders.get(&sym).expect("sender just inserted").clone();
+            let recent_ticks = Arc::clone(&hub.recent_ticks);
             let url = ws_url.clone();
             tokio::spawn(async move {
                 let mut reconnect_backoff = Duration::from_millis(300);
@@ -3124,6 +3172,14 @@ impl ChainlinkHub {
                             if normalize_chainlink_symbol(&tick_sym) != sym {
                                 continue;
                             }
+                            if let Ok(mut guard) = recent_ticks.lock() {
+                                if let Some(buf) = guard.get_mut(&sym) {
+                                    buf.push_back((price, ts_ms));
+                                    while buf.len() > CHAINLINK_HUB_RECENT_TICKS_PER_SYMBOL {
+                                        buf.pop_front();
+                                    }
+                                }
+                            }
                             let _ = tx.send((price, ts_ms));
                             stat_delivered = stat_delivered.saturating_add(1);
                             matched_ticks = matched_ticks.saturating_add(1);
@@ -3163,6 +3219,20 @@ impl ChainlinkHub {
     fn subscribe(&self, symbol: &str) -> Option<broadcast::Receiver<(f64, u64)>> {
         let sym = normalize_chainlink_symbol(symbol);
         self.senders.get(&sym).map(|tx| tx.subscribe())
+    }
+
+    fn snapshot_recent_ticks(&self, symbol: &str) -> Vec<(f64, u64)> {
+        let sym = normalize_chainlink_symbol(symbol);
+        if sym.is_empty() {
+            return Vec::new();
+        }
+        let Ok(guard) = self.recent_ticks.lock() else {
+            return Vec::new();
+        };
+        guard
+            .get(&sym)
+            .map(|buf| buf.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default()
     }
 }
 
@@ -5244,6 +5314,316 @@ async fn run_data_streams_winner_hint(
     None
 }
 
+#[derive(Debug, Clone, Copy)]
+struct AggregatedPricePoint {
+    price: f64,
+    ts_ms: u64,
+    exact: bool,
+    abs_delta_ms: u64,
+    source: &'static str,
+}
+
+impl AggregatedPricePoint {
+    fn from_exact(price: f64, ts_ms: u64, source: &'static str) -> Self {
+        Self {
+            price,
+            ts_ms,
+            exact: true,
+            abs_delta_ms: 0,
+            source,
+        }
+    }
+}
+
+fn self_built_agg_ingest_tick(
+    price: f64,
+    ts_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+    first_tick_ts_ms: &mut Option<u64>,
+    open_exact: &mut Option<AggregatedPricePoint>,
+    close_exact: &mut Option<AggregatedPricePoint>,
+    nearest_start: &mut Option<(u64, u64, f64)>,
+    nearest_end: &mut Option<(u64, u64, f64)>,
+) {
+    first_tick_ts_ms.get_or_insert(ts_ms);
+
+    if open_exact.is_none() && ts_ms == start_ms {
+        *open_exact = Some(AggregatedPricePoint::from_exact(
+            price,
+            ts_ms,
+            "hub_open_exact",
+        ));
+    }
+    if close_exact.is_none() && ts_ms == end_ms {
+        *close_exact = Some(AggregatedPricePoint::from_exact(
+            price,
+            ts_ms,
+            "hub_close_exact",
+        ));
+    }
+
+    let start_delta = ts_ms.abs_diff(start_ms);
+    match *nearest_start {
+        Some((best_delta, _, _)) if start_delta >= best_delta => {}
+        _ => *nearest_start = Some((start_delta, ts_ms, price)),
+    }
+
+    let end_delta = ts_ms.abs_diff(end_ms);
+    match *nearest_end {
+        Some((best_delta, _, _)) if end_delta >= best_delta => {}
+        _ => *nearest_end = Some((end_delta, ts_ms, price)),
+    }
+}
+
+/// Self-built round price aggregator:
+/// - consume Chainlink hub ticks
+/// - fuse exact + nearest-round-boundary candidates
+/// - emit high-confidence winner hint (or unresolved)
+async fn run_self_built_price_aggregator(
+    chainlink_hub: Option<Arc<ChainlinkHub>>,
+    symbol: &str,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    hard_deadline_ts: u64,
+) -> Option<(Side, f64, f64, u64, u64, bool)> {
+    let Some(hub) = chainlink_hub else {
+        return None;
+    };
+
+    let target_symbol = normalize_chainlink_symbol(symbol);
+    let start_ms = round_start_ts.saturating_mul(1_000);
+    let end_ms = round_end_ts.saturating_mul(1_000);
+    let open_tol_ms = self_built_price_agg_open_tolerance_ms();
+    let close_tol_ms = self_built_price_agg_close_tolerance_ms();
+    let min_confidence = self_built_price_agg_min_confidence();
+
+    let mut open_exact: Option<AggregatedPricePoint> =
+        peek_prewarmed_tick(&target_symbol, start_ms).map(|(price, ts_ms)| {
+            AggregatedPricePoint::from_exact(price, ts_ms, "prewarm_open_exact")
+        });
+    let mut close_exact: Option<AggregatedPricePoint> = None;
+    let prev_round_close = cached_prev_round_close(&target_symbol, start_ms);
+
+    let mut observed_ticks: u64 = 0;
+    let mut observed_snapshot_ticks: u64 = 0;
+    let mut observed_live_ticks: u64 = 0;
+    let mut lagged_ticks: u64 = 0;
+    let mut nearest_start: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
+    let mut nearest_end: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
+    let mut first_tick_ts_ms: Option<u64> = None;
+
+    // Phase-1: consume hub in-memory recent ticks first (zero network wait).
+    for (price, ts_ms) in hub.snapshot_recent_ticks(&target_symbol) {
+        observed_ticks = observed_ticks.saturating_add(1);
+        self_built_agg_ingest_tick(
+            price,
+            ts_ms,
+            start_ms,
+            end_ms,
+            &mut first_tick_ts_ms,
+            &mut open_exact,
+            &mut close_exact,
+            &mut nearest_start,
+            &mut nearest_end,
+        );
+        observed_snapshot_ticks = observed_snapshot_ticks.saturating_add(1);
+    }
+
+    // If snapshot already gives enough evidence, avoid extra waiting.
+    let need_live_stream = !(close_exact.is_some()
+        && (open_exact.is_some()
+            || nearest_start
+                .map(|(delta, _, _)| delta <= open_tol_ms)
+                .unwrap_or(false)
+            || prev_round_close.is_some()));
+
+    if need_live_stream {
+        let Some(mut rx) = hub.subscribe(&target_symbol) else {
+            warn!(
+                "⚠️ self_built_price_agg_unsubscribed | symbol={} round_start_ts={} round_end_ts={}",
+                target_symbol, round_start_ts, round_end_ts
+            );
+            return None;
+        };
+
+        while unix_now_secs() <= hard_deadline_ts {
+            let next = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await;
+            let (price, ts_ms) = match next {
+                Ok(Ok(hit)) => hit,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                    lagged_ticks = lagged_ticks.saturating_add(n);
+                    continue;
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                Err(_) => continue,
+            };
+            observed_ticks = observed_ticks.saturating_add(1);
+            self_built_agg_ingest_tick(
+                price,
+                ts_ms,
+                start_ms,
+                end_ms,
+                &mut first_tick_ts_ms,
+                &mut open_exact,
+                &mut close_exact,
+                &mut nearest_start,
+                &mut nearest_end,
+            );
+            observed_live_ticks = observed_live_ticks.saturating_add(1);
+
+            // Early stop: close known and at least one usable open candidate already exists.
+            if close_exact.is_some()
+                && (open_exact.is_some()
+                    || nearest_start
+                        .map(|(delta, _, _)| delta <= open_tol_ms)
+                        .unwrap_or(false)
+                    || prev_round_close.is_some())
+            {
+                break;
+            }
+        }
+    }
+
+    if close_exact.is_none() {
+        close_exact = peek_prewarmed_tick(&target_symbol, end_ms)
+            .map(|(price, ts_ms)| AggregatedPricePoint::from_exact(price, ts_ms, "prewarm_close"));
+    }
+
+    let open_point = if let Some(p) = open_exact {
+        Some(p)
+    } else if let Some((delta, ts_ms, px)) = nearest_start {
+        if delta <= open_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "hub_nearest_open",
+            })
+        } else {
+            None
+        }
+    } else if let Some((px, ts_ms)) = prev_round_close {
+        Some(AggregatedPricePoint {
+            price: px,
+            ts_ms,
+            exact: false,
+            abs_delta_ms: ts_ms.abs_diff(start_ms),
+            source: "prev_round_close",
+        })
+    } else {
+        None
+    };
+
+    let close_point = if let Some(p) = close_exact {
+        Some(p)
+    } else if let Some((delta, ts_ms, px)) = nearest_end {
+        if delta <= close_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "hub_nearest_close",
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    let (open_hit, close_hit) = match (open_point, close_point) {
+        (Some(o), Some(c)) => (o, c),
+        _ => {
+            warn!(
+                "⚠️ self_built_price_agg_unresolved | symbol={} round_start_ts={} round_end_ts={} observed_ticks={} lagged_ticks={} open_exact={} close_exact={} nearest_start={:?} nearest_end={:?}",
+                target_symbol,
+                round_start_ts,
+                round_end_ts,
+                observed_ticks,
+                lagged_ticks,
+                open_exact.is_some(),
+                close_exact.is_some(),
+                nearest_start,
+                nearest_end,
+            );
+            return None;
+        }
+    };
+
+    let mut confidence: f64 = match (open_hit.exact, close_hit.exact) {
+        (true, true) => 1.0,
+        (true, false) => 0.9,
+        (false, true) => 0.86,
+        (false, false) => 0.76,
+    };
+    if !open_hit.exact && open_hit.abs_delta_ms > open_tol_ms / 2 {
+        confidence -= 0.05;
+    }
+    if !close_hit.exact && close_hit.abs_delta_ms > close_tol_ms / 2 {
+        confidence -= 0.05;
+    }
+    if open_hit.source == "prev_round_close" {
+        confidence -= 0.08;
+    }
+    confidence = confidence.clamp(0.0, 1.0);
+
+    if confidence + 1e-9 < min_confidence {
+        warn!(
+            "⚠️ self_built_price_agg_low_confidence | symbol={} round_start_ts={} round_end_ts={} confidence={:.3} min_confidence={:.3} open_source={} close_source={} open_delta_ms={} close_delta_ms={}",
+            target_symbol,
+            round_start_ts,
+            round_end_ts,
+            confidence,
+            min_confidence,
+            open_hit.source,
+            close_hit.source,
+            open_hit.abs_delta_ms,
+            close_hit.abs_delta_ms,
+        );
+        return None;
+    }
+
+    let side = if close_hit.price >= open_hit.price {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    set_last_chainlink_close(&target_symbol, close_hit.ts_ms, close_hit.price);
+    info!(
+        "🧠 self_built_price_agg_ready | unix_ms={} symbol={} side={:?} confidence={:.3} open={:.6}@{} open_source={} open_exact={} open_delta_ms={} close={:.6}@{} close_source={} close_exact={} close_delta_ms={} observed_ticks={} observed_snapshot_ticks={} observed_live_ticks={} lagged_ticks={}",
+        unix_now_millis_u64(),
+        target_symbol,
+        side,
+        confidence,
+        open_hit.price,
+        open_hit.ts_ms,
+        open_hit.source,
+        open_hit.exact,
+        open_hit.abs_delta_ms,
+        close_hit.price,
+        close_hit.ts_ms,
+        close_hit.source,
+        close_hit.exact,
+        close_hit.abs_delta_ms,
+        observed_ticks,
+        observed_snapshot_ticks,
+        observed_live_ticks,
+        lagged_ticks,
+    );
+
+    Some((
+        side,
+        open_hit.price,
+        close_hit.price,
+        open_hit.ts_ms,
+        close_hit.ts_ms,
+        open_hit.exact,
+    ))
+}
+
 async fn run_chainlink_winner_hint_via_hub(
     hub: Arc<ChainlinkHub>,
     symbol: &str,
@@ -5443,6 +5823,24 @@ async fn run_chainlink_winner_hint(
     hard_deadline_ts: u64,
     chainlink_hub: Option<Arc<ChainlinkHub>>,
 ) -> Option<(Side, f64, f64, u64, u64, bool)> {
+    if self_built_price_agg_enabled() {
+        if let Some(hit) = run_self_built_price_aggregator(
+            chainlink_hub.clone(),
+            symbol,
+            round_start_ts,
+            round_end_ts,
+            hard_deadline_ts,
+        )
+        .await
+        {
+            return Some(hit);
+        }
+        warn!(
+            "⚠️ self_built_price_agg_unresolved_fallback_legacy | symbol={} round_start_ts={} round_end_ts={}",
+            symbol, round_start_ts, round_end_ts
+        );
+    }
+
     if chainlink_data_streams_enabled() {
         if let Some(hit) =
             run_data_streams_winner_hint(symbol, round_start_ts, round_end_ts, hard_deadline_ts)
