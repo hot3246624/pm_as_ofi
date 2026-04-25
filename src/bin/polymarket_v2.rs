@@ -3258,8 +3258,40 @@ struct ChainlinkRoundAlignmentProbe {
     note: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SelfBuiltPriceAggProbe {
+    unix_ms: u64,
+    symbol: String,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    status: String,
+    side: Option<String>,
+    confidence: Option<f64>,
+    min_confidence: f64,
+    open_price: Option<f64>,
+    open_ts_ms: Option<u64>,
+    open_source: Option<String>,
+    open_exact: Option<bool>,
+    open_delta_ms: Option<u64>,
+    close_price: Option<f64>,
+    close_ts_ms: Option<u64>,
+    close_source: Option<String>,
+    close_exact: Option<bool>,
+    close_delta_ms: Option<u64>,
+    observed_ticks: u64,
+    observed_snapshot_ticks: u64,
+    observed_live_ticks: u64,
+    lagged_ticks: u64,
+    nearest_start_delta_ms: Option<u64>,
+    nearest_end_delta_ms: Option<u64>,
+}
+
 fn chainlink_round_alignment_path() -> PathBuf {
     PathBuf::from("logs/chainlink_round_alignment.jsonl")
+}
+
+fn self_built_price_agg_probe_path() -> PathBuf {
+    PathBuf::from("logs/self_built_price_agg.jsonl")
 }
 
 fn chainlink_last_close_cache_path() -> PathBuf {
@@ -3289,6 +3321,32 @@ fn append_chainlink_round_alignment_probe(probe: &ChainlinkRoundAlignmentProbe) 
     };
     if let Err(e) = writeln!(writer, "{}", line) {
         warn!("⚠️ chainlink_round_alignment write failed: {}", e);
+    }
+}
+
+fn append_self_built_price_agg_probe(probe: &SelfBuiltPriceAggProbe) {
+    let path = self_built_price_agg_probe_path();
+    let file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "⚠️ self_built_price_agg write open failed: path={} err={}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let mut writer = BufWriter::new(file);
+    let line = match serde_json::to_string(probe) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("⚠️ self_built_price_agg serialize failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = writeln!(writer, "{}", line) {
+        warn!("⚠️ self_built_price_agg write failed: {}", e);
     }
 }
 
@@ -5412,6 +5470,44 @@ async fn run_self_built_price_aggregator(
     let mut nearest_start: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
     let mut nearest_end: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
     let mut first_tick_ts_ms: Option<u64> = None;
+    let emit_probe = |status: &str,
+                      side: Option<Side>,
+                      confidence: Option<f64>,
+                      open: Option<AggregatedPricePoint>,
+                      close: Option<AggregatedPricePoint>,
+                      observed_ticks: u64,
+                      observed_snapshot_ticks: u64,
+                      observed_live_ticks: u64,
+                      lagged_ticks: u64,
+                      nearest_start: Option<(u64, u64, f64)>,
+                      nearest_end: Option<(u64, u64, f64)>| {
+        append_self_built_price_agg_probe(&SelfBuiltPriceAggProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            status: status.to_string(),
+            side: side.map(|s| format!("{:?}", s)),
+            confidence,
+            min_confidence,
+            open_price: open.map(|p| p.price),
+            open_ts_ms: open.map(|p| p.ts_ms),
+            open_source: open.map(|p| p.source.to_string()),
+            open_exact: open.map(|p| p.exact),
+            open_delta_ms: open.map(|p| p.abs_delta_ms),
+            close_price: close.map(|p| p.price),
+            close_ts_ms: close.map(|p| p.ts_ms),
+            close_source: close.map(|p| p.source.to_string()),
+            close_exact: close.map(|p| p.exact),
+            close_delta_ms: close.map(|p| p.abs_delta_ms),
+            observed_ticks,
+            observed_snapshot_ticks,
+            observed_live_ticks,
+            lagged_ticks,
+            nearest_start_delta_ms: nearest_start.map(|(d, _, _)| d),
+            nearest_end_delta_ms: nearest_end.map(|(d, _, _)| d),
+        });
+    };
 
     // Phase-1: consume hub in-memory recent ticks first (zero network wait).
     for (price, ts_ms) in hub.snapshot_recent_ticks(&target_symbol) {
@@ -5443,6 +5539,19 @@ async fn run_self_built_price_aggregator(
             warn!(
                 "⚠️ self_built_price_agg_unsubscribed | symbol={} round_start_ts={} round_end_ts={}",
                 target_symbol, round_start_ts, round_end_ts
+            );
+            emit_probe(
+                "hub_unsubscribed",
+                None,
+                None,
+                open_exact,
+                close_exact,
+                observed_ticks,
+                observed_snapshot_ticks,
+                observed_live_ticks,
+                lagged_ticks,
+                nearest_start,
+                nearest_end,
             );
             return None;
         };
@@ -5549,6 +5658,19 @@ async fn run_self_built_price_aggregator(
                 nearest_start,
                 nearest_end,
             );
+            emit_probe(
+                "unresolved",
+                None,
+                None,
+                open_point,
+                close_point,
+                observed_ticks,
+                observed_snapshot_ticks,
+                observed_live_ticks,
+                lagged_ticks,
+                nearest_start,
+                nearest_end,
+            );
             return None;
         }
     };
@@ -5583,6 +5705,19 @@ async fn run_self_built_price_aggregator(
             open_hit.abs_delta_ms,
             close_hit.abs_delta_ms,
         );
+        emit_probe(
+            "low_confidence",
+            None,
+            Some(confidence),
+            Some(open_hit),
+            Some(close_hit),
+            observed_ticks,
+            observed_snapshot_ticks,
+            observed_live_ticks,
+            lagged_ticks,
+            nearest_start,
+            nearest_end,
+        );
         return None;
     }
 
@@ -5612,6 +5747,19 @@ async fn run_self_built_price_aggregator(
         observed_snapshot_ticks,
         observed_live_ticks,
         lagged_ticks,
+    );
+    emit_probe(
+        "ready",
+        Some(side),
+        Some(confidence),
+        Some(open_hit),
+        Some(close_hit),
+        observed_ticks,
+        observed_snapshot_ticks,
+        observed_live_ticks,
+        lagged_ticks,
+        nearest_start,
+        nearest_end,
     );
 
     Some((
