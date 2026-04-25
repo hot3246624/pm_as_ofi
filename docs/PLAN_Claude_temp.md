@@ -1,201 +1,77 @@
-⏺ Bash(until grep -q "oracle_lag_arbiter_decision\|oracle_lag_arbiter_intake\|cross_market_hint_arbiter spawned" logs/supervisor-20260420-133418.log 2>/dev/null; do
-      sl…)
-  ⎿  2026-04-20T05:34:19.925164Z  INFO polymarket_v2: 🏅 cross_market_hint_arbiter spawned | collection_window_ms=300 book_max_age_ms=250
+**核心判断**
+这两份更新很有价值，但它们现在不是同一层级的文档。
 
-⏺ 仲裁器已成功启动 (cross_market_hint_arbiter spawned)。收盘后等待 Chainlink 结果到达并触发仲裁。
+[STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:1) 是“风险补丁 / 假设裁决层”：它把 V1 里最危险的隐含假设拆出来，要求先用数据、双口径、资本模型验证。
 
-⏺ Bash(until grep -q "oracle_lag_arbiter_intake" logs/supervisor-20260420-133418.log 2>/dev/null; do sleep 3; done && grep -E
-      "arbiter_intake|arbiter_decision|cross_ma…)
-  ⎿  Running in the background (↓ to manage)
-  ⎿  (timeout 5m)
+[PLAN_Codex.md](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:1) 是“工程主线 / 实施收敛层”：它把新策略压成一个可实现版本，明确 `maker-first`、`single-leg open`、`CompletionOnly`、旧 `pair_arb` 保留 baseline。
 
-⏺ Background command "until grep -q "oracle_lag_arbiter_intake" logs/supervisor-20260420-133418.log 2&gt;/dev/null; do sleep 3; done &amp;&amp; grep -E
-"arbiter_intake|arbiter_decision|cross_market_skip|post_close_winner_hint_to_arbiter|chainlink_result_ready|oracle_lag_arbiter_selection"
-logs/supervisor-20260420-133418.log | head -80" completed (exit code 0)
+我建议：**PLAN_Codex 继续做实现主计划，V1.1 作为 PLAN_Codex 的 gate/风险附录吸收进去**。不要让 V1.1 的所有 override 直接改变 V1 默认行为，否则实现面会从“可落地”一下跳到“研究系统 + 双路径策略 + 资本模型 + 时间衰减”四件事同时开干，复杂度会炸。
 
-  Read 1 file (ctrl+o to expand)
+**V1.1 强项**
+V1.1 最强的贡献是把三个隐藏假设显式化：
 
-⏺ 第一轮仲裁完美成功！ 7/7 全部到达，仲裁器在 300ms 窗口内完成了裁决。让我立即确认 btc 是否下单、其他 6 市场是否静默。
+- `A1`：xuan 约 `4000 trades / 33h / 367 markets` 是否能代表常态。
+- `A2`：我方是否能像 xuan 一样 maker 到 first leg。
+- `A3`：我方 7-market 环境下是否能累积足够 surplus bank。
 
-  Searched for 2 patterns (ctrl+o to expand)
+这三个都是真问题。尤其是 [V1.1 §2.1](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:32) 把 H-0 从单窗口聚合升级为 `>=20000 trades`、`>=5` 周、market 分桶、4h 分桶，这是研究纪律上的明显进步。否则我们可能拿一个顺风 session 的 `clean_closed=95%` 去指导实盘，然后在低流动/高波动时段被打穿。
 
-⏺ 第一轮干跑完美通过！ 让我解读结果：
+[V1.1 §2.2](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:54) 的 `pair_cost_tranche` 与 `pair_cost_fifo` 并行也非常关键。FIFO 是研究近似，行为层真正消费的是 tranche-explicit 账本。如果二者 `delta_p50 > 0.05`，说明我们的 surplus/repair 预算可能是错的。这个应该马上吸收到 PLAN_Codex。
 
-  ---
-  第一轮仲裁结果 (round_end_ts=1776663600)
+[V1.1 §2.4](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:117) 的 Capital Pressure Gate 方向也对。xuan 的 edge 依赖 rolling merge 和资金周转；我方只有有限 market/资金时，不建模 `locked_capital_ratio`，会出现“策略逻辑允许开仓，但资金实际被 covered/unmerged 库存锁死”的假阳性。
 
-  ┌──────┬──────────┬────────────┬──────────┬──────┬────────────────────┐
-  │ 市场 │ 到达时延 │  ask_eff   │ book_age │ 排名 │        结果        │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ btc  │ 1009ms   │ 0.9900     │ 2066ms   │ 1/7  │ ✅ selected        │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ sol  │ 1017ms   │ 0.9900     │ 3660ms   │ 2/7  │ ❌ outranked       │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ bnb  │ 960ms    │ 0.9900     │ 3794ms   │ 3/7  │ ❌ outranked       │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ eth  │ 994ms    │ 0.9900     │ 15298ms  │ 4/7  │ ❌ outranked       │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ xrp  │ 1009ms   │ 0.9900     │ 15772ms  │ 5/7  │ ❌ outranked       │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ doge │ 954ms    │ 0 (no ask) │ 1384ms   │ 6/7  │ ❌ no tradable ask │
-  ├──────┼──────────┼────────────┼──────────┼──────┼────────────────────┤
-  │ hype │ 965ms    │ 0 (no ask) │ 26515ms  │ 7/7  │ ❌ stale+no ask    │
-  └──────┴──────────┴────────────┴──────────┴──────┴────────────────────┘
+**主要冲突**
+第一个冲突是 H-0 门槛。V1.1 说任一 H-0 升级条件未达标，V1 不允许进入 shadow；PLAN_Codex 则把 `H-0` 通过条件固定回 `clean_closed >= 90%`、`same_side_add <= 10%`、`p90 <= 60s`，并把实现列为“立即做”。见 [V1.1](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:39) 和 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:36)。
 
-  - 7/7 全部在收集窗口内到达（实际离散度仅 63ms，远小于 300ms）
-  - 评分正确：所有 tradable ask 均为 0.99，按 book_age 升序打破平局 → btc (2066ms) 胜出
-  - btc coordinator 收到 selected=true → FAK 触发：limit=0.992, size=5.00, dry=true ✅
-  - 其余 6 个 coordinator 收到 selected=false，无任何 dry_taker_preview ✅
-  - 收盘后仲裁到 FAK 发出：仅 1256ms，极快 ✅
+我的建议是拆成两层：**工程 skeleton 可以立即做，enforce 不允许；shadow 也可以跑我方，但研究结论不得宣称通过 H-0 升级门槛**。也就是说，V1.1 的 H-0 应阻塞 enforce，不应阻塞基础账本/回放/指标建设。
 
-  ---
-  现在持续监控后续轮次，等第 2 轮触发：
+第二个冲突是 maker/taker。V1.1 要 maker/taker 双路径并行 shadow，见 [V1.1 §2.6](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:221)。PLAN_Codex 则明确 `maker-first` 是默认执行边界，`bounded taker completion` 只预留接口，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:8) 和 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:46)。
 
-⏺ Monitor(仲裁器每轮结果 — 验证 rank=1 唯一选中)
-  ⎿  Monitor started · task bzzvi806u · persistent
+我站 PLAN_Codex 这一边：**先 maker-only 实现，taker 路径做 replay/simulation shadow，不要一开始做 live taker runner**。原因很朴素：taker first leg 的成交率当然高，但 adverse selection、滑点和资金锁定完全不同；它不是 xuan 的等价替代路径。双路径应该用于裁决，不应该同时进入行为执行。
 
-⏺ 监控已挂上，每轮 rank=1 选中事件和任何 dry_taker_preview 都会通知。
+第三个冲突是 same-side run。V1.1 把默认从 `MAX=1` 改成条件化 `MAX=2`，见 [V1.1](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:84)。PLAN_Codex 仍固定 `max_same_side_run=1`，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:59)。
 
-  第 1/5 轮通过 ✅。每 5 分钟会看到下一轮仲裁结果。5 轮全部通过后即可考虑切 live。
+这里我建议保守：**实现上保留 `MAX=1`，但指标层加 `conditional_second_same_side_would_allow` shadow 计数**。等我们看到第二笔同侧是否真的提高 open opportunity 且不污染 repair budget，再改默认。否则一开口子，最容易从“pair-gated”滑回“越不平越加仓”。
 
-✻ Cooked for 7m 20s
+第四个冲突是 completion ceiling。V1.1 要时间衰减公式，见 [V1.1 §2.5](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:166)。PLAN_Codex 则固定 `urgency_budget_per_share=0`，只在后续 bounded taker shadow 启用，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:26)。
 
-※ recap: Cross-market arbiter is implemented and dry-running. First round passed perfectly — only btc was selected and fired FAK. Waiting for 4 more rounds to
-  confirm before going live.
+V1.1 的方向对，但公式有一个硬问题：当前初始交易域是 `BTC 5m`，而公式里有 `t > 600s`、`60s < t <= 600s`。5 分钟 round 的 `T=300s`，所以 `t > 600s` 永远不会发生，`60s < t <= 600s` 从开盘就成立。这会让 urgency ramp 在全 round 生效，和“close 前 10min 才启用”的解释不一致。这个公式要按 5m 重写，不能原样进实现。
 
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
+第五个冲突是 CapitalModel。V1.1 引入 `locked_capital_ratio` 和 `harvest_min_dynamic`，见 [V1.1](D:/web3work/pm_as_ofi/docs/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md:124)。PLAN_Codex 默认仍是 `harvest_min_full_set=10`，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:59)。
 
-⏺ 第 2/5 轮通过 ✅ — btc 再次 rank=1，FAK 0.992 × 5U 正常触发，其余 6 市场静默。继续等待第 3 轮。
+这个我建议立即吸收 telemetry，但暂不改变行为。还有一个小逻辑需要澄清：`locked_capital_ratio > 0.50` 已经会 `trigger_merge=true`，同时 `harvest_min_dynamic = max(10, round(ratio * 50))` 在高压力时变大。如果这个值是“触发阈值”，变大反而可能降低 merge 频率；如果它是“目标 batch size”，那文档应改名为 `harvest_batch_dynamic`。这块需要改清楚，否则实现者会误读。
 
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
+**PLAN_Codex 评价**
+PLAN_Codex 是目前最适合作为工程入口的文档。它做了几个很好的收敛：
 
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
+- 新增 `StrategyKind::PairGatedTrancheArb`，不污染旧 `pair_arb`，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:13)。
+- `InventoryManager` 成为账本真相源，coordinator 只消费快照，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:14)。
+- 明确 `CompletionOnly` 后同侧风险全部抑制，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:25)。
+- 明确 `PairCovered != Merged`，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:30)。
+- 回测器独立为 `backtest_pair_gated_tranche.py`，不塞进旧 pair arb 回测，见 [PLAN_Codex](D:/web3work/pm_as_ofi/docs/PLAN_Codex.md:41)。
 
-⏺ 这是 btc 的 FAK re-entry shots 2/3 和 3/3（同一 coordinator 的 IOC 重发），不是第二个市场触发。正常。等第 3 轮（05:50）。
+我比较担心的是 PLAN_Codex 现在太“决策完成”了，但没有吸收 V1.1 的关键风险门。它适合开工，但在开工前应补三行硬规则：
 
-※ recap: Cross-market arbiter is live in dry-run: each 5-minute round, one market is selected and fires a FAK, the other 6 stay silent. Two rounds passed cleanly;
-  waiting for round 3 at 05:50.
+- `pair_cost` 字段必须拆成 `pair_cost_tranche` 与 `pair_cost_fifo`，enforce 使用 tranche-explicit。
+- `H-0 upgraded sample gate` 阻塞 enforce，不阻塞 skeleton/shadow 工具建设。
+- `CapitalState` 先作为 telemetry 加入 ledger snapshot，行为 gate 先 shadow-only。
 
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
+**实施建议**
+我建议把两份文档关系定成这样：
 
-⏺ 第 3/5 轮通过 ✅ — 这轮 bnb 胜出（book_age=2486ms 最新鲜），不再是 btc，说明仲裁器每轮独立评分、不固定选同一市场。FAK 正常触发。
+`PLAN_Codex` 是主计划，描述“我们现在怎么实现”。
 
-  3/5 轮结果汇总：
+`STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md` 是风险门，描述“哪些实现结果不能直接上线”。
 
-  ┌──────┬──────────┬──────────┐
-  │ 轮次 │ 选中市场 │ book_age │
-  ├──────┼──────────┼──────────┤
-  │ 1    │ btc      │ 2066ms   │
-  ├──────┼──────────┼──────────┤
-  │ 2    │ btc      │ 4142ms   │
-  ├──────┼──────────┼──────────┤
-  │ 3    │ bnb      │ 2486ms   │
-  └──────┴──────────┴──────────┘
+下一步最稳的路线：
 
-  继续等第 4、5 轮。
+1. 更新 `PLAN_Codex.md`，吸收 V1.1 的非争议项：tranche/FIFO 双 pair cost、CapitalState telemetry、H-0 upgraded gate 作为 enforce 前置。
+2. 保持 PLAN_Codex 的 maker-only V1 默认，不采纳 V1.1 的 live maker/taker 双 runner，只做 replay/simulation 双口径。
+3. 保持 `max_same_side_run=1` 行为默认，把 V1.1 的 `MAX=2` 条件化放行降级为 shadow counter。
+4. 修正 V1.1 的 5m 时间衰减公式，把 `600s` 改成相对 `T` 的比例或 5m 专用窗口。
+5. 澄清 `harvest_min_dynamic` 是触发阈值还是 batch size；我倾向改为 `harvest_batch_dynamic`。
 
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
+**底线判断**
+V1.1 是必要的“刹车系统”，PLAN_Codex 是必要的“发动机图纸”。现在最好的形态不是二选一，而是：**PLAN_Codex 负责推进，V1.1 负责防止我们把未裁决假设误上线**。
 
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ bnb 的 re-entry shots 2/3 和 3/3，与前两轮行为一致。等第 4 轮（05:55）。
-
-※ recap: Cross-market arbiter is live in dry-run, 3/5 rounds passed with exactly 1 market selected and FAK fired per round. Waiting for rounds 4 and 5 before
-  switching to live.
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ 第 4/5 轮 — 有趣的边缘情况：
-
-  本轮 bnb 仍是 rank=1，但 winner_ask_eff=0.0000 winner_ask_tradable=false，说明所有 7 个市场本轮都没有可成交 ask（盘口过期）。仲裁器仍选出了 1 个市场（bnb）走 maker
-   路径。没有 dry_taker_preview（因为无 ask → 走 maker 不走 FAK），这是正确行为。等第 5 轮。
-
-  ┌──────┬──────────┬────────────┬─────────────────────────┐
-  │ 轮次 │ 选中市场 │  ask_eff   │          路径           │
-  ├──────┼──────────┼────────────┼─────────────────────────┤
-  │ 1    │ btc      │ 0.990      │ FAK ✅                  │
-  ├──────┼──────────┼────────────┼─────────────────────────┤
-  │ 2    │ btc      │ 0.990      │ FAK ✅                  │
-  ├──────┼──────────┼────────────┼─────────────────────────┤
-  │ 3    │ bnb      │ 0.990      │ FAK ✅                  │
-  ├──────┼──────────┼────────────┼─────────────────────────┤
-  │ 4    │ bnb      │ 0 (no ask) │ maker（无 FAK，正常）✅ │
-  └──────┴──────────┴────────────┴─────────────────────────┘
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ 第 5/5 轮通过 ✅ — btc rank=1，FAK 正常触发。
-
-  ---
-  5 轮 Dry-Run 验收完成
-
-  ┌──────┬───────┬──────────┬─────────┬───────┬──────┐
-  │ 轮次 │ 时间  │ 选中市场 │ ask_eff │ 路径  │ 结果 │
-  ├──────┼───────┼──────────┼─────────┼───────┼──────┤
-  │ 1    │ 05:40 │ btc      │ 0.990   │ FAK   │ ✅   │
-  ├──────┼───────┼──────────┼─────────┼───────┼──────┤
-  │ 2    │ 05:45 │ btc      │ 0.990   │ FAK   │ ✅   │
-  ├──────┼───────┼──────────┼─────────┼───────┼──────┤
-  │ 3    │ 05:50 │ bnb      │ 0.990   │ FAK   │ ✅   │
-  ├──────┼───────┼──────────┼─────────┼───────┼──────┤
-  │ 4    │ 05:55 │ bnb      │ 0       │ maker │ ✅   │
-  ├──────┼───────┼──────────┼─────────┼───────┼──────┤
-  │ 5    │ 06:00 │ btc      │ 0.990   │ FAK   │ ✅   │
-  └──────┴───────┴──────────┴─────────┴───────┴──────┘
-
-  所有验收标准均通过：
-  - 每轮唯一 1 个市场 selected=true ✅
-  - 其余 6 市场完全静默（无 FAK/maker 泄漏）✅
-  - 仲裁器按 book_age 正确排名打破 ask 平局 ✅
-  - no-ask 轮次正确走 maker 路径而非 FAK ✅
-  - 7 市场全部在 300ms 收集窗口内到达 ✅
-
-  ---
-  现在可以切实盘了。 命令：
-
-  ./start_markets.sh live
-
-  切之前最后确认一件事：你的钱包里现有多少 USDC？PM_BID_SIZE=5 意味着每次下单 5U，同时最多 3 shots，上限 15U/轮。
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ 第 5 轮的 re-entry shots 2/3 和 3/3，正常。
-
-  现在可以切 live。你钱包里有多少 USDC？
-
-※ recap: Cross-market arbiter implemented and 5 dry-run rounds passed — only 1 market fires per round. Waiting for user to confirm USDC balance before switching to
-  live mode.
-
-❯ /status 
-  ⎿  Status dialog dismissed
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ 第 6 轮：hype rank=1（新面孔），FAK 正常。仲裁器已稳定跨 3 个不同市场选中。
-
-  钱包里有多少 USDC？确认后可以直接停掉 dry-run 切 live。
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ hype 的 re-entry shots，正常。
-
-  你还没告诉我钱包里有多少 USDC——确认一下，然后我们停 dry-run 切 live。
-
-※ recap: Cross-market arbiter is implemented and dry-run validated across 6 rounds — only 1 market fires per round. Waiting for your USDC balance confirmation before
-   stopping dry-run and switching to live.
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ 第 7 轮：btc rank=1，FAK 正常。7 轮全部通过，仲裁器稳定。
-
-  你的钱包 USDC 余额？
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ Monitor event: "仲裁器每轮结果 — 验证 rank=1 唯一选中"
-
-⏺ btc re-entry shots，正常。
+我建议下一步直接做一次文档对齐 patch：更新 `PLAN_Codex.md` 为 V1.1-aware 主计划，同时在 `STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md` 修正 5m 时间衰减和 harvest 动态命名。
