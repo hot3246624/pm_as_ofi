@@ -99,6 +99,7 @@ pub enum OracleLagTailMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WinnerHintSource {
     Chainlink,
+    LocalAgg,
     Gamma,
     BookInference,
 }

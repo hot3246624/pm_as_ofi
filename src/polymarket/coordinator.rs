@@ -1472,6 +1472,16 @@ impl StrategyCoordinator {
             .unwrap_or(true)
     }
 
+    fn oracle_lag_allow_local_agg_hint(&self) -> bool {
+        std::env::var("PM_LOCAL_PRICE_AGG_DECISION_ENABLED")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                !(v == "0" || v == "false" || v == "no" || v == "off")
+            })
+            .unwrap_or(false)
+    }
+
     /// Oracle-lag trading should only act on fully-qualified Chainlink hints.
     /// Returns `(winner_side, open_ref_price, final_price)` when all fields are present.
     pub(crate) fn post_close_chainlink_winner(&self) -> Option<(Side, f64, f64)> {
@@ -1480,9 +1490,13 @@ impl StrategyCoordinator {
         }
         let side = self.post_close_winner_side()?;
         let allow_fallback_open = self.oracle_lag_allow_fallback_open_in_dry_run();
-        if self.post_close_winner_source != Some(WinnerHintSource::Chainlink)
-            && !allow_fallback_open
-        {
+        let source = self.post_close_winner_source?;
+        let source_allowed = match source {
+            WinnerHintSource::Chainlink => true,
+            WinnerHintSource::LocalAgg => self.oracle_lag_allow_local_agg_hint(),
+            _ => false,
+        };
+        if !source_allowed && !allow_fallback_open {
             return None;
         }
         // First-round / fallback protection: skip trading when open_ref did not
@@ -1490,7 +1504,10 @@ impl StrategyCoordinator {
         // frontend_open_fallback). These paths are semantically correct but
         // typically indicate cold-start — add an extra ~300ms of HTTP hop and
         // should not risk FAK capital.
-        if self.post_close_winner_open_is_exact != Some(true) && !allow_fallback_open {
+        if source == WinnerHintSource::Chainlink
+            && self.post_close_winner_open_is_exact != Some(true)
+            && !allow_fallback_open
+        {
             return None;
         }
         let ref_price = self.post_close_winner_ref_price;

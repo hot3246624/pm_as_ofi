@@ -2553,6 +2553,11 @@ const DATA_STREAMS_CONNECT_TIMEOUT_MS: u64 = 2_500;
 const SELF_BUILT_AGG_OPEN_TOLERANCE_MS_DEFAULT: u64 = 1_200;
 const SELF_BUILT_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 1_500;
 const SELF_BUILT_AGG_MIN_CONFIDENCE_DEFAULT: f64 = 0.80;
+const LOCAL_PRICE_AGG_OPEN_TOLERANCE_MS_DEFAULT: u64 = 600;
+const LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 600;
+const LOCAL_PRICE_AGG_MIN_CONFIDENCE_DEFAULT: f64 = 0.85;
+const LOCAL_PRICE_AGG_MIN_SOURCES_DEFAULT: usize = 1;
+const LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS_DEFAULT: f64 = 12.0;
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -2627,6 +2632,54 @@ fn self_built_price_agg_min_confidence() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .map(|v| v.clamp(0.0, 1.0))
         .unwrap_or(SELF_BUILT_AGG_MIN_CONFIDENCE_DEFAULT)
+}
+
+fn local_price_agg_enabled() -> bool {
+    env_bool("PM_LOCAL_PRICE_AGG_ENABLED", false)
+}
+
+fn local_price_agg_decision_enabled() -> bool {
+    env_bool("PM_LOCAL_PRICE_AGG_DECISION_ENABLED", false)
+}
+
+fn local_price_agg_open_tolerance_ms() -> u64 {
+    env::var("PM_LOCAL_PRICE_AGG_OPEN_TOLERANCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(50, 5_000))
+        .unwrap_or(LOCAL_PRICE_AGG_OPEN_TOLERANCE_MS_DEFAULT)
+}
+
+fn local_price_agg_close_tolerance_ms() -> u64 {
+    env::var("PM_LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(50, 5_000))
+        .unwrap_or(LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS_DEFAULT)
+}
+
+fn local_price_agg_min_confidence() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_MIN_CONFIDENCE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 1.0))
+        .unwrap_or(LOCAL_PRICE_AGG_MIN_CONFIDENCE_DEFAULT)
+}
+
+fn local_price_agg_min_sources() -> usize {
+    env::var("PM_LOCAL_PRICE_AGG_MIN_SOURCES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(1, 8))
+        .unwrap_or(LOCAL_PRICE_AGG_MIN_SOURCES_DEFAULT)
+}
+
+fn local_price_agg_max_source_spread_bps() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 500.0))
+        .unwrap_or(LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS_DEFAULT)
 }
 
 fn env_nonempty_var(names: &[&str]) -> Option<String> {
@@ -2712,6 +2765,213 @@ fn normalize_chainlink_symbol(raw: &str) -> String {
         .to_ascii_lowercase()
         .replace(['-', '_'], "/")
         .replace("//", "/")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum LocalPriceSource {
+    Binance,
+    Bybit,
+    Okx,
+}
+
+impl LocalPriceSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Binance => "binance",
+            Self::Bybit => "bybit",
+            Self::Okx => "okx",
+        }
+    }
+}
+
+fn binance_stream_symbol_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let (base, quote) = chainlink_symbol.split_once('/')?;
+    if !quote.eq_ignore_ascii_case("usd") {
+        return None;
+    }
+    let base = base.trim().to_ascii_lowercase();
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}usdt", base))
+}
+
+fn chainlink_symbol_from_binance_stream_symbol(binance_symbol: &str) -> Option<String> {
+    let lower = binance_symbol.trim().to_ascii_lowercase();
+    let base = lower.strip_suffix("usdt")?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}/usd", base))
+}
+
+fn parse_binance_combined_trade_tick(text: &str) -> Option<(String, f64, u64)> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return None;
+    };
+    let stream = value
+        .get("stream")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("s").and_then(|v| v.as_str()))?;
+    let stream_symbol = stream
+        .split('@')
+        .next()
+        .map(str::to_string)
+        .unwrap_or_default();
+    let chainlink_symbol = chainlink_symbol_from_binance_stream_symbol(&stream_symbol)?;
+    let data = value.get("data").unwrap_or(&value);
+    let price = data.get("p").and_then(parse_f64_value)?;
+    if !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+    let ts_ms = data
+        .get("T")
+        .and_then(parse_unix_ms_value)
+        .or_else(|| data.get("E").and_then(parse_unix_ms_value))
+        .unwrap_or_else(unix_now_millis_u64);
+    Some((chainlink_symbol, price, ts_ms))
+}
+
+fn bybit_stream_symbol_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let (base, quote) = chainlink_symbol.split_once('/')?;
+    if !quote.eq_ignore_ascii_case("usd") {
+        return None;
+    }
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}USDT", base.to_ascii_uppercase()))
+}
+
+fn chainlink_symbol_from_bybit_stream_symbol(bybit_symbol: &str) -> Option<String> {
+    let upper = bybit_symbol.trim().to_ascii_uppercase();
+    let base = upper.strip_suffix("USDT")?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}/usd", base.to_ascii_lowercase()))
+}
+
+fn parse_bybit_public_trade_ticks(text: &str) -> Vec<(String, f64, u64)> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return vec![];
+    };
+    let topic = value.get("topic").and_then(|v| v.as_str()).unwrap_or("");
+    if !topic.starts_with("publicTrade.") {
+        return vec![];
+    }
+    let bybit_symbol = topic.trim_start_matches("publicTrade.");
+    let Some(chainlink_symbol) = chainlink_symbol_from_bybit_stream_symbol(bybit_symbol) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    if let Some(items) = value.get("data").and_then(|v| v.as_array()) {
+        for item in items {
+            let price = item.get("p").and_then(parse_f64_value).unwrap_or(0.0);
+            if !price.is_finite() || price <= 0.0 {
+                continue;
+            }
+            let ts_ms = item
+                .get("T")
+                .and_then(parse_unix_ms_value)
+                .or_else(|| item.get("ts").and_then(parse_unix_ms_value))
+                .unwrap_or_else(unix_now_millis_u64);
+            out.push((chainlink_symbol.clone(), price, ts_ms));
+        }
+    }
+    out
+}
+
+fn okx_inst_id_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let (base, quote) = chainlink_symbol.split_once('/')?;
+    if !quote.eq_ignore_ascii_case("usd") {
+        return None;
+    }
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}-USDT", base.to_ascii_uppercase()))
+}
+
+fn chainlink_symbol_from_okx_inst_id(inst_id: &str) -> Option<String> {
+    let upper = inst_id.trim().to_ascii_uppercase();
+    let base = upper.strip_suffix("-USDT")?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}/usd", base.to_ascii_lowercase()))
+}
+
+fn parse_okx_trade_ticks(text: &str) -> Vec<(String, f64, u64)> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return vec![];
+    };
+    let arg = value.get("arg");
+    let channel = arg
+        .and_then(|a| a.get("channel"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    if channel != "trades" {
+        return vec![];
+    }
+    let inst_id = arg
+        .and_then(|a| a.get("instId"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let Some(chainlink_symbol) = chainlink_symbol_from_okx_inst_id(inst_id) else {
+        return vec![];
+    };
+    let mut out = Vec::new();
+    if let Some(items) = value.get("data").and_then(|v| v.as_array()) {
+        for item in items {
+            let price = item.get("px").and_then(parse_f64_value).unwrap_or(0.0);
+            if !price.is_finite() || price <= 0.0 {
+                continue;
+            }
+            let ts_ms = item
+                .get("ts")
+                .and_then(parse_unix_ms_value)
+                .unwrap_or_else(unix_now_millis_u64);
+            out.push((chainlink_symbol.clone(), price, ts_ms));
+        }
+    }
+    out
+}
+
+fn robust_median(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = values.len() / 2;
+    if values.len() % 2 == 1 {
+        Some(values[mid])
+    } else {
+        Some((values[mid - 1] + values[mid]) / 2.0)
+    }
+}
+
+fn spread_bps(values: &[f64]) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    let min_v = values.iter().copied().fold(f64::INFINITY, f64::min);
+    let max_v = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let median = robust_median(values.to_vec())?;
+    if !median.is_finite() || median <= 0.0 {
+        return None;
+    }
+    Some(((max_v - min_v) / median.abs()) * 10_000.0)
+}
+
+fn median_u64(mut values: Vec<u64>) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    Some(values[values.len() / 2])
 }
 
 fn chainlink_symbol_from_slug(slug: &str) -> Option<String> {
@@ -3048,6 +3308,7 @@ fn parse_chainlink_multi_symbol_ticks(text: &str) -> Vec<(String, f64, u64)> {
 
 const CHAINLINK_HUB_TICK_STALL_RECONNECT_MS: u64 = 2_000;
 const CHAINLINK_HUB_RECENT_TICKS_PER_SYMBOL: usize = 16_384;
+const LOCAL_PRICE_HUB_RECENT_TICKS_PER_SYMBOL: usize = 16_384;
 
 #[derive(Clone)]
 struct ChainlinkHub {
@@ -3236,6 +3497,223 @@ impl ChainlinkHub {
     }
 }
 
+#[derive(Clone)]
+struct LocalPriceHub {
+    senders: Arc<HashMap<String, broadcast::Sender<(f64, u64, LocalPriceSource)>>>,
+    recent_ticks: Arc<Mutex<HashMap<String, VecDeque<(f64, u64, LocalPriceSource)>>>>,
+}
+
+impl LocalPriceHub {
+    fn spawn(symbols: HashSet<String>) -> Arc<Self> {
+        let mut senders = HashMap::new();
+        let mut recent_ticks = HashMap::new();
+        for sym in &symbols {
+            let (tx, _rx) = broadcast::channel::<(f64, u64, LocalPriceSource)>(4096);
+            senders.insert(sym.clone(), tx);
+            recent_ticks.insert(sym.clone(), VecDeque::new());
+        }
+        let hub = Arc::new(Self {
+            senders: Arc::new(senders),
+            recent_ticks: Arc::new(Mutex::new(recent_ticks)),
+        });
+        Self::spawn_binance_feeder(Arc::clone(&hub), symbols.clone());
+        Self::spawn_bybit_feeder(Arc::clone(&hub), symbols.clone());
+        Self::spawn_okx_feeder(Arc::clone(&hub), symbols);
+        hub
+    }
+
+    fn publish_tick(&self, symbol: &str, price: f64, ts_ms: u64, source: LocalPriceSource) {
+        let sym = normalize_chainlink_symbol(symbol);
+        if sym.is_empty() || !price.is_finite() || price <= 0.0 {
+            return;
+        }
+        if let Ok(mut guard) = self.recent_ticks.lock() {
+            if let Some(buf) = guard.get_mut(&sym) {
+                buf.push_back((price, ts_ms, source));
+                while buf.len() > LOCAL_PRICE_HUB_RECENT_TICKS_PER_SYMBOL {
+                    buf.pop_front();
+                }
+            }
+        }
+        if let Some(tx) = self.senders.get(&sym) {
+            let _ = tx.send((price, ts_ms, source));
+        }
+    }
+
+    fn subscribe(&self, symbol: &str) -> Option<broadcast::Receiver<(f64, u64, LocalPriceSource)>> {
+        let sym = normalize_chainlink_symbol(symbol);
+        self.senders.get(&sym).map(|tx| tx.subscribe())
+    }
+
+    fn snapshot_recent_ticks(&self, symbol: &str) -> Vec<(f64, u64, LocalPriceSource)> {
+        let sym = normalize_chainlink_symbol(symbol);
+        if sym.is_empty() {
+            return Vec::new();
+        }
+        let Ok(guard) = self.recent_ticks.lock() else {
+            return Vec::new();
+        };
+        guard
+            .get(&sym)
+            .map(|buf| buf.iter().copied().collect::<Vec<_>>())
+            .unwrap_or_default()
+    }
+
+    fn spawn_binance_feeder(hub: Arc<Self>, symbols: HashSet<String>) {
+        let streams: Vec<String> = symbols
+            .iter()
+            .filter_map(|sym| binance_stream_symbol_from_chainlink_symbol(sym))
+            .map(|sym| format!("{}@trade", sym))
+            .collect();
+        if streams.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            let url = format!(
+                "wss://stream.binance.com:9443/stream?streams={}",
+                streams.join("/")
+            );
+            let mut backoff = Duration::from_millis(300);
+            loop {
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(3), connect_async(&url)).await;
+                let Ok(Ok((ws, _))) = connect else {
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(3));
+                    continue;
+                };
+                backoff = Duration::from_millis(300);
+                let (_write, mut read) = ws.split();
+                while let Some(next) = read.next().await {
+                    let msg = match next {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    };
+                    let text = match msg {
+                        Message::Text(t) => t.to_string(),
+                        Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    if let Some((symbol, price, ts_ms)) = parse_binance_combined_trade_tick(&text) {
+                        hub.publish_tick(&symbol, price, ts_ms, LocalPriceSource::Binance);
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_bybit_feeder(hub: Arc<Self>, symbols: HashSet<String>) {
+        let topics: Vec<String> = symbols
+            .iter()
+            .filter_map(|sym| bybit_stream_symbol_from_chainlink_symbol(sym))
+            .map(|sym| format!("publicTrade.{}", sym))
+            .collect();
+        if topics.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            let url = "wss://stream.bybit.com/v5/public/spot";
+            let mut backoff = Duration::from_millis(300);
+            loop {
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(3), connect_async(url)).await;
+                let Ok(Ok((ws, _))) = connect else {
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(3));
+                    continue;
+                };
+                backoff = Duration::from_millis(300);
+                let (mut write, mut read) = ws.split();
+                let subscribe_msg = json!({
+                    "op": "subscribe",
+                    "args": topics,
+                });
+                if write
+                    .send(Message::Text(subscribe_msg.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                while let Some(next) = read.next().await {
+                    let msg = match next {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    };
+                    let text = match msg {
+                        Message::Text(t) => t.to_string(),
+                        Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    for (symbol, price, ts_ms) in parse_bybit_public_trade_ticks(&text) {
+                        hub.publish_tick(&symbol, price, ts_ms, LocalPriceSource::Bybit);
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_okx_feeder(hub: Arc<Self>, symbols: HashSet<String>) {
+        let args: Vec<Value> = symbols
+            .iter()
+            .filter_map(|sym| okx_inst_id_from_chainlink_symbol(sym))
+            .map(|inst| json!({"channel":"trades","instId": inst}))
+            .collect();
+        if args.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            let url = "wss://ws.okx.com:8443/ws/v5/public";
+            let mut backoff = Duration::from_millis(300);
+            loop {
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(3), connect_async(url)).await;
+                let Ok(Ok((ws, _))) = connect else {
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(3));
+                    continue;
+                };
+                backoff = Duration::from_millis(300);
+                let (mut write, mut read) = ws.split();
+                let subscribe_msg = json!({
+                    "op": "subscribe",
+                    "args": args,
+                });
+                if write
+                    .send(Message::Text(subscribe_msg.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                while let Some(next) = read.next().await {
+                    let msg = match next {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    };
+                    let text = match msg {
+                        Message::Text(t) => t.to_string(),
+                        Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    for (symbol, price, ts_ms) in parse_okx_trade_ticks(&text) {
+                        hub.publish_tick(&symbol, price, ts_ms, LocalPriceSource::Okx);
+                    }
+                }
+            }
+        });
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct ChainlinkRoundAlignmentProbe {
     unix_ms: u64,
@@ -3290,12 +3768,43 @@ struct SelfBuiltPriceAggProbe {
     close_pick_rule: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LocalPriceAggProbe {
+    unix_ms: u64,
+    symbol: String,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    status: String,
+    side: Option<String>,
+    confidence: Option<f64>,
+    min_confidence: f64,
+    min_sources: usize,
+    max_source_spread_bps: f64,
+    source_count: usize,
+    source_agreement: Option<f64>,
+    source_spread_bps: Option<f64>,
+    open_price: Option<f64>,
+    open_ts_ms: Option<u64>,
+    close_price: Option<f64>,
+    close_ts_ms: Option<u64>,
+    open_exact_sources: usize,
+    close_exact_sources: usize,
+    observed_ticks: u64,
+    observed_snapshot_ticks: u64,
+    observed_live_ticks: u64,
+    lagged_ticks: u64,
+}
+
 fn chainlink_round_alignment_path() -> PathBuf {
     PathBuf::from("logs/chainlink_round_alignment.jsonl")
 }
 
 fn self_built_price_agg_probe_path() -> PathBuf {
     PathBuf::from("logs/self_built_price_agg.jsonl")
+}
+
+fn local_price_agg_probe_path() -> PathBuf {
+    PathBuf::from("logs/local_price_agg.jsonl")
 }
 
 fn chainlink_last_close_cache_path() -> PathBuf {
@@ -3351,6 +3860,32 @@ fn append_self_built_price_agg_probe(probe: &SelfBuiltPriceAggProbe) {
     };
     if let Err(e) = writeln!(writer, "{}", line) {
         warn!("⚠️ self_built_price_agg write failed: {}", e);
+    }
+}
+
+fn append_local_price_agg_probe(probe: &LocalPriceAggProbe) {
+    let path = local_price_agg_probe_path();
+    let file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "⚠️ local_price_agg write open failed: path={} err={}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let mut writer = BufWriter::new(file);
+    let line = match serde_json::to_string(probe) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("⚠️ local_price_agg serialize failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = writeln!(writer, "{}", line) {
+        warn!("⚠️ local_price_agg write failed: {}", e);
     }
 }
 
@@ -4734,6 +5269,7 @@ async fn run_post_close_winner_hint_listener(
     post_close_book_rx: mpsc::Receiver<PostCloseSideBookUpdate>,
     rest_url: String,
     chainlink_hub: Option<Arc<ChainlinkHub>>,
+    local_price_hub: Option<Arc<LocalPriceHub>>,
     slug: String,
     yes_asset_id: String,
     no_asset_id: String,
@@ -4760,31 +5296,25 @@ async fn run_post_close_winner_hint_listener(
     let cl_symbol = symbol.clone();
     let cl_slug = slug.clone();
     let chainlink_task = tokio::spawn(async move {
-        if let Some((side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
+        if let Some((source, side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
             run_chainlink_winner_hint(
                 &cl_symbol,
                 round_start_ts,
                 round_end_ts,
                 chainlink_deadline_ts,
                 chainlink_hub.clone(),
+                local_price_hub.clone(),
             )
             .await
         {
             let detect_ms = unix_now_millis_u64();
             info!(
-                "⏱️ chainlink_result_ready | slug={} symbol={} side={:?} open_exact={} open_ref={:.6} close={:.6} open_ts_ms={} close_ts_ms={} detect_ms={} latency_from_end_ms={}",
-                cl_slug, cl_symbol, side, open_is_exact, open_ref, close_px,
+                "⏱️ chainlink_result_ready | slug={} symbol={} source={:?} side={:?} open_exact={} open_ref={:.6} close={:.6} open_ts_ms={} close_ts_ms={} detect_ms={} latency_from_end_ms={}",
+                cl_slug, cl_symbol, source, side, open_is_exact, open_ref, close_px,
                 open_ts_ms, close_ts_ms, detect_ms,
                 detect_ms.saturating_sub(market_end_ms),
             );
-            return Some((
-                WinnerHintSource::Chainlink,
-                side,
-                open_ref,
-                close_px,
-                detect_ms,
-                open_is_exact,
-            ));
+            return Some((source, side, open_ref, close_px, detect_ms, open_is_exact));
         }
         None
     });
@@ -5868,6 +6398,431 @@ async fn run_self_built_price_aggregator(
     ))
 }
 
+#[derive(Debug, Default, Clone, Copy)]
+struct LocalSourceBoundaryState {
+    first_tick_ts_ms: Option<u64>,
+    open_exact: Option<AggregatedPricePoint>,
+    close_exact: Option<AggregatedPricePoint>,
+    nearest_start: Option<(u64, u64, f64)>,
+    nearest_end: Option<(u64, u64, f64)>,
+    first_after_start: Option<(u64, u64, f64)>,
+    first_after_end: Option<(u64, u64, f64)>,
+}
+
+fn pick_local_source_points(
+    state: &LocalSourceBoundaryState,
+    open_tol_ms: u64,
+    close_tol_ms: u64,
+) -> Option<(AggregatedPricePoint, AggregatedPricePoint)> {
+    let open = if let Some(p) = state.open_exact {
+        Some(p)
+    } else if let Some((delta, ts_ms, px)) = state.first_after_start {
+        if delta <= open_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_first_after_open",
+            })
+        } else {
+            None
+        }
+    } else if let Some((delta, ts_ms, px)) = state.nearest_start {
+        if delta <= open_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_nearest_open",
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }?;
+
+    let close = if let Some(p) = state.close_exact {
+        Some(p)
+    } else if let Some((delta, ts_ms, px)) = state.first_after_end {
+        if delta <= close_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_first_after_close",
+            })
+        } else {
+            None
+        }
+    } else if let Some((delta, ts_ms, px)) = state.nearest_end {
+        if delta <= close_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_nearest_close",
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }?;
+
+    Some((open, close))
+}
+
+fn local_price_agg_ingest_state(
+    states: &mut HashMap<LocalPriceSource, LocalSourceBoundaryState>,
+    source: LocalPriceSource,
+    price: f64,
+    ts_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+) {
+    let st = states.entry(source).or_default();
+    self_built_agg_ingest_tick(
+        price,
+        ts_ms,
+        start_ms,
+        end_ms,
+        &mut st.first_tick_ts_ms,
+        &mut st.open_exact,
+        &mut st.close_exact,
+        &mut st.nearest_start,
+        &mut st.nearest_end,
+        &mut st.first_after_start,
+        &mut st.first_after_end,
+    );
+}
+
+async fn run_local_price_aggregator(
+    local_price_hub: Option<Arc<LocalPriceHub>>,
+    symbol: &str,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    hard_deadline_ts: u64,
+) -> Option<(Side, f64, f64, u64, u64, bool)> {
+    let Some(hub) = local_price_hub else {
+        return None;
+    };
+    let target_symbol = normalize_chainlink_symbol(symbol);
+    if target_symbol.is_empty() {
+        return None;
+    }
+
+    let start_ms = round_start_ts.saturating_mul(1_000);
+    let end_ms = round_end_ts.saturating_mul(1_000);
+    let open_tol_ms = local_price_agg_open_tolerance_ms();
+    let close_tol_ms = local_price_agg_close_tolerance_ms();
+    let min_confidence = local_price_agg_min_confidence();
+    let min_sources = local_price_agg_min_sources();
+    let max_source_spread_bps = local_price_agg_max_source_spread_bps();
+
+    let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
+    let mut observed_ticks: u64 = 0;
+    let mut observed_snapshot_ticks: u64 = 0;
+    let mut observed_live_ticks: u64 = 0;
+    let mut lagged_ticks: u64 = 0;
+
+    for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
+        observed_ticks = observed_ticks.saturating_add(1);
+        observed_snapshot_ticks = observed_snapshot_ticks.saturating_add(1);
+        local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+    }
+
+    if let Some(mut rx) = hub.subscribe(&target_symbol) {
+        while unix_now_secs() <= hard_deadline_ts {
+            let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
+            let (price, ts_ms, source) = match next {
+                Ok(Ok(hit)) => hit,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                    lagged_ticks = lagged_ticks.saturating_add(n);
+                    continue;
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                Err(_) => continue,
+            };
+            observed_ticks = observed_ticks.saturating_add(1);
+            observed_live_ticks = observed_live_ticks.saturating_add(1);
+            local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+
+            if unix_now_millis_u64() >= end_ms {
+                let ready = states
+                    .values()
+                    .filter(|st| pick_local_source_points(st, open_tol_ms, close_tol_ms).is_some())
+                    .count();
+                if ready >= min_sources {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut source_hits: Vec<(LocalPriceSource, AggregatedPricePoint, AggregatedPricePoint)> =
+        Vec::new();
+    for (source, st) in &states {
+        if let Some((open, close)) = pick_local_source_points(st, open_tol_ms, close_tol_ms) {
+            source_hits.push((*source, open, close));
+        }
+    }
+
+    let emit_probe = |status: &str,
+                      side: Option<Side>,
+                      confidence: Option<f64>,
+                      source_count: usize,
+                      source_agreement: Option<f64>,
+                      source_spread_bps: Option<f64>,
+                      open_price: Option<f64>,
+                      open_ts_ms: Option<u64>,
+                      close_price: Option<f64>,
+                      close_ts_ms: Option<u64>,
+                      open_exact_sources: usize,
+                      close_exact_sources: usize| {
+        append_local_price_agg_probe(&LocalPriceAggProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            status: status.to_string(),
+            side: side.map(|s| format!("{:?}", s)),
+            confidence,
+            min_confidence,
+            min_sources,
+            max_source_spread_bps,
+            source_count,
+            source_agreement,
+            source_spread_bps,
+            open_price,
+            open_ts_ms,
+            close_price,
+            close_ts_ms,
+            open_exact_sources,
+            close_exact_sources,
+            observed_ticks,
+            observed_snapshot_ticks,
+            observed_live_ticks,
+            lagged_ticks,
+        });
+    };
+
+    if source_hits.len() < min_sources {
+        warn!(
+            "⚠️ local_price_agg_unresolved | symbol={} round_start_ts={} round_end_ts={} reason=insufficient_sources have={} need={} observed_ticks={} snapshot_ticks={} live_ticks={}",
+            target_symbol,
+            round_start_ts,
+            round_end_ts,
+            source_hits.len(),
+            min_sources,
+            observed_ticks,
+            observed_snapshot_ticks,
+            observed_live_ticks,
+        );
+        emit_probe(
+            "insufficient_sources",
+            None,
+            None,
+            source_hits.len(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            0,
+            0,
+        );
+        return None;
+    }
+
+    let open_values: Vec<f64> = source_hits.iter().map(|(_, o, _)| o.price).collect();
+    let close_values: Vec<f64> = source_hits.iter().map(|(_, _, c)| c.price).collect();
+    let open_timestamps: Vec<u64> = source_hits.iter().map(|(_, o, _)| o.ts_ms).collect();
+    let close_timestamps: Vec<u64> = source_hits.iter().map(|(_, _, c)| c.ts_ms).collect();
+    let open_exact_sources = source_hits.iter().filter(|(_, o, _)| o.exact).count();
+    let close_exact_sources = source_hits.iter().filter(|(_, _, c)| c.exact).count();
+
+    let Some(open_med) = robust_median(open_values.clone()) else {
+        emit_probe(
+            "open_median_missing",
+            None,
+            None,
+            source_hits.len(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            open_exact_sources,
+            close_exact_sources,
+        );
+        return None;
+    };
+    let Some(close_med) = robust_median(close_values.clone()) else {
+        emit_probe(
+            "close_median_missing",
+            None,
+            None,
+            source_hits.len(),
+            None,
+            None,
+            Some(open_med),
+            median_u64(open_timestamps.clone()),
+            None,
+            None,
+            open_exact_sources,
+            close_exact_sources,
+        );
+        return None;
+    };
+    let open_ts_med = median_u64(open_timestamps).unwrap_or(start_ms);
+    let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
+
+    let side = if close_med >= open_med {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    let agree_cnt = source_hits
+        .iter()
+        .filter(|(_, open, close)| {
+            let src_side = if close.price >= open.price {
+                Side::Yes
+            } else {
+                Side::No
+            };
+            src_side == side
+        })
+        .count();
+    let source_agreement = agree_cnt as f64 / source_hits.len() as f64;
+    let spread_open = spread_bps(&open_values).unwrap_or(0.0);
+    let spread_close = spread_bps(&close_values).unwrap_or(0.0);
+    let source_spread = spread_open.max(spread_close);
+    if source_spread > max_source_spread_bps + 1e-9 {
+        warn!(
+            "⚠️ local_price_agg_spread_reject | symbol={} round_start_ts={} round_end_ts={} spread_bps={:.3} max_bps={:.3} source_count={}",
+            target_symbol,
+            round_start_ts,
+            round_end_ts,
+            source_spread,
+            max_source_spread_bps,
+            source_hits.len(),
+        );
+        emit_probe(
+            "spread_reject",
+            Some(side),
+            None,
+            source_hits.len(),
+            Some(source_agreement),
+            Some(source_spread),
+            Some(open_med),
+            Some(open_ts_med),
+            Some(close_med),
+            Some(close_ts_med),
+            open_exact_sources,
+            close_exact_sources,
+        );
+        return None;
+    }
+
+    let confidence = if source_hits.len() == 1 {
+        if open_exact_sources > 0 && close_exact_sources > 0 {
+            0.93
+        } else {
+            0.87
+        }
+    } else {
+        let source_factor = (source_hits.len().min(3) as f64) / 3.0;
+        let spread_factor = if max_source_spread_bps > 0.0 {
+            (1.0 - (source_spread / max_source_spread_bps)).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let exact_factor = ((open_exact_sources.min(close_exact_sources).min(2)) as f64) / 2.0;
+        (0.50 * source_agreement
+            + 0.20 * source_factor
+            + 0.20 * spread_factor
+            + 0.10 * exact_factor)
+            .clamp(0.0, 1.0)
+    };
+
+    if confidence + 1e-9 < min_confidence {
+        warn!(
+            "⚠️ local_price_agg_low_confidence | symbol={} round_start_ts={} round_end_ts={} confidence={:.3} min_confidence={:.3} source_count={} agreement={:.3} spread_bps={:.3}",
+            target_symbol,
+            round_start_ts,
+            round_end_ts,
+            confidence,
+            min_confidence,
+            source_hits.len(),
+            source_agreement,
+            source_spread,
+        );
+        emit_probe(
+            "low_confidence",
+            Some(side),
+            Some(confidence),
+            source_hits.len(),
+            Some(source_agreement),
+            Some(source_spread),
+            Some(open_med),
+            Some(open_ts_med),
+            Some(close_med),
+            Some(close_ts_med),
+            open_exact_sources,
+            close_exact_sources,
+        );
+        return None;
+    }
+
+    info!(
+        "🧠 local_price_agg_ready | unix_ms={} symbol={} side={:?} confidence={:.3} sources={} agreement={:.3} spread_bps={:.3} open={:.6}@{} close={:.6}@{} open_exact_sources={} close_exact_sources={} observed_ticks={} snapshot_ticks={} live_ticks={} lagged_ticks={}",
+        unix_now_millis_u64(),
+        target_symbol,
+        side,
+        confidence,
+        source_hits
+            .iter()
+            .map(|(s, _, _)| s.as_str())
+            .collect::<Vec<_>>()
+            .join(","),
+        source_agreement,
+        source_spread,
+        open_med,
+        open_ts_med,
+        close_med,
+        close_ts_med,
+        open_exact_sources,
+        close_exact_sources,
+        observed_ticks,
+        observed_snapshot_ticks,
+        observed_live_ticks,
+        lagged_ticks,
+    );
+    emit_probe(
+        "ready",
+        Some(side),
+        Some(confidence),
+        source_hits.len(),
+        Some(source_agreement),
+        Some(source_spread),
+        Some(open_med),
+        Some(open_ts_med),
+        Some(close_med),
+        Some(close_ts_med),
+        open_exact_sources,
+        close_exact_sources,
+    );
+
+    Some((side, open_med, close_med, open_ts_med, close_ts_med, false))
+}
+
 async fn run_chainlink_winner_hint_via_hub(
     hub: Arc<ChainlinkHub>,
     symbol: &str,
@@ -6117,7 +7072,46 @@ async fn run_chainlink_winner_hint(
     round_end_ts: u64,
     hard_deadline_ts: u64,
     chainlink_hub: Option<Arc<ChainlinkHub>>,
-) -> Option<(Side, f64, f64, u64, u64, bool)> {
+    local_price_hub: Option<Arc<LocalPriceHub>>,
+) -> Option<(WinnerHintSource, Side, f64, f64, u64, u64, bool)> {
+    if local_price_agg_enabled() {
+        let agg_start_ms = unix_now_millis_u64();
+        if let Some((side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
+            run_local_price_aggregator(
+                local_price_hub,
+                symbol,
+                round_start_ts,
+                round_end_ts,
+                hard_deadline_ts,
+            )
+            .await
+        {
+            let agg_done_ms = unix_now_millis_u64();
+            info!(
+                "⏱️ local_price_agg_latency | symbol={} round_start_ts={} round_end_ts={} status=ready elapsed_ms={}",
+                symbol,
+                round_start_ts,
+                round_end_ts,
+                agg_done_ms.saturating_sub(agg_start_ms),
+            );
+            if local_price_agg_decision_enabled() {
+                return Some((
+                    WinnerHintSource::LocalAgg,
+                    side,
+                    open_ref,
+                    close_px,
+                    open_ts_ms,
+                    close_ts_ms,
+                    open_is_exact,
+                ));
+            }
+            info!(
+                "🧪 local_price_agg_shadow_only | symbol={} round_end_ts={} decision_enabled=false",
+                symbol, round_end_ts
+            );
+        }
+    }
+
     if self_built_price_agg_enabled() {
         let agg_start_ms = unix_now_millis_u64();
         if let Some(hit) = run_self_built_price_aggregator(
@@ -6137,7 +7131,16 @@ async fn run_chainlink_winner_hint(
                 round_end_ts,
                 agg_done_ms.saturating_sub(agg_start_ms),
             );
-            return Some(hit);
+            let (side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact) = hit;
+            return Some((
+                WinnerHintSource::Chainlink,
+                side,
+                open_ref,
+                close_px,
+                open_ts_ms,
+                close_ts_ms,
+                open_is_exact,
+            ));
         }
         let agg_done_ms = unix_now_millis_u64();
         warn!(
@@ -6154,7 +7157,16 @@ async fn run_chainlink_winner_hint(
             run_data_streams_winner_hint(symbol, round_start_ts, round_end_ts, hard_deadline_ts)
                 .await
         {
-            return Some(hit);
+            let (side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact) = hit;
+            return Some((
+                WinnerHintSource::Chainlink,
+                side,
+                open_ref,
+                close_px,
+                open_ts_ms,
+                close_ts_ms,
+                open_is_exact,
+            ));
         }
         warn!(
             "⚠️ chainlink_data_streams_unresolved_fallback_rtds | symbol={} round_start_ts={} round_end_ts={}",
@@ -6170,7 +7182,20 @@ async fn run_chainlink_winner_hint(
             round_end_ts,
             hard_deadline_ts,
         )
-        .await;
+        .await
+        .map(
+            |(side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)| {
+                (
+                    WinnerHintSource::Chainlink,
+                    side,
+                    open_ref,
+                    close_px,
+                    open_ts_ms,
+                    close_ts_ms,
+                    open_is_exact,
+                )
+            },
+        );
     }
 
     let ws_url = post_close_chainlink_ws_url();
@@ -6402,7 +7427,15 @@ async fn run_chainlink_winner_hint(
                         close_ts_ms,
                     );
                     set_last_chainlink_close(&target_symbol, close_ts_ms, close);
-                    return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+                    return Some((
+                        WinnerHintSource::Chainlink,
+                        side,
+                        open_ref_px,
+                        close,
+                        open_ts_ms,
+                        close_ts_ms,
+                        true,
+                    ));
                 }
                 set_last_chainlink_close(&target_symbol, close_ts_ms, close);
                 warn!(
@@ -6442,7 +7475,15 @@ async fn run_chainlink_winner_hint(
                 target_symbol, side, open_ref_px, open_ts_ms, close, close_ts_ms,
             );
             set_last_chainlink_close(&target_symbol, close_ts_ms, close);
-            return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+            return Some((
+                WinnerHintSource::Chainlink,
+                side,
+                open_ref_px,
+                close,
+                open_ts_ms,
+                close_ts_ms,
+                true,
+            ));
         }
         set_last_chainlink_close(&target_symbol, close_ts_ms, close);
     }
@@ -6857,8 +7898,8 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
     );
 
     let coord_cfg = CoordinatorConfig::from_env();
-    let shared_hub = if coord_cfg.strategy.is_oracle_lag_sniping() {
-        let mut hub_symbols: HashSet<String> = HashSet::new();
+    let mut hub_symbols: HashSet<String> = HashSet::new();
+    if coord_cfg.strategy.is_oracle_lag_sniping() {
         for prefix in &prefixes {
             if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
                 hub_symbols.insert(format!("{}/usd", sym));
@@ -6869,17 +7910,29 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
                 );
             }
         }
-        if hub_symbols.is_empty() {
-            None
-        } else {
-            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-            log_symbols.sort();
-            info!(
-                "🛰️ shared chainlink_hub starting | symbols={}",
-                log_symbols.join(",")
-            );
-            Some(ChainlinkHub::spawn(hub_symbols))
-        }
+    }
+    let shared_hub = if hub_symbols.is_empty() {
+        None
+    } else {
+        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+        log_symbols.sort();
+        info!(
+            "🛰️ shared chainlink_hub starting | symbols={}",
+            log_symbols.join(",")
+        );
+        Some(ChainlinkHub::spawn(hub_symbols.clone()))
+    };
+    let shared_local_price_hub = if coord_cfg.strategy.is_oracle_lag_sniping()
+        && local_price_agg_enabled()
+        && !hub_symbols.is_empty()
+    {
+        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+        log_symbols.sort();
+        info!(
+            "🧠 shared local_price_hub starting | symbols={} sources=binance,bybit,okx",
+            log_symbols.join(",")
+        );
+        Some(LocalPriceHub::spawn(hub_symbols.clone()))
     } else {
         None
     };
@@ -6912,6 +7965,7 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
         let ctx = Arc::new(WorkerCtx {
             slug: prefix.clone(),
             chainlink_hub: shared_hub.clone(),
+            local_price_hub: shared_local_price_hub.clone(),
             arbiter_tx: arbiter_sender.clone(),
             round_tail_tx: round_tail_sender.clone(),
         });
@@ -7757,6 +8811,7 @@ async fn main() -> anyhow::Result<()> {
 struct WorkerCtx {
     slug: String,
     chainlink_hub: Option<Arc<ChainlinkHub>>,
+    local_price_hub: Option<Arc<LocalPriceHub>>,
     /// Cross-market arbiter channel. When Some, hint listeners send
     /// `ArbiterObservation` to this instead of `WinnerHint` directly.
     arbiter_tx: Option<mpsc::Sender<ArbiterObservation>>,
@@ -7831,6 +8886,23 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             log_symbols.join(",")
         );
         Some(ChainlinkHub::spawn(hub_symbols))
+    } else {
+        None
+    };
+    let local_price_hub = if let Some(c) = &ctx {
+        c.local_price_hub.clone()
+    } else if coord_cfg_base.strategy.is_oracle_lag_sniping() && local_price_agg_enabled() {
+        let mut hub_symbols = HashSet::new();
+        for base in oracle_lag_symbol_universe.hub_symbols() {
+            hub_symbols.insert(format!("{}/usd", base));
+        }
+        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+        log_symbols.sort();
+        info!(
+            "🧠 local_price_hub starting | symbols={} sources=binance,bybit,okx",
+            log_symbols.join(",")
+        );
+        Some(LocalPriceHub::spawn(hub_symbols))
     } else {
         None
     };
@@ -8761,6 +9833,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             let hint_md_rx = coord_md_rx.clone();
             let hint_post_close_book_rx = post_close_book_rx;
             let hint_chainlink_hub = chainlink_hub.clone();
+            let hint_local_price_hub = local_price_hub.clone();
             let hint_rest_url = settings.rest_url.clone();
             let hint_slug = slug.clone();
             let hint_yes_asset_id = yes_asset_id.clone();
@@ -8783,6 +9856,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     hint_post_close_book_rx,
                     hint_rest_url,
                     hint_chainlink_hub,
+                    hint_local_price_hub,
                     hint_slug,
                     hint_yes_asset_id,
                     hint_no_asset_id,
@@ -9416,6 +10490,36 @@ mod tests {
                 ("btc/usd".to_string(), 85000.1, 1_776_488_226_000),
                 ("eth/usd".to_string(), 2400.2, 1_776_488_226_000),
             ]
+        );
+    }
+
+    #[test]
+    fn test_parse_binance_combined_trade_tick() {
+        let msg = r#"{"stream":"btcusdt@trade","data":{"e":"trade","E":1776488227000,"s":"BTCUSDT","t":1,"p":"85000.12000000","q":"0.001","T":1776488226999}}"#;
+        let tick = parse_binance_combined_trade_tick(msg);
+        assert_eq!(
+            tick,
+            Some(("btc/usd".to_string(), 85000.12, 1_776_488_226_999))
+        );
+    }
+
+    #[test]
+    fn test_parse_bybit_public_trade_ticks() {
+        let msg = r#"{"topic":"publicTrade.BTCUSDT","type":"snapshot","ts":1776488227000,"data":[{"T":1776488226998,"s":"BTCUSDT","S":"Buy","v":"0.001","p":"85000.12"}]}"#;
+        let ticks = parse_bybit_public_trade_ticks(msg);
+        assert_eq!(
+            ticks,
+            vec![("btc/usd".to_string(), 85000.12, 1_776_488_226_998)]
+        );
+    }
+
+    #[test]
+    fn test_parse_okx_trade_ticks() {
+        let msg = r#"{"arg":{"channel":"trades","instId":"BTC-USDT"},"data":[{"instId":"BTC-USDT","tradeId":"1","px":"85000.12","sz":"0.1","side":"buy","ts":"1776488226997"}]}"#;
+        let ticks = parse_okx_trade_ticks(msg);
+        assert_eq!(
+            ticks,
+            vec![("btc/usd".to_string(), 85000.12, 1_776_488_226_997)]
         );
     }
 
