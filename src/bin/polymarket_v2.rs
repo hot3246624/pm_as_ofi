@@ -5796,11 +5796,59 @@ async fn run_chainlink_winner_hint_via_hub(
     let mut close_point: Option<(f64, u64)> = None;
     let mut open_missing_warned = false;
     let mut observed_ticks: u64 = 0;
+    let mut observed_snapshot_ticks: u64 = 0;
+    let mut observed_live_ticks: u64 = 0;
     let mut lagged_ticks: u64 = 0;
     let mut first_tick_ts_ms: Option<u64> = None;
     let mut last_tick_ts_ms: Option<u64> = None;
     let mut nearest_start: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
     let mut nearest_end: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
+
+    for (price, ts_ms) in hub.snapshot_recent_ticks(&target_symbol) {
+        observed_ticks = observed_ticks.saturating_add(1);
+        observed_snapshot_ticks = observed_snapshot_ticks.saturating_add(1);
+        first_tick_ts_ms.get_or_insert(ts_ms);
+        last_tick_ts_ms = Some(ts_ms);
+        let start_delta = ts_ms.abs_diff(start_ms);
+        match nearest_start {
+            Some((best_delta, _, _)) if start_delta >= best_delta => {}
+            _ => nearest_start = Some((start_delta, ts_ms, price)),
+        }
+        let end_delta = ts_ms.abs_diff(end_ms);
+        match nearest_end {
+            Some((best_delta, _, _)) if end_delta >= best_delta => {}
+            _ => nearest_end = Some((end_delta, ts_ms, price)),
+        }
+        if open_point.is_none() && ts_ms == start_ms {
+            open_point = Some((price, ts_ms));
+        }
+        if close_point.is_none() && ts_ms == end_ms {
+            close_point = Some((price, ts_ms));
+        }
+    }
+
+    if let Some((close, close_ts_ms)) = close_point {
+        if let Some((open_ref_px, open_ts_ms)) = open_point {
+            let side = if close >= open_ref_px {
+                Side::Yes
+            } else {
+                Side::No
+            };
+            info!(
+                "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_exact_hub_snapshot",
+                unix_now_millis_u64(),
+                target_symbol,
+                side,
+                open_ref_px,
+                open_ts_ms,
+                close,
+                close_ts_ms,
+            );
+            set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+            return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+        }
+    }
+
     let Some(mut rx) = hub.subscribe(&target_symbol) else {
         warn!(
             "⚠️ chainlink_hub_unsubscribed | symbol={} round_start_ts={} round_end_ts={}",
@@ -5837,6 +5885,7 @@ async fn run_chainlink_winner_hint_via_hub(
             Err(_) => continue,
         };
         observed_ticks = observed_ticks.saturating_add(1);
+        observed_live_ticks = observed_live_ticks.saturating_add(1);
         first_tick_ts_ms.get_or_insert(ts_ms);
         last_tick_ts_ms = Some(ts_ms);
         let start_delta = ts_ms.abs_diff(start_ms);
@@ -5942,12 +5991,14 @@ async fn run_chainlink_winner_hint_via_hub(
     }
 
     warn!(
-        "⚠️ chainlink_winner_hint_unresolved | symbol={} round_start_ts={} round_end_ts={} deadline_ts={} observed_ticks={} lagged_ticks={} first_tick_ts_ms={:?} last_tick_ts_ms={:?} nearest_start={:?} nearest_end={:?}",
+        "⚠️ chainlink_winner_hint_unresolved | symbol={} round_start_ts={} round_end_ts={} deadline_ts={} observed_ticks={} observed_snapshot_ticks={} observed_live_ticks={} lagged_ticks={} first_tick_ts_ms={:?} last_tick_ts_ms={:?} nearest_start={:?} nearest_end={:?}",
         target_symbol,
         round_start_ts,
         round_end_ts,
         hard_deadline_ts,
         observed_ticks,
+        observed_snapshot_ticks,
+        observed_live_ticks,
         lagged_ticks,
         first_tick_ts_ms,
         last_tick_ts_ms,
