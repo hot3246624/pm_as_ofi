@@ -6119,6 +6119,7 @@ async fn run_chainlink_winner_hint(
     chainlink_hub: Option<Arc<ChainlinkHub>>,
 ) -> Option<(Side, f64, f64, u64, u64, bool)> {
     if self_built_price_agg_enabled() {
+        let agg_start_ms = unix_now_millis_u64();
         if let Some(hit) = run_self_built_price_aggregator(
             chainlink_hub.clone(),
             symbol,
@@ -6128,11 +6129,23 @@ async fn run_chainlink_winner_hint(
         )
         .await
         {
+            let agg_done_ms = unix_now_millis_u64();
+            info!(
+                "⏱️ self_built_price_agg_latency | symbol={} round_start_ts={} round_end_ts={} status=ready elapsed_ms={}",
+                symbol,
+                round_start_ts,
+                round_end_ts,
+                agg_done_ms.saturating_sub(agg_start_ms),
+            );
             return Some(hit);
         }
+        let agg_done_ms = unix_now_millis_u64();
         warn!(
-            "⚠️ self_built_price_agg_unresolved_fallback_legacy | symbol={} round_start_ts={} round_end_ts={}",
-            symbol, round_start_ts, round_end_ts
+            "⚠️ self_built_price_agg_unresolved_fallback_legacy | symbol={} round_start_ts={} round_end_ts={} elapsed_ms={}",
+            symbol,
+            round_start_ts,
+            round_end_ts,
+            agg_done_ms.saturating_sub(agg_start_ms),
         );
     }
 
