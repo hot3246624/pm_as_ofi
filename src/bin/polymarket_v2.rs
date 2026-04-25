@@ -3284,6 +3284,10 @@ struct SelfBuiltPriceAggProbe {
     lagged_ticks: u64,
     nearest_start_delta_ms: Option<u64>,
     nearest_end_delta_ms: Option<u64>,
+    first_after_start_delta_ms: Option<u64>,
+    first_after_end_delta_ms: Option<u64>,
+    open_pick_rule: Option<String>,
+    close_pick_rule: Option<String>,
 }
 
 fn chainlink_round_alignment_path() -> PathBuf {
@@ -5403,6 +5407,8 @@ fn self_built_agg_ingest_tick(
     close_exact: &mut Option<AggregatedPricePoint>,
     nearest_start: &mut Option<(u64, u64, f64)>,
     nearest_end: &mut Option<(u64, u64, f64)>,
+    first_after_start: &mut Option<(u64, u64, f64)>,
+    first_after_end: &mut Option<(u64, u64, f64)>,
 ) {
     first_tick_ts_ms.get_or_insert(ts_ms);
 
@@ -5426,11 +5432,25 @@ fn self_built_agg_ingest_tick(
         Some((best_delta, _, _)) if start_delta >= best_delta => {}
         _ => *nearest_start = Some((start_delta, ts_ms, price)),
     }
+    if ts_ms >= start_ms {
+        let after_delta = ts_ms.saturating_sub(start_ms);
+        match *first_after_start {
+            Some((best_delta, _, _)) if after_delta >= best_delta => {}
+            _ => *first_after_start = Some((after_delta, ts_ms, price)),
+        }
+    }
 
     let end_delta = ts_ms.abs_diff(end_ms);
     match *nearest_end {
         Some((best_delta, _, _)) if end_delta >= best_delta => {}
         _ => *nearest_end = Some((end_delta, ts_ms, price)),
+    }
+    if ts_ms >= end_ms {
+        let after_delta = ts_ms.saturating_sub(end_ms);
+        match *first_after_end {
+            Some((best_delta, _, _)) if after_delta >= best_delta => {}
+            _ => *first_after_end = Some((after_delta, ts_ms, price)),
+        }
     }
 }
 
@@ -5469,6 +5489,8 @@ async fn run_self_built_price_aggregator(
     let mut lagged_ticks: u64 = 0;
     let mut nearest_start: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
     let mut nearest_end: Option<(u64, u64, f64)> = None; // (abs_delta_ms, ts_ms, price)
+    let mut first_after_start: Option<(u64, u64, f64)> = None; // (delta_after_ms, ts_ms, price)
+    let mut first_after_end: Option<(u64, u64, f64)> = None; // (delta_after_ms, ts_ms, price)
     let mut first_tick_ts_ms: Option<u64> = None;
     let emit_probe = |status: &str,
                       side: Option<Side>,
@@ -5480,7 +5502,11 @@ async fn run_self_built_price_aggregator(
                       observed_live_ticks: u64,
                       lagged_ticks: u64,
                       nearest_start: Option<(u64, u64, f64)>,
-                      nearest_end: Option<(u64, u64, f64)>| {
+                      nearest_end: Option<(u64, u64, f64)>,
+                      first_after_start: Option<(u64, u64, f64)>,
+                      first_after_end: Option<(u64, u64, f64)>,
+                      open_pick_rule: Option<&str>,
+                      close_pick_rule: Option<&str>| {
         append_self_built_price_agg_probe(&SelfBuiltPriceAggProbe {
             unix_ms: unix_now_millis_u64(),
             symbol: target_symbol.clone(),
@@ -5506,6 +5532,10 @@ async fn run_self_built_price_aggregator(
             lagged_ticks,
             nearest_start_delta_ms: nearest_start.map(|(d, _, _)| d),
             nearest_end_delta_ms: nearest_end.map(|(d, _, _)| d),
+            first_after_start_delta_ms: first_after_start.map(|(d, _, _)| d),
+            first_after_end_delta_ms: first_after_end.map(|(d, _, _)| d),
+            open_pick_rule: open_pick_rule.map(|s| s.to_string()),
+            close_pick_rule: close_pick_rule.map(|s| s.to_string()),
         });
     };
 
@@ -5522,6 +5552,8 @@ async fn run_self_built_price_aggregator(
             &mut close_exact,
             &mut nearest_start,
             &mut nearest_end,
+            &mut first_after_start,
+            &mut first_after_end,
         );
         observed_snapshot_ticks = observed_snapshot_ticks.saturating_add(1);
     }
@@ -5529,6 +5561,9 @@ async fn run_self_built_price_aggregator(
     // If snapshot already gives enough evidence, avoid extra waiting.
     let need_live_stream = !(close_exact.is_some()
         && (open_exact.is_some()
+            || first_after_start
+                .map(|(delta, _, _)| delta <= open_tol_ms)
+                .unwrap_or(false)
             || nearest_start
                 .map(|(delta, _, _)| delta <= open_tol_ms)
                 .unwrap_or(false)
@@ -5552,6 +5587,10 @@ async fn run_self_built_price_aggregator(
                 lagged_ticks,
                 nearest_start,
                 nearest_end,
+                first_after_start,
+                first_after_end,
+                None,
+                None,
             );
             return None;
         };
@@ -5578,12 +5617,17 @@ async fn run_self_built_price_aggregator(
                 &mut close_exact,
                 &mut nearest_start,
                 &mut nearest_end,
+                &mut first_after_start,
+                &mut first_after_end,
             );
             observed_live_ticks = observed_live_ticks.saturating_add(1);
 
             // Early stop: close known and at least one usable open candidate already exists.
             if close_exact.is_some()
                 && (open_exact.is_some()
+                    || first_after_start
+                        .map(|(delta, _, _)| delta <= open_tol_ms)
+                        .unwrap_or(false)
                     || nearest_start
                         .map(|(delta, _, _)| delta <= open_tol_ms)
                         .unwrap_or(false)
@@ -5599,49 +5643,89 @@ async fn run_self_built_price_aggregator(
             .map(|(price, ts_ms)| AggregatedPricePoint::from_exact(price, ts_ms, "prewarm_close"));
     }
 
-    let open_point = if let Some(p) = open_exact {
-        Some(p)
-    } else if let Some((delta, ts_ms, px)) = nearest_start {
-        if delta <= open_tol_ms {
-            Some(AggregatedPricePoint {
-                price: px,
-                ts_ms,
-                exact: false,
-                abs_delta_ms: delta,
-                source: "hub_nearest_open",
-            })
+    let (open_point, open_pick_rule): (Option<AggregatedPricePoint>, &'static str) =
+        if let Some(p) = open_exact {
+            (Some(p), "exact")
+        } else if let Some((delta, ts_ms, px)) = first_after_start {
+            if delta <= open_tol_ms {
+                (
+                    Some(AggregatedPricePoint {
+                        price: px,
+                        ts_ms,
+                        exact: false,
+                        abs_delta_ms: delta,
+                        source: "hub_first_after_open",
+                    }),
+                    "first_after",
+                )
+            } else {
+                (None, "missing")
+            }
+        } else if let Some((delta, ts_ms, px)) = nearest_start {
+            if delta <= open_tol_ms {
+                (
+                    Some(AggregatedPricePoint {
+                        price: px,
+                        ts_ms,
+                        exact: false,
+                        abs_delta_ms: delta,
+                        source: "hub_nearest_open",
+                    }),
+                    "nearest",
+                )
+            } else {
+                (None, "missing")
+            }
+        } else if let Some((px, ts_ms)) = prev_round_close {
+            (
+                Some(AggregatedPricePoint {
+                    price: px,
+                    ts_ms,
+                    exact: false,
+                    abs_delta_ms: ts_ms.abs_diff(start_ms),
+                    source: "prev_round_close",
+                }),
+                "prev_close",
+            )
         } else {
-            None
-        }
-    } else if let Some((px, ts_ms)) = prev_round_close {
-        Some(AggregatedPricePoint {
-            price: px,
-            ts_ms,
-            exact: false,
-            abs_delta_ms: ts_ms.abs_diff(start_ms),
-            source: "prev_round_close",
-        })
-    } else {
-        None
-    };
-
-    let close_point = if let Some(p) = close_exact {
-        Some(p)
-    } else if let Some((delta, ts_ms, px)) = nearest_end {
-        if delta <= close_tol_ms {
-            Some(AggregatedPricePoint {
-                price: px,
-                ts_ms,
-                exact: false,
-                abs_delta_ms: delta,
-                source: "hub_nearest_close",
-            })
+            (None, "missing")
+        };
+    let (close_point, close_pick_rule): (Option<AggregatedPricePoint>, &'static str) =
+        if let Some(p) = close_exact {
+            (Some(p), "exact")
+        } else if let Some((delta, ts_ms, px)) = first_after_end {
+            if delta <= close_tol_ms {
+                (
+                    Some(AggregatedPricePoint {
+                        price: px,
+                        ts_ms,
+                        exact: false,
+                        abs_delta_ms: delta,
+                        source: "hub_first_after_close",
+                    }),
+                    "first_after",
+                )
+            } else {
+                (None, "missing")
+            }
+        } else if let Some((delta, ts_ms, px)) = nearest_end {
+            if delta <= close_tol_ms {
+                (
+                    Some(AggregatedPricePoint {
+                        price: px,
+                        ts_ms,
+                        exact: false,
+                        abs_delta_ms: delta,
+                        source: "hub_nearest_close",
+                    }),
+                    "nearest",
+                )
+            } else {
+                (None, "missing")
+            }
         } else {
-            None
-        }
-    } else {
-        None
-    };
+            (None, "missing")
+        };
 
     let (open_hit, close_hit) = match (open_point, close_point) {
         (Some(o), Some(c)) => (o, c),
@@ -5670,6 +5754,10 @@ async fn run_self_built_price_aggregator(
                 lagged_ticks,
                 nearest_start,
                 nearest_end,
+                first_after_start,
+                first_after_end,
+                Some(open_pick_rule),
+                Some(close_pick_rule),
             );
             return None;
         }
@@ -5717,6 +5805,10 @@ async fn run_self_built_price_aggregator(
             lagged_ticks,
             nearest_start,
             nearest_end,
+            first_after_start,
+            first_after_end,
+            Some(open_pick_rule),
+            Some(close_pick_rule),
         );
         return None;
     }
@@ -5760,6 +5852,10 @@ async fn run_self_built_price_aggregator(
         lagged_ticks,
         nearest_start,
         nearest_end,
+        first_after_start,
+        first_after_end,
+        Some(open_pick_rule),
+        Some(close_pick_rule),
     );
 
     Some((
