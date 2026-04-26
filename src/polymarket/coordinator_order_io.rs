@@ -10,6 +10,22 @@ use crate::polymarket::glft::{
 use super::*;
 
 impl StrategyCoordinator {
+    fn oracle_lag_dryrun_execute_enabled(&self, purpose: TradePurpose) -> bool {
+        if !self.cfg.dry_run || !self.cfg.strategy.is_oracle_lag_sniping() {
+            return false;
+        }
+        if !matches!(purpose, TradePurpose::OracleLagSnipe) {
+            return false;
+        }
+        std::env::var("PM_ORACLE_LAG_DRYRUN_EXECUTE")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                v == "1" || v == "true" || v == "yes" || v == "on"
+            })
+            .unwrap_or(false)
+    }
+
     fn reset_oracle_lag_hint_book_cache(&mut self) {
         self.post_close_hint_winner_bid = 0.0;
         self.post_close_hint_winner_ask_raw = 0.0;
@@ -1255,7 +1271,8 @@ impl StrategyCoordinator {
                 self.clear_slot_target(slot, CancelReason::Reprice).await;
             }
         }
-        if self.cfg.dry_run {
+        let dryrun_execute = self.oracle_lag_dryrun_execute_enabled(purpose);
+        if self.cfg.dry_run && !dryrun_execute {
             let order_type = if limit_price.is_some() {
                 "FAK"
             } else {
@@ -1279,6 +1296,19 @@ impl StrategyCoordinator {
                 notional_usdc_s,
             );
             return;
+        }
+        if dryrun_execute {
+            info!(
+                "🧪 dry_taker_execute | strategy={:?} side={:?} direction={:?} purpose={:?} limit_price={} size={:.2}",
+                self.cfg.strategy,
+                side,
+                direction,
+                purpose,
+                limit_price
+                    .map(|p| format!("{p:.4}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                rounded,
+            );
         }
         let _ = self
             .om_tx

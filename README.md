@@ -79,6 +79,12 @@ PM_DRY_RUN_FILL_PROBABILITY=1.0 \
 cargo run --bin polymarket_v2 --release
 ```
 
+如果要在 `oracle_lag_sniping` 的 dry-run 中验证“下单 -> simulated fill -> inventory/tranche”全链路，还需额外开启：
+
+```bash
+PM_ORACLE_LAG_DRYRUN_EXECUTE=true
+```
+
 排查 market parser 或 replay 偏差时再切到：
 
 ```bash
