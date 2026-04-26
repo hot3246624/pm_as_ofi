@@ -9224,6 +9224,7 @@ async fn run_market_ws(
                                                         *price,
                                                         *size,
                                                         trade_id.as_deref(),
+                                                        Some(unix_now_millis_u64()),
                                                     );
                                                 }
                                                 try_forward_md(
@@ -9374,6 +9375,7 @@ async fn run_market_ws(
                                                                 *price,
                                                                 *size,
                                                                 trade_id.as_deref(),
+                                                                Some(unix_now_millis_u64()),
                                                             );
                                                         }
                                                         try_forward_md(
@@ -10633,6 +10635,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
 
         // Fill fanout: UserWS → fill_tx → splitter → (InventoryManager, Executor)
         let (fill_tx, mut fill_rx) = mpsc::channel::<FillEvent>(64);
+        let dry_run_sim_fill_tx = if dry_run { Some(fill_tx.clone()) } else { None };
         let (inv_event_tx, inv_event_rx) = mpsc::channel::<InventoryEvent>(64);
         let (exec_fill_tx, exec_fill_rx) = mpsc::channel::<FillEvent>(64);
         let (validation_fill_tx, validation_fill_rx) = mpsc::channel::<FillEvent>(256);
@@ -10877,6 +10880,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             exec_rx,
             result_tx,
             exec_fill_rx,
+            dry_run_sim_fill_tx,
             Some(capital_tx),
             Some(feedback_tx),
             recorder.enabled().then_some(recorder.clone()),
@@ -10908,14 +10912,14 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             session_handles.push(tokio::spawn(user_ws.run()));
             info!("👤 User WS Listener spawned (real fills only)");
         } else {
-            info!("📝 DRY-RUN: No User WS — net_diff stays 0 (no fills)");
+            info!(
+                "📝 DRY-RUN: User WS disabled — executor synthetic fills enabled via PM_DRY_RUN_FILL_PROBABILITY"
+            );
             if coord_cfg.strategy.as_str() == "glft_mm" {
                 info!(
-                    "🧪 GLFT dry-run note: no fills means zero inventory, so SELL slots stay inventory-gated"
+                    "🧪 GLFT dry-run note: inventory now depends on synthetic fill simulator; tune PM_DRY_RUN_FILL_PROBABILITY as needed"
                 );
             }
-            // In DRY-RUN mode, fill_tx is unused, fill_rx sees nothing.
-            // InventoryManager stays at default state → Coordinator always Balanced.
         }
 
         info!("🚀 Actors spawned — starting WS feed");

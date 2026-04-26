@@ -609,7 +609,9 @@ impl InventoryManager {
         }
 
         if prev_active.map(|tranche| tranche.state) != curr_active.map(|tranche| tranche.state) {
-            if let Some(active) = curr_active.filter(|active| active.state == TrancheState::CompletionOnly) {
+            if let Some(active) =
+                curr_active.filter(|active| active.state == TrancheState::CompletionOnly)
+            {
                 self.emit_inventory_event(
                     "tranche_entered_completion_only",
                     serde_json::json!({
@@ -682,7 +684,9 @@ impl InventoryManager {
             );
         }
 
-        if curr.pair_ledger.repair_budget_available + 1e-9 < prev.pair_ledger.repair_budget_available {
+        if curr.pair_ledger.repair_budget_available + 1e-9
+            < prev.pair_ledger.repair_budget_available
+        {
             self.emit_inventory_event(
                 "repair_budget_spent",
                 serde_json::json!({
@@ -723,6 +727,12 @@ impl InventoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polymarket::recorder::{
+        RecorderConfig, RecorderHandle, RecorderMarketMode, RecorderSessionMeta,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_fill(side: Side, size: f64, price: f64) -> FillEvent {
         FillEvent {
@@ -740,6 +750,14 @@ mod tests {
         let (state_tx, _state_rx) = watch::channel(InventorySnapshot::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
         InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx, None, None)
+    }
+
+    fn temp_root(prefix: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("pm_as_ofi_{}_{}", prefix, ts))
     }
 
     #[test]
@@ -881,5 +899,65 @@ mod tests {
         });
         assert!((im.snapshot.settled.no_qty - 5.0).abs() < 1e-9);
         assert!((im.snapshot.working.no_qty - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn run_loop_fill_emits_tranche_events_to_recorder() {
+        let root = temp_root("inventory_recorder");
+        let recorder = RecorderHandle::from_config(&RecorderConfig {
+            enabled: true,
+            root: root.clone(),
+            md_queue_cap: 32,
+            ops_queue_cap: 32,
+            flush_every: Duration::from_millis(5),
+            market_mode: RecorderMarketMode::Structured,
+        });
+        let meta = RecorderSessionMeta {
+            slug: "btc-updown-5m-test".to_string(),
+            condition_id: "0xcond".to_string(),
+            market_id: "0xmarket".to_string(),
+            strategy: "pair_gated_tranche_arb".to_string(),
+            dry_run: true,
+        };
+
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (state_tx, _state_rx) = watch::channel(InventorySnapshot::default());
+        let manager = InventoryManager::new(
+            InventoryConfig::default(),
+            event_rx,
+            state_tx,
+            Some(recorder),
+            Some(meta),
+        );
+        let handle = tokio::spawn(manager.run());
+        let _ = event_tx
+            .send(InventoryEvent::Fill(FillEvent {
+                order_id: "dry-fill-1".to_string(),
+                side: Side::Yes,
+                direction: TradeDirection::Buy,
+                filled_size: 5.0,
+                price: 0.48,
+                status: FillStatus::Confirmed,
+                ts: Instant::now(),
+            }))
+            .await;
+        drop(event_tx);
+        let _ = handle.await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let date_dir = fs::read_dir(&root)
+            .expect("date dir should exist")
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.is_dir())
+            .expect("one date dir");
+        let events_path = date_dir.join("btc-updown-5m-test").join("events.jsonl");
+        let text = fs::read_to_string(&events_path).expect("events.jsonl should exist");
+        assert!(
+            text.contains("\"event\":\"tranche_opened\""),
+            "expected tranche_opened in events stream, got: {}",
+            text
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

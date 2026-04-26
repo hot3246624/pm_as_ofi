@@ -69,6 +69,16 @@ PM_RECORDER_MARKET_MODE=structured \
 cargo run --bin polymarket_v2 --release
 ```
 
+推荐 dry-run 录制（用于链路冒烟，不发真实 REST 下单）：
+
+```bash
+PM_DRY_RUN=true \
+PM_RECORDER_ENABLED=true \
+PM_RECORDER_MARKET_MODE=structured \
+PM_DRY_RUN_FILL_PROBABILITY=1.0 \
+cargo run --bin polymarket_v2 --release
+```
+
 排查 market parser 或 replay 偏差时再切到：
 
 ```bash
@@ -79,6 +89,14 @@ PM_RECORDER_MARKET_MODE=hybrid
 
 ```bash
 python3 scripts/build_replay_db.py --input-root data/recorder --output-root data/replay --date 2026-04-26
+```
+
+dry-run 录制后可做最小验收：
+
+```bash
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_budget_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_inventory_events;"
 ```
 
 ## 推荐阅读顺序

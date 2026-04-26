@@ -351,6 +351,7 @@ impl RecorderHandle {
         price: f64,
         size: f64,
         trade_id: Option<&str>,
+        trade_ts_ms: Option<u64>,
     ) {
         if !self.market_mode.captures_structured() {
             return;
@@ -365,6 +366,7 @@ impl RecorderHandle {
                 "price": price,
                 "size": size,
                 "trade_id": trade_id.unwrap_or_default(),
+                "trade_ts_ms": trade_ts_ms.unwrap_or_default(),
             }),
             RecorderStream::MarketMd,
         );
@@ -648,6 +650,7 @@ mod tests {
             0.51,
             10.0,
             None,
+            Some(1_746_000_000_000),
         );
         rec.emit_own_order_event(
             &meta,
@@ -670,6 +673,11 @@ mod tests {
             market_rows.len(),
             2,
             "structured market payloads should be recorded"
+        );
+        assert_eq!(
+            market_rows[1]["payload"]["trade_ts_ms"].as_u64(),
+            Some(1_746_000_000_000),
+            "structured trade should carry trade_ts_ms"
         );
         assert_eq!(event_rows.len(), 1, "own_order_events should be recorded");
         assert_eq!(
@@ -740,6 +748,7 @@ mod tests {
                 0.49,
                 2.0,
                 Some("tid-1"),
+                Some(1_746_000_000_100),
             );
             drop(rec);
 

@@ -94,6 +94,7 @@ class BuildReplayDbTests(unittest.TestCase):
                             "price": 0.51,
                             "size": 7.0,
                             "trade_id": "",
+                            "trade_ts_ms": 1_746_000_000_003,
                         },
                         capture_seq=3,
                         recv_unix_ms=1_746_000_000_003,
@@ -108,6 +109,7 @@ class BuildReplayDbTests(unittest.TestCase):
                             "price": 0.51,
                             "size": 7.0,
                             "trade_id": "",
+                            "trade_ts_ms": 1_746_000_000_003,
                         },
                         capture_seq=4,
                         recv_unix_ms=1_746_000_000_003,
@@ -132,10 +134,10 @@ class BuildReplayDbTests(unittest.TestCase):
                 conn.commit()
 
                 book_rows = conn.execute(
-                    "SELECT side, bid, ask, source FROM md_book_l1 ORDER BY side"
+                    "SELECT side, bid, ask, bid_sz, ask_sz, source FROM md_book_l1 ORDER BY side"
                 ).fetchall()
                 trade_rows = conn.execute(
-                    "SELECT asset_id, side, price, size, trade_id FROM md_trades"
+                    "SELECT asset_id, side, taker_side, price, size, trade_id, trade_ts_ms FROM md_trades"
                 ).fetchall()
             finally:
                 conn.close()
@@ -143,11 +145,14 @@ class BuildReplayDbTests(unittest.TestCase):
             self.assertEqual(
                 book_rows,
                 [
-                    ("NO", 0.47, 0.53, "structured_book_l1"),
-                    ("YES", 0.48, 0.52, "structured_book_l1"),
+                    ("NO", 0.47, 0.53, None, None, "structured_book_l1"),
+                    ("YES", 0.48, 0.52, None, None, "structured_book_l1"),
                 ],
             )
-            self.assertEqual(trade_rows, [("yes-asset", "BUY", 0.51, 7.0, "")])
+            self.assertEqual(
+                trade_rows,
+                [("yes-asset", "BUY", "BUY", 0.51, 7.0, "", 1_746_000_000_003)],
+            )
 
     def test_build_for_slug_falls_back_to_raw_market_ws(self):
         with tempfile.TemporaryDirectory(prefix="pm_as_ofi_replay_") as tmp:
@@ -170,6 +175,7 @@ class BuildReplayDbTests(unittest.TestCase):
                                         "price": 0.51,
                                         "size": 4.0,
                                         "trade_id": "tid-1",
+                                        "timestamp": 1_746_000_000,
                                     },
                                 ]
                             )
@@ -187,13 +193,16 @@ class BuildReplayDbTests(unittest.TestCase):
 
                 book_count = conn.execute("SELECT COUNT(*) FROM md_book_l1").fetchone()[0]
                 trade_rows = conn.execute(
-                    "SELECT asset_id, side, price, size, trade_id FROM md_trades"
+                    "SELECT asset_id, side, taker_side, price, size, trade_id, trade_ts_ms FROM md_trades"
                 ).fetchall()
             finally:
                 conn.close()
 
             self.assertEqual(book_count, 1)
-            self.assertEqual(trade_rows, [("yes-asset", "BUY", 0.51, 4.0, "tid-1")])
+            self.assertEqual(
+                trade_rows,
+                [("yes-asset", "BUY", "BUY", 0.51, 4.0, "tid-1", 1_746_000_000_000)],
+            )
 
 
 if __name__ == "__main__":

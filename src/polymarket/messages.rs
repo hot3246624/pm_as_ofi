@@ -570,10 +570,11 @@ pub struct PlacementRejectEvent {
 }
 
 // ─────────────────────────────────────────────────────────
-// Fill Events (User WS → InventoryManager)
+// Fill Events
 //
-// CRITICAL: Only the authenticated User WebSocket may emit FillEvents.
-// The Executor MUST NEVER create FillEvents — it only sends orders.
+// Live mode: authenticated User WS is the single source of truth.
+// Dry-run mode: executor may emit simulated fills to exercise the same
+// downstream inventory/ledger paths.
 // ─────────────────────────────────────────────────────────
 
 /// Status of a fill as reported by the exchange.
@@ -587,9 +588,10 @@ pub enum FillStatus {
     Failed,
 }
 
-/// Real trade fill from the exchange (via authenticated User WS).
+/// Real trade fill from the exchange (via authenticated User WS), or
+/// a dry-run simulated fill when `PM_DRY_RUN=1`.
 ///
-/// This is the **single source of truth** for inventory changes.
+/// In live mode this is the single source of truth for inventory changes.
 /// `filled_size` is the size of THIS fill (supports partial fills).
 #[derive(Debug, Clone)]
 pub struct FillEvent {

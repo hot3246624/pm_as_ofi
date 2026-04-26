@@ -107,6 +107,27 @@ def as_int(v: Any) -> Optional[int]:
         return None
 
 
+def as_ts_ms(v: Any) -> Optional[int]:
+    """Parse timestamp-like values into unix milliseconds."""
+    if v is None:
+        return None
+    try:
+        raw = float(v)
+    except Exception:
+        return None
+    if raw <= 0:
+        return None
+    iv = int(raw)
+    # ns
+    if iv >= 10**15:
+        return iv // 1_000_000
+    # ms
+    if iv >= 10**12:
+        return iv
+    # sec
+    return iv * 1000
+
+
 def parse_slot_side_direction(payload: Dict[str, Any]) -> Tuple[str, str, str]:
     slot = str(payload.get("slot") or "").strip().upper()
     side = str(payload.get("side") or "").strip().upper()
@@ -149,6 +170,24 @@ def parse_top_price(v: Any) -> Optional[float]:
     return None
 
 
+def parse_top_size(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    if isinstance(v, (int, float, str)):
+        return as_float(v)
+    if isinstance(v, list) and v:
+        if isinstance(v[0], (list, tuple)) and len(v[0]) >= 2:
+            return as_float(v[0][1])
+        if len(v) >= 2:
+            return as_float(v[1])
+        return None
+    if isinstance(v, dict):
+        for k in ("size", "s", "amount", "qty", "quantity", "value"):
+            if k in v:
+                return as_float(v[k])
+    return None
+
+
 def extract_book_rows(env: Envelope, raw_payload: str) -> List[Tuple]:
     rows: List[Tuple] = []
     try:
@@ -166,21 +205,41 @@ def extract_book_rows(env: Envelope, raw_payload: str) -> List[Tuple]:
 
         bid = None
         ask = None
+        bid_sz = None
+        ask_sz = None
         for k in ("best_bid", "bid", "b", "yes_bid", "no_bid"):
             if k in item:
                 bid = parse_top_price(item.get(k))
+                if k == "best_bid":
+                    bid_sz = parse_top_size(item.get("best_bid_size"))
+                elif k == "bid":
+                    bid_sz = parse_top_size(item.get("bid_size"))
+                elif k == "yes_bid":
+                    bid_sz = parse_top_size(item.get("yes_bid_size"))
+                elif k == "no_bid":
+                    bid_sz = parse_top_size(item.get("no_bid_size"))
                 if bid is not None:
                     break
         for k in ("best_ask", "ask", "a", "yes_ask", "no_ask"):
             if k in item:
                 ask = parse_top_price(item.get(k))
+                if k == "best_ask":
+                    ask_sz = parse_top_size(item.get("best_ask_size"))
+                elif k == "ask":
+                    ask_sz = parse_top_size(item.get("ask_size"))
+                elif k == "yes_ask":
+                    ask_sz = parse_top_size(item.get("yes_ask_size"))
+                elif k == "no_ask":
+                    ask_sz = parse_top_size(item.get("no_ask_size"))
                 if ask is not None:
                     break
 
         if bid is None and "bids" in item:
             bid = parse_top_price(item.get("bids"))
+            bid_sz = parse_top_size(item.get("bids"))
         if ask is None and "asks" in item:
             ask = parse_top_price(item.get("asks"))
+            ask_sz = parse_top_size(item.get("asks"))
 
         if bid is None and ask is None:
             continue
@@ -198,6 +257,8 @@ def extract_book_rows(env: Envelope, raw_payload: str) -> List[Tuple]:
                 side,
                 bid,
                 ask,
+                bid_sz,
+                ask_sz,
                 evt,
                 json_dumps(item),
             )
@@ -223,12 +284,22 @@ def extract_trade_rows(env: Envelope, raw_payload: str, seen_trade_ids: set[str]
         trade_id = str(item.get("trade_id") or item.get("id") or item.get("hash") or "").strip()
         asset_id = str(item.get("asset_id") or "")
         side = str(item.get("side") or item.get("market_side") or item.get("taker_side") or "").upper()
+        taker_side = str(item.get("taker_side") or item.get("side") or "").upper()
         price = as_float(item.get("price") or item.get("last_trade_price") or item.get("p"))
         size = as_float(item.get("size") or item.get("amount") or item.get("s"))
+        trade_ts_ms = as_ts_ms(
+            item.get("trade_ts_ms")
+            or item.get("timestamp_ms")
+            or item.get("ts")
+            or item.get("timestamp")
+            or item.get("time")
+        )
         if price is None:
             continue
         if size is None:
             size = 0.0
+        if trade_ts_ms is None:
+            trade_ts_ms = env.recv_unix_ms
 
         if trade_id:
             if trade_id in seen_trade_ids:
@@ -247,9 +318,11 @@ def extract_trade_rows(env: Envelope, raw_payload: str, seen_trade_ids: set[str]
                 env.capture_seq,
                 asset_id,
                 side,
+                taker_side,
                 price,
                 size,
                 trade_id,
+                trade_ts_ms,
                 json_dumps(item),
             )
         )
@@ -266,6 +339,10 @@ def extract_structured_book_rows(env: Envelope) -> List[Tuple]:
     yes_ask = as_float(payload.get("yes_ask"))
     no_bid = as_float(payload.get("no_bid"))
     no_ask = as_float(payload.get("no_ask"))
+    yes_bid_sz = as_float(payload.get("yes_bid_sz"))
+    yes_ask_sz = as_float(payload.get("yes_ask_sz"))
+    no_bid_sz = as_float(payload.get("no_bid_sz"))
+    no_ask_sz = as_float(payload.get("no_ask_sz"))
     if yes_bid is None or yes_ask is None or no_bid is None or no_ask is None:
         return rows
 
@@ -278,6 +355,8 @@ def extract_structured_book_rows(env: Envelope) -> List[Tuple]:
             "YES",
             yes_bid,
             yes_ask,
+            yes_bid_sz,
+            yes_ask_sz,
             "structured_book_l1",
             raw_json,
         )
@@ -290,6 +369,8 @@ def extract_structured_book_rows(env: Envelope) -> List[Tuple]:
             "NO",
             no_bid,
             no_ask,
+            no_bid_sz,
+            no_ask_sz,
             "structured_book_l1",
             raw_json,
         )
@@ -308,9 +389,11 @@ def extract_structured_trade_rows(
     asset_id = str(payload.get("asset_id") or "")
     market_side = str(payload.get("market_side") or "").upper()
     side = str(payload.get("taker_side") or payload.get("side") or market_side).upper()
+    taker_side = str(payload.get("taker_side") or side).upper()
     price = as_float(payload.get("price"))
     size = as_float(payload.get("size"))
     trade_id = str(payload.get("trade_id") or "").strip()
+    trade_ts_ms = as_ts_ms(payload.get("trade_ts_ms")) or env.recv_unix_ms
     if price is None:
         return rows
     if size is None:
@@ -333,9 +416,11 @@ def extract_structured_trade_rows(
             env.capture_seq,
             asset_id,
             side,
+            taker_side,
             price,
             size,
             trade_id,
+            trade_ts_ms,
             json_dumps(payload),
         )
     )
@@ -368,6 +453,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             side TEXT,
             bid REAL,
             ask REAL,
+            bid_sz REAL,
+            ask_sz REAL,
             source TEXT,
             raw_json TEXT
         );
@@ -379,9 +466,11 @@ def init_db(conn: sqlite3.Connection) -> None:
             capture_seq INTEGER,
             asset_id TEXT,
             side TEXT,
+            taker_side TEXT,
             price REAL,
             size REAL,
             trade_id TEXT,
+            trade_ts_ms INTEGER,
             raw_json TEXT
         );
 
@@ -517,13 +606,13 @@ def build_for_slug(conn: sqlite3.Connection, day: str, slug_dir: Path) -> None:
             book_rows = extract_structured_book_rows(env)
             if book_rows:
                 conn.executemany(
-                    "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     [(day, *r) for r in book_rows],
                 )
             trade_rows = extract_structured_trade_rows(env, seen_trade_ids, seen_trade_keys)
             if trade_rows:
                 conn.executemany(
-                    "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     [(day, *r) for r in trade_rows],
                 )
     else:
@@ -534,13 +623,13 @@ def build_for_slug(conn: sqlite3.Connection, day: str, slug_dir: Path) -> None:
             book_rows = extract_book_rows(env, raw_payload)
             if book_rows:
                 conn.executemany(
-                    "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     [(day, *r) for r in book_rows],
                 )
             trade_rows = extract_trade_rows(env, raw_payload, seen_trade_ids, seen_trade_keys)
             if trade_rows:
                 conn.executemany(
-                    "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                     [(day, *r) for r in trade_rows],
                 )
 
