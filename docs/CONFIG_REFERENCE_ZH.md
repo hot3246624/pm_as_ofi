@@ -54,6 +54,7 @@
 | `PM_ORACLE_LAG_ARBITER_BOOK_MAX_AGE_MS` | `250` | 仅在启用跨市场仲裁时有效：盘口新鲜度阈值（毫秒） |
 | `PM_ORACLE_LAG_MAX_ORDER_NOTIONAL_USDC` | `0` | 仅 `oracle_lag_sniping` 使用：单笔名义上限（USDC），`0` 表示关闭；例如 `1` 表示每次最多买 1 USDC |
 | `PM_ORACLE_LAG_LAB_ONLY` | `false` | 仅 `oracle_lag_sniping` 使用：实验模式。开启后保留 RTDS/本地聚合判定与对照日志，但阻断 taker/maker 下单路径 |
+| `PM_ORACLE_LAG_DRYRUN_EXECUTE` | `false` | 仅 `oracle_lag_sniping` dry-run 使用：默认仅 `dry_taker_preview`；设 `true` 时允许 taker 意图继续进入 OMS/Executor，走 simulated fill 链路 |
 | `PM_ORACLE_LAG_SYMBOL_UNIVERSE` | `hype,btc,eth,sol,bnb,doge,xrp` | 仅 `oracle_lag_sniping` 使用：允许激活的 5m symbol 列表；`*` 表示全部 |
 | `PM_MULTI_MARKET_PREFIXES` | unset | 逗号分隔的市场前缀并发列表；设置后主进程进入 supervisor 模式并拉起多个子进程（每个前缀一个） |
 | `PM_INPROC_SUPERVISOR` | auto | 多市场模式下是否使用 in-proc 单进程多worker；`oracle_lag_sniping` 默认为 `true`，设 `0/false` 可强制回退多进程 |

@@ -29,6 +29,22 @@
 - `PM_DRY_RUN=true` 先跑 5 轮观察日志，再切 live
 - `PM_BID_SIZE=5`
 - `PM_MAX_NET_DIFF` 维持当前安全值
+- 若要验证 dry-run 下完整执行链路（intent -> OMS -> simulated fill -> inventory/tranche），加 `PM_ORACLE_LAG_DRYRUN_EXECUTE=true`
+- 切 live 前务必去掉 `PM_ORACLE_LAG_DRYRUN_EXECUTE`（或保持默认 `false`）
+
+### dry-run 全链路验收（推荐）
+
+建议在演练时同时开启 recorder：
+
+- `PM_RECORDER_ENABLED=true`
+- `PM_RECORDER_MARKET_MODE=structured`
+- `PM_DRY_RUN_FILL_PROBABILITY=1.0`
+
+最小通过标准：
+
+- 日志出现 `dry_taker_execute` 与 `[DRY-RUN] Taker`
+- `events.jsonl` 中出现 `fill_snapshot`、`tranche_opened`、`capital_state_snapshot`
+- replay 表 `own_order_events` / `pair_tranche_events` / `capital_state_events` 均非 0
 
 ## 2. 轮次内必须出现的关键日志
 
@@ -48,7 +64,7 @@
 - 未选中市场应出现：`oracle_lag_cross_market_skip | side=... reason=not_selected by arbiter`
 - 选中市场应出现：`oracle_lag_arbiter_selection | round_end_ts=... selected=true rank=1`
 
-**每轮验收（仲裁开启）**：只有 1 个市场出现 `oracle_lag_submit_latency` 或 `dry_taker_preview`，其余市场出现 `oracle_lag_cross_market_skip`。
+**每轮验收（仲裁开启）**：只有 1 个市场出现 `oracle_lag_submit_latency` 或 `dry_taker_execute`（未开启执行门时是 `dry_taker_preview`），其余市场出现 `oracle_lag_cross_market_skip`。
 
 **每轮验收（默认不仲裁）**：每个市场独立 single-shot，不再出现 `oracle_lag_cross_market_skip`。
 

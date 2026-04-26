@@ -85,6 +85,30 @@ cargo run --bin polymarket_v2 --release
 PM_ORACLE_LAG_DRYRUN_EXECUTE=true
 ```
 
+推荐直接使用单市场 BTC 5m dry-run 命令（低流量，适合链路验收）：
+
+```bash
+PM_DRY_RUN=true \
+PM_STRATEGY=oracle_lag_sniping \
+POLYMARKET_MARKET_SLUG=btc-updown-5m \
+PM_RECORDER_ENABLED=true \
+PM_RECORDER_MARKET_MODE=structured \
+PM_RECORDER_ROOT=data/recorder_oracle_lag_dryrun \
+PM_DRY_RUN_FILL_PROBABILITY=1.0 \
+PM_LOCAL_PRICE_AGG_DECISION_ENABLED=true \
+PM_ORACLE_LAG_DRYRUN_ALLOW_FALLBACK_OPEN=true \
+PM_ORACLE_LAG_DRYRUN_EXECUTE=true \
+cargo run --bin polymarket_v2 --release
+```
+
+若用多市场 dry-run（inproc），只跑 BTC 可设置：
+
+```bash
+PM_MULTI_MARKET_PREFIXES=btc-updown-5m
+```
+
+注意：`PM_ORACLE_LAG_DRYRUN_EXECUTE` 只用于 `PM_DRY_RUN=true` 的链路演练；live 时不要开启。
+
 排查 market parser 或 replay 偏差时再切到：
 
 ```bash
@@ -103,6 +127,14 @@ dry-run 录制后可做最小验收：
 sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
 sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_budget_events;"
 sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_inventory_events;"
+```
+
+针对 `oracle_lag_sniping` dry-run 全链路，建议额外确认以下表非 0：
+
+```bash
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_order_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM capital_state_events;"
 ```
 
 ## 推荐阅读顺序
