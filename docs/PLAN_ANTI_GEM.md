@@ -1,65 +1,65 @@
-# Dry Run Log Analysis (2026-04-09)
+# Pair-Gated Tranche V1.2 优化分析与重构实现计划
 
-## 1. 宏观指标与状态流转 (Macro & Lifecycle)
+## Summary
+基于 `docs/XUANXUAN008_STRATEGY_V2_ZH.md` 的新证据，将策略重心从“是否能一对一配对”升级为“高 merged_ratio、低有效残余、临近结束批量 MERGE、补腿 clip 自适应”的完整复刻。实施目标是让当前 `PairGatedTrancheArb` 从概念状态机变成可 shadow 验收的策略执行框架，同时保留 maker/taker、PnL 口径等未裁决项为研究任务。
 
-整体表现非常稳定，策略在 `dry_run=true` 模式下展现了极高的健康度。
+## Key Changes
+- **文档重构**
+  - 新增或更新一份 V1.2 设计文档，吸收 V2 结论：positions 终态证据、loser residual 解释、MERGE/REDEEM 节律、clip size 分布、session 节律、PnL mismatch。
+  - 将证据等级明确为：pair-gated/merged_ratio/MERGE 主路径为 A；maker/taker 与真实 PnL 为 C；depth-aware clip 仅标为待裁决，不写成已证实。
+  - 把旧策略假设“保留 winner residual”彻底移除，改为“winner redeem、loser dust retained”。
 
-*   **市场轮转正常**: 成功在多个 15 分钟级的 BTC 市场间无缝轮转，比如 `btc-updown-15m-1775736900` 和 `1775737800`。
-*   **Endgame 执行精准**: 完美的倒计时撤单流程
-    ```text
-    ⏱️ Endgame phase: Normal -> SoftClose (t-45s)      // 停止新开仓，允许对冲
-    📝 DRY cancel YES_BUY & NO_BUY (EndgameRiskGate)  // 撤销未成交单
-    ⏱️ Endgame phase: SoftClose -> HardClose (t-30s)   // 强制平仓
-    ⏱️ Endgame phase: HardClose -> Freeze (t-2s)       // 冻结网络
-    🏁 Market expired (wall-clock)
-    ```
-*   **引擎健壮性**: 单个 session 处理超过 12 万次 WS 变动 (`parsed=239202`)，没有死锁、没有卡顿，`Coordinator` 和 `Executor` 层面的处理延迟一直处于安全范围内。
+- **策略状态机重构**
+  - 在 [pair_gated_tranche.rs](D:/web3work/pm_as_ofi/src/polymarket/strategy/pair_gated_tranche.rs:1) 中保留核心状态：`Flat/Residual -> ActiveFirstLeg -> CompletionOnly -> PairCovered -> MergeQueued -> Closed`。
+  - 未完成 active tranche 时，默认禁止继续同侧 risk-increasing 开仓；`MAX=2` 只作为 shadow counter，不进入 live 行为。
+  - CompletionOnly 不再一次性补完整 residual，而是按 adaptive clip 输出补腿 intent。
 
-## 2. 核心架构收敛验证 (V2 Architecture Progress)
+- **Adaptive Clip Model**
+  - 新增 clip sizing 逻辑，默认 shadow 参数：
+    - `base_clip_qty = 120`
+    - `max_clip_qty = 250`
+    - `min_clip_qty = 25`
+    - imbalance 越高，completion clip 越大。
+    - intra-round trade index 越靠后，first-leg clip 递减。
+    - `remaining_secs <= 60` 进入 tail completion 升档。
+  - live 初始行为采用保守上限：clip 不超过 residual、不超过盘口可接受量、不超过 repair-budgeted ceiling。
 
-这份日志带来了我们期待已久的**最核心好消息**，证明了前阶段重构带来的设计收敛（Full-Chain Responsibility Convergence）已经生效！
+- **Repair-Budgeted Variable Pair Cost**
+  - 补腿价格不使用固定 `UP + DOWN` target。
+  - 统一使用：`first_leg_vwap + completion_price <= 1 - min_edge + repair_budget_per_share`。
+  - `urgency_budget_shadow_5m` 先从 shadow 变量升级为报价输入，但只允许提高 completion ceiling，不允许绕过 hard loss cap。
 
-> [!TIP]
-> **脆弱状态完全剥离 (Crucial Success)**
-> 观察到 `skip(inv/sim/util/edge)=0/0/0/0` 这四个过滤指标在全程全部为 **0**。这证明历史遗留的那些“因为预期盈亏不足、或者因为利用率不够”而阻止挂单的复杂且脆弱的状态（Fragile State）已经被彻底移除了主执行路径，执行层做到了纯粹的“价格与指令透传”。
+- **PairHarvester 升级为 P0**
+  - 新增 `PairHarvester` 行为：当 `seconds_to_market_end <= 25` 且 `pairable_qty >= 10` 时发 MERGE intent。
+  - MERGE 优先级高于新开 first leg，也高于非紧急 completion。
+  - REDEEM 作为 settlement 后 30–60 秒兜底路径，不作为主要资金回收路径。
 
-*   **连续报价机制 (Continuous Quoting)**:
-    日志中 `pair_arb_suppressed=0` (完全封杀=0次)，而 `pair_arb_softened=19586` (软化降频=1.9万次)。
-    这表明 **OFI 毒性防御现在不会直接导致策略"死机（Stall）"**。在受到高单边毒性冲击时，系统选择了 "Softened" 路线——适度压低买价、拉宽 Spread，但**始终留在场内保持流动性**！这是做市稳定性的一次巨大飞跃。
+- **Ledger / Telemetry**
+  - 确保 `pair_tranche_events`、`pair_budget_events`、`capital_state_events` 在 shadow 运行中稳定产出。
+  - [pair_ledger.rs](D:/web3work/pm_as_ofi/src/polymarket/pair_ledger.rs:1) 已有 `pair_cost_tranche` / `pair_cost_fifo_ref`，实现时只补齐事件落库和策略侧消费。
+  - CapitalState 从“只计算”升级为“能触发 merge pressure shadow”，live 初期只记录，不主动扩大风险。
 
-## 3. RETAIN 逻辑微观验证与挂单效率
+- **Research Tasks**
+  - 新增 maker/taker 离线推断脚本：用本地 recorder 的 `md_book_l1` 对齐 xuan trade timestamp，比较成交价与当时 best bid/ask。
+  - 新增 cash-flow PnL reconciliation：用 BUY、MERGE、REDEEM、residual valuation 重建真实收益，暂不信任单一 FIFO 或 positions realizedPnl。
 
-我们一度非常担心 `RETAIN` 这个拦截器会不会变成拦路虎，这份日志清晰展示了它的实际工作表现。
+## Test Plan
+- **单元测试**
+  - active tranche 未补齐时，同侧新开被阻止。
+  - completion clip 不超过 residual、max clip、repair-budgeted ceiling。
+  - tail 阶段允许 completion 升档，但不允许突破 hard loss cap。
+  - `pairable_qty >= 10` 且 `seconds_to_market_end <= 25` 时生成 MERGE intent。
+  - MERGE 后 pairable 减少，residual 与 recent closed 状态正确更新。
 
-*   **高频去重作用**:
-    ```text
-    Round 4: retain(hits=72603), replace=14
-    Round 5: retain(hits=115627), replace=40 (replace_per_min=2.70)
-    ```
-    `RETAIN` 的去重率极高，阻挡了约 99.9% 毫无意义的微小价格跳动，避免了向 Polymarket 发送海量的 API 垃圾请求。
-*   **有效的阶梯式追踪**:
-    当市场偏离超过 `reprice=0.020` 阈值时，订单能够被顺利挤出 `RETAIN` 屏障。在日志中我们清楚地看到其价格的跟随变迁：从 `$0.48/$0.43` 一路顺滑下移到 `$0.28/$0.26`、`$0.09` 甚至 `$0.01`。这代表向下重新定价 (Downward Reprice) 没有被卡死。
+- **回放 / Shadow 验收**
+  - shadow 至少跑 3 天，确认三类事件表非零且连续。
+  - episode 指标达到：`clean_closed / closed >= 90%`，`same_side_add_qty_ratio <= 10%`，completion delay p90 <= 100s。
+  - positions 风格指标达到：merged_ratio p50 >= 95%，loser residual 为主要尾迹。
+  - MERGE 节律接近 V2 发现：主要集中在 close 前 20–30 秒，MERGE 回收金额显著高于 REDEEM。
+  - PnL 验收只用 cash-flow ledger，不用未裁决的 FIFO 估算直接判断盈利。
 
-> [!WARNING]
-> **潜在的隐患：上旋提单 (Upward Reprice)**
-> 虽然 `replace` 在正常生效，但日志显示 `pairing_upward_reprice=0` 且 `reprice_ratio=0.00`。
-> 我们目前处于 Dry Run 模式下（由于没有填单，`net_diff` 始终为 0），策略两边永远处于 `Pairing` 对称状态。在 V2 计划中提及的：“如果偏离超过 3 ticks 将引发强制 Upward Reprice”，这一点似乎没有被触发。
-> *需要复核代码：是 `reprice` 阈值过高，还是上一次推送的代码暂未彻底覆盖 Upward Reprice 的特权通道？*
-
-## 4. 其它细节指标评估
-
-*   **OFI 尾部热度判断 (`mode=tail-quantile`)**:
-    模型非常适应这种震荡市，能敏锐抓到尾部热度。`🔥 NO heat enter` 触发后伴随清晰的 `🧊 NO heat cool` 退出逻辑，不存在"进入毒性过长导致系统瘫痪"的情况。
-*   **Inventory Limit (`inv_limit=3386`)**:
-    在极度低价区 (e.g. Yes@0.01, No 被压得很低) 时，出现了 3000 多次的 `inv_limit`。猜测是受制于极速单边行情下引发的某些 Tier 参数保护（或者 `dip_cap=0.20` 控制）。这是一个很好的安全锁，防止在胜率极低的末路继续大量浪费报价。
-*   **零死锁 / 无 Ghost Orders**:
-    受限于干跑模式，不会模拟出真实的残渣订单（Dust Floor）与撤单失败 (`opposite-slot blocked=0`)。但这起码证明在我们策略层的纯净模拟中，订单插槽（Slots）的进出生命周期是自洽的，没有任何死循环分配。
-
----
-
-## 结论 (Conclusion)
-
-目前的版本日志**非常漂亮 (Elegant & Highly Efficient)**。
-1. **符合预期**：它如期抛弃了繁杂的多视界过滤 (`sim/util=0`)，全面依赖于 Band/IO 执行层。
-2. **生命力强**：即使面对连续下挫至 `<$0.10` 的单边极端行情，做市算法也一路持续挂单紧咬 (`softened` 替代了 `suppressed`)，展现了极强的策略韧性。
-3. **下一步建议**：可以立即转向真实资金的极小规模实盘（例如每注 `$5`）进行湿跑，验证在有真实 Fill 导致的 `net_diff` 变化时，真实的 RETAIN 边界（特别是风险侧的退让和安全侧的上旋追击）是否达到完美的收敛态。
+## Assumptions
+- 该计划命名为 `Pair-Gated Tranche Arb V1.2`，是 V1/V1.1 的吸收升级，不直接覆盖原始 V3.5 主计划。
+- 初始实现以 shadow-first 为默认，live 行为只启用状态机硬约束、保守 completion、MERGE intent；adaptive clip 和 capital pressure 先记录再逐步启用。
+- maker/taker 仍未裁决；策略默认 maker-first，但不把 xuan 的 maker 比例写成事实。
+- `depth-aware` 暂不作为已证实设计目标，直到盘口深度与成交价格对齐分析完成。
