@@ -27,6 +27,7 @@ pub enum MarketDataMsg {
     /// Individual trade tick (from `last_trade_price` WS event).
     TradeTick {
         asset_id: String,
+        trade_id: Option<String>,
         market_side: Side,
         taker_side: TakerSide,
         price: f64,
@@ -110,6 +111,15 @@ pub enum WinnerHintSource {
 pub enum TakerSide {
     Buy,
     Sell,
+}
+
+impl TakerSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
 }
 
 /// Trade direction for strategy intents and fill accounting.

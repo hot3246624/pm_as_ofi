@@ -1,3 +1,5 @@
+use super::messages::TakerSide;
+use super::types::Side;
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,6 +20,40 @@ pub struct RecorderConfig {
     pub md_queue_cap: usize,
     pub ops_queue_cap: usize,
     pub flush_every: Duration,
+    pub market_mode: RecorderMarketMode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum RecorderMarketMode {
+    Structured,
+    Raw,
+    Hybrid,
+}
+
+impl RecorderMarketMode {
+    fn from_env_value(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "raw" => Self::Raw,
+            "hybrid" => Self::Hybrid,
+            _ => Self::Structured,
+        }
+    }
+
+    fn captures_raw(self) -> bool {
+        matches!(self, Self::Raw | Self::Hybrid)
+    }
+
+    fn captures_structured(self) -> bool {
+        matches!(self, Self::Structured | Self::Hybrid)
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Structured => "structured",
+            Self::Raw => "raw",
+            Self::Hybrid => "hybrid",
+        }
+    }
 }
 
 impl RecorderConfig {
@@ -46,6 +82,10 @@ impl RecorderConfig {
             .and_then(|v| v.parse::<u64>().ok())
             .filter(|v| *v > 0)
             .unwrap_or(250);
+        let market_mode = std::env::var("PM_RECORDER_MARKET_MODE")
+            .ok()
+            .map(|v| RecorderMarketMode::from_env_value(&v))
+            .unwrap_or(RecorderMarketMode::Structured);
 
         Self {
             enabled,
@@ -53,6 +93,7 @@ impl RecorderConfig {
             md_queue_cap,
             ops_queue_cap,
             flush_every: Duration::from_millis(flush_every_ms),
+            market_mode,
         }
     }
 }
@@ -66,9 +107,18 @@ pub struct RecorderSessionMeta {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecorderSessionStart {
+    pub round_start_ts: u64,
+    pub round_end_ts: u64,
+    pub yes_asset_id: String,
+    pub no_asset_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum RecorderStream {
     MarketWs,
+    MarketMd,
     UserWs,
     Events,
     Meta,
@@ -78,6 +128,7 @@ impl RecorderStream {
     fn as_str(self) -> &'static str {
         match self {
             Self::MarketWs => "market_ws",
+            Self::MarketMd => "market_md",
             Self::UserWs => "user_ws",
             Self::Events => "events",
             Self::Meta => "meta",
@@ -87,6 +138,7 @@ impl RecorderStream {
     fn file_name(self) -> &'static str {
         match self {
             Self::MarketWs => "market_ws.jsonl",
+            Self::MarketMd => "market_md.jsonl",
             Self::UserWs => "user_ws.jsonl",
             Self::Events => "events.jsonl",
             Self::Meta => "meta.jsonl",
@@ -110,6 +162,7 @@ struct RecorderEnvelope {
 #[derive(Clone)]
 pub struct RecorderHandle {
     enabled: bool,
+    market_mode: RecorderMarketMode,
     md_tx: Option<mpsc::Sender<RecorderEnvelope>>,
     ops_tx: Option<mpsc::Sender<RecorderEnvelope>>,
     md_drop_count: Arc<AtomicU64>,
@@ -120,6 +173,7 @@ impl RecorderHandle {
     pub fn disabled() -> Self {
         Self {
             enabled: false,
+            market_mode: RecorderMarketMode::Structured,
             md_tx: None,
             ops_tx: None,
             md_drop_count: Arc::new(AtomicU64::new(0)),
@@ -191,8 +245,9 @@ impl RecorderHandle {
         });
 
         info!(
-            "📼 recorder enabled | root={} md_queue_cap={} ops_queue_cap={} flush_every_ms={}",
+            "📼 recorder enabled | root={} market_mode={} md_queue_cap={} ops_queue_cap={} flush_every_ms={}",
             cfg.root.display(),
+            cfg.market_mode.as_str(),
             cfg.md_queue_cap,
             cfg.ops_queue_cap,
             cfg.flush_every.as_millis(),
@@ -200,6 +255,7 @@ impl RecorderHandle {
 
         Self {
             enabled: true,
+            market_mode: cfg.market_mode,
             md_tx: Some(md_tx),
             ops_tx: Some(ops_tx),
             md_drop_count: Arc::new(AtomicU64::new(0)),
@@ -224,12 +280,15 @@ impl RecorderHandle {
         self.critical_drop_count.load(Ordering::Relaxed)
     }
 
-    pub fn emit_session_start(&self, meta: &RecorderSessionMeta, round_end_ts: u64) {
+    pub fn emit_session_start(&self, meta: &RecorderSessionMeta, session: &RecorderSessionStart) {
         self.try_send_ops(
             meta,
             json!({
                 "event": "session_start",
-                "round_end_ts": round_end_ts,
+                "round_start_ts": session.round_start_ts,
+                "round_end_ts": session.round_end_ts,
+                "yes_asset_id": session.yes_asset_id,
+                "no_asset_id": session.no_asset_id,
             }),
             RecorderStream::Meta,
         );
@@ -247,12 +306,67 @@ impl RecorderHandle {
     }
 
     pub fn record_market_ws_raw(&self, meta: &RecorderSessionMeta, payload_text: &str) {
+        if !self.market_mode.captures_raw() {
+            return;
+        }
         self.try_send_md(
             meta,
             json!({
                 "raw_text": payload_text,
             }),
             RecorderStream::MarketWs,
+        );
+    }
+
+    pub fn record_market_book_l1(
+        &self,
+        meta: &RecorderSessionMeta,
+        yes_bid: f64,
+        yes_ask: f64,
+        no_bid: f64,
+        no_ask: f64,
+    ) {
+        if !self.market_mode.captures_structured() {
+            return;
+        }
+        self.try_send_md(
+            meta,
+            json!({
+                "kind": "book_l1",
+                "yes_bid": yes_bid,
+                "yes_ask": yes_ask,
+                "no_bid": no_bid,
+                "no_ask": no_ask,
+            }),
+            RecorderStream::MarketMd,
+        );
+    }
+
+    pub fn record_market_trade(
+        &self,
+        meta: &RecorderSessionMeta,
+        asset_id: &str,
+        market_side: Side,
+        taker_side: TakerSide,
+        price: f64,
+        size: f64,
+        trade_id: Option<&str>,
+    ) {
+        if !self.market_mode.captures_structured() {
+            return;
+        }
+        self.try_send_md(
+            meta,
+            json!({
+                "kind": "trade",
+                "asset_id": asset_id,
+                "market_side": market_side.as_str(),
+                "taker_side": taker_side.as_str(),
+                "price": price,
+                "size": size,
+                "trade_id": trade_id.unwrap_or_default(),
+            }),
+            RecorderStream::MarketMd,
         );
     }
 
@@ -481,6 +595,15 @@ mod tests {
             .collect()
     }
 
+    fn session_start() -> RecorderSessionStart {
+        RecorderSessionStart {
+            round_start_ts: 100,
+            round_end_ts: 200,
+            yes_asset_id: "yes-asset".to_string(),
+            no_asset_id: "no-asset".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn recorder_disabled_writes_nothing() {
         let root = temp_root("recorder_disabled");
@@ -490,10 +613,11 @@ mod tests {
             md_queue_cap: 8,
             ops_queue_cap: 8,
             flush_every: Duration::from_millis(5),
+            market_mode: RecorderMarketMode::Structured,
         };
         let rec = RecorderHandle::from_config(&cfg);
         let meta = test_meta("btc-updown-5m-test");
-        rec.emit_session_start(&meta, 123);
+        rec.emit_session_start(&meta, &session_start());
         rec.record_market_ws_raw(&meta, r#"{"event_type":"book"}"#);
         rec.emit_session_end(&meta, "Expired");
         tokio::time::sleep(Duration::from_millis(30)).await;
@@ -501,7 +625,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recorder_enabled_writes_jsonl_with_monotonic_seq() {
+    async fn recorder_enabled_writes_structured_jsonl_with_monotonic_seq() {
         let root = temp_root("recorder_enabled");
         let cfg = RecorderConfig {
             enabled: true,
@@ -509,12 +633,22 @@ mod tests {
             md_queue_cap: 64,
             ops_queue_cap: 64,
             flush_every: Duration::from_millis(5),
+            market_mode: RecorderMarketMode::Structured,
         };
         let rec = RecorderHandle::from_config(&cfg);
         let meta = test_meta("btc-updown-5m-test");
 
-        rec.emit_session_start(&meta, 1000);
-        rec.record_market_ws_raw(&meta, r#"{"event_type":"book","bids":[["0.5","10"]]}"#);
+        rec.emit_session_start(&meta, &session_start());
+        rec.record_market_book_l1(&meta, 0.48, 0.52, 0.47, 0.53);
+        rec.record_market_trade(
+            &meta,
+            "yes-asset",
+            Side::Yes,
+            TakerSide::Buy,
+            0.51,
+            10.0,
+            None,
+        );
         rec.emit_own_order_event(
             &meta,
             "intent_sent",
@@ -528,16 +662,26 @@ mod tests {
         let date = ymd_utc(unix_now_millis());
         let dir = root.join(date).join(meta.slug);
         let meta_rows = read_jsonl(&dir.join("meta.jsonl"));
-        let market_rows = read_jsonl(&dir.join("market_ws.jsonl"));
+        let market_rows = read_jsonl(&dir.join("market_md.jsonl"));
         let event_rows = read_jsonl(&dir.join("events.jsonl"));
 
         assert!(meta_rows.len() >= 2, "session start/end should be recorded");
         assert_eq!(
             market_rows.len(),
-            1,
-            "raw market ws payload should be recorded"
+            2,
+            "structured market payloads should be recorded"
         );
         assert_eq!(event_rows.len(), 1, "own_order_events should be recorded");
+        assert_eq!(
+            meta_rows[0]["payload"]["round_start_ts"].as_u64(),
+            Some(100),
+            "session_start should include round_start_ts"
+        );
+        assert_eq!(
+            meta_rows[0]["payload"]["yes_asset_id"].as_str(),
+            Some("yes-asset"),
+            "session_start should include asset ids"
+        );
 
         let mut seqs: Vec<u64> = meta_rows
             .iter()
@@ -552,5 +696,74 @@ mod tests {
         }
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn recorder_market_modes_split_raw_and_structured_streams() {
+        let modes = [
+            (
+                RecorderMarketMode::Structured,
+                false,
+                true,
+                "recorder_mode_structured",
+            ),
+            (RecorderMarketMode::Raw, true, false, "recorder_mode_raw"),
+            (
+                RecorderMarketMode::Hybrid,
+                true,
+                true,
+                "recorder_mode_hybrid",
+            ),
+        ];
+
+        for (market_mode, expect_raw, expect_structured, label) in modes {
+            let root = temp_root(label);
+            let cfg = RecorderConfig {
+                enabled: true,
+                root: root.clone(),
+                md_queue_cap: 64,
+                ops_queue_cap: 64,
+                flush_every: Duration::from_millis(5),
+                market_mode,
+            };
+            let rec = RecorderHandle::from_config(&cfg);
+            let meta = test_meta(label);
+
+            rec.emit_session_start(&meta, &session_start());
+            rec.record_market_ws_raw(&meta, r#"{"event_type":"book"}"#);
+            rec.record_market_book_l1(&meta, 0.48, 0.52, 0.47, 0.53);
+            rec.record_market_trade(
+                &meta,
+                "yes-asset",
+                Side::Yes,
+                TakerSide::Sell,
+                0.49,
+                2.0,
+                Some("tid-1"),
+            );
+            drop(rec);
+
+            tokio::time::sleep(Duration::from_millis(80)).await;
+
+            let date = ymd_utc(unix_now_millis());
+            let dir = root.join(date).join(meta.slug);
+            let raw_rows = read_jsonl(&dir.join("market_ws.jsonl"));
+            let structured_rows = read_jsonl(&dir.join("market_md.jsonl"));
+
+            assert_eq!(
+                !raw_rows.is_empty(),
+                expect_raw,
+                "raw rows presence should match market mode {}",
+                market_mode.as_str()
+            );
+            assert_eq!(
+                !structured_rows.is_empty(),
+                expect_structured,
+                "structured rows presence should match market mode {}",
+                market_mode.as_str()
+            );
+
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }

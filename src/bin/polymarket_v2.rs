@@ -39,7 +39,9 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
-use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta};
+use pm_as_ofi::polymarket::recorder::{
+    RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
+};
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -8320,11 +8322,20 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
 
                 // Classify which market side (YES or NO token)
                 let market_side = classify_side(asset_id, settings);
+                let trade_id = value
+                    .get("trade_id")
+                    .or_else(|| value.get("id"))
+                    .or_else(|| value.get("hash"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string);
 
                 if price > 0.0 {
                     if let Some(ms) = market_side {
                         msgs.push(MarketDataMsg::TradeTick {
                             asset_id: asset_id.to_string(),
+                            trade_id,
                             market_side: ms,
                             taker_side,
                             price,
@@ -9052,11 +9063,30 @@ async fn run_market_ws(
                                         session_parsed_msg_count =
                                             session_parsed_msg_count.saturating_add(1);
                                         match &md_msg {
-                                            MarketDataMsg::TradeTick { .. } => {
+                                            MarketDataMsg::TradeTick {
+                                                asset_id,
+                                                trade_id,
+                                                market_side,
+                                                taker_side,
+                                                price,
+                                                size,
+                                                ..
+                                            } => {
                                                 session_had_market_data = true;
                                                 session_trade_tick_count =
                                                     session_trade_tick_count.saturating_add(1);
                                                 last_market_data_at = tokio::time::Instant::now();
+                                                if let (Some(rec), Some(meta)) = (&recorder, &recorder_meta) {
+                                                    rec.record_market_trade(
+                                                        meta,
+                                                        asset_id,
+                                                        *market_side,
+                                                        *taker_side,
+                                                        *price,
+                                                        *size,
+                                                        trade_id.as_deref(),
+                                                    );
+                                                }
                                                 try_forward_md(
                                                     &ofi_tx,
                                                     md_msg.clone(),
@@ -9117,6 +9147,22 @@ async fn run_market_ws(
                                                         session_book_tick_count.saturating_add(1);
                                                     last_market_data_at = tokio::time::Instant::now();
                                                     last_full_book_at = Some(last_market_data_at);
+                                                    if let (
+                                                        Some(rec),
+                                                        Some(meta),
+                                                        MarketDataMsg::BookTick {
+                                                            yes_bid,
+                                                            yes_ask,
+                                                            no_bid,
+                                                            no_ask,
+                                                            ..
+                                                        },
+                                                    ) = (&recorder, &recorder_meta, &full)
+                                                    {
+                                                        rec.record_market_book_l1(
+                                                            meta, *yes_bid, *yes_ask, *no_bid, *no_ask,
+                                                        );
+                                                    }
                                                     try_forward_md(
                                                         &glft_tx,
                                                         full.clone(),
@@ -9165,11 +9211,32 @@ async fn run_market_ws(
                                                 session_parsed_msg_count =
                                                     session_parsed_msg_count.saturating_add(1);
                                                 match &md_msg {
-                                                    MarketDataMsg::TradeTick { .. } => {
+                                                    MarketDataMsg::TradeTick {
+                                                        asset_id,
+                                                        trade_id,
+                                                        market_side,
+                                                        taker_side,
+                                                        price,
+                                                        size,
+                                                        ..
+                                                    } => {
                                                         session_had_market_data = true;
                                                         session_trade_tick_count =
                                                             session_trade_tick_count.saturating_add(1);
                                                         last_market_data_at = tokio::time::Instant::now();
+                                                        if let (Some(rec), Some(meta)) =
+                                                            (&recorder, &recorder_meta)
+                                                        {
+                                                            rec.record_market_trade(
+                                                                meta,
+                                                                asset_id,
+                                                                *market_side,
+                                                                *taker_side,
+                                                                *price,
+                                                                *size,
+                                                                trade_id.as_deref(),
+                                                            );
+                                                        }
                                                         try_forward_md(
                                                             &ofi_tx,
                                                             md_msg.clone(),
@@ -9231,6 +9298,22 @@ async fn run_market_ws(
                                                                     .saturating_add(1);
                                                             last_market_data_at = tokio::time::Instant::now();
                                                             last_full_book_at = Some(last_market_data_at);
+                                                            if let (
+                                                                Some(rec),
+                                                                Some(meta),
+                                                                MarketDataMsg::BookTick {
+                                                                    yes_bid,
+                                                                    yes_ask,
+                                                                    no_bid,
+                                                                    no_ask,
+                                                                    ..
+                                                                },
+                                                            ) = (&recorder, &recorder_meta, &full)
+                                                            {
+                                                                rec.record_market_book_l1(
+                                                                    meta, *yes_bid, *yes_ask, *no_bid, *no_ask,
+                                                                );
+                                                            }
                                                             try_forward_md(
                                                                 &glft_tx,
                                                                 full.clone(),
@@ -10716,7 +10799,17 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             effective_end_ts
         };
         if recorder.enabled() {
-            recorder.emit_session_start(&recorder_meta, ws_round_end_ts);
+            let session_start = RecorderSessionStart {
+                round_start_ts: if slug_start_ts != u64::MAX {
+                    slug_start_ts
+                } else {
+                    0
+                },
+                round_end_ts: effective_end_ts,
+                yes_asset_id: yes_asset_id.clone(),
+                no_asset_id: no_asset_id.clone(),
+            };
+            recorder.emit_session_start(&recorder_meta, &session_start);
         }
         let reason = run_market_ws_with_wall_guard(
             settings,
@@ -11343,6 +11436,89 @@ mod tests {
 
         assert_eq!(side1, Some("SELL"));
         assert_eq!(side2, None);
+    }
+
+    #[test]
+    fn test_parse_ws_message_last_trade_price_preserves_trade_id() {
+        let settings = Settings {
+            market_slug: Some("btc-updown-5m-test".to_string()),
+            market_id: "0xmarket".to_string(),
+            yes_asset_id: "111".to_string(),
+            no_asset_id: "222".to_string(),
+            ws_base_url: String::new(),
+            rest_url: String::new(),
+            private_key: None,
+            funder_address: None,
+            custom_feature: false,
+        };
+        let value = json!({
+            "event_type": "last_trade_price",
+            "asset_id": "111",
+            "price": "0.50",
+            "size": "100",
+            "side": "SELL",
+            "trade_id": "tid-123",
+        });
+
+        let msgs = parse_ws_message(&settings, &value);
+        assert_eq!(msgs.len(), 1);
+        match &msgs[0] {
+            MarketDataMsg::TradeTick {
+                asset_id,
+                trade_id,
+                market_side,
+                taker_side,
+                price,
+                size,
+                ..
+            } => {
+                assert_eq!(asset_id, "111");
+                assert_eq!(trade_id.as_deref(), Some("tid-123"));
+                assert_eq!(*market_side, Side::Yes);
+                assert_eq!(*taker_side, TakerSide::Sell);
+                assert!((*price - 0.50).abs() < 1e-9);
+                assert!((*size - 100.0).abs() < 1e-9);
+            }
+            other => panic!("unexpected message: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_book_assembler_emits_full_book_only_after_both_sides() {
+        let mut asm = BookAssembler::default();
+        let ts = Instant::now();
+        let yes_only = MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.51,
+            no_bid: f64::NAN,
+            no_ask: f64::NAN,
+            ts,
+        };
+        let no_only = MarketDataMsg::BookTick {
+            yes_bid: f64::NAN,
+            yes_ask: f64::NAN,
+            no_bid: 0.48,
+            no_ask: 0.52,
+            ts,
+        };
+
+        assert!(asm.update(&yes_only).is_none());
+        let full = asm.update(&no_only).expect("full book should emit after both sides");
+        match full {
+            MarketDataMsg::BookTick {
+                yes_bid,
+                yes_ask,
+                no_bid,
+                no_ask,
+                ..
+            } => {
+                assert_eq!(yes_bid, 0.49);
+                assert_eq!(yes_ask, 0.51);
+                assert_eq!(no_bid, 0.48);
+                assert_eq!(no_ask, 0.52);
+            }
+            other => panic!("unexpected full book output: {other:?}"),
+        }
     }
 
     #[tokio::test]

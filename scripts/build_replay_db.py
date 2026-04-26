@@ -256,6 +256,92 @@ def extract_trade_rows(env: Envelope, raw_payload: str, seen_trade_ids: set[str]
     return rows
 
 
+def extract_structured_book_rows(env: Envelope) -> List[Tuple]:
+    rows: List[Tuple] = []
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    if str(payload.get("kind") or "").lower() != "book_l1":
+        return rows
+
+    yes_bid = as_float(payload.get("yes_bid"))
+    yes_ask = as_float(payload.get("yes_ask"))
+    no_bid = as_float(payload.get("no_bid"))
+    no_ask = as_float(payload.get("no_ask"))
+    if yes_bid is None or yes_ask is None or no_bid is None or no_ask is None:
+        return rows
+
+    raw_json = json_dumps(payload)
+    rows.append(
+        (
+            env.slug,
+            env.recv_unix_ms,
+            env.capture_seq,
+            "YES",
+            yes_bid,
+            yes_ask,
+            "structured_book_l1",
+            raw_json,
+        )
+    )
+    rows.append(
+        (
+            env.slug,
+            env.recv_unix_ms,
+            env.capture_seq,
+            "NO",
+            no_bid,
+            no_ask,
+            "structured_book_l1",
+            raw_json,
+        )
+    )
+    return rows
+
+
+def extract_structured_trade_rows(
+    env: Envelope, seen_trade_ids: set[str], seen_trade_keys: set[Tuple]
+) -> List[Tuple]:
+    rows: List[Tuple] = []
+    payload = env.payload if isinstance(env.payload, dict) else {}
+    if str(payload.get("kind") or "").lower() != "trade":
+        return rows
+
+    asset_id = str(payload.get("asset_id") or "")
+    market_side = str(payload.get("market_side") or "").upper()
+    side = str(payload.get("taker_side") or payload.get("side") or market_side).upper()
+    price = as_float(payload.get("price"))
+    size = as_float(payload.get("size"))
+    trade_id = str(payload.get("trade_id") or "").strip()
+    if price is None:
+        return rows
+    if size is None:
+        size = 0.0
+
+    if trade_id:
+        if trade_id in seen_trade_ids:
+            return rows
+        seen_trade_ids.add(trade_id)
+    else:
+        dedup_key = (env.slug, env.recv_unix_ms, market_side, round(price, 9), round(size, 9))
+        if dedup_key in seen_trade_keys:
+            return rows
+        seen_trade_keys.add(dedup_key)
+
+    rows.append(
+        (
+            env.slug,
+            env.recv_unix_ms,
+            env.capture_seq,
+            asset_id,
+            side,
+            price,
+            size,
+            trade_id,
+            json_dumps(payload),
+        )
+    )
+    return rows
+
+
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
@@ -425,22 +511,38 @@ def build_for_slug(conn: sqlite3.Connection, day: str, slug_dir: Path) -> None:
             meta_rows,
         )
 
-    for env in load_jsonl(slug_dir / "market_ws.jsonl") or []:
-        raw_payload = str((env.payload or {}).get("raw_text") or "")
-        if not raw_payload:
-            continue
-        book_rows = extract_book_rows(env, raw_payload)
-        if book_rows:
-            conn.executemany(
-                "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?)",
-                [(day, *r) for r in book_rows],
-            )
-        trade_rows = extract_trade_rows(env, raw_payload, seen_trade_ids, seen_trade_keys)
-        if trade_rows:
-            conn.executemany(
-                "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
-                [(day, *r) for r in trade_rows],
-            )
+    market_md_path = slug_dir / "market_md.jsonl"
+    if market_md_path.exists():
+        for env in load_jsonl(market_md_path) or []:
+            book_rows = extract_structured_book_rows(env)
+            if book_rows:
+                conn.executemany(
+                    "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?)",
+                    [(day, *r) for r in book_rows],
+                )
+            trade_rows = extract_structured_trade_rows(env, seen_trade_ids, seen_trade_keys)
+            if trade_rows:
+                conn.executemany(
+                    "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [(day, *r) for r in trade_rows],
+                )
+    else:
+        for env in load_jsonl(slug_dir / "market_ws.jsonl") or []:
+            raw_payload = str((env.payload or {}).get("raw_text") or "")
+            if not raw_payload:
+                continue
+            book_rows = extract_book_rows(env, raw_payload)
+            if book_rows:
+                conn.executemany(
+                    "INSERT INTO md_book_l1 VALUES (?,?,?,?,?,?,?,?,?)",
+                    [(day, *r) for r in book_rows],
+                )
+            trade_rows = extract_trade_rows(env, raw_payload, seen_trade_ids, seen_trade_keys)
+            if trade_rows:
+                conn.executemany(
+                    "INSERT INTO md_trades VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    [(day, *r) for r in trade_rows],
+                )
 
     for env in load_jsonl(slug_dir / "events.jsonl") or []:
         event = str((env.payload or {}).get("event") or "")

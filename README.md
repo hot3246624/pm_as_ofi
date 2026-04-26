@@ -53,6 +53,34 @@ cargo test --bin polymarket_v2
 PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 ```
 
+## Live Truth Capture
+
+- 默认关闭：只有显式设置 `PM_RECORDER_ENABLED=true` 才会落盘。
+- 默认 market 口径是 `structured`，也就是写 `market_md.jsonl`，记录完整 `L1 book + trades`。
+- `user_ws.jsonl`、`events.jsonl`、`meta.jsonl` 会继续保留，用于回放真实 order/fill/inventory/tranche/capital 语义。
+- `market_ws.jsonl` 只在 `PM_RECORDER_MARKET_MODE=raw` 或 `hybrid` 时写入，作为 parser/debug 取证，不再是默认主路径。
+
+推荐 live 配置：
+
+```bash
+PM_DRY_RUN=false \
+PM_RECORDER_ENABLED=true \
+PM_RECORDER_MARKET_MODE=structured \
+cargo run --bin polymarket_v2 --release
+```
+
+排查 market parser 或 replay 偏差时再切到：
+
+```bash
+PM_RECORDER_MARKET_MODE=hybrid
+```
+
+会后离线构建 replay：
+
+```bash
+python3 scripts/build_replay_db.py --input-root data/recorder --output-root data/replay --date 2026-04-26
+```
+
 ## 推荐阅读顺序
 
 1. `docs/STRATEGY_V2_CORE_ZH.md`
