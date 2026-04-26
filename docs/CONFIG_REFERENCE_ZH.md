@@ -214,6 +214,7 @@
 ## Completion First
 - `PM_STRATEGY=completion_first`
   - 独立 BTC 5m completion-first 策略
+  - 兼容别名：`xuan_clone`
 - `PM_COMPLETION_FIRST_MODE=shadow|enforce`
   - `shadow`：只计算/记录，不真实下单
   - `enforce`：后续实盘模式预留

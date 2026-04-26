@@ -4,14 +4,19 @@
 - 复刻 `xuanxuan008` 的核心做法，而不是继续扩写 `pair_arb`
 - 第一阶段只支持 `BTC 5m`
 - 第一阶段默认 `shadow`，只输出决策与生命周期事件，不真实下单
+- 当前入口：
+  - `PM_STRATEGY=completion_first`
+  - 兼容别名：`xuan_clone`
 
 ## 策略语义
 - `FlatSeed`
   - 同时生成 `YES_BUY` 与 `NO_BUY`
   - seed 定价复用 `pair_arb` 的 buy-side 底座
+  - seed 数量不再沿用 `bid_size`，而是直接使用 `completion_first clip`
 - `CompletionOnly`
   - 一旦出现 active tranche，默认优先推动对侧 completion
   - 同侧加仓最多允许 1 次
+  - same-side add 也使用 `completion_first clip`
 - `HarvestWindow`
   - 收盘前 `t-25s` 进入
   - 只做 completion 评估与 merge 请求评估
@@ -24,6 +29,10 @@
   - `BASE_CLIP = 150`
   - `MAX_CLIP = 250`
   - `MIN_CLIP = 45`
+- 适用范围：
+  - `FlatSeed` 双边 seed
+  - `CompletionOnly` 下的 same-side add
+  - completion 腿（上限为 `min(residual_qty, clip)`）
 - 乘子：
   - `session_mult`
   - `imbalance_mult`
@@ -36,6 +45,7 @@
   - `t-25s` 首次检查
   - `pairable_full_sets >= 10` 才请求
   - `t-18s` 最多 retry 一次
+  - `shadow` 模式下会同时写 `completion_first_merge_requested` 与 `completion_first_merge_executed`
 - `redeem`
   - 只针对 winner-side residual
   - `+35s` 首次请求

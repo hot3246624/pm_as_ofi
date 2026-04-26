@@ -124,30 +124,40 @@ impl StrategyCoordinator {
                 && mergeable >= COMPLETION_FIRST_MERGE_TRIGGER_SHARES
             {
                 self.completion_first_merge_requested_this_round = true;
+                let payload = serde_json::json!({
+                    "remaining_secs": remaining,
+                    "mergeable_full_sets": mergeable,
+                    "attempt": 1,
+                    "mode": format!("{:?}", self.completion_first_mode()),
+                    "shadow": self.completion_first_mode() == CompletionFirstMode::Shadow,
+                });
                 self.emit_completion_first_event(
                     "completion_first_merge_requested",
-                    serde_json::json!({
-                        "remaining_secs": remaining,
-                        "mergeable_full_sets": mergeable,
-                        "attempt": 1,
-                        "mode": format!("{:?}", self.completion_first_mode()),
-                    }),
+                    payload.clone(),
                 );
+                if self.completion_first_mode() == CompletionFirstMode::Shadow {
+                    self.emit_completion_first_event("completion_first_merge_executed", payload);
+                }
             } else if self.completion_first_merge_requested_this_round
                 && !self.completion_first_merge_retry_requested_this_round
                 && remaining <= COMPLETION_FIRST_MERGE_RETRY_SECS
                 && mergeable >= COMPLETION_FIRST_MERGE_TRIGGER_SHARES
             {
                 self.completion_first_merge_retry_requested_this_round = true;
+                let payload = serde_json::json!({
+                    "remaining_secs": remaining,
+                    "mergeable_full_sets": mergeable,
+                    "attempt": 2,
+                    "mode": format!("{:?}", self.completion_first_mode()),
+                    "shadow": self.completion_first_mode() == CompletionFirstMode::Shadow,
+                });
                 self.emit_completion_first_event(
                     "completion_first_merge_requested",
-                    serde_json::json!({
-                        "remaining_secs": remaining,
-                        "mergeable_full_sets": mergeable,
-                        "attempt": 2,
-                        "mode": format!("{:?}", self.completion_first_mode()),
-                    }),
+                    payload.clone(),
                 );
+                if self.completion_first_mode() == CompletionFirstMode::Shadow {
+                    self.emit_completion_first_event("completion_first_merge_executed", payload);
+                }
             }
         }
 

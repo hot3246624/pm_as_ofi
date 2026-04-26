@@ -54,13 +54,11 @@ impl QuoteStrategy for CompletionFirstStrategy {
             if self.same_side_add_allowed(active, phase) {
                 if let Some(first_side) = active.first_side {
                     if let Some(seed_intent) = pair_arb_quotes.buy_for(first_side) {
-                        quotes.set(StrategyIntent {
-                            side: seed_intent.side,
-                            direction: TradeDirection::Buy,
-                            price: seed_intent.price,
-                            size: seed_intent.size,
-                            reason: BidReason::Provide,
-                        });
+                        if let Some(intent) =
+                            self.seed_intent_with_clip(coordinator, input, seed_intent)
+                        {
+                            quotes.set(intent);
+                        }
                     }
                 }
             }
@@ -72,22 +70,14 @@ impl QuoteStrategy for CompletionFirstStrategy {
         }
 
         if let Some(intent) = pair_arb_quotes.buy_for(Side::Yes) {
-            quotes.set(StrategyIntent {
-                side: intent.side,
-                direction: TradeDirection::Buy,
-                price: intent.price,
-                size: intent.size,
-                reason: BidReason::Provide,
-            });
+            if let Some(intent) = self.seed_intent_with_clip(coordinator, input, intent) {
+                quotes.set(intent);
+            }
         }
         if let Some(intent) = pair_arb_quotes.buy_for(Side::No) {
-            quotes.set(StrategyIntent {
-                side: intent.side,
-                direction: TradeDirection::Buy,
-                price: intent.price,
-                size: intent.size,
-                reason: BidReason::Provide,
-            });
+            if let Some(intent) = self.seed_intent_with_clip(coordinator, input, intent) {
+                quotes.set(intent);
+            }
         }
         quotes
     }
@@ -99,7 +89,20 @@ impl CompletionFirstStrategy {
         input: StrategyTickInput<'_>,
         remaining_secs: u64,
     ) -> f64 {
-        let hour = chrono::Utc::now().hour();
+        Self::clip_for_hour(
+            coordinator,
+            input,
+            remaining_secs,
+            chrono::Utc::now().hour(),
+        )
+    }
+
+    fn clip_for_hour(
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+        remaining_secs: u64,
+        hour: u32,
+    ) -> f64 {
         let session_mult = if (16..=22).contains(&hour) {
             1.15
         } else if (3..=12).contains(&hour) {
@@ -126,6 +129,23 @@ impl CompletionFirstStrategy {
         let tail_mult = if remaining_secs <= 30 { 1.16 } else { 1.0 };
         let clip = BASE_CLIP * session_mult * imbalance_mult * trade_index_mult * tail_mult;
         ((clip.clamp(MIN_CLIP, MAX_CLIP) * 10.0).round()) / 10.0
+    }
+
+    fn seed_intent_with_clip(
+        &self,
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+        seed_intent: StrategyIntent,
+    ) -> Option<StrategyIntent> {
+        let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
+        let clip = Self::clip_for(coordinator, input, remaining_secs);
+        if clip <= 0.0 {
+            return None;
+        }
+        Some(StrategyIntent {
+            size: clip,
+            ..seed_intent
+        })
     }
 
     fn same_side_add_allowed(&self, active: PairTranche, phase: CompletionFirstPhase) -> bool {
@@ -198,6 +218,46 @@ use chrono::Timelike;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polymarket::coordinator::{Book, CompletionFirstMode, CoordinatorConfig};
+    use crate::polymarket::messages::{
+        InventorySnapshot, InventoryState, MarketDataMsg, OfiSnapshot, SlotReleaseEvent,
+    };
+    use crate::polymarket::pair_ledger::PairLedgerSnapshot;
+    use crate::polymarket::strategy::{StrategyKind, StrategyTickInput};
+
+    fn make_coord(mut cfg: CoordinatorConfig) -> StrategyCoordinator {
+        cfg.strategy = StrategyKind::CompletionFirst;
+        cfg.completion_first.market_enabled = true;
+        cfg.completion_first.mode = CompletionFirstMode::Shadow;
+        let (_ofi_tx, ofi_rx) = tokio::sync::watch::channel(OfiSnapshot::default());
+        let (_inv_tx, inv_rx) = tokio::sync::watch::channel(InventorySnapshot::default());
+        let (_md_tx, md_rx) = tokio::sync::watch::channel(MarketDataMsg::BookTick {
+            yes_bid: 0.0,
+            yes_ask: 0.0,
+            no_bid: 0.0,
+            no_ask: 0.0,
+            ts: std::time::Instant::now(),
+        });
+        let (_glft_tx, glft_rx) =
+            tokio::sync::watch::channel(crate::polymarket::glft::GlftSignalSnapshot::default());
+        let (om_tx, _om_rx) = tokio::sync::mpsc::channel(1);
+        let (_kill_tx, kill_rx) = tokio::sync::mpsc::channel(1);
+        let (_feedback_tx, feedback_rx) = tokio::sync::mpsc::channel(1);
+        let (_release_tx, release_rx) = tokio::sync::mpsc::channel::<SlotReleaseEvent>(1);
+        let (_winner_hint_tx, winner_hint_rx) = tokio::sync::mpsc::channel(1);
+        StrategyCoordinator::with_aux_rx(
+            cfg,
+            ofi_rx,
+            inv_rx,
+            md_rx,
+            winner_hint_rx,
+            glft_rx,
+            om_tx,
+            kill_rx,
+            feedback_rx,
+            release_rx,
+        )
+    }
 
     #[test]
     fn same_side_limit_blocks_second_add() {
@@ -208,5 +268,151 @@ mod tests {
         };
         assert!(!COMPLETION_FIRST_STRATEGY
             .same_side_add_allowed(tranche, CompletionFirstPhase::CompletionOnly));
+    }
+
+    #[test]
+    fn flat_seed_emits_dual_buy_with_completion_clip() {
+        let mut cfg = CoordinatorConfig::default();
+        cfg.bid_size = 5.0;
+        cfg.max_net_diff = 15.0;
+        let coord = make_coord(cfg);
+        let inv = InventoryState::default();
+        let inventory = InventorySnapshot {
+            settled: inv,
+            working: inv,
+            pending_yes_qty: 0.0,
+            pending_no_qty: 0.0,
+            fragile: false,
+            pair_ledger: PairLedgerSnapshot::default(),
+            episode_metrics: Default::default(),
+        };
+        let book = Book {
+            yes_bid: 0.48,
+            yes_ask: 0.49,
+            no_bid: 0.48,
+            no_ask: 0.49,
+        };
+        let metrics = coord.derive_inventory_metrics(&inv);
+        let input = StrategyTickInput {
+            inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &inventory,
+            book: &book,
+            metrics: &metrics,
+            ofi: None,
+            glft: None,
+        };
+
+        let quotes = COMPLETION_FIRST_STRATEGY.compute_quotes(&coord, input);
+        let clip = CompletionFirstStrategy::clip_for(&coord, input, u64::MAX);
+        assert!(quotes.yes_buy.is_some());
+        assert!(quotes.no_buy.is_some());
+        assert!((quotes.yes_buy.unwrap().size - clip).abs() < 1e-9);
+        assert!((quotes.no_buy.unwrap().size - clip).abs() < 1e-9);
+    }
+
+    #[test]
+    fn completion_only_prefers_opposite_leg_when_same_side_is_exhausted() {
+        let mut cfg = CoordinatorConfig::default();
+        cfg.bid_size = 5.0;
+        cfg.max_net_diff = 15.0;
+        let coord = make_coord(cfg);
+        let working = InventoryState {
+            yes_qty: 100.0,
+            yes_avg_cost: 0.44,
+            no_qty: 20.0,
+            no_avg_cost: 0.48,
+            net_diff: 80.0,
+            ..Default::default()
+        };
+        let active = PairTranche {
+            id: 7,
+            state: TrancheState::CompletionOnly,
+            first_side: Some(Side::Yes),
+            first_qty: 100.0,
+            first_vwap: 0.44,
+            hedge_qty: 20.0,
+            hedge_vwap: 0.48,
+            residual_qty: 80.0,
+            pairable_qty: 20.0,
+            same_side_add_count: 1,
+            ..Default::default()
+        };
+        let inventory = InventorySnapshot {
+            settled: working,
+            working,
+            pending_yes_qty: 0.0,
+            pending_no_qty: 0.0,
+            fragile: false,
+            pair_ledger: PairLedgerSnapshot {
+                active_tranche: Some(active),
+                buy_fill_count: 2,
+                ..Default::default()
+            },
+            episode_metrics: Default::default(),
+        };
+        let book = Book {
+            yes_bid: 0.46,
+            yes_ask: 0.47,
+            no_bid: 0.52,
+            no_ask: 0.53,
+        };
+        let metrics = coord.derive_inventory_metrics(&working);
+        let quotes = COMPLETION_FIRST_STRATEGY.compute_quotes(
+            &coord,
+            StrategyTickInput {
+                inv: &working,
+                settled_inv: &working,
+                working_inv: &working,
+                inventory: &inventory,
+                book: &book,
+                metrics: &metrics,
+                ofi: None,
+                glft: None,
+            },
+        );
+
+        assert!(quotes.yes_buy.is_none(), "same-side add should be blocked");
+        assert!(
+            quotes.no_buy.is_some(),
+            "opposite completion leg should remain"
+        );
+    }
+
+    #[test]
+    fn clip_tail_multiplier_increases_size() {
+        let mut cfg = CoordinatorConfig::default();
+        cfg.max_net_diff = 15.0;
+        let coord = make_coord(cfg);
+        let inv = InventoryState::default();
+        let inventory = InventorySnapshot {
+            settled: inv,
+            working: inv,
+            pending_yes_qty: 0.0,
+            pending_no_qty: 0.0,
+            fragile: false,
+            pair_ledger: PairLedgerSnapshot {
+                buy_fill_count: 1,
+                ..Default::default()
+            },
+            episode_metrics: Default::default(),
+        };
+        let book = Book::default();
+        let metrics = coord.derive_inventory_metrics(&inv);
+        let input = StrategyTickInput {
+            inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &inventory,
+            book: &book,
+            metrics: &metrics,
+            ofi: None,
+            glft: None,
+        };
+
+        let base = CompletionFirstStrategy::clip_for_hour(&coord, input, 31, 14);
+        let tail = CompletionFirstStrategy::clip_for_hour(&coord, input, 30, 14);
+        assert!(tail > base, "tail clip should be larger inside final 30s");
     }
 }
