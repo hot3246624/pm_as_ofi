@@ -5,6 +5,7 @@ use super::glft::GlftSignalSnapshot;
 use super::messages::{
     BidReason, InventorySnapshot, InventoryState, OfiSnapshot, OrderSlot, TradeDirection,
 };
+use super::pair_ledger::{EpisodeMetrics, PairLedgerSnapshot};
 use super::types::Side;
 
 pub mod dip_buy;
@@ -12,6 +13,7 @@ pub mod gabagool_corridor;
 pub mod gabagool_grid;
 pub mod glft_mm;
 pub mod pair_arb;
+pub mod pair_gated_tranche;
 pub mod phase_builder;
 pub mod post_close_hype;
 
@@ -30,6 +32,7 @@ pub enum StrategyKind {
     GabagoolCorridor,
     GlftMm,
     PairArb,
+    PairGatedTrancheArb,
     DipBuy,
     PhaseBuilder,
     OracleLagSniping,
@@ -146,6 +149,11 @@ impl StrategyKind {
             }
             "glft_mm" | "glft-mm" | "glftmm" => Some(Self::GlftMm),
             "pair_arb" | "pairarb" | "pair-arb" => Some(Self::PairArb),
+            "pair_gated_tranche_arb"
+            | "pair-gated-tranche-arb"
+            | "pairgatedtranchearb"
+            | "pgt_arb"
+            | "pgt-arb" => Some(Self::PairGatedTrancheArb),
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
             "oracle_lag_sniping" | "oraclelagsniping" | "oracle-lag-sniping"
@@ -166,6 +174,7 @@ impl StrategyKind {
             Self::GabagoolCorridor => "gabagool_corridor",
             Self::GlftMm => "glft_mm",
             Self::PairArb => "pair_arb",
+            Self::PairGatedTrancheArb => "pair_gated_tranche_arb",
             Self::DipBuy => "dip_buy",
             Self::PhaseBuilder => "phase_builder",
             Self::OracleLagSniping => "oracle_lag_sniping",
@@ -183,6 +192,11 @@ impl StrategyKind {
     }
 
     #[inline]
+    pub fn is_pair_gated_tranche_arb(self) -> bool {
+        matches!(self, Self::PairGatedTrancheArb)
+    }
+
+    #[inline]
     pub fn is_oracle_lag_sniping(self) -> bool {
         matches!(self, Self::OracleLagSniping)
     }
@@ -194,7 +208,10 @@ impl StrategyKind {
 
     pub(crate) fn execution_mode(self) -> StrategyExecutionMode {
         match self {
-            Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {
+            Self::GabagoolGrid
+            | Self::GabagoolCorridor
+            | Self::PairArb
+            | Self::PairGatedTrancheArb => {
                 StrategyExecutionMode::UnifiedBuys
             }
             Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
@@ -248,6 +265,8 @@ pub(crate) struct StrategyTickInput<'a> {
     pub(crate) settled_inv: &'a InventoryState,
     pub(crate) working_inv: &'a InventoryState,
     pub(crate) inventory: &'a InventorySnapshot,
+    pub(crate) pair_ledger: &'a PairLedgerSnapshot,
+    pub(crate) episode_metrics: &'a EpisodeMetrics,
     pub(crate) book: &'a Book,
     pub(crate) metrics: &'a StrategyInventoryMetrics,
     pub(crate) ofi: Option<&'a OfiSnapshot>,
@@ -258,11 +277,12 @@ pub(crate) struct StrategyRegistry;
 
 impl StrategyRegistry {
     fn entries() -> &'static [&'static dyn QuoteStrategy] {
-        static ENTRIES: [&'static dyn QuoteStrategy; 7] = [
+        static ENTRIES: [&'static dyn QuoteStrategy; 8] = [
             &gabagool_grid::GABAGOOL_GRID_STRATEGY,
             &gabagool_corridor::GABAGOOL_CORRIDOR_STRATEGY,
             &glft_mm::GLFT_MM_STRATEGY,
             &pair_arb::PAIR_ARB_STRATEGY,
+            &pair_gated_tranche::PAIR_GATED_TRANCHE_STRATEGY,
             &dip_buy::DIP_BUY_STRATEGY,
             &phase_builder::PHASE_BUILDER_STRATEGY,
             &post_close_hype::POST_CLOSE_HYPE_STRATEGY,
@@ -304,6 +324,10 @@ mod tests {
         assert_eq!(StrategyKind::parse("glft-mm"), Some(StrategyKind::GlftMm));
         assert_eq!(StrategyKind::parse("pair_arb"), Some(StrategyKind::PairArb));
         assert_eq!(StrategyKind::parse("PAIR-ARB"), Some(StrategyKind::PairArb));
+        assert_eq!(
+            StrategyKind::parse("pair_gated_tranche_arb"),
+            Some(StrategyKind::PairGatedTrancheArb)
+        );
         assert_eq!(StrategyKind::parse("dipbuy"), Some(StrategyKind::DipBuy));
         assert_eq!(
             StrategyKind::parse("phase-builder"),

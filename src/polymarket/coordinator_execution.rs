@@ -133,7 +133,10 @@ impl StrategyCoordinator {
     }
 
     pub(super) fn should_execute_directional_hedges(&self, st: &ExecutionState) -> bool {
-        if self.cfg.strategy.is_pair_arb() || self.cfg.strategy.is_oracle_lag_sniping() {
+        if self.cfg.strategy.is_pair_arb()
+            || self.cfg.strategy.is_pair_gated_tranche_arb()
+            || self.cfg.strategy.is_oracle_lag_sniping()
+        {
             return false;
         }
         match self.cfg.strategy.execution_mode() {

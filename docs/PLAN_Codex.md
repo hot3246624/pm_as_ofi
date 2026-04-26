@@ -13,9 +13,9 @@
 - 新增策略线 `StrategyKind::PairGatedTrancheArb`，保留 `pair_arb` 原语义与原回测脚本；`PM_STRATEGY=pair_gated_tranche_arb` 作为新主线入口。
 - `InventoryManager` 升级为账本真相源，除现有 `InventorySnapshot` 外再维护 `MarketPairLedger`；协调器只消费快照，不在 `pair_arb` 式全局均价上自行推断 tranche。
 - 新增核心类型：
-  - `PairTranche { id, state, first_side, first_qty, first_vwap, hedge_qty, hedge_vwap, residual_qty, pairable_qty, pair_cost, gross_surplus, spendable_surplus, repair_spent, opened_at, closed_at }`
+  - `PairTranche { id, state, first_side, first_qty, first_vwap, hedge_qty, hedge_vwap, residual_qty, pairable_qty, pair_cost_tranche, pair_cost_fifo, gross_surplus, spendable_surplus, repair_spent, opened_at, closed_at }`；`pair_cost` 拆为 `pair_cost_tranche`（first leg + completion vwap）与 `pair_cost_fifo`（FIFO 近似）两口径并存，enforce 决策必须以 `pair_cost_tranche` 为准（来自 V1.1 §2.2）。
   - `TrancheState { FlatOrResidual, FirstLegPending, CompletionOnly, PairCovered, MergeQueued, Closed }`
-  - `MarketPairLedger { active_tranche, residual_side, residual_qty, surplus_bank, repair_budget_available, same_side_add_events, recent_closed }`
+  - `MarketPairLedger { active_tranche, residual_side, residual_qty, surplus_bank, repair_budget_available, same_side_add_events, recent_closed, locked_capital_ratio, mergeable_full_sets }`；`locked_capital_ratio` 与 `mergeable_full_sets` 在 V1 阶段仅作为 telemetry 暴露，不接入行为层；行为 gate 由 V1.1 §2.4 验收后再启用。
   - `EpisodeMetrics { clean_closed_episode_ratio, same_side_add_qty_ratio, residual_before_new_open_p90, episode_close_delay_p50, episode_close_delay_p90 }`
 - `StrategyTickInput` 扩展为显式携带 `pair_ledger` 与 `episode_metrics`；旧策略可忽略新字段，新策略必须只根据账本状态驱动行为。
 - 行为规则固定如下：
@@ -33,7 +33,7 @@
   - 把 `BS-1` 拆成 `BS-1a 我方 execution truth` 与 `BS-1b xuan trader_side truth`。
   - `BS-1a` 立即采用已验证的 authenticated `/data/trades`；`BS-1b` 不再阻塞 V1。
   - 强制新增研究对象 `xuan_pair_episode_summary`、`xuan_pair_cost_budget_summary`，与原有三对象并存。
-  - `H-0` 通过条件固定为 `clean_closed_episode_ratio >= 90%`、`same_side_add_qty_ratio <= 10%`、`episode_close_delay_p90 <= 60s`。
+  - `H-0` 通过条件固定为 `clean_closed_episode_ratio >= 90%`、`same_side_add_qty_ratio <= 10%`、`episode_close_delay_p90 <= 60s`；实盘 enforce 前另需通过 V1.1 §2.1 升级 H-0（更大样本 + 市场分桶 + 分时分桶；数据不可获取时降级为我方 shadow ≥4 周同口径达标），仅阻塞 enforce、不阻塞 skeleton 与 shadow tooling。
   - `H-5` 通过条件固定为 `discount_pair_surplus / abs(repair_pair_loss) >= 1.25`、`cohort_net_pair_pnl > 0`、`repair_loss` 全程受 `realized spendable surplus` 约束。
 - 回测与录制路径固定为：
   - `recorder` 新增 `tranche_opened`、`tranche_completed`、`same_side_add_before_covered`、`surplus_bank_updated`、`repair_budget_spent`、`merge_pairable_reduced` 事件。
@@ -42,7 +42,7 @@
 - 发布矩阵固定为：
   - 立即做：`A0 TrancheLedger`、`B0 Episode/Cadence metrics`、`D0 Harvester observer`、`PairGatedTrancheArb` skeleton、replay/backtest 扩展。
   - shadow 默认边界：`maker-only`、`single-leg open`、`completion-only`、`repair budget enforce in simulation`、`bounded taker` 仅统计不下单。
-  - enforce 前提：连续 2 周 shadow、`clean_closed_episode_ratio >= 90%`、`same_side_add_qty_ratio <= 10%`、`cohort_net_pair_pnl > baseline pair_arb`、`repair_loss` 未超过预算、`tail residual` 不恶化。
+  - enforce 前提：连续 2 周 shadow、`clean_closed_episode_ratio >= 90%`、`same_side_add_qty_ratio <= 10%`、`cohort_net_pair_pnl > baseline pair_arb`、`repair_loss` 未超过预算、`tail residual` 不恶化；另需满足 V1.1 enforce 前置：`abs(pair_cost_tranche_p50 - pair_cost_fifo_p50) < 0.05`（V1.1 §2.2）、`locked_capital_ratio_p90 < 0.6`（V1.1 §2.4）、尾段 `t/T <= 0.2` PnL 不显著为负（V1.1 §2.5）；按市场分级 enforce（V1.1 §2.1），不要求全 7 市场齐过线。
   - `bounded taker completion` 的接口预留为 `CompletionMode::{MakerOnly, BoundedTakerShadow, BoundedTakerEnforce}`；只有 `BS-1a` 完整、maker-only shadow 达标后，才允许进入 `BoundedTakerShadow`。
 
 **测试计划**

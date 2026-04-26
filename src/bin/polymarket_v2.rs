@@ -2554,10 +2554,21 @@ const SELF_BUILT_AGG_OPEN_TOLERANCE_MS_DEFAULT: u64 = 1_200;
 const SELF_BUILT_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 1_500;
 const SELF_BUILT_AGG_MIN_CONFIDENCE_DEFAULT: f64 = 0.80;
 const LOCAL_PRICE_AGG_OPEN_TOLERANCE_MS_DEFAULT: u64 = 600;
-const LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 600;
+// close-only shadow compare is diagnostic, not execution-critical; allow a wider
+// close window so we can collect enough multi-source samples near round end.
+const LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 2_500;
 const LOCAL_PRICE_AGG_MIN_CONFIDENCE_DEFAULT: f64 = 0.85;
 const LOCAL_PRICE_AGG_MIN_SOURCES_DEFAULT: usize = 1;
 const LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS_DEFAULT: f64 = 12.0;
+const LOCAL_PRICE_AGG_DECISION_WAIT_MS_DEFAULT: u64 = 1_500;
+const LOCAL_PRICE_AGG_WEIGHT_BINANCE_DEFAULT: f64 = 1.0;
+const LOCAL_PRICE_AGG_WEIGHT_BYBIT_DEFAULT: f64 = 1.0;
+const LOCAL_PRICE_AGG_WEIGHT_OKX_DEFAULT: f64 = 1.0;
+const LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT: f64 = 1.0;
+const LOCAL_PRICE_AGG_COMPARE_DEADLINE_GRACE_MS: u64 = 250;
+const LOCAL_PRICE_AGG_COMPARE_TARGET_BPS: f64 = 5.0;
+const LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS: usize = 12;
+const LOCAL_PRICE_AGG_COMPARE_REPORT_DECIMALS: usize = 15;
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -2682,6 +2693,46 @@ fn local_price_agg_max_source_spread_bps() -> f64 {
         .unwrap_or(LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS_DEFAULT)
 }
 
+fn local_price_agg_decision_wait_ms() -> u64 {
+    env::var("PM_LOCAL_PRICE_AGG_DECISION_WAIT_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(50, 3_000))
+        .unwrap_or(LOCAL_PRICE_AGG_DECISION_WAIT_MS_DEFAULT)
+}
+
+fn local_price_agg_weight_binance() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_WEIGHT_BINANCE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 10.0))
+        .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_BINANCE_DEFAULT)
+}
+
+fn local_price_agg_weight_bybit() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_WEIGHT_BYBIT")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 10.0))
+        .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_BYBIT_DEFAULT)
+}
+
+fn local_price_agg_weight_okx() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_WEIGHT_OKX")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 10.0))
+        .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_OKX_DEFAULT)
+}
+
+fn local_price_agg_weight_coinbase() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_WEIGHT_COINBASE")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 10.0))
+        .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT)
+}
+
 fn env_nonempty_var(names: &[&str]) -> Option<String> {
     names.iter().find_map(|name| {
         env::var(name).ok().and_then(|v| {
@@ -2772,6 +2823,7 @@ enum LocalPriceSource {
     Binance,
     Bybit,
     Okx,
+    Coinbase,
 }
 
 impl LocalPriceSource {
@@ -2780,7 +2832,17 @@ impl LocalPriceSource {
             Self::Binance => "binance",
             Self::Bybit => "bybit",
             Self::Okx => "okx",
+            Self::Coinbase => "coinbase",
         }
+    }
+}
+
+fn local_price_agg_source_weight(source: LocalPriceSource) -> f64 {
+    match source {
+        LocalPriceSource::Binance => local_price_agg_weight_binance(),
+        LocalPriceSource::Bybit => local_price_agg_weight_bybit(),
+        LocalPriceSource::Okx => local_price_agg_weight_okx(),
+        LocalPriceSource::Coinbase => local_price_agg_weight_coinbase(),
     }
 }
 
@@ -2940,6 +3002,49 @@ fn parse_okx_trade_ticks(text: &str) -> Vec<(String, f64, u64)> {
     out
 }
 
+fn coinbase_product_id_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let (base, quote) = chainlink_symbol.split_once('/')?;
+    if !quote.eq_ignore_ascii_case("usd") {
+        return None;
+    }
+    let base = base.trim();
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}-USD", base.to_ascii_uppercase()))
+}
+
+fn chainlink_symbol_from_coinbase_product_id(product_id: &str) -> Option<String> {
+    let upper = product_id.trim().to_ascii_uppercase();
+    let base = upper.strip_suffix("-USD")?;
+    if base.is_empty() {
+        return None;
+    }
+    Some(format!("{}/usd", base.to_ascii_lowercase()))
+}
+
+fn parse_coinbase_ticker_tick(text: &str) -> Option<(String, f64, u64)> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return None;
+    };
+    if value.get("type").and_then(|v| v.as_str()) != Some("ticker") {
+        return None;
+    }
+    let product_id = value.get("product_id").and_then(|v| v.as_str())?;
+    let chainlink_symbol = chainlink_symbol_from_coinbase_product_id(product_id)?;
+    let price = value.get("price").and_then(parse_f64_value)?;
+    if !price.is_finite() || price <= 0.0 {
+        return None;
+    }
+    let ts_ms = value
+        .get("time")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.timestamp_millis().max(0) as u64)
+        .unwrap_or_else(unix_now_millis_u64);
+    Some((chainlink_symbol, price, ts_ms))
+}
+
 fn robust_median(mut values: Vec<f64>) -> Option<f64> {
     if values.is_empty() {
         return None;
@@ -2950,6 +3055,41 @@ fn robust_median(mut values: Vec<f64>) -> Option<f64> {
         Some(values[mid])
     } else {
         Some((values[mid - 1] + values[mid]) / 2.0)
+    }
+}
+
+fn robust_center(mut values: Vec<f64>) -> Option<f64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    match values.len() {
+        1 => Some(values[0]),
+        2 => Some((values[0] + values[1]) / 2.0),
+        // Drop one-side outliers and average the center mass; this is usually
+        // closer to Chainlink-style aggregated closes than picking one median tick.
+        _ => {
+            let inner = &values[1..values.len() - 1];
+            let sum: f64 = inner.iter().sum();
+            Some(sum / inner.len() as f64)
+        }
+    }
+}
+
+fn weighted_mean(values: &[(f64, f64)]) -> Option<f64> {
+    let mut weighted_sum = 0.0f64;
+    let mut weight_sum = 0.0f64;
+    for (value, weight) in values {
+        if !value.is_finite() || !weight.is_finite() || *weight <= 0.0 {
+            continue;
+        }
+        weighted_sum += value * weight;
+        weight_sum += weight;
+    }
+    if weight_sum <= 0.0 {
+        None
+    } else {
+        Some(weighted_sum / weight_sum)
     }
 }
 
@@ -3518,7 +3658,8 @@ impl LocalPriceHub {
         });
         Self::spawn_binance_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_bybit_feeder(Arc::clone(&hub), symbols.clone());
-        Self::spawn_okx_feeder(Arc::clone(&hub), symbols);
+        Self::spawn_okx_feeder(Arc::clone(&hub), symbols.clone());
+        Self::spawn_coinbase_feeder(Arc::clone(&hub), symbols);
         hub
     }
 
@@ -3712,6 +3853,59 @@ impl LocalPriceHub {
             }
         });
     }
+
+    fn spawn_coinbase_feeder(hub: Arc<Self>, symbols: HashSet<String>) {
+        let product_ids: Vec<String> = symbols
+            .iter()
+            .filter_map(|sym| coinbase_product_id_from_chainlink_symbol(sym))
+            .collect();
+        if product_ids.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            let url = "wss://ws-feed.exchange.coinbase.com";
+            let mut backoff = Duration::from_millis(300);
+            loop {
+                let connect = tokio::time::timeout(Duration::from_secs(3), connect_async(url)).await;
+                let Ok(Ok((ws, _))) = connect else {
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(3));
+                    continue;
+                };
+                backoff = Duration::from_millis(300);
+                let (mut write, mut read) = ws.split();
+                let subscribe_msg = json!({
+                    "type": "subscribe",
+                    "product_ids": product_ids,
+                    "channels": ["ticker"],
+                });
+                if write
+                    .send(Message::Text(subscribe_msg.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                while let Some(next) = read.next().await {
+                    let msg = match next {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    };
+                    let text = match msg {
+                        Message::Text(t) => t.to_string(),
+                        Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    if let Some((symbol, price, ts_ms)) = parse_coinbase_ticker_tick(&text) {
+                        hub.publish_tick(&symbol, price, ts_ms, LocalPriceSource::Coinbase);
+                    }
+                }
+            }
+        });
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3795,6 +3989,29 @@ struct LocalPriceAggProbe {
     lagged_ticks: u64,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LocalPriceAggSourcePointProbe {
+    source: String,
+    open_price: Option<f64>,
+    open_ts_ms: Option<u64>,
+    open_exact: Option<bool>,
+    close_price: Option<f64>,
+    close_ts_ms: Option<u64>,
+    close_exact: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalPriceAggSourcesProbe {
+    unix_ms: u64,
+    symbol: String,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    mode: String,
+    status: String,
+    min_sources: usize,
+    source_points: Vec<LocalPriceAggSourcePointProbe>,
+}
+
 fn chainlink_round_alignment_path() -> PathBuf {
     PathBuf::from("logs/chainlink_round_alignment.jsonl")
 }
@@ -3805,6 +4022,10 @@ fn self_built_price_agg_probe_path() -> PathBuf {
 
 fn local_price_agg_probe_path() -> PathBuf {
     PathBuf::from("logs/local_price_agg.jsonl")
+}
+
+fn local_price_agg_sources_probe_path() -> PathBuf {
+    PathBuf::from("logs/local_price_agg_sources.jsonl")
 }
 
 fn chainlink_last_close_cache_path() -> PathBuf {
@@ -3886,6 +4107,32 @@ fn append_local_price_agg_probe(probe: &LocalPriceAggProbe) {
     };
     if let Err(e) = writeln!(writer, "{}", line) {
         warn!("⚠️ local_price_agg write failed: {}", e);
+    }
+}
+
+fn append_local_price_agg_sources_probe(probe: &LocalPriceAggSourcesProbe) {
+    let path = local_price_agg_sources_probe_path();
+    let file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "⚠️ local_price_agg_sources write open failed: path={} err={}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let mut writer = BufWriter::new(file);
+    let line = match serde_json::to_string(probe) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("⚠️ local_price_agg_sources serialize failed: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = writeln!(writer, "{}", line) {
+        warn!("⚠️ local_price_agg_sources write failed: {}", e);
     }
 }
 
@@ -5295,6 +5542,8 @@ async fn run_post_close_winner_hint_listener(
     // Task starts IMMEDIATELY so RTDS backfill has best chance to include open_t.
     let cl_symbol = symbol.clone();
     let cl_slug = slug.clone();
+    let cl_local_price_hub = local_price_hub.clone();
+    let cl_chainlink_hub = chainlink_hub.clone();
     let chainlink_task = tokio::spawn(async move {
         if let Some((source, side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
             run_chainlink_winner_hint(
@@ -5302,14 +5551,14 @@ async fn run_post_close_winner_hint_listener(
                 round_start_ts,
                 round_end_ts,
                 chainlink_deadline_ts,
-                chainlink_hub.clone(),
-                local_price_hub.clone(),
+                cl_chainlink_hub,
+                cl_local_price_hub,
             )
             .await
         {
             let detect_ms = unix_now_millis_u64();
             info!(
-                "⏱️ chainlink_result_ready | slug={} symbol={} source={:?} side={:?} open_exact={} open_ref={:.6} close={:.6} open_ts_ms={} close_ts_ms={} detect_ms={} latency_from_end_ms={}",
+                "⏱️ chainlink_result_ready | slug={} symbol={} source={:?} side={:?} open_exact={} open_ref={:.15} close={:.15} open_ts_ms={} close_ts_ms={} detect_ms={} latency_from_end_ms={}",
                 cl_slug, cl_symbol, source, side, open_is_exact, open_ref, close_px,
                 open_ts_ms, close_ts_ms, detect_ms,
                 detect_ms.saturating_sub(market_end_ms),
@@ -5322,6 +5571,32 @@ async fn run_post_close_winner_hint_listener(
     let mut frontend_task = Some(tokio::spawn(async move {
         fetch_frontend_crypto_round_prices(&frontend_symbol, round_start_ts, round_end_ts).await
     }));
+    // Independent local aggregator lane for accuracy/latency benchmarking against RTDS.
+    // This lane never drives trading in shadow mode; it only emits compare logs.
+    let mut local_compare_task = if local_price_agg_enabled() && !local_price_agg_decision_enabled()
+    {
+        let cmp_hub = local_price_hub.clone();
+        let cmp_symbol = symbol.clone();
+        let cmp_deadline_ms = round_end_ts
+            .saturating_mul(1_000)
+            .saturating_add(local_price_agg_decision_wait_ms())
+            .saturating_add(LOCAL_PRICE_AGG_COMPARE_DEADLINE_GRACE_MS);
+        Some(tokio::spawn(async move {
+            let started_ms = unix_now_millis_u64();
+            let hit = run_local_price_close_aggregator(
+                cmp_hub,
+                &cmp_symbol,
+                round_start_ts,
+                round_end_ts,
+                cmp_deadline_ms,
+            )
+            .await;
+            let ready_ms = unix_now_millis_u64();
+            (hit, started_ms, ready_ms, cmp_deadline_ms)
+        }))
+    } else {
+        None
+    };
 
     // ── Wait until t-10s for book snapshot ──
     // The Chainlink task is already running; this sleep only gates the pre-close book snapshot
@@ -5458,6 +5733,77 @@ async fn run_post_close_winner_hint_listener(
         return;
     };
     let (first_source, first_side, first_ref, first_obs, first_ms, first_open_exact) = first;
+
+    if let Some(task) = local_compare_task.take() {
+        match task.await {
+            Ok((hit, started_ms, ready_ms, deadline_ms)) => match hit {
+                Some(hit) => {
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let close_within_target = close_diff_bps <= LOCAL_PRICE_AGG_COMPARE_TARGET_BPS;
+                    let close_match_frac_digits = count_matching_fractional_digits(
+                        hit.close_price,
+                        first_obs,
+                        LOCAL_PRICE_AGG_COMPARE_REPORT_DECIMALS,
+                    );
+                    let close_meets_12dp =
+                        close_match_frac_digits >= LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    info!(
+                        "🧪 local_price_agg_vs_rtds | slug={} symbol={} compare_mode=close_only_open_from_rtds local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} close_within_5bps={} close_match_frac_digits={} close_meets_12dp={} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        close_within_target,
+                        close_match_frac_digits,
+                        close_meets_12dp,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                }
+                None => {
+                    warn!(
+                        "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                        slug,
+                        symbol,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        first_ref,
+                        first_side,
+                        first_obs,
+                    );
+                }
+            },
+            Err(err) => {
+                warn!(
+                    "⚠️ local_price_agg_compare_task_join_error | slug={} symbol={} err={}",
+                    slug, symbol, err
+                );
+            }
+        }
+    }
 
     if first_ms.saturating_sub(market_end_ms) > post_close_window_secs.saturating_mul(1_000) {
         warn!(
@@ -6126,6 +6472,27 @@ async fn run_self_built_price_aggregator(
         };
 
         while unix_now_secs() <= hard_deadline_ts {
+            if close_exact.is_none() {
+                if let Some((price, ts_ms)) = peek_prewarmed_tick(&target_symbol, end_ms) {
+                    close_exact = Some(AggregatedPricePoint::from_exact(
+                        price,
+                        ts_ms,
+                        "prewarm_close_early",
+                    ));
+                }
+            }
+            if close_exact.is_some()
+                && (open_exact.is_some()
+                    || first_after_start
+                        .map(|(delta, _, _)| delta <= open_tol_ms)
+                        .unwrap_or(false)
+                    || nearest_start
+                        .map(|(delta, _, _)| delta <= open_tol_ms)
+                        .unwrap_or(false)
+                    || prev_round_close.is_some())
+            {
+                break;
+            }
             let next = tokio::time::timeout(Duration::from_millis(250), rx.recv()).await;
             let (price, ts_ms) = match next {
                 Ok(Ok(hit)) => hit,
@@ -6477,6 +6844,55 @@ fn pick_local_source_points(
     Some((open, close))
 }
 
+fn pick_local_source_close_point(
+    state: &LocalSourceBoundaryState,
+    close_tol_ms: u64,
+) -> Option<AggregatedPricePoint> {
+    if let Some(p) = state.close_exact {
+        Some(p)
+    } else if let Some((delta, ts_ms, px)) = state.first_after_end {
+        if delta <= close_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_first_after_close",
+            })
+        } else {
+            None
+        }
+    } else if let Some((delta, ts_ms, px)) = state.nearest_end {
+        if delta <= close_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_nearest_close",
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn count_matching_fractional_digits(a: f64, b: f64, max_decimals: usize) -> usize {
+    if !a.is_finite() || !b.is_finite() || max_decimals == 0 {
+        return 0;
+    }
+    let sa = format!("{:.*}", max_decimals, a.abs());
+    let sb = format!("{:.*}", max_decimals, b.abs());
+    let fa = sa.split('.').nth(1).unwrap_or("");
+    let fb = sb.split('.').nth(1).unwrap_or("");
+    fa.chars()
+        .zip(fb.chars())
+        .take_while(|(x, y)| x == y)
+        .count()
+}
+
 fn local_price_agg_ingest_state(
     states: &mut HashMap<LocalPriceSource, LocalSourceBoundaryState>,
     source: LocalPriceSource,
@@ -6501,12 +6917,127 @@ fn local_price_agg_ingest_state(
     );
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LocalCloseOnlyAggHit {
+    close_price: f64,
+    close_ts_ms: u64,
+    source_count: usize,
+    source_spread_bps: f64,
+    close_exact_sources: usize,
+}
+
+async fn run_local_price_close_aggregator(
+    local_price_hub: Option<Arc<LocalPriceHub>>,
+    symbol: &str,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    hard_deadline_ms: u64,
+) -> Option<LocalCloseOnlyAggHit> {
+    let Some(hub) = local_price_hub else {
+        return None;
+    };
+    let target_symbol = normalize_chainlink_symbol(symbol);
+    if target_symbol.is_empty() {
+        return None;
+    }
+
+    let start_ms = round_start_ts.saturating_mul(1_000);
+    let end_ms = round_end_ts.saturating_mul(1_000);
+    let close_tol_ms = local_price_agg_close_tolerance_ms();
+    let min_sources = local_price_agg_min_sources();
+
+    let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
+    for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
+        local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+    }
+
+    if let Some(mut rx) = hub.subscribe(&target_symbol) {
+        while unix_now_millis_u64() <= hard_deadline_ms {
+            let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
+            let (price, ts_ms, source) = match next {
+                Ok(Ok(hit)) => hit,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                Err(_) => continue,
+            };
+            local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+
+            if unix_now_millis_u64() >= end_ms {
+                let ready = states
+                    .values()
+                    .filter(|st| pick_local_source_close_point(st, close_tol_ms).is_some())
+                    .count();
+                if ready >= min_sources {
+                    break;
+                }
+            }
+        }
+    }
+
+    let mut source_hits: Vec<(LocalPriceSource, AggregatedPricePoint)> = Vec::new();
+    for (source, st) in &states {
+        if let Some(close) = pick_local_source_close_point(st, close_tol_ms) {
+            source_hits.push((*source, close));
+        }
+    }
+    let source_points = source_hits
+        .iter()
+        .map(|(source, close)| LocalPriceAggSourcePointProbe {
+            source: source.as_str().to_string(),
+            open_price: None,
+            open_ts_ms: None,
+            open_exact: None,
+            close_price: Some(close.price),
+            close_ts_ms: Some(close.ts_ms),
+            close_exact: Some(close.exact),
+        })
+        .collect::<Vec<_>>();
+    let status = if source_hits.len() >= min_sources {
+        "ready"
+    } else {
+        "insufficient_sources"
+    };
+    append_local_price_agg_sources_probe(&LocalPriceAggSourcesProbe {
+        unix_ms: unix_now_millis_u64(),
+        symbol: target_symbol.clone(),
+        round_start_ts,
+        round_end_ts,
+        mode: "close_only".to_string(),
+        status: status.to_string(),
+        min_sources,
+        source_points,
+    });
+
+    if source_hits.len() < min_sources {
+        return None;
+    }
+
+    let close_values: Vec<f64> = source_hits.iter().map(|(_, c)| c.price).collect();
+    let close_timestamps: Vec<u64> = source_hits.iter().map(|(_, c)| c.ts_ms).collect();
+    let close_exact_sources = source_hits.iter().filter(|(_, c)| c.exact).count();
+    let close_weighted = source_hits
+        .iter()
+        .map(|(source, close)| (close.price, local_price_agg_source_weight(*source)))
+        .collect::<Vec<_>>();
+    let close_med = weighted_mean(&close_weighted).or_else(|| robust_center(close_values.clone()))?;
+    let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
+    let source_spread_bps = spread_bps(&close_values).unwrap_or(0.0);
+
+    Some(LocalCloseOnlyAggHit {
+        close_price: close_med,
+        close_ts_ms: close_ts_med,
+        source_count: source_hits.len(),
+        source_spread_bps,
+        close_exact_sources,
+    })
+}
+
 async fn run_local_price_aggregator(
     local_price_hub: Option<Arc<LocalPriceHub>>,
     symbol: &str,
     round_start_ts: u64,
     round_end_ts: u64,
-    hard_deadline_ts: u64,
+    hard_deadline_ms: u64,
 ) -> Option<(Side, f64, f64, u64, u64, bool)> {
     let Some(hub) = local_price_hub else {
         return None;
@@ -6537,7 +7068,7 @@ async fn run_local_price_aggregator(
     }
 
     if let Some(mut rx) = hub.subscribe(&target_symbol) {
-        while unix_now_secs() <= hard_deadline_ts {
+        while unix_now_millis_u64() <= hard_deadline_ms {
             let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
             let (price, ts_ms, source) = match next {
                 Ok(Ok(hit)) => hit,
@@ -6571,6 +7102,21 @@ async fn run_local_price_aggregator(
             source_hits.push((*source, open, close));
         }
     }
+
+    let source_points_for_probe = || {
+        source_hits
+            .iter()
+            .map(|(source, open, close)| LocalPriceAggSourcePointProbe {
+                source: source.as_str().to_string(),
+                open_price: Some(open.price),
+                open_ts_ms: Some(open.ts_ms),
+                open_exact: Some(open.exact),
+                close_price: Some(close.price),
+                close_ts_ms: Some(close.ts_ms),
+                close_exact: Some(close.exact),
+            })
+            .collect::<Vec<_>>()
+    };
 
     let emit_probe = |status: &str,
                       side: Option<Side>,
@@ -6608,6 +7154,16 @@ async fn run_local_price_aggregator(
             observed_snapshot_ticks,
             observed_live_ticks,
             lagged_ticks,
+        });
+        append_local_price_agg_sources_probe(&LocalPriceAggSourcesProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            mode: "full".to_string(),
+            status: status.to_string(),
+            min_sources,
+            source_points: source_points_for_probe(),
         });
     };
 
@@ -6647,7 +7203,12 @@ async fn run_local_price_aggregator(
     let open_exact_sources = source_hits.iter().filter(|(_, o, _)| o.exact).count();
     let close_exact_sources = source_hits.iter().filter(|(_, _, c)| c.exact).count();
 
-    let Some(open_med) = robust_median(open_values.clone()) else {
+    let open_weighted = source_hits
+        .iter()
+        .map(|(source, open, _)| (open.price, local_price_agg_source_weight(*source)))
+        .collect::<Vec<_>>();
+    let Some(open_med) = weighted_mean(&open_weighted).or_else(|| robust_median(open_values.clone()))
+    else {
         emit_probe(
             "open_median_missing",
             None,
@@ -6664,7 +7225,13 @@ async fn run_local_price_aggregator(
         );
         return None;
     };
-    let Some(close_med) = robust_median(close_values.clone()) else {
+    let close_weighted = source_hits
+        .iter()
+        .map(|(source, _, close)| (close.price, local_price_agg_source_weight(*source)))
+        .collect::<Vec<_>>();
+    let Some(close_med) =
+        weighted_mean(&close_weighted).or_else(|| robust_median(close_values.clone()))
+    else {
         emit_probe(
             "close_median_missing",
             None,
@@ -6909,6 +7476,51 @@ async fn run_chainlink_winner_hint_via_hub(
     };
 
     while unix_now_secs() <= hard_deadline_ts {
+        if close_point.is_none() {
+            if let Some((price, ts_ms)) = peek_prewarmed_tick(&target_symbol, end_ms) {
+                close_point = Some((price, ts_ms));
+                info!(
+                    "🔄 chainlink_close_recovered_from_prewarm_early | symbol={} round_end_ts={} close_ts_ms={} close_price={:.6}",
+                    target_symbol, round_end_ts, ts_ms, price,
+                );
+            }
+        }
+        if let Some((close, close_ts_ms)) = close_point {
+            if let Some((open_ref_px, open_ts_ms)) = open_point {
+                let side = if close >= open_ref_px {
+                    Side::Yes
+                } else {
+                    Side::No
+                };
+                info!(
+                    "🏁 Chainlink winner hint ready | unix_ms={} symbol={} side={:?} open_ref={:.6}@{} close={:.6}@{} source=rtds_exact_close_recovered_early",
+                    unix_now_millis_u64(),
+                    target_symbol,
+                    side,
+                    open_ref_px,
+                    open_ts_ms,
+                    close,
+                    close_ts_ms,
+                );
+                set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+                return Some((side, open_ref_px, close, open_ts_ms, close_ts_ms, true));
+            }
+            set_last_chainlink_close(&target_symbol, close_ts_ms, close);
+            warn!(
+                "⚠️ chainlink_close_ready_but_open_missing | symbol={} round_start_ts={} round_end_ts={} has_open_t={} has_final=true observed_ticks={} lagged_ticks={} first_tick_ts_ms={:?} last_tick_ts_ms={:?} nearest_start={:?} nearest_end={:?} — keeping decision unresolved",
+                target_symbol,
+                round_start_ts,
+                round_end_ts,
+                open_point.is_some(),
+                observed_ticks,
+                lagged_ticks,
+                first_tick_ts_ms,
+                last_tick_ts_ms,
+                nearest_start,
+                nearest_end
+            );
+            return None;
+        }
         if open_point.is_none() {
             let elapsed = unix_now_secs().saturating_sub(round_start_ts);
             if elapsed > 30 && !open_missing_warned {
@@ -7074,27 +7686,30 @@ async fn run_chainlink_winner_hint(
     chainlink_hub: Option<Arc<ChainlinkHub>>,
     local_price_hub: Option<Arc<LocalPriceHub>>,
 ) -> Option<(WinnerHintSource, Side, f64, f64, u64, u64, bool)> {
+    let local_agg_deadline_ms = round_end_ts
+        .saturating_mul(1_000)
+        .saturating_add(local_price_agg_decision_wait_ms());
     if local_price_agg_enabled() {
-        let agg_start_ms = unix_now_millis_u64();
-        if let Some((side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
-            run_local_price_aggregator(
-                local_price_hub,
-                symbol,
-                round_start_ts,
-                round_end_ts,
-                hard_deadline_ts,
-            )
-            .await
-        {
-            let agg_done_ms = unix_now_millis_u64();
-            info!(
-                "⏱️ local_price_agg_latency | symbol={} round_start_ts={} round_end_ts={} status=ready elapsed_ms={}",
-                symbol,
-                round_start_ts,
-                round_end_ts,
-                agg_done_ms.saturating_sub(agg_start_ms),
-            );
-            if local_price_agg_decision_enabled() {
+        if local_price_agg_decision_enabled() {
+            let agg_start_ms = unix_now_millis_u64();
+            if let Some((side, open_ref, close_px, open_ts_ms, close_ts_ms, open_is_exact)) =
+                run_local_price_aggregator(
+                    local_price_hub.clone(),
+                    symbol,
+                    round_start_ts,
+                    round_end_ts,
+                    local_agg_deadline_ms,
+                )
+                .await
+            {
+                let agg_done_ms = unix_now_millis_u64();
+                info!(
+                    "⏱️ local_price_agg_latency | symbol={} round_start_ts={} round_end_ts={} status=ready elapsed_ms={}",
+                    symbol,
+                    round_start_ts,
+                    round_end_ts,
+                    agg_done_ms.saturating_sub(agg_start_ms),
+                );
                 return Some((
                     WinnerHintSource::LocalAgg,
                     side,
@@ -7105,9 +7720,11 @@ async fn run_chainlink_winner_hint(
                     open_is_exact,
                 ));
             }
+        } else {
             info!(
-                "🧪 local_price_agg_shadow_only | symbol={} round_end_ts={} decision_enabled=false",
-                symbol, round_end_ts
+                "🧪 local_price_agg_shadow_mode | symbol={} round_end_ts={} decision_enabled=false",
+                symbol,
+                round_end_ts
             );
         }
     }

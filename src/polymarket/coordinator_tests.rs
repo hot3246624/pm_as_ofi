@@ -30,15 +30,20 @@ fn with_strategy(mut c: CoordinatorConfig, strategy: StrategyKind) -> Coordinato
 #[derive(Clone)]
 struct TestInventoryTx(watch::Sender<InventorySnapshot>);
 
+fn test_inventory_snapshot(inv: InventoryState) -> InventorySnapshot {
+    InventorySnapshot {
+        settled: inv,
+        working: inv,
+        pending_yes_qty: 0.0,
+        pending_no_qty: 0.0,
+        fragile: false,
+        ..InventorySnapshot::default()
+    }
+}
+
 impl TestInventoryTx {
     fn send(&self, inv: InventoryState) -> Result<(), watch::error::SendError<InventorySnapshot>> {
-        self.0.send(InventorySnapshot {
-            settled: inv,
-            working: inv,
-            pending_yes_qty: 0.0,
-            pending_no_qty: 0.0,
-            fragile: false,
-        })
+        self.0.send(test_inventory_snapshot(inv))
     }
 }
 
@@ -148,19 +153,16 @@ fn live_glft_snapshot() -> GlftSignalSnapshot {
 fn phase_builder_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -> StrategyQuotes {
     let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::PhaseBuilder));
     let metrics = coord.derive_inventory_metrics(&inv);
+    let inventory = test_inventory_snapshot(inv);
     StrategyKind::PhaseBuilder.compute_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
             settled_inv: &inv,
             working_inv: &inv,
-            inventory: &crate::polymarket::messages::InventorySnapshot {
-                settled: inv,
-                working: inv,
-                pending_yes_qty: 0.0,
-                pending_no_qty: 0.0,
-                fragile: false,
-            },
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
             book: &book,
             metrics: &metrics,
             ofi: None,
@@ -172,19 +174,16 @@ fn phase_builder_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
 fn gabagool_grid_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -> StrategyQuotes {
     let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::GabagoolGrid));
     let metrics = coord.derive_inventory_metrics(&inv);
+    let inventory = test_inventory_snapshot(inv);
     StrategyKind::GabagoolGrid.compute_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
             settled_inv: &inv,
             working_inv: &inv,
-            inventory: &crate::polymarket::messages::InventorySnapshot {
-                settled: inv,
-                working: inv,
-                pending_yes_qty: 0.0,
-                pending_no_qty: 0.0,
-                fragile: false,
-            },
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
             book: &book,
             metrics: &metrics,
             ofi: None,
@@ -200,19 +199,16 @@ fn gabagool_corridor_quotes(
 ) -> StrategyQuotes {
     let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::GabagoolCorridor));
     let metrics = coord.derive_inventory_metrics(&inv);
+    let inventory = test_inventory_snapshot(inv);
     StrategyKind::GabagoolCorridor.compute_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
             settled_inv: &inv,
             working_inv: &inv,
-            inventory: &crate::polymarket::messages::InventorySnapshot {
-                settled: inv,
-                working: inv,
-                pending_yes_qty: 0.0,
-                pending_no_qty: 0.0,
-                fragile: false,
-            },
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
             book: &book,
             metrics: &metrics,
             ofi: None,
@@ -229,19 +225,16 @@ fn pair_arb_quotes(
 ) -> StrategyQuotes {
     let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::PairArb));
     let metrics = coord.derive_inventory_metrics(&inv);
+    let inventory = test_inventory_snapshot(inv);
     StrategyKind::PairArb.compute_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
             settled_inv: &inv,
             working_inv: &inv,
-            inventory: &crate::polymarket::messages::InventorySnapshot {
-                settled: inv,
-                working: inv,
-                pending_yes_qty: 0.0,
-                pending_no_qty: 0.0,
-                fragile: false,
-            },
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
             book: &book,
             metrics: &metrics,
             ofi: ofi.as_ref(),
@@ -267,6 +260,8 @@ fn pair_arb_quotes_with_snapshot(
             settled_inv: &settled,
             working_inv: &working,
             inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
             book: &book,
             metrics: &metrics,
             ofi: ofi.as_ref(),
@@ -306,6 +301,7 @@ fn test_pair_arb_uses_working_inventory_for_tiered_yes_cap() {
         pending_yes_qty: 5.0,
         pending_no_qty: 0.0,
         fragile: false,
+        ..InventorySnapshot::default()
     };
 
     let tier_1_mult = c.pair_arb.tier_1_mult;
@@ -360,6 +356,7 @@ fn test_pair_arb_execution_recheck_rejects_stale_same_side_quote_from_working_in
         pending_yes_qty: 5.0,
         pending_no_qty: 0.0,
         fragile: false,
+        ..InventorySnapshot::default()
     });
 
     let ub = book(0.61, 0.62, 0.34, 0.35);
@@ -2620,6 +2617,7 @@ fn test_pair_arb_progress_updates_on_working_only_advance() {
         pending_yes_qty: 0.0,
         pending_no_qty: 0.0,
         fragile: true,
+        ..InventorySnapshot::default()
     };
     coord.observe_pair_arb_inventory_transition(&snapshot, now);
 
@@ -2662,6 +2660,7 @@ fn test_pair_arb_progress_delta_scales_with_bid_size() {
         pending_yes_qty: 0.0,
         pending_no_qty: 0.0,
         fragile: true,
+        ..InventorySnapshot::default()
     };
     coord.observe_pair_arb_inventory_transition(&small_progress, now);
     assert!(
@@ -2693,6 +2692,7 @@ fn test_pair_arb_progress_delta_scales_with_bid_size() {
         pending_yes_qty: 0.0,
         pending_no_qty: 0.0,
         fragile: true,
+        ..InventorySnapshot::default()
     };
     coord.observe_pair_arb_inventory_transition(&large_progress, now + Duration::from_secs(1));
     assert_eq!(
@@ -3069,6 +3069,7 @@ fn test_pair_arb_merge_aware_round_accounting_tracks_realized_pair_metrics() {
             pending_yes_qty: 0.0,
             pending_no_qty: 0.0,
             fragile: false,
+            ..InventorySnapshot::default()
         },
         Instant::now(),
     );
@@ -5662,19 +5663,16 @@ fn test_pair_arb_ofi_toxic_does_not_block_pairing_buy_in_execution_layer() {
     };
     let book = book(0.63, 0.65, 0.18, 0.20);
     let metrics = coord.derive_inventory_metrics(&inv);
+    let inventory = test_inventory_snapshot(inv);
     let mut quotes = StrategyKind::PairArb.compute_quotes(
         &coord,
         StrategyTickInput {
             inv: &inv,
             settled_inv: &inv,
             working_inv: &inv,
-            inventory: &crate::polymarket::messages::InventorySnapshot {
-                settled: inv,
-                working: inv,
-                pending_yes_qty: 0.0,
-                pending_no_qty: 0.0,
-                fragile: false,
-            },
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
             book: &book,
             metrics: &metrics,
             ofi: Some(&ofi),

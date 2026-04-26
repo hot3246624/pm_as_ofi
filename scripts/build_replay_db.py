@@ -25,7 +25,17 @@ ORDER_EVENTS = {
     "cancel_ack",
     "taker_repair_sent",
 }
-INVENTORY_EVENTS = {"fill_snapshot", "merge_sync"}
+TRANCHE_EVENTS = {
+    "tranche_opened",
+    "tranche_entered_completion_only",
+    "tranche_pair_covered",
+    "tranche_overshoot_rolled",
+    "same_side_add_before_covered",
+    "merge_pairable_reduced",
+}
+BUDGET_EVENTS = {"surplus_bank_updated", "repair_budget_spent"}
+CAPITAL_EVENTS = {"capital_state_snapshot"}
+INVENTORY_EVENTS = {"fill_snapshot", "merge_sync", *TRANCHE_EVENTS, *BUDGET_EVENTS, *CAPITAL_EVENTS}
 SETTLEMENT_EVENTS = {"redeem_result", "market_resolved"}
 
 
@@ -86,6 +96,41 @@ def as_float(v: Any) -> Optional[float]:
         return float(v)
     except Exception:
         return None
+
+
+def as_int(v: Any) -> Optional[int]:
+    try:
+        if v is None:
+            return None
+        return int(v)
+    except Exception:
+        return None
+
+
+def parse_slot_side_direction(payload: Dict[str, Any]) -> Tuple[str, str, str]:
+    slot = str(payload.get("slot") or "").strip().upper()
+    side = str(payload.get("side") or "").strip().upper()
+    direction = str(payload.get("direction") or "").strip().upper()
+    if slot and "_" in slot:
+        parts = slot.split("_", 1)
+        if len(parts) == 2:
+            side = parts[0].strip().upper()
+            direction = parts[1].strip().upper()
+    return slot, side, direction
+
+
+def classify_exec_path(event: str, payload: Dict[str, Any]) -> str:
+    if event == "taker_repair_sent":
+        return "TAKER_INTENT"
+    if event == "order_accepted":
+        if payload.get("purpose") is not None:
+            return "TAKER_ACCEPTED"
+        return "MAKER_ACCEPTED"
+    if event == "placement_rejected":
+        if payload.get("purpose") is not None:
+            return "TAKER_REJECTED"
+        return "MAKER_REJECTED"
+    return ""
 
 
 def parse_top_price(v: Any) -> Optional[float]:
@@ -263,12 +308,81 @@ def init_db(conn: sqlite3.Connection) -> None:
             payload_json TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS own_order_lifecycle (
+            date TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            recv_unix_ms INTEGER,
+            capture_seq INTEGER,
+            event TEXT,
+            slot TEXT,
+            side TEXT,
+            direction TEXT,
+            order_id TEXT,
+            reason TEXT,
+            purpose TEXT,
+            reject_kind TEXT,
+            retry TEXT,
+            cooldown_ms INTEGER,
+            price REAL,
+            size REAL,
+            exec_path TEXT,
+            payload_json TEXT
+        );
+
         CREATE TABLE IF NOT EXISTS own_inventory_events (
             date TEXT NOT NULL,
             slug TEXT NOT NULL,
             recv_unix_ms INTEGER,
             capture_seq INTEGER,
             event TEXT,
+            payload_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS pair_tranche_events (
+            date TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            recv_unix_ms INTEGER,
+            capture_seq INTEGER,
+            event TEXT,
+            tranche_id INTEGER,
+            state TEXT,
+            first_side TEXT,
+            pairable_qty REAL,
+            residual_qty REAL,
+            pair_cost_tranche REAL,
+            pair_cost_fifo_ref REAL,
+            payload_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS pair_budget_events (
+            date TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            recv_unix_ms INTEGER,
+            capture_seq INTEGER,
+            event TEXT,
+            surplus_bank REAL,
+            repair_budget_available REAL,
+            before_budget REAL,
+            after_budget REAL,
+            payload_json TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS capital_state_events (
+            date TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            recv_unix_ms INTEGER,
+            capture_seq INTEGER,
+            event TEXT,
+            working_capital REAL,
+            locked_in_active_tranches REAL,
+            locked_in_pair_covered REAL,
+            mergeable_full_sets REAL,
+            locked_capital_ratio REAL,
+            would_block_new_open_due_to_capital INTEGER,
+            would_trigger_merge_due_to_capital INTEGER,
+            capital_pressure_merge_batch_shadow REAL,
+            clean_closed_episode_ratio REAL,
+            same_side_add_qty_ratio REAL,
             payload_json TEXT
         );
 
@@ -336,8 +450,94 @@ def build_for_slug(conn: sqlite3.Connection, day: str, slug_dir: Path) -> None:
             conn.execute("INSERT INTO own_order_events VALUES (?,?,?,?,?,?)", row)
         elif event in INVENTORY_EVENTS:
             conn.execute("INSERT INTO own_inventory_events VALUES (?,?,?,?,?,?)", row)
+            if event in TRANCHE_EVENTS:
+                payload_dict = payload if isinstance(payload, dict) else {}
+                conn.execute(
+                    "INSERT INTO pair_tranche_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        day,
+                        env.slug,
+                        env.recv_unix_ms,
+                        env.capture_seq,
+                        event,
+                        int(payload_dict.get("tranche_id") or payload_dict.get("new_tranche_id") or 0),
+                        str(payload_dict.get("state") or ""),
+                        str(payload_dict.get("first_side") or ""),
+                        as_float(payload_dict.get("pairable_qty")),
+                        as_float(payload_dict.get("residual_qty") or payload_dict.get("first_qty")),
+                        as_float(payload_dict.get("pair_cost_tranche")),
+                        as_float(payload_dict.get("pair_cost_fifo_ref")),
+                        json_dumps(payload),
+                    ),
+                )
+            if event in BUDGET_EVENTS:
+                payload_dict = payload if isinstance(payload, dict) else {}
+                conn.execute(
+                    "INSERT INTO pair_budget_events VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        day,
+                        env.slug,
+                        env.recv_unix_ms,
+                        env.capture_seq,
+                        event,
+                        as_float(payload_dict.get("surplus_bank")),
+                        as_float(payload_dict.get("repair_budget_available")),
+                        as_float(payload_dict.get("before")),
+                        as_float(payload_dict.get("after")),
+                        json_dumps(payload),
+                    ),
+                )
+            if event in CAPITAL_EVENTS:
+                payload_dict = payload if isinstance(payload, dict) else {}
+                conn.execute(
+                    "INSERT INTO capital_state_events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        day,
+                        env.slug,
+                        env.recv_unix_ms,
+                        env.capture_seq,
+                        event,
+                        as_float(payload_dict.get("working_capital")),
+                        as_float(payload_dict.get("locked_in_active_tranches")),
+                        as_float(payload_dict.get("locked_in_pair_covered")),
+                        as_float(payload_dict.get("mergeable_full_sets")),
+                        as_float(payload_dict.get("locked_capital_ratio")),
+                        1 if payload_dict.get("would_block_new_open_due_to_capital") else 0,
+                        1 if payload_dict.get("would_trigger_merge_due_to_capital") else 0,
+                        as_float(payload_dict.get("capital_pressure_merge_batch_shadow")),
+                        as_float(payload_dict.get("clean_closed_episode_ratio")),
+                        as_float(payload_dict.get("same_side_add_qty_ratio")),
+                        json_dumps(payload),
+                    ),
+                )
         elif event in SETTLEMENT_EVENTS:
             conn.execute("INSERT INTO settlement_records VALUES (?,?,?,?,?,?)", row)
+        if event in ORDER_EVENTS:
+            payload_dict = payload if isinstance(payload, dict) else {}
+            slot, side, direction = parse_slot_side_direction(payload_dict)
+            conn.execute(
+                "INSERT INTO own_order_lifecycle VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    day,
+                    env.slug,
+                    env.recv_unix_ms,
+                    env.capture_seq,
+                    event,
+                    slot,
+                    side,
+                    direction,
+                    str(payload_dict.get("order_id") or ""),
+                    str(payload_dict.get("reason") or ""),
+                    str(payload_dict.get("purpose") or ""),
+                    str(payload_dict.get("reject_kind") or ""),
+                    str(payload_dict.get("retry") or ""),
+                    as_int(payload_dict.get("cooldown_ms")),
+                    as_float(payload_dict.get("price") or payload_dict.get("limit_price")),
+                    as_float(payload_dict.get("size")),
+                    classify_exec_path(event, payload_dict),
+                    json_dumps(payload),
+                ),
+            )
 
 
 def main() -> None:

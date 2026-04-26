@@ -46,6 +46,10 @@ impl StrategyCoordinator {
             }
             return;
         }
+        if self.cfg.strategy.is_pair_gated_tranche_arb() {
+            self.edge_hold_state = None;
+            return;
+        }
         if self.cfg.strategy.is_oracle_lag_sniping() {
             // Post-close strategy runs strictly after market end for a short window.
             // It should not inherit normal pre-close endgame gates.
@@ -117,7 +121,7 @@ impl StrategyCoordinator {
         }
     }
 
-    pub(super) fn seconds_to_market_end(&self) -> Option<u64> {
+    pub(crate) fn seconds_to_market_end(&self) -> Option<u64> {
         let end_ts = self.cfg.market_end_ts?;
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

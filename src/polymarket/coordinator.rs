@@ -2519,6 +2519,8 @@ impl StrategyCoordinator {
             settled_inv: &settled_inv,
             working_inv: &working_inv,
             inventory: &inv_snapshot,
+            pair_ledger: &inv_snapshot.pair_ledger,
+            episode_metrics: &inv_snapshot.episode_metrics,
             book: &ub,
             metrics: &metrics,
             ofi: Some(&ofi),
