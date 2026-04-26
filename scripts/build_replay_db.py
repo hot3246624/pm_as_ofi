@@ -37,6 +37,7 @@ INVENTORY_EVENTS = {
     "completion_first_merge_requested",
     "completion_first_merge_executed",
     "completion_first_redeem_requested",
+    "completion_first_shadow_summary",
 }
 SETTLEMENT_EVENTS = {"redeem_result", "market_resolved"}
 

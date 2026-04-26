@@ -66,3 +66,6 @@
 - `clean_closed_episode_ratio`
 - `same_side_add_qty_ratio`
 - `episode_close_delay_p50/p90`
+- replay/report：
+  - `python scripts/build_replay_db.py --date YYYY-MM-DD`
+  - `python scripts/export_completion_first_shadow_report.py --date YYYY-MM-DD`

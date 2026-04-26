@@ -177,6 +177,36 @@ impl StrategyCoordinator {
                 Some(Side::No) => snapshot.working.no_qty,
                 None => 0.0,
             };
+            if !self.completion_first_shadow_summary_emitted && elapsed >= 1 {
+                self.completion_first_shadow_summary_emitted = true;
+                self.emit_completion_first_event(
+                    "completion_first_shadow_summary",
+                    serde_json::json!({
+                        "elapsed_secs": elapsed,
+                        "winner_side": winner_side.map(|s| s.as_str()),
+                        "buy_fill_count": self.completion_first_round_buy_fill_count,
+                        "same_side_run_count": self.completion_first_same_side_run_count,
+                        "active_tranche_id": snapshot.pair_ledger.active_tranche.map(|t| t.id),
+                        "active_state": snapshot.pair_ledger.active_tranche.map(|t| format!("{:?}", t.state)),
+                        "residual_qty": snapshot.pair_ledger.residual_qty,
+                        "residual_side": snapshot.pair_ledger.residual_side.map(|s| s.as_str()),
+                        "pairable_qty": snapshot.pair_ledger.total_pairable_qty(),
+                        "surplus_bank": snapshot.pair_ledger.surplus_bank,
+                        "repair_budget_available": snapshot.pair_ledger.repair_budget_available,
+                        "clean_closed_episode_ratio": snapshot.episode_metrics.clean_closed_episode_ratio,
+                        "same_side_add_qty_ratio": snapshot.episode_metrics.same_side_add_qty_ratio,
+                        "episode_close_delay_p50": snapshot.episode_metrics.episode_close_delay_p50,
+                        "episode_close_delay_p90": snapshot.episode_metrics.episode_close_delay_p90,
+                        "conditional_second_same_side_would_allow": snapshot.episode_metrics.conditional_second_same_side_would_allow,
+                        "working_yes_qty": snapshot.working.yes_qty,
+                        "working_no_qty": snapshot.working.no_qty,
+                        "mergeable_full_sets": snapshot.pair_ledger.capital_state.mergeable_full_sets,
+                        "working_capital": snapshot.pair_ledger.capital_state.working_capital,
+                        "locked_capital_ratio": snapshot.pair_ledger.capital_state.locked_capital_ratio,
+                        "mode": format!("{:?}", self.completion_first_mode()),
+                    }),
+                );
+            }
             if residual <= 1e-9 {
                 return;
             }
