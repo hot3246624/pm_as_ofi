@@ -7101,23 +7101,34 @@ async fn run_local_price_close_aggregator(
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
     }
 
-    if let Some(mut rx) = hub.subscribe(&target_symbol) {
-        while unix_now_millis_u64() <= hard_deadline_ms {
-            let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
-            let (price, ts_ms, source) = match next {
-                Ok(Ok(hit)) => hit,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
-                Err(_) => continue,
-            };
-            local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+    let close_ready_sources = |states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>| {
+        states
+            .values()
+            .filter(|st| pick_local_source_close_point(st, close_tol_ms).is_some())
+            .count()
+    };
 
-            if unix_now_millis_u64() >= end_ms {
-                let ready = states
-                    .values()
-                    .filter(|st| pick_local_source_close_point(st, close_tol_ms).is_some())
-                    .count();
-                if ready >= min_sources {
+    if unix_now_millis_u64() < end_ms || close_ready_sources(&states) < min_sources {
+        if let Some(mut rx) = hub.subscribe(&target_symbol) {
+            while unix_now_millis_u64() <= hard_deadline_ms {
+                let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
+                match next {
+                    Ok(Ok((price, ts_ms, source))) => {
+                        local_price_agg_ingest_state(
+                            &mut states,
+                            source,
+                            price,
+                            ts_ms,
+                            start_ms,
+                            end_ms,
+                        );
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                    Err(_) => {}
+                }
+
+                if unix_now_millis_u64() >= end_ms && close_ready_sources(&states) >= min_sources {
                     break;
                 }
             }
@@ -7235,28 +7246,38 @@ async fn run_local_price_aggregator(
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
     }
 
-    if let Some(mut rx) = hub.subscribe(&target_symbol) {
-        while unix_now_millis_u64() <= hard_deadline_ms {
-            let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
-            let (price, ts_ms, source) = match next {
-                Ok(Ok(hit)) => hit,
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
-                    lagged_ticks = lagged_ticks.saturating_add(n);
-                    continue;
-                }
-                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
-                Err(_) => continue,
-            };
-            observed_ticks = observed_ticks.saturating_add(1);
-            observed_live_ticks = observed_live_ticks.saturating_add(1);
-            local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+    let full_ready_sources = |states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>| {
+        states
+            .values()
+            .filter(|st| pick_local_source_points(st, open_tol_ms, close_tol_ms).is_some())
+            .count()
+    };
 
-            if unix_now_millis_u64() >= end_ms {
-                let ready = states
-                    .values()
-                    .filter(|st| pick_local_source_points(st, open_tol_ms, close_tol_ms).is_some())
-                    .count();
-                if ready >= min_sources {
+    if unix_now_millis_u64() < end_ms || full_ready_sources(&states) < min_sources {
+        if let Some(mut rx) = hub.subscribe(&target_symbol) {
+            while unix_now_millis_u64() <= hard_deadline_ms {
+                let next = tokio::time::timeout(Duration::from_millis(120), rx.recv()).await;
+                match next {
+                    Ok(Ok((price, ts_ms, source))) => {
+                        observed_ticks = observed_ticks.saturating_add(1);
+                        observed_live_ticks = observed_live_ticks.saturating_add(1);
+                        local_price_agg_ingest_state(
+                            &mut states,
+                            source,
+                            price,
+                            ts_ms,
+                            start_ms,
+                            end_ms,
+                        );
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
+                        lagged_ticks = lagged_ticks.saturating_add(n);
+                    }
+                    Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                    Err(_) => {}
+                }
+
+                if unix_now_millis_u64() >= end_ms && full_ready_sources(&states) >= min_sources {
                     break;
                 }
             }

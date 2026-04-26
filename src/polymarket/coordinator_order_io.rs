@@ -192,6 +192,21 @@ impl StrategyCoordinator {
         reason: BidReason,
         log_msg: Option<String>,
     ) {
+        if self.cfg.strategy.is_oracle_lag_sniping()
+            && self.cfg.oracle_lag_sniping.lab_only
+            && reason == BidReason::OracleLagProvide
+        {
+            info!(
+                "🧪 oracle_lag_lab_skip_maker | slot={} side={:?} direction={:?} price={:.4} size={:.4} reason={:?}",
+                slot.as_str(),
+                slot.side,
+                slot.direction,
+                price,
+                size,
+                reason
+            );
+            return;
+        }
         let current_target = self.slot_target(slot).cloned();
         let last_ts = self.slot_last_ts(slot);
         let active = current_target.is_some();
@@ -1145,6 +1160,19 @@ impl StrategyCoordinator {
         purpose: TradePurpose,
         limit_price: Option<f64>,
     ) {
+        if self.cfg.strategy.is_oracle_lag_sniping() && self.cfg.oracle_lag_sniping.lab_only {
+            info!(
+                "🧪 oracle_lag_lab_skip_taker | side={:?} direction={:?} size={:.4} purpose={:?} limit_price={}",
+                side,
+                direction,
+                size,
+                purpose,
+                limit_price
+                    .map(|p| format!("{p:.4}"))
+                    .unwrap_or_else(|| "none".to_string())
+            );
+            return;
+        }
         let rounded = (size * 100.0).floor() / 100.0;
         if rounded < 0.01 {
             debug!(

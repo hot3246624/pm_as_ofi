@@ -118,6 +118,8 @@ pub struct OracleLagSnipingStrategyConfig {
     /// Optional per-order notional cap (USDC) for oracle-lag orders.
     /// 0.0 disables cap and uses `PM_BID_SIZE` as before.
     pub max_order_notional_usdc: f64,
+    /// Lab mode: keep data/decision pipeline active but block all trading intents.
+    pub lab_only: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -252,6 +254,7 @@ impl Default for CoordinatorConfig {
                 arbiter_collection_window_ms: 200,
                 arbiter_book_max_age_ms: 250,
                 max_order_notional_usdc: 0.0,
+                lab_only: false,
             },
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
@@ -511,6 +514,10 @@ impl CoordinatorConfig {
                     );
                 }
             }
+        }
+        if let Ok(v) = std::env::var("PM_ORACLE_LAG_LAB_ONLY") {
+            let lv = v.to_ascii_lowercase();
+            self.oracle_lag_sniping.lab_only = v == "1" || lv == "true";
         }
     }
 
@@ -1553,13 +1560,16 @@ impl StrategyCoordinator {
 
     pub async fn run(mut self) {
         info!(
-            "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s pair_arb_risk_open_cutoff={}s edge(keep/exit)={:.2}/{:.2} dry={}",
+            "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s pair_arb_risk_open_cutoff={}s oracle_lag(lab_only={},window={}s,max_notional={:.2}) edge(keep/exit)={:.2}/{:.2} dry={}",
             self.cfg.strategy.as_str(),
             self.cfg.pair_target, self.cfg.open_pair_band, self.cfg.bid_size, self.cfg.dip_buy_max_entry_price, self.cfg.tick_size,
             self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms,
             self.cfg.strategy_metrics_log_secs,
             self.cfg.endgame_soft_close_secs, self.cfg.endgame_hard_close_secs, self.cfg.endgame_freeze_secs, self.cfg.endgame_maker_repair_min_secs,
             self.cfg.pair_arb.risk_open_cutoff_secs,
+            self.cfg.oracle_lag_sniping.lab_only,
+            self.cfg.oracle_lag_sniping.window_secs,
+            self.cfg.oracle_lag_sniping.max_order_notional_usdc,
             self.cfg.endgame_edge_keep_mult, self.cfg.endgame_edge_exit_mult,
             self.cfg.dry_run,
         );
