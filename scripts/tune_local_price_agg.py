@@ -74,7 +74,7 @@ class RoundSourceClose:
     symbol: str
     round_end_ts: int
     unix_ms: int
-    source_prices: Dict[str, float]
+    source_points: Dict[str, Tuple[float, int, bool]]
 
 
 def parse_compare_logs(paths: List[Path]) -> Dict[Tuple[str, int], CompareObs]:
@@ -176,15 +176,22 @@ def parse_source_probe(path: Path, mode: str) -> Dict[Tuple[str, int], RoundSour
             if not symbol or not isinstance(round_end, int):
                 continue
             source_points = obj.get("source_points") or []
-            prices: Dict[str, float] = {}
+            points: Dict[str, Tuple[float, int, bool]] = {}
             for sp in source_points:
                 src = str(sp.get("source", "")).lower()
                 close_price = sp.get("close_price")
+                close_ts_ms = sp.get("close_ts_ms")
+                close_exact = bool(sp.get("close_exact", False))
                 if src in ("binance", "bybit", "okx", "coinbase") and isinstance(close_price, (int, float)):
                     px = float(close_price)
-                    if px > 0 and math.isfinite(px):
-                        prices[src] = px
-            if not prices:
+                    if (
+                        px > 0
+                        and math.isfinite(px)
+                        and isinstance(close_ts_ms, (int, float))
+                        and float(close_ts_ms) > 0
+                    ):
+                        points[src] = (px, int(close_ts_ms), close_exact)
+            if not points:
                 continue
             key = (symbol, round_end)
             prev = out.get(key)
@@ -194,22 +201,39 @@ def parse_source_probe(path: Path, mode: str) -> Dict[Tuple[str, int], RoundSour
                     symbol=symbol,
                     round_end_ts=round_end,
                     unix_ms=unix_ms,
-                    source_prices=prices,
+                    source_points=points,
                 )
     return out
 
 
-def weighted_close(source_prices: Dict[str, float], weights: Dict[str, float]) -> Optional[float]:
+def weighted_close(
+    source_points: Dict[str, Tuple[float, int, bool]],
+    round_end_ts: int,
+    weights: Dict[str, float],
+    close_decay_ms: float,
+    exact_boost: float,
+) -> Optional[float]:
     numer = 0.0
     denom = 0.0
-    for src, px in source_prices.items():
+    end_ms = round_end_ts * 1000
+    for src, point in source_points.items():
+        px, close_ts_ms, close_exact = point
         w = float(weights.get(src, 0.0))
         if w <= 0 or not math.isfinite(w):
             continue
         if not math.isfinite(px) or px <= 0:
             continue
-        numer += px * w
-        denom += w
+        delta_ms = abs(close_ts_ms - end_ms)
+        if close_decay_ms > 0 and math.isfinite(close_decay_ms):
+            temporal = 1.0 / (1.0 + (delta_ms / close_decay_ms))
+        else:
+            temporal = 1.0
+        exact = exact_boost if close_exact else 1.0
+        eff_w = w * temporal * exact
+        if eff_w <= 0 or not math.isfinite(eff_w):
+            continue
+        numer += px * eff_w
+        denom += eff_w
     if denom <= 0:
         return None
     return numer / denom
@@ -226,13 +250,18 @@ def count_matching_fractional_digits(a: float, b: float, decimals: int = 15) -> 
     return c
 
 
-def round_metrics(dataset: List[Tuple[CompareObs, RoundSourceClose]], weights: Dict[str, float]) -> Dict[str, float]:
+def round_metrics(
+    dataset: List[Tuple[CompareObs, RoundSourceClose]],
+    weights: Dict[str, float],
+    close_decay_ms: float,
+    exact_boost: float,
+) -> Dict[str, float]:
     bps: List[float] = []
     side_hits = 0
     valid = 0
     d12_hits = 0
     for obs, src in dataset:
-        pred = weighted_close(src.source_prices, weights)
+        pred = weighted_close(src.source_points, obs.round_end_ts, weights, close_decay_ms, exact_boost)
         if pred is None or obs.rtds_close <= 0:
             continue
         valid += 1
@@ -273,6 +302,16 @@ def frange(start: float, end: float, step: float) -> List[float]:
     return out
 
 
+def parse_float_list(raw: str) -> List[float]:
+    out: List[float] = []
+    for tok in raw.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        out.append(float(tok))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Tune local price agg source weights against RTDS closes")
     ap.add_argument("--compare-log", action="append", default=[], help="Path to log file containing local_price_agg_vs_rtds lines (repeatable)")
@@ -282,6 +321,10 @@ def main() -> int:
     ap.add_argument("--grid-start", type=float, default=0.4)
     ap.add_argument("--grid-end", type=float, default=2.0)
     ap.add_argument("--grid-step", type=float, default=0.1)
+    ap.add_argument("--close-decay-ms", type=float, default=900.0)
+    ap.add_argument("--exact-boost", type=float, default=1.25)
+    ap.add_argument("--close-decay-grid", default="", help="Comma-separated decay candidates, e.g. 500,900,1300")
+    ap.add_argument("--exact-boost-grid", default="", help="Comma-separated exact boost candidates, e.g. 1.0,1.25,1.6")
     ap.add_argument("--top-k", type=int, default=20)
     ap.add_argument("--out-csv", default="logs/localagg_weight_search.csv")
     ap.add_argument("--out-round-csv", default="logs/localagg_best_per_round.csv")
@@ -333,19 +376,37 @@ def main() -> int:
         return 1
 
     values = frange(args.grid_start, args.grid_end, args.grid_step)
+    decay_values = (
+        parse_float_list(args.close_decay_grid)
+        if args.close_decay_grid.strip()
+        else [float(args.close_decay_ms)]
+    )
+    boost_values = (
+        parse_float_list(args.exact_boost_grid)
+        if args.exact_boost_grid.strip()
+        else [float(args.exact_boost)]
+    )
     rows = []
-    for wb, wy, wo, wc in itertools.product(values, values, values, values):
-        weights = {"binance": wb, "bybit": wy, "okx": wo, "coinbase": wc}
-        m = round_metrics(joined, weights)
-        rows.append(
-            {
-                "w_binance": wb,
-                "w_bybit": wy,
-                "w_okx": wo,
-                "w_coinbase": wc,
-                **m,
-            }
-        )
+    for decay, boost in itertools.product(decay_values, boost_values):
+        for wb, wy, wo, wc in itertools.product(values, values, values, values):
+            weights = {"binance": wb, "bybit": wy, "okx": wo, "coinbase": wc}
+            m = round_metrics(
+                joined,
+                weights,
+                close_decay_ms=decay,
+                exact_boost=boost,
+            )
+            rows.append(
+                {
+                    "close_decay_ms": decay,
+                    "exact_boost": boost,
+                    "w_binance": wb,
+                    "w_bybit": wy,
+                    "w_okx": wo,
+                    "w_coinbase": wc,
+                    **m,
+                }
+            )
 
     rows.sort(key=lambda r: (r["mean_bps"], -r["side_match"], -r["match_12dp"], r["p95_bps"]))
 
@@ -355,6 +416,8 @@ def main() -> int:
         writer = csv.DictWriter(
             f,
             fieldnames=[
+                "close_decay_ms",
+                "exact_boost",
                 "w_binance",
                 "w_bybit",
                 "w_okx",
@@ -378,6 +441,8 @@ def main() -> int:
         "okx": float(best["w_okx"]),
         "coinbase": float(best["w_coinbase"]),
     }
+    best_decay = float(best["close_decay_ms"])
+    best_boost = float(best["exact_boost"])
 
     out_round = Path(args.out_round_csv)
     out_round.parent.mkdir(parents=True, exist_ok=True)
@@ -405,7 +470,13 @@ def main() -> int:
             ]
         )
         for obs, src in sorted(joined, key=lambda x: (x[0].round_end_ts, x[0].symbol)):
-            pred = weighted_close(src.source_prices, best_weights)
+            pred = weighted_close(
+                src.source_points,
+                obs.round_end_ts,
+                best_weights,
+                close_decay_ms=best_decay,
+                exact_boost=best_boost,
+            )
             if pred is None:
                 continue
             abs_diff = abs(pred - obs.rtds_close)
@@ -428,17 +499,18 @@ def main() -> int:
                     pred_side,
                     true_side,
                     pred_side == true_side,
-                    src.source_prices.get("binance", ""),
-                    src.source_prices.get("bybit", ""),
-                    src.source_prices.get("okx", ""),
-                    src.source_prices.get("coinbase", ""),
+                    (src.source_points.get("binance") or ("", "", ""))[0],
+                    (src.source_points.get("bybit") or ("", "", ""))[0],
+                    (src.source_points.get("okx") or ("", "", ""))[0],
+                    (src.source_points.get("coinbase") or ("", "", ""))[0],
                 ]
             )
 
     print(f"Joined samples: {len(joined)} (exact={exact_hits}, offset<=300s={offset_hits})")
     print(
         "Best weights => "
-        f"binance={best['w_binance']}, bybit={best['w_bybit']}, okx={best['w_okx']}, coinbase={best['w_coinbase']} | "
+        f"binance={best['w_binance']}, bybit={best['w_bybit']}, okx={best['w_okx']}, coinbase={best['w_coinbase']}, "
+        f"close_decay_ms={best['close_decay_ms']}, exact_boost={best['exact_boost']} | "
         f"mean_bps={best['mean_bps']:.6f}, p95_bps={best['p95_bps']:.6f}, "
         f"side_match={best['side_match']:.3f}, match_12dp={best['match_12dp']:.3f}"
     )
@@ -449,7 +521,9 @@ def main() -> int:
         f"PM_LOCAL_PRICE_AGG_WEIGHT_BINANCE={best['w_binance']}\n"
         f"PM_LOCAL_PRICE_AGG_WEIGHT_BYBIT={best['w_bybit']}\n"
         f"PM_LOCAL_PRICE_AGG_WEIGHT_OKX={best['w_okx']}\n"
-        f"PM_LOCAL_PRICE_AGG_WEIGHT_COINBASE={best['w_coinbase']}"
+        f"PM_LOCAL_PRICE_AGG_WEIGHT_COINBASE={best['w_coinbase']}\n"
+        f"PM_LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS={best['close_decay_ms']}\n"
+        f"PM_LOCAL_PRICE_AGG_EXACT_BOOST={best['exact_boost']}"
     )
     return 0
 

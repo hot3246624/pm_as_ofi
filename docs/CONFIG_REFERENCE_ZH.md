@@ -35,13 +35,19 @@
 | `PM_SELF_BUILT_PRICE_AGG_OPEN_TOLERANCE_MS` | `1200` | 仅 `oracle_lag_sniping` 使用：open 候选与 round_start 的最大容忍偏差（毫秒） |
 | `PM_SELF_BUILT_PRICE_AGG_CLOSE_TOLERANCE_MS` | `1500` | 仅 `oracle_lag_sniping` 使用：close 候选与 round_end 的最大容忍偏差（毫秒） |
 | `PM_SELF_BUILT_PRICE_AGG_MIN_CONFIDENCE` | `0.80` | 仅 `oracle_lag_sniping` 使用：聚合器最小置信度阈值 |
-| `PM_LOCAL_PRICE_AGG_ENABLED` | `false` | 仅 `oracle_lag_sniping` 使用：启用本地多源价格聚合器（Binance/Bybit/OKX），默认 shadow |
+| `PM_LOCAL_PRICE_AGG_ENABLED` | `false` | 仅 `oracle_lag_sniping` 使用：启用本地多源价格聚合器（Binance/Bybit/OKX/Coinbase），默认 shadow |
 | `PM_LOCAL_PRICE_AGG_DECISION_ENABLED` | `false` | 仅 `oracle_lag_sniping` 使用：允许 `LocalAgg` 直接驱动 winner hint 决策 |
 | `PM_LOCAL_PRICE_AGG_OPEN_TOLERANCE_MS` | `600` | 本地聚合器 open 边界容忍偏差（毫秒） |
-| `PM_LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS` | `600` | 本地聚合器 close 边界容忍偏差（毫秒） |
+| `PM_LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS` | `2500` | 本地聚合器 close 边界容忍偏差（毫秒） |
 | `PM_LOCAL_PRICE_AGG_MIN_CONFIDENCE` | `0.85` | 本地聚合器最小置信度阈值 |
 | `PM_LOCAL_PRICE_AGG_MIN_SOURCES` | `1` | 本地聚合器最少有效源数量 |
 | `PM_LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS` | `12` | 本地聚合器源间最大允许价差（bps） |
+| `PM_LOCAL_PRICE_AGG_WEIGHT_BINANCE` | `1.0` | 本地聚合器 Binance 基础权重 |
+| `PM_LOCAL_PRICE_AGG_WEIGHT_BYBIT` | `1.0` | 本地聚合器 Bybit 基础权重 |
+| `PM_LOCAL_PRICE_AGG_WEIGHT_OKX` | `1.0` | 本地聚合器 OKX 基础权重 |
+| `PM_LOCAL_PRICE_AGG_WEIGHT_COINBASE` | `1.0` | 本地聚合器 Coinbase 基础权重 |
+| `PM_LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS` | `900` | 本地聚合器 close 融合的时间衰减常数（毫秒） |
+| `PM_LOCAL_PRICE_AGG_EXACT_BOOST` | `1.25` | 本地聚合器对 exact close 点的额外权重倍数 |
 | `PM_POST_CLOSE_GAMMA_POLL_MS` | `300` | 仅 `oracle_lag_sniping` 使用：Chainlink 未命中时 Gamma 兜底轮询间隔 |
 | `PM_ORACLE_LAG_CROSS_MARKET_ARBITER_ENABLED` | `false` | 仅 `oracle_lag_sniping` 使用：是否启用跨市场仲裁（默认关闭，推荐每市场独立 single-shot） |
 | `PM_ORACLE_LAG_ARBITER_COLLECTION_WINDOW_MS` | `200` | 仅在启用跨市场仲裁时有效：仲裁收集窗口（毫秒） |

@@ -2565,6 +2565,8 @@ const LOCAL_PRICE_AGG_WEIGHT_BINANCE_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_BYBIT_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_OKX_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT: f64 = 1.0;
+const LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS_DEFAULT: f64 = 900.0;
+const LOCAL_PRICE_AGG_EXACT_BOOST_DEFAULT: f64 = 1.25;
 const LOCAL_PRICE_AGG_COMPARE_DEADLINE_GRACE_MS: u64 = 250;
 const LOCAL_PRICE_AGG_COMPARE_TARGET_BPS: f64 = 5.0;
 const LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS: usize = 12;
@@ -2731,6 +2733,22 @@ fn local_price_agg_weight_coinbase() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .map(|v| v.clamp(0.0, 10.0))
         .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT)
+}
+
+fn local_price_agg_close_time_decay_ms() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(50.0, 10_000.0))
+        .unwrap_or(LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS_DEFAULT)
+}
+
+fn local_price_agg_exact_boost() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_EXACT_BOOST")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(1.0, 3.0))
+        .unwrap_or(LOCAL_PRICE_AGG_EXACT_BOOST_DEFAULT)
 }
 
 fn env_nonempty_var(names: &[&str]) -> Option<String> {
@@ -5756,7 +5774,7 @@ async fn run_post_close_winner_hint_listener(
                     };
                     let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
                     info!(
-                        "🧪 local_price_agg_vs_rtds | slug={} symbol={} compare_mode=close_only_open_from_rtds local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} close_within_5bps={} close_match_frac_digits={} close_meets_12dp={} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        "🧪 local_price_agg_vs_rtds | slug={} symbol={} compare_mode=close_only_open_from_rtds local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} close_within_5bps={} close_match_frac_digits={} close_meets_12dp={} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_decay_ms={:.1} local_exact_boost={:.2} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
                         slug,
                         symbol,
                         local_side_vs_rtds_open,
@@ -5774,6 +5792,8 @@ async fn run_post_close_winner_hint_listener(
                         hit.source_count,
                         hit.source_spread_bps,
                         hit.close_exact_sources,
+                        local_price_agg_close_time_decay_ms(),
+                        local_price_agg_exact_boost(),
                         started_ms,
                         ready_ms,
                         deadline_ms,
@@ -6926,6 +6946,25 @@ struct LocalCloseOnlyAggHit {
     close_exact_sources: usize,
 }
 
+fn local_price_agg_temporal_weight(abs_delta_ms: u64) -> f64 {
+    let decay = local_price_agg_close_time_decay_ms();
+    if !decay.is_finite() || decay <= 0.0 {
+        return 1.0;
+    }
+    1.0 / (1.0 + (abs_delta_ms as f64 / decay))
+}
+
+fn local_price_agg_point_weight(source: LocalPriceSource, point: &AggregatedPricePoint) -> f64 {
+    let base = local_price_agg_source_weight(source);
+    let temporal = local_price_agg_temporal_weight(point.abs_delta_ms);
+    let exact = if point.exact {
+        local_price_agg_exact_boost()
+    } else {
+        1.0
+    };
+    base * temporal * exact
+}
+
 async fn run_local_price_close_aggregator(
     local_price_hub: Option<Arc<LocalPriceHub>>,
     symbol: &str,
@@ -7017,7 +7056,7 @@ async fn run_local_price_close_aggregator(
     let close_exact_sources = source_hits.iter().filter(|(_, c)| c.exact).count();
     let close_weighted = source_hits
         .iter()
-        .map(|(source, close)| (close.price, local_price_agg_source_weight(*source)))
+        .map(|(source, close)| (close.price, local_price_agg_point_weight(*source, close)))
         .collect::<Vec<_>>();
     let close_med = weighted_mean(&close_weighted).or_else(|| robust_center(close_values.clone()))?;
     let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
@@ -7205,7 +7244,7 @@ async fn run_local_price_aggregator(
 
     let open_weighted = source_hits
         .iter()
-        .map(|(source, open, _)| (open.price, local_price_agg_source_weight(*source)))
+        .map(|(source, open, _)| (open.price, local_price_agg_point_weight(*source, open)))
         .collect::<Vec<_>>();
     let Some(open_med) = weighted_mean(&open_weighted).or_else(|| robust_median(open_values.clone()))
     else {
@@ -7227,7 +7266,7 @@ async fn run_local_price_aggregator(
     };
     let close_weighted = source_hits
         .iter()
-        .map(|(source, _, close)| (close.price, local_price_agg_source_weight(*source)))
+        .map(|(source, _, close)| (close.price, local_price_agg_point_weight(*source, close)))
         .collect::<Vec<_>>();
     let Some(close_med) =
         weighted_mean(&close_weighted).or_else(|| robust_median(close_values.clone()))
@@ -7349,7 +7388,7 @@ async fn run_local_price_aggregator(
     }
 
     info!(
-        "🧠 local_price_agg_ready | unix_ms={} symbol={} side={:?} confidence={:.3} sources={} agreement={:.3} spread_bps={:.3} open={:.6}@{} close={:.6}@{} open_exact_sources={} close_exact_sources={} observed_ticks={} snapshot_ticks={} live_ticks={} lagged_ticks={}",
+        "🧠 local_price_agg_ready | unix_ms={} symbol={} side={:?} confidence={:.3} sources={} agreement={:.3} spread_bps={:.3} open={:.6}@{} close={:.6}@{} open_exact_sources={} close_exact_sources={} decay_ms={:.1} exact_boost={:.2} observed_ticks={} snapshot_ticks={} live_ticks={} lagged_ticks={}",
         unix_now_millis_u64(),
         target_symbol,
         side,
@@ -7367,6 +7406,8 @@ async fn run_local_price_aggregator(
         close_ts_med,
         open_exact_sources,
         close_exact_sources,
+        local_price_agg_close_time_decay_ms(),
+        local_price_agg_exact_boost(),
         observed_ticks,
         observed_snapshot_ticks,
         observed_live_ticks,
