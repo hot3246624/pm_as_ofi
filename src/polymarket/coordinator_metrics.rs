@@ -310,6 +310,63 @@ impl StrategyCoordinator {
         );
     }
 
+    fn completion_first_gate_snapshot(&self) -> CompletionFirstGateLogSnapshot {
+        CompletionFirstGateLogSnapshot {
+            seed_emitted: self.stats.completion_first_seed_emitted,
+            repair_quotes: self.stats.completion_first_repair_quotes,
+            skip_score_gate: self.stats.completion_first_skip_score_gate,
+            skip_cooldown: self.stats.completion_first_skip_cooldown,
+        }
+    }
+
+    fn maybe_log_completion_first_gate_summary(&mut self) {
+        if self.cfg.strategy != StrategyKind::CompletionFirst {
+            return;
+        }
+        let now = Instant::now();
+        let interval = Duration::from_secs(PAIR_ARB_GATE_SUMMARY_SECS);
+        if now.duration_since(self.completion_first_gate_last_log_ts) < interval {
+            return;
+        }
+        self.completion_first_gate_last_log_ts = now;
+
+        let cur = self.completion_first_gate_snapshot();
+        let prev = self.completion_first_gate_last_snapshot;
+        self.completion_first_gate_last_snapshot = cur;
+
+        let seed_delta = cur.seed_emitted.saturating_sub(prev.seed_emitted);
+        let repair_delta = cur.repair_quotes.saturating_sub(prev.repair_quotes);
+        let skip_score_delta = cur.skip_score_gate.saturating_sub(prev.skip_score_gate);
+        let skip_cooldown_delta = cur.skip_cooldown.saturating_sub(prev.skip_cooldown);
+        let attempts = seed_delta + skip_score_delta + skip_cooldown_delta;
+        let inv = self.current_working_inventory();
+        let breakdown =
+            self.completion_first_score_breakdown(&self.book, Some(&*self.ofi_rx.borrow()), now);
+        let residual_active = self.derive_inventory_metrics(&inv).residual_qty > FLOAT_INV_EPS;
+
+        info!(
+            "🧭 CompletionFirstGate(30s) | attempts={} seed={} repair={} skip(score/cooldown)={}/{} residual_active={} cooldown={} score={:.2} flags(two_sided={} alt={} spread={} centered={} healthy={} heat={} time={} live={} toxic={} stale={})",
+            attempts,
+            seed_delta,
+            repair_delta,
+            skip_score_delta,
+            skip_cooldown_delta,
+            residual_active,
+            self.completion_first_reentry_cooldown_active(now),
+            breakdown.score,
+            breakdown.two_sided_recent,
+            breakdown.alternating_recent,
+            breakdown.spread_ok,
+            breakdown.book_centered,
+            breakdown.healthy_flow,
+            breakdown.balanced_heat,
+            breakdown.early_or_tail_window,
+            breakdown.both_live,
+            breakdown.toxic_penalty,
+            breakdown.any_side_stale,
+        );
+    }
+
     pub(super) fn outcome_floor_pnl(&self) -> f64 {
         let max_net = self.cfg.max_net_diff.max(0.0);
         if max_net <= f64::EPSILON {
@@ -629,5 +686,6 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         self.maybe_log_pair_arb_gate_summary();
+        self.maybe_log_completion_first_gate_summary();
     }
 }

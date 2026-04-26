@@ -83,7 +83,9 @@ impl StrategyCoordinator {
     pub(super) async fn execute_quotes(
         &mut self,
         inv: &InventoryState,
+        metrics: &StrategyInventoryMetrics,
         ub: &Book,
+        ofi: Option<&OfiSnapshot>,
         quotes: StrategyQuotes,
         yes_stale: bool,
         no_stale: bool,
@@ -116,6 +118,8 @@ impl StrategyCoordinator {
 
         let mut st = self.init_execution_state(inv, quotes);
         self.apply_endgame_controls(inv, ub, &mut st);
+        self.apply_completion_first_taker_repair(inv, metrics, ub, ofi, &mut st)
+            .await;
         if self.should_execute_directional_hedges(&st) {
             self.execute_hedges(inv, ub, yes_stale, no_stale, &mut st)
                 .await;
@@ -165,6 +169,47 @@ impl StrategyCoordinator {
             block_maker_hedge: false,
             endgame_phase: self.endgame_phase(),
         }
+    }
+
+    pub(super) async fn apply_completion_first_taker_repair(
+        &mut self,
+        inv: &InventoryState,
+        metrics: &StrategyInventoryMetrics,
+        ub: &Book,
+        ofi: Option<&OfiSnapshot>,
+        st: &mut ExecutionState,
+    ) {
+        if self.cfg.strategy != StrategyKind::CompletionFirst {
+            return;
+        }
+
+        let now = Instant::now();
+        let Some((repair_side, repair_size, limit_price)) =
+            self.completion_first_taker_repair_plan(inv, metrics, ub, ofi, now)
+        else {
+            return;
+        };
+
+        info!(
+            "⚡ completion_first taker repair | side={:?} size={:.2} limit={:.4} active_age_secs={:.1} residual_qty={:.2}",
+            repair_side,
+            repair_size,
+            limit_price,
+            self.completion_first_active_age(now)
+                .map(|age| age.as_secs_f64())
+                .unwrap_or_default(),
+            metrics.residual_qty,
+        );
+        self.dispatch_taker_intent(
+            repair_side,
+            TradeDirection::Buy,
+            repair_size,
+            TradePurpose::Hedge,
+            Some(limit_price),
+        )
+        .await;
+        self.note_completion_first_taker_repair(now);
+        st.mark_hedge_dispatched(repair_side);
     }
 
     pub(super) fn pair_arb_quote_still_admissible(
