@@ -117,7 +117,7 @@ impl StrategyCoordinator {
         }
     }
 
-    pub(super) fn seconds_to_market_end(&self) -> Option<u64> {
+    pub(crate) fn seconds_to_market_end(&self) -> Option<u64> {
         let end_ts = self.cfg.market_end_ts?;
         let now_secs = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

@@ -20,8 +20,10 @@ use tracing::{debug, info, warn};
 
 use super::glft::GlftSignalSnapshot;
 use super::messages::*;
+use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::strategy::{
-    StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput,
+    completion_first::CompletionFirstPhase, StrategyExecutionMode, StrategyIntent, StrategyKind,
+    StrategyQuotes, StrategyTickInput,
 };
 use super::types::Side;
 
@@ -74,6 +76,8 @@ const PAIR_ARB_OPPOSITE_SLOT_BLOCK_MS: u64 = 30_000;
 #[allow(dead_code)]
 const PAIR_ARB_OPPOSITE_SLOT_BLOCK_TTL_MS: u64 = 10_000;
 
+#[path = "coordinator_completion_first.rs"]
+mod coordinator_completion_first;
 #[path = "coordinator_endgame.rs"]
 mod coordinator_endgame;
 #[path = "coordinator_execution.rs"]
@@ -100,6 +104,18 @@ pub struct PairArbStrategyConfig {
     /// PairArb risk-open cutoff window (seconds to market end).
     /// Remaining <= this threshold blocks new risk-increasing buys.
     pub risk_open_cutoff_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompletionFirstMode {
+    Shadow,
+    Enforce,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompletionFirstStrategyConfig {
+    pub market_enabled: bool,
+    pub mode: CompletionFirstMode,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +179,8 @@ pub struct CoordinatorConfig {
     pub as_time_decay_k: f64,
     /// PairArb strategy-specific runtime config.
     pub pair_arb: PairArbStrategyConfig,
+    /// Completion-first strategy runtime config.
+    pub completion_first: CompletionFirstStrategyConfig,
     /// Post-close HYPE strategy-specific runtime config.
     pub oracle_lag_sniping: OracleLagSnipingStrategyConfig,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
@@ -244,6 +262,10 @@ impl Default for CoordinatorConfig {
                 pair_cost_safety_margin: 0.02,
                 risk_open_cutoff_secs: 180,
             },
+            completion_first: CompletionFirstStrategyConfig {
+                market_enabled: false,
+                mode: CompletionFirstMode::Shadow,
+            },
             oracle_lag_sniping: OracleLagSnipingStrategyConfig {
                 // ~Polymarket liquidity lifecycle post-close (all resting orders cleared by then).
                 window_secs: 105,
@@ -285,6 +307,7 @@ impl CoordinatorConfig {
         cfg.apply_common_env();
         cfg.apply_glft_env();
         cfg.apply_pair_arb_env();
+        cfg.apply_completion_first_env();
         cfg.apply_oracle_lag_env();
         cfg.apply_hedge_env();
         cfg.apply_runtime_env();
@@ -477,6 +500,17 @@ impl CoordinatorConfig {
             if let Ok(secs) = v.parse::<u64>() {
                 self.pair_arb.risk_open_cutoff_secs = secs;
             }
+        }
+    }
+
+    fn apply_completion_first_env(&mut self) {
+        if let Ok(v) = std::env::var("PM_COMPLETION_FIRST_MODE") {
+            let v = v.trim().to_ascii_lowercase();
+            self.completion_first.mode = if v == "enforce" {
+                CompletionFirstMode::Enforce
+            } else {
+                CompletionFirstMode::Shadow
+            };
         }
     }
 
@@ -1125,6 +1159,13 @@ pub struct StrategyCoordinator {
     /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
     last_post_close_snapshot_ts: Option<Instant>,
     pair_arb_decision_epoch: u64,
+    completion_first_decision_epoch: u64,
+    completion_first_round_buy_fill_count: u64,
+    completion_first_same_side_run_count: u32,
+    completion_first_merge_requested_this_round: bool,
+    completion_first_merge_retry_requested_this_round: bool,
+    completion_first_redeem_requested_count: u8,
+    completion_first_last_phase: CompletionFirstPhase,
     pair_arb_last_risk_open_cutoff_active: bool,
     last_settled_inv_snapshot: InventoryState,
     last_working_inv_snapshot: InventoryState,
@@ -1153,6 +1194,8 @@ pub struct StrategyCoordinator {
     slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
     /// Optional low-overhead observability snapshot channel for round validation.
     obs_tx: Option<watch::Sender<CoordinatorObsSnapshot>>,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1407,6 +1450,13 @@ impl StrategyCoordinator {
             oracle_lag_round_halt_kind: None,
             last_post_close_snapshot_ts: None,
             pair_arb_decision_epoch: 0,
+            completion_first_decision_epoch: 0,
+            completion_first_round_buy_fill_count: 0,
+            completion_first_same_side_run_count: 0,
+            completion_first_merge_requested_this_round: false,
+            completion_first_merge_retry_requested_this_round: false,
+            completion_first_redeem_requested_count: 0,
+            completion_first_last_phase: CompletionFirstPhase::FlatSeed,
             pair_arb_last_risk_open_cutoff_active: false,
             last_settled_inv_snapshot: InventoryState::default(),
             last_working_inv_snapshot: InventoryState::default(),
@@ -1427,11 +1477,23 @@ impl StrategyCoordinator {
             feedback_rx,
             slot_release_rx,
             obs_tx: None,
+            recorder: None,
+            recorder_meta: None,
         }
     }
 
     pub fn with_obs_tx(mut self, obs_tx: watch::Sender<CoordinatorObsSnapshot>) -> Self {
         self.obs_tx = Some(obs_tx);
+        self
+    }
+
+    pub fn with_recorder(
+        mut self,
+        recorder: RecorderHandle,
+        recorder_meta: RecorderSessionMeta,
+    ) -> Self {
+        self.recorder = Some(recorder);
+        self.recorder_meta = Some(recorder_meta);
         self
     }
 
@@ -2252,6 +2314,7 @@ impl StrategyCoordinator {
         let settled_inv = inv_snapshot.settled;
         let decision_inv = working_inv;
         self.observe_pair_arb_inventory_transition(&inv_snapshot, now);
+        self.observe_completion_first_inventory_transition(&inv_snapshot, now);
         let glft_snapshot = if self.cfg.strategy.is_glft_mm() {
             Some(*self.glft_rx.borrow())
         } else {
@@ -2508,6 +2571,12 @@ impl StrategyCoordinator {
             glft: glft_snapshot.as_ref(),
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
+        if self.cfg.strategy == StrategyKind::CompletionFirst {
+            self.emit_completion_first_decision_events(&inv_snapshot, &quotes);
+            if self.completion_first_mode() == CompletionFirstMode::Shadow {
+                quotes = StrategyQuotes::default();
+            }
+        }
         self.record_strategy_quote_diagnostics(&quotes);
         self.apply_flow_risk(
             &working_inv,

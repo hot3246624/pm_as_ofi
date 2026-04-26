@@ -211,3 +211,9 @@
 补充说明：
 - `PM_OPEN_PAIR_BAND` 主要服务 `gabagool_grid`
 - `PM_AS_SKEW_FACTOR` / `PM_AS_TIME_DECAY_K` 是 `pair_arb` 核心参数
+## Completion First
+- `PM_STRATEGY=completion_first`
+  - 独立 BTC 5m completion-first 策略
+- `PM_COMPLETION_FIRST_MODE=shadow|enforce`
+  - `shadow`：只计算/记录，不真实下单
+  - `enforce`：后续实盘模式预留

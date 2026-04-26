@@ -7,6 +7,7 @@ pub mod inventory;
 pub mod messages;
 pub mod ofi;
 pub mod order_manager;
+pub mod pair_ledger;
 pub mod recorder;
 pub mod strategy;
 pub mod user_ws;

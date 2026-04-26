@@ -25,7 +25,19 @@ ORDER_EVENTS = {
     "cancel_ack",
     "taker_repair_sent",
 }
-INVENTORY_EVENTS = {"fill_snapshot", "merge_sync"}
+INVENTORY_EVENTS = {
+    "fill_snapshot",
+    "merge_sync",
+    "pair_tranche_events",
+    "pair_budget_events",
+    "capital_state_events",
+    "completion_first_seed_built",
+    "completion_first_completion_built",
+    "completion_first_same_side_add_blocked",
+    "completion_first_merge_requested",
+    "completion_first_merge_executed",
+    "completion_first_redeem_requested",
+}
 SETTLEMENT_EVENTS = {"redeem_result", "market_resolved"}
 
 
