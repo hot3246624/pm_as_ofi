@@ -39,9 +39,7 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
-use pm_as_ofi::polymarket::recorder::{
-    RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
-};
+use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta, RecorderSessionStart};
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -2569,6 +2567,9 @@ const LOCAL_PRICE_AGG_WEIGHT_OKX_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS_DEFAULT: f64 = 900.0;
 const LOCAL_PRICE_AGG_EXACT_BOOST_DEFAULT: f64 = 1.25;
+const LOCAL_PRICE_AGG_SOURCE_BIAS_EMA_ALPHA: f64 = 0.30;
+const LOCAL_PRICE_AGG_SOURCE_BIAS_MAX_ABS_BPS: f64 = 10.0;
+const LOCAL_PRICE_AGG_SOURCE_BIAS_RESIDUAL_MAX_ABS_BPS: f64 = 25.0;
 const LOCAL_PRICE_AGG_COMPARE_DEADLINE_GRACE_MS: u64 = 250;
 const LOCAL_PRICE_AGG_COMPARE_TARGET_BPS: f64 = 5.0;
 const LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS: usize = 12;
@@ -3886,7 +3887,8 @@ impl LocalPriceHub {
             let url = "wss://ws-feed.exchange.coinbase.com";
             let mut backoff = Duration::from_millis(300);
             loop {
-                let connect = tokio::time::timeout(Duration::from_secs(3), connect_async(url)).await;
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(3), connect_async(url)).await;
                 let Ok(Ok((ws, _))) = connect else {
                     sleep(backoff).await;
                     backoff = (backoff * 2).min(Duration::from_secs(3));
@@ -4164,6 +4166,65 @@ fn winner_from_open_close(open: Option<f64>, close: Option<f64>) -> Option<Side>
 
 fn side_label(side: Option<Side>) -> Option<String> {
     side.map(|s| format!("{:?}", s))
+}
+
+type LocalPriceAggBiasMap = HashMap<(String, LocalPriceSource), f64>;
+static LOCAL_PRICE_AGG_SOURCE_BIAS_BPS: OnceLock<Mutex<LocalPriceAggBiasMap>> = OnceLock::new();
+
+fn local_price_agg_source_bias_map() -> &'static Mutex<LocalPriceAggBiasMap> {
+    LOCAL_PRICE_AGG_SOURCE_BIAS_BPS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn local_price_agg_get_source_bias_bps(symbol: &str, source: LocalPriceSource) -> f64 {
+    let normalized = normalize_chainlink_symbol(symbol);
+    if normalized.is_empty() {
+        return 0.0;
+    }
+    let Ok(guard) = local_price_agg_source_bias_map().lock() else {
+        return 0.0;
+    };
+    guard.get(&(normalized, source)).copied().unwrap_or(0.0)
+}
+
+fn local_price_agg_apply_source_bias(symbol: &str, source: LocalPriceSource, raw: f64) -> f64 {
+    if !raw.is_finite() || raw <= 0.0 {
+        return raw;
+    }
+    let bias_bps = local_price_agg_get_source_bias_bps(symbol, source);
+    let adjusted = raw * (1.0 + bias_bps / 10_000.0);
+    if adjusted.is_finite() && adjusted > 0.0 {
+        adjusted
+    } else {
+        raw
+    }
+}
+
+fn local_price_agg_update_source_bias_bps(
+    symbol: &str,
+    source: LocalPriceSource,
+    residual_bps: f64,
+) -> Option<f64> {
+    let normalized = normalize_chainlink_symbol(symbol);
+    if normalized.is_empty() || !residual_bps.is_finite() {
+        return None;
+    }
+    let clamped_residual = residual_bps.clamp(
+        -LOCAL_PRICE_AGG_SOURCE_BIAS_RESIDUAL_MAX_ABS_BPS,
+        LOCAL_PRICE_AGG_SOURCE_BIAS_RESIDUAL_MAX_ABS_BPS,
+    );
+    let Ok(mut guard) = local_price_agg_source_bias_map().lock() else {
+        return None;
+    };
+    let key = (normalized, source);
+    let prev = guard.get(&key).copied().unwrap_or(0.0);
+    let next = (prev * (1.0 - LOCAL_PRICE_AGG_SOURCE_BIAS_EMA_ALPHA)
+        + clamped_residual * LOCAL_PRICE_AGG_SOURCE_BIAS_EMA_ALPHA)
+        .clamp(
+            -LOCAL_PRICE_AGG_SOURCE_BIAS_MAX_ABS_BPS,
+            LOCAL_PRICE_AGG_SOURCE_BIAS_MAX_ABS_BPS,
+        );
+    guard.insert(key, next);
+    Some(next)
 }
 
 type LastCloseMap = HashMap<String, (u64, f64)>;
@@ -5758,6 +5819,11 @@ async fn run_post_close_winner_hint_listener(
         match task.await {
             Ok((hit, started_ms, ready_ms, deadline_ms)) => match hit {
                 Some(hit) => {
+                    local_price_agg_learn_source_biases_from_rtds(
+                        &symbol,
+                        first_obs,
+                        &hit.source_contributions,
+                    );
                     let close_abs_diff = (hit.close_price - first_obs).abs();
                     let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
                     let close_within_target = close_diff_bps <= LOCAL_PRICE_AGG_COMPARE_TARGET_BPS;
@@ -5766,8 +5832,8 @@ async fn run_post_close_winner_hint_listener(
                         first_obs,
                         LOCAL_PRICE_AGG_COMPARE_REPORT_DECIMALS,
                     );
-                    let close_meets_12dp =
-                        close_match_frac_digits >= LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS;
+                    let close_meets_12dp = close_match_frac_digits
+                        >= LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS;
                     let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
                     let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                         Side::Yes
@@ -6940,12 +7006,22 @@ fn local_price_agg_ingest_state(
 }
 
 #[derive(Debug, Clone, Copy)]
+struct LocalCloseSourceContribution {
+    source: LocalPriceSource,
+    raw_close_price: f64,
+    adjusted_close_price: f64,
+    close_ts_ms: u64,
+    close_exact: bool,
+}
+
+#[derive(Debug, Clone)]
 struct LocalCloseOnlyAggHit {
     close_price: f64,
     close_ts_ms: u64,
     source_count: usize,
     source_spread_bps: f64,
     close_exact_sources: usize,
+    source_contributions: Vec<LocalCloseSourceContribution>,
 }
 
 fn local_price_agg_temporal_weight(abs_delta_ms: u64) -> f64 {
@@ -6965,6 +7041,39 @@ fn local_price_agg_point_weight(source: LocalPriceSource, point: &AggregatedPric
         1.0
     };
     base * temporal * exact
+}
+
+fn local_price_agg_learn_source_biases_from_rtds(
+    symbol: &str,
+    rtds_close: f64,
+    points: &[LocalCloseSourceContribution],
+) {
+    if !rtds_close.is_finite() || rtds_close <= 0.0 {
+        return;
+    }
+    for point in points {
+        if !point.raw_close_price.is_finite() || point.raw_close_price <= 0.0 {
+            continue;
+        }
+        let residual_bps =
+            ((rtds_close - point.raw_close_price) / rtds_close.abs().max(1e-12)) * 10_000.0;
+        if let Some(new_bias_bps) =
+            local_price_agg_update_source_bias_bps(symbol, point.source, residual_bps)
+        {
+            info!(
+                "🧪 local_price_agg_bias_update | symbol={} source={} rtds_close={:.15} raw_close={:.15} adjusted_close={:.15} residual_bps={:.6} new_bias_bps={:.6} close_ts_ms={} close_exact={}",
+                symbol,
+                point.source.as_str(),
+                rtds_close,
+                point.raw_close_price,
+                point.adjusted_close_price,
+                residual_bps,
+                new_bias_bps,
+                point.close_ts_ms,
+                point.close_exact,
+            );
+        }
+    }
 }
 
 async fn run_local_price_close_aggregator(
@@ -7015,23 +7124,39 @@ async fn run_local_price_close_aggregator(
         }
     }
 
-    let mut source_hits: Vec<(LocalPriceSource, AggregatedPricePoint)> = Vec::new();
+    let mut source_hits: Vec<(LocalPriceSource, AggregatedPricePoint, f64)> = Vec::new();
     for (source, st) in &states {
-        if let Some(close) = pick_local_source_close_point(st, close_tol_ms) {
-            source_hits.push((*source, close));
+        if let Some(mut close) = pick_local_source_close_point(st, close_tol_ms) {
+            let raw_close_price = close.price;
+            close.price = local_price_agg_apply_source_bias(&target_symbol, *source, close.price);
+            source_hits.push((*source, close, raw_close_price));
         }
     }
+    let source_contributions = source_hits
+        .iter()
+        .map(
+            |(source, close, raw_close_price)| LocalCloseSourceContribution {
+                source: *source,
+                raw_close_price: *raw_close_price,
+                adjusted_close_price: close.price,
+                close_ts_ms: close.ts_ms,
+                close_exact: close.exact,
+            },
+        )
+        .collect::<Vec<_>>();
     let source_points = source_hits
         .iter()
-        .map(|(source, close)| LocalPriceAggSourcePointProbe {
-            source: source.as_str().to_string(),
-            open_price: None,
-            open_ts_ms: None,
-            open_exact: None,
-            close_price: Some(close.price),
-            close_ts_ms: Some(close.ts_ms),
-            close_exact: Some(close.exact),
-        })
+        .map(
+            |(source, close, _raw_close_price)| LocalPriceAggSourcePointProbe {
+                source: source.as_str().to_string(),
+                open_price: None,
+                open_ts_ms: None,
+                open_exact: None,
+                close_price: Some(close.price),
+                close_ts_ms: Some(close.ts_ms),
+                close_exact: Some(close.exact),
+            },
+        )
         .collect::<Vec<_>>();
     let status = if source_hits.len() >= min_sources {
         "ready"
@@ -7053,14 +7178,15 @@ async fn run_local_price_close_aggregator(
         return None;
     }
 
-    let close_values: Vec<f64> = source_hits.iter().map(|(_, c)| c.price).collect();
-    let close_timestamps: Vec<u64> = source_hits.iter().map(|(_, c)| c.ts_ms).collect();
-    let close_exact_sources = source_hits.iter().filter(|(_, c)| c.exact).count();
+    let close_values: Vec<f64> = source_hits.iter().map(|(_, c, _)| c.price).collect();
+    let close_timestamps: Vec<u64> = source_hits.iter().map(|(_, c, _)| c.ts_ms).collect();
+    let close_exact_sources = source_hits.iter().filter(|(_, c, _)| c.exact).count();
     let close_weighted = source_hits
         .iter()
-        .map(|(source, close)| (close.price, local_price_agg_point_weight(*source, close)))
+        .map(|(source, close, _)| (close.price, local_price_agg_point_weight(*source, close)))
         .collect::<Vec<_>>();
-    let close_med = weighted_mean(&close_weighted).or_else(|| robust_center(close_values.clone()))?;
+    let close_med =
+        weighted_mean(&close_weighted).or_else(|| robust_center(close_values.clone()))?;
     let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
     let source_spread_bps = spread_bps(&close_values).unwrap_or(0.0);
 
@@ -7070,6 +7196,7 @@ async fn run_local_price_close_aggregator(
         source_count: source_hits.len(),
         source_spread_bps,
         close_exact_sources,
+        source_contributions,
     })
 }
 
@@ -7136,26 +7263,38 @@ async fn run_local_price_aggregator(
         }
     }
 
-    let mut source_hits: Vec<(LocalPriceSource, AggregatedPricePoint, AggregatedPricePoint)> =
-        Vec::new();
+    let mut source_hits: Vec<(
+        LocalPriceSource,
+        AggregatedPricePoint,
+        AggregatedPricePoint,
+        f64,
+        f64,
+    )> = Vec::new();
     for (source, st) in &states {
-        if let Some((open, close)) = pick_local_source_points(st, open_tol_ms, close_tol_ms) {
-            source_hits.push((*source, open, close));
+        if let Some((mut open, mut close)) = pick_local_source_points(st, open_tol_ms, close_tol_ms)
+        {
+            let raw_open = open.price;
+            let raw_close = close.price;
+            open.price = local_price_agg_apply_source_bias(&target_symbol, *source, open.price);
+            close.price = local_price_agg_apply_source_bias(&target_symbol, *source, close.price);
+            source_hits.push((*source, open, close, raw_open, raw_close));
         }
     }
 
     let source_points_for_probe = || {
         source_hits
             .iter()
-            .map(|(source, open, close)| LocalPriceAggSourcePointProbe {
-                source: source.as_str().to_string(),
-                open_price: Some(open.price),
-                open_ts_ms: Some(open.ts_ms),
-                open_exact: Some(open.exact),
-                close_price: Some(close.price),
-                close_ts_ms: Some(close.ts_ms),
-                close_exact: Some(close.exact),
-            })
+            .map(
+                |(source, open, close, _, _)| LocalPriceAggSourcePointProbe {
+                    source: source.as_str().to_string(),
+                    open_price: Some(open.price),
+                    open_ts_ms: Some(open.ts_ms),
+                    open_exact: Some(open.exact),
+                    close_price: Some(close.price),
+                    close_ts_ms: Some(close.ts_ms),
+                    close_exact: Some(close.exact),
+                },
+            )
             .collect::<Vec<_>>()
     };
 
@@ -7237,18 +7376,19 @@ async fn run_local_price_aggregator(
         return None;
     }
 
-    let open_values: Vec<f64> = source_hits.iter().map(|(_, o, _)| o.price).collect();
-    let close_values: Vec<f64> = source_hits.iter().map(|(_, _, c)| c.price).collect();
-    let open_timestamps: Vec<u64> = source_hits.iter().map(|(_, o, _)| o.ts_ms).collect();
-    let close_timestamps: Vec<u64> = source_hits.iter().map(|(_, _, c)| c.ts_ms).collect();
-    let open_exact_sources = source_hits.iter().filter(|(_, o, _)| o.exact).count();
-    let close_exact_sources = source_hits.iter().filter(|(_, _, c)| c.exact).count();
+    let open_values: Vec<f64> = source_hits.iter().map(|(_, o, _, _, _)| o.price).collect();
+    let close_values: Vec<f64> = source_hits.iter().map(|(_, _, c, _, _)| c.price).collect();
+    let open_timestamps: Vec<u64> = source_hits.iter().map(|(_, o, _, _, _)| o.ts_ms).collect();
+    let close_timestamps: Vec<u64> = source_hits.iter().map(|(_, _, c, _, _)| c.ts_ms).collect();
+    let open_exact_sources = source_hits.iter().filter(|(_, o, _, _, _)| o.exact).count();
+    let close_exact_sources = source_hits.iter().filter(|(_, _, c, _, _)| c.exact).count();
 
     let open_weighted = source_hits
         .iter()
-        .map(|(source, open, _)| (open.price, local_price_agg_point_weight(*source, open)))
+        .map(|(source, open, _, _, _)| (open.price, local_price_agg_point_weight(*source, open)))
         .collect::<Vec<_>>();
-    let Some(open_med) = weighted_mean(&open_weighted).or_else(|| robust_median(open_values.clone()))
+    let Some(open_med) =
+        weighted_mean(&open_weighted).or_else(|| robust_median(open_values.clone()))
     else {
         emit_probe(
             "open_median_missing",
@@ -7268,7 +7408,7 @@ async fn run_local_price_aggregator(
     };
     let close_weighted = source_hits
         .iter()
-        .map(|(source, _, close)| (close.price, local_price_agg_point_weight(*source, close)))
+        .map(|(source, _, close, _, _)| (close.price, local_price_agg_point_weight(*source, close)))
         .collect::<Vec<_>>();
     let Some(close_med) =
         weighted_mean(&close_weighted).or_else(|| robust_median(close_values.clone()))
@@ -7299,7 +7439,7 @@ async fn run_local_price_aggregator(
     };
     let agree_cnt = source_hits
         .iter()
-        .filter(|(_, open, close)| {
+        .filter(|(_, open, close, _, _)| {
             let src_side = if close.price >= open.price {
                 Side::Yes
             } else {
@@ -7397,7 +7537,7 @@ async fn run_local_price_aggregator(
         confidence,
         source_hits
             .iter()
-            .map(|(s, _, _)| s.as_str())
+            .map(|(s, _, _, _, _)| s.as_str())
             .collect::<Vec<_>>()
             .join(","),
         source_agreement,
@@ -7766,8 +7906,7 @@ async fn run_chainlink_winner_hint(
         } else {
             info!(
                 "🧪 local_price_agg_shadow_mode | symbol={} round_end_ts={} decision_enabled=false",
-                symbol,
-                round_end_ts
+                symbol, round_end_ts
             );
         }
     }
@@ -11503,7 +11642,9 @@ mod tests {
         };
 
         assert!(asm.update(&yes_only).is_none());
-        let full = asm.update(&no_only).expect("full book should emit after both sides");
+        let full = asm
+            .update(&no_only)
+            .expect("full book should emit after both sides");
         match full {
             MarketDataMsg::BookTick {
                 yes_bid,
