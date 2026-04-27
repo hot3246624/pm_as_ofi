@@ -127,6 +127,32 @@
       }
     ]
   },
+  "control_screen_thresholds": {
+    "single_venue_btc_5m": {
+      "slug_substring": "btc-updown-5m"
+    },
+    "high_round_coverage": {
+      "require_nonzero_open_candidates": true,
+      "xuan_relative_threshold_pending_truth": true
+    },
+    "low_directionality": {
+      "same_side_add_qty_ratio_p90_pass_max": 0.1,
+      "same_side_add_qty_ratio_p90_watch_max": 0.2
+    },
+    "in_round_completion": {
+      "completion_30s_hit_rate_pass_min": 0.3,
+      "clean_closed_episode_ratio_median_pass_min": 0.9
+    },
+    "state_selected_clip": {
+      "min_nonzero_score_buckets": 2,
+      "max_single_bucket_share": 0.95
+    },
+    "fixed_clip_post_close_batch_merge": {
+      "require_single_score_bucket": true,
+      "completion_30s_hit_rate_fail_max": 0.3,
+      "require_merge_or_redeem_activity": true
+    }
+  },
   "hypothesis_buckets": [
     "falsified",
     "weak_evidence",

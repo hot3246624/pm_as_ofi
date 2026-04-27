@@ -53,6 +53,12 @@
 2. 导出 `xuan_completion_gap_*.json`
 3. 如 baseline 报告可用，再做 baseline 对比
 
+解释顺序固定为：
+
+1. 先看 `control_screening`
+2. 再看 `gap_vs_xuan`
+3. 最后才看单市场 / 单轮 episode drill-down
+
 只回答三件事：
 
 - 哪些候选被 block

@@ -72,3 +72,7 @@
 - 如果某个现象同样常见于 `late_grammar / quietb27 / gabagool22 / silent_d189`，它只能算“大类共性”，不能算 xuan 证据。
 - 如果某个现象更接近 `selective directional`、`multi-venue spread` 或 `fixed-clip post-close merge`，默认视为 `anti-target`。
 - 只有同时满足 `单 venue BTC 5m + 高 coverage + 低 directional + in-round completion + 状态感知 clip`，才允许表述为“逼近 xuan”。
+
+对应的 shadow 机器筛查口径见：
+
+- [XUAN_SHADOW_CONTROL_SCREEN_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_SHADOW_CONTROL_SCREEN_ZH.md)

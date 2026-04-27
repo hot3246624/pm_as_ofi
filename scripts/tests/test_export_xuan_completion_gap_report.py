@@ -31,9 +31,17 @@ class ExportXuanCompletionGapReportTests(unittest.TestCase):
                 "30s_completion_hit_rate_when_gate_on": 0.8,
                 "30s_completion_hit_rate_when_gate_off": 0.2,
                 "median_first_opposite_delay_s": 12.0,
+                "same_side_add_qty_ratio_p90": 0.08,
+                "clean_closed_episode_ratio_median": 0.95,
                 "score_bucket_distribution": {"full_clip": 4},
                 "session_bucket_distribution": {"12": 4},
-            }
+                "merge_executed_total": 0,
+                "redeem_requested_total": 0,
+            },
+            "rows": [
+                {"slug": "btc-updown-5m-20260427-1200"},
+                {"slug": "btc-updown-5m-20260427-1205"},
+            ],
         }
         xuan_summary = {
             "coverage_stats": {
@@ -70,7 +78,27 @@ class ExportXuanCompletionGapReportTests(unittest.TestCase):
             "shadow_gap_question_order": ["why blocked", "why no opposite", "why no clean close"],
             "archetype_controls": {
                 "must_match": [{"id": "single_venue_btc_5m"}],
-                "anti_targets": [{"id": "selective_directional_round_picker"}]
+                "anti_targets": [{"id": "selective_directional_round_picker"}],
+            },
+            "control_screen_thresholds": {
+                "single_venue_btc_5m": {"slug_substring": "btc-updown-5m"},
+                "high_round_coverage": {"require_nonzero_open_candidates": True},
+                "low_directionality": {
+                    "same_side_add_qty_ratio_p90_pass_max": 0.10,
+                    "same_side_add_qty_ratio_p90_watch_max": 0.20,
+                },
+                "in_round_completion": {
+                    "completion_30s_hit_rate_pass_min": 0.30,
+                    "clean_closed_episode_ratio_median_pass_min": 0.90,
+                },
+                "state_selected_clip": {
+                    "min_nonzero_score_buckets": 1,
+                    "max_single_bucket_share": 1.01,
+                },
+                "fixed_clip_post_close_batch_merge": {
+                    "completion_30s_hit_rate_fail_max": 0.30,
+                    "require_merge_or_redeem_activity": True,
+                },
             },
         }
         baseline_report = {
@@ -85,6 +113,8 @@ class ExportXuanCompletionGapReportTests(unittest.TestCase):
         self.assertEqual(out["decision_summary"]["verdict"], "Shadow Gap Actionable")
         self.assertTrue(out["decision_summary"]["data_usable"]["pass"])
         self.assertIn("must_match", out["decision_summary"]["archetype_controls"])
+        self.assertIn("control_screening", out)
+        self.assertGreaterEqual(out["control_screening"]["status_counts"].get("pass", 0), 2)
 
 
 if __name__ == "__main__":

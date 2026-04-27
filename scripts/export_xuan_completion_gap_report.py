@@ -42,6 +42,251 @@ def nested_get(payload: dict[str, Any], dotted: str, default: Any = None) -> Any
     return cur
 
 
+def as_float(v: Any) -> float:
+    try:
+        if v is None:
+            return 0.0
+        return float(v)
+    except Exception:
+        return 0.0
+
+
+def as_int(v: Any) -> int:
+    try:
+        if v is None:
+            return 0
+        return int(v)
+    except Exception:
+        return 0
+
+
+def build_control_screening(report: dict[str, Any], contract: dict[str, Any]) -> dict[str, Any]:
+    summary = report.get("summary") or {}
+    rows = report.get("rows") or []
+    cfg = contract.get("control_screen_thresholds") or {}
+
+    def score_bucket_stats() -> tuple[int, float]:
+        dist = summary.get("score_bucket_distribution") or {}
+        counts = [as_int(v) for v in dist.values() if as_int(v) > 0]
+        total = sum(counts)
+        if total <= 0:
+            return 0, 0.0
+        return len(counts), max(counts) / float(total)
+
+    def market_slug_stats() -> tuple[int, int]:
+        want = str((cfg.get("single_venue_btc_5m") or {}).get("slug_substring") or "")
+        if not rows:
+            return 0, 0
+        total = 0
+        matched = 0
+        for row in rows:
+            slug = str(row.get("slug") or "")
+            if not slug:
+                continue
+            total += 1
+            if want and want in slug:
+                matched += 1
+        return total, matched
+
+    checks: list[dict[str, Any]] = []
+
+    total_markets, matched_markets = market_slug_stats()
+    if total_markets == 0:
+        venue_status = "insufficient"
+    elif matched_markets == total_markets:
+        venue_status = "pass"
+    else:
+        venue_status = "fail"
+    checks.append(
+        {
+            "id": "single_venue_btc_5m",
+            "kind": "must_match",
+            "status": venue_status,
+            "observed": {
+                "market_count": total_markets,
+                "btc_5m_market_count": matched_markets,
+            },
+            "note": "All active shadow markets should remain on BTC 5m.",
+        }
+    )
+
+    open_candidate_total = as_int(summary.get("open_candidate_total"))
+    coverage_cfg = cfg.get("high_round_coverage") or {}
+    if coverage_cfg.get("require_nonzero_open_candidates") and open_candidate_total == 0:
+        coverage_status = "fail"
+        coverage_note = "No open candidates means there is no evidence of xuan-like round coverage."
+    else:
+        coverage_status = "insufficient"
+        coverage_note = "Needs xuan relative round-coverage truth before hard pass/fail."
+    checks.append(
+        {
+            "id": "high_round_coverage",
+            "kind": "must_match",
+            "status": coverage_status,
+            "observed": {
+                "open_candidate_total": open_candidate_total,
+                "open_allowed_total": as_int(summary.get("open_allowed_total")),
+                "market_count": as_int(summary.get("market_count")),
+            },
+            "note": coverage_note,
+        }
+    )
+
+    same_side_p90 = as_float(summary.get("same_side_add_qty_ratio_p90"))
+    dir_cfg = cfg.get("low_directionality") or {}
+    dir_pass_max = as_float(dir_cfg.get("same_side_add_qty_ratio_p90_pass_max"))
+    dir_watch_max = as_float(dir_cfg.get("same_side_add_qty_ratio_p90_watch_max"))
+    if same_side_p90 <= dir_pass_max:
+        dir_status = "pass"
+    elif same_side_p90 <= dir_watch_max:
+        dir_status = "watch"
+    else:
+        dir_status = "fail"
+    checks.append(
+        {
+            "id": "low_directionality",
+            "kind": "must_match",
+            "status": dir_status,
+            "observed": {
+                "same_side_add_qty_ratio_p90": same_side_p90,
+                "pass_max": dir_pass_max,
+                "watch_max": dir_watch_max,
+            },
+            "note": "High same-side drift suggests directional contamination rather than completion-first behavior.",
+        }
+    )
+
+    completion_hit = as_float(summary.get("30s_completion_hit_rate"))
+    clean_closed = as_float(summary.get("clean_closed_episode_ratio_median"))
+    completion_cfg = cfg.get("in_round_completion") or {}
+    completion_pass = (
+        completion_hit >= as_float(completion_cfg.get("completion_30s_hit_rate_pass_min"))
+        and clean_closed >= as_float(completion_cfg.get("clean_closed_episode_ratio_median_pass_min"))
+    )
+    checks.append(
+        {
+            "id": "in_round_completion",
+            "kind": "must_match",
+            "status": "pass" if completion_pass else "fail",
+            "observed": {
+                "30s_completion_hit_rate": completion_hit,
+                "clean_closed_episode_ratio_median": clean_closed,
+                "completion_30s_hit_rate_pass_min": as_float(
+                    completion_cfg.get("completion_30s_hit_rate_pass_min")
+                ),
+                "clean_closed_episode_ratio_median_pass_min": as_float(
+                    completion_cfg.get("clean_closed_episode_ratio_median_pass_min")
+                ),
+            },
+            "note": "xuan progress must show round-inside pairing, not only after-close cleanup.",
+        }
+    )
+
+    clip_cfg = cfg.get("state_selected_clip") or {}
+    nonzero_buckets, dominant_bucket_share = score_bucket_stats()
+    clip_pass = (
+        nonzero_buckets >= as_int(clip_cfg.get("min_nonzero_score_buckets"))
+        and dominant_bucket_share < as_float(clip_cfg.get("max_single_bucket_share"))
+    )
+    checks.append(
+        {
+            "id": "state_selected_clip",
+            "kind": "must_match",
+            "status": "pass" if clip_pass else "fail",
+            "observed": {
+                "nonzero_score_bucket_count": nonzero_buckets,
+                "dominant_score_bucket_share": dominant_bucket_share,
+                "min_nonzero_score_buckets": as_int(clip_cfg.get("min_nonzero_score_buckets")),
+                "max_single_bucket_share": as_float(clip_cfg.get("max_single_bucket_share")),
+            },
+            "note": "A single dominant score bucket usually means fixed-clip behavior, not state-selected clip.",
+        }
+    )
+
+    checks.append(
+        {
+            "id": "maker_leaning_execution",
+            "kind": "nice_to_have",
+            "status": "insufficient",
+            "observed": {},
+            "note": "Still blocked on stronger maker/taker and fillability truth.",
+        }
+    )
+    checks.append(
+        {
+            "id": "in_round_merge_capital_recycling",
+            "kind": "nice_to_have",
+            "status": "insufficient",
+            "observed": {
+                "merge_executed_total": as_int(summary.get("merge_executed_total")),
+                "redeem_requested_total": as_int(summary.get("redeem_requested_total")),
+            },
+            "note": "Merge/redeem counts alone do not distinguish xuan-like recycling from slow cleanup.",
+        }
+    )
+
+    anti_directional_status = "watch" if dir_status == "fail" else "insufficient"
+    checks.append(
+        {
+            "id": "selective_directional_round_picker",
+            "kind": "anti_target",
+            "status": anti_directional_status,
+            "observed": {
+                "same_side_add_qty_ratio_p90": same_side_p90,
+                "coverage_truth_ready": False,
+            },
+            "note": "Hard anti-target needs both low coverage and high directional skew; current screen only sees the skew side.",
+        }
+    )
+
+    checks.append(
+        {
+            "id": "multi_venue_slow_merge_spread",
+            "kind": "anti_target",
+            "status": "clear" if venue_status == "pass" else ("warning" if venue_status == "fail" else "insufficient"),
+            "observed": {
+                "market_count": total_markets,
+                "btc_5m_market_count": matched_markets,
+            },
+            "note": "Multi-venue deployment is a different archetype, even if the PnL surface looks smoother.",
+        }
+    )
+
+    fixed_cfg = cfg.get("fixed_clip_post_close_batch_merge") or {}
+    merge_or_redeem = as_int(summary.get("merge_executed_total")) + as_int(summary.get("redeem_requested_total"))
+    fixed_clip_warning = (
+        (not clip_pass)
+        and completion_hit < as_float(fixed_cfg.get("completion_30s_hit_rate_fail_max"))
+        and (
+            not bool(fixed_cfg.get("require_merge_or_redeem_activity"))
+            or merge_or_redeem > 0
+        )
+    )
+    checks.append(
+        {
+            "id": "fixed_clip_post_close_batch_merge",
+            "kind": "anti_target",
+            "status": "warning" if fixed_clip_warning else "clear",
+            "observed": {
+                "clip_screen_pass": clip_pass,
+                "30s_completion_hit_rate": completion_hit,
+                "merge_or_redeem_total": merge_or_redeem,
+            },
+            "note": "If clip is effectively fixed and completion is weak, later merge/redeem can fake progress.",
+        }
+    )
+
+    status_counts: dict[str, int] = {}
+    for check in checks:
+        status = str(check.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    return {
+        "checks": checks,
+        "status_counts": status_counts,
+    }
+
+
 def build_decision_summary(
     report: dict[str, Any],
     xuan_summary: dict[str, Any],
@@ -148,6 +393,7 @@ def build_gap(
             ),
             "maker_proxy_ratio": None,
         },
+        "control_screening": build_control_screening(report, contract),
         "decision_summary": build_decision_summary(report, xuan_summary, contract, baseline_report),
         "provisional": bool(xuan_summary.get("provisional")),
     }
