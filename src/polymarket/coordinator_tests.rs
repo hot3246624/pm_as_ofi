@@ -4436,6 +4436,35 @@ async fn test_cancel_stats_track_toxic_and_inventory_reasons() {
 }
 
 #[tokio::test]
+async fn test_dry_run_clear_slot_target_still_notifies_oms() {
+    let mut c = cfg();
+    c.dry_run = true;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(c);
+
+    let target = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 2.0,
+        reason: BidReason::Provide,
+    };
+    coord.yes_target = Some(target.clone());
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(target);
+
+    coord
+        .clear_slot_target(OrderSlot::YES_BUY, CancelReason::StaleData)
+        .await;
+
+    match timeout(Duration::from_millis(100), er.recv()).await {
+        Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+            assert_eq!(slot, OrderSlot::YES_BUY);
+            assert_eq!(reason, CancelReason::StaleData);
+        }
+        other => panic!("expected dry-run ClearTarget to reach OMS, got {:?}", other),
+    }
+}
+
+#[tokio::test]
 async fn test_other_side_can_still_quote_when_one_side_toxic() {
     let (o, _i, m, _k, mut e, mut coord) = make(with_strategy(cfg(), StrategyKind::PairArb));
 
@@ -5963,6 +5992,419 @@ fn test_pair_gated_tranche_flat_seed_stays_at_bid_in_tight_spread() {
 }
 
 #[test]
+fn test_pair_gated_tranche_flat_seed_uses_open_pair_band_not_pair_target_excess() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.pair_target = 0.97;
+    c.open_pair_band = 0.99;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.51, 0.49, 0.50),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES seed quote");
+    let no = quotes.no_buy.expect("expected NO seed quote");
+    assert!(
+        (yes.price - 0.50).abs() < 1e-9,
+        "YES flat seed should use open_pair_band ceiling rather than pair_target excess logic"
+    );
+    assert!(
+        (no.price - 0.49).abs() < 1e-9,
+        "NO flat seed should use open_pair_band ceiling rather than pair_target excess logic"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_flat_seed_reserves_immediate_completion_budget_in_price() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.pair_target = 0.97;
+    c.open_pair_band = 0.99;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.48, 0.49, 0.51, 0.53),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES seed quote");
+    let no = quotes.no_buy.expect("expected NO seed quote");
+    assert!(
+        (yes.price - 0.47).abs() < 1e-9,
+        "YES flat seed should reserve room for NO completion at ask-1tick instead of spending the full open band"
+    );
+    assert!(
+        (no.price - 0.51).abs() < 1e-9,
+        "NO flat seed should still remain maker-first while respecting immediate completion budget"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_flat_seed_haircuts_clip_when_immediate_completion_is_absent() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.open_pair_band = 0.99;
+    let open_quotes = pair_gated_tranche_quotes(
+        c.clone(),
+        InventorySnapshot::default(),
+        book(0.48, 0.49, 0.50, 0.51),
+    );
+    let constrained_quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.51, 0.49, 0.50),
+    );
+
+    let open_yes = open_quotes.yes_buy.expect("expected YES open seed quote");
+    let constrained_yes = constrained_quotes
+        .yes_buy
+        .expect("expected YES constrained seed quote");
+    let open_no = open_quotes.no_buy.expect("expected NO open seed quote");
+    let constrained_no = constrained_quotes
+        .no_buy
+        .expect("expected NO constrained seed quote");
+    assert!(
+        open_quotes.diagnostics.pgt_taker_shadow_would_open >= 2,
+        "both seed sides should flag taker-shadow-open when the current ask already fits the seed ceiling"
+    );
+    assert!(
+        constrained_quotes.diagnostics.pgt_taker_shadow_would_open == 0,
+        "constrained book should not report immediate taker-open opportunity"
+    );
+    assert!(
+        constrained_yes.size < open_yes.size,
+        "YES seed should pay caution by shrinking clip rather than by demoting price"
+    );
+    assert!(
+        constrained_no.size < open_no.size,
+        "NO seed should pay caution by shrinking clip rather than by demoting price"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_flat_seed_widens_taker_open_room_early_round() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.open_pair_band = 0.99;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let late_quotes = pair_gated_tranche_quotes(
+        {
+            let mut cfg = c.clone();
+            cfg.market_end_ts = Some(now_secs + 60);
+            cfg
+        },
+        InventorySnapshot::default(),
+        book(0.50, 0.51, 0.49, 0.50),
+    );
+    let early_quotes = pair_gated_tranche_quotes(
+        {
+            let mut cfg = c;
+            cfg.market_end_ts = Some(now_secs + 220);
+            cfg
+        },
+        InventorySnapshot::default(),
+        book(0.50, 0.51, 0.49, 0.50),
+    );
+
+    let late_yes = late_quotes.yes_buy.expect("expected late-window YES seed");
+    let early_yes = early_quotes.yes_buy.expect("expected early-window YES seed");
+    assert!(
+        (early_yes.price - late_yes.price).abs() < 1e-9,
+        "widening the early-round band should not turn maker-first seed into a more aggressive price"
+    );
+    assert!(
+        late_quotes.diagnostics.pgt_taker_shadow_would_open == 0,
+        "late-round base band should not treat the current ask as an immediately coverable first-leg open"
+    );
+    assert!(
+        early_quotes.diagnostics.pgt_taker_shadow_would_open > 0,
+        "early-round widened band should expose immediate taker-open room without changing the passive seed price"
+    );
+    assert!(
+        early_yes.size > late_yes.size,
+        "early-round widened band should preserve a larger seed clip when the current ask fits inside the first-leg ceiling (late={:.1}, early={:.1})",
+        late_yes.size,
+        early_yes.size
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_selects_single_shadow_taker_open_candidate_in_dry_run() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.open_pair_band = 1.0;
+    c.max_net_diff = 500.0;
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+    let yes_intent = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.46,
+        size: 76.8,
+        reason: BidReason::Provide,
+    };
+    let no_intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 76.8,
+        reason: BidReason::Provide,
+    };
+    let st = ExecutionState {
+        intent_yes: Some(yes_intent),
+        intent_no: Some(no_intent),
+        net_diff: 0.0,
+        hedge_dispatched_yes: false,
+        hedge_dispatched_no: false,
+        allow_yes_provide: true,
+        allow_no_provide: true,
+        block_yes_provide: false,
+        block_no_provide: false,
+        block_reason_yes: None,
+        block_reason_no: None,
+        force_taker_side: None,
+        force_taker_size: 0.0,
+        block_maker_hedge: false,
+        endgame_phase: EndgamePhase::Normal,
+    };
+    let candidate = coord
+        .pgt_shadow_taker_open_candidate(
+            &InventoryState::default(),
+            &book(0.46, 0.47, 0.45, 0.46),
+            &st,
+            false,
+            false,
+            false,
+            false,
+        )
+        .expect("expected a single PGT shadow taker-open candidate");
+    assert_eq!(
+        candidate.side,
+        Side::No,
+        "lower ask side should win first-leg taker-open tie"
+    );
+    assert!(
+        (candidate.limit_price - 0.54).abs() < 1e-9,
+        "shadow taker-open limit should respect the first-leg ceiling"
+    );
+    let action = coord.decide_provide_side_action(
+        Side::No,
+        Some(no_intent),
+        true,
+        None,
+        false,
+        false,
+        Some(candidate.limit_price),
+    );
+    assert!(
+        matches!(action, ProvideSideAction::ShadowTaker { .. }),
+        "eligible dry-run PGT seed should route through shadow taker-open instead of maker place"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_taker_open_fires_once_per_epoch() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.open_pair_band = 1.0;
+    c.max_net_diff = 500.0;
+    let (_o, _i, _m, _k, _e, mut coord) = make(c);
+    coord.pgt_decision_epoch = 7;
+    let yes_intent = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.46,
+        size: 76.8,
+        reason: BidReason::Provide,
+    };
+    let no_intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.45,
+        size: 76.8,
+        reason: BidReason::Provide,
+    };
+    let st = ExecutionState {
+        intent_yes: Some(yes_intent),
+        intent_no: Some(no_intent),
+        net_diff: 0.0,
+        hedge_dispatched_yes: false,
+        hedge_dispatched_no: false,
+        allow_yes_provide: true,
+        allow_no_provide: true,
+        block_yes_provide: false,
+        block_no_provide: false,
+        block_reason_yes: None,
+        block_reason_no: None,
+        force_taker_side: None,
+        force_taker_size: 0.0,
+        block_maker_hedge: false,
+        endgame_phase: EndgamePhase::Normal,
+    };
+    let book = book(0.46, 0.47, 0.45, 0.46);
+    let first = coord
+        .pgt_shadow_taker_open_candidate(&InventoryState::default(), &book, &st, false, false, false, false)
+        .expect("expected first candidate");
+    assert_eq!(first.side, Side::No);
+    coord.pgt_shadow_taker_open_fired_epoch = Some(coord.pgt_decision_epoch);
+    let second = coord.pgt_shadow_taker_open_candidate(
+        &InventoryState::default(),
+        &book,
+        &st,
+        false,
+        false,
+        false,
+        false,
+    );
+    assert!(
+        second.is_none(),
+        "same-side shadow taker-open should be suppressed after the first fire in the same epoch"
+    );
+    coord.pgt_decision_epoch += 1;
+    let third = coord
+        .pgt_shadow_taker_open_candidate(&InventoryState::default(), &book, &st, false, false, false, false)
+        .expect("expected candidate after epoch bump");
+    assert_eq!(third.side, Side::No);
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_taker_limit_does_not_upgrade_hedge_intent() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+    let hedge_intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.46,
+        size: 96.0,
+        reason: BidReason::Hedge,
+    };
+    let action = coord.decide_provide_side_action(
+        Side::No,
+        Some(hedge_intent),
+        true,
+        None,
+        false,
+        false,
+        Some(0.48),
+    );
+    assert!(
+        matches!(action, ProvideSideAction::Place { intent } if intent.reason == BidReason::Hedge),
+        "completion hedge must stay maker-path even when a shadow taker-open limit is present"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_taker_open_blocks_when_two_ask_pair_cost_is_over_band() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.open_pair_band = 1.0;
+    c.max_net_diff = 500.0;
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+    let yes_intent = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.53,
+        size: 96.0,
+        reason: BidReason::Provide,
+    };
+    let no_intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.46,
+        size: 96.0,
+        reason: BidReason::Provide,
+    };
+    let st = ExecutionState {
+        intent_yes: Some(yes_intent),
+        intent_no: Some(no_intent),
+        net_diff: 0.0,
+        hedge_dispatched_yes: false,
+        hedge_dispatched_no: false,
+        allow_yes_provide: true,
+        allow_no_provide: true,
+        block_yes_provide: false,
+        block_no_provide: false,
+        block_reason_yes: None,
+        block_reason_no: None,
+        force_taker_side: None,
+        force_taker_size: 0.0,
+        block_maker_hedge: false,
+        endgame_phase: EndgamePhase::Normal,
+    };
+    let blocked = coord.pgt_shadow_taker_open_candidate(
+        &InventoryState::default(),
+        &book(0.53, 0.54, 0.46, 0.47),
+        &st,
+        false,
+        false,
+        false,
+        false,
+    );
+    assert!(
+        blocked.is_none(),
+        "shadow taker-open should be blocked when current two-ask completion pair cost already exceeds the open band"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_taker_close_limit_appears_in_late_phase() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 80,
+    );
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+    let limit = coord
+        .pgt_shadow_taker_close_limit_for_side(Side::Yes, 0.47, 0.52, 0.49, 80)
+        .expect("expected late-phase shadow taker-close");
+    assert!((limit - 0.49).abs() < 1e-9);
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_taker_close_fires_once_per_epoch() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 80,
+    );
+    let (_o, _i, _m, _k, _e, mut coord) = make(c);
+    coord.pgt_decision_epoch = 11;
+    let first = coord
+        .pgt_shadow_taker_close_limit_for_side(Side::Yes, 0.47, 0.52, 0.49, 80)
+        .expect("expected first taker-close candidate");
+    assert!((first - 0.49).abs() < 1e-9);
+    coord.pgt_shadow_taker_close_fired_epoch[Side::Yes.index()] = Some(coord.pgt_decision_epoch);
+    let second = coord.pgt_shadow_taker_close_limit_for_side(Side::Yes, 0.47, 0.52, 0.49, 80);
+    assert!(
+        second.is_none(),
+        "shadow taker-close should be suppressed after first fire in same epoch"
+    );
+    coord.pgt_decision_epoch += 1;
+    let third = coord
+        .pgt_shadow_taker_close_limit_for_side(Side::Yes, 0.47, 0.52, 0.49, 80)
+        .expect("expected taker-close candidate after epoch bump");
+    assert!((third - 0.49).abs() < 1e-9);
+}
+
+#[test]
 fn test_pair_gated_tranche_inventory_gate_bypasses_global_max_net_diff() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
@@ -6045,6 +6487,164 @@ fn test_pair_gated_tranche_completion_is_maker_first_not_aggressive() {
 }
 
 #[test]
+fn test_pair_gated_tranche_completion_steps_up_before_harvest_window() {
+    let inv = InventoryState {
+        yes_qty: 100.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 20.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 100.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+
+    let mut far_cfg = cfg();
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    far_cfg.market_end_ts = Some(now_secs + 240);
+    let far_quotes = pair_gated_tranche_quotes(far_cfg, inventory, book(0.20, 0.22, 0.56, 0.59));
+    let far_hedge = far_quotes.no_buy.expect("expected far-window NO completion quote");
+
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 40);
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.20, 0.22, 0.56, 0.59));
+    let hedge = quotes.no_buy.expect("expected NO completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        hedge.price >= far_hedge.price + 0.009,
+        "pre-harvest tail completion should step up over far-window completion (far={:.4}, tail={:.4})",
+        far_hedge.price,
+        hedge.price
+    );
+    assert!((hedge.price - 0.57).abs() < 1e-9, "tail completion should step one tick inside before harvest when ceiling allows, got {:.4}", hedge.price);
+}
+
+#[test]
+fn test_pair_gated_tranche_completion_steps_up_as_residual_ages() {
+    let inv = InventoryState {
+        yes_qty: 100.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 20.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 100.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let mut fresh_snapshot = ledger.snapshot;
+    let mut stale_snapshot = ledger.snapshot;
+    let now = Instant::now();
+    if let Some(mut active) = fresh_snapshot.active_tranche {
+        active.last_transition_at = Some(now);
+        fresh_snapshot.active_tranche = Some(active);
+    }
+    if let Some(mut active) = stale_snapshot.active_tranche {
+        active.last_transition_at = Some(now - Duration::from_secs(30));
+        stale_snapshot.active_tranche = Some(active);
+    }
+    let inventory_fresh =
+        test_inventory_snapshot_with_ledger(inv, fresh_snapshot, ledger.episode_metrics);
+    let inventory_stale =
+        test_inventory_snapshot_with_ledger(inv, stale_snapshot, ledger.episode_metrics);
+
+    let mut c = cfg();
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 120,
+    );
+    let fresh = pair_gated_tranche_quotes(c.clone(), inventory_fresh, book(0.20, 0.22, 0.56, 0.60))
+        .no_buy
+        .expect("fresh completion quote");
+    let stale = pair_gated_tranche_quotes(c, inventory_stale, book(0.20, 0.22, 0.56, 0.60))
+        .no_buy
+        .expect("stale completion quote");
+    assert!(
+        stale.price >= fresh.price + 0.009,
+        "aged completion should step closer to ask than fresh completion (fresh={:.4}, stale={:.4})",
+        fresh.price,
+        stale.price
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_tail_urgency_budget_allows_close_side_completion() {
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.49,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.49)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+
+    let mut c = cfg();
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    c.market_end_ts = Some(now_secs + 40);
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.47, 0.48, 0.52, 0.53));
+    let hedge = quotes.no_buy.expect("expected NO completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        (hedge.price - 0.52).abs() < 1e-9,
+        "tail urgency budget should let completion re-anchor to bid-side close-out level, got {:.4}",
+        hedge.price
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_tail_urgency_budget_can_cover_late_adverse_move() {
+    let inv = InventoryState {
+        yes_qty: 0.0,
+        no_qty: 96.0,
+        yes_avg_cost: 0.0,
+        no_avg_cost: 0.49,
+        net_diff: -96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::No, 96.0, 0.49)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+
+    let mut c = cfg();
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    c.market_end_ts = Some(now_secs + 40);
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.55, 0.56, 0.43, 0.44));
+    let hedge = quotes.yes_buy.expect("expected YES completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        (hedge.price - 0.55).abs() < 1e-9,
+        "tail urgency budget should allow maker-first completion to lift to the live YES bid, got {:.4}",
+        hedge.price
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
@@ -6087,6 +6687,56 @@ fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
         "tail completion clip should be larger than normal-window clip (far={:.1}, tail={:.1})",
         far.size,
         tail.size,
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_round_buy_fill_count_reduces_clip() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    let inv = InventoryState {
+        yes_qty: 360.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 280.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 360.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let mut early_metrics = ledger.episode_metrics;
+    early_metrics.round_buy_fill_count = 1;
+    let early_inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, early_metrics);
+
+    let mut late_metrics = ledger.episode_metrics;
+    late_metrics.round_buy_fill_count = 10;
+    let late_inventory = test_inventory_snapshot_with_ledger(inv, ledger.snapshot, late_metrics);
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut fixed_cfg = c;
+    fixed_cfg.market_end_ts = Some(now_secs + 120);
+
+    let early = pair_gated_tranche_quotes(fixed_cfg.clone(), early_inventory, book(0.20, 0.22, 0.56, 0.58))
+        .no_buy
+        .expect("early completion quote");
+    let late = pair_gated_tranche_quotes(fixed_cfg, late_inventory, book(0.20, 0.22, 0.56, 0.58))
+        .no_buy
+        .expect("late completion quote");
+
+    assert!(
+        late.size < early.size,
+        "later round buy fill count should shrink clip (early={:.1}, late={:.1})",
+        early.size,
+        late.size,
     );
 }
 
@@ -6223,6 +6873,11 @@ async fn test_pair_gated_tranche_completion_reprices_on_large_upward_move() {
     config.strategy = StrategyKind::PairGatedTrancheArb;
     config.debounce_ms = 0;
     config.reprice_threshold = 0.02;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    config.market_end_ts = Some(now_secs + 60);
     let (_o, _i, _m, _k, mut er, mut coord) = make(config);
 
     coord
@@ -6246,6 +6901,216 @@ async fn test_pair_gated_tranche_completion_reprices_on_large_upward_move() {
         }
         other => panic!("expected completion reprice SetTarget, got {:?}", other),
     }
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_mode_transition_from_seed_to_completion_forces_reprice() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.49, 96.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial seed SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+
+    coord
+        .slot_place_or_reprice(slot, 0.50, 96.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.reason, BidReason::Hedge);
+            assert!((target.price - 0.50).abs() < 1e-9);
+        }
+        other => panic!("expected mode-transition SetTarget, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_mode_transition_same_price_still_forces_reprice() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.49, 96.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial seed SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+
+    coord
+        .slot_place_or_reprice(slot, 0.49, 96.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.reason, BidReason::Hedge);
+            assert!((target.price - 0.49).abs() < 1e-9);
+        }
+        other => panic!("expected same-price mode-transition SetTarget, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_mode_transition_to_completion_does_not_step_down_price() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.50, 84.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial provide SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+
+    coord
+        .slot_place_or_reprice(slot, 0.49, 120.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.reason, BidReason::Hedge);
+            assert!((target.price - 0.50).abs() < 1e-9);
+        }
+        other => panic!("expected completion transition to preserve higher live quote, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_completion_does_not_chase_downward_move() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.49, 120.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial hedge SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(3);
+
+    coord
+        .slot_place_or_reprice(slot, 0.44, 120.0, BidReason::Hedge, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "completion should hold the existing order on downward drift instead of chasing down",
+    );
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_completion_aged_residual_reprices_on_one_tick_upward_move() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.49, 120.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial hedge SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(25);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(25);
+
+    coord
+        .slot_place_or_reprice(slot, 0.50, 120.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.reason, BidReason::Hedge);
+            assert!((target.price - 0.50).abs() < 1e-9);
+        }
+        other => panic!("expected aged residual hedge SetTarget on +1 tick, got {:?}", other),
+    }
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_seed_does_not_reprice_on_same_price_size_only_drift() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.47, 67.1, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial seed SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(3);
+
+    coord
+        .slot_place_or_reprice(slot, 0.47, 96.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT flat seed should hold same-price live order instead of repricing on size-only drift",
+    );
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_stale_holds_existing_buy_quote_instead_of_clearing() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.47, 96.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial seed SetTarget, got {:?}", other),
+    }
+
+    let action = coord.decide_provide_side_action(
+        Side::No,
+        None,
+        true,
+        None,
+        false,
+        true,
+        None,
+    );
+    assert!(
+        matches!(action, ProvideSideAction::None),
+        "PGT should retain an existing buy quote during stale-data gaps instead of clearing it immediately"
+    );
 }
 
 #[tokio::test]

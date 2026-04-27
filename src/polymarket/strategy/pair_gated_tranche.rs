@@ -10,12 +10,26 @@ use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, Strateg
 
 const RESIDUAL_EPS: f64 = 10.0;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
-const TAIL_COMPLETION_ONLY_SECS: u64 = 60;
+const TAIL_COMPLETION_ONLY_SECS: u64 = 45;
 const HARVEST_WINDOW_SECS: u64 = 25;
 const HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const BASE_CLIP_QTY: f64 = 120.0;
 const MAX_CLIP_QTY: f64 = 250.0;
 const MIN_CLIP_QTY: f64 = 25.0;
+const SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT: f64 = 0.70;
+pub(crate) const PGT_OPEN_PAIR_BAND_WIDE_SECS: u64 = 150;
+pub(crate) const PGT_OPEN_PAIR_BAND_MID_SECS: u64 = 90;
+pub(crate) const PGT_OPEN_PAIR_BAND_MID_VALUE: f64 = 0.995;
+
+struct CompletionPlan {
+    intent: StrategyIntent,
+    taker_shadow_would_close: bool,
+}
+
+struct SeedPlan {
+    intent: StrategyIntent,
+    taker_shadow_would_open: bool,
+}
 
 pub(crate) struct PairGatedTrancheStrategy;
 
@@ -45,10 +59,13 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                 quotes.note_pgt_skip_harvest();
                 return quotes;
             }
-            if let Some(intent) = self.completion_intent(coordinator, input, active, remaining_secs)
+            if let Some(plan) = self.completion_intent(coordinator, input, active, remaining_secs)
             {
                 quotes.note_pgt_completion_quote();
-                quotes.set(intent);
+                if plan.taker_shadow_would_close {
+                    quotes.note_pgt_taker_shadow_would_close();
+                }
+                quotes.set(plan.intent);
             } else {
                 quotes.note_pgt_skip_invalid_book();
             }
@@ -76,7 +93,9 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             return quotes;
         }
 
-        let Some((raw_yes, raw_no)) = self.flat_seed_raw_prices(coordinator, input) else {
+        let Some((raw_yes, raw_no)) =
+            self.flat_seed_raw_prices(coordinator, input, remaining_secs)
+        else {
             quotes.note_pgt_skip_invalid_book();
             return quotes;
         };
@@ -92,13 +111,19 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             self.flat_seed_intent_for_side(coordinator, input, Side::Yes, raw_yes, size)
         {
             quotes.note_pgt_seed_quote();
-            quotes.set(seed);
+            if seed.taker_shadow_would_open {
+                quotes.note_pgt_taker_shadow_would_open();
+            }
+            quotes.set(seed.intent);
         }
         if let Some(seed) =
             self.flat_seed_intent_for_side(coordinator, input, Side::No, raw_no, size)
         {
             quotes.note_pgt_seed_quote();
-            quotes.set(seed);
+            if seed.taker_shadow_would_open {
+                quotes.note_pgt_taker_shadow_would_open();
+            }
+            quotes.set(seed.intent);
         }
 
         if quotes.yes_buy.is_none() && quotes.no_buy.is_none() {
@@ -119,32 +144,30 @@ impl PairGatedTrancheStrategy {
         &self,
         coordinator: &StrategyCoordinator,
         input: StrategyTickInput<'_>,
+        remaining_secs: u64,
     ) -> Option<(f64, f64)> {
         let ub = input.book;
         if ub.yes_bid <= 0.0 || ub.yes_ask <= 0.0 || ub.no_bid <= 0.0 || ub.no_ask <= 0.0 {
             return None;
         }
-
-        let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
-        let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
-        let excess = f64::max(0.0, (mid_yes + mid_no) - coordinator.cfg().pair_target);
-        let skew = if coordinator.cfg().max_net_diff > 0.0 {
-            (input.inv.net_diff / coordinator.cfg().max_net_diff).clamp(-1.0, 1.0)
-        } else {
-            0.0
-        };
-        let time_decay = coordinator.compute_time_decay_factor();
-        let effective_skew_factor = PairArbStrategy::effective_skew_factor(
-            coordinator.cfg().as_skew_factor,
-            input.inv.net_diff.abs(),
-            time_decay,
-        );
-        let skew_shift = skew * effective_skew_factor;
-
-        Some((
-            mid_yes - (excess / 2.0) - skew_shift,
-            mid_no - (excess / 2.0) + skew_shift,
-        ))
+        // Opening-leg seed is anchored by the broad open_pair_band ceiling.
+        // But we also reserve room for the opposite leg to complete at
+        // ask-1tick if that ask is already visible now; otherwise we enter
+        // first-leg fills that only close after drifting into negative pair
+        // cost. Clip haircut still handles the "no immediate completion" case,
+        // but price itself must not consume the entire completion budget.
+        let open_pair_band =
+            pgt_effective_open_pair_band_value(coordinator.cfg().open_pair_band, remaining_secs);
+        let tick = coordinator.cfg().tick_size.max(1e-9);
+        let yes_bid_cap = pgt_open_leg_ceiling_from_opposite_bid(open_pair_band, ub.no_bid)?;
+        let no_bid_cap = pgt_open_leg_ceiling_from_opposite_bid(open_pair_band, ub.yes_bid)?;
+        let yes_immediate_completion_cap =
+            (open_pair_band - (ub.no_ask - tick).max(0.0)).clamp(0.0, 1.0);
+        let no_immediate_completion_cap =
+            (open_pair_band - (ub.yes_ask - tick).max(0.0)).clamp(0.0, 1.0);
+        let yes_ceiling = yes_bid_cap.min(yes_immediate_completion_cap);
+        let no_ceiling = no_bid_cap.min(no_immediate_completion_cap);
+        Some((yes_ceiling, no_ceiling))
     }
 
     fn flat_seed_intent_for_side(
@@ -154,7 +177,7 @@ impl PairGatedTrancheStrategy {
         side: Side,
         raw_price: f64,
         size: f64,
-    ) -> Option<StrategyIntent> {
+    ) -> Option<SeedPlan> {
         if raw_price <= 0.0 || size <= 0.0 {
             return None;
         }
@@ -209,19 +232,30 @@ impl PairGatedTrancheStrategy {
             ceiling = ceiling.min(vwap_ceiling);
         }
 
-        let price =
-            self.passive_seed_price(coordinator, side, ceiling, best_bid, best_ask)?;
+        let price = self.passive_seed_price(coordinator, side, ceiling, best_bid, best_ask)?;
         if price <= 0.0 {
+            return None;
+        }
+        let taker_shadow_would_open = best_ask <= ceiling + 1e-9 && best_ask > price + 1e-9;
+        let size = if taker_shadow_would_open {
+            size
+        } else {
+            quantize_tenth(size * SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT)
+        };
+        if size <= 0.0 {
             return None;
         }
         coordinator.simulate_buy(input.inv, side, size, price)?;
 
-        Some(StrategyIntent {
-            side,
-            direction: TradeDirection::Buy,
-            price,
-            size,
-            reason: BidReason::Provide,
+        Some(SeedPlan {
+            taker_shadow_would_open,
+            intent: StrategyIntent {
+                side,
+                direction: TradeDirection::Buy,
+                price,
+                size,
+                reason: BidReason::Provide,
+            },
         })
     }
 
@@ -231,7 +265,7 @@ impl PairGatedTrancheStrategy {
         input: StrategyTickInput<'_>,
         active: PairTranche,
         remaining_secs: u64,
-    ) -> Option<StrategyIntent> {
+    ) -> Option<CompletionPlan> {
         let first_side = active.first_side?;
         let hedge_side = opposite_side(first_side);
         let (best_bid, best_ask) = match hedge_side {
@@ -258,6 +292,11 @@ impl PairGatedTrancheStrategy {
             best_bid,
             best_ask,
             remaining_secs,
+            active
+                .last_transition_at
+                .map(|ts| ts.elapsed().as_secs_f64())
+                .or_else(|| active.opened_at.map(|ts| ts.elapsed().as_secs_f64()))
+                .unwrap_or(0.0),
         ) else {
             return None;
         };
@@ -273,19 +312,22 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        Some(StrategyIntent {
-            side: hedge_side,
-            direction: TradeDirection::Buy,
-            price,
-            size,
-            reason: BidReason::Hedge,
+        Some(CompletionPlan {
+            taker_shadow_would_close: best_ask <= ceiling + 1e-9 && best_ask > price + 1e-9,
+            intent: StrategyIntent {
+                side: hedge_side,
+                direction: TradeDirection::Buy,
+                price,
+                size,
+                reason: BidReason::Hedge,
+            },
         })
     }
 
     fn passive_seed_price(
         &self,
         coordinator: &StrategyCoordinator,
-        side: Side,
+        _side: Side,
         ceiling: f64,
         best_bid: f64,
         best_ask: f64,
@@ -294,8 +336,12 @@ impl PairGatedTrancheStrategy {
             return None;
         }
         let tick = coordinator.cfg().tick_size.max(1e-9);
-        let safety_margin = coordinator.post_only_safety_margin_for(side, best_bid, best_ask);
-        let maker_cap = (best_ask - safety_margin).max(0.0);
+        // Unlike pair_arb, PGT flat seed is low-cadence and explicitly
+        // maker-first. Reusing the shared tight-spread safety margin pushes a
+        // one-tick market one full tick below the actual best bid, which kills
+        // fills on BTC 5m. The only hard requirement here is "remain below the
+        // ask", so use ask-1tick as the maker cap.
+        let maker_cap = (best_ask - tick).max(0.0);
         if maker_cap <= 0.0 {
             return None;
         }
@@ -326,9 +372,8 @@ impl PairGatedTrancheStrategy {
     ) -> f64 {
         let session_mult = session_clip_mult_utc();
         let imbalance_mult = imbalance_clip_mult(coordinator, input, active);
-        let trade_index_mult = active
-            .map(|tranche| (1.0 - 0.05 * f64::from(tranche.same_side_add_count)).max(0.70))
-            .unwrap_or(1.0);
+        let trade_index = input.episode_metrics.round_buy_fill_count.max(1) as f64;
+        let trade_index_mult = (1.0 - 0.05 * (trade_index - 1.0)).max(0.70);
         let tail_mult = if remaining_secs <= 30 { 1.16 } else { 1.0 };
 
         (BASE_CLIP_QTY * session_mult * imbalance_mult * trade_index_mult * tail_mult)
@@ -338,33 +383,104 @@ impl PairGatedTrancheStrategy {
     fn passive_completion_price(
         &self,
         coordinator: &StrategyCoordinator,
-        side: Side,
+        _side: Side,
         ceiling: f64,
         best_bid: f64,
         best_ask: f64,
         remaining_secs: u64,
+        completion_age_secs: f64,
     ) -> Option<f64> {
         if ceiling <= 0.0 || best_bid <= 0.0 || best_ask <= 0.0 {
             return None;
         }
         let tick = coordinator.cfg().tick_size.max(1e-9);
-        let safety_margin = coordinator.post_only_safety_margin_for(side, best_bid, best_ask);
-        let maker_cap = (best_ask - safety_margin).max(0.0);
+        // PGT completion is a dedicated close-out path, not a generic reprice
+        // path like pair_arb. Shadow validation against xuan only starts to make
+        // sense if completion is allowed to lean to ask-1tick while remaining
+        // maker-only, instead of inheriting the broader shared post-only margin.
+        let maker_cap = (best_ask - tick).max(0.0);
         if maker_cap <= 0.0 {
             return None;
         }
 
         let spread_ticks = ((best_ask - best_bid) / tick).max(0.0);
-        let improve_ticks = if remaining_secs <= 30 {
-            if spread_ticks >= 4.0 { 2.0 } else { 1.0 }
+        let max_passive_ticks = (spread_ticks - 1.0).max(0.0).floor();
+        let time_ticks = if remaining_secs <= 25 {
+            // Harvest edge: stay maker-only, but move all the way to ask-1tick
+            // so any remaining pairable inventory has a realistic chance to close
+            // before the merge pulse.
+            max_passive_ticks
+        } else if remaining_secs <= 45 {
+            if spread_ticks >= 5.0 {
+                3.0
+            } else if spread_ticks >= 3.0 {
+                2.0
+            } else {
+                1.0
+            }
         } else if remaining_secs <= 60 {
-            if spread_ticks >= 3.0 { 1.0 } else { 0.0 }
-        } else if spread_ticks >= 4.0 {
+            if spread_ticks >= 5.0 {
+                3.0
+            } else if spread_ticks >= 3.0 {
+                2.0
+            } else if spread_ticks >= 2.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else if remaining_secs <= 90 {
+            if spread_ticks >= 4.0 {
+                2.0
+            } else if spread_ticks >= 2.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else if remaining_secs <= 120 {
+            if spread_ticks >= 4.0 {
+                2.0
+            } else if spread_ticks >= 2.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else if remaining_secs <= 180 {
+            if spread_ticks >= 4.0 { 1.0 } else { 0.0 }
+        } else if spread_ticks >= 5.0 {
             1.0
         } else {
             0.0
         };
 
+        // Once a residual leg has been sitting for a while, completion should
+        // progressively lean further inside the spread even outside tail mode.
+        // This keeps the path maker-only, but prevents 60s+ close delays where
+        // a tranche is technically closable yet we keep repricing too slowly.
+        let age_ticks = if completion_age_secs >= 45.0 {
+            max_passive_ticks
+        } else if completion_age_secs >= 25.0 {
+            if spread_ticks >= 4.0 {
+                3.0
+            } else if spread_ticks >= 3.0 {
+                2.0
+            } else if spread_ticks >= 2.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else if completion_age_secs >= 12.0 {
+            if spread_ticks >= 3.0 {
+                2.0
+            } else if spread_ticks >= 2.0 {
+                1.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let improve_ticks = time_ticks.max(age_ticks).min(max_passive_ticks);
         let passive_anchor = best_bid + improve_ticks * tick;
         let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
         if price > 0.0 {
@@ -373,6 +489,31 @@ impl PairGatedTrancheStrategy {
             None
         }
     }
+
+}
+
+pub(crate) fn pgt_effective_open_pair_band_value(base: f64, remaining_secs: u64) -> f64 {
+    if remaining_secs == u64::MAX {
+        return base;
+    }
+    if remaining_secs > PGT_OPEN_PAIR_BAND_WIDE_SECS {
+        1.0
+    } else if remaining_secs > PGT_OPEN_PAIR_BAND_MID_SECS {
+        base.max(PGT_OPEN_PAIR_BAND_MID_VALUE)
+    } else {
+        base
+    }
+}
+
+pub(crate) fn pgt_open_leg_ceiling_from_opposite_bid(
+    open_pair_band: f64,
+    opposite_bid: f64,
+) -> Option<f64> {
+    if opposite_bid <= 0.0 {
+        return None;
+    }
+    let ceiling = (open_pair_band - opposite_bid).clamp(0.0, 1.0);
+    if ceiling > 0.0 { Some(ceiling) } else { None }
 }
 
 fn imbalance_clip_mult(

@@ -1,8 +1,77 @@
 use tracing::{debug, info};
 
 use super::*;
+use crate::polymarket::strategy::pair_gated_tranche::{
+    pgt_effective_open_pair_band_value, pgt_open_leg_ceiling_from_opposite_bid,
+};
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PgtShadowTakerOpenCandidate {
+    pub(super) side: Side,
+    pub(super) limit_price: f64,
+    slack: f64,
+    best_ask: f64,
+}
+
+const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 
 impl StrategyCoordinator {
+    pub(super) fn pgt_buy_retain_decision(
+        &self,
+        reason: BidReason,
+        delta_ticks: f64,
+        slot_age: std::time::Duration,
+        remaining_secs: u64,
+    ) -> (bool, &'static str) {
+        match reason {
+            BidReason::Provide => {
+                if slot_age < std::time::Duration::from_millis(1_500) {
+                    (delta_ticks >= -6.0 - 1e-9, "pgt_flat_seed_time_hold")
+                } else {
+                    (
+                        delta_ticks >= -3.0 - 1e-9,
+                        "pgt_seed_holds_between_large_down_moves",
+                    )
+                }
+            }
+            BidReason::Hedge => {
+                if delta_ticks <= 0.0 + 1e-9 {
+                    (true, "pgt_completion_no_chase_down")
+                } else {
+                    let time_based_max_up_ticks: f64 = if remaining_secs <= 45 {
+                        0.0
+                    } else if remaining_secs <= 60 {
+                        1.0
+                    } else if remaining_secs <= 90 {
+                        1.0
+                    } else if remaining_secs <= 120 {
+                        2.0
+                    } else {
+                        3.0
+                    };
+                    let age_based_max_up_ticks: f64 = if slot_age >= std::time::Duration::from_secs(20)
+                    {
+                        0.0
+                    } else if slot_age >= std::time::Duration::from_secs(10) {
+                        1.0
+                    } else {
+                        f64::INFINITY
+                    };
+                    let max_up_ticks = if slot_age < std::time::Duration::from_millis(1_200) {
+                        time_based_max_up_ticks.max(1.0)
+                    } else {
+                        time_based_max_up_ticks.min(age_based_max_up_ticks)
+                    };
+                    (
+                        delta_ticks <= max_up_ticks + 1e-9,
+                        "pgt_completion_step_up_band_hold",
+                    )
+                }
+            }
+            BidReason::OracleLagProvide => (false, "not_pgt_path"),
+        }
+    }
+
     pub(super) async fn handle_slot_release_event(&mut self, event: SlotReleaseEvent) {
         self.soft_release_slot_target(event.slot);
         let idx = event.slot.index();
@@ -416,25 +485,9 @@ impl StrategyCoordinator {
         let tick = self.cfg.tick_size.max(1e-9);
         let delta_ticks = (intent.price - current.price) / tick;
         let slot_age = self.slot_last_ts(slot).elapsed();
-        let (retain, retain_reason) = match intent.reason {
-            BidReason::Provide => {
-                if inv.net_diff.abs() <= f64::EPSILON
-                    && slot_age < std::time::Duration::from_millis(1_500)
-                {
-                    (true, "pgt_flat_seed_time_hold")
-                } else {
-                    (
-                        delta_ticks >= -3.0 - 1e-9,
-                        "pgt_seed_holds_between_large_down_moves",
-                    )
-                }
-            }
-            BidReason::Hedge => (
-                delta_ticks <= 2.0 + 1e-9 && delta_ticks >= -4.0 - 1e-9,
-                "pgt_completion_band_hold",
-            ),
-            BidReason::OracleLagProvide => (false, "not_pgt_path"),
-        };
+        let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+        let (retain, retain_reason) =
+            self.pgt_buy_retain_decision(intent.reason, delta_ticks, slot_age, remaining_secs);
         if !retain {
             return false;
         }
@@ -598,6 +651,36 @@ impl StrategyCoordinator {
             return;
         }
 
+        let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+        if let Some(limit_price) = self.pgt_shadow_taker_close_limit_for_side(
+            hedge_side,
+            hedge_px,
+            ceiling,
+            book_ask,
+            remaining_secs,
+        ) {
+            if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                self.pgt_shadow_taker_close_fired_epoch[hedge_side.index()] =
+                    Some(self.pgt_decision_epoch);
+                self.stats.pgt_dispatch_taker_close =
+                    self.stats.pgt_dispatch_taker_close.saturating_add(1);
+            }
+            info!(
+                "⚡ PGT shadow taker-close | side={:?} maker_price={:.4} size={:.2} limit={:.4} ceiling={:.4}",
+                hedge_side, hedge_px, hedge_size, limit_price, ceiling
+            );
+            self.dispatch_taker_intent(
+                hedge_side,
+                TradeDirection::Buy,
+                hedge_size,
+                TradePurpose::Hedge,
+                Some(limit_price),
+            )
+            .await;
+            st.mark_hedge_dispatched(hedge_side);
+            return;
+        }
+
         if self.keep_existing_maker_if_safe(
             inv,
             hedge_side,
@@ -652,6 +735,8 @@ impl StrategyCoordinator {
         st.apply_blocked_provide();
         let yes_toxic_blocked = yes_toxic_blocked && self.execution_toxic_block_applies();
         let no_toxic_blocked = no_toxic_blocked && self.execution_toxic_block_applies();
+        let shadow_taker_open =
+            self.pgt_shadow_taker_open_candidate(inv, ub, st, yes_toxic_blocked, no_toxic_blocked, yes_stale, no_stale);
 
         self.dispatch_provide_side(
             inv,
@@ -663,6 +748,9 @@ impl StrategyCoordinator {
             st.hedge_dispatched_for(Side::Yes),
             yes_toxic_blocked,
             yes_stale,
+            shadow_taker_open
+                .filter(|candidate| candidate.side == Side::Yes)
+                .map(|candidate| candidate.limit_price),
         )
         .await;
         self.dispatch_provide_side(
@@ -675,6 +763,9 @@ impl StrategyCoordinator {
             st.hedge_dispatched_for(Side::No),
             no_toxic_blocked,
             no_stale,
+            shadow_taker_open
+                .filter(|candidate| candidate.side == Side::No)
+                .map(|candidate| candidate.limit_price),
         )
         .await;
     }
@@ -690,6 +781,7 @@ impl StrategyCoordinator {
         hedge_dispatched: bool,
         toxic_blocked: bool,
         stale: bool,
+        shadow_taker_limit_price: Option<f64>,
     ) {
         if hedge_dispatched {
             return;
@@ -713,8 +805,155 @@ impl StrategyCoordinator {
             block_reason,
             toxic_blocked,
             stale,
+            shadow_taker_limit_price,
         );
         self.apply_provide_side_action(inv, ub, side, action).await;
+    }
+
+    pub(super) fn pgt_shadow_taker_open_candidate(
+        &self,
+        inv: &InventoryState,
+        ub: &Book,
+        st: &ExecutionState,
+        yes_toxic_blocked: bool,
+        no_toxic_blocked: bool,
+        yes_stale: bool,
+        no_stale: bool,
+    ) -> Option<PgtShadowTakerOpenCandidate> {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
+            return None;
+        }
+        if inv.net_diff.abs() > PAIR_ARB_NET_EPS {
+            return None;
+        }
+        if self.endgame_phase() != EndgamePhase::Normal {
+            return None;
+        }
+
+        let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+        let open_pair_band =
+            pgt_effective_open_pair_band_value(self.cfg.open_pair_band, remaining_secs);
+        let yes = self.pgt_shadow_taker_open_candidate_for_side(
+            ub,
+            Side::Yes,
+            st.intent_for(Side::Yes),
+            st.allow_provide_for(Side::Yes),
+            st.hedge_dispatched_for(Side::Yes),
+            yes_toxic_blocked,
+            yes_stale,
+            open_pair_band,
+        );
+        let no = self.pgt_shadow_taker_open_candidate_for_side(
+            ub,
+            Side::No,
+            st.intent_for(Side::No),
+            st.allow_provide_for(Side::No),
+            st.hedge_dispatched_for(Side::No),
+            no_toxic_blocked,
+            no_stale,
+            open_pair_band,
+        );
+
+        match (yes, no) {
+            (Some(lhs), Some(rhs)) => {
+                if lhs.slack > rhs.slack + 1e-9 {
+                    Some(lhs)
+                } else if rhs.slack > lhs.slack + 1e-9 {
+                    Some(rhs)
+                } else if lhs.best_ask <= rhs.best_ask + 1e-9 {
+                    Some(lhs)
+                } else {
+                    Some(rhs)
+                }
+            }
+            (Some(candidate), None) | (None, Some(candidate)) => Some(candidate),
+            (None, None) => None,
+        }
+    }
+
+    fn pgt_shadow_taker_open_candidate_for_side(
+        &self,
+        ub: &Book,
+        side: Side,
+        intent: Option<StrategyIntent>,
+        allow_provide: bool,
+        hedge_dispatched: bool,
+        toxic_blocked: bool,
+        stale: bool,
+        open_pair_band: f64,
+    ) -> Option<PgtShadowTakerOpenCandidate> {
+        if hedge_dispatched || !allow_provide || toxic_blocked || stale {
+            return None;
+        }
+        let intent = intent?;
+        if intent.direction != TradeDirection::Buy || intent.reason != BidReason::Provide {
+            return None;
+        }
+        if self
+            .pgt_same_side_release_quarantine_until[side.index()]
+            .is_some_and(|until| until > std::time::Instant::now())
+        {
+            return None;
+        }
+        if self.pgt_shadow_taker_open_fired_epoch == Some(self.pgt_decision_epoch) {
+            return None;
+        }
+        let (best_ask, opposite_bid, opposite_ask) = match side {
+            Side::Yes => (ub.yes_ask, ub.no_bid, ub.no_ask),
+            Side::No => (ub.no_ask, ub.yes_bid, ub.yes_ask),
+        };
+        if best_ask <= 0.0 || opposite_bid <= 0.0 || opposite_ask <= 0.0 {
+            return None;
+        }
+        // Aggressive first-leg open is only acceptable when the *current*
+        // two-ask completion geometry itself still fits inside the broad
+        // opening band. Otherwise we are paying taker urgency into a tranche
+        // that is already economically stretched before any market movement.
+        if best_ask + opposite_ask > open_pair_band + 1e-9 {
+            return None;
+        }
+        let ceiling = pgt_open_leg_ceiling_from_opposite_bid(open_pair_band, opposite_bid)?;
+        if best_ask > ceiling + 1e-9 || best_ask <= intent.price + 1e-9 {
+            return None;
+        }
+        if self.side_target_reason(side) == Some(BidReason::Hedge) {
+            return None;
+        }
+        if self.recent_cross_reject(side, std::time::Duration::from_secs(1)) {
+            return None;
+        }
+        Some(PgtShadowTakerOpenCandidate {
+            side,
+            limit_price: ceiling,
+            slack: (ceiling - best_ask).max(0.0),
+            best_ask,
+        })
+    }
+
+    pub(super) fn pgt_shadow_taker_close_limit_for_side(
+        &self,
+        side: Side,
+        maker_price: f64,
+        ceiling: f64,
+        best_ask: f64,
+        remaining_secs: u64,
+    ) -> Option<f64> {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
+            return None;
+        }
+        if remaining_secs > PGT_SHADOW_TAKER_CLOSE_SECS {
+            return None;
+        }
+        if self.pgt_shadow_taker_close_fired_epoch[side.index()] == Some(self.pgt_decision_epoch) {
+            return None;
+        }
+        if best_ask <= 0.0 || ceiling <= 0.0 || maker_price <= 0.0 {
+            return None;
+        }
+        if best_ask > ceiling + 1e-9 || best_ask <= maker_price + 1e-9 {
+            return None;
+        }
+        Some(self.safe_price(best_ask))
     }
 
     pub(super) async fn execute_slot_market_making(
@@ -1246,6 +1485,7 @@ impl StrategyCoordinator {
         block_reason: Option<CancelReason>,
         toxic_blocked: bool,
         stale: bool,
+        shadow_taker_limit_price: Option<f64>,
     ) -> ProvideSideAction {
         if let Some(intent) = intent {
             if !allow_provide {
@@ -1254,6 +1494,11 @@ impl StrategyCoordinator {
                 };
             }
             if intent.price > 0.0 && intent.size > 0.0 {
+                if intent.reason == BidReason::Provide {
+                    if let Some(limit_price) = shadow_taker_limit_price {
+                        return ProvideSideAction::ShadowTaker { intent, limit_price };
+                    }
+                }
                 return ProvideSideAction::Place { intent };
             }
         }
@@ -1267,6 +1512,9 @@ impl StrategyCoordinator {
             };
         }
         if stale {
+            if self.pgt_should_retain_existing_buy_on_stale(side) {
+                return ProvideSideAction::None;
+            }
             return ProvideSideAction::Clear {
                 reason: CancelReason::StaleData,
             };
@@ -1277,6 +1525,16 @@ impl StrategyCoordinator {
             };
         }
         ProvideSideAction::None
+    }
+
+    fn pgt_should_retain_existing_buy_on_stale(&self, side: Side) -> bool {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() {
+            return false;
+        }
+        matches!(
+            self.side_target_reason(side),
+            Some(BidReason::Provide | BidReason::Hedge)
+        )
     }
 
     pub(super) async fn apply_provide_side_action(
@@ -1332,6 +1590,25 @@ impl StrategyCoordinator {
                     intent.size,
                     intent.reason,
                     None,
+                )
+                .await;
+            }
+            ProvideSideAction::ShadowTaker { intent, limit_price } => {
+                if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.pgt_shadow_taker_open_fired_epoch = Some(self.pgt_decision_epoch);
+                    self.stats.pgt_dispatch_taker_open =
+                        self.stats.pgt_dispatch_taker_open.saturating_add(1);
+                }
+                info!(
+                    "⚡ PGT shadow taker-open | side={:?} price={:.4} size={:.2} limit={:.4}",
+                    side, intent.price, intent.size, limit_price
+                );
+                self.dispatch_taker_intent(
+                    side,
+                    intent.direction,
+                    intent.size,
+                    TradePurpose::Provide,
+                    Some(limit_price),
                 )
                 .await;
             }

@@ -36,6 +36,17 @@ impl StrategyCoordinator {
             .unwrap_or(false)
     }
 
+    fn pgt_shadow_taker_dryrun_execute_enabled(
+        &self,
+        direction: TradeDirection,
+        purpose: TradePurpose,
+    ) -> bool {
+        self.cfg.dry_run
+            && self.cfg.strategy.is_pair_gated_tranche_arb()
+            && direction == TradeDirection::Buy
+            && matches!(purpose, TradePurpose::Provide | TradePurpose::Hedge)
+    }
+
     fn reset_oracle_lag_hint_book_cache(&mut self) {
         self.post_close_hint_winner_bid = 0.0;
         self.post_close_hint_winner_ask_raw = 0.0;
@@ -286,6 +297,18 @@ impl StrategyCoordinator {
         let slot_price = current_target.as_ref().map(|t| t.price).unwrap_or(0.0);
         let slot_size = current_target.as_ref().map(|t| t.size).unwrap_or(0.0);
         let slot_direction = current_target.as_ref().map(|t| t.direction);
+        let slot_reason = current_target.as_ref().map(|t| t.reason);
+        if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+            && active
+            && slot_reason == Some(BidReason::Provide)
+            && reason == BidReason::Hedge
+            && slot_price.is_finite()
+            && slot_price > 0.0
+            && price < slot_price - 1e-9
+        {
+            price = slot_price;
+        }
         let now = Instant::now();
         let reprice_eps = 1e-9;
         let raw_target_price = price;
@@ -679,11 +702,24 @@ impl StrategyCoordinator {
             } else {
                 price_gap >= (reprice_band - reprice_eps).max(0.0)
             };
+            let pgt_reason_changed = self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot.direction == TradeDirection::Buy
+                && active
+                && slot_reason != Some(reason);
+            let pgt_ignore_size_only_reprice = self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot.direction == TradeDirection::Buy
+                && active
+                && slot_direction == Some(slot.direction)
+                && slot_reason == Some(reason)
+                && price_gap <= reprice_eps;
+            let size_change_triggers_reprice = (slot_size - size).abs() > 0.1
+                && !pgt_ignore_size_only_reprice;
             let mut needs_reprice = force_glft_drift_reprice
                 || cross_reprice_override
                 || slot_direction != Some(slot.direction)
                 || price_gap_triggers_reprice
-                || (slot_size - size).abs() > 0.1;
+                || size_change_triggers_reprice
+                || pgt_reason_changed;
             if pair_arb_cross_reject_reprice_pending {
                 needs_reprice = true;
             }
@@ -723,19 +759,22 @@ impl StrategyCoordinator {
                 && (slot_size - size).abs() <= 0.1
                 && slot.direction == TradeDirection::Buy
             {
+                if slot_reason != Some(reason) {
+                    debug!(
+                        "🔁 PGT mode-transition reprice {:?}: live_reason={:?} new_reason={:?} strategic_target={:.4} live={:.4}",
+                        slot,
+                        slot_reason,
+                        reason,
+                        price,
+                        slot_price,
+                    );
+                } else {
                 let tick = self.cfg.tick_size.max(1e-9);
                 let delta_ticks = (price - slot_price) / tick;
-                let (retain, retain_reason) = match reason {
-                    BidReason::Provide => (
-                        delta_ticks >= -3.0 - 1e-9,
-                        "pgt_seed_holds_between_large_down_moves",
-                    ),
-                    BidReason::Hedge => (
-                        delta_ticks <= 2.0 + 1e-9 && delta_ticks >= -4.0 - 1e-9,
-                        "pgt_completion_band_hold",
-                    ),
-                    BidReason::OracleLagProvide => (false, "not_pgt_path"),
-                };
+                let slot_age = self.slot_last_ts(slot).elapsed();
+                let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+                let (retain, retain_reason) =
+                    self.pgt_buy_retain_decision(reason, delta_ticks, slot_age, remaining_secs);
                 if retain {
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     debug!(
@@ -748,6 +787,7 @@ impl StrategyCoordinator {
                     "🔁 PGT reprice {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
                     slot, retain_reason, price, slot_price, delta_ticks,
                 );
+                }
             }
             // PairArb is BUY-only and pair-cost-first:
             // both candidate roles are state/event-driven and hold between
@@ -1215,7 +1255,6 @@ impl StrategyCoordinator {
                 reason,
                 scope
             );
-            return;
         }
 
         let _ = self
@@ -1364,7 +1403,8 @@ impl StrategyCoordinator {
                 self.clear_slot_target(slot, CancelReason::Reprice).await;
             }
         }
-        let dryrun_execute = self.oracle_lag_dryrun_execute_enabled(purpose);
+        let dryrun_execute = self.oracle_lag_dryrun_execute_enabled(purpose)
+            || self.pgt_shadow_taker_dryrun_execute_enabled(direction, purpose);
         if self.cfg.dry_run && !dryrun_execute {
             let order_type = if limit_price.is_some() {
                 "FAK"
