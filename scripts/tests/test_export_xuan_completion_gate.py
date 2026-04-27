@@ -158,6 +158,10 @@ class ExportXuanCompletionGateTests(unittest.TestCase):
             self.assertIn("feature_bucket_defs", defaults)
             self.assertIn("coverage_stats", defaults)
             self.assertIn("xuan_targets", summary)
+            self.assertIn("censor_stats", summary)
+            self.assertIn("feature_identifiability", summary)
+            self.assertIn("one_sided_guardrails", summary)
+            self.assertIn("signal_priors", summary)
             self.assertTrue(episodes_csv.exists())
 
 

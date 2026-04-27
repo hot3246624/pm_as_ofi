@@ -14,6 +14,7 @@
 - 问题树与证据矩阵：[docs/XUAN_RESEARCH_EVIDENCE_MATRIX_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_RESEARCH_EVIDENCE_MATRIX_ZH.md)
 - Xuan 不变量矩阵：[docs/XUAN_ARCHETYPE_INVARIANTS_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_ARCHETYPE_INVARIANTS_ZH.md)
 - Shadow 控制组筛查：[docs/XUAN_SHADOW_CONTROL_SCREEN_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_SHADOW_CONTROL_SCREEN_ZH.md)
+- 当前信号先验：[docs/XUAN_SIGNAL_PRIORS_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_SIGNAL_PRIORS_ZH.md)
 - 假设分级表：[docs/XUAN_HYPOTHESIS_GRADING_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_HYPOTHESIS_GRADING_ZH.md)
 - 真值到位后 `72h` 冲刺流程：[docs/XUAN_TRUTH_TPLUS72_RUNBOOK_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_TRUTH_TPLUS72_RUNBOOK_ZH.md)
 

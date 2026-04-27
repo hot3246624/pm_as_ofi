@@ -70,6 +70,21 @@ FEATURE_PLANS = {
     ],
 }
 
+IDENTIFIABILITY_FEATURES = {
+    "prior_imbalance_bucket": {"kind": "categorical"},
+    "same_side_run_before_open": {"kind": "categorical"},
+    "maker_taker_proxy": {"kind": "categorical"},
+    "utc_hour_bucket": {"kind": "categorical"},
+    "l1_spread_ticks_first_side": {"kind": "plan", "plan": FEATURE_PLANS["l1_spread_ticks_first_side"]},
+    "l1_spread_ticks_opposite_side": {"kind": "plan", "plan": FEATURE_PLANS["l1_spread_ticks_opposite_side"]},
+    "first_leg_clip": {"kind": "quantile"},
+    "round_open_rel_s": {"kind": "quantile"},
+    "round_close_rel_s": {"kind": "quantile"},
+    "recent_opposite_trade_rate_5s": {"kind": "quantile"},
+    "recent_total_trade_rate_15s": {"kind": "quantile"},
+    "book_update_rate_5s": {"kind": "quantile"},
+}
+
 
 @dataclass
 class ReplaySource:
@@ -632,6 +647,227 @@ def bucket_matches(value: float, min_v: Optional[float], max_v: Optional[float])
     return True
 
 
+def quantile_cut_points(values: list[float], parts: int = 4) -> list[float]:
+    if not values:
+        return []
+    xs = sorted(values)
+    cuts: list[float] = []
+    for i in range(1, parts):
+        idx = min(len(xs) - 1, max(0, round((len(xs) - 1) * i / parts)))
+        value = float(xs[idx])
+        if not cuts or abs(value - cuts[-1]) > 1e-9:
+            cuts.append(value)
+    return cuts
+
+
+def quantile_bucket_label(value: float, cuts: list[float]) -> str:
+    if not cuts:
+        return "all"
+    for cut in cuts:
+        if value <= cut:
+            return f"le_{cut:.3f}"
+    return f"gt_{cuts[-1]:.3f}"
+
+
+def feature_bucket_value(
+    row: dict[str, Any],
+    feature: str,
+    cfg: dict[str, Any],
+    quantile_cuts: dict[str, list[float]],
+) -> str:
+    kind = str(cfg.get("kind") or "")
+    if kind == "categorical":
+        raw = row.get(feature)
+        return str(raw if raw not in (None, "") else "empty")
+    value = as_float(row.get(feature))
+    if kind == "plan":
+        plan = cfg.get("plan") or []
+        return bucket_name(plan, value)
+    if kind == "quantile":
+        return quantile_bucket_label(value, quantile_cuts.get(feature) or [])
+    return "unknown"
+
+
+def build_feature_identifiability(
+    full_rows: list[dict[str, Any]],
+    recent_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    quantile_cuts = {
+        feature: quantile_cut_points([as_float(row.get(feature)) for row in full_rows])
+        for feature, cfg in IDENTIFIABILITY_FEATURES.items()
+        if cfg.get("kind") == "quantile"
+    }
+    out: dict[str, Any] = {}
+    recent_ready_floor = 30
+    for feature, cfg in IDENTIFIABILITY_FEATURES.items():
+        full_counts: dict[str, int] = defaultdict(int)
+        recent_counts: dict[str, int] = defaultdict(int)
+        for row in full_rows:
+            full_counts[feature_bucket_value(row, feature, cfg, quantile_cuts)] += 1
+        for row in recent_rows:
+            recent_counts[feature_bucket_value(row, feature, cfg, quantile_cuts)] += 1
+        full_nonzero = {k: v for k, v in full_counts.items() if v > 0}
+        recent_nonzero = {k: v for k, v in recent_counts.items() if v > 0}
+        full_distinct = len(full_nonzero)
+        recent_distinct = len(recent_nonzero)
+        full_total = sum(full_nonzero.values())
+        recent_total = sum(recent_nonzero.values())
+        full_dominant = max(full_nonzero.values()) / full_total if full_total else 1.0
+        recent_dominant = max(recent_nonzero.values()) / recent_total if recent_total else 1.0
+        if full_distinct < 2:
+            status = "not_identified"
+            note = "No meaningful variation even in full overlap sample."
+        elif len(recent_rows) < recent_ready_floor or recent_distinct < 2:
+            status = "full_only"
+            note = "Usable for weak full-window priors only; recent overlap is too thin."
+        else:
+            status = "recent_ready"
+            note = "Variation exists in both full and recent windows."
+        out[feature] = {
+            "status": status,
+            "note": note,
+            "kind": cfg.get("kind"),
+            "full_distinct_bucket_count": full_distinct,
+            "recent_distinct_bucket_count": recent_distinct,
+            "full_dominant_bucket_share": full_dominant,
+            "recent_dominant_bucket_share": recent_dominant,
+            "full_bucket_counts": dict(sorted(full_nonzero.items())),
+            "recent_bucket_counts": dict(sorted(recent_nonzero.items())),
+            "quantile_cuts": quantile_cuts.get(feature),
+        }
+    return out
+
+
+def summarize_bucket_rates(
+    rows: list[dict[str, Any]],
+    feature: str,
+    cfg: dict[str, Any],
+    quantile_cuts: dict[str, list[float]],
+) -> dict[str, dict[str, float | int | str]]:
+    buckets: dict[str, list[float]] = defaultdict(list)
+    hits: dict[str, int] = defaultdict(int)
+    counts: dict[str, int] = defaultdict(int)
+    for row in rows:
+        bucket = feature_bucket_value(row, feature, cfg, quantile_cuts)
+        counts[bucket] += 1
+        value = as_float(row.get(feature)) if cfg.get("kind") != "categorical" else 0.0
+        buckets[bucket].append(value)
+        if row.get("label_complete_30s"):
+            hits[bucket] += 1
+    base = mean_bool(rows, "label_complete_30s")
+    out: dict[str, dict[str, float | int | str]] = {}
+    for bucket, count in sorted(counts.items()):
+        hit_rate = hits[bucket] / count if count else 0.0
+        values = buckets[bucket]
+        out[bucket] = {
+            "count": count,
+            "hit_rate": hit_rate,
+            "lift_vs_base": hit_rate - base,
+            "median_value": median(values) if values and cfg.get("kind") != "categorical" else 0.0,
+        }
+    return out
+
+
+def best_supported_bucket(
+    bucket_stats: dict[str, dict[str, float | int | str]],
+    min_count: int,
+) -> dict[str, Any] | None:
+    candidates = []
+    for bucket, stats in bucket_stats.items():
+        count = as_int(stats.get("count"))
+        if count < min_count:
+            continue
+        candidates.append((bucket, stats))
+    if not candidates:
+        return None
+    bucket, stats = max(
+        candidates,
+        key=lambda item: (as_float(item[1].get("lift_vs_base")), as_int(item[1].get("count"))),
+    )
+    return {"bucket": bucket, **stats}
+
+
+def worst_supported_bucket(
+    bucket_stats: dict[str, dict[str, float | int | str]],
+    min_count: int,
+) -> dict[str, Any] | None:
+    candidates = []
+    for bucket, stats in bucket_stats.items():
+        count = as_int(stats.get("count"))
+        if count < min_count:
+            continue
+        candidates.append((bucket, stats))
+    if not candidates:
+        return None
+    bucket, stats = min(
+        candidates,
+        key=lambda item: (as_float(item[1].get("lift_vs_base")), -as_int(item[1].get("count"))),
+    )
+    return {"bucket": bucket, **stats}
+
+
+def build_signal_priors(
+    full_rows: list[dict[str, Any]],
+    recent_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    features = {
+        "first_leg_clip": IDENTIFIABILITY_FEATURES["first_leg_clip"],
+        "round_open_rel_s": IDENTIFIABILITY_FEATURES["round_open_rel_s"],
+        "round_close_rel_s": IDENTIFIABILITY_FEATURES["round_close_rel_s"],
+        "recent_opposite_trade_rate_5s": IDENTIFIABILITY_FEATURES["recent_opposite_trade_rate_5s"],
+        "recent_total_trade_rate_15s": IDENTIFIABILITY_FEATURES["recent_total_trade_rate_15s"],
+        "book_update_rate_5s": IDENTIFIABILITY_FEATURES["book_update_rate_5s"],
+        "maker_taker_proxy": IDENTIFIABILITY_FEATURES["maker_taker_proxy"],
+        "score_bucket": {"kind": "categorical"},
+    }
+    quantile_cuts = {
+        feature: quantile_cut_points([as_float(row.get(feature)) for row in full_rows])
+        for feature, cfg in features.items()
+        if cfg.get("kind") == "quantile"
+    }
+    out: dict[str, Any] = {}
+    for feature, cfg in features.items():
+        full_bucket_stats = summarize_bucket_rates(full_rows, feature, cfg, quantile_cuts)
+        recent_bucket_stats = summarize_bucket_rates(recent_rows, feature, cfg, quantile_cuts)
+        out[feature] = {
+            "full_base_rate": mean_bool(full_rows, "label_complete_30s"),
+            "recent_base_rate": mean_bool(recent_rows, "label_complete_30s"),
+            "full_best_bucket": best_supported_bucket(full_bucket_stats, 10),
+            "full_worst_bucket": worst_supported_bucket(full_bucket_stats, 10),
+            "recent_best_bucket": best_supported_bucket(recent_bucket_stats, 3),
+            "recent_worst_bucket": worst_supported_bucket(recent_bucket_stats, 3),
+            "quantile_cuts": quantile_cuts.get(feature),
+        }
+    return out
+
+
+def build_one_sided_guardrails(feature_identifiability: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for feature in ("same_side_run_before_open", "prior_imbalance_bucket"):
+        item = feature_identifiability.get(feature) or {}
+        full_bucket_counts = item.get("full_bucket_counts") or {}
+        if len(full_bucket_counts) == 1:
+            only_bucket = next(iter(full_bucket_counts.keys()))
+            out[feature] = {
+                "suggestion": "hard_guardrail_candidate",
+                "observed_only_bucket": only_bucket,
+                "note": "No lift can be estimated, but observed overlap never violates this bucket.",
+            }
+    for feature in ("l1_spread_ticks_first_side", "l1_spread_ticks_opposite_side"):
+        item = feature_identifiability.get(feature) or {}
+        share = as_float(item.get("full_dominant_bucket_share"))
+        counts = item.get("full_bucket_counts") or {}
+        if share >= 0.95 and counts:
+            dominant_bucket = max(counts.items(), key=lambda kv: as_int(kv[1]))[0]
+            out[feature] = {
+                "suggestion": "hard_ceiling_candidate",
+                "dominant_bucket": dominant_bucket,
+                "dominant_share": share,
+                "note": "Observed overlap overwhelmingly sits under one spread regime; use as ceiling, not ranked score.",
+            }
+    return out
+
+
 def build_feature_bucket_defs(
     train_rows: list[dict[str, Any]],
     full_rows: list[dict[str, Any]],
@@ -806,6 +1042,20 @@ def compute_window_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def build_censor_stats(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    reasons: dict[str, int] = defaultdict(int)
+    overlap_sources: dict[str, int] = defaultdict(int)
+    for row in rows:
+        if row.get("censored"):
+            reasons[str(row.get("censored_reason") or "unknown")] += 1
+        overlap_sources[str(row.get("overlap_source_date") or "none")] += 1
+    return {
+        "censored_total": sum(reasons.values()),
+        "censored_reason_counts": dict(sorted(reasons.items())),
+        "overlap_source_counts": dict(sorted(overlap_sources.items())),
+    }
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
@@ -902,6 +1152,9 @@ def main() -> None:
     full_metrics = compute_window_metrics(eligible_scored)
     recent_metrics = compute_window_metrics(recent_scored or eligible_scored)
     holdout_metrics = compute_window_metrics(holdout_scored or recent_scored or eligible_scored)
+    feature_identifiability = build_feature_identifiability(eligible_scored, recent_scored or eligible_scored)
+    signal_priors = build_signal_priors(eligible_scored, recent_scored or eligible_scored)
+    one_sided_guardrails = build_one_sided_guardrails(feature_identifiability)
 
     coverage_stats = {
         "full_episode_count": len(enriched),
@@ -954,9 +1207,13 @@ def main() -> None:
     }
     summary_payload = {
         "coverage_stats": coverage_stats,
+        "censor_stats": build_censor_stats(scored),
         "full_metrics": full_metrics,
         "recent_metrics": recent_metrics,
         "holdout_metrics": holdout_metrics,
+        "feature_identifiability": feature_identifiability,
+        "one_sided_guardrails": one_sided_guardrails,
+        "signal_priors": signal_priors,
         "xuan_targets": {
             "xuan_30s_completion_hit_rate": recent_metrics["completion_30s_hit_rate"],
             "xuan_median_first_opposite_delay_s": recent_metrics["median_first_opposite_delay_s"],

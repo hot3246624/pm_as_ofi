@@ -38,12 +38,14 @@
 1. 重导 `xuan_completion_gate_summary.json`
 2. 重导 `xuan_completion_gate_defaults.json`
 3. 检查 `provisional` 是否仍为 `true`
+4. 检查 `feature_identifiability`
 
 必须回答：
 
 - `30s completion` lift 是否已经出现
 - lift 主要落在哪些 `score bucket / session bucket`
 - `maker_proxy_ratio` 是否仍稳定在既有叙事内
+- 哪些特征已经从 `full_only` 升级为 `recent_ready`
 
 ## 3. T+24h 到 T+48h：导出我方 shadow 与 gap
 
