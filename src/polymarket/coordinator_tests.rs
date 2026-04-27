@@ -3,6 +3,10 @@ use crate::polymarket::glft::{
     DriftMode, FitQuality, GlftFitStatus, GlftReadinessBlockers, GlftSignalState, QuoteRegime,
     ReferenceHealth, WarmStartStatus,
 };
+use crate::polymarket::pair_ledger::{
+    build_pair_ledger, EpisodeMetrics, PairLedgerEvent, PairLedgerEventKind, PairLedgerSnapshot,
+    PathKind,
+};
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -38,6 +42,22 @@ fn test_inventory_snapshot(inv: InventoryState) -> InventorySnapshot {
         pending_no_qty: 0.0,
         fragile: false,
         ..InventorySnapshot::default()
+    }
+}
+
+fn test_inventory_snapshot_with_ledger(
+    inv: InventoryState,
+    pair_ledger: PairLedgerSnapshot,
+    episode_metrics: EpisodeMetrics,
+) -> InventorySnapshot {
+    InventorySnapshot {
+        settled: inv,
+        working: inv,
+        pending_yes_qty: 0.0,
+        pending_no_qty: 0.0,
+        fragile: false,
+        pair_ledger,
+        episode_metrics,
     }
 }
 
@@ -241,6 +261,52 @@ fn pair_arb_quotes(
             glft: None,
         },
     )
+}
+
+fn pair_gated_tranche_quotes(
+    c: CoordinatorConfig,
+    inventory: InventorySnapshot,
+    book: Book,
+) -> StrategyQuotes {
+    pair_gated_tranche_quotes_with_ofi(c, inventory, book, None)
+}
+
+fn pair_gated_tranche_quotes_with_ofi(
+    c: CoordinatorConfig,
+    inventory: InventorySnapshot,
+    book: Book,
+    ofi: Option<OfiSnapshot>,
+) -> StrategyQuotes {
+    let (_, _, _, _, _, coord) = make(with_strategy(c, StrategyKind::PairGatedTrancheArb));
+    let settled = inventory.settled;
+    let working = inventory.working;
+    let metrics = coord.derive_inventory_metrics(&working);
+    StrategyKind::PairGatedTrancheArb.compute_quotes(
+        &coord,
+        StrategyTickInput {
+            inv: &working,
+            settled_inv: &settled,
+            working_inv: &working,
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
+            book: &book,
+            metrics: &metrics,
+            ofi: ofi.as_ref(),
+            glft: None,
+        },
+    )
+}
+
+fn pgt_fill(side: Side, size: f64, price: f64) -> PairLedgerEvent {
+    PairLedgerEvent {
+        side,
+        direction: TradeDirection::Buy,
+        size,
+        price,
+        ts: Instant::now(),
+        kind: PairLedgerEventKind::Fill,
+    }
 }
 
 fn pair_arb_quotes_with_snapshot(
@@ -4191,6 +4257,20 @@ fn test_outcome_floor_allows_recovery_buy_when_already_below_floor() {
 }
 
 #[test]
+fn test_pair_gated_tranche_seed_ignores_shared_outcome_floor() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.max_net_diff = 5.0;
+    c.pair_target = 0.97;
+    let (_, _, _, _, _, coord) = make(c);
+    let inv = InventoryState::default();
+    assert!(
+        coord.passes_outcome_floor_for_buy(&inv, Side::Yes, 120.0, 0.20, BidReason::Provide),
+        "PGT seed buys should be governed by tranche/capital discipline, not pair_arb outcome floor"
+    );
+}
+
+#[test]
 fn test_glft_pair_cost_guard_blocks_newly_bad_pair_even_if_rebalancing() {
     let mut c = cfg();
     c.strategy = StrategyKind::GlftMm;
@@ -5785,6 +5865,216 @@ async fn test_gabagool_corridor_normal_session_skips_directional_hedge_overlay()
 
     drop(m);
     let _ = h.await;
+}
+
+#[test]
+fn test_pair_gated_tranche_flat_state_quotes_both_seed_sides() {
+    let mut c = cfg();
+    c.max_net_diff = 5.0;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.54, 0.48, 0.52),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES seed quote");
+    let no = quotes.no_buy.expect("expected NO seed quote");
+    assert_eq!(yes.reason, BidReason::Provide);
+    assert_eq!(no.reason, BidReason::Provide);
+    assert_eq!(yes.direction, TradeDirection::Buy);
+    assert_eq!(no.direction, TradeDirection::Buy);
+    assert!(
+        (yes.size - no.size).abs() <= 0.1,
+        "dual seed clips should stay symmetric"
+    );
+    assert!(
+        yes.size > 5.0,
+        "PGT seed clip should no longer be capped by global max_net_diff"
+    );
+    assert!((25.0..=250.0).contains(&yes.size));
+    assert_eq!(quotes.diagnostics.pgt_seed_quotes, 2);
+}
+
+#[test]
+fn test_pair_gated_tranche_inventory_gate_bypasses_global_max_net_diff() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.max_net_diff = 5.0;
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+    let inv = InventoryState::default();
+    let intent = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.01,
+        size: 120.0,
+        reason: BidReason::Provide,
+    };
+    assert!(
+        coord.can_place_strategy_intent(&inv, Some(intent)),
+        "PGT should gate new opens via tranche/capital state, not pair_arb max_net_diff"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_active_state_only_quotes_completion_side() {
+    let inv = InventoryState {
+        yes_qty: 100.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 20.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 100.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+
+    let quotes = pair_gated_tranche_quotes(cfg(), inventory, book(0.20, 0.22, 0.56, 0.58));
+    assert!(
+        quotes.yes_buy.is_none(),
+        "dominant first-leg side should stay blocked"
+    );
+    let hedge = quotes.no_buy.expect("expected NO completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert_eq!(hedge.side, Side::No);
+    assert!(hedge.size > 0.0 && hedge.size <= 20.0 + 1e-9);
+    assert_eq!(quotes.diagnostics.pgt_completion_quotes, 1);
+}
+
+#[test]
+fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    let inv = InventoryState {
+        yes_qty: 360.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 280.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 360.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut far_cfg = c.clone();
+    far_cfg.market_end_ts = Some(now_secs + 90);
+    let far = pair_gated_tranche_quotes(far_cfg, inventory, book(0.20, 0.22, 0.56, 0.58))
+        .no_buy
+        .expect("far completion quote");
+
+    let mut tail_cfg = c;
+    tail_cfg.market_end_ts = Some(now_secs + 29);
+    let tail = pair_gated_tranche_quotes(tail_cfg, inventory, book(0.20, 0.22, 0.56, 0.58))
+        .no_buy
+        .expect("tail completion quote");
+
+    assert!(
+        tail.size > far.size,
+        "tail completion clip should be larger than normal-window clip (far={:.1}, tail={:.1})",
+        far.size,
+        tail.size,
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_harvest_window_blocks_new_seed_quotes() {
+    let inv = InventoryState {
+        yes_qty: 100.0,
+        no_qty: 100.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 0.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 100.0, 0.40),
+            pgt_fill(Side::No, 100.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 20);
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.54, 0.48, 0.52));
+
+    assert!(
+        quotes.yes_buy.is_none(),
+        "harvest window should suppress new YES seed"
+    );
+    assert!(
+        quotes.no_buy.is_none(),
+        "harvest window should suppress new NO seed"
+    );
+    assert_eq!(quotes.diagnostics.pgt_skip_harvest, 1);
+}
+
+#[test]
+fn test_pair_gated_tranche_seed_ignores_pair_arb_ofi_strategy_gate() {
+    let mut ofi = OfiSnapshot::default();
+    ofi.yes.is_toxic = true;
+    ofi.yes.saturated = true;
+    ofi.no.is_toxic = true;
+    ofi.no.saturated = true;
+
+    let quotes = pair_gated_tranche_quotes_with_ofi(
+        cfg(),
+        InventorySnapshot::default(),
+        book(0.50, 0.54, 0.48, 0.52),
+        Some(ofi),
+    );
+
+    assert!(
+        quotes.yes_buy.is_some(),
+        "PGT seed should not depend on pair_arb OFI candidate suppression"
+    );
+    assert!(
+        quotes.no_buy.is_some(),
+        "PGT seed should remain bilateral under toxic OFI at strategy layer"
+    );
+    assert_eq!(quotes.diagnostics.pgt_seed_quotes, 2);
+}
+
+#[test]
+fn test_pair_gated_tranche_tail_blocks_new_seed_with_diagnostic() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 45);
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.54, 0.48, 0.52),
+    );
+
+    assert!(quotes.yes_buy.is_none());
+    assert!(quotes.no_buy.is_none());
+    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 1);
 }
 
 // ── Debounce ──

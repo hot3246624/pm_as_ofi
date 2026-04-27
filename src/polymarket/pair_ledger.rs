@@ -45,8 +45,10 @@ pub struct PairTranche {
     pub gross_surplus: f64,
     pub spendable_surplus: f64,
     pub repair_spent: f64,
+    pub same_side_add_count: u32,
     pub opened_at: Option<Instant>,
     pub closed_at: Option<Instant>,
+    pub last_transition_at: Option<Instant>,
     pub path_kind: PathKind,
 }
 
@@ -54,7 +56,9 @@ impl PairTranche {
     pub fn is_active(self) -> bool {
         matches!(
             self.state,
-            TrancheState::FirstLegPending | TrancheState::CompletionOnly | TrancheState::FlatOrResidual
+            TrancheState::FirstLegPending
+                | TrancheState::CompletionOnly
+                | TrancheState::FlatOrResidual
         ) && self.residual_qty > PAIR_LEDGER_EPS
     }
 }
@@ -104,7 +108,11 @@ impl PairLedgerSnapshot {
             .flatten()
             .map(|tranche| tranche.pairable_qty.max(0.0))
             .sum::<f64>();
-        recent + self.active_tranche.map(|tranche| tranche.pairable_qty.max(0.0)).unwrap_or(0.0)
+        recent
+            + self
+                .active_tranche
+                .map(|tranche| tranche.pairable_qty.max(0.0))
+                .unwrap_or(0.0)
     }
 }
 
@@ -172,15 +180,17 @@ impl WorkingTranche {
                 gross_surplus: 0.0,
                 spendable_surplus: 0.0,
                 repair_spent: 0.0,
+                same_side_add_count: 0,
                 opened_at: Some(ts),
                 closed_at: None,
+                last_transition_at: Some(ts),
                 path_kind,
             },
             first_lots: VecDeque::new(),
             hedge_lots: VecDeque::new(),
             same_side_add_qty: 0.0,
         };
-        tranche.add_first(qty, price, false);
+        tranche.add_first(qty, price, ts, false);
         tranche
     }
 
@@ -188,18 +198,16 @@ impl WorkingTranche {
         self.snapshot.first_side
     }
 
-    fn hedge_side(&self) -> Option<Side> {
-        self.snapshot.first_side.map(opposite_side)
-    }
-
-    fn add_first(&mut self, qty: f64, price: f64, mark_same_side_add: bool) {
+    fn add_first(&mut self, qty: f64, price: f64, ts: Instant, mark_same_side_add: bool) {
         if qty <= PAIR_LEDGER_EPS {
             return;
         }
         self.first_lots.push_back(Lot { qty, price });
         if mark_same_side_add {
             self.same_side_add_qty += qty.max(0.0);
+            self.snapshot.same_side_add_count = self.snapshot.same_side_add_count.saturating_add(1);
         }
+        self.snapshot.last_transition_at = Some(ts);
         self.recompute();
     }
 
@@ -209,6 +217,7 @@ impl WorkingTranche {
         }
         self.hedge_lots.push_back(Lot { qty, price });
         self.snapshot.closed_at = Some(ts);
+        self.snapshot.last_transition_at = Some(ts);
         self.recompute();
     }
 
@@ -221,8 +230,11 @@ impl WorkingTranche {
         consume_lots_fifo(&mut self.first_lots, mergeable);
         consume_lots_fifo(&mut self.hedge_lots, mergeable);
         self.snapshot.closed_at = Some(ts);
+        self.snapshot.last_transition_at = Some(ts);
         self.recompute();
-        if self.snapshot.pairable_qty <= PAIR_LEDGER_EPS && self.snapshot.residual_qty <= PAIR_LEDGER_EPS {
+        if self.snapshot.pairable_qty <= PAIR_LEDGER_EPS
+            && self.snapshot.residual_qty <= PAIR_LEDGER_EPS
+        {
             self.snapshot.state = TrancheState::Closed;
         } else if self.snapshot.pairable_qty <= PAIR_LEDGER_EPS {
             self.snapshot.state = TrancheState::CompletionOnly;
@@ -247,15 +259,15 @@ impl WorkingTranche {
             0.0
         };
         let pair_cost_fifo_ref = if pairable_qty > PAIR_LEDGER_EPS {
-            fifo_avg_for_qty(&self.first_lots, pairable_qty) + fifo_avg_for_qty(&self.hedge_lots, pairable_qty)
+            fifo_avg_for_qty(&self.first_lots, pairable_qty)
+                + fifo_avg_for_qty(&self.hedge_lots, pairable_qty)
         } else {
             0.0
         };
         let gross_surplus = pairable_qty * (1.0 - pair_cost_tranche).max(0.0);
         let spendable_surplus =
             pairable_qty * (1.0 - pair_cost_tranche - MIN_EDGE_PER_PAIR).max(0.0);
-        let repair_spent =
-            pairable_qty * (pair_cost_tranche + MIN_EDGE_PER_PAIR - 1.0).max(0.0);
+        let repair_spent = pairable_qty * (pair_cost_tranche + MIN_EDGE_PER_PAIR - 1.0).max(0.0);
 
         self.snapshot.first_qty = first_qty;
         self.snapshot.first_vwap = first_vwap;
@@ -319,10 +331,12 @@ impl PairLedgerBuilder {
         }
         if let Some(active) = self.active.as_mut() {
             if active.first_side() == Some(side) {
-                active.add_first(qty, price, true);
+                active.add_first(qty, price, ts, true);
                 self.stats.same_side_add_qty += qty.max(0.0);
-                self.stats.conditional_second_same_side_would_allow =
-                    self.stats.conditional_second_same_side_would_allow.saturating_add(1);
+                self.stats.conditional_second_same_side_would_allow = self
+                    .stats
+                    .conditional_second_same_side_would_allow
+                    .saturating_add(1);
                 return;
             }
 
@@ -382,7 +396,14 @@ impl PairLedgerBuilder {
         self.stats.total_open_qty += qty.max(0.0);
         let id = self.next_id;
         self.next_id = self.next_id.saturating_add(1);
-        self.active = Some(WorkingTranche::new(id, side, qty, price, ts, self.path_kind));
+        self.active = Some(WorkingTranche::new(
+            id,
+            side,
+            qty,
+            price,
+            ts,
+            self.path_kind,
+        ));
     }
 
     fn record_close(&mut self, tranche: &PairTranche) {
@@ -460,8 +481,7 @@ impl PairLedgerBuilder {
             locked_capital_ratio,
             would_block_new_open_due_to_capital: locked_capital_ratio >= CAPITAL_BLOCK_RATIO,
             would_trigger_merge_due_to_capital: locked_capital_ratio >= CAPITAL_MERGE_RATIO,
-            capital_pressure_merge_batch_shadow:
-                (locked_capital_ratio * 50.0).round().max(10.0),
+            capital_pressure_merge_batch_shadow: (locked_capital_ratio * 50.0).round().max(10.0),
         };
 
         let snapshot = PairLedgerSnapshot {
@@ -495,7 +515,10 @@ impl PairLedgerBuilder {
     }
 }
 
-pub(crate) fn build_pair_ledger(events: &[PairLedgerEvent], path_kind: PathKind) -> PairLedgerBuildResult {
+pub(crate) fn build_pair_ledger(
+    events: &[PairLedgerEvent],
+    path_kind: PathKind,
+) -> PairLedgerBuildResult {
     let mut builder = PairLedgerBuilder::new(path_kind);
     for event in events {
         let qty = event.size.max(0.0);
@@ -526,15 +549,11 @@ pub fn urgency_budget_shadow_5m(remaining_secs: u64, has_active_tranche: bool) -
     (fraction * 0.005).clamp(0.0, 0.005)
 }
 
-fn opposite_side(side: Side) -> Side {
-    match side {
-        Side::Yes => Side::No,
-        Side::No => Side::Yes,
-    }
-}
-
 fn sum_lots(lots: &VecDeque<Lot>) -> f64 {
-    lots.iter().map(|lot| lot.qty.max(0.0)).sum::<f64>().max(0.0)
+    lots.iter()
+        .map(|lot| lot.qty.max(0.0))
+        .sum::<f64>()
+        .max(0.0)
 }
 
 fn weighted_avg(lots: &VecDeque<Lot>) -> f64 {
@@ -662,7 +681,10 @@ mod tests {
     fn builds_clean_pair() {
         let now = Instant::now();
         let result = build_pair_ledger(
-            &[fill(Side::Yes, 100.0, 0.40, now), fill(Side::No, 100.0, 0.51, now)],
+            &[
+                fill(Side::Yes, 100.0, 0.40, now),
+                fill(Side::No, 100.0, 0.51, now),
+            ],
             PathKind::MakerShadow,
         );
         let closed = result.snapshot.recent_closed[0].expect("closed tranche");
@@ -677,7 +699,10 @@ mod tests {
     fn tracks_partial_completion_residual() {
         let now = Instant::now();
         let result = build_pair_ledger(
-            &[fill(Side::Yes, 100.0, 0.40, now), fill(Side::No, 95.0, 0.55, now)],
+            &[
+                fill(Side::Yes, 100.0, 0.40, now),
+                fill(Side::No, 95.0, 0.55, now),
+            ],
             PathKind::MakerShadow,
         );
         let active = result.snapshot.active_tranche.expect("active tranche");
@@ -703,14 +728,22 @@ mod tests {
         assert!((active.first_qty - 150.0).abs() < 1e-9);
         assert!((active.hedge_qty - 80.0).abs() < 1e-9);
         assert!(result.episode_metrics.same_side_add_qty_ratio > 0.0);
-        assert_eq!(result.episode_metrics.conditional_second_same_side_would_allow, 1);
+        assert_eq!(
+            result
+                .episode_metrics
+                .conditional_second_same_side_would_allow,
+            1
+        );
     }
 
     #[test]
     fn overshoot_rolls_into_new_active_tranche() {
         let now = Instant::now();
         let result = build_pair_ledger(
-            &[fill(Side::Yes, 100.0, 0.40, now), fill(Side::No, 130.0, 0.55, now)],
+            &[
+                fill(Side::Yes, 100.0, 0.40, now),
+                fill(Side::No, 130.0, 0.55, now),
+            ],
             PathKind::MakerShadow,
         );
         let closed = result.snapshot.recent_closed[0].expect("closed tranche");

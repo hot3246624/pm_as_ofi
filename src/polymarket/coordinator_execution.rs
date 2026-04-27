@@ -626,8 +626,15 @@ impl StrategyCoordinator {
             return;
         }
 
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && intent.is_some() {
+            self.stats.pgt_dispatch_intents = self.stats.pgt_dispatch_intents.saturating_add(1);
+        }
+
         if intent.is_some() && !allow_provide {
             self.note_skipped_inv_limit();
+            if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                self.stats.pgt_dispatch_blocked = self.stats.pgt_dispatch_blocked.saturating_add(1);
+            }
         }
 
         let action = self.decide_provide_side_action(
@@ -1221,7 +1228,14 @@ impl StrategyCoordinator {
                 };
                 if should_retain {
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                        self.stats.pgt_dispatch_retain =
+                            self.stats.pgt_dispatch_retain.saturating_add(1);
+                    }
                     return;
+                }
+                if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.stats.pgt_dispatch_place = self.stats.pgt_dispatch_place.saturating_add(1);
                 }
                 self.place_or_reprice(
                     side,
@@ -1234,6 +1248,9 @@ impl StrategyCoordinator {
                 .await;
             }
             ProvideSideAction::Clear { reason } => {
+                if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.stats.pgt_dispatch_clear = self.stats.pgt_dispatch_clear.saturating_add(1);
+                }
                 if self.cfg.strategy.is_pair_arb() {
                     let slot = OrderSlot::new(side, TradeDirection::Buy);
                     match self.evaluate_slot_retention(

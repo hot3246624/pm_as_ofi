@@ -601,6 +601,7 @@ impl InventoryManager {
                         "first_side": active.first_side.map(|side| side.as_str()),
                         "first_qty": active.first_qty,
                         "first_vwap": active.first_vwap,
+                        "same_side_add_count": active.same_side_add_count,
                         "state": format!("{:?}", active.state),
                         "path_kind": format!("{:?}", active.path_kind),
                     }),
@@ -618,6 +619,7 @@ impl InventoryManager {
                         "tranche_id": active.id,
                         "residual_qty": active.residual_qty,
                         "pairable_qty": active.pairable_qty,
+                        "same_side_add_count": active.same_side_add_count,
                         "pair_cost_tranche": active.pair_cost_tranche,
                         "pair_cost_fifo_ref": active.pair_cost_fifo_ref,
                     }),
@@ -652,6 +654,7 @@ impl InventoryManager {
                         "tranche_id": curr_active.id,
                         "prev_first_qty": prev_active.first_qty,
                         "curr_first_qty": curr_active.first_qty,
+                        "same_side_add_count": curr_active.same_side_add_count,
                         "same_side_add_qty_ratio": curr.episode_metrics.same_side_add_qty_ratio,
                     }),
                 );

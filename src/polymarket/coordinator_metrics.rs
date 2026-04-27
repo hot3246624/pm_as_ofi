@@ -261,6 +261,25 @@ impl StrategyCoordinator {
         }
     }
 
+    fn pgt_gate_snapshot(&self) -> PgtGateLogSnapshot {
+        PgtGateLogSnapshot {
+            seed_quotes: self.stats.pgt_seed_quotes,
+            completion_quotes: self.stats.pgt_completion_quotes,
+            skip_harvest: self.stats.pgt_skip_harvest,
+            skip_tail_completion_only: self.stats.pgt_skip_tail_completion_only,
+            skip_residual_guard: self.stats.pgt_skip_residual_guard,
+            skip_capital_guard: self.stats.pgt_skip_capital_guard,
+            skip_invalid_book: self.stats.pgt_skip_invalid_book,
+            skip_no_seed: self.stats.pgt_skip_no_seed,
+            post_flow_quotes: self.stats.pgt_post_flow_quotes,
+            dispatch_intents: self.stats.pgt_dispatch_intents,
+            dispatch_blocked: self.stats.pgt_dispatch_blocked,
+            dispatch_place: self.stats.pgt_dispatch_place,
+            dispatch_retain: self.stats.pgt_dispatch_retain,
+            dispatch_clear: self.stats.pgt_dispatch_clear,
+        }
+    }
+
     fn maybe_log_pair_arb_gate_summary(&mut self) {
         if self.cfg.strategy != StrategyKind::PairArb {
             return;
@@ -307,6 +326,69 @@ impl StrategyCoordinator {
             skip_sim_delta,
             softened_delta,
             suppressed_delta,
+        );
+    }
+
+    fn maybe_log_pgt_gate_summary(&mut self) {
+        if self.cfg.strategy != StrategyKind::PairGatedTrancheArb {
+            return;
+        }
+        let now = Instant::now();
+        let interval = Duration::from_secs(PAIR_ARB_GATE_SUMMARY_SECS);
+        if now.duration_since(self.pgt_gate_last_log_ts) < interval {
+            return;
+        }
+        self.pgt_gate_last_log_ts = now;
+
+        let cur = self.pgt_gate_snapshot();
+        let prev = self.pgt_gate_last_snapshot;
+        self.pgt_gate_last_snapshot = cur;
+
+        let seed_delta = cur.seed_quotes.saturating_sub(prev.seed_quotes);
+        let completion_delta = cur
+            .completion_quotes
+            .saturating_sub(prev.completion_quotes);
+        let skip_harvest_delta = cur.skip_harvest.saturating_sub(prev.skip_harvest);
+        let skip_tail_delta = cur
+            .skip_tail_completion_only
+            .saturating_sub(prev.skip_tail_completion_only);
+        let skip_residual_delta = cur
+            .skip_residual_guard
+            .saturating_sub(prev.skip_residual_guard);
+        let skip_capital_delta = cur
+            .skip_capital_guard
+            .saturating_sub(prev.skip_capital_guard);
+        let skip_invalid_book_delta = cur
+            .skip_invalid_book
+            .saturating_sub(prev.skip_invalid_book);
+        let skip_no_seed_delta = cur.skip_no_seed.saturating_sub(prev.skip_no_seed);
+        let post_flow_delta = cur.post_flow_quotes.saturating_sub(prev.post_flow_quotes);
+        let dispatch_intents_delta = cur
+            .dispatch_intents
+            .saturating_sub(prev.dispatch_intents);
+        let dispatch_blocked_delta = cur
+            .dispatch_blocked
+            .saturating_sub(prev.dispatch_blocked);
+        let dispatch_place_delta = cur.dispatch_place.saturating_sub(prev.dispatch_place);
+        let dispatch_retain_delta = cur.dispatch_retain.saturating_sub(prev.dispatch_retain);
+        let dispatch_clear_delta = cur.dispatch_clear.saturating_sub(prev.dispatch_clear);
+
+        info!(
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow)={}/{}/{} dispatch(intent/blocked/place/retain/clear)={}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed)={}/{}/{}/{}/{}/{}",
+            seed_delta,
+            completion_delta,
+            post_flow_delta,
+            dispatch_intents_delta,
+            dispatch_blocked_delta,
+            dispatch_place_delta,
+            dispatch_retain_delta,
+            dispatch_clear_delta,
+            skip_harvest_delta,
+            skip_tail_delta,
+            skip_residual_delta,
+            skip_capital_delta,
+            skip_invalid_book_delta,
+            skip_no_seed_delta,
         );
     }
 
@@ -428,7 +510,10 @@ impl StrategyCoordinator {
     ) -> bool {
         // OracleLagSniping has near-certain winner knowledge from Chainlink; the
         // pair-arb symmetric-risk floor assumes unknown outcome and does not apply.
-        if self.cfg.strategy == StrategyKind::OracleLagSniping {
+        if matches!(
+            self.cfg.strategy,
+            StrategyKind::OracleLagSniping | StrategyKind::PairGatedTrancheArb
+        ) {
             return true;
         }
         let floor = self.outcome_floor_pnl();
@@ -629,5 +714,6 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         self.maybe_log_pair_arb_gate_summary();
+        self.maybe_log_pgt_gate_summary();
     }
 }

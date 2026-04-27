@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tracing::{info, warn};
 
 use super::messages::*;
@@ -98,6 +98,8 @@ pub struct Executor {
     /// Dry-run only: synthesized fills are sent through the same fan-out path
     /// as User WS fills so inventory/ledger code paths stay identical.
     sim_fill_tx: Option<mpsc::Sender<FillEvent>>,
+    /// Dry-run only: shared market-data feed for market-touch fill simulation.
+    dry_run_md_rx: Option<watch::Receiver<MarketDataMsg>>,
     /// Side channel for capital-recycle trigger events.
     capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
     /// Side channel for Coordinator execution feedback (e.g. crossed-book reject adaptation).
@@ -111,6 +113,8 @@ pub struct Executor {
     /// Active open orders tracked per slot: order_id → remaining_size.
     /// Enables partial fill tracking — only removes when fully filled.
     open_orders: [HashMap<String, f64>; 4],
+    /// Dry-run only: live order metadata for touch-triggered synthetic fills.
+    dry_run_live_orders: HashMap<String, DryRunLiveOrder>,
     /// Recent same-side buy fills used to identify transient sell availability lag.
     last_buy_fill_ts: [Option<Instant>; 2],
     /// Recent same-side buy placements, used as a fallback when fill events lag behind submit ACKs.
@@ -136,8 +140,21 @@ pub struct Executor {
     slot_last_forced_cancel_attempt: [Instant; 4],
     /// Dry-run fill probability [0,1].
     dry_run_fill_probability: f64,
+    /// When enabled, dry-run fills are emitted only after market data touches
+    /// the resting order instead of immediately after submit.
+    dry_run_market_touch_fills: bool,
     recorder: Option<RecorderHandle>,
     recorder_meta: Option<RecorderSessionMeta>,
+}
+
+#[derive(Debug, Clone)]
+struct DryRunLiveOrder {
+    slot: OrderSlot,
+    side: Side,
+    direction: TradeDirection,
+    price: f64,
+    size: f64,
+    fill_emitted: bool,
 }
 
 impl Executor {
@@ -196,6 +213,8 @@ impl Executor {
         result_tx: mpsc::Sender<OrderResult>,
         fill_rx: mpsc::Receiver<FillEvent>,
         sim_fill_tx: Option<mpsc::Sender<FillEvent>>,
+        dry_run_md_rx: Option<watch::Receiver<MarketDataMsg>>,
+        dry_run_market_touch_fills: bool,
         capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
         feedback_tx: Option<mpsc::Sender<ExecutionFeedback>>,
         recorder: Option<RecorderHandle>,
@@ -214,6 +233,7 @@ impl Executor {
             result_tx,
             fill_rx,
             sim_fill_tx,
+            dry_run_md_rx,
             capital_tx,
             feedback_tx,
             balance_cache_usdc: None,
@@ -226,6 +246,7 @@ impl Executor {
                     .unwrap_or(2000),
             ),
             open_orders: std::array::from_fn(|_| HashMap::new()),
+            dry_run_live_orders: HashMap::new(),
             last_buy_fill_ts: [None, None],
             last_buy_place_ts: [None, None],
             slot_blocked_since: [None; 4],
@@ -234,6 +255,7 @@ impl Executor {
                 Instant::now() - Duration::from_secs(60)
             }),
             dry_run_fill_probability,
+            dry_run_market_touch_fills,
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
             marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
                 .ok()
@@ -312,6 +334,92 @@ impl Executor {
         .is_ok()
     }
 
+    fn track_dry_run_live_order(
+        &mut self,
+        order_id: String,
+        slot: OrderSlot,
+        side: Side,
+        direction: TradeDirection,
+        price: f64,
+        size: f64,
+    ) {
+        self.dry_run_live_orders.insert(
+            order_id,
+            DryRunLiveOrder {
+                slot,
+                side,
+                direction,
+                price,
+                size,
+                fill_emitted: false,
+            },
+        );
+    }
+
+    fn clear_dry_run_live_order(&mut self, order_id: &str) {
+        self.dry_run_live_orders.remove(order_id);
+    }
+
+    async fn handle_dry_run_market_data(&mut self, msg: MarketDataMsg) {
+        let MarketDataMsg::BookTick {
+            yes_ask, no_ask, ..
+        } = msg
+        else {
+            return;
+        };
+
+        let mut touched: Vec<(String, Side, TradeDirection, f64, f64)> = Vec::new();
+        for (order_id, meta) in self.dry_run_live_orders.iter() {
+            if meta.fill_emitted || meta.direction != TradeDirection::Buy {
+                continue;
+            }
+            let ask = match meta.side {
+                Side::Yes => yes_ask,
+                Side::No => no_ask,
+            };
+            if !ask.is_finite() || ask <= 0.0 {
+                continue;
+            }
+            if meta.price + 1e-9 < ask {
+                continue;
+            }
+            let remaining = self
+                .slot_orders(meta.slot)
+                .get(order_id)
+                .copied()
+                .unwrap_or(meta.size)
+                .max(0.0);
+            if remaining <= 0.0 {
+                continue;
+            }
+            touched.push((
+                order_id.clone(),
+                meta.side,
+                meta.direction,
+                remaining,
+                meta.price,
+            ));
+        }
+
+        for (order_id, side, direction, remaining, fill_price) in touched {
+            if let Some(meta) = self.dry_run_live_orders.get_mut(&order_id) {
+                meta.fill_emitted = true;
+            }
+            if !self
+                .try_emit_dry_run_fill(order_id.clone(), side, direction, remaining, fill_price)
+                .await
+            {
+                warn!(
+                    "⚠️ DRY-RUN market-touch fill channel unavailable; order remains tracked order_id={}",
+                    order_id
+                );
+                if let Some(meta) = self.dry_run_live_orders.get_mut(&order_id) {
+                    meta.fill_emitted = false;
+                }
+            }
+        }
+    }
+
     pub async fn run(mut self) {
         info!(
             "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2}",
@@ -330,6 +438,19 @@ impl Executor {
 
         loop {
             tokio::select! {
+                changed = async {
+                    if let Some(rx) = self.dry_run_md_rx.as_mut() {
+                        rx.changed().await.ok()
+                    } else {
+                        std::future::pending::<Option<()>>().await
+                    }
+                }, if self.dry_run_market_touch_fills => {
+                    if changed.is_some() {
+                        if let Some(msg) = self.dry_run_md_rx.as_ref().map(|rx| rx.borrow().clone()) {
+                            self.handle_dry_run_market_data(msg).await;
+                        }
+                    }
+                }
                 // Command channel (from Coordinator)
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
@@ -781,15 +902,21 @@ impl Executor {
         }
         // P1-3: FAILED = order terminated, remove entirely
         if fill.status == FillStatus::Failed {
-            let orders = self.slot_orders_mut(slot);
-            if orders.remove(&fill.order_id).is_some() {
+            let (removed, slot_empty) = {
+                let orders = self.slot_orders_mut(slot);
+                let removed = orders.remove(&fill.order_id).is_some();
+                let slot_empty = orders.is_empty();
+                (removed, slot_empty)
+            };
+            if removed {
+                self.clear_dry_run_live_order(&fill.order_id);
                 warn!(
                     "📋 Lifecycle: {} order {}… FAILED — removed from tracking ({} remaining)",
                     slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
-                    orders.len(),
+                    self.slot_orders(slot).len(),
                 );
-                if orders.is_empty() {
+                if slot_empty {
                     self.reset_slot_blocked_state(slot);
                 }
                 // Notify Coordinator: slot is now free
@@ -799,18 +926,30 @@ impl Executor {
         }
 
         // MATCHED path: decrement remaining size
-        let orders = self.slot_orders_mut(slot);
-        if let Some(remaining) = orders.get_mut(&fill.order_id) {
-            *remaining -= fill.filled_size;
-            if *remaining <= 0.0 || Self::is_residual_dust(*remaining) {
-                orders.remove(&fill.order_id);
+        let maybe_remaining = {
+            let orders = self.slot_orders_mut(slot);
+            if let Some(remaining) = orders.get_mut(&fill.order_id) {
+                *remaining -= fill.filled_size;
+                Some(*remaining)
+            } else {
+                None
+            }
+        };
+        if let Some(remaining_after_fill) = maybe_remaining {
+            if remaining_after_fill <= 0.0 || Self::is_residual_dust(remaining_after_fill) {
+                let slot_empty = {
+                    let orders = self.slot_orders_mut(slot);
+                    orders.remove(&fill.order_id);
+                    orders.is_empty()
+                };
+                self.clear_dry_run_live_order(&fill.order_id);
                 info!(
                     "📋 Lifecycle: {} order {}… fully filled/dust-closed — removed ({} remaining on slot)",
                     slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
-                    orders.len(),
+                    self.slot_orders(slot).len(),
                 );
-                if orders.is_empty() {
+                if slot_empty {
                     self.reset_slot_blocked_state(slot);
                 }
                 // AUDIT FIX: Notify Coordinator that the slot is free for new orders
@@ -821,7 +960,7 @@ impl Executor {
                     slot.as_str(),
                     &fill.order_id[..8.min(fill.order_id.len())],
                     fill.filled_size,
-                    remaining,
+                    remaining_after_fill,
                 );
             }
         }
@@ -1099,6 +1238,9 @@ impl Executor {
                 self.last_buy_place_ts[side.index()] = Some(Instant::now());
             }
             self.slot_orders_mut(slot).insert(order_id.clone(), size);
+            if self.dry_run_market_touch_fills {
+                self.track_dry_run_live_order(order_id.clone(), slot, side, direction, price, size);
+            }
             self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
                 slot,
                 ts: Instant::now(),
@@ -1129,7 +1271,7 @@ impl Executor {
                     "dry_run": true,
                 }),
             );
-            if self.dry_run_should_fill(&order_id) {
+            if !self.dry_run_market_touch_fills && self.dry_run_should_fill(&order_id) {
                 let fill_price = self.dry_run_fill_price(direction, price);
                 if !self
                     .try_emit_dry_run_fill(order_id.clone(), side, direction, size, fill_price)
@@ -1711,6 +1853,7 @@ impl Executor {
             for orders in self.open_orders.iter_mut() {
                 orders.remove(order_id);
             }
+            self.clear_dry_run_live_order(order_id);
             info!("📝 [DRY-RUN] CancelOrder {}", order_id);
             return true;
         }
@@ -1847,6 +1990,7 @@ impl Executor {
         if self.cfg.dry_run || self.client.is_none() {
             info!("📝 [DRY-RUN] CancelAll");
             self.open_orders.iter_mut().for_each(|v| v.clear());
+            self.dry_run_live_orders.clear();
             return;
         }
 
@@ -2435,11 +2579,12 @@ pub async fn init_clob_client(
 mod tests {
     use std::time::{Duration, Instant};
 
-    use tokio::sync::mpsc;
+    use tokio::sync::{mpsc, watch};
 
     use super::{ExecutionCmd, Executor, ExecutorConfig, OrderResult, ReconcileFetchMode};
     use crate::polymarket::messages::{
-        BidReason, CancelReason, FillEvent, FillStatus, OrderSlot, TradeDirection, TradePurpose,
+        BidReason, CancelReason, FillEvent, FillStatus, MarketDataMsg, OrderSlot, TradeDirection,
+        TradePurpose,
     };
     use crate::polymarket::types::Side;
 
@@ -2463,6 +2608,8 @@ mod tests {
             result_tx,
             fill_rx,
             None,
+            None,
+            false,
             None,
             None,
             None,
@@ -2537,6 +2684,8 @@ mod tests {
             fill_rx,
             None,
             None,
+            false,
+            None,
             None,
             None,
             None,
@@ -2584,6 +2733,8 @@ mod tests {
             fill_rx,
             None,
             None,
+            false,
+            None,
             None,
             None,
             None,
@@ -2622,6 +2773,8 @@ mod tests {
             fill_rx,
             Some(sim_fill_tx),
             None,
+            false,
+            None,
             None,
             None,
             None,
@@ -2650,6 +2803,83 @@ mod tests {
             .recv()
             .await
             .expect("dry_run should emit simulated fill");
+        assert_eq!(fill.side, Side::Yes);
+        assert_eq!(fill.direction, TradeDirection::Buy);
+        assert_eq!(fill.status, FillStatus::Confirmed);
+        assert!((fill.filled_size - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_touch_requires_ask_touch_before_fill() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
+            yes_bid: 0.45,
+            yes_ask: 0.55,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        });
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            5.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+        )
+        .await;
+
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+        assert!(sim_fill_rx.try_recv().is_err());
+
+        let touch_msg = MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.50,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        };
+        let _ = md_tx.send(touch_msg.clone());
+        exec.handle_dry_run_market_data(touch_msg).await;
+
+        let fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("market touch should emit simulated fill");
         assert_eq!(fill.side, Side::Yes);
         assert_eq!(fill.direction, TradeDirection::Buy);
         assert_eq!(fill.status, FillStatus::Confirmed);

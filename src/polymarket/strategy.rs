@@ -61,6 +61,14 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_keep_candidates: u8,
     pub(crate) pair_arb_skip_inventory_gate: u8,
     pub(crate) pair_arb_skip_simulate_buy_none: u8,
+    pub(crate) pgt_seed_quotes: u8,
+    pub(crate) pgt_completion_quotes: u8,
+    pub(crate) pgt_skip_harvest: u8,
+    pub(crate) pgt_skip_tail_completion_only: u8,
+    pub(crate) pgt_skip_residual_guard: u8,
+    pub(crate) pgt_skip_capital_guard: u8,
+    pub(crate) pgt_skip_invalid_book: u8,
+    pub(crate) pgt_skip_no_seed: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -135,6 +143,45 @@ impl StrategyQuotes {
             .diagnostics
             .pair_arb_skip_simulate_buy_none
             .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_seed_quote(&mut self) {
+        self.diagnostics.pgt_seed_quotes = self.diagnostics.pgt_seed_quotes.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_completion_quote(&mut self) {
+        self.diagnostics.pgt_completion_quotes =
+            self.diagnostics.pgt_completion_quotes.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_harvest(&mut self) {
+        self.diagnostics.pgt_skip_harvest = self.diagnostics.pgt_skip_harvest.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_tail_completion_only(&mut self) {
+        self.diagnostics.pgt_skip_tail_completion_only = self
+            .diagnostics
+            .pgt_skip_tail_completion_only
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_residual_guard(&mut self) {
+        self.diagnostics.pgt_skip_residual_guard =
+            self.diagnostics.pgt_skip_residual_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_capital_guard(&mut self) {
+        self.diagnostics.pgt_skip_capital_guard =
+            self.diagnostics.pgt_skip_capital_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_invalid_book(&mut self) {
+        self.diagnostics.pgt_skip_invalid_book =
+            self.diagnostics.pgt_skip_invalid_book.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_no_seed(&mut self) {
+        self.diagnostics.pgt_skip_no_seed = self.diagnostics.pgt_skip_no_seed.saturating_add(1);
     }
 }
 
@@ -211,9 +258,7 @@ impl StrategyKind {
             Self::GabagoolGrid
             | Self::GabagoolCorridor
             | Self::PairArb
-            | Self::PairGatedTrancheArb => {
-                StrategyExecutionMode::UnifiedBuys
-            }
+            | Self::PairGatedTrancheArb => StrategyExecutionMode::UnifiedBuys,
             Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
             Self::DipBuy | Self::PhaseBuilder => StrategyExecutionMode::DirectionalHedgeOverlay,

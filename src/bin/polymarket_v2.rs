@@ -842,12 +842,55 @@ fn unix_now_ms() -> i64 {
     now.as_millis() as i64
 }
 
+fn sanitize_instance_id(raw: &str) -> String {
+    let sanitized = raw
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => ch,
+            _ => '_',
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "default".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn instance_id() -> Option<String> {
+    env::var("PM_INSTANCE_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(|s| sanitize_instance_id(&s))
+}
+
+fn log_root() -> PathBuf {
+    if let Some(root) = env::var("PM_LOG_ROOT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return PathBuf::from(root);
+    }
+    let base = PathBuf::from("logs");
+    match instance_id() {
+        Some(id) => base.join(id),
+        None => base,
+    }
+}
+
+fn log_path(file_name: &str) -> PathBuf {
+    log_root().join(file_name)
+}
+
 fn round_validation_jsonl_path() -> PathBuf {
-    PathBuf::from("logs/round_validation_glft_mm.jsonl")
+    log_path("round_validation_glft_mm.jsonl")
 }
 
 fn round_validation_aggregate_path() -> PathBuf {
-    PathBuf::from("logs/round_validation_aggregate.json")
+    log_path("round_validation_aggregate.json")
 }
 
 fn append_round_validation_summary(summary: &RoundValidationSummary) -> anyhow::Result<()> {
@@ -2525,6 +2568,144 @@ async fn run_round_claim_window(
     Ok(())
 }
 
+const PGT_SHADOW_HARVEST_FIRST_SECS: u64 = 25;
+const PGT_SHADOW_HARVEST_RETRY_SECS: u64 = 18;
+const PGT_SHADOW_HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
+const PGT_SHADOW_REDEEM_FIRST_SECS: u64 = 35;
+const PGT_SHADOW_REDEEM_RETRY_SECS: u64 = 50;
+
+fn pgt_shadow_redeem_target(
+    snapshot: &InventorySnapshot,
+    winner_side: Option<Side>,
+) -> Option<(Side, f64)> {
+    let side = winner_side?;
+    let qty = match side {
+        Side::Yes => snapshot.working.yes_qty.max(0.0),
+        Side::No => snapshot.working.no_qty.max(0.0),
+    };
+    (qty > 1e-9).then_some((side, qty))
+}
+
+async fn run_pgt_shadow_harvest_lifecycle(
+    mut inv_rx: watch::Receiver<InventorySnapshot>,
+    recorder: RecorderHandle,
+    recorder_meta: RecorderSessionMeta,
+    market_end_ts: u64,
+) {
+    let mut first_sent = false;
+    let mut retry_sent = false;
+
+    loop {
+        let now = unix_now_secs();
+        if now >= market_end_ts {
+            break;
+        }
+
+        let remaining_secs = market_end_ts.saturating_sub(now);
+        let snap = *inv_rx.borrow();
+        let pairable_qty = snap.pair_ledger.total_pairable_qty().max(0.0);
+        let mergeable_full_sets = snap.pair_ledger.capital_state.mergeable_full_sets.max(0.0);
+        let eligible = pairable_qty + 1e-9 >= PGT_SHADOW_HARVEST_MIN_PAIRABLE_QTY;
+
+        let should_emit_first = !first_sent && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS;
+        let should_emit_retry = !retry_sent && remaining_secs <= PGT_SHADOW_HARVEST_RETRY_SECS;
+        let attempt = if should_emit_first {
+            Some(1_u8)
+        } else if should_emit_retry {
+            Some(2_u8)
+        } else {
+            None
+        };
+
+        if let Some(attempt) = attempt {
+            if eligible {
+                let payload = json!({
+                    "attempt": attempt,
+                    "shadow_only": true,
+                    "remaining_secs": remaining_secs,
+                    "pairable_qty": pairable_qty,
+                    "mergeable_full_sets": mergeable_full_sets,
+                    "working_capital": snap.pair_ledger.capital_state.working_capital,
+                    "clean_closed_episode_ratio": snap.episode_metrics.clean_closed_episode_ratio,
+                    "same_side_add_qty_ratio": snap.episode_metrics.same_side_add_qty_ratio,
+                });
+                recorder.emit_own_inventory_event(
+                    &recorder_meta,
+                    "merge_requested",
+                    payload.clone(),
+                );
+                recorder.emit_own_inventory_event(&recorder_meta, "merge_executed", payload);
+            }
+            if attempt == 1 {
+                first_sent = true;
+            } else {
+                retry_sent = true;
+            }
+        }
+
+        tokio::select! {
+            changed = inv_rx.changed() => {
+                if changed.is_err() {
+                    break;
+                }
+            }
+            _ = sleep(Duration::from_millis(250)) => {}
+        }
+    }
+}
+
+async fn run_pgt_shadow_redeem_lifecycle(
+    recorder: RecorderHandle,
+    recorder_meta: RecorderSessionMeta,
+    market_end_ts: u64,
+    final_snapshot: InventorySnapshot,
+) {
+    let residual_qty = final_snapshot.pair_ledger.residual_qty.max(0.0);
+    let yes_qty = final_snapshot.working.yes_qty.max(0.0);
+    let no_qty = final_snapshot.working.no_qty.max(0.0);
+    if residual_qty <= 1e-9 && yes_qty <= 1e-9 && no_qty <= 1e-9 {
+        return;
+    }
+
+    let mut resolved_winner_side: Option<Side> = None;
+    for (attempt, delay_secs) in [
+        (1_u8, PGT_SHADOW_REDEEM_FIRST_SECS),
+        (2_u8, PGT_SHADOW_REDEEM_RETRY_SECS),
+    ] {
+        let fire_at = market_end_ts.saturating_add(delay_secs);
+        let now = unix_now_secs();
+        if fire_at > now {
+            sleep(Duration::from_secs(fire_at - now)).await;
+        }
+
+        if resolved_winner_side.is_none() {
+            resolved_winner_side = fetch_gamma_winner_hint(&recorder_meta.slug)
+                .await
+                .map(|(side, _)| side);
+        }
+        let target = pgt_shadow_redeem_target(&final_snapshot, resolved_winner_side);
+
+        recorder.emit_own_inventory_event(
+            &recorder_meta,
+            "redeem_requested",
+            json!({
+                "attempt": attempt,
+                "shadow_only": true,
+                "post_close_secs": delay_secs,
+                "residual_side": final_snapshot.pair_ledger.residual_side.map(|s| s.as_str().to_string()),
+                "residual_qty": residual_qty,
+                "yes_qty": yes_qty,
+                "no_qty": no_qty,
+                "resolved_winner_side": resolved_winner_side.map(|s| s.as_str().to_string()),
+                "target_side": target.map(|(side, _)| side.as_str().to_string()),
+                "target_qty": target.map(|(_, qty)| qty).unwrap_or(0.0),
+                "target_present": target.is_some(),
+                "winner_side_only_target": true,
+            }),
+        );
+    }
+}
+
 fn round_claim_missing_requirements(
     cfg: &AutoClaimConfig,
     funder_address: Option<&str>,
@@ -2560,11 +2741,19 @@ const LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS_DEFAULT: u64 = 2_500;
 const LOCAL_PRICE_AGG_MIN_CONFIDENCE_DEFAULT: f64 = 0.85;
 const LOCAL_PRICE_AGG_MIN_SOURCES_DEFAULT: usize = 1;
 const LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS_DEFAULT: f64 = 12.0;
+const LOCAL_PRICE_AGG_SINGLE_SOURCE_MIN_DIRECTION_MARGIN_BPS_DEFAULT: f64 = 1.25;
+const LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE_DEFAULT: f64 = 0.80;
+const LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS_DEFAULT: f64 = 5.0;
+const LOCAL_PRICE_AGG_RELIEF_MAX_SOURCE_SPREAD_BPS_DEFAULT: f64 = 2.0;
+const LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_SOURCES: usize = 2;
+const LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 3.0;
+const LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MAX_SOURCE_SPREAD_BPS: f64 = 5.0;
 const LOCAL_PRICE_AGG_DECISION_WAIT_MS_DEFAULT: u64 = 1_500;
 const LOCAL_PRICE_AGG_WEIGHT_BINANCE_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_BYBIT_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_OKX_DEFAULT: f64 = 1.0;
 const LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT: f64 = 1.0;
+const LOCAL_PRICE_AGG_WEIGHT_HYPERLIQUID_DEFAULT: f64 = 0.5;
 const LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS_DEFAULT: f64 = 900.0;
 const LOCAL_PRICE_AGG_EXACT_BOOST_DEFAULT: f64 = 1.25;
 const LOCAL_PRICE_AGG_SOURCE_BIAS_EMA_ALPHA: f64 = 0.30;
@@ -2574,6 +2763,12 @@ const LOCAL_PRICE_AGG_COMPARE_DEADLINE_GRACE_MS: u64 = 250;
 const LOCAL_PRICE_AGG_COMPARE_TARGET_BPS: f64 = 5.0;
 const LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS: usize = 12;
 const LOCAL_PRICE_AGG_COMPARE_REPORT_DECIMALS: usize = 15;
+const LOCAL_PRICE_AGG_COMPARE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 5.5;
+const LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS: f64 = 6.0;
+const LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_SOURCES: usize = 2;
+const LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 2.0;
+const LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS: f64 = 3.0;
+const LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 2.0;
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -2698,6 +2893,14 @@ fn local_price_agg_max_source_spread_bps() -> f64 {
         .unwrap_or(LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS_DEFAULT)
 }
 
+fn local_price_agg_single_source_min_direction_margin_bps() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_SINGLE_SOURCE_MIN_DIRECTION_MARGIN_BPS")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 20.0))
+        .unwrap_or(LOCAL_PRICE_AGG_SINGLE_SOURCE_MIN_DIRECTION_MARGIN_BPS_DEFAULT)
+}
+
 fn local_price_agg_decision_wait_ms() -> u64 {
     env::var("PM_LOCAL_PRICE_AGG_DECISION_WAIT_MS")
         .ok()
@@ -2736,6 +2939,14 @@ fn local_price_agg_weight_coinbase() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .map(|v| v.clamp(0.0, 10.0))
         .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_COINBASE_DEFAULT)
+}
+
+fn local_price_agg_weight_hyperliquid() -> f64 {
+    env::var("PM_LOCAL_PRICE_AGG_WEIGHT_HYPERLIQUID")
+        .ok()
+        .and_then(|v| v.parse::<f64>().ok())
+        .map(|v| v.clamp(0.0, 10.0))
+        .unwrap_or(LOCAL_PRICE_AGG_WEIGHT_HYPERLIQUID_DEFAULT)
 }
 
 fn local_price_agg_close_time_decay_ms() -> f64 {
@@ -2845,6 +3056,7 @@ enum LocalPriceSource {
     Bybit,
     Okx,
     Coinbase,
+    Hyperliquid,
 }
 
 impl LocalPriceSource {
@@ -2854,6 +3066,18 @@ impl LocalPriceSource {
             Self::Bybit => "bybit",
             Self::Okx => "okx",
             Self::Coinbase => "coinbase",
+            Self::Hyperliquid => "hyperliquid",
+        }
+    }
+
+    fn from_str(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "binance" => Some(Self::Binance),
+            "bybit" => Some(Self::Bybit),
+            "okx" => Some(Self::Okx),
+            "coinbase" => Some(Self::Coinbase),
+            "hyperliquid" => Some(Self::Hyperliquid),
+            _ => None,
         }
     }
 }
@@ -2864,8 +3088,17 @@ fn local_price_agg_source_weight(source: LocalPriceSource) -> f64 {
         LocalPriceSource::Bybit => local_price_agg_weight_bybit(),
         LocalPriceSource::Okx => local_price_agg_weight_okx(),
         LocalPriceSource::Coinbase => local_price_agg_weight_coinbase(),
+        LocalPriceSource::Hyperliquid => local_price_agg_weight_hyperliquid(),
     }
 }
+
+const LOCAL_PRICE_SOURCES: [LocalPriceSource; 5] = [
+    LocalPriceSource::Binance,
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Okx,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Hyperliquid,
+];
 
 fn binance_stream_symbol_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
     let (base, quote) = chainlink_symbol.split_once('/')?;
@@ -3035,6 +3268,19 @@ fn coinbase_product_id_from_chainlink_symbol(chainlink_symbol: &str) -> Option<S
     Some(format!("{}-USD", base.to_ascii_uppercase()))
 }
 
+fn hyperliquid_coin_from_chainlink_symbol(chainlink_symbol: &str) -> Option<String> {
+    let (base, quote) = chainlink_symbol.split_once('/')?;
+    if !quote.eq_ignore_ascii_case("usd") {
+        return None;
+    }
+    let base = base.trim().to_ascii_uppercase();
+    if base == "HYPE" {
+        Some(base)
+    } else {
+        None
+    }
+}
+
 fn chainlink_symbol_from_coinbase_product_id(product_id: &str) -> Option<String> {
     let upper = product_id.trim().to_ascii_uppercase();
     let base = upper.strip_suffix("-USD")?;
@@ -3064,6 +3310,46 @@ fn parse_coinbase_ticker_tick(text: &str) -> Option<(String, f64, u64)> {
         .map(|dt| dt.timestamp_millis().max(0) as u64)
         .unwrap_or_else(unix_now_millis_u64);
     Some((chainlink_symbol, price, ts_ms))
+}
+
+fn parse_hyperliquid_all_mids_ticks(
+    text: &str,
+    wanted_coins: &HashMap<String, String>,
+) -> Vec<(String, f64, u64)> {
+    let Ok(value) = serde_json::from_str::<Value>(text) else {
+        return Vec::new();
+    };
+    let channel = value
+        .get("channel")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.get("type").and_then(|v| v.as_str()))
+        .unwrap_or_default();
+    if channel != "allMids" {
+        return Vec::new();
+    }
+    let Some(mids) = value
+        .get("data")
+        .and_then(|v| v.get("mids"))
+        .and_then(|v| v.as_object())
+    else {
+        return Vec::new();
+    };
+    let ts_ms = value
+        .get("data")
+        .and_then(|v| v.get("time"))
+        .and_then(parse_u64_value)
+        .unwrap_or_else(unix_now_millis_u64);
+    let mut out = Vec::new();
+    for (coin, pxv) in mids {
+        let Some(symbol) = wanted_coins.get(&coin.to_ascii_uppercase()) else {
+            continue;
+        };
+        let Some(price) = parse_f64_value(pxv).filter(|v| *v > 0.0) else {
+            continue;
+        };
+        out.push((symbol.clone(), price, ts_ms));
+    }
+    out
 }
 
 fn robust_median(mut values: Vec<f64>) -> Option<f64> {
@@ -3680,6 +3966,7 @@ impl LocalPriceHub {
         Self::spawn_binance_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_bybit_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_okx_feeder(Arc::clone(&hub), symbols.clone());
+        Self::spawn_hyperliquid_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_coinbase_feeder(Arc::clone(&hub), symbols);
         hub
     }
@@ -3928,6 +4215,62 @@ impl LocalPriceHub {
             }
         });
     }
+
+    fn spawn_hyperliquid_feeder(hub: Arc<Self>, symbols: HashSet<String>) {
+        let wanted: HashMap<String, String> = symbols
+            .iter()
+            .filter_map(|sym| {
+                hyperliquid_coin_from_chainlink_symbol(sym)
+                    .map(|coin| (coin, normalize_chainlink_symbol(sym)))
+            })
+            .collect();
+        if wanted.is_empty() {
+            return;
+        }
+        tokio::spawn(async move {
+            let url = "wss://api.hyperliquid.xyz/ws";
+            let mut backoff = Duration::from_millis(300);
+            loop {
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(3), connect_async(url)).await;
+                let Ok(Ok((ws, _))) = connect else {
+                    sleep(backoff).await;
+                    backoff = (backoff * 2).min(Duration::from_secs(3));
+                    continue;
+                };
+                backoff = Duration::from_millis(300);
+                let (mut write, mut read) = ws.split();
+                let subscribe_msg = json!({
+                    "method": "subscribe",
+                    "subscription": { "type": "allMids" },
+                });
+                if write
+                    .send(Message::Text(subscribe_msg.to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    continue;
+                }
+                while let Some(next) = read.next().await {
+                    let msg = match next {
+                        Ok(m) => m,
+                        Err(_) => break,
+                    };
+                    let text = match msg {
+                        Message::Text(t) => t.to_string(),
+                        Message::Binary(b) => match String::from_utf8(b.to_vec()) {
+                            Ok(t) => t,
+                            Err(_) => continue,
+                        },
+                        _ => continue,
+                    };
+                    for (symbol, price, ts_ms) in parse_hyperliquid_all_mids_ticks(&text, &wanted) {
+                        hub.publish_tick(&symbol, price, ts_ms, LocalPriceSource::Hyperliquid);
+                    }
+                }
+            }
+        });
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3994,11 +4337,15 @@ struct LocalPriceAggProbe {
     side: Option<String>,
     confidence: Option<f64>,
     min_confidence: f64,
+    effective_min_confidence: f64,
     min_sources: usize,
     max_source_spread_bps: f64,
+    single_source_min_direction_margin_bps: f64,
+    confidence_relief_applied: bool,
     source_count: usize,
     source_agreement: Option<f64>,
     source_spread_bps: Option<f64>,
+    direction_margin_bps: Option<f64>,
     open_price: Option<f64>,
     open_ts_ms: Option<u64>,
     close_price: Option<f64>,
@@ -4017,9 +4364,12 @@ struct LocalPriceAggSourcePointProbe {
     open_price: Option<f64>,
     open_ts_ms: Option<u64>,
     open_exact: Option<bool>,
+    raw_close_price: Option<f64>,
     close_price: Option<f64>,
     close_ts_ms: Option<u64>,
     close_exact: Option<bool>,
+    close_abs_delta_ms: Option<u64>,
+    close_pick_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4035,23 +4385,23 @@ struct LocalPriceAggSourcesProbe {
 }
 
 fn chainlink_round_alignment_path() -> PathBuf {
-    PathBuf::from("logs/chainlink_round_alignment.jsonl")
+    log_path("chainlink_round_alignment.jsonl")
 }
 
 fn self_built_price_agg_probe_path() -> PathBuf {
-    PathBuf::from("logs/self_built_price_agg.jsonl")
+    log_path("self_built_price_agg.jsonl")
 }
 
 fn local_price_agg_probe_path() -> PathBuf {
-    PathBuf::from("logs/local_price_agg.jsonl")
+    log_path("local_price_agg.jsonl")
 }
 
 fn local_price_agg_sources_probe_path() -> PathBuf {
-    PathBuf::from("logs/local_price_agg_sources.jsonl")
+    log_path("local_price_agg_sources.jsonl")
 }
 
 fn chainlink_last_close_cache_path() -> PathBuf {
-    PathBuf::from("logs/chainlink_last_close_cache.json")
+    log_path("chainlink_last_close_cache.json")
 }
 
 fn append_chainlink_round_alignment_probe(probe: &ChainlinkRoundAlignmentProbe) {
@@ -4171,8 +4521,83 @@ fn side_label(side: Option<Side>) -> Option<String> {
 type LocalPriceAggBiasMap = HashMap<(String, LocalPriceSource), f64>;
 static LOCAL_PRICE_AGG_SOURCE_BIAS_BPS: OnceLock<Mutex<LocalPriceAggBiasMap>> = OnceLock::new();
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalPriceAggBiasCacheEntry {
+    symbol: String,
+    source: String,
+    bias_bps: f64,
+}
+
+fn local_price_agg_bias_cache_path() -> PathBuf {
+    if let Ok(path) = env::var("PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH") {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    log_path("local_price_agg_bias_cache.json")
+}
+
+fn load_local_price_agg_bias_cache() -> LocalPriceAggBiasMap {
+    let path = local_price_agg_bias_cache_path();
+    let Ok(raw) = fs::read_to_string(&path) else {
+        return HashMap::new();
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<LocalPriceAggBiasCacheEntry>>(&raw) else {
+        warn!(
+            "⚠️ Failed to parse local price agg bias cache | path={}",
+            path.display()
+        );
+        return HashMap::new();
+    };
+    let mut out = HashMap::new();
+    for entry in entries {
+        let symbol = normalize_chainlink_symbol(&entry.symbol);
+        let Some(source) = LocalPriceSource::from_str(&entry.source) else {
+            continue;
+        };
+        if symbol.is_empty() || !entry.bias_bps.is_finite() {
+            continue;
+        }
+        out.insert((symbol, source), entry.bias_bps);
+    }
+    if !out.is_empty() {
+        info!(
+            "🧠 Loaded local price agg bias cache | path={} entries={}",
+            path.display(),
+            out.len()
+        );
+    }
+    out
+}
+
+fn persist_local_price_agg_bias_cache(map: &LocalPriceAggBiasMap) {
+    let path = local_price_agg_bias_cache_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let entries = map
+        .iter()
+        .map(|((symbol, source), bias_bps)| LocalPriceAggBiasCacheEntry {
+            symbol: symbol.clone(),
+            source: source.as_str().to_string(),
+            bias_bps: *bias_bps,
+        })
+        .collect::<Vec<_>>();
+    let Ok(payload) = serde_json::to_vec(&entries) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if fs::write(&tmp, payload).is_err() {
+        return;
+    }
+    if fs::rename(&tmp, &path).is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+}
+
 fn local_price_agg_source_bias_map() -> &'static Mutex<LocalPriceAggBiasMap> {
-    LOCAL_PRICE_AGG_SOURCE_BIAS_BPS.get_or_init(|| Mutex::new(HashMap::new()))
+    LOCAL_PRICE_AGG_SOURCE_BIAS_BPS.get_or_init(|| Mutex::new(load_local_price_agg_bias_cache()))
 }
 
 fn local_price_agg_get_source_bias_bps(symbol: &str, source: LocalPriceSource) -> f64 {
@@ -4224,6 +4649,9 @@ fn local_price_agg_update_source_bias_bps(
             LOCAL_PRICE_AGG_SOURCE_BIAS_MAX_ABS_BPS,
         );
     guard.insert(key, next);
+    let snapshot = guard.clone();
+    drop(guard);
+    persist_local_price_agg_bias_cache(&snapshot);
     Some(next)
 }
 
@@ -4314,6 +4742,12 @@ fn persist_last_chainlink_close_cache(map: &LastCloseMap) {
 fn cached_prev_round_close(symbol: &str, round_start_ms: u64) -> Option<(f64, u64)> {
     get_last_chainlink_close(symbol)
         .filter(|(ts_ms, _)| ts_ms.abs_diff(round_start_ms) <= 1_000)
+        .map(|(ts_ms, px)| (px, ts_ms))
+}
+
+fn cached_round_exact_close(symbol: &str, round_end_ms: u64) -> Option<(f64, u64)> {
+    get_last_chainlink_close(symbol)
+        .filter(|(ts_ms, _)| ts_ms.abs_diff(round_end_ms) <= 1_000)
         .map(|(ts_ms, px)| (px, ts_ms))
 }
 
@@ -4415,9 +4849,25 @@ async fn fetch_frontend_crypto_round_prices(
 
 type PrewarmedOpenMap = HashMap<(String, u64), (f64, u64)>;
 static CHAINLINK_PREWARMED_OPEN: OnceLock<Mutex<PrewarmedOpenMap>> = OnceLock::new();
+static CHAINLINK_EXACT_OPEN: OnceLock<Mutex<PrewarmedOpenMap>> = OnceLock::new();
+static CHAINLINK_EXACT_CLOSE: OnceLock<Mutex<PrewarmedOpenMap>> = OnceLock::new();
+type LocalPrewarmedOpenMap = HashMap<(String, u64, LocalPriceSource), AggregatedPricePoint>;
+static LOCAL_PRICE_PREWARMED_OPEN: OnceLock<Mutex<LocalPrewarmedOpenMap>> = OnceLock::new();
 
 fn chainlink_prewarmed_open_map() -> &'static Mutex<PrewarmedOpenMap> {
     CHAINLINK_PREWARMED_OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn chainlink_exact_open_map() -> &'static Mutex<PrewarmedOpenMap> {
+    CHAINLINK_EXACT_OPEN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn chainlink_exact_close_map() -> &'static Mutex<PrewarmedOpenMap> {
+    CHAINLINK_EXACT_CLOSE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn local_price_prewarmed_open_map() -> &'static Mutex<LocalPrewarmedOpenMap> {
+    LOCAL_PRICE_PREWARMED_OPEN.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn set_prewarmed_open(symbol: &str, round_start_ms: u64, price: f64, ts_ms: u64) {
@@ -4442,6 +4892,50 @@ fn take_prewarmed_open(symbol: &str, round_start_ms: u64) -> Option<(f64, u64)> 
 fn peek_prewarmed_tick(symbol: &str, ts_ms: u64) -> Option<(f64, u64)> {
     let guard = chainlink_prewarmed_open_map().lock().ok()?;
     guard.get(&(symbol.to_string(), ts_ms)).copied()
+}
+
+fn remember_chainlink_exact_open(symbol: &str, round_start_ms: u64, price: f64, ts_ms: u64) {
+    if let Ok(mut guard) = chainlink_exact_open_map().lock() {
+        guard.insert((symbol.to_string(), round_start_ms), (price, ts_ms));
+    }
+}
+
+fn remember_chainlink_exact_close(symbol: &str, round_end_ms: u64, price: f64, ts_ms: u64) {
+    if let Ok(mut guard) = chainlink_exact_close_map().lock() {
+        guard.insert((symbol.to_string(), round_end_ms), (price, ts_ms));
+    }
+}
+
+fn peek_chainlink_exact_open(symbol: &str, round_start_ms: u64) -> Option<(f64, u64)> {
+    let guard = chainlink_exact_open_map().lock().ok()?;
+    guard.get(&(symbol.to_string(), round_start_ms)).copied()
+}
+
+fn peek_chainlink_exact_close(symbol: &str, round_end_ms: u64) -> Option<(f64, u64)> {
+    let guard = chainlink_exact_close_map().lock().ok()?;
+    guard.get(&(symbol.to_string(), round_end_ms)).copied()
+}
+
+fn set_local_prewarmed_open(
+    symbol: &str,
+    round_start_ms: u64,
+    source: LocalPriceSource,
+    point: AggregatedPricePoint,
+) {
+    if let Ok(mut guard) = local_price_prewarmed_open_map().lock() {
+        guard.insert((symbol.to_string(), round_start_ms, source), point);
+    }
+}
+
+fn peek_local_prewarmed_open(
+    symbol: &str,
+    round_start_ms: u64,
+    source: LocalPriceSource,
+) -> Option<AggregatedPricePoint> {
+    let guard = local_price_prewarmed_open_map().lock().ok()?;
+    guard
+        .get(&(symbol.to_string(), round_start_ms, source))
+        .copied()
 }
 
 fn map_outcome_label_to_side(label: &str) -> Option<Side> {
@@ -4715,6 +5209,7 @@ async fn run_chainlink_open_prewarm(
                 }
                 if ts_ms == start_ms {
                     set_prewarmed_open(&target_symbol, start_ms, price, ts_ms);
+                    remember_chainlink_exact_open(&target_symbol, start_ms, price, ts_ms);
                     info!(
                         "⏱️ chainlink_open_prewarm_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6}",
                         unix_now_millis_u64(),
@@ -4739,6 +5234,87 @@ async fn run_chainlink_open_prewarm(
         last_tick_ts_ms,
         nearest_start
     );
+}
+
+async fn run_local_price_open_prewarm(
+    symbol: &str,
+    round_start_ts: u64,
+    hard_deadline_ts: u64,
+    local_price_hub: Option<Arc<LocalPriceHub>>,
+) {
+    let Some(hub) = local_price_hub else {
+        return;
+    };
+    let target_symbol = normalize_chainlink_symbol(symbol);
+    if target_symbol.is_empty() {
+        return;
+    }
+    let start_ms = round_start_ts.saturating_mul(1_000);
+    let open_tol_ms = local_price_agg_open_tolerance_ms();
+    let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
+
+    for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
+        local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, start_ms);
+    }
+
+    if let Some(mut rx) = hub.subscribe(&target_symbol) {
+        while unix_now_secs() <= hard_deadline_ts {
+            let next = tokio::time::timeout(Duration::from_millis(700), rx.recv()).await;
+            match next {
+                Ok(Ok((price, ts_ms, source))) => {
+                    local_price_agg_ingest_state(
+                        &mut states,
+                        source,
+                        price,
+                        ts_ms,
+                        start_ms,
+                        start_ms,
+                    );
+                }
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => continue,
+                Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    let mut hits = 0usize;
+    for source in LOCAL_PRICE_SOURCES {
+        let Some(state) = states.get(&source) else {
+            continue;
+        };
+        let Some(point) = pick_local_source_open_point(state, open_tol_ms) else {
+            continue;
+        };
+        let tagged = AggregatedPricePoint {
+            source: match point.source {
+                "local_first_after_open" => "local_prewarm_open_first_after",
+                "local_nearest_open" => "local_prewarm_open_nearest",
+                _ => "local_prewarm_open_exact",
+            },
+            ..point
+        };
+        set_local_prewarmed_open(&target_symbol, start_ms, source, tagged);
+        hits += 1;
+        info!(
+            "⏱️ local_price_open_prewarm_hit | unix_ms={} symbol={} source={} round_start_ts={} open_ts_ms={} open_price={:.6} exact={} delta_ms={}",
+            unix_now_millis_u64(),
+            target_symbol,
+            source.as_str(),
+            round_start_ts,
+            point.ts_ms,
+            point.price,
+            point.exact,
+            point.abs_delta_ms,
+        );
+    }
+
+    if hits == 0 {
+        warn!(
+            "⚠️ local_price_open_prewarm_missed | symbol={} round_start_ts={} deadline_ts={}",
+            target_symbol, round_start_ts, hard_deadline_ts,
+        );
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -5678,6 +6254,30 @@ async fn run_post_close_winner_hint_listener(
     } else {
         None
     };
+    let mut local_full_shadow_task =
+        if local_price_agg_enabled() && !local_price_agg_decision_enabled() {
+            let full_hub = local_price_hub.clone();
+            let full_symbol = symbol.clone();
+            let full_deadline_ms = round_end_ts
+                .saturating_mul(1_000)
+                .saturating_add(local_price_agg_decision_wait_ms())
+                .saturating_add(LOCAL_PRICE_AGG_COMPARE_DEADLINE_GRACE_MS);
+            Some(tokio::spawn(async move {
+                let started_ms = unix_now_millis_u64();
+                let hit = run_local_price_aggregator(
+                    full_hub,
+                    &full_symbol,
+                    round_start_ts,
+                    round_end_ts,
+                    full_deadline_ms,
+                )
+                .await;
+                let ready_ms = unix_now_millis_u64();
+                (hit, started_ms, ready_ms, full_deadline_ms)
+            }))
+        } else {
+            None
+        };
 
     // ── Wait until t-10s for book snapshot ──
     // The Chainlink task is already running; this sleep only gates the pre-close book snapshot
@@ -5757,8 +6357,68 @@ async fn run_post_close_winner_hint_listener(
             }
         };
 
+    let (compare_truth, compare_truth_open_source): (
+        Option<(WinnerHintSource, Side, f64, f64, u64, bool)>,
+        Option<&'static str>,
+    ) = if let Some(v) = chainlink_result {
+        (Some(v), Some("exact_open"))
+    } else if local_price_agg_enabled() && !local_price_agg_decision_enabled() {
+        let start_ms = round_start_ts.saturating_mul(1_000);
+        let end_ms = round_end_ts.saturating_mul(1_000);
+        let open_truth = peek_chainlink_exact_open(&symbol, start_ms)
+            .map(|(px, ts)| ("exact_open", px, ts, true))
+            .or_else(|| {
+                cached_prev_round_close(&symbol, start_ms)
+                    .map(|(px, ts)| ("prev_exact_close", px, ts, false))
+            });
+        let close_truth = peek_chainlink_exact_close(&symbol, end_ms)
+            .map(|(px, ts)| ("exact_close", px, ts))
+            .or_else(|| {
+                cached_round_exact_close(&symbol, end_ms)
+                    .map(|(px, ts)| ("last_close_cache", px, ts))
+            });
+        match (open_truth, close_truth) {
+            (
+                Some((open_truth_source, open_ref_px, open_ts_ms, open_is_exact)),
+                Some((close_truth_source, close_px, close_ts_ms)),
+            ) => {
+                let side = if close_px >= open_ref_px {
+                    Side::Yes
+                } else {
+                    Side::No
+                };
+                info!(
+                    "🧪 chainlink_compare_truth_fallback | slug={} symbol={} source=rtds_truth_cache open_truth_source={} close_truth_source={} side={:?} open_ref={:.15}@{} close={:.15}@{}",
+                    slug,
+                    symbol,
+                    open_truth_source,
+                    close_truth_source,
+                    side,
+                    open_ref_px,
+                    open_ts_ms,
+                    close_px,
+                    close_ts_ms,
+                );
+                (
+                    Some((
+                        WinnerHintSource::Chainlink,
+                        side,
+                        open_ref_px,
+                        close_px,
+                        close_ts_ms,
+                        open_is_exact,
+                    )),
+                    Some(open_truth_source),
+                )
+            }
+            _ => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+
     // ── Chainlink result → emit WinnerHint ──
-    let first = if let Some(v) = chainlink_result {
+    let first = if let Some(v) = compare_truth {
         v
     } else {
         let frontend_round = if let Some(task) = frontend_task.take() {
@@ -5814,6 +6474,8 @@ async fn run_post_close_winner_hint_listener(
         return;
     };
     let (first_source, first_side, first_ref, first_obs, first_ms, first_open_exact) = first;
+    let compare_truth_open_source = compare_truth_open_source.unwrap_or("none");
+    let winner_hint_ready = chainlink_result.is_some();
 
     if let Some(task) = local_compare_task.take() {
         match task.await {
@@ -5824,50 +6486,263 @@ async fn run_post_close_winner_hint_listener(
                         first_obs,
                         &hit.source_contributions,
                     );
-                    let close_abs_diff = (hit.close_price - first_obs).abs();
-                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
-                    let close_within_target = close_diff_bps <= LOCAL_PRICE_AGG_COMPARE_TARGET_BPS;
-                    let close_match_frac_digits = count_matching_fractional_digits(
-                        hit.close_price,
-                        first_obs,
-                        LOCAL_PRICE_AGG_COMPARE_REPORT_DECIMALS,
-                    );
-                    let close_meets_12dp = close_match_frac_digits
-                        >= LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS;
-                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
                     let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                         Side::Yes
                     } else {
                         Side::No
                     };
-                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
-                    info!(
-                        "🧪 local_price_agg_vs_rtds | slug={} symbol={} compare_mode=close_only_open_from_rtds local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} close_within_5bps={} close_match_frac_digits={} close_meets_12dp={} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_decay_ms={:.1} local_exact_boost={:.2} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
-                        slug,
-                        symbol,
-                        local_side_vs_rtds_open,
-                        first_side,
-                        side_match_vs_rtds_open,
-                        hit.close_price,
-                        hit.close_ts_ms,
-                        first_ref,
-                        first_obs,
-                        close_abs_diff,
-                        close_diff_bps,
-                        close_within_target,
-                        close_match_frac_digits,
-                        close_meets_12dp,
-                        hit.source_count,
-                        hit.source_spread_bps,
-                        hit.close_exact_sources,
-                        local_price_agg_close_time_decay_ms(),
-                        local_price_agg_exact_boost(),
-                        started_ms,
-                        ready_ms,
-                        deadline_ms,
-                        ready_ms.saturating_sub(started_ms),
-                        local_vs_rtds_detect_gap_ms,
-                    );
+                    let source_agreement = if hit.source_contributions.is_empty() {
+                        0.0
+                    } else {
+                        let agree_cnt = hit
+                            .source_contributions
+                            .iter()
+                            .filter(|src| {
+                                let src_side = if src.adjusted_close_price >= first_ref {
+                                    Side::Yes
+                                } else {
+                                    Side::No
+                                };
+                                src_side == local_side_vs_rtds_open
+                            })
+                            .count();
+                        agree_cnt as f64 / hit.source_contributions.len() as f64
+                    };
+                    let direction_margin_bps = ((hit.close_price - first_ref).abs()
+                        / first_ref.abs().max(1e-12))
+                        * 10_000.0;
+                    let all_preclose = hit
+                        .source_contributions
+                        .iter()
+                        .all(|src| src.close_ts_ms < round_end_ts.saturating_mul(1_000));
+                    let preclose_relief_applied = all_preclose
+                        && hit.close_exact_sources == 0
+                        && direction_margin_bps + 1e-9
+                            >= LOCAL_PRICE_AGG_COMPARE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS
+                        && direction_margin_bps + 1e-9
+                            < LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS;
+                    let safe_preclose_relief_applied = all_preclose
+                        && hit.close_exact_sources == 0
+                        && hit.source_count >= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_SOURCES
+                        && hit.source_spread_bps
+                            <= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS
+                                + 1e-9
+                        && direction_margin_bps + 1e-9
+                            >= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS;
+                    let single_source_min_direction_margin_bps =
+                        local_price_agg_single_source_min_direction_margin_bps()
+                            .max(LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS_DEFAULT);
+                    let safe_single_source_relief_applied = hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && direction_margin_bps + 1e-9
+                            >= LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS;
+                    let mut close_only_filtered = false;
+                    if all_preclose
+                        && hit.close_exact_sources == 0
+                        && !preclose_relief_applied
+                        && !safe_preclose_relief_applied
+                        && !safe_single_source_relief_applied
+                        && direction_margin_bps + 1e-9
+                            < LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS
+                    {
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=preclose_near_flat direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && !safe_single_source_relief_applied
+                        && direction_margin_bps + 1e-9 < single_source_min_direction_margin_bps
+                    {
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=single_source_near_flat direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            single_source_min_direction_margin_bps,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    let min_confidence = local_price_agg_min_confidence();
+                    let relief_min_confidence = LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE_DEFAULT;
+                    let relief_min_direction_margin_bps =
+                        LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS_DEFAULT;
+                    let relief_max_source_spread_bps =
+                        LOCAL_PRICE_AGG_RELIEF_MAX_SOURCE_SPREAD_BPS_DEFAULT;
+                    let strong_direction_relief_applied = hit.source_count >= 3
+                        && (source_agreement >= 1.0 - 1e-9)
+                        && hit.source_spread_bps <= 5.0 + 1e-9
+                        && direction_margin_bps >= 10.0 - 1e-9;
+                    let safe_low_conf_relief_applied = hit.source_count
+                        >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_SOURCES
+                        && (source_agreement >= 1.0 - 1e-9)
+                        && hit.source_spread_bps
+                            <= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
+                        && direction_margin_bps
+                            >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS - 1e-9;
+                    let confidence = if hit.source_count == 1 {
+                        if hit.close_exact_sources > 0 {
+                            0.93
+                        } else {
+                            0.87
+                        }
+                    } else {
+                        let source_factor = (hit.source_count.min(3) as f64) / 3.0;
+                        let spread_factor = if local_price_agg_max_source_spread_bps() > 0.0 {
+                            (1.0 - (hit.source_spread_bps
+                                / local_price_agg_max_source_spread_bps()))
+                            .clamp(0.0, 1.0)
+                        } else {
+                            1.0
+                        };
+                        let exact_factor = (hit.close_exact_sources.min(2) as f64) / 2.0;
+                        (0.50 * source_agreement
+                            + 0.20 * source_factor
+                            + 0.20 * spread_factor
+                            + 0.10 * exact_factor)
+                            .clamp(0.0, 1.0)
+                    };
+                    let confidence_relief_applied = hit.source_count >= 2
+                        && (source_agreement >= 1.0 - 1e-9)
+                        && hit.source_spread_bps <= relief_max_source_spread_bps + 1e-9
+                        && direction_margin_bps >= relief_min_direction_margin_bps - 1e-9;
+                    let effective_min_confidence = if confidence_relief_applied
+                        || strong_direction_relief_applied
+                        || safe_low_conf_relief_applied
+                    {
+                        min_confidence.min(relief_min_confidence)
+                    } else {
+                        min_confidence
+                    };
+                    if !close_only_filtered && confidence + 1e-9 < effective_min_confidence {
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=low_confidence confidence={:.3} min_confidence={:.3} effective_min_confidence={:.3} relief_applied={} strong_direction_relief_applied={} safe_low_conf_relief_applied={} agreement={:.3} direction_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            confidence,
+                            min_confidence,
+                            effective_min_confidence,
+                            confidence_relief_applied,
+                            strong_direction_relief_applied,
+                            safe_low_conf_relief_applied,
+                            source_agreement,
+                            direction_margin_bps,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered {
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let close_within_target =
+                            close_diff_bps <= LOCAL_PRICE_AGG_COMPARE_TARGET_BPS;
+                        let close_match_frac_digits = count_matching_fractional_digits(
+                            hit.close_price,
+                            first_obs,
+                            LOCAL_PRICE_AGG_COMPARE_REPORT_DECIMALS,
+                        );
+                        let close_meets_12dp = close_match_frac_digits
+                            >= LOCAL_PRICE_AGG_COMPARE_TARGET_MIN_MATCH_DECIMALS;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        info!(
+                            "🧪 local_price_agg_vs_rtds | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} preclose_relief_applied={} safe_preclose_relief_applied={} safe_single_source_relief_applied={} safe_low_conf_relief_applied={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} close_within_5bps={} close_match_frac_digits={} close_meets_12dp={} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_decay_ms={:.1} local_exact_boost={:.2} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            preclose_relief_applied,
+                            safe_preclose_relief_applied,
+                            safe_single_source_relief_applied,
+                            safe_low_conf_relief_applied,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            close_within_target,
+                            close_match_frac_digits,
+                            close_meets_12dp,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            local_price_agg_close_time_decay_ms(),
+                            local_price_agg_exact_boost(),
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    }
                 }
                 None => {
                     warn!(
@@ -5891,6 +6766,72 @@ async fn run_post_close_winner_hint_listener(
                 );
             }
         }
+    }
+    if let Some(task) = local_full_shadow_task.take() {
+        match task.await {
+            Ok((hit, started_ms, ready_ms, deadline_ms)) => match hit {
+                Some((
+                    local_side,
+                    local_open,
+                    local_close,
+                    local_open_ts_ms,
+                    local_close_ts_ms,
+                    local_open_exact,
+                )) => {
+                    let close_abs_diff = (local_close - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    let side_match_vs_rtds_open = local_side == first_side;
+                    info!(
+                        "🧪 local_price_agg_full_shadow_vs_rtds | slug={} symbol={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_open={:.15}@{} local_close={:.15}@{} local_open_exact={} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        local_side,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        local_open,
+                        local_open_ts_ms,
+                        local_close,
+                        local_close_ts_ms,
+                        local_open_exact,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                }
+                None => {
+                    warn!(
+                        "⚠️ local_price_agg_full_shadow_unresolved | slug={} symbol={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                        slug,
+                        symbol,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        first_ref,
+                        first_side,
+                        first_obs,
+                    );
+                }
+            },
+            Err(err) => {
+                warn!(
+                    "⚠️ local_price_agg_full_shadow_task_join_error | slug={} symbol={} err={}",
+                    slug, symbol, err
+                );
+            }
+        }
+    }
+
+    if !winner_hint_ready {
+        observation_task.abort();
+        return;
     }
 
     if first_ms.saturating_sub(market_end_ms) > post_close_window_secs.saturating_mul(1_000) {
@@ -6864,6 +7805,51 @@ struct LocalSourceBoundaryState {
     first_after_end: Option<(u64, u64, f64)>,
 }
 
+fn format_local_source_boundary_state(
+    source: LocalPriceSource,
+    state: &LocalSourceBoundaryState,
+) -> String {
+    let first_tick = state
+        .first_tick_ts_ms
+        .map(|v| v.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let open_exact = state
+        .open_exact
+        .map(|p| format!("{}@{}", p.price, p.ts_ms))
+        .unwrap_or_else(|| "-".to_string());
+    let close_exact = state
+        .close_exact
+        .map(|p| format!("{}@{}", p.price, p.ts_ms))
+        .unwrap_or_else(|| "-".to_string());
+    let nearest_start = state
+        .nearest_start
+        .map(|(delta, ts_ms, px)| format!("{delta}ms/{px}@{ts_ms}"))
+        .unwrap_or_else(|| "-".to_string());
+    let first_after_start = state
+        .first_after_start
+        .map(|(delta, ts_ms, px)| format!("{delta}ms/{px}@{ts_ms}"))
+        .unwrap_or_else(|| "-".to_string());
+    let nearest_end = state
+        .nearest_end
+        .map(|(delta, ts_ms, px)| format!("{delta}ms/{px}@{ts_ms}"))
+        .unwrap_or_else(|| "-".to_string());
+    let first_after_end = state
+        .first_after_end
+        .map(|(delta, ts_ms, px)| format!("{delta}ms/{px}@{ts_ms}"))
+        .unwrap_or_else(|| "-".to_string());
+    format!(
+        "{}:first_tick={} open_exact={} first_after_start={} nearest_start={} close_exact={} first_after_end={} nearest_end={}",
+        source.as_str(),
+        first_tick,
+        open_exact,
+        first_after_start,
+        nearest_start,
+        close_exact,
+        first_after_end,
+        nearest_end,
+    )
+}
+
 fn pick_local_source_points(
     state: &LocalSourceBoundaryState,
     open_tol_ms: u64,
@@ -6964,6 +7950,64 @@ fn pick_local_source_close_point(
         }
     } else {
         None
+    }
+}
+
+fn pick_local_source_open_point(
+    state: &LocalSourceBoundaryState,
+    open_tol_ms: u64,
+) -> Option<AggregatedPricePoint> {
+    if let Some(p) = state.open_exact {
+        Some(p)
+    } else if let Some((delta, ts_ms, px)) = state.first_after_start {
+        if delta <= open_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_first_after_open",
+            })
+        } else {
+            None
+        }
+    } else if let Some((delta, ts_ms, px)) = state.nearest_start {
+        if delta <= open_tol_ms {
+            Some(AggregatedPricePoint {
+                price: px,
+                ts_ms,
+                exact: false,
+                abs_delta_ms: delta,
+                source: "local_nearest_open",
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
+fn apply_local_prewarmed_open_seed(
+    states: &mut HashMap<LocalPriceSource, LocalSourceBoundaryState>,
+    symbol: &str,
+    round_start_ms: u64,
+) {
+    for source in LOCAL_PRICE_SOURCES {
+        let Some(point) = peek_local_prewarmed_open(symbol, round_start_ms, source) else {
+            continue;
+        };
+        let state = states.entry(source).or_default();
+        match point.source {
+            "local_prewarm_open_exact" => state.open_exact = Some(point),
+            "local_prewarm_open_first_after" => {
+                state.first_after_start = Some((point.abs_delta_ms, point.ts_ms, point.price));
+            }
+            "local_prewarm_open_nearest" => {
+                state.nearest_start = Some((point.abs_delta_ms, point.ts_ms, point.price));
+            }
+            _ => {}
+        }
     }
 }
 
@@ -7095,6 +8139,7 @@ async fn run_local_price_close_aggregator(
     let end_ms = round_end_ts.saturating_mul(1_000);
     let close_tol_ms = local_price_agg_close_tolerance_ms();
     let min_sources = local_price_agg_min_sources();
+    let max_source_spread_bps = local_price_agg_max_source_spread_bps();
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
     for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
@@ -7163,9 +8208,12 @@ async fn run_local_price_close_aggregator(
                 open_price: None,
                 open_ts_ms: None,
                 open_exact: None,
+                raw_close_price: Some(*_raw_close_price),
                 close_price: Some(close.price),
                 close_ts_ms: Some(close.ts_ms),
                 close_exact: Some(close.exact),
+                close_abs_delta_ms: Some(close.abs_delta_ms),
+                close_pick_kind: Some(close.source.to_string()),
             },
         )
         .collect::<Vec<_>>();
@@ -7201,6 +8249,19 @@ async fn run_local_price_close_aggregator(
     let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
     let source_spread_bps = spread_bps(&close_values).unwrap_or(0.0);
 
+    if source_spread_bps > max_source_spread_bps + 1e-9 {
+        warn!(
+            "⚠️ local_price_agg_close_only_spread_reject | symbol={} round_start_ts={} round_end_ts={} spread_bps={:.3} max_bps={:.3} source_count={}",
+            target_symbol,
+            round_start_ts,
+            round_end_ts,
+            source_spread_bps,
+            max_source_spread_bps,
+            source_hits.len(),
+        );
+        return None;
+    }
+
     Some(LocalCloseOnlyAggHit {
         close_price: close_med,
         close_ts_ms: close_ts_med,
@@ -7233,6 +8294,11 @@ async fn run_local_price_aggregator(
     let min_confidence = local_price_agg_min_confidence();
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
+    let single_source_min_direction_margin_bps =
+        local_price_agg_single_source_min_direction_margin_bps();
+    let relief_min_confidence = LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE_DEFAULT;
+    let relief_min_direction_margin_bps = LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS_DEFAULT;
+    let relief_max_source_spread_bps = LOCAL_PRICE_AGG_RELIEF_MAX_SOURCE_SPREAD_BPS_DEFAULT;
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
     let mut observed_ticks: u64 = 0;
@@ -7245,6 +8311,7 @@ async fn run_local_price_aggregator(
         observed_snapshot_ticks = observed_snapshot_ticks.saturating_add(1);
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
     }
+    apply_local_prewarmed_open_seed(&mut states, &target_symbol, start_ms);
 
     let full_ready_sources = |states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>| {
         states
@@ -7306,14 +8373,17 @@ async fn run_local_price_aggregator(
         source_hits
             .iter()
             .map(
-                |(source, open, close, _, _)| LocalPriceAggSourcePointProbe {
+                |(source, open, close, _, raw_close)| LocalPriceAggSourcePointProbe {
                     source: source.as_str().to_string(),
                     open_price: Some(open.price),
                     open_ts_ms: Some(open.ts_ms),
                     open_exact: Some(open.exact),
+                    raw_close_price: Some(*raw_close),
                     close_price: Some(close.price),
                     close_ts_ms: Some(close.ts_ms),
                     close_exact: Some(close.exact),
+                    close_abs_delta_ms: Some(close.abs_delta_ms),
+                    close_pick_kind: Some(close.source.to_string()),
                 },
             )
             .collect::<Vec<_>>()
@@ -7322,9 +8392,12 @@ async fn run_local_price_aggregator(
     let emit_probe = |status: &str,
                       side: Option<Side>,
                       confidence: Option<f64>,
+                      effective_min_confidence: f64,
+                      confidence_relief_applied: bool,
                       source_count: usize,
                       source_agreement: Option<f64>,
                       source_spread_bps: Option<f64>,
+                      direction_margin_bps: Option<f64>,
                       open_price: Option<f64>,
                       open_ts_ms: Option<u64>,
                       close_price: Option<f64>,
@@ -7340,11 +8413,15 @@ async fn run_local_price_aggregator(
             side: side.map(|s| format!("{:?}", s)),
             confidence,
             min_confidence,
+            effective_min_confidence,
             min_sources,
             max_source_spread_bps,
+            single_source_min_direction_margin_bps,
+            confidence_relief_applied,
             source_count,
             source_agreement,
             source_spread_bps,
+            direction_margin_bps,
             open_price,
             open_ts_ms,
             close_price,
@@ -7368,9 +8445,17 @@ async fn run_local_price_aggregator(
         });
     };
 
+    let boundary_debug = || {
+        states
+            .iter()
+            .map(|(source, st)| format_local_source_boundary_state(*source, st))
+            .collect::<Vec<_>>()
+            .join(" | ")
+    };
+
     if source_hits.len() < min_sources {
         warn!(
-            "⚠️ local_price_agg_unresolved | symbol={} round_start_ts={} round_end_ts={} reason=insufficient_sources have={} need={} observed_ticks={} snapshot_ticks={} live_ticks={}",
+            "⚠️ local_price_agg_unresolved | symbol={} round_start_ts={} round_end_ts={} reason=insufficient_sources have={} need={} observed_ticks={} snapshot_ticks={} live_ticks={} source_boundary={}",
             target_symbol,
             round_start_ts,
             round_end_ts,
@@ -7379,12 +8464,16 @@ async fn run_local_price_aggregator(
             observed_ticks,
             observed_snapshot_ticks,
             observed_live_ticks,
+            boundary_debug(),
         );
         emit_probe(
             "insufficient_sources",
             None,
             None,
+            min_confidence,
+            false,
             source_hits.len(),
+            None,
             None,
             None,
             None,
@@ -7415,7 +8504,10 @@ async fn run_local_price_aggregator(
             "open_median_missing",
             None,
             None,
+            min_confidence,
+            false,
             source_hits.len(),
+            None,
             None,
             None,
             None,
@@ -7438,7 +8530,10 @@ async fn run_local_price_aggregator(
             "close_median_missing",
             None,
             None,
+            min_confidence,
+            false,
             source_hits.len(),
+            None,
             None,
             None,
             Some(open_med),
@@ -7473,6 +8568,8 @@ async fn run_local_price_aggregator(
     let spread_open = spread_bps(&open_values).unwrap_or(0.0);
     let spread_close = spread_bps(&close_values).unwrap_or(0.0);
     let source_spread = spread_open.max(spread_close);
+    let direction_margin_bps =
+        ((close_med - open_med).abs() / open_med.abs().max(1e-12)) * 10_000.0;
     if source_spread > max_source_spread_bps + 1e-9 {
         warn!(
             "⚠️ local_price_agg_spread_reject | symbol={} round_start_ts={} round_end_ts={} spread_bps={:.3} max_bps={:.3} source_count={}",
@@ -7487,9 +8584,12 @@ async fn run_local_price_aggregator(
             "spread_reject",
             Some(side),
             None,
+            min_confidence,
+            false,
             source_hits.len(),
             Some(source_agreement),
             Some(source_spread),
+            Some(direction_margin_bps),
             Some(open_med),
             Some(open_ts_med),
             Some(close_med),
@@ -7521,25 +8621,83 @@ async fn run_local_price_aggregator(
             .clamp(0.0, 1.0)
     };
 
-    if confidence + 1e-9 < min_confidence {
+    if source_hits.len() == 1
+        && open_exact_sources == 0
+        && close_exact_sources == 0
+        && direction_margin_bps + 1e-9 < single_source_min_direction_margin_bps
+    {
         warn!(
-            "⚠️ local_price_agg_low_confidence | symbol={} round_start_ts={} round_end_ts={} confidence={:.3} min_confidence={:.3} source_count={} agreement={:.3} spread_bps={:.3}",
+            "⚠️ local_price_agg_single_source_near_flat | symbol={} round_start_ts={} round_end_ts={} direction_margin_bps={:.6} min_margin_bps={:.6} source_boundary={}",
+            target_symbol,
+            round_start_ts,
+            round_end_ts,
+            direction_margin_bps,
+            single_source_min_direction_margin_bps,
+            boundary_debug(),
+        );
+        emit_probe(
+            "single_source_near_flat",
+            Some(side),
+            None,
+            min_confidence,
+            false,
+            source_hits.len(),
+            Some(source_agreement),
+            Some(source_spread),
+            Some(direction_margin_bps),
+            Some(open_med),
+            Some(open_ts_med),
+            Some(close_med),
+            Some(close_ts_med),
+            open_exact_sources,
+            close_exact_sources,
+        );
+        return None;
+    }
+
+    let confidence_relief_applied = source_hits.len() >= 2
+        && (source_agreement >= 1.0 - 1e-9)
+        && source_spread <= relief_max_source_spread_bps + 1e-9
+        && direction_margin_bps >= relief_min_direction_margin_bps - 1e-9;
+    let safe_low_conf_relief_applied = source_hits.len()
+        >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_SOURCES
+        && (source_agreement >= 1.0 - 1e-9)
+        && source_spread <= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
+        && direction_margin_bps
+            >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS - 1e-9;
+    let effective_min_confidence = if confidence_relief_applied || safe_low_conf_relief_applied {
+        min_confidence.min(relief_min_confidence)
+    } else {
+        min_confidence
+    };
+
+    if confidence + 1e-9 < effective_min_confidence {
+        warn!(
+            "⚠️ local_price_agg_low_confidence | symbol={} round_start_ts={} round_end_ts={} confidence={:.3} min_confidence={:.3} effective_min_confidence={:.3} relief_applied={} safe_low_conf_relief_applied={} source_count={} agreement={:.3} spread_bps={:.3} direction_margin_bps={:.6} source_boundary={}",
             target_symbol,
             round_start_ts,
             round_end_ts,
             confidence,
             min_confidence,
+            effective_min_confidence,
+            confidence_relief_applied,
+            safe_low_conf_relief_applied,
             source_hits.len(),
             source_agreement,
             source_spread,
+            direction_margin_bps,
+            boundary_debug(),
         );
         emit_probe(
             "low_confidence",
             Some(side),
             Some(confidence),
+            effective_min_confidence,
+            confidence_relief_applied || safe_low_conf_relief_applied,
             source_hits.len(),
             Some(source_agreement),
             Some(source_spread),
+            Some(direction_margin_bps),
             Some(open_med),
             Some(open_ts_med),
             Some(close_med),
@@ -7551,11 +8709,15 @@ async fn run_local_price_aggregator(
     }
 
     info!(
-        "🧠 local_price_agg_ready | unix_ms={} symbol={} side={:?} confidence={:.3} sources={} agreement={:.3} spread_bps={:.3} open={:.6}@{} close={:.6}@{} open_exact_sources={} close_exact_sources={} decay_ms={:.1} exact_boost={:.2} observed_ticks={} snapshot_ticks={} live_ticks={} lagged_ticks={}",
+        "🧠 local_price_agg_ready | unix_ms={} symbol={} side={:?} confidence={:.3} min_confidence={:.3} effective_min_confidence={:.3} relief_applied={} safe_low_conf_relief_applied={} sources={} agreement={:.3} spread_bps={:.3} direction_margin_bps={:.6} open={:.6}@{} close={:.6}@{} open_exact_sources={} close_exact_sources={} decay_ms={:.1} exact_boost={:.2} observed_ticks={} snapshot_ticks={} live_ticks={} lagged_ticks={}",
         unix_now_millis_u64(),
         target_symbol,
         side,
         confidence,
+        min_confidence,
+        effective_min_confidence,
+        confidence_relief_applied,
+        safe_low_conf_relief_applied,
         source_hits
             .iter()
             .map(|(s, _, _, _, _)| s.as_str())
@@ -7563,6 +8725,7 @@ async fn run_local_price_aggregator(
             .join(","),
         source_agreement,
         source_spread,
+        direction_margin_bps,
         open_med,
         open_ts_med,
         close_med,
@@ -7580,9 +8743,12 @@ async fn run_local_price_aggregator(
         "ready",
         Some(side),
         Some(confidence),
+        effective_min_confidence,
+        confidence_relief_applied,
         source_hits.len(),
         Some(source_agreement),
         Some(source_spread),
+        Some(direction_margin_bps),
         Some(open_med),
         Some(open_ts_med),
         Some(close_med),
@@ -7767,10 +8933,11 @@ async fn run_chainlink_winner_hint_via_hub(
         }
         if open_point.is_none() && ts_ms == start_ms {
             open_point = Some((price, ts_ms));
+            remember_chainlink_exact_open(&target_symbol, start_ms, price, ts_ms);
             info!(
-                "⏱️ chainlink_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} exact=true",
-                unix_now_millis_u64(),
-                target_symbol,
+                        "⏱️ chainlink_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} exact=true",
+                        unix_now_millis_u64(),
+                        target_symbol,
                 round_start_ts,
                 ts_ms,
                 price,
@@ -7778,10 +8945,11 @@ async fn run_chainlink_winner_hint_via_hub(
         }
         if close_point.is_none() && ts_ms == end_ms {
             close_point = Some((price, ts_ms));
+            remember_chainlink_exact_close(&target_symbol, end_ms, price, ts_ms);
             info!(
-                "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} exact=true",
-                unix_now_millis_u64(),
-                target_symbol,
+                        "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} exact=true",
+                        unix_now_millis_u64(),
+                        target_symbol,
                 round_end_ts,
                 ts_ms,
                 price,
@@ -7835,6 +9003,7 @@ async fn run_chainlink_winner_hint_via_hub(
             "🔄 chainlink_close_recovered_from_prewarm | symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} — own WS missed the tick, using next-round prewarm observation",
             target_symbol, round_end_ts, close_ts_ms, close,
         );
+        remember_chainlink_exact_close(&target_symbol, end_ms, close, close_ts_ms);
         if let Some((open_ref_px, open_ts_ms)) = open_point {
             let side = if close >= open_ref_px {
                 Side::Yes
@@ -8663,6 +9832,7 @@ async fn run_market_ws_with_wall_guard(
     ofi_tx: mpsc::Sender<MarketDataMsg>,
     glft_tx: mpsc::Sender<MarketDataMsg>,
     coord_tx: watch::Sender<MarketDataMsg>,
+    coord_accept_partial_book: bool,
     post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
     recorder: Option<RecorderHandle>,
@@ -8674,6 +9844,7 @@ async fn run_market_ws_with_wall_guard(
         ofi_tx,
         glft_tx,
         coord_tx,
+        coord_accept_partial_book,
         post_close_book_tx,
         end_ts,
         recorder,
@@ -8727,44 +9898,7 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
     );
 
     let coord_cfg = CoordinatorConfig::from_env();
-    let mut hub_symbols: HashSet<String> = HashSet::new();
-    if coord_cfg.strategy.is_oracle_lag_sniping() {
-        for prefix in &prefixes {
-            if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
-                hub_symbols.insert(format!("{}/usd", sym));
-            } else {
-                warn!(
-                    "⚠️ in-proc supervisor: could not derive symbol from prefix='{}' — this slug will not have a Chainlink feed",
-                    prefix
-                );
-            }
-        }
-    }
-    let shared_hub = if hub_symbols.is_empty() {
-        None
-    } else {
-        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-        log_symbols.sort();
-        info!(
-            "🛰️ shared chainlink_hub starting | symbols={}",
-            log_symbols.join(",")
-        );
-        Some(ChainlinkHub::spawn(hub_symbols.clone()))
-    };
-    let shared_local_price_hub = if coord_cfg.strategy.is_oracle_lag_sniping()
-        && local_price_agg_enabled()
-        && !hub_symbols.is_empty()
-    {
-        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-        log_symbols.sort();
-        info!(
-            "🧠 shared local_price_hub starting | symbols={} sources=binance,bybit,okx",
-            log_symbols.join(",")
-        );
-        Some(LocalPriceHub::spawn(hub_symbols.clone()))
-    } else {
-        None
-    };
+    let shared_ingress = SharedIngressRuntime::build(&prefixes, &coord_cfg);
 
     // Oracle-lag execution now runs per-market directly on WinnerHint hot path.
     // Cross-market arbiter and round-tail maker fallback are intentionally disabled.
@@ -8793,8 +9927,7 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
     for prefix in prefixes {
         let ctx = Arc::new(WorkerCtx {
             slug: prefix.clone(),
-            chainlink_hub: shared_hub.clone(),
-            local_price_hub: shared_local_price_hub.clone(),
+            shared_ingress: shared_ingress.clone(),
             arbiter_tx: arbiter_sender.clone(),
             round_tail_tx: round_tail_sender.clone(),
         });
@@ -8988,6 +10121,7 @@ async fn run_market_ws(
     ofi_tx: mpsc::Sender<MarketDataMsg>,
     glft_tx: mpsc::Sender<MarketDataMsg>,
     coord_tx: watch::Sender<MarketDataMsg>,
+    coord_accept_partial_book: bool,
     post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
     recorder: Option<RecorderHandle>,
@@ -9302,6 +10436,9 @@ async fn run_market_ws(
                                                                 .saturating_add(1);
                                                     }
                                                 }
+                                                if coord_accept_partial_book {
+                                                    let _ = coord_tx.send(md_msg.clone());
+                                                }
                                                 if let Some(full) = book_asm.update(&md_msg) {
                                                     session_had_market_data = true;
                                                     session_book_tick_count =
@@ -9452,6 +10589,9 @@ async fn run_market_ws(
                                                                     session_partial_no_book_count
                                                                         .saturating_add(1);
                                                             }
+                                                        }
+                                                        if coord_accept_partial_book {
+                                                            let _ = coord_tx.send(md_msg.clone());
                                                         }
                                                         if let Some(full) = book_asm.update(&md_msg) {
                                                             session_had_market_data = true;
@@ -9669,6 +10809,8 @@ fn install_rustls_crypto_provider() {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenv::dotenv().ok();
+    let active_instance_id = instance_id();
+    let active_log_root = log_root();
     // Per-worker log isolation: when spawned as a supervisor child, each worker
     // writes to its own slug-tagged daily-rolling file so grepping one market's
     // story stops requiring slug= field scoping on every log line.
@@ -9680,8 +10822,9 @@ async fn main() -> anyhow::Result<()> {
         Some(slug) => format!("polymarket.{}.log", slug),
         None => "polymarket.log".to_string(),
     };
-    // Dual-output logging: stdout + daily rolling file in logs/
-    let file_appender = tracing_appender::rolling::daily("logs", &log_filename_prefix);
+    // Dual-output logging: stdout + daily rolling file in log_root().
+    fs::create_dir_all(&active_log_root)?;
+    let file_appender = tracing_appender::rolling::daily(&active_log_root, &log_filename_prefix);
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     {
         use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -9696,6 +10839,11 @@ async fn main() -> anyhow::Result<()> {
     info!("  Polymarket V2 — Async Inventory Arbitrage Engine");
     info!("  Auto-Discovery + Market Rotation");
     info!("═══════════════════════════════════════════════════");
+    info!(
+        "🗂️ runtime_paths | instance_id={} log_root={}",
+        active_instance_id.as_deref().unwrap_or("unset"),
+        active_log_root.display()
+    );
 
     let is_multi_market_child = env::var("PM_MULTI_MARKET_CHILD")
         .ok()
@@ -9708,13 +10856,64 @@ async fn main() -> anyhow::Result<()> {
     run_prefix_worker(None).await
 }
 
-/// Shared handles passed from the in-proc supervisor to each per-slug worker.
-/// When present, overrides env-based slug resolution and lets every worker
-/// share one ChainlinkHub (one WS connection, N symbol subscriptions).
-struct WorkerCtx {
-    slug: String,
+/// Shared ingress plane passed from the in-proc supervisor to per-slug workers.
+/// This keeps one upstream data plane and multiple downstream workers.
+#[derive(Clone)]
+struct SharedIngressRuntime {
     chainlink_hub: Option<Arc<ChainlinkHub>>,
     local_price_hub: Option<Arc<LocalPriceHub>>,
+}
+
+impl SharedIngressRuntime {
+    fn build(prefixes: &[String], coord_cfg: &CoordinatorConfig) -> Self {
+        let mut hub_symbols: HashSet<String> = HashSet::new();
+        if coord_cfg.strategy.is_oracle_lag_sniping() {
+            for prefix in prefixes {
+                if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
+                    hub_symbols.insert(format!("{}/usd", sym));
+                } else {
+                    warn!(
+                        "⚠️ shared ingress: could not derive symbol from prefix='{}' — this slug will not have a Chainlink feed",
+                        prefix
+                    );
+                }
+            }
+        }
+        let chainlink_hub = if hub_symbols.is_empty() {
+            None
+        } else {
+            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+            log_symbols.sort();
+            info!(
+                "🛰️ shared ingress chainlink_hub starting | symbols={}",
+                log_symbols.join(",")
+            );
+            Some(ChainlinkHub::spawn(hub_symbols.clone()))
+        };
+        let local_price_hub = if coord_cfg.strategy.is_oracle_lag_sniping()
+            && local_price_agg_enabled()
+            && !hub_symbols.is_empty()
+        {
+            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
+            log_symbols.sort();
+            info!(
+                "🧠 shared ingress local_price_hub starting | symbols={} sources=binance,bybit,okx",
+                log_symbols.join(",")
+            );
+            Some(LocalPriceHub::spawn(hub_symbols))
+        } else {
+            None
+        };
+        Self {
+            chainlink_hub,
+            local_price_hub,
+        }
+    }
+}
+
+struct WorkerCtx {
+    slug: String,
+    shared_ingress: SharedIngressRuntime,
     /// Cross-market arbiter channel. When Some, hint listeners send
     /// `ArbiterObservation` to this instead of `WinnerHint` directly.
     arbiter_tx: Option<mpsc::Sender<ArbiterObservation>>,
@@ -9776,7 +10975,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     };
 
     let chainlink_hub = if let Some(c) = &ctx {
-        c.chainlink_hub.clone()
+        c.shared_ingress.chainlink_hub.clone()
     } else if coord_cfg_base.strategy.is_oracle_lag_sniping() {
         let mut hub_symbols = HashSet::new();
         for base in oracle_lag_symbol_universe.hub_symbols() {
@@ -9793,7 +10992,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         None
     };
     let local_price_hub = if let Some(c) = &ctx {
-        c.local_price_hub.clone()
+        c.shared_ingress.local_price_hub.clone()
     } else if coord_cfg_base.strategy.is_oracle_lag_sniping() && local_price_agg_enabled() {
         let mut hub_symbols = HashSet::new();
         for base in oracle_lag_symbol_universe.hub_symbols() {
@@ -9815,6 +11014,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     let recorder = RecorderHandle::from_env();
     let mut auto_claim_state = AutoClaimState::default();
     let mut round_claim_task: Option<tokio::task::JoinHandle<()>> = None;
+    let mut pgt_shadow_redeem_task: Option<tokio::task::JoinHandle<()>> = None;
 
     let dry_run = coord_cfg_base.dry_run;
     if dry_run {
@@ -10695,6 +11895,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             ts: Instant::now(),
         });
         let (inv_watch_tx, inv_watch_rx) = watch::channel(InventorySnapshot::default());
+        let inv_watch_rx_postclose = inv_watch_rx.clone();
         let (ofi_watch_tx, ofi_watch_rx) = watch::channel(OfiSnapshot::default());
         let (glft_watch_tx, glft_watch_rx) = watch::channel(GlftSignalSnapshot::default());
         let (coord_obs_tx, coord_obs_rx) = watch::channel(CoordinatorObsSnapshot::default());
@@ -10799,6 +12000,19 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                         )
                         .await;
                     }));
+                    if local_price_agg_enabled() {
+                        let sym = prewarm_symbol.clone();
+                        let prewarm_local_price_hub = local_price_hub.clone();
+                        session_handles.push(tokio::spawn(async move {
+                            run_local_price_open_prewarm(
+                                &sym,
+                                current_round_start_ts,
+                                current_prewarm_deadline_ts,
+                                prewarm_local_price_hub,
+                            )
+                            .await;
+                        }));
+                    }
                 }
                 // Next-round prewarm (normal path): capture exact open before round N+1 starts.
                 let next_round_start_ts = hint_round_end_ts;
@@ -10808,16 +12022,45 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     prewarm_symbol, next_round_start_ts, prewarm_deadline_ts
                 );
                 let prewarm_chainlink_hub = chainlink_hub.clone();
+                let next_round_chainlink_symbol = prewarm_symbol.clone();
                 session_handles.push(tokio::spawn(async move {
                     run_chainlink_open_prewarm(
-                        &prewarm_symbol,
+                        &next_round_chainlink_symbol,
                         next_round_start_ts,
                         prewarm_deadline_ts,
                         prewarm_chainlink_hub,
                     )
                     .await;
                 }));
+                if local_price_agg_enabled() {
+                    let prewarm_local_price_hub = local_price_hub.clone();
+                    let prewarm_symbol_local = prewarm_symbol.clone();
+                    session_handles.push(tokio::spawn(async move {
+                        run_local_price_open_prewarm(
+                            &prewarm_symbol_local,
+                            next_round_start_ts,
+                            prewarm_deadline_ts,
+                            prewarm_local_price_hub,
+                        )
+                        .await;
+                    }));
+                }
             }
+        }
+
+        if coord_cfg.strategy.is_pair_gated_tranche_arb() && recorder.enabled() {
+            let inv_watch_rx_shadow = inv_watch_rx.clone();
+            let shadow_recorder = recorder.clone();
+            let shadow_meta = recorder_meta.clone();
+            session_handles.push(tokio::spawn(async move {
+                run_pgt_shadow_harvest_lifecycle(
+                    inv_watch_rx_shadow,
+                    shadow_recorder,
+                    shadow_meta,
+                    effective_end_ts,
+                )
+                .await;
+            }));
         }
 
         let inv = InventoryManager::new(
@@ -10853,11 +12096,17 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             }
         }
 
+        let dry_run_executor_md_rx = if dry_run && coord_cfg.strategy.is_pair_gated_tranche_arb() {
+            Some(coord_md_rx.clone())
+        } else {
+            None
+        };
+
         let coord = StrategyCoordinator::with_aux_rx(
             coord_cfg.clone(),
             ofi_watch_rx,
             inv_watch_rx,
-            coord_md_rx,
+            coord_md_rx.clone(),
             winner_hint_rx,
             glft_watch_rx,
             om_tx.clone(),
@@ -10902,6 +12151,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             result_tx,
             exec_fill_rx,
             dry_run_sim_fill_tx,
+            dry_run_executor_md_rx,
+            dry_run && coord_cfg.strategy.is_pair_gated_tranche_arb(),
             Some(capital_tx),
             Some(feedback_tx),
             recorder.enabled().then_some(recorder.clone()),
@@ -10980,6 +12231,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             ofi_md_tx,
             glft_md_tx,
             coord_md_tx,
+            coord_cfg.strategy.is_pair_gated_tranche_arb(),
             post_close_book_tx,
             ws_round_end_ts,
             recorder.enabled().then_some(recorder.clone()),
@@ -11099,6 +12351,21 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         }
 
         let ended_condition = market_id.parse::<alloy::primitives::B256>().ok();
+        if let Some(prev) = pgt_shadow_redeem_task.take() {
+            if prev.is_finished() {
+                match prev.await {
+                    Ok(_) => {}
+                    Err(e) if e.is_cancelled() => {}
+                    Err(e) => warn!("⚠️ Previous pgt shadow-redeem task join failed: {:?}", e),
+                }
+            } else {
+                warn!(
+                    "⚠️ Previous pgt shadow-redeem task still running at new market boundary — aborting stale task"
+                );
+                prev.abort();
+                let _ = prev.await;
+            }
+        }
         if let Some(prev) = round_claim_task.take() {
             if prev.is_finished() {
                 match prev.await {
@@ -11123,6 +12390,21 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 "💸 Round claim skipped: market session ended by {:?} (not settled)",
                 reason
             );
+        }
+
+        if market_settled && coord_cfg.strategy.is_pair_gated_tranche_arb() && recorder.enabled() {
+            let redeem_recorder = recorder.clone();
+            let redeem_meta = recorder_meta.clone();
+            let final_snapshot = *inv_watch_rx_postclose.borrow();
+            pgt_shadow_redeem_task = Some(tokio::spawn(async move {
+                run_pgt_shadow_redeem_lifecycle(
+                    redeem_recorder,
+                    redeem_meta,
+                    effective_end_ts,
+                    final_snapshot,
+                )
+                .await;
+            }));
         }
 
         if auto_claim_cfg.enabled && market_settled {
@@ -11166,6 +12448,21 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         }
 
         if !prefix_mode {
+            if let Some(handle) = pgt_shadow_redeem_task.take() {
+                let wait_secs = PGT_SHADOW_REDEEM_RETRY_SECS.saturating_add(5);
+                info!(
+                    "🧾 Fixed mode: waiting up to {}s for pgt shadow-redeem task before exit",
+                    wait_secs
+                );
+                match tokio::time::timeout(Duration::from_secs(wait_secs), handle).await {
+                    Ok(joined) => {
+                        if let Err(e) = joined {
+                            warn!("⚠️ PGT shadow-redeem task join failed: {:?}", e);
+                        }
+                    }
+                    Err(_) => warn!("⚠️ PGT shadow-redeem task timed out on fixed-mode exit"),
+                }
+            }
             if let Some(handle) = round_claim_task.take() {
                 let wait_secs = round_claim_cfg.window.as_secs().saturating_add(5);
                 info!(
@@ -11736,6 +13033,36 @@ mod tests {
         let huge = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
         let parsed = parse_u256_allowance(huge).expect("must parse large allowance");
         assert!(!parsed.is_zero(), "large allowance should be non-zero");
+    }
+
+    #[test]
+    fn test_pgt_shadow_redeem_target_only_targets_resolved_winner_side() {
+        let mut snapshot = InventorySnapshot::default();
+        snapshot.working.yes_qty = 12.0;
+        snapshot.working.no_qty = 3.0;
+
+        assert_eq!(
+            pgt_shadow_redeem_target(&snapshot, Some(Side::Yes)),
+            Some((Side::Yes, 12.0))
+        );
+        assert_eq!(
+            pgt_shadow_redeem_target(&snapshot, Some(Side::No)),
+            Some((Side::No, 3.0))
+        );
+        assert_eq!(pgt_shadow_redeem_target(&snapshot, None), None);
+    }
+
+    #[test]
+    fn test_pgt_shadow_redeem_target_skips_zero_qty_winner_side() {
+        let mut snapshot = InventorySnapshot::default();
+        snapshot.working.yes_qty = 0.0;
+        snapshot.working.no_qty = 7.0;
+
+        assert_eq!(pgt_shadow_redeem_target(&snapshot, Some(Side::Yes)), None);
+        assert_eq!(
+            pgt_shadow_redeem_target(&snapshot, Some(Side::No)),
+            Some((Side::No, 7.0))
+        );
     }
 
     #[test]

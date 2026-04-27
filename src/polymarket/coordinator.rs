@@ -786,9 +786,23 @@ struct Stats {
     pair_arb_keep_candidates: u64,
     pair_arb_skip_inventory_gate: u64,
     pair_arb_skip_simulate_buy_none: u64,
+    pgt_post_flow_quotes: u64,
+    pgt_dispatch_intents: u64,
+    pgt_dispatch_blocked: u64,
+    pgt_dispatch_place: u64,
+    pgt_dispatch_retain: u64,
+    pgt_dispatch_clear: u64,
     pair_arb_opposite_slot_blocked: u64,
     pair_arb_stale_target_dropped: u64,
     pair_arb_state_forced_republish: u64,
+    pgt_seed_quotes: u64,
+    pgt_completion_quotes: u64,
+    pgt_skip_harvest: u64,
+    pgt_skip_tail_completion_only: u64,
+    pgt_skip_residual_guard: u64,
+    pgt_skip_capital_guard: u64,
+    pgt_skip_invalid_book: u64,
+    pgt_skip_no_seed: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -798,6 +812,24 @@ struct PairArbGateLogSnapshot {
     keep_candidates: u64,
     skip_inventory_gate: u64,
     skip_simulate_buy_none: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PgtGateLogSnapshot {
+    seed_quotes: u64,
+    completion_quotes: u64,
+    skip_harvest: u64,
+    skip_tail_completion_only: u64,
+    skip_residual_guard: u64,
+    skip_capital_guard: u64,
+    skip_invalid_book: u64,
+    skip_no_seed: u64,
+    post_flow_quotes: u64,
+    dispatch_intents: u64,
+    dispatch_blocked: u64,
+    dispatch_place: u64,
+    dispatch_retain: u64,
+    dispatch_clear: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1083,6 +1115,8 @@ pub struct StrategyCoordinator {
     last_metrics_log_ts: Instant,
     pair_arb_gate_last_log_ts: Instant,
     pair_arb_gate_last_snapshot: PairArbGateLogSnapshot,
+    pgt_gate_last_log_ts: Instant,
+    pgt_gate_last_snapshot: PgtGateLogSnapshot,
     post_close_winner_side: Option<Side>,
     post_close_winner_source: Option<WinnerHintSource>,
     post_close_winner_open_is_exact: Option<bool>,
@@ -1208,6 +1242,20 @@ pub struct CoordinatorObsSnapshot {
     pub pair_arb_opposite_slot_blocked: u64,
     pub pair_arb_stale_target_dropped: u64,
     pub pair_arb_state_forced_republish: u64,
+    pub pgt_seed_quotes: u64,
+    pub pgt_completion_quotes: u64,
+    pub pgt_skip_harvest: u64,
+    pub pgt_skip_tail_completion_only: u64,
+    pub pgt_skip_residual_guard: u64,
+    pub pgt_skip_capital_guard: u64,
+    pub pgt_skip_invalid_book: u64,
+    pub pgt_skip_no_seed: u64,
+    pub pgt_post_flow_quotes: u64,
+    pub pgt_dispatch_intents: u64,
+    pub pgt_dispatch_blocked: u64,
+    pub pgt_dispatch_place: u64,
+    pub pgt_dispatch_retain: u64,
+    pub pgt_dispatch_clear: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1386,6 +1434,8 @@ impl StrategyCoordinator {
             last_metrics_log_ts,
             pair_arb_gate_last_log_ts: now,
             pair_arb_gate_last_snapshot: PairArbGateLogSnapshot::default(),
+            pgt_gate_last_log_ts: now,
+            pgt_gate_last_snapshot: PgtGateLogSnapshot::default(),
             post_close_winner_side: None,
             post_close_winner_source: None,
             post_close_winner_open_is_exact: None,
@@ -1661,7 +1711,7 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
@@ -1670,6 +1720,7 @@ impl StrategyCoordinator {
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked, self.stats.pair_arb_stale_target_dropped, self.stats.pair_arb_state_forced_republish,
             self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none,
+            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
@@ -1722,6 +1773,20 @@ impl StrategyCoordinator {
             pair_arb_opposite_slot_blocked: self.stats.pair_arb_opposite_slot_blocked,
             pair_arb_stale_target_dropped: self.stats.pair_arb_stale_target_dropped,
             pair_arb_state_forced_republish: self.stats.pair_arb_state_forced_republish,
+            pgt_seed_quotes: self.stats.pgt_seed_quotes,
+            pgt_completion_quotes: self.stats.pgt_completion_quotes,
+            pgt_skip_harvest: self.stats.pgt_skip_harvest,
+            pgt_skip_tail_completion_only: self.stats.pgt_skip_tail_completion_only,
+            pgt_skip_residual_guard: self.stats.pgt_skip_residual_guard,
+            pgt_skip_capital_guard: self.stats.pgt_skip_capital_guard,
+            pgt_skip_invalid_book: self.stats.pgt_skip_invalid_book,
+            pgt_skip_no_seed: self.stats.pgt_skip_no_seed,
+            pgt_post_flow_quotes: self.stats.pgt_post_flow_quotes,
+            pgt_dispatch_intents: self.stats.pgt_dispatch_intents,
+            pgt_dispatch_blocked: self.stats.pgt_dispatch_blocked,
+            pgt_dispatch_place: self.stats.pgt_dispatch_place,
+            pgt_dispatch_retain: self.stats.pgt_dispatch_retain,
+            pgt_dispatch_clear: self.stats.pgt_dispatch_clear,
         };
         let _ = obs_tx.send(snapshot);
     }
@@ -1747,6 +1812,38 @@ impl StrategyCoordinator {
             .stats
             .pair_arb_skip_simulate_buy_none
             .saturating_add(quotes.diagnostics.pair_arb_skip_simulate_buy_none as u64);
+        self.stats.pgt_seed_quotes = self
+            .stats
+            .pgt_seed_quotes
+            .saturating_add(quotes.diagnostics.pgt_seed_quotes as u64);
+        self.stats.pgt_completion_quotes = self
+            .stats
+            .pgt_completion_quotes
+            .saturating_add(quotes.diagnostics.pgt_completion_quotes as u64);
+        self.stats.pgt_skip_harvest = self
+            .stats
+            .pgt_skip_harvest
+            .saturating_add(quotes.diagnostics.pgt_skip_harvest as u64);
+        self.stats.pgt_skip_tail_completion_only = self
+            .stats
+            .pgt_skip_tail_completion_only
+            .saturating_add(quotes.diagnostics.pgt_skip_tail_completion_only as u64);
+        self.stats.pgt_skip_residual_guard = self
+            .stats
+            .pgt_skip_residual_guard
+            .saturating_add(quotes.diagnostics.pgt_skip_residual_guard as u64);
+        self.stats.pgt_skip_capital_guard = self
+            .stats
+            .pgt_skip_capital_guard
+            .saturating_add(quotes.diagnostics.pgt_skip_capital_guard as u64);
+        self.stats.pgt_skip_invalid_book = self
+            .stats
+            .pgt_skip_invalid_book
+            .saturating_add(quotes.diagnostics.pgt_skip_invalid_book as u64);
+        self.stats.pgt_skip_no_seed = self
+            .stats
+            .pgt_skip_no_seed
+            .saturating_add(quotes.diagnostics.pgt_skip_no_seed as u64);
     }
 
     pub(super) fn execution_toxic_block_applies(&self) -> bool {
@@ -1758,24 +1855,30 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     fn update_book(&mut self, yb: f64, ya: f64, nb: f64, na: f64) {
-        self.book = Book {
-            yes_bid: yb,
-            yes_ask: ya,
-            no_bid: nb,
-            no_ask: na,
-        };
+        if yb.is_finite() {
+            self.book.yes_bid = yb.max(0.0);
+        }
+        if ya.is_finite() {
+            self.book.yes_ask = ya.max(0.0);
+        }
+        if nb.is_finite() {
+            self.book.no_bid = nb.max(0.0);
+        }
+        if na.is_finite() {
+            self.book.no_ask = na.max(0.0);
+        }
 
         // P5 FIX: Update per-side timestamps independently.
         // Shared timestamp caused YES updates to mask NO staleness.
-        if yb > 0.0 && ya > 0.0 {
-            self.last_valid_book.yes_bid = yb;
-            self.last_valid_book.yes_ask = ya;
+        if yb.is_finite() && ya.is_finite() && self.book.yes_bid > 0.0 && self.book.yes_ask > 0.0 {
+            self.last_valid_book.yes_bid = self.book.yes_bid;
+            self.last_valid_book.yes_ask = self.book.yes_ask;
             self.last_valid_ts_yes = Instant::now();
             self.yes_stale_since = None;
         }
-        if nb > 0.0 && na > 0.0 {
-            self.last_valid_book.no_bid = nb;
-            self.last_valid_book.no_ask = na;
+        if nb.is_finite() && na.is_finite() && self.book.no_bid > 0.0 && self.book.no_ask > 0.0 {
+            self.last_valid_book.no_bid = self.book.no_bid;
+            self.last_valid_book.no_ask = self.book.no_ask;
             self.last_valid_ts_no = Instant::now();
             self.no_stale_since = None;
         }
@@ -2541,17 +2644,22 @@ impl StrategyCoordinator {
         self.apply_flow_risk(
             &working_inv,
             &mut quotes,
-            yes_stale_raw,
-            no_stale_raw,
+            yes_stale_actionable,
+            no_stale_actionable,
             yes_toxic_blocked,
             no_toxic_blocked,
         );
+        if self.cfg.strategy.is_pair_gated_tranche_arb() {
+            let remaining_quotes = u64::from(quotes.yes_buy.is_some()) + u64::from(quotes.no_buy.is_some());
+            self.stats.pgt_post_flow_quotes =
+                self.stats.pgt_post_flow_quotes.saturating_add(remaining_quotes);
+        }
         self.execute_quotes(
             &working_inv,
             &ub,
             quotes,
-            yes_stale_raw,
-            no_stale_raw,
+            yes_stale_actionable,
+            no_stale_actionable,
             yes_toxic_blocked,
             no_toxic_blocked,
         )

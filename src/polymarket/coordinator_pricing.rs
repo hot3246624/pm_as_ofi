@@ -489,46 +489,69 @@ impl StrategyCoordinator {
         match intent {
             Some(intent) => match (intent.side, intent.direction) {
                 (Side::Yes, TradeDirection::Buy) => {
-                    self.can_buy_yes(inv, intent.size)
-                        && self.passes_outcome_floor_for_buy(
+                    (if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                        self.can_buy_pair_gated_tranche(intent)
+                    } else {
+                        self.can_buy_yes(inv, intent.size)
+                    }) && self.passes_outcome_floor_for_buy(
+                        inv,
+                        Side::Yes,
+                        intent.size,
+                        intent.price,
+                        intent.reason,
+                    ) && (!self.cfg.strategy.is_glft_mm()
+                        || self.passes_pair_cost_guard_for_buy(
                             inv,
                             Side::Yes,
                             intent.size,
                             intent.price,
                             intent.reason,
-                        )
-                        && (!self.cfg.strategy.is_glft_mm()
-                            || self.passes_pair_cost_guard_for_buy(
-                                inv,
-                                Side::Yes,
-                                intent.size,
-                                intent.price,
-                                intent.reason,
-                            ))
+                        ))
                 }
                 (Side::No, TradeDirection::Buy) => {
-                    self.can_buy_no(inv, intent.size)
-                        && self.passes_outcome_floor_for_buy(
+                    (if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                        self.can_buy_pair_gated_tranche(intent)
+                    } else {
+                        self.can_buy_no(inv, intent.size)
+                    }) && self.passes_outcome_floor_for_buy(
+                        inv,
+                        Side::No,
+                        intent.size,
+                        intent.price,
+                        intent.reason,
+                    ) && (!self.cfg.strategy.is_glft_mm()
+                        || self.passes_pair_cost_guard_for_buy(
                             inv,
                             Side::No,
                             intent.size,
                             intent.price,
                             intent.reason,
-                        )
-                        && (!self.cfg.strategy.is_glft_mm()
-                            || self.passes_pair_cost_guard_for_buy(
-                                inv,
-                                Side::No,
-                                intent.size,
-                                intent.price,
-                                intent.reason,
-                            ))
+                        ))
                 }
                 (Side::Yes, TradeDirection::Sell) => self.can_sell_yes(inv, intent.size),
                 (Side::No, TradeDirection::Sell) => self.can_sell_no(inv, intent.size),
             },
             None => true,
         }
+    }
+
+    fn can_buy_pair_gated_tranche(&self, intent: StrategyIntent) -> bool {
+        let snapshot = self.current_inventory_snapshot();
+        let ledger = snapshot.pair_ledger;
+        let active = ledger
+            .active_tranche
+            .filter(|tranche| tranche.first_side.is_some() && tranche.residual_qty > f64::EPSILON);
+
+        if let Some(active) = active {
+            let first_side = active.first_side.unwrap_or(intent.side);
+            let completion_side = match first_side {
+                Side::Yes => Side::No,
+                Side::No => Side::Yes,
+            };
+            return intent.side == completion_side && intent.size <= active.residual_qty + 1e-6;
+        }
+
+        !ledger.capital_state.would_block_new_open_due_to_capital
     }
 
     pub(super) fn should_clear_on_toxic(&self, side: Side) -> bool {
