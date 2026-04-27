@@ -10,6 +10,10 @@ impl StrategyCoordinator {
         self.pair_arb_slot_blocked_at[idx] = None;
         self.slot_pair_arb_cross_reject_reprice_pending[idx] = false;
         self.slot_pair_arb_state_republish_latched[idx] = false;
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && event.slot.direction == TradeDirection::Buy {
+            self.pgt_same_side_release_quarantine_until[event.slot.side.index()] =
+                Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+        }
     }
 
     pub(super) fn pair_arb_should_force_freshness_republish(
@@ -388,6 +392,71 @@ impl StrategyCoordinator {
         ) {
             self.slot_pair_arb_state_keys[idx] = Some(state_key);
             self.slot_pair_arb_fill_recheck_pending[idx] = false;
+            return true;
+        }
+        false
+    }
+
+    pub(super) fn pgt_should_retain_existing(
+        &mut self,
+        inv: &InventoryState,
+        ub: &Book,
+        slot: OrderSlot,
+        intent: StrategyIntent,
+    ) -> bool {
+        let Some(current) = self.slot_target(slot).cloned() else {
+            return false;
+        };
+        if current.direction != intent.direction || current.reason != intent.reason {
+            return false;
+        }
+        if (current.size - intent.size).abs() > 0.1 {
+            return false;
+        }
+        let tick = self.cfg.tick_size.max(1e-9);
+        let delta_ticks = (intent.price - current.price) / tick;
+        let slot_age = self.slot_last_ts(slot).elapsed();
+        let (retain, retain_reason) = match intent.reason {
+            BidReason::Provide => {
+                if inv.net_diff.abs() <= f64::EPSILON
+                    && slot_age < std::time::Duration::from_millis(1_500)
+                {
+                    (true, "pgt_flat_seed_time_hold")
+                } else {
+                    (
+                        delta_ticks >= -3.0 - 1e-9,
+                        "pgt_seed_holds_between_large_down_moves",
+                    )
+                }
+            }
+            BidReason::Hedge => (
+                delta_ticks <= 2.0 + 1e-9 && delta_ticks >= -4.0 - 1e-9,
+                "pgt_completion_band_hold",
+            ),
+            BidReason::OracleLagProvide => (false, "not_pgt_path"),
+        };
+        if !retain {
+            return false;
+        }
+        let (best_bid, best_ask) = match slot.side {
+            Side::Yes => (ub.yes_bid, ub.yes_ask),
+            Side::No => (ub.no_bid, ub.no_ask),
+        };
+        if self.keep_existing_maker_if_safe(
+            inv,
+            slot.side,
+            intent.direction,
+            intent.price,
+            intent.size,
+            intent.price,
+            best_bid,
+            best_ask,
+            intent.reason,
+        ) {
+            debug!(
+                "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                slot, retain_reason, intent.price, current.price, delta_ticks,
+            );
             return true;
         }
         false
@@ -1074,6 +1143,14 @@ impl StrategyCoordinator {
         let Some(intent) = intent else {
             return false;
         };
+        if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && intent.direction == TradeDirection::Buy
+            && intent.reason == BidReason::Provide
+            && self.pgt_same_side_release_quarantine_until[intent.side.index()]
+                .is_some_and(|until| until > std::time::Instant::now())
+        {
+            return false;
+        }
         // OracleLagSniping decides winner from Chainlink, not the book.
         // Post-close books are naturally stale; blocking on staleness would
         // suppress every post-close maker order for this strategy.
@@ -1209,6 +1286,10 @@ impl StrategyCoordinator {
                 let phase = self.endgame_phase();
                 let should_retain = if self.cfg.strategy.is_pair_arb() {
                     self.pair_arb_should_retain_existing(inv, ub, slot, intent, phase)
+                } else if self.cfg.strategy.is_pair_gated_tranche_arb()
+                    && slot.direction == TradeDirection::Buy
+                {
+                    self.pgt_should_retain_existing(inv, ub, slot, intent)
                 } else {
                     let (best_bid, best_ask) = match side {
                         Side::Yes => (ub.yes_bid, ub.yes_ask),

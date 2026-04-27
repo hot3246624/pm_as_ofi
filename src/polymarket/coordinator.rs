@@ -1089,6 +1089,7 @@ pub struct StrategyCoordinator {
     slot_pair_arb_last_cross_rejected_action_price: [Option<f64>; 4],
     slot_pair_arb_cross_reject_reprice_pending: [bool; 4],
     slot_pair_arb_state_republish_latched: [bool; 4],
+    pgt_same_side_release_quarantine_until: [Option<Instant>; 2],
     pair_arb_slot_blocked_for_ms: [u64; 4],
     pair_arb_slot_blocked_at: [Option<Instant>; 4],
     yes_target: Option<DesiredTarget>,
@@ -1411,6 +1412,7 @@ impl StrategyCoordinator {
             slot_pair_arb_last_cross_rejected_action_price: std::array::from_fn(|_| None),
             slot_pair_arb_cross_reject_reprice_pending: [false; 4],
             slot_pair_arb_state_republish_latched: [false; 4],
+            pgt_same_side_release_quarantine_until: [None; 2],
             pair_arb_slot_blocked_for_ms: [0; 4],
             pair_arb_slot_blocked_at: [None; 4],
             yes_target: None,
@@ -1663,9 +1665,30 @@ impl StrategyCoordinator {
                     self.emit_obs_snapshot();
                 }
 
+                // Inventory mutations (fills / failed rollbacks / merge sync) must be able to
+                // drive an immediate re-evaluation on their own. Pair-gated-tranche in
+                // particular needs first-leg fills to flip FlatSeed -> CompletionOnly without
+                // waiting for an unrelated market-data tick or slot-release follow-up.
+                changed = self.inv_rx.changed() => {
+                    if changed.is_err() {
+                        break; // Sender dropped
+                    }
+                    self.tick().await;
+                    self.emit_obs_snapshot();
+                }
+
                 Some(release) = self.slot_release_rx.recv() => {
                     self.handle_slot_release_event(release).await;
-                    self.tick().await;
+                    let defer_to_inventory_tick = self.cfg.strategy.is_pair_gated_tranche_arb()
+                        && release.slot.direction == TradeDirection::Buy;
+                    if defer_to_inventory_tick {
+                        debug!(
+                            "🧭 PGT defer slot-release tick | slot={} reason=await_inventory_change",
+                            release.slot.as_str()
+                        );
+                    } else {
+                        self.tick().await;
+                    }
                     self.emit_obs_snapshot();
                 }
 
