@@ -10,6 +10,16 @@ use crate::polymarket::glft::{
 use super::*;
 
 impl StrategyCoordinator {
+    fn dry_run_execute_enabled_for_maker(&self, reason: BidReason) -> bool {
+        if !self.cfg.dry_run {
+            return true;
+        }
+        // oracle_lag keeps its dedicated preview/execute split; all other strategies
+        // should flow through OMS/executor in dry-run so recorder/inventory shadow
+        // signals are actually produced.
+        !(self.cfg.strategy.is_oracle_lag_sniping() && reason == BidReason::OracleLagProvide)
+    }
+
     fn oracle_lag_dryrun_execute_enabled(&self, purpose: TradePurpose) -> bool {
         if !self.cfg.dry_run || !self.cfg.strategy.is_oracle_lag_sniping() {
             return false;
@@ -659,6 +669,38 @@ impl StrategyCoordinator {
             };
             if pair_arb_force_freshness_republish {
                 needs_reprice = true;
+            }
+            if needs_reprice
+                && self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot_direction == Some(slot.direction)
+                && (slot_size - size).abs() <= 0.1
+                && slot.direction == TradeDirection::Buy
+            {
+                let tick = self.cfg.tick_size.max(1e-9);
+                let delta_ticks = (price - slot_price) / tick;
+                let (retain, retain_reason) = match reason {
+                    BidReason::Provide => (
+                        delta_ticks >= -3.0 - 1e-9,
+                        "pgt_seed_holds_between_large_down_moves",
+                    ),
+                    BidReason::Hedge => (
+                        delta_ticks <= 2.0 + 1e-9 && delta_ticks >= -4.0 - 1e-9,
+                        "pgt_completion_band_hold",
+                    ),
+                    BidReason::OracleLagProvide => (false, "not_pgt_path"),
+                };
+                if retain {
+                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                    debug!(
+                        "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                        slot, retain_reason, price, slot_price, delta_ticks,
+                    );
+                    return;
+                }
+                debug!(
+                    "🔁 PGT reprice {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                    slot, retain_reason, price, slot_price, delta_ticks,
+                );
             }
             // PairArb is BUY-only and pair-cost-first:
             // both candidate roles are state/event-driven and hold between
@@ -1730,7 +1772,8 @@ impl StrategyCoordinator {
         }
         self.log_oracle_lag_submit_latency(slot, price, size, reason, replacing);
 
-        if self.cfg.dry_run {
+        let dryrun_execute = self.dry_run_execute_enabled_for_maker(reason);
+        if self.cfg.dry_run && !dryrun_execute {
             let notional_usdc = price * size;
             info!(
                 "🧪 dry_order_preview | strategy={:?} slot={} side={:?} direction={:?} order_type=Limit reason={:?} price={:.4} size={:.2} notional_usdc={:.4} replacing={}",
@@ -1745,6 +1788,21 @@ impl StrategyCoordinator {
                 replacing,
             );
             return;
+        }
+        if self.cfg.dry_run && dryrun_execute {
+            let notional_usdc = price * size;
+            info!(
+                "🧪 dry_order_execute | strategy={:?} slot={} side={:?} direction={:?} order_type=Limit reason={:?} price={:.4} size={:.2} notional_usdc={:.4} replacing={}",
+                self.cfg.strategy,
+                slot.as_str(),
+                slot.side,
+                slot.direction,
+                reason,
+                price,
+                size,
+                notional_usdc,
+                replacing,
+            );
         }
 
         if self.cfg.strategy.is_pair_arb()

@@ -6077,6 +6077,80 @@ fn test_pair_gated_tranche_tail_blocks_new_seed_with_diagnostic() {
     assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 1);
 }
 
+#[tokio::test]
+async fn test_pair_gated_tranche_seed_retain_holds_between_large_down_moves() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.40, 120.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.yes_last_ts = Instant::now() - Duration::from_secs(2);
+
+    coord
+        .slot_place_or_reprice(slot, 0.43, 120.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT seed should not chase higher buy prices inside the same state"
+    );
+
+    coord
+        .slot_place_or_reprice(slot, 0.38, 120.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT seed should also retain on small downward drift"
+    );
+
+    let live = coord.slot_target(slot).expect("slot target must remain active");
+    assert!(
+        (live.price - 0.40).abs() < 1e-9,
+        "retained PGT seed price should stay at the original live quote"
+    );
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_completion_reprices_on_large_upward_move() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    config.reprice_threshold = 0.02;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.40, 120.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(2);
+    coord.no_last_ts = Instant::now() - Duration::from_secs(2);
+
+    coord
+        .slot_place_or_reprice(slot, 0.43, 120.0, BidReason::Hedge, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert!((target.price - 0.43).abs() < 1e-9);
+        }
+        other => panic!("expected completion reprice SetTarget, got {:?}", other),
+    }
+}
+
 // ── Debounce ──
 
 #[tokio::test]

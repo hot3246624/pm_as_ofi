@@ -39,6 +39,7 @@ const SLOT_LOCK_RECOVERY_RETRY_MS: u64 = 5_000;
 // does not simultaneously trigger both a fill and a reprice/cancel on the
 // replaced order.
 const DRY_RUN_TOUCH_CONFIRM_MS: u64 = 250;
+const DRY_RUN_CANCELED_FILL_TTL_MS: u64 = 2_000;
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,6 +125,9 @@ pub struct Executor {
     /// before we emit a synthetic fill. This prevents same-tick cancel/reprice
     /// races from double-counting old and new orders.
     dry_run_pending_touch_fills: HashMap<String, DryRunPendingTouchFill>,
+    /// Dry-run only: order_ids that entered cancel flow and whose later synthetic
+    /// fills must be ignored to avoid cancel/fill double counting.
+    dry_run_recently_canceled: HashMap<String, Instant>,
     /// Recent same-side buy fills used to identify transient sell availability lag.
     last_buy_fill_ts: [Option<Instant>; 2],
     /// Recent same-side buy placements, used as a fallback when fill events lag behind submit ACKs.
@@ -268,6 +272,7 @@ impl Executor {
             open_orders: std::array::from_fn(|_| HashMap::new()),
             dry_run_live_orders: HashMap::new(),
             dry_run_pending_touch_fills: HashMap::new(),
+            dry_run_recently_canceled: HashMap::new(),
             last_buy_fill_ts: [None, None],
             last_buy_place_ts: [None, None],
             slot_blocked_since: [None; 4],
@@ -381,6 +386,12 @@ impl Executor {
     fn clear_dry_run_live_order(&mut self, order_id: &str) {
         self.dry_run_live_orders.remove(order_id);
         self.dry_run_pending_touch_fills.remove(order_id);
+    }
+
+    fn prune_dry_run_recently_canceled(&mut self, now: Instant) {
+        let ttl = Duration::from_millis(DRY_RUN_CANCELED_FILL_TTL_MS);
+        self.dry_run_recently_canceled
+            .retain(|_, ts| now.saturating_duration_since(*ts) <= ttl);
     }
 
     async fn handle_dry_run_market_data(&mut self, msg: MarketDataMsg) {
@@ -971,6 +982,17 @@ impl Executor {
     /// AUDIT FIX: Sends OrderFilled back to Coordinator so it can release the slot.
     async fn handle_fill_notification(&mut self, fill: &FillEvent) {
         let slot = fill.slot();
+        if self.cfg.dry_run {
+            self.prune_dry_run_recently_canceled(Instant::now());
+            if self.dry_run_recently_canceled.remove(&fill.order_id).is_some() {
+                info!(
+                    "🧪 DRY-RUN ignored late synthetic fill after cancel order_id={}",
+                    fill.order_id
+                );
+                self.clear_dry_run_live_order(&fill.order_id);
+                return;
+            }
+        }
         if fill.status != FillStatus::Failed && slot.direction == TradeDirection::Buy {
             self.last_buy_fill_ts[slot.side.index()] = Some(Instant::now());
         }
@@ -1924,6 +1946,8 @@ impl Executor {
 
         if self.cfg.dry_run || self.client.is_none() {
             // DRY-RUN: remove from tracking immediately
+            self.dry_run_recently_canceled
+                .insert(order_id.to_string(), Instant::now());
             for orders in self.open_orders.iter_mut() {
                 orders.remove(order_id);
             }
@@ -3041,5 +3065,58 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
         exec.flush_dry_run_pending_touch_fills().await;
         assert!(sim_fill_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn dry_run_late_fill_after_cancel_is_ignored() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        let order_id = "dry-YES_BUY-late-fill".to_string();
+        exec.slot_orders_mut(OrderSlot::YES_BUY)
+            .insert(order_id.clone(), 5.0);
+
+        assert!(exec
+            .handle_cancel_order(&order_id, CancelReason::Reprice)
+            .await);
+        assert!(exec.slot_orders(OrderSlot::YES_BUY).is_empty());
+
+        exec.handle_fill_notification(&FillEvent {
+            order_id: order_id.clone(),
+            side: Side::Yes,
+            direction: TradeDirection::Buy,
+            filled_size: 5.0,
+            price: 0.50,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        })
+        .await;
+
+        assert!(exec.slot_orders(OrderSlot::YES_BUY).is_empty());
+        assert!(result_rx.try_recv().is_err());
     }
 }
