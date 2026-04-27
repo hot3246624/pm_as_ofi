@@ -209,7 +209,8 @@ impl PairGatedTrancheStrategy {
             ceiling = ceiling.min(vwap_ceiling);
         }
 
-        let price = coordinator.aggressive_price_for(side, ceiling, best_bid, best_ask);
+        let price =
+            self.passive_seed_price(coordinator, side, ceiling, best_bid, best_ask)?;
         if price <= 0.0 {
             return None;
         }
@@ -272,6 +273,41 @@ impl PairGatedTrancheStrategy {
             size,
             reason: BidReason::Hedge,
         })
+    }
+
+    fn passive_seed_price(
+        &self,
+        coordinator: &StrategyCoordinator,
+        side: Side,
+        ceiling: f64,
+        best_bid: f64,
+        best_ask: f64,
+    ) -> Option<f64> {
+        if ceiling <= 0.0 || best_bid <= 0.0 || best_ask <= 0.0 {
+            return None;
+        }
+        let tick = coordinator.cfg().tick_size.max(1e-9);
+        let safety_margin = coordinator.post_only_safety_margin_for(side, best_bid, best_ask);
+        let maker_cap = (best_ask - safety_margin).max(0.0);
+        if maker_cap <= 0.0 {
+            return None;
+        }
+
+        // Flat-state seed should behave like a passive maker: quote at the bid
+        // or improve by a single tick when there is enough spread, and treat
+        // pair-target / tier / VWAP logic strictly as ceilings rather than as a
+        // reason to chase toward the ask.
+        let passive_anchor = if best_ask > best_bid + (2.0 * tick) {
+            best_bid + tick
+        } else {
+            best_bid
+        };
+        let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
+        if price > 0.0 {
+            Some(price)
+        } else {
+            None
+        }
     }
 
     fn adaptive_clip_qty(

@@ -3049,6 +3049,29 @@ async fn test_pair_arb_stale_target_epoch_is_dropped_before_place() {
     assert_eq!(coord.stats.pair_arb_stale_target_dropped, 1);
 }
 
+#[tokio::test]
+async fn test_pair_gated_tranche_stale_target_epoch_is_dropped_before_place() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, i, _m, _k, mut er, mut coord) = make(config);
+    let inv = InventoryState::default();
+    let _ = i.send(inv);
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_pgt_intent_epochs[slot.index()] = Some(1);
+    coord.pgt_decision_epoch = 2;
+
+    coord
+        .slot_place_or_reprice(slot, 0.45, 25.0, BidReason::Provide, None)
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(50), er.recv()).await.is_err(),
+        "stale PGT target epoch should be dropped before any place/reprice command"
+    );
+    assert_eq!(coord.stats.pgt_stale_target_dropped, 1);
+}
+
 #[test]
 fn test_pair_arb_endgame_phase_change_marks_recheck_pending() {
     let mut config = cfg();
@@ -5896,6 +5919,50 @@ fn test_pair_gated_tranche_flat_state_quotes_both_seed_sides() {
 }
 
 #[test]
+fn test_pair_gated_tranche_flat_seed_is_maker_first_not_aggressive() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.40, 0.50, 0.40, 0.50),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES seed quote");
+    let no = quotes.no_buy.expect("expected NO seed quote");
+    assert!(
+        (yes.price - 0.41).abs() < 1e-9,
+        "YES flat seed should improve bid by one tick, not chase toward ask"
+    );
+    assert!(
+        (no.price - 0.41).abs() < 1e-9,
+        "NO flat seed should improve bid by one tick, not chase toward ask"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_flat_seed_stays_at_bid_in_tight_spread() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.44, 0.45, 0.44, 0.45),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES seed quote");
+    let no = quotes.no_buy.expect("expected NO seed quote");
+    assert!(
+        yes.price <= 0.44 + 1e-9,
+        "YES flat seed should never chase above the bid in a one-tick spread"
+    );
+    assert!(
+        no.price <= 0.44 + 1e-9,
+        "NO flat seed should never chase above the bid in a one-tick spread"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_inventory_gate_bypasses_global_max_net_diff() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
@@ -6149,6 +6216,33 @@ async fn test_pair_gated_tranche_completion_reprices_on_large_upward_move() {
         }
         other => panic!("expected completion reprice SetTarget, got {:?}", other),
     }
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_release_quarantine_blocks_stale_same_side_buy() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord.pgt_same_side_release_quarantine_until[Side::No.index()] =
+        Some(Instant::now() + Duration::from_millis(500));
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.40, 96.0, BidReason::Hedge, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT should suppress stale same-side hedge during release quarantine"
+    );
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.32, 96.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT should also suppress same-side provide during release quarantine"
+    );
 }
 
 // ── Debounce ──

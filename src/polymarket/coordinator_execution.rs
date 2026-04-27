@@ -770,6 +770,14 @@ impl StrategyCoordinator {
                 self.slot_pair_arb_intent_state_keys[slot.index()] = None;
                 self.slot_pair_arb_intent_epochs[slot.index()] = None;
             }
+            if self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot.direction == TradeDirection::Buy
+            {
+                self.slot_pgt_intent_epochs[slot.index()] =
+                    intent.map(|_| self.pgt_decision_epoch);
+            } else {
+                self.slot_pgt_intent_epochs[slot.index()] = None;
+            }
             if intent.is_some() {
                 self.slot_absent_clear_since[slot.index()] = None;
             }
@@ -1145,7 +1153,6 @@ impl StrategyCoordinator {
         };
         if self.cfg.strategy.is_pair_gated_tranche_arb()
             && intent.direction == TradeDirection::Buy
-            && intent.reason == BidReason::Provide
             && self.pgt_same_side_release_quarantine_until[intent.side.index()]
                 .is_some_and(|until| until > std::time::Instant::now())
         {

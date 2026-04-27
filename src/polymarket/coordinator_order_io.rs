@@ -218,6 +218,53 @@ impl StrategyCoordinator {
         reason: BidReason,
         log_msg: Option<String>,
     ) {
+        let pgt_expected_epoch = if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+        {
+            self.slot_pgt_intent_epochs[slot.index()]
+        } else {
+            None
+        };
+        let pgt_current_epoch = if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+        {
+            Some(self.pgt_decision_epoch)
+        } else {
+            None
+        };
+        if let (Some(expected_epoch), Some(current_epoch)) = (pgt_expected_epoch, pgt_current_epoch)
+        {
+            if expected_epoch != current_epoch {
+                self.slot_pgt_intent_epochs[slot.index()] = None;
+                self.stats.pgt_stale_target_dropped =
+                    self.stats.pgt_stale_target_dropped.saturating_add(1);
+                info!(
+                    "🧭 pgt_stale_target_dropped | slot={} pgt_target_epoch={} pgt_current_epoch={} target_price={:.4} target_size={:.2} reason={:?}",
+                    slot.as_str(),
+                    expected_epoch,
+                    current_epoch,
+                    price,
+                    size,
+                    reason,
+                );
+                return;
+            }
+        }
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && slot.direction == TradeDirection::Buy {
+            self.slot_pgt_intent_epochs[slot.index()] = None;
+        }
+        if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+            && self.pgt_same_side_release_quarantine_until[slot.side.index()]
+                .is_some_and(|until| until > Instant::now())
+        {
+            debug!(
+                "🧭 PGT stale place/reprice suppressed | slot={} reason={:?}",
+                slot.as_str(),
+                reason
+            );
+            return;
+        }
         if self.cfg.strategy.is_oracle_lag_sniping()
             && self.cfg.oracle_lag_sniping.lab_only
             && reason == BidReason::OracleLagProvide
@@ -1138,6 +1185,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_intent_state_keys[slot.index()] = None;
         self.slot_pair_arb_target_epochs[slot.index()] = None;
         self.slot_pair_arb_intent_epochs[slot.index()] = None;
+        self.slot_pgt_target_epochs[slot.index()] = None;
+        self.slot_pgt_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
         self.slot_pair_arb_state_republish_latched[slot.index()] = false;
@@ -1189,6 +1238,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_intent_state_keys[slot.index()] = None;
         self.slot_pair_arb_target_epochs[slot.index()] = None;
         self.slot_pair_arb_intent_epochs[slot.index()] = None;
+        self.slot_pgt_target_epochs[slot.index()] = None;
+        self.slot_pgt_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
         self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
         self.slot_pair_arb_state_republish_latched[slot.index()] = false;
@@ -1516,6 +1567,11 @@ impl StrategyCoordinator {
                 self.post_close_hint_winner_ask_raw = hint_winner_ask_raw.max(0.0);
                 self.post_close_hint_book_source = winner_book_source;
                 self.post_close_hint_distance_to_final_ms = winner_distance_to_final_ms;
+                if let Some(shared) = &self.shared_post_close_winner_side {
+                    if let Ok(mut slot) = shared.lock() {
+                        *slot = Some(side);
+                    }
+                }
                 if changed {
                     info!(
                         "🏁 post_close winner hint | slug={} hint_id={} side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={} new_hint_round={}",
@@ -1761,6 +1817,11 @@ impl StrategyCoordinator {
             self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         } else {
             self.slot_pair_arb_target_epochs[slot.index()] = None;
+        }
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && slot.direction == TradeDirection::Buy {
+            self.slot_pgt_target_epochs[slot.index()] = Some(self.pgt_decision_epoch);
+        } else {
+            self.slot_pgt_target_epochs[slot.index()] = None;
         }
         self.sync_buy_side_wrapper(slot);
 

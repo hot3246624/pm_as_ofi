@@ -10,6 +10,17 @@ const PAIR_ARB_STALLED_SECS: u64 = 60;
 const FLOAT_INV_EPS: f64 = PAIR_ARB_NET_EPS;
 
 impl StrategyCoordinator {
+    pub(super) fn pgt_bump_decision_epoch(&mut self, reason: &'static str) {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() {
+            return;
+        }
+        self.pgt_decision_epoch = self.pgt_decision_epoch.saturating_add(1);
+        debug!(
+            "🧭 pgt_decision_epoch={} reason={}",
+            self.pgt_decision_epoch, reason
+        );
+    }
+
     fn pair_arb_progress_min_paired_qty_delta(&self) -> f64 {
         (self.cfg.bid_size * PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_RATIO)
             .max(PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_FLOOR)
@@ -111,7 +122,9 @@ impl StrategyCoordinator {
     ) {
         let settled = snapshot.settled;
         let working = snapshot.working;
-        if self.cfg.strategy != StrategyKind::PairArb {
+        if self.cfg.strategy != StrategyKind::PairArb
+            && self.cfg.strategy != StrategyKind::PairGatedTrancheArb
+        {
             self.last_settled_inv_snapshot = settled;
             self.last_working_inv_snapshot = working;
             return;
@@ -131,6 +144,13 @@ impl StrategyCoordinator {
             || (prev_working.no_avg_cost - working.no_avg_cost).abs() > FLOAT_INV_EPS
             || snapshot.fragile != prev_fragile;
         if !settled_changed && !working_changed {
+            return;
+        }
+
+        if self.cfg.strategy.is_pair_gated_tranche_arb() {
+            self.pgt_bump_decision_epoch("inventory_transition");
+            self.last_settled_inv_snapshot = settled;
+            self.last_working_inv_snapshot = working;
             return;
         }
 
@@ -277,6 +297,7 @@ impl StrategyCoordinator {
             dispatch_place: self.stats.pgt_dispatch_place,
             dispatch_retain: self.stats.pgt_dispatch_retain,
             dispatch_clear: self.stats.pgt_dispatch_clear,
+            stale_target_dropped: self.stats.pgt_stale_target_dropped,
         }
     }
 
@@ -372,9 +393,12 @@ impl StrategyCoordinator {
         let dispatch_place_delta = cur.dispatch_place.saturating_sub(prev.dispatch_place);
         let dispatch_retain_delta = cur.dispatch_retain.saturating_sub(prev.dispatch_retain);
         let dispatch_clear_delta = cur.dispatch_clear.saturating_sub(prev.dispatch_clear);
+        let stale_target_dropped_delta = cur
+            .stale_target_dropped
+            .saturating_sub(prev.stale_target_dropped);
 
         info!(
-            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow)={}/{}/{} dispatch(intent/blocked/place/retain/clear)={}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed)={}/{}/{}/{}/{}/{}",
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow)={}/{}/{} dispatch(intent/blocked/place/retain/clear/stale_drop)={}/{}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed)={}/{}/{}/{}/{}/{}",
             seed_delta,
             completion_delta,
             post_flow_delta,
@@ -383,6 +407,7 @@ impl StrategyCoordinator {
             dispatch_place_delta,
             dispatch_retain_delta,
             dispatch_clear_delta,
+            stale_target_dropped_delta,
             skip_harvest_delta,
             skip_tail_delta,
             skip_residual_delta,

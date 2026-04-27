@@ -13,6 +13,7 @@
 //!    Empty book → refuse to bid (return 0.0). Never use ceiling as fallback.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use tokio::sync::{mpsc, watch};
@@ -792,6 +793,7 @@ struct Stats {
     pgt_dispatch_place: u64,
     pgt_dispatch_retain: u64,
     pgt_dispatch_clear: u64,
+    pgt_stale_target_dropped: u64,
     pair_arb_opposite_slot_blocked: u64,
     pair_arb_stale_target_dropped: u64,
     pair_arb_state_forced_republish: u64,
@@ -830,6 +832,7 @@ struct PgtGateLogSnapshot {
     dispatch_place: u64,
     dispatch_retain: u64,
     dispatch_clear: u64,
+    stale_target_dropped: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1084,6 +1087,8 @@ pub struct StrategyCoordinator {
     slot_pair_arb_intent_state_keys: [Option<PairArbStateKey>; 4],
     slot_pair_arb_intent_epochs: [Option<u64>; 4],
     slot_pair_arb_target_epochs: [Option<u64>; 4],
+    slot_pgt_intent_epochs: [Option<u64>; 4],
+    slot_pgt_target_epochs: [Option<u64>; 4],
     slot_pair_arb_fill_recheck_pending: [bool; 4],
     slot_pair_arb_cross_reject_extra_ticks: [u8; 4],
     slot_pair_arb_last_cross_rejected_action_price: [Option<f64>; 4],
@@ -1166,6 +1171,7 @@ pub struct StrategyCoordinator {
     oracle_lag_round_halt_kind: Option<RejectKind>,
     /// Rate-limiter for post_close_book_tick snapshot logs (500ms).
     last_post_close_snapshot_ts: Option<Instant>,
+    pgt_decision_epoch: u64,
     pair_arb_decision_epoch: u64,
     pair_arb_last_risk_open_cutoff_active: bool,
     last_settled_inv_snapshot: InventoryState,
@@ -1195,6 +1201,9 @@ pub struct StrategyCoordinator {
     slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
     /// Optional low-overhead observability snapshot channel for round validation.
     obs_tx: Option<watch::Sender<CoordinatorObsSnapshot>>,
+    /// Optional shared winner-side cache for non-oracle strategies that need
+    /// post-close winner awareness after the coordinator task has been moved.
+    shared_post_close_winner_side: Option<Arc<Mutex<Option<Side>>>>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -1257,6 +1266,7 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_dispatch_place: u64,
     pub pgt_dispatch_retain: u64,
     pub pgt_dispatch_clear: u64,
+    pub pgt_stale_target_dropped: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1365,6 +1375,34 @@ impl StrategyCoordinator {
         feedback_rx: mpsc::Receiver<ExecutionFeedback>,
         slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
     ) -> Self {
+        Self::with_aux_rx_and_shared_winner(
+            cfg,
+            ofi_rx,
+            inv_rx,
+            md_rx,
+            winner_hint_rx,
+            glft_rx,
+            om_tx,
+            kill_rx,
+            feedback_rx,
+            slot_release_rx,
+            None,
+        )
+    }
+
+    pub fn with_aux_rx_and_shared_winner(
+        cfg: CoordinatorConfig,
+        ofi_rx: watch::Receiver<OfiSnapshot>,
+        inv_rx: watch::Receiver<InventorySnapshot>,
+        md_rx: watch::Receiver<MarketDataMsg>,
+        winner_hint_rx: mpsc::Receiver<MarketDataMsg>,
+        glft_rx: watch::Receiver<GlftSignalSnapshot>,
+        om_tx: mpsc::Sender<OrderManagerCmd>,
+        kill_rx: mpsc::Receiver<KillSwitchSignal>,
+        feedback_rx: mpsc::Receiver<ExecutionFeedback>,
+        slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
+        shared_post_close_winner_side: Option<Arc<Mutex<Option<Side>>>>,
+    ) -> Self {
         let now = Instant::now();
         let last_metrics_log_ts = if cfg.strategy_metrics_log_secs > 0 {
             now.checked_sub(Duration::from_secs(cfg.strategy_metrics_log_secs))
@@ -1407,6 +1445,8 @@ impl StrategyCoordinator {
             slot_pair_arb_intent_state_keys: std::array::from_fn(|_| None),
             slot_pair_arb_intent_epochs: std::array::from_fn(|_| None),
             slot_pair_arb_target_epochs: std::array::from_fn(|_| None),
+            slot_pgt_intent_epochs: std::array::from_fn(|_| None),
+            slot_pgt_target_epochs: std::array::from_fn(|_| None),
             slot_pair_arb_fill_recheck_pending: [false; 4],
             slot_pair_arb_cross_reject_extra_ticks: [0; 4],
             slot_pair_arb_last_cross_rejected_action_price: std::array::from_fn(|_| None),
@@ -1465,6 +1505,7 @@ impl StrategyCoordinator {
             oracle_lag_round_halted: false,
             oracle_lag_round_halt_kind: None,
             last_post_close_snapshot_ts: None,
+            pgt_decision_epoch: 0,
             pair_arb_decision_epoch: 0,
             pair_arb_last_risk_open_cutoff_active: false,
             last_settled_inv_snapshot: InventoryState::default(),
@@ -1486,6 +1527,7 @@ impl StrategyCoordinator {
             feedback_rx,
             slot_release_rx,
             obs_tx: None,
+            shared_post_close_winner_side,
         }
     }
 
@@ -1506,7 +1548,7 @@ impl StrategyCoordinator {
         &self.cfg
     }
 
-    pub(crate) fn post_close_winner_side(&self) -> Option<Side> {
+    pub fn post_close_winner_side(&self) -> Option<Side> {
         self.post_close_winner_side
     }
 
@@ -1734,7 +1776,7 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={} stale_target_dropped={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
@@ -1743,7 +1785,7 @@ impl StrategyCoordinator {
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked, self.stats.pair_arb_stale_target_dropped, self.stats.pair_arb_state_forced_republish,
             self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none,
-            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed,
+            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed, self.stats.pgt_stale_target_dropped,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
@@ -1810,6 +1852,7 @@ impl StrategyCoordinator {
             pgt_dispatch_place: self.stats.pgt_dispatch_place,
             pgt_dispatch_retain: self.stats.pgt_dispatch_retain,
             pgt_dispatch_clear: self.stats.pgt_dispatch_clear,
+            pgt_stale_target_dropped: self.stats.pgt_stale_target_dropped,
         };
         let _ = obs_tx.send(snapshot);
     }

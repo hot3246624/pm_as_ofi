@@ -2618,23 +2618,26 @@ async fn run_pgt_shadow_harvest_lifecycle(
         };
 
         if let Some(attempt) = attempt {
+            let payload = json!({
+                "attempt": attempt,
+                "shadow_only": true,
+                "remaining_secs": remaining_secs,
+                "eligible": eligible,
+                "pairable_qty": pairable_qty,
+                "mergeable_full_sets": mergeable_full_sets,
+                "working_capital": snap.pair_ledger.capital_state.working_capital,
+                "clean_closed_episode_ratio": snap.episode_metrics.clean_closed_episode_ratio,
+                "same_side_add_qty_ratio": snap.episode_metrics.same_side_add_qty_ratio,
+            });
             if eligible {
-                let payload = json!({
-                    "attempt": attempt,
-                    "shadow_only": true,
-                    "remaining_secs": remaining_secs,
-                    "pairable_qty": pairable_qty,
-                    "mergeable_full_sets": mergeable_full_sets,
-                    "working_capital": snap.pair_ledger.capital_state.working_capital,
-                    "clean_closed_episode_ratio": snap.episode_metrics.clean_closed_episode_ratio,
-                    "same_side_add_qty_ratio": snap.episode_metrics.same_side_add_qty_ratio,
-                });
                 recorder.emit_own_inventory_event(
                     &recorder_meta,
                     "merge_requested",
                     payload.clone(),
                 );
                 recorder.emit_own_inventory_event(&recorder_meta, "merge_executed", payload);
+            } else {
+                recorder.emit_own_inventory_event(&recorder_meta, "merge_skipped", payload);
             }
             if attempt == 1 {
                 first_sent = true;
@@ -2659,6 +2662,7 @@ async fn run_pgt_shadow_redeem_lifecycle(
     recorder_meta: RecorderSessionMeta,
     market_end_ts: u64,
     final_snapshot: InventorySnapshot,
+    local_winner_side: Option<Side>,
 ) {
     let residual_qty = final_snapshot.pair_ledger.residual_qty.max(0.0);
     let yes_qty = final_snapshot.working.yes_qty.max(0.0);
@@ -2667,7 +2671,7 @@ async fn run_pgt_shadow_redeem_lifecycle(
         return;
     }
 
-    let mut resolved_winner_side: Option<Side> = None;
+    let mut resolved_winner_side: Option<Side> = local_winner_side;
     for (attempt, delay_secs) in [
         (1_u8, PGT_SHADOW_REDEEM_FIRST_SECS),
         (2_u8, PGT_SHADOW_REDEEM_RETRY_SECS),
@@ -2963,6 +2967,14 @@ fn local_price_agg_exact_boost() -> f64 {
         .and_then(|v| v.parse::<f64>().ok())
         .map(|v| v.clamp(1.0, 3.0))
         .unwrap_or(LOCAL_PRICE_AGG_EXACT_BOOST_DEFAULT)
+}
+
+fn local_price_agg_boundary_window_ms() -> u64 {
+    env::var("PM_LOCAL_PRICE_AGG_BOUNDARY_WINDOW_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(100, 30_000))
+        .unwrap_or(5_000)
 }
 
 fn env_nonempty_var(names: &[&str]) -> Option<String> {
@@ -4384,6 +4396,32 @@ struct LocalPriceAggSourcesProbe {
     source_points: Vec<LocalPriceAggSourcePointProbe>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct LocalBoundaryTickProbe {
+    ts_ms: u64,
+    offset_ms: i64,
+    price: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalPriceAggBoundarySourceProbe {
+    source: String,
+    open_window_ticks: Vec<LocalBoundaryTickProbe>,
+    close_window_ticks: Vec<LocalBoundaryTickProbe>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LocalPriceAggBoundaryProbe {
+    unix_ms: u64,
+    symbol: String,
+    round_start_ts: u64,
+    round_end_ts: u64,
+    mode: String,
+    status: String,
+    boundary_window_ms: u64,
+    source_tapes: Vec<LocalPriceAggBoundarySourceProbe>,
+}
+
 fn chainlink_round_alignment_path() -> PathBuf {
     log_path("chainlink_round_alignment.jsonl")
 }
@@ -4398,6 +4436,10 @@ fn local_price_agg_probe_path() -> PathBuf {
 
 fn local_price_agg_sources_probe_path() -> PathBuf {
     log_path("local_price_agg_sources.jsonl")
+}
+
+fn local_price_agg_boundary_probe_path() -> PathBuf {
+    log_path("local_price_agg_boundary_tape.jsonl")
 }
 
 fn chainlink_last_close_cache_path() -> PathBuf {
@@ -4505,6 +4547,29 @@ fn append_local_price_agg_sources_probe(probe: &LocalPriceAggSourcesProbe) {
     };
     if let Err(e) = writeln!(writer, "{}", line) {
         warn!("⚠️ local_price_agg_sources write failed: {}", e);
+    }
+}
+
+fn append_local_price_agg_boundary_probe(probe: &LocalPriceAggBoundaryProbe) {
+    let path = local_price_agg_boundary_probe_path();
+    let file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "⚠️ local_price_agg_boundary_tape write open failed: path={} err={}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    let mut writer = BufWriter::new(file);
+    if let Err(e) = serde_json::to_writer(&mut writer, probe) {
+        warn!("⚠️ local_price_agg_boundary_tape serialize failed: {}", e);
+        return;
+    }
+    if let Err(e) = writer.write_all(b"\n").and_then(|_| writer.flush()) {
+        warn!("⚠️ local_price_agg_boundary_tape write failed: {}", e);
     }
 }
 
@@ -6479,8 +6544,14 @@ async fn run_post_close_winner_hint_listener(
 
     if let Some(task) = local_compare_task.take() {
         match task.await {
-            Ok((hit, started_ms, ready_ms, deadline_ms)) => match hit {
-                Some(hit) => {
+            Ok((compare_hit, started_ms, ready_ms, deadline_ms)) => {
+                let weighted_shadow_hit = compare_hit
+                    .boundary_shadow_outcomes
+                    .iter()
+                    .find(|outcome| outcome.policy_name == "boundary_weighted")
+                    .and_then(|outcome| outcome.hit.as_ref());
+                let mut close_only_filtered = false;
+                if let Some(hit) = compare_hit.base_hit.as_ref() {
                     local_price_agg_learn_source_biases_from_rtds(
                         &symbol,
                         first_obs,
@@ -6536,7 +6607,6 @@ async fn run_post_close_winner_hint_listener(
                         && hit.close_exact_sources == 0
                         && direction_margin_bps + 1e-9
                             >= LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS;
-                    let mut close_only_filtered = false;
                     if all_preclose
                         && hit.close_exact_sources == 0
                         && !preclose_relief_applied
@@ -6743,8 +6813,7 @@ async fn run_post_close_winner_hint_listener(
                             local_vs_rtds_detect_gap_ms,
                         );
                     }
-                }
-                None => {
+                } else {
                     warn!(
                         "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
                         slug,
@@ -6758,7 +6827,157 @@ async fn run_post_close_winner_hint_listener(
                         first_obs,
                     );
                 }
-            },
+                for outcome in &compare_hit.boundary_shadow_outcomes {
+                    match outcome.hit.as_ref() {
+                        Some(hit) => {
+                            let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                                Side::Yes
+                            } else {
+                                Side::No
+                            };
+                            let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                            let close_abs_diff = (hit.close_price - first_obs).abs();
+                            let close_diff_bps =
+                                close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                            let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                            info!(
+                                "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                                slug,
+                                symbol,
+                                hit.policy_name,
+                                hit.source_subset_name,
+                                hit.rule.as_str(),
+                                hit.min_sources,
+                                local_side_vs_rtds_open,
+                                first_side,
+                                side_match_vs_rtds_open,
+                                hit.close_price,
+                                hit.close_ts_ms,
+                                first_ref,
+                                first_obs,
+                                close_abs_diff,
+                                close_diff_bps,
+                                hit.source_count,
+                                hit.source_spread_bps,
+                                hit.close_exact_sources,
+                                started_ms,
+                                ready_ms,
+                                deadline_ms,
+                                ready_ms.saturating_sub(started_ms),
+                                local_vs_rtds_detect_gap_ms,
+                            );
+                        }
+                        None => {
+                            warn!(
+                                "⚠️ local_price_agg_boundary_shadow_unresolved | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                                slug,
+                                symbol,
+                                outcome.policy_name,
+                                outcome.source_subset_name,
+                                outcome.rule.as_str(),
+                                outcome.min_sources,
+                                started_ms,
+                                ready_ms,
+                                deadline_ms,
+                                ready_ms.saturating_sub(started_ms),
+                                first_ref,
+                                first_side,
+                                first_obs,
+                            );
+                        }
+                    }
+                }
+                if let Some(hit) = compare_hit.base_hit.as_ref().filter(|_| !close_only_filtered) {
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    info!(
+                        "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        "boundary_hybrid_close_only_then_weighted",
+                        "close_only_primary",
+                        "close_only",
+                        hit.source_count,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                } else if let Some(hit) = weighted_shadow_hit {
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    info!(
+                        "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        "boundary_hybrid_close_only_then_weighted",
+                        "weighted_fallback",
+                        hit.rule.as_str(),
+                        hit.min_sources,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                } else {
+                    warn!(
+                        "⚠️ local_price_agg_boundary_shadow_unresolved | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                        slug,
+                        symbol,
+                        "boundary_hybrid_close_only_then_weighted",
+                        "weighted_fallback",
+                        "hybrid",
+                        1,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        first_ref,
+                        first_side,
+                        first_obs,
+                    );
+                }
+            }
             Err(err) => {
                 warn!(
                     "⚠️ local_price_agg_compare_task_join_error | slug={} symbol={} err={}",
@@ -7805,6 +8024,14 @@ struct LocalSourceBoundaryState {
     first_after_end: Option<(u64, u64, f64)>,
 }
 
+#[derive(Debug, Default, Clone)]
+struct LocalSourceBoundaryTapeState {
+    open_window_ticks: Vec<(u64, f64)>,
+    close_window_ticks: Vec<(u64, f64)>,
+}
+
+const LOCAL_PRICE_AGG_BOUNDARY_TAPE_MAX_TICKS_PER_SIDE: usize = 512;
+
 fn format_local_source_boundary_state(
     source: LocalPriceSource,
     state: &LocalSourceBoundaryState,
@@ -7848,6 +8075,65 @@ fn format_local_source_boundary_state(
         first_after_end,
         nearest_end,
     )
+}
+
+fn local_price_agg_collect_boundary_tape_tick(
+    tapes: &mut HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    source: LocalPriceSource,
+    price: f64,
+    ts_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+    boundary_window_ms: u64,
+) {
+    let tape = tapes.entry(source).or_default();
+    let open_low = start_ms.saturating_sub(boundary_window_ms);
+    let open_high = start_ms.saturating_add(boundary_window_ms);
+    if ts_ms >= open_low && ts_ms <= open_high {
+        if tape.open_window_ticks.len() < LOCAL_PRICE_AGG_BOUNDARY_TAPE_MAX_TICKS_PER_SIDE {
+            tape.open_window_ticks.push((ts_ms, price));
+        }
+    }
+    let close_low = end_ms.saturating_sub(boundary_window_ms);
+    let close_high = end_ms.saturating_add(boundary_window_ms);
+    if ts_ms >= close_low && ts_ms <= close_high {
+        if tape.close_window_ticks.len() < LOCAL_PRICE_AGG_BOUNDARY_TAPE_MAX_TICKS_PER_SIDE {
+            tape.close_window_ticks.push((ts_ms, price));
+        }
+    }
+}
+
+fn build_local_price_agg_boundary_source_probes(
+    tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    start_ms: u64,
+    end_ms: u64,
+) -> Vec<LocalPriceAggBoundarySourceProbe> {
+    let mut items = tapes
+        .iter()
+        .map(|(source, tape)| LocalPriceAggBoundarySourceProbe {
+            source: source.as_str().to_string(),
+            open_window_ticks: tape
+                .open_window_ticks
+                .iter()
+                .map(|(ts_ms, price)| LocalBoundaryTickProbe {
+                    ts_ms: *ts_ms,
+                    offset_ms: (*ts_ms as i64) - (start_ms as i64),
+                    price: *price,
+                })
+                .collect(),
+            close_window_ticks: tape
+                .close_window_ticks
+                .iter()
+                .map(|(ts_ms, price)| LocalBoundaryTickProbe {
+                    ts_ms: *ts_ms,
+                    offset_ms: (*ts_ms as i64) - (end_ms as i64),
+                    price: *price,
+                })
+                .collect(),
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| a.source.cmp(&b.source));
+    items
 }
 
 fn pick_local_source_points(
@@ -7950,6 +8236,385 @@ fn pick_local_source_close_point(
         }
     } else {
         None
+    }
+}
+
+fn pick_local_boundary_tape_close_point(
+    tape: &LocalSourceBoundaryTapeState,
+    end_ms: u64,
+    pre_ms: u64,
+    post_ms: u64,
+    rule: LocalBoundaryCloseRule,
+) -> Option<(AggregatedPricePoint, f64)> {
+    let ticks = tape
+        .close_window_ticks
+        .iter()
+        .filter_map(|(ts_ms, price)| {
+            let offset_ms = (*ts_ms as i64) - (end_ms as i64);
+            let in_range = offset_ms >= -(pre_ms as i64) && offset_ms <= post_ms as i64;
+            if in_range {
+                Some((*ts_ms, *price, offset_ms))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    if ticks.is_empty() {
+        return None;
+    }
+
+    let picked = match rule {
+        LocalBoundaryCloseRule::LastBefore => ticks
+            .iter()
+            .filter(|(_, _, offset_ms)| *offset_ms <= 0)
+            .max_by_key(|(ts_ms, _, _)| *ts_ms)
+            .copied(),
+        LocalBoundaryCloseRule::NearestAbs => ticks
+            .iter()
+            .min_by_key(|(ts_ms, _, offset_ms)| (offset_ms.abs(), *offset_ms > 0, *ts_ms))
+            .copied(),
+        LocalBoundaryCloseRule::AfterThenBefore => ticks
+            .iter()
+            .filter(|(_, _, offset_ms)| *offset_ms >= 0)
+            .min_by_key(|(ts_ms, _, _)| *ts_ms)
+            .copied()
+            .or_else(|| {
+                ticks.iter()
+                    .filter(|(_, _, offset_ms)| *offset_ms <= 0)
+                    .max_by_key(|(ts_ms, _, _)| *ts_ms)
+                    .copied()
+            }),
+    }?;
+
+    let (ts_ms, raw_price, offset_ms) = picked;
+    Some((
+        AggregatedPricePoint {
+            price: raw_price,
+            ts_ms,
+            exact: offset_ms == 0,
+            abs_delta_ms: offset_ms.unsigned_abs(),
+            source: rule.as_str(),
+        },
+        raw_price,
+    ))
+}
+
+fn local_boundary_policy_specs_fully_free(symbol: &str) -> LocalBoundaryShadowPolicySpec {
+    match symbol {
+        "bnb/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "full",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+        },
+        "btc/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        "doge/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        "eth/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+        },
+        "hype/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "drop_hyperliquid",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID,
+        },
+        "sol/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "drop_bybit",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 2,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BYBIT,
+        },
+        "xrp/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        _ => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_fully_free",
+            source_subset_name: "full",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+        },
+    }
+}
+
+fn local_boundary_policy_specs_shared_core(symbol: &str) -> LocalBoundaryShadowPolicySpec {
+    match symbol {
+        "bnb/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+        },
+        "btc/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        "doge/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        "eth/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "full",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+        },
+        "hype/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "drop_coinbase",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_COINBASE,
+        },
+        "sol/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+        },
+        "xrp/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+        },
+        _ => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_shared_core",
+            source_subset_name: "full",
+            rule: LocalBoundaryCloseRule::NearestAbs,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+        },
+    }
+}
+
+fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPolicySpec {
+    match symbol {
+        "bnb/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "drop_coinbase",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_COINBASE,
+        },
+        "btc/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        "doge/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        "eth/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 3,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+        },
+        "hype/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "full",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+        },
+        "sol/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 2,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+        },
+        "xrp/usd" => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+        },
+        _ => LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_weighted",
+            source_subset_name: "full",
+            rule: LocalBoundaryCloseRule::LastBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+        },
+    }
+}
+
+fn local_boundary_policy_source_weight(
+    policy_name: &str,
+    symbol: &str,
+    source: LocalPriceSource,
+) -> f64 {
+    if policy_name != "boundary_weighted" {
+        return local_price_agg_source_weight(source);
+    }
+    match (symbol, source) {
+        ("bnb/usd", LocalPriceSource::Binance) => 2.578_491,
+        ("bnb/usd", LocalPriceSource::Bybit) => 0.207_523,
+        ("bnb/usd", LocalPriceSource::Hyperliquid) => 2.971_718,
+        ("bnb/usd", LocalPriceSource::Okx) => 1.856_930,
+
+        ("btc/usd", LocalPriceSource::Binance) => 1.797_995,
+        ("btc/usd", LocalPriceSource::Bybit) => 2.558_950,
+        ("btc/usd", LocalPriceSource::Coinbase) => 9.649_231,
+        ("btc/usd", LocalPriceSource::Hyperliquid) => 0.165_740,
+
+        ("doge/usd", LocalPriceSource::Binance) => 1.946_838,
+        ("doge/usd", LocalPriceSource::Bybit) => 0.772_736,
+        ("doge/usd", LocalPriceSource::Coinbase) => 1.494_323,
+        ("doge/usd", LocalPriceSource::Hyperliquid) => 7.569_670,
+
+        ("eth/usd", LocalPriceSource::Bybit) => 1.162_945,
+        ("eth/usd", LocalPriceSource::Coinbase) => 3.774_743,
+        ("eth/usd", LocalPriceSource::Hyperliquid) => 3.076_856,
+        ("eth/usd", LocalPriceSource::Okx) => 0.833_738,
+
+        ("hype/usd", LocalPriceSource::Binance) => 0.100_000,
+        ("hype/usd", LocalPriceSource::Bybit) => 0.100_000,
+        ("hype/usd", LocalPriceSource::Coinbase) => 0.250_000,
+        ("hype/usd", LocalPriceSource::Hyperliquid) => 1.500_000,
+        ("hype/usd", LocalPriceSource::Okx) => 3.000_000,
+
+        ("sol/usd", LocalPriceSource::Bybit) => 0.071_358,
+        ("sol/usd", LocalPriceSource::Coinbase) => 3.382_379,
+        ("sol/usd", LocalPriceSource::Hyperliquid) => 0.176_728,
+        ("sol/usd", LocalPriceSource::Okx) => 2.098_641,
+
+        ("xrp/usd", LocalPriceSource::Binance) => 1.509_501,
+        ("xrp/usd", LocalPriceSource::Bybit) => 1.029_301,
+        ("xrp/usd", LocalPriceSource::Coinbase) => 3.347_218,
+        ("xrp/usd", LocalPriceSource::Hyperliquid) => 0.672_930,
+
+        _ => local_price_agg_source_weight(source),
+    }
+}
+
+fn run_local_boundary_shadow_policy(
+    symbol: &str,
+    spec: LocalBoundaryShadowPolicySpec,
+    tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    end_ms: u64,
+) -> LocalBoundaryShadowOutcome {
+    let mut contributions = Vec::new();
+    for source in spec.allowed_sources {
+        let Some(tape) = tapes.get(source) else {
+            continue;
+        };
+        let Some((mut point, raw_close_price)) = pick_local_boundary_tape_close_point(
+            tape,
+            end_ms,
+            LOCAL_BOUNDARY_POLICY_PRE_MS,
+            LOCAL_BOUNDARY_POLICY_POST_MS,
+            spec.rule,
+        ) else {
+            continue;
+        };
+        point.price = local_price_agg_apply_source_bias(symbol, *source, point.price);
+        contributions.push(LocalCloseSourceContribution {
+            source: *source,
+            raw_close_price,
+            adjusted_close_price: point.price,
+            close_ts_ms: point.ts_ms,
+            close_exact: point.exact,
+        });
+    }
+
+    if contributions.len() < spec.min_sources {
+        return LocalBoundaryShadowOutcome {
+            policy_name: spec.policy_name,
+            source_subset_name: spec.source_subset_name,
+            rule: spec.rule,
+            min_sources: spec.min_sources,
+            hit: None,
+        };
+    }
+
+    let close_values = contributions
+        .iter()
+        .map(|src| src.adjusted_close_price)
+        .collect::<Vec<_>>();
+    let close_timestamps = contributions
+        .iter()
+        .map(|src| src.close_ts_ms)
+        .collect::<Vec<_>>();
+    let num = contributions
+        .iter()
+        .map(|src| {
+            local_boundary_policy_source_weight(spec.policy_name, symbol, src.source)
+                * src.adjusted_close_price
+        })
+        .sum::<f64>();
+    let den = contributions
+        .iter()
+        .map(|src| local_boundary_policy_source_weight(spec.policy_name, symbol, src.source))
+        .sum::<f64>();
+    let close_price = if den > 0.0 {
+        num / den
+    } else {
+        robust_center(close_values.clone()).unwrap_or_default()
+    };
+    let close_ts_ms = median_u64(close_timestamps).unwrap_or(end_ms);
+    let source_spread_bps = spread_bps(&close_values).unwrap_or(0.0);
+    let close_exact_sources = contributions.iter().filter(|src| src.close_exact).count();
+    LocalBoundaryShadowOutcome {
+        policy_name: spec.policy_name,
+        source_subset_name: spec.source_subset_name,
+        rule: spec.rule,
+        min_sources: spec.min_sources,
+        hit: Some(LocalBoundaryShadowHit {
+            policy_name: spec.policy_name,
+            source_subset_name: spec.source_subset_name,
+            rule: spec.rule,
+            min_sources: spec.min_sources,
+            close_price,
+            close_ts_ms,
+            source_count: contributions.len(),
+            source_spread_bps,
+            close_exact_sources,
+            source_contributions: contributions,
+        }),
     }
 }
 
@@ -8068,6 +8733,102 @@ struct LocalCloseOnlyAggHit {
     source_contributions: Vec<LocalCloseSourceContribution>,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum LocalBoundaryCloseRule {
+    LastBefore,
+    NearestAbs,
+    AfterThenBefore,
+}
+
+impl LocalBoundaryCloseRule {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::LastBefore => "last_before",
+            Self::NearestAbs => "nearest_abs",
+            Self::AfterThenBefore => "after_then_before",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LocalBoundaryShadowPolicySpec {
+    policy_name: &'static str,
+    source_subset_name: &'static str,
+    rule: LocalBoundaryCloseRule,
+    min_sources: usize,
+    allowed_sources: &'static [LocalPriceSource],
+}
+
+#[derive(Debug, Clone)]
+struct LocalBoundaryShadowHit {
+    policy_name: &'static str,
+    source_subset_name: &'static str,
+    rule: LocalBoundaryCloseRule,
+    min_sources: usize,
+    close_price: f64,
+    close_ts_ms: u64,
+    source_count: usize,
+    source_spread_bps: f64,
+    close_exact_sources: usize,
+    source_contributions: Vec<LocalCloseSourceContribution>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalBoundaryShadowOutcome {
+    policy_name: &'static str,
+    source_subset_name: &'static str,
+    rule: LocalBoundaryCloseRule,
+    min_sources: usize,
+    hit: Option<LocalBoundaryShadowHit>,
+}
+
+#[derive(Debug, Clone)]
+struct LocalCloseAggCompareResult {
+    base_hit: Option<LocalCloseOnlyAggHit>,
+    boundary_shadow_outcomes: Vec<LocalBoundaryShadowOutcome>,
+}
+
+const LOCAL_BOUNDARY_SOURCES_FULL: &[LocalPriceSource] = &[
+    LocalPriceSource::Binance,
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Okx,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Hyperliquid,
+];
+const LOCAL_BOUNDARY_SOURCES_DROP_BINANCE: &[LocalPriceSource] = &[
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Okx,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Hyperliquid,
+];
+const LOCAL_BOUNDARY_SOURCES_DROP_BYBIT: &[LocalPriceSource] = &[
+    LocalPriceSource::Binance,
+    LocalPriceSource::Okx,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Hyperliquid,
+];
+const LOCAL_BOUNDARY_SOURCES_DROP_OKX: &[LocalPriceSource] = &[
+    LocalPriceSource::Binance,
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Hyperliquid,
+];
+const LOCAL_BOUNDARY_SOURCES_DROP_COINBASE: &[LocalPriceSource] = &[
+    LocalPriceSource::Binance,
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Okx,
+    LocalPriceSource::Hyperliquid,
+];
+const LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID: &[LocalPriceSource] = &[
+    LocalPriceSource::Binance,
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Okx,
+    LocalPriceSource::Coinbase,
+];
+
+const LOCAL_BOUNDARY_POLICY_PRE_MS: u64 = 5_000;
+const LOCAL_BOUNDARY_POLICY_POST_MS: u64 = 500;
+
 fn local_price_agg_temporal_weight(abs_delta_ms: u64) -> f64 {
     let decay = local_price_agg_close_time_decay_ms();
     if !decay.is_finite() || decay <= 0.0 {
@@ -8126,13 +8887,19 @@ async fn run_local_price_close_aggregator(
     round_start_ts: u64,
     round_end_ts: u64,
     hard_deadline_ms: u64,
-) -> Option<LocalCloseOnlyAggHit> {
+) -> LocalCloseAggCompareResult {
     let Some(hub) = local_price_hub else {
-        return None;
+        return LocalCloseAggCompareResult {
+            base_hit: None,
+            boundary_shadow_outcomes: Vec::new(),
+        };
     };
     let target_symbol = normalize_chainlink_symbol(symbol);
     if target_symbol.is_empty() {
-        return None;
+        return LocalCloseAggCompareResult {
+            base_hit: None,
+            boundary_shadow_outcomes: Vec::new(),
+        };
     }
 
     let start_ms = round_start_ts.saturating_mul(1_000);
@@ -8140,10 +8907,21 @@ async fn run_local_price_close_aggregator(
     let close_tol_ms = local_price_agg_close_tolerance_ms();
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
+    let boundary_window_ms = local_price_agg_boundary_window_ms();
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
+    let mut tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
     for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+        local_price_agg_collect_boundary_tape_tick(
+            &mut tapes,
+            source,
+            price,
+            ts_ms,
+            start_ms,
+            end_ms,
+            boundary_window_ms,
+        );
     }
 
     let close_ready_sources = |states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>| {
@@ -8166,6 +8944,15 @@ async fn run_local_price_close_aggregator(
                             ts_ms,
                             start_ms,
                             end_ms,
+                        );
+                        local_price_agg_collect_boundary_tape_tick(
+                            &mut tapes,
+                            source,
+                            price,
+                            ts_ms,
+                            start_ms,
+                            end_ms,
+                            boundary_window_ms,
                         );
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
@@ -8232,9 +9019,29 @@ async fn run_local_price_close_aggregator(
         min_sources,
         source_points,
     });
+    append_local_price_agg_boundary_probe(&LocalPriceAggBoundaryProbe {
+        unix_ms: unix_now_millis_u64(),
+        symbol: target_symbol.clone(),
+        round_start_ts,
+        round_end_ts,
+        mode: "close_only".to_string(),
+        status: status.to_string(),
+        boundary_window_ms,
+        source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
+    });
+
+    let boundary_shadow_outcomes = vec![run_local_boundary_shadow_policy(
+        &target_symbol,
+        local_boundary_policy_specs_weighted(&target_symbol),
+        &tapes,
+        end_ms,
+    )];
 
     if source_hits.len() < min_sources {
-        return None;
+        return LocalCloseAggCompareResult {
+            base_hit: None,
+            boundary_shadow_outcomes,
+        };
     }
 
     let close_values: Vec<f64> = source_hits.iter().map(|(_, c, _)| c.price).collect();
@@ -8244,8 +9051,14 @@ async fn run_local_price_close_aggregator(
         .iter()
         .map(|(source, close, _)| (close.price, local_price_agg_point_weight(*source, close)))
         .collect::<Vec<_>>();
-    let close_med =
-        weighted_mean(&close_weighted).or_else(|| robust_center(close_values.clone()))?;
+    let Some(close_med) =
+        weighted_mean(&close_weighted).or_else(|| robust_center(close_values.clone()))
+    else {
+        return LocalCloseAggCompareResult {
+            base_hit: None,
+            boundary_shadow_outcomes,
+        };
+    };
     let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
     let source_spread_bps = spread_bps(&close_values).unwrap_or(0.0);
 
@@ -8259,17 +9072,23 @@ async fn run_local_price_close_aggregator(
             max_source_spread_bps,
             source_hits.len(),
         );
-        return None;
+        return LocalCloseAggCompareResult {
+            base_hit: None,
+            boundary_shadow_outcomes,
+        };
     }
 
-    Some(LocalCloseOnlyAggHit {
-        close_price: close_med,
-        close_ts_ms: close_ts_med,
-        source_count: source_hits.len(),
-        source_spread_bps,
-        close_exact_sources,
-        source_contributions,
-    })
+    LocalCloseAggCompareResult {
+        base_hit: Some(LocalCloseOnlyAggHit {
+            close_price: close_med,
+            close_ts_ms: close_ts_med,
+            source_count: source_hits.len(),
+            source_spread_bps,
+            close_exact_sources,
+            source_contributions,
+        }),
+        boundary_shadow_outcomes,
+    }
 }
 
 async fn run_local_price_aggregator(
@@ -8294,6 +9113,7 @@ async fn run_local_price_aggregator(
     let min_confidence = local_price_agg_min_confidence();
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
+    let boundary_window_ms = local_price_agg_boundary_window_ms();
     let single_source_min_direction_margin_bps =
         local_price_agg_single_source_min_direction_margin_bps();
     let relief_min_confidence = LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE_DEFAULT;
@@ -8301,6 +9121,7 @@ async fn run_local_price_aggregator(
     let relief_max_source_spread_bps = LOCAL_PRICE_AGG_RELIEF_MAX_SOURCE_SPREAD_BPS_DEFAULT;
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
+    let mut tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
     let mut observed_ticks: u64 = 0;
     let mut observed_snapshot_ticks: u64 = 0;
     let mut observed_live_ticks: u64 = 0;
@@ -8310,6 +9131,15 @@ async fn run_local_price_aggregator(
         observed_ticks = observed_ticks.saturating_add(1);
         observed_snapshot_ticks = observed_snapshot_ticks.saturating_add(1);
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
+        local_price_agg_collect_boundary_tape_tick(
+            &mut tapes,
+            source,
+            price,
+            ts_ms,
+            start_ms,
+            end_ms,
+            boundary_window_ms,
+        );
     }
     apply_local_prewarmed_open_seed(&mut states, &target_symbol, start_ms);
 
@@ -8335,6 +9165,15 @@ async fn run_local_price_aggregator(
                             ts_ms,
                             start_ms,
                             end_ms,
+                        );
+                        local_price_agg_collect_boundary_tape_tick(
+                            &mut tapes,
+                            source,
+                            price,
+                            ts_ms,
+                            start_ms,
+                            end_ms,
+                            boundary_window_ms,
                         );
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
@@ -8442,6 +9281,16 @@ async fn run_local_price_aggregator(
             status: status.to_string(),
             min_sources,
             source_points: source_points_for_probe(),
+        });
+        append_local_price_agg_boundary_probe(&LocalPriceAggBoundaryProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            mode: "full".to_string(),
+            status: status.to_string(),
+            boundary_window_ms,
+            source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
         });
     };
 
@@ -12102,7 +12951,12 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             None
         };
 
-        let coord = StrategyCoordinator::with_aux_rx(
+        let shared_pgt_winner_side = coord_cfg
+            .strategy
+            .is_pair_gated_tranche_arb()
+            .then_some(Arc::new(Mutex::new(None)));
+
+        let coord = StrategyCoordinator::with_aux_rx_and_shared_winner(
             coord_cfg.clone(),
             ofi_watch_rx,
             inv_watch_rx,
@@ -12113,11 +12967,23 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             kill_rx,
             feedback_rx,
             slot_release_rx,
+            shared_pgt_winner_side.clone(),
         )
         .with_obs_tx(coord_obs_tx);
         session_handles.push(tokio::spawn(coord.run()));
 
-        let om = OrderManager::new(om_rx, exec_tx.clone(), result_rx, slot_release_tx);
+        let pgt_buy_fill_reopen_cooldown = if coord_cfg.strategy.is_pair_gated_tranche_arb() {
+            std::time::Duration::from_millis(300)
+        } else {
+            std::time::Duration::ZERO
+        };
+        let om = OrderManager::with_buy_fill_reopen_cooldown(
+            om_rx,
+            exec_tx.clone(),
+            result_rx,
+            slot_release_tx,
+            pgt_buy_fill_reopen_cooldown,
+        );
         session_handles.push(tokio::spawn(om.run()));
 
         if !dry_run && recycle_cfg.enabled {
@@ -12144,6 +13010,13 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 tick_size: coord_cfg.tick_size,
                 reconcile_interval_secs,
                 dry_run,
+                pgt_shadow_same_side_provide_cooldown_ms: if dry_run
+                    && coord_cfg.strategy.is_pair_gated_tranche_arb()
+                {
+                    1_200
+                } else {
+                    0
+                },
             },
             clob_client.clone(),
             signer.clone(),
@@ -12253,6 +13126,9 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             );
         }
         let market_settled = matches!(reason, MarketEnd::Expired);
+        let pgt_local_winner_side = shared_pgt_winner_side
+            .as_ref()
+            .and_then(|shared| shared.lock().ok().and_then(|guard| *guard));
         if market_settled && recorder.enabled() {
             recorder.emit_own_inventory_event(
                 &recorder_meta,
@@ -12260,6 +13136,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 json!({
                     "reason": format!("{:?}", reason),
                     "round_end_ts": ws_round_end_ts,
+                    "winner_side": pgt_local_winner_side.map(|s| s.as_str().to_string()),
                 }),
             );
         }
@@ -12396,12 +13273,14 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             let redeem_recorder = recorder.clone();
             let redeem_meta = recorder_meta.clone();
             let final_snapshot = *inv_watch_rx_postclose.borrow();
+            let local_winner_side = pgt_local_winner_side;
             pgt_shadow_redeem_task = Some(tokio::spawn(async move {
                 run_pgt_shadow_redeem_lifecycle(
                     redeem_recorder,
                     redeem_meta,
                     effective_end_ts,
                     final_snapshot,
+                    local_winner_side,
                 )
                 .await;
             }));

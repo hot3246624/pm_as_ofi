@@ -14,6 +14,7 @@ const PENDING_CANCEL_TIMEOUT: Duration = Duration::from_secs(8);
 const PENDING_TIMEOUT_COOLDOWN: Duration = Duration::from_secs(2);
 const SLOT_PUMP_HEARTBEAT: Duration = Duration::from_millis(200);
 const SELL_AVAILABLE_WARMUP: Duration = Duration::from_millis(1_500);
+const DEFAULT_BUY_FILL_REOPEN_COOLDOWN: Duration = Duration::ZERO;
 const ORACLE_LAG_REPRICE_MIN_INTERVAL: Duration = Duration::from_millis(200);
 const ORACLE_LAG_REPRICE_PRICE_EPS: f64 = 5e-4;
 const ORACLE_LAG_REPRICE_SIZE_EPS: f64 = 0.05;
@@ -66,6 +67,7 @@ pub struct OrderManager {
     exec_tx: mpsc::Sender<ExecutionCmd>,
     result_rx: mpsc::Receiver<OrderResult>,
     slot_release_tx: mpsc::Sender<SlotReleaseEvent>,
+    buy_fill_reopen_cooldown: Duration,
 }
 
 impl OrderManager {
@@ -75,6 +77,22 @@ impl OrderManager {
         result_rx: mpsc::Receiver<OrderResult>,
         slot_release_tx: mpsc::Sender<SlotReleaseEvent>,
     ) -> Self {
+        Self::with_buy_fill_reopen_cooldown(
+            cmd_rx,
+            exec_tx,
+            result_rx,
+            slot_release_tx,
+            DEFAULT_BUY_FILL_REOPEN_COOLDOWN,
+        )
+    }
+
+    pub fn with_buy_fill_reopen_cooldown(
+        cmd_rx: mpsc::Receiver<OrderManagerCmd>,
+        exec_tx: mpsc::Sender<ExecutionCmd>,
+        result_rx: mpsc::Receiver<OrderResult>,
+        slot_release_tx: mpsc::Sender<SlotReleaseEvent>,
+        buy_fill_reopen_cooldown: Duration,
+    ) -> Self {
         Self {
             slots: std::array::from_fn(|idx| SlotTracker::new(OrderSlot::ALL[idx])),
             side_takers: [SideTakerState::Idle, SideTakerState::Idle],
@@ -83,6 +101,7 @@ impl OrderManager {
             exec_tx,
             result_rx,
             slot_release_tx,
+            buy_fill_reopen_cooldown,
         }
     }
 
@@ -320,6 +339,18 @@ impl OrderManager {
         let tracker = self.tracker_mut(slot);
         match tracker.state {
             OrderState::PendingSubmit(_) | OrderState::Idle => {
+                if matches!(tracker.state, OrderState::Idle)
+                    && slot.direction == TradeDirection::Buy
+                    && tracker
+                        .cooldown_until
+                        .is_some_and(|until| Instant::now() < until)
+                {
+                    warn!(
+                        "🧭 OMS: {} late OrderPlaced ignored during buy reopen cooldown",
+                        slot.as_str()
+                    );
+                    return;
+                }
                 tracker.state = OrderState::Live(target);
                 tracker.last_action = Instant::now();
                 info!("✅ OMS: {} OrderPlaced -> Live", slot.as_str());
@@ -360,10 +391,14 @@ impl OrderManager {
     }
 
     async fn handle_filled(&mut self, slot: OrderSlot) {
+        let buy_fill_reopen_cooldown = self.buy_fill_reopen_cooldown;
         let tracker = self.tracker_mut(slot);
         info!("✅ OMS: {} OrderFilled -> Slot freed", slot.as_str());
         tracker.state = OrderState::Idle;
         tracker.desired = None;
+        if slot.direction == TradeDirection::Buy && !buy_fill_reopen_cooldown.is_zero() {
+            tracker.cooldown_until = Some(Instant::now() + buy_fill_reopen_cooldown);
+        }
         let _ = self.slot_release_tx.send(SlotReleaseEvent { slot }).await;
         if slot.direction == TradeDirection::Buy {
             let until = Instant::now() + SELL_AVAILABLE_WARMUP;
@@ -771,6 +806,109 @@ mod tests {
 
         drop(cmd_tx);
         let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_buy_slot_reopen_cooldown_delays_post_fill_reentry() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, mut exec_rx) = mpsc::channel(16);
+        let (result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
+
+        let om = OrderManager::with_buy_fill_reopen_cooldown(
+            cmd_rx,
+            exec_tx,
+            result_rx,
+            slot_release_tx,
+            Duration::from_millis(300),
+        );
+        let h = tokio::spawn(om.run());
+
+        let _ = result_tx
+            .send(OrderResult::OrderFilled {
+                slot: OrderSlot::NO_BUY,
+            })
+            .await;
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                OrderSlot::NO_BUY,
+                0.37,
+                96.0,
+                BidReason::Provide,
+            )))
+            .await;
+
+        let early_deadline = tokio::time::Instant::now() + Duration::from_millis(200);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= early_deadline {
+                break;
+            }
+            let remaining = early_deadline - now;
+            match timeout(remaining, exec_rx.recv()).await {
+                Err(_) | Ok(None) => break,
+                Ok(Some(ExecutionCmd::ExecuteIntent { intent }))
+                    if intent.side == Side::No && intent.direction == TradeDirection::Buy =>
+                {
+                    panic!(
+                        "NO buy should stay blocked during post-fill reopen cooldown, got {:?}",
+                        intent
+                    );
+                }
+                Ok(Some(_)) => continue,
+            }
+        }
+
+        let ready_deadline = tokio::time::Instant::now() + Duration::from_millis(1000);
+        loop {
+            let now = tokio::time::Instant::now();
+            if now >= ready_deadline {
+                panic!("timed out waiting for delayed NO buy ExecuteIntent");
+            }
+            let remaining = ready_deadline - now;
+            match timeout(remaining, exec_rx.recv()).await {
+                Ok(Some(ExecutionCmd::ExecuteIntent { intent })) => {
+                    if intent.side == Side::No && intent.direction == TradeDirection::Buy {
+                        assert_eq!(intent.urgency, TradeUrgency::MakerPostOnly);
+                        assert_eq!(intent.price, Some(0.37));
+                        break;
+                    }
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => panic!("timed out waiting for delayed NO buy ExecuteIntent"),
+            }
+        }
+
+        drop(cmd_tx);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_buy_slot_late_order_placed_is_ignored_during_reopen_cooldown() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, _exec_rx) = mpsc::channel(16);
+        let (_result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
+
+        let mut om = OrderManager::with_buy_fill_reopen_cooldown(
+            cmd_rx,
+            exec_tx,
+            result_rx,
+            slot_release_tx,
+            Duration::from_millis(300),
+        );
+
+        om.handle_filled(OrderSlot::NO_BUY).await;
+        om.handle_placed(
+            OrderSlot::NO_BUY,
+            target(OrderSlot::NO_BUY, 0.37, 96.0, BidReason::Provide),
+        )
+        .await;
+
+        let tracker = om.tracker(OrderSlot::NO_BUY);
+        assert!(matches!(tracker.state, OrderState::Idle));
+        assert!(tracker.desired.is_none());
     }
 
     #[tokio::test]
