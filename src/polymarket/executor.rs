@@ -86,6 +86,7 @@ pub struct ExecutorConfig {
     pub tick_size: f64,
     pub reconcile_interval_secs: u64,
     pub dry_run: bool,
+    pub pgt_shadow_same_side_provide_cooldown_ms: u64,
 }
 
 // ─────────────────────────────────────────────────────────
@@ -132,6 +133,9 @@ pub struct Executor {
     last_buy_fill_ts: [Option<Instant>; 2],
     /// Recent same-side buy placements, used as a fallback when fill events lag behind submit ACKs.
     last_buy_place_ts: [Option<Instant>; 2],
+    /// PGT shadow only: after a Provide fill on one side, suppress new same-side
+    /// Provide submissions for a short window so completion can take over first.
+    pgt_recent_provide_fill_until: [Option<Instant>; 2],
 
     /// Runtime-selected query mode for REST reconciliation.
     reconcile_fetch_mode: ReconcileFetchMode,
@@ -167,6 +171,7 @@ struct DryRunLiveOrder {
     slot: OrderSlot,
     side: Side,
     direction: TradeDirection,
+    reason: BidReason,
     price: f64,
     size: f64,
     fill_emitted: bool,
@@ -275,6 +280,7 @@ impl Executor {
             dry_run_recently_canceled: HashMap::new(),
             last_buy_fill_ts: [None, None],
             last_buy_place_ts: [None, None],
+            pgt_recent_provide_fill_until: [None, None],
             slot_blocked_since: [None; 4],
             slot_last_blocked_feedback: [None; 4],
             slot_last_forced_cancel_attempt: std::array::from_fn(|_| {
@@ -367,6 +373,7 @@ impl Executor {
         slot: OrderSlot,
         side: Side,
         direction: TradeDirection,
+        reason: BidReason,
         price: f64,
         size: f64,
     ) {
@@ -376,6 +383,7 @@ impl Executor {
                 slot,
                 side,
                 direction,
+                reason,
                 price,
                 size,
                 fill_emitted: false,
@@ -520,6 +528,14 @@ impl Executor {
         loop {
             tokio::select! {
                 biased;
+                // Fill notifications must outrank new placement commands in dry-run:
+                // first-leg fills need to mutate slot/inventory state before stale
+                // same-side commands are allowed through.
+                fill = self.fill_rx.recv() => {
+                    if let Some(fill) = fill {
+                        self.handle_fill_notification(&fill).await;
+                    }
+                }
                 // Command channel (from Coordinator)
                 cmd = self.cmd_rx.recv() => {
                     match cmd {
@@ -581,18 +597,11 @@ impl Executor {
                         Some(ExecutionCmd::ReconcileNow { reason }) => {
                             if reconcile_enabled {
                                 info!("🧭 ReconcileNow: {}", reason);
-                                // Warm balance cache off the trading hot path.
                                 let _ = self.cached_free_balance_usdc().await;
                                 self.reconcile_open_orders().await;
                             }
                         }
-                        None => break, // Channel closed
-                    }
-                }
-                // FIX #4: Fill notifications — clean up open_orders lifecycle
-                fill = self.fill_rx.recv() => {
-                    if let Some(fill) = fill {
-                        self.handle_fill_notification(&fill).await;
+                        None => break,
                     }
                 }
                 _ = dry_run_touch_tick.tick(), if self.dry_run_market_touch_fills => {
@@ -995,6 +1004,20 @@ impl Executor {
         }
         if fill.status != FillStatus::Failed && slot.direction == TradeDirection::Buy {
             self.last_buy_fill_ts[slot.side.index()] = Some(Instant::now());
+            if self.cfg.dry_run
+                && self.cfg.pgt_shadow_same_side_provide_cooldown_ms > 0
+                && self
+                    .dry_run_live_orders
+                    .get(&fill.order_id)
+                    .is_some_and(|order| order.reason == BidReason::Provide)
+            {
+                self.pgt_recent_provide_fill_until[slot.side.index()] = Some(
+                    Instant::now()
+                        + Duration::from_millis(
+                            self.cfg.pgt_shadow_same_side_provide_cooldown_ms,
+                        ),
+                );
+            }
         }
         // P1-3: FAILED = order terminated, remove entirely
         if fill.status == FillStatus::Failed {
@@ -1152,6 +1175,27 @@ impl Executor {
             "📤 {} PostOnly {:?} {:?}@{:.3} size={:.1}",
             reason_str, direction, side, price, size,
         );
+
+        if self.cfg.dry_run
+            && self.cfg.pgt_shadow_same_side_provide_cooldown_ms > 0
+            && direction == TradeDirection::Buy
+            && reason == BidReason::Provide
+            && self.pgt_recent_provide_fill_until[side.index()]
+                .is_some_and(|until| until > Instant::now())
+        {
+            info!(
+                "🧪 PGT shadow suppressed same-side provide {:?} {:?}@{:.3} size={:.1}",
+                direction, side, price, size
+            );
+            let _ = self
+                .result_tx
+                .send(OrderResult::OrderFailed {
+                    slot,
+                    cooldown_ms: self.cfg.pgt_shadow_same_side_provide_cooldown_ms,
+                })
+                .await;
+            return;
+        }
 
         let dust_pruned = self.prune_slot_dust_locally(slot);
         if dust_pruned > 0 {
@@ -1335,7 +1379,15 @@ impl Executor {
             }
             self.slot_orders_mut(slot).insert(order_id.clone(), size);
             if self.dry_run_market_touch_fills {
-                self.track_dry_run_live_order(order_id.clone(), slot, side, direction, price, size);
+                self.track_dry_run_live_order(
+                    order_id.clone(),
+                    slot,
+                    side,
+                    direction,
+                    reason,
+                    price,
+                    size,
+                );
             }
             self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
                 slot,
@@ -2699,6 +2751,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: false,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,
@@ -2774,6 +2827,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: false,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,
@@ -2823,6 +2877,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: false,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,
@@ -2863,6 +2918,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,
@@ -2929,6 +2985,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,
@@ -3011,6 +3068,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,
@@ -3081,6 +3139,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
             None,

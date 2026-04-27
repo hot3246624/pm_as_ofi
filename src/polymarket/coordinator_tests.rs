@@ -6015,6 +6015,36 @@ fn test_pair_gated_tranche_active_state_only_quotes_completion_side() {
 }
 
 #[test]
+fn test_pair_gated_tranche_completion_is_maker_first_not_aggressive() {
+    let inv = InventoryState {
+        yes_qty: 100.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 20.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 100.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+
+    let quotes = pair_gated_tranche_quotes(cfg(), inventory, book(0.20, 0.22, 0.56, 0.58));
+    let hedge = quotes.no_buy.expect("expected NO completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        hedge.price <= 0.57 + 1e-9,
+        "completion should stay maker-first near bid/inside-spread, not chase ask (got {:.4})",
+        hedge.price
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
     let mut c = cfg();
     c.max_net_diff = 500.0;

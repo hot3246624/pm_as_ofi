@@ -242,7 +242,6 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let safety_margin = coordinator.post_only_safety_margin_for(hedge_side, best_bid, best_ask);
         let repair_budget_per_share =
             input.pair_ledger.repair_budget_available / active.residual_qty.max(1.0);
         let urgency_shadow = urgency_budget_shadow_5m(remaining_secs, true);
@@ -252,8 +251,16 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let maker_cap = (best_ask - safety_margin).max(0.0);
-        let price = coordinator.safe_price(maker_cap.min(ceiling));
+        let Some(price) = self.passive_completion_price(
+            coordinator,
+            hedge_side,
+            ceiling,
+            best_bid,
+            best_ask,
+            remaining_secs,
+        ) else {
+            return None;
+        };
         if price <= 0.0 || price > ceiling + 1e-9 {
             return None;
         }
@@ -326,6 +333,45 @@ impl PairGatedTrancheStrategy {
 
         (BASE_CLIP_QTY * session_mult * imbalance_mult * trade_index_mult * tail_mult)
             .clamp(MIN_CLIP_QTY, MAX_CLIP_QTY)
+    }
+
+    fn passive_completion_price(
+        &self,
+        coordinator: &StrategyCoordinator,
+        side: Side,
+        ceiling: f64,
+        best_bid: f64,
+        best_ask: f64,
+        remaining_secs: u64,
+    ) -> Option<f64> {
+        if ceiling <= 0.0 || best_bid <= 0.0 || best_ask <= 0.0 {
+            return None;
+        }
+        let tick = coordinator.cfg().tick_size.max(1e-9);
+        let safety_margin = coordinator.post_only_safety_margin_for(side, best_bid, best_ask);
+        let maker_cap = (best_ask - safety_margin).max(0.0);
+        if maker_cap <= 0.0 {
+            return None;
+        }
+
+        let spread_ticks = ((best_ask - best_bid) / tick).max(0.0);
+        let improve_ticks = if remaining_secs <= 30 {
+            if spread_ticks >= 4.0 { 2.0 } else { 1.0 }
+        } else if remaining_secs <= 60 {
+            if spread_ticks >= 3.0 { 1.0 } else { 0.0 }
+        } else if spread_ticks >= 4.0 {
+            1.0
+        } else {
+            0.0
+        };
+
+        let passive_anchor = best_bid + improve_ticks * tick;
+        let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
+        if price > 0.0 {
+            Some(price)
+        } else {
+            None
+        }
     }
 }
 
