@@ -1,0 +1,76 @@
+{
+  "version": "2026-04-27",
+  "goal": "Converge on a falsifiable xuanxuan008 edge structure before new truth data arrives.",
+  "question_priority": [
+    {
+      "rank": 1,
+      "module": "Open Gate",
+      "question": "What market states justify opening the first leg?"
+    },
+    {
+      "rank": 2,
+      "module": "Completion Controller",
+      "question": "Which states make opposite completion inside 30s materially more likely?"
+    },
+    {
+      "rank": 3,
+      "module": "First-Leg Sizing",
+      "question": "How should clip size change with state quality and session regime?"
+    },
+    {
+      "rank": 4,
+      "module": "Re-entry / Cooldown",
+      "question": "When does xuan reopen after a closed tranche, and when does it sit out?"
+    },
+    {
+      "rank": 5,
+      "module": "Abort / Repair",
+      "question": "When does xuan stop waiting and pay for a more aggressive completion?"
+    }
+  ],
+  "shadow_gap_question_order": [
+    "Why was a candidate blocked before first leg open?",
+    "Why did an allowed first leg fail to see opposite completion inside 30s?",
+    "Why did opposite appear but still fail to clean close inside 60s?"
+  ],
+  "fixed_metrics": [
+    "30s_completion_hit_rate",
+    "median_first_opposite_delay_s",
+    "same_side_before_opposite_ratio",
+    "maker_proxy_ratio",
+    "score_bucket_distribution",
+    "session_bucket_distribution",
+    "open_candidate_count",
+    "open_allowed_count",
+    "open_blocked_count",
+    "clean_closed_episode_ratio",
+    "same_side_add_qty_ratio"
+  ],
+  "thresholds": {
+    "data_usable": {
+      "recent_overlap_episode_min": 300,
+      "field": "coverage_stats.recent_overlap_episode_count"
+    },
+    "research_effective": {
+      "holdout_lift_min_abs": 0.1,
+      "field": "coverage_stats.holdout_lift_pct"
+    },
+    "enforce_discussion_ready": {
+      "baseline_report_required": true,
+      "shadow_vs_baseline_completion_lift_min_abs": 0.1,
+      "shadow_vs_xuan_completion_gap_max_abs": 0.05,
+      "shadow_vs_xuan_delay_gap_max_s": 5.0
+    }
+  },
+  "hypothesis_buckets": [
+    "falsified",
+    "weak_evidence",
+    "strong_waiting_for_truth",
+    "not_answerable"
+  ],
+  "defaults": {
+    "recent_first": true,
+    "xuan_edge_primary_hypothesis": "state_selection",
+    "hard_no_claim": "No 100 percent xuan replica claim before non-provisional overlap truth."
+  }
+}

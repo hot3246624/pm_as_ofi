@@ -8,6 +8,23 @@
   - `PM_STRATEGY=completion_first`
   - 兼容别名：`xuan_clone`
 
+## 研究裁决资产
+
+- 机器可读 contract：`configs/xuan_research_contract.json`
+- 问题树与证据矩阵：[docs/XUAN_RESEARCH_EVIDENCE_MATRIX_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_RESEARCH_EVIDENCE_MATRIX_ZH.md)
+- 假设分级表：[docs/XUAN_HYPOTHESIS_GRADING_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_HYPOTHESIS_GRADING_ZH.md)
+- 真值到位后 `72h` 冲刺流程：[docs/XUAN_TRUTH_TPLUS72_RUNBOOK_ZH.md](/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/docs/XUAN_TRUTH_TPLUS72_RUNBOOK_ZH.md)
+
+当前研究默认只回答 5 个模块：
+
+1. `Open Gate`
+2. `Completion Controller`
+3. `First-Leg Sizing`
+4. `Re-entry / Cooldown`
+5. `Abort / Repair`
+
+如果新的分析不能帮助裁决这 5 个模块，就不进入主研究链。
+
 ## 策略语义
 - `FlatSeed`
   - 先生成 `pair_arb` 风格的 `YES_BUY` / `NO_BUY` 候选
@@ -85,8 +102,13 @@
 - `gate_block_reason_counts`
 - `score_bucket_distribution`
 - `session_bucket_distribution`
+- gap 默认只按以下顺序解释：
+  - 为什么候选没被放行
+  - 为什么放行后没有在 `30s` 内出现 opposite
+  - 为什么出现 opposite 后仍未 clean close
 - replay/report：
   - `python scripts/build_replay_db.py --date YYYY-MM-DD`
   - `python scripts/export_completion_first_shadow_report.py --date YYYY-MM-DD`
   - `python scripts/export_xuan_completion_gate.py`
   - `python scripts/export_xuan_completion_gap_report.py --report-json .../completion_first_shadow_summary.json`
+  - `bash scripts/run_xuan_truth_t72_cycle.sh <UTC-DAY>`
