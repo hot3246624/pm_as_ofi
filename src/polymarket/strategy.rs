@@ -68,6 +68,8 @@ pub(crate) struct StrategyQuotes {
     pub(crate) yes_sell: Option<StrategyIntent>,
     pub(crate) no_buy: Option<StrategyIntent>,
     pub(crate) no_sell: Option<StrategyIntent>,
+    pub(crate) completion_first_open_yes: Option<completion_first::CompletionFirstOpenDecision>,
+    pub(crate) completion_first_open_no: Option<completion_first::CompletionFirstOpenDecision>,
     pub(crate) diagnostics: StrategyQuoteDiagnostics,
 }
 
@@ -101,6 +103,26 @@ impl StrategyQuotes {
 
     pub(crate) fn buy_for(&self, side: Side) -> Option<StrategyIntent> {
         self.get(OrderSlot::new(side, TradeDirection::Buy))
+    }
+
+    pub(crate) fn note_completion_first_open_eval(
+        &mut self,
+        decision: completion_first::CompletionFirstOpenDecision,
+    ) {
+        match decision.side {
+            Side::Yes => self.completion_first_open_yes = Some(decision),
+            Side::No => self.completion_first_open_no = Some(decision),
+        }
+    }
+
+    pub(crate) fn completion_first_open_eval(
+        &self,
+        side: Side,
+    ) -> Option<completion_first::CompletionFirstOpenDecision> {
+        match side {
+            Side::Yes => self.completion_first_open_yes,
+            Side::No => self.completion_first_open_no,
+        }
     }
 
     pub(crate) fn note_pair_arb_ofi_softened(&mut self) {

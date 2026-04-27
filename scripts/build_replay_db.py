@@ -32,6 +32,7 @@ INVENTORY_EVENTS = {
     "pair_budget_events",
     "capital_state_events",
     "completion_first_seed_built",
+    "completion_first_open_gate_decision",
     "completion_first_completion_built",
     "completion_first_same_side_add_blocked",
     "completion_first_merge_requested",

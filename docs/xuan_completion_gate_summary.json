@@ -1,0 +1,86 @@
+{
+  "coverage_stats": {
+    "full_episode_count": 1196,
+    "full_overlap_episode_count": 208,
+    "recent_episode_count": 21,
+    "recent_overlap_episode_count": 17,
+    "holdout_gate_on_completion_rate": 0.35294117647058826,
+    "holdout_baseline_completion_rate": 0.35294117647058826,
+    "holdout_lift_pct": 0.0
+  },
+  "full_metrics": {
+    "episode_count": 208,
+    "completion_30s_hit_rate": 0.3125,
+    "gate_on_completion_rate": 0.31313131313131315,
+    "gate_on_lift_pct": 0.0006313131313131493,
+    "median_first_opposite_delay_s": 24.0,
+    "same_side_before_opposite_ratio": 0.15384615384615385,
+    "maker_proxy_ratio": 0.6490384615384616,
+    "score_bucket_distribution": {
+      "full_clip": 87,
+      "half_clip": 3,
+      "upclip": 118
+    },
+    "session_distribution": {
+      "0": 17,
+      "15": 1,
+      "17": 10,
+      "18": 29,
+      "19": 32,
+      "20": 20,
+      "21": 35,
+      "22": 38,
+      "23": 26
+    }
+  },
+  "recent_metrics": {
+    "episode_count": 17,
+    "completion_30s_hit_rate": 0.35294117647058826,
+    "gate_on_completion_rate": 0.35294117647058826,
+    "gate_on_lift_pct": 0.0,
+    "median_first_opposite_delay_s": 26.0,
+    "same_side_before_opposite_ratio": 0.29411764705882354,
+    "maker_proxy_ratio": 0.47058823529411764,
+    "score_bucket_distribution": {
+      "full_clip": 8,
+      "half_clip": 1,
+      "upclip": 8
+    },
+    "session_distribution": {
+      "0": 17
+    }
+  },
+  "holdout_metrics": {
+    "episode_count": 17,
+    "completion_30s_hit_rate": 0.35294117647058826,
+    "gate_on_completion_rate": 0.35294117647058826,
+    "gate_on_lift_pct": 0.0,
+    "median_first_opposite_delay_s": 26.0,
+    "same_side_before_opposite_ratio": 0.29411764705882354,
+    "maker_proxy_ratio": 0.47058823529411764,
+    "score_bucket_distribution": {
+      "full_clip": 8,
+      "half_clip": 1,
+      "upclip": 8
+    },
+    "session_distribution": {
+      "0": 17
+    }
+  },
+  "xuan_targets": {
+    "xuan_30s_completion_hit_rate": 0.35294117647058826,
+    "xuan_median_first_opposite_delay_s": 26.0,
+    "xuan_score_bucket_distribution": {
+      "full_clip": 8,
+      "half_clip": 1,
+      "upclip": 8
+    },
+    "xuan_session_distribution": {
+      "0": 17
+    },
+    "xuan_maker_proxy_ratio": 0.47058823529411764
+  },
+  "defaults_path": "configs/xuan_completion_gate_defaults.json",
+  "fallback_applied": true,
+  "provisional": true
+}

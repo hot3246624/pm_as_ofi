@@ -22,8 +22,8 @@ use super::glft::GlftSignalSnapshot;
 use super::messages::*;
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::strategy::{
-    completion_first::CompletionFirstPhase, StrategyExecutionMode, StrategyIntent, StrategyKind,
-    StrategyQuotes, StrategyTickInput,
+    completion_first::{CompletionFirstGateDefaults, CompletionFirstPhase},
+    StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput,
 };
 use super::types::Side;
 
@@ -116,6 +116,8 @@ pub enum CompletionFirstMode {
 pub struct CompletionFirstStrategyConfig {
     pub market_enabled: bool,
     pub mode: CompletionFirstMode,
+    pub gate_defaults_path: Option<String>,
+    pub gate_defaults: CompletionFirstGateDefaults,
 }
 
 #[derive(Debug, Clone)]
@@ -265,6 +267,8 @@ impl Default for CoordinatorConfig {
             completion_first: CompletionFirstStrategyConfig {
                 market_enabled: false,
                 mode: CompletionFirstMode::Shadow,
+                gate_defaults_path: None,
+                gate_defaults: CompletionFirstGateDefaults::default(),
             },
             oracle_lag_sniping: OracleLagSnipingStrategyConfig {
                 // ~Polymarket liquidity lifecycle post-close (all resting orders cleared by then).
@@ -511,6 +515,31 @@ impl CoordinatorConfig {
             } else {
                 CompletionFirstMode::Shadow
             };
+        }
+
+        let path = std::env::var("PM_COMPLETION_FIRST_GATE_DEFAULTS")
+            .ok()
+            .filter(|v| !v.trim().is_empty())
+            .or_else(|| {
+                let default_path =
+                    std::path::Path::new("configs/xuan_completion_gate_defaults.json");
+                default_path
+                    .exists()
+                    .then(|| default_path.display().to_string())
+            });
+        if let Some(path) = path {
+            match CompletionFirstGateDefaults::from_path(std::path::Path::new(&path)) {
+                Ok(defaults) => {
+                    self.completion_first.gate_defaults_path = Some(path);
+                    self.completion_first.gate_defaults = defaults;
+                }
+                Err(err) => {
+                    warn!(
+                        "⚠️ Failed to load completion_first gate defaults from {}: {}",
+                        path, err
+                    );
+                }
+            }
         }
     }
 

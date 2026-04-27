@@ -44,6 +44,13 @@ impl StrategyCoordinator {
         self.cfg.completion_first.mode
     }
 
+    pub(crate) fn completion_first_book_age_ms(&self, side: Side) -> u64 {
+        match side {
+            Side::Yes => self.last_valid_ts_yes.elapsed().as_millis() as u64,
+            Side::No => self.last_valid_ts_no.elapsed().as_millis() as u64,
+        }
+    }
+
     pub(crate) fn market_has_ended(&self) -> bool {
         let Some(end_ts) = self.cfg.market_end_ts else {
             return false;
@@ -252,6 +259,36 @@ impl StrategyCoordinator {
         }
         let phase = self.completion_first_phase();
         let active = snapshot.pair_ledger.active_tranche;
+        if phase == crate::polymarket::strategy::completion_first::CompletionFirstPhase::FlatSeed {
+            for side in [Side::Yes, Side::No] {
+                if let Some(eval) = quotes.completion_first_open_eval(side) {
+                    self.emit_completion_first_event(
+                        "completion_first_open_gate_decision",
+                        serde_json::json!({
+                            "phase": format!("{:?}", phase),
+                            "side": side.as_str(),
+                            "allowed": eval.allowed,
+                            "score": eval.score,
+                            "score_bucket": eval.score_bucket,
+                            "block_reason": eval.block_reason,
+                            "clip_mult": eval.clip_mult,
+                            "session_mult": eval.session_mult,
+                            "base_clip": eval.base_clip,
+                            "final_clip": eval.final_clip,
+                            "book_age_ms": eval.book_age_ms,
+                            "utc_hour_bucket": eval.hour_bucket,
+                            "prior_imbalance": eval.prior_imbalance,
+                            "same_side_run_before_open": eval.same_side_run_before_open,
+                            "l1_spread_ticks_first_side": eval.l1_spread_ticks_first_side,
+                            "l1_spread_ticks_opposite_side": eval.l1_spread_ticks_opposite_side,
+                            "mid_skew_to_opposite": eval.mid_skew_to_opposite,
+                            "gate_source": eval.gate_source,
+                            "provisional": eval.provisional,
+                        }),
+                    );
+                }
+            }
+        }
         if let Some(intent) = quotes.buy_for(Side::Yes) {
             let event = if active.is_some() && active.and_then(|t| t.first_side) != Some(Side::Yes)
             {

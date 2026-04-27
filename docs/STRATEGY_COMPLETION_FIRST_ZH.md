@@ -10,9 +10,13 @@
 
 ## 策略语义
 - `FlatSeed`
-  - 同时生成 `YES_BUY` 与 `NO_BUY`
-  - seed 定价复用 `pair_arb` 的 buy-side 底座
-  - seed 数量不再沿用 `bid_size`，而是直接使用 `completion_first clip`
+  - 先生成 `pair_arb` 风格的 `YES_BUY` / `NO_BUY` 候选
+  - 再走 `xuan completion gate`：
+    - 只影响 `first leg open allow/block`
+    - 只影响 `first leg clip multiplier`
+    - 不改变 `completion-only`、`repair budget`、`merge/redeem` 语义
+  - gate 默认读取 `configs/xuan_completion_gate_defaults.json`
+  - 每个候选都会写一条 `completion_first_open_gate_decision`
 - `CompletionOnly`
   - 一旦出现 active tranche，默认优先推动对侧 completion
   - 同侧加仓最多允许 1 次
@@ -30,14 +34,17 @@
   - `MAX_CLIP = 250`
   - `MIN_CLIP = 45`
 - 适用范围：
-  - `FlatSeed` 双边 seed
+  - `FlatSeed` 候选 seed
   - `CompletionOnly` 下的 same-side add
   - completion 腿（上限为 `min(residual_qty, clip)`）
 - 乘子：
-  - `session_mult`
-  - `imbalance_mult`
-  - `trade_index_mult`
-  - 尾部 `30s` 再乘 `1.16`
+  - `FlatSeed`：
+    - 先算 `completion_first base clip`
+    - 再乘 `gate score bucket clip_mult`
+    - 再乘 `session_mult_by_utc_hour`
+  - `CompletionOnly` / same-side add：
+    - 继续使用原 `completion_first clip`
+    - 不吃 `xuan gate`
 - 最终数量四舍五入到 `0.1 share`
 
 ## 生命周期
@@ -52,6 +59,7 @@
   - `+50s` 第二次请求
 
 ## Shadow 事件
+- `completion_first_open_gate_decision`
 - `completion_first_seed_built`
 - `completion_first_completion_built`
 - `completion_first_same_side_add_blocked`
@@ -63,9 +71,22 @@
 - `pair_tranche_events`
 - `pair_budget_events`
 - `capital_state_events`
+- `completion_first_open_gate_decision`
 - `clean_closed_episode_ratio`
 - `same_side_add_qty_ratio`
 - `episode_close_delay_p50/p90`
+- `open_candidate_count`
+- `open_allowed_count`
+- `open_blocked_count`
+- `30s_completion_hit_rate`
+- `30s_completion_hit_rate_when_gate_on`
+- `30s_completion_hit_rate_when_gate_off`
+- `median_first_opposite_delay_s`
+- `gate_block_reason_counts`
+- `score_bucket_distribution`
+- `session_bucket_distribution`
 - replay/report：
   - `python scripts/build_replay_db.py --date YYYY-MM-DD`
   - `python scripts/export_completion_first_shadow_report.py --date YYYY-MM-DD`
+  - `python scripts/export_xuan_completion_gate.py`
+  - `python scripts/export_xuan_completion_gap_report.py --report-json .../completion_first_shadow_summary.json`
