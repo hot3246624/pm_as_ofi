@@ -1004,13 +1004,7 @@ impl Executor {
         }
         if fill.status != FillStatus::Failed && slot.direction == TradeDirection::Buy {
             self.last_buy_fill_ts[slot.side.index()] = Some(Instant::now());
-            if self.cfg.dry_run
-                && self.cfg.pgt_shadow_same_side_provide_cooldown_ms > 0
-                && self
-                    .dry_run_live_orders
-                    .get(&fill.order_id)
-                    .is_some_and(|order| order.reason == BidReason::Provide)
-            {
+            if self.cfg.dry_run && self.cfg.pgt_shadow_same_side_provide_cooldown_ms > 0 {
                 self.pgt_recent_provide_fill_until[slot.side.index()] = Some(
                     Instant::now()
                         + Duration::from_millis(
@@ -3177,5 +3171,69 @@ mod tests {
 
         assert!(exec.slot_orders(OrderSlot::YES_BUY).is_empty());
         assert!(result_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn dry_run_pgt_same_side_provide_is_suppressed_after_buy_fill() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                pgt_shadow_same_side_provide_cooldown_ms: 1200,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            None,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        exec.handle_fill_notification(&FillEvent {
+            order_id: "dry-NO_BUY-fill".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Buy,
+            filled_size: 96.0,
+            price: 0.48,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        })
+        .await;
+
+        exec.handle_place_bid(
+            Side::No,
+            TradeDirection::Buy,
+            0.46,
+            96.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+        )
+        .await;
+
+        let result = result_rx
+            .recv()
+            .await
+            .expect("cooldown should emit failure result");
+        assert!(matches!(
+            result,
+            OrderResult::OrderFailed { slot, cooldown_ms }
+                if slot == OrderSlot::NO_BUY && cooldown_ms == 1200
+        ));
+        assert!(exec.slot_orders(OrderSlot::NO_BUY).is_empty());
     }
 }
