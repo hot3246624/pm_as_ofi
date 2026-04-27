@@ -111,6 +111,7 @@ def build_decision_summary(
         },
         "question_priority": contract.get("question_priority") or [],
         "shadow_gap_question_order": contract.get("shadow_gap_question_order") or [],
+        "archetype_controls": contract.get("archetype_controls") or {},
     }
 
 

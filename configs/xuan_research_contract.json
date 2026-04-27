@@ -62,6 +62,71 @@
       "shadow_vs_xuan_delay_gap_max_s": 5.0
     }
   },
+  "archetype_controls": {
+    "reference_docs": [
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/XUANXUAN008_STRATEGY_V2_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/LATE_GRAMMAR_0x7347d3_STRATEGY_DEEP_DIVE_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/QUIETB27_0xb27bc_STRATEGY_DEEP_DIVE_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/GABAGOOL22_GROWN_CANTALOUPE_STRATEGY_DEEP_DIVE_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/SILENT_D189_0xd189664c_STRATEGY_DEEP_DIVE_ZH.md"
+    ],
+    "must_match": [
+      {
+        "id": "single_venue_btc_5m",
+        "rule": "Default target remains single-venue BTC 5m, not multi-venue spread deployment.",
+        "reason": "xuan edge is specialized on BTC 5m; multi-venue behavior belongs to late_grammar or gabagool22."
+      },
+      {
+        "id": "high_round_coverage",
+        "rule": "Treat high round participation as a positive prior, not a bug to optimize away.",
+        "reason": "xuan is archetype C every-round maker, unlike selective directional round pickers."
+      },
+      {
+        "id": "low_directionality",
+        "rule": "Default target is low pure-directional share and low same-side run before opposite completion.",
+        "reason": "xuan is completion-first, not directional-first."
+      },
+      {
+        "id": "in_round_completion",
+        "rule": "Primary success path is opposite completion inside the round, not post-close cleanup.",
+        "reason": "xuan strength is fast in-round pairing rather than slow after-close inventory bleed."
+      },
+      {
+        "id": "state_selected_clip",
+        "rule": "Clip sizing should remain state-aware, not fixed-size by default.",
+        "reason": "xuan adapts clip; fixed clip belongs to gabagool22."
+      }
+    ],
+    "nice_to_have": [
+      {
+        "id": "maker_leaning_execution",
+        "rule": "Prefer maker-leaning mixed execution, but do not hard-require registered maker status.",
+        "reason": "xuan currently supports maker-leaning mixed evidence, not A-grade rebate-confirmed maker."
+      },
+      {
+        "id": "in_round_merge_capital_recycling",
+        "rule": "Prefer in-round capital recycling once pair-covered inventory exists.",
+        "reason": "This is a xuan-like efficiency trait, but not the first proof target before 30s completion is understood."
+      }
+    ],
+    "anti_targets": [
+      {
+        "id": "selective_directional_round_picker",
+        "rule": "Do not treat low coverage plus high directional skew as xuan progress.",
+        "matches_archetype": "quietb27 / silent_d189"
+      },
+      {
+        "id": "multi_venue_slow_merge_spread",
+        "rule": "Do not treat multi-venue holding and delayed merge/redeem as xuan progress.",
+        "matches_archetype": "late_grammar"
+      },
+      {
+        "id": "fixed_clip_post_close_batch_merge",
+        "rule": "Do not treat fixed 10-share clip and post-close batch merge as xuan progress.",
+        "matches_archetype": "gabagool22"
+      }
+    ]
+  },
   "hypothesis_buckets": [
     "falsified",
     "weak_evidence",

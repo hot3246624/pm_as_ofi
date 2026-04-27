@@ -68,6 +68,10 @@ class ExportXuanCompletionGapReportTests(unittest.TestCase):
             },
             "question_priority": [{"rank": 1, "module": "Open Gate"}],
             "shadow_gap_question_order": ["why blocked", "why no opposite", "why no clean close"],
+            "archetype_controls": {
+                "must_match": [{"id": "single_venue_btc_5m"}],
+                "anti_targets": [{"id": "selective_directional_round_picker"}]
+            },
         }
         baseline_report = {
             "summary": {
@@ -80,6 +84,7 @@ class ExportXuanCompletionGapReportTests(unittest.TestCase):
         self.assertTrue(out["provisional"])
         self.assertEqual(out["decision_summary"]["verdict"], "Shadow Gap Actionable")
         self.assertTrue(out["decision_summary"]["data_usable"]["pass"])
+        self.assertIn("must_match", out["decision_summary"]["archetype_controls"])
 
 
 if __name__ == "__main__":
