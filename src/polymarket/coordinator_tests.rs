@@ -38,6 +38,8 @@ impl TestInventoryTx {
             pending_yes_qty: 0.0,
             pending_no_qty: 0.0,
             fragile: false,
+            pair_ledger: Default::default(),
+            episode_metrics: Default::default(),
         })
     }
 }
@@ -160,6 +162,8 @@ fn phase_builder_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
                 pending_yes_qty: 0.0,
                 pending_no_qty: 0.0,
                 fragile: false,
+                pair_ledger: Default::default(),
+                episode_metrics: Default::default(),
             },
             book: &book,
             metrics: &metrics,
@@ -184,6 +188,8 @@ fn gabagool_grid_quotes(c: CoordinatorConfig, inv: InventoryState, book: Book) -
                 pending_yes_qty: 0.0,
                 pending_no_qty: 0.0,
                 fragile: false,
+                pair_ledger: Default::default(),
+                episode_metrics: Default::default(),
             },
             book: &book,
             metrics: &metrics,
@@ -212,6 +218,8 @@ fn gabagool_corridor_quotes(
                 pending_yes_qty: 0.0,
                 pending_no_qty: 0.0,
                 fragile: false,
+                pair_ledger: Default::default(),
+                episode_metrics: Default::default(),
             },
             book: &book,
             metrics: &metrics,
@@ -241,6 +249,8 @@ fn pair_arb_quotes(
                 pending_yes_qty: 0.0,
                 pending_no_qty: 0.0,
                 fragile: false,
+                pair_ledger: Default::default(),
+                episode_metrics: Default::default(),
             },
             book: &book,
             metrics: &metrics,
@@ -306,6 +316,8 @@ fn test_pair_arb_uses_working_inventory_for_tiered_yes_cap() {
         pending_yes_qty: 5.0,
         pending_no_qty: 0.0,
         fragile: false,
+        pair_ledger: Default::default(),
+        episode_metrics: Default::default(),
     };
 
     let tier_1_mult = c.pair_arb.tier_1_mult;
@@ -360,6 +372,8 @@ fn test_pair_arb_execution_recheck_rejects_stale_same_side_quote_from_working_in
         pending_yes_qty: 5.0,
         pending_no_qty: 0.0,
         fragile: false,
+        pair_ledger: Default::default(),
+        episode_metrics: Default::default(),
     });
 
     let ub = book(0.61, 0.62, 0.34, 0.35);
@@ -2620,6 +2634,8 @@ fn test_pair_arb_progress_updates_on_working_only_advance() {
         pending_yes_qty: 0.0,
         pending_no_qty: 0.0,
         fragile: true,
+        pair_ledger: Default::default(),
+        episode_metrics: Default::default(),
     };
     coord.observe_pair_arb_inventory_transition(&snapshot, now);
 
@@ -2662,6 +2678,8 @@ fn test_pair_arb_progress_delta_scales_with_bid_size() {
         pending_yes_qty: 0.0,
         pending_no_qty: 0.0,
         fragile: true,
+        pair_ledger: Default::default(),
+        episode_metrics: Default::default(),
     };
     coord.observe_pair_arb_inventory_transition(&small_progress, now);
     assert!(
@@ -2693,6 +2711,8 @@ fn test_pair_arb_progress_delta_scales_with_bid_size() {
         pending_yes_qty: 0.0,
         pending_no_qty: 0.0,
         fragile: true,
+        pair_ledger: Default::default(),
+        episode_metrics: Default::default(),
     };
     coord.observe_pair_arb_inventory_transition(&large_progress, now + Duration::from_secs(1));
     assert_eq!(
@@ -3069,6 +3089,8 @@ fn test_pair_arb_merge_aware_round_accounting_tracks_realized_pair_metrics() {
             pending_yes_qty: 0.0,
             pending_no_qty: 0.0,
             fragile: false,
+            pair_ledger: Default::default(),
+            episode_metrics: Default::default(),
         },
         Instant::now(),
     );
@@ -5674,6 +5696,8 @@ fn test_pair_arb_ofi_toxic_does_not_block_pairing_buy_in_execution_layer() {
                 pending_yes_qty: 0.0,
                 pending_no_qty: 0.0,
                 fragile: false,
+                pair_ledger: Default::default(),
+                episode_metrics: Default::default(),
             },
             book: &book,
             metrics: &metrics,

@@ -8,3 +8,6 @@ logs/
 
 # Runtime pid files from start_markets.sh
 pids/
+
+# Replay/research artifacts
+data/

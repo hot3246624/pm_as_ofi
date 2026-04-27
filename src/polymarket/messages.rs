@@ -6,6 +6,7 @@
 
 use std::time::Instant;
 
+use super::pair_ledger::{EpisodeMetrics, PairLedgerSnapshot};
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -324,6 +325,8 @@ pub struct InventorySnapshot {
     pub pending_yes_qty: f64,
     pub pending_no_qty: f64,
     pub fragile: bool,
+    pub pair_ledger: PairLedgerSnapshot,
+    pub episode_metrics: EpisodeMetrics,
 }
 
 // ─────────────────────────────────────────────────────────

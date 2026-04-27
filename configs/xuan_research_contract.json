@@ -1,0 +1,167 @@
+{
+  "version": "2026-04-27",
+  "goal": "Converge on a falsifiable xuanxuan008 edge structure before new truth data arrives.",
+  "question_priority": [
+    {
+      "rank": 1,
+      "module": "Open Gate",
+      "question": "What market states justify opening the first leg?"
+    },
+    {
+      "rank": 2,
+      "module": "Completion Controller",
+      "question": "Which states make opposite completion inside 30s materially more likely?"
+    },
+    {
+      "rank": 3,
+      "module": "First-Leg Sizing",
+      "question": "How should clip size change with state quality and session regime?"
+    },
+    {
+      "rank": 4,
+      "module": "Re-entry / Cooldown",
+      "question": "When does xuan reopen after a closed tranche, and when does it sit out?"
+    },
+    {
+      "rank": 5,
+      "module": "Abort / Repair",
+      "question": "When does xuan stop waiting and pay for a more aggressive completion?"
+    }
+  ],
+  "shadow_gap_question_order": [
+    "Why was a candidate blocked before first leg open?",
+    "Why did an allowed first leg fail to see opposite completion inside 30s?",
+    "Why did opposite appear but still fail to clean close inside 60s?"
+  ],
+  "fixed_metrics": [
+    "30s_completion_hit_rate",
+    "median_first_opposite_delay_s",
+    "same_side_before_opposite_ratio",
+    "maker_proxy_ratio",
+    "score_bucket_distribution",
+    "session_bucket_distribution",
+    "open_candidate_count",
+    "open_allowed_count",
+    "open_blocked_count",
+    "clean_closed_episode_ratio",
+    "same_side_add_qty_ratio"
+  ],
+  "thresholds": {
+    "data_usable": {
+      "recent_overlap_episode_min": 300,
+      "field": "coverage_stats.recent_overlap_episode_count"
+    },
+    "research_effective": {
+      "holdout_lift_min_abs": 0.1,
+      "field": "coverage_stats.holdout_lift_pct"
+    },
+    "enforce_discussion_ready": {
+      "baseline_report_required": true,
+      "shadow_vs_baseline_completion_lift_min_abs": 0.1,
+      "shadow_vs_xuan_completion_gap_max_abs": 0.05,
+      "shadow_vs_xuan_delay_gap_max_s": 5.0
+    }
+  },
+  "archetype_controls": {
+    "reference_docs": [
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/XUANXUAN008_STRATEGY_V2_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/LATE_GRAMMAR_0x7347d3_STRATEGY_DEEP_DIVE_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/QUIETB27_0xb27bc_STRATEGY_DEEP_DIVE_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/GABAGOOL22_GROWN_CANTALOUPE_STRATEGY_DEEP_DIVE_ZH.md",
+      "/Users/hot/web3Scientist/pm_as_ofi/docs/SILENT_D189_0xd189664c_STRATEGY_DEEP_DIVE_ZH.md"
+    ],
+    "must_match": [
+      {
+        "id": "single_venue_btc_5m",
+        "rule": "Default target remains single-venue BTC 5m, not multi-venue spread deployment.",
+        "reason": "xuan edge is specialized on BTC 5m; multi-venue behavior belongs to late_grammar or gabagool22."
+      },
+      {
+        "id": "high_round_coverage",
+        "rule": "Treat high round participation as a positive prior, not a bug to optimize away.",
+        "reason": "xuan is archetype C every-round maker, unlike selective directional round pickers."
+      },
+      {
+        "id": "low_directionality",
+        "rule": "Default target is low pure-directional share and low same-side run before opposite completion.",
+        "reason": "xuan is completion-first, not directional-first."
+      },
+      {
+        "id": "in_round_completion",
+        "rule": "Primary success path is opposite completion inside the round, not post-close cleanup.",
+        "reason": "xuan strength is fast in-round pairing rather than slow after-close inventory bleed."
+      },
+      {
+        "id": "state_selected_clip",
+        "rule": "Clip sizing should remain state-aware, not fixed-size by default.",
+        "reason": "xuan adapts clip; fixed clip belongs to gabagool22."
+      }
+    ],
+    "nice_to_have": [
+      {
+        "id": "maker_leaning_execution",
+        "rule": "Prefer maker-leaning mixed execution, but do not hard-require registered maker status.",
+        "reason": "xuan currently supports maker-leaning mixed evidence, not A-grade rebate-confirmed maker."
+      },
+      {
+        "id": "in_round_merge_capital_recycling",
+        "rule": "Prefer in-round capital recycling once pair-covered inventory exists.",
+        "reason": "This is a xuan-like efficiency trait, but not the first proof target before 30s completion is understood."
+      }
+    ],
+    "anti_targets": [
+      {
+        "id": "selective_directional_round_picker",
+        "rule": "Do not treat low coverage plus high directional skew as xuan progress.",
+        "matches_archetype": "quietb27 / silent_d189"
+      },
+      {
+        "id": "multi_venue_slow_merge_spread",
+        "rule": "Do not treat multi-venue holding and delayed merge/redeem as xuan progress.",
+        "matches_archetype": "late_grammar"
+      },
+      {
+        "id": "fixed_clip_post_close_batch_merge",
+        "rule": "Do not treat fixed 10-share clip and post-close batch merge as xuan progress.",
+        "matches_archetype": "gabagool22"
+      }
+    ]
+  },
+  "control_screen_thresholds": {
+    "single_venue_btc_5m": {
+      "slug_substring": "btc-updown-5m"
+    },
+    "high_round_coverage": {
+      "require_nonzero_open_candidates": true,
+      "xuan_relative_threshold_pending_truth": true
+    },
+    "low_directionality": {
+      "same_side_add_qty_ratio_p90_pass_max": 0.1,
+      "same_side_add_qty_ratio_p90_watch_max": 0.2
+    },
+    "in_round_completion": {
+      "completion_30s_hit_rate_pass_min": 0.3,
+      "clean_closed_episode_ratio_median_pass_min": 0.9
+    },
+    "state_selected_clip": {
+      "min_nonzero_score_buckets": 2,
+      "max_single_bucket_share": 0.95
+    },
+    "fixed_clip_post_close_batch_merge": {
+      "require_single_score_bucket": true,
+      "completion_30s_hit_rate_fail_max": 0.3,
+      "require_merge_or_redeem_activity": true
+    }
+  },
+  "hypothesis_buckets": [
+    "falsified",
+    "weak_evidence",
+    "strong_waiting_for_truth",
+    "not_answerable"
+  ],
+  "defaults": {
+    "recent_first": true,
+    "xuan_edge_primary_hypothesis": "state_selection",
+    "hard_no_claim": "No 100 percent xuan replica claim before non-provisional overlap truth."
+  }
+}

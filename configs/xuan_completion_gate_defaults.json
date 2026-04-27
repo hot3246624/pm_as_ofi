@@ -1,0 +1,203 @@
+{
+  "score_threshold_block": 0,
+  "score_threshold_half_clip": 2,
+  "score_threshold_full_clip": 4,
+  "score_threshold_upclip": 5,
+  "clip_mult_by_score_bucket": {
+    "blocked": 0.0,
+    "half_clip": 0.5,
+    "full_clip": 1.0,
+    "upclip": 1.25
+  },
+  "session_mult_by_utc_hour": [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+    1.0
+  ],
+  "hard_block_rules": {
+    "max_same_side_run_before_open": 1,
+    "max_opposite_side_spread_ticks": 3.0,
+    "max_book_age_ms": 500,
+    "min_session_mult_for_open": 0.75,
+    "min_recent_overlap_episodes": 30
+  },
+  "feature_bucket_defs": {
+    "round_close_rel_s": [
+      {
+        "label": "le_15",
+        "min": null,
+        "max": 15.0,
+        "score": 2
+      },
+      {
+        "label": "15_60",
+        "min": 15.0,
+        "max": 60.0,
+        "score": 2
+      },
+      {
+        "label": "60_120",
+        "min": 60.0,
+        "max": 120.0,
+        "score": 1
+      },
+      {
+        "label": "120_180",
+        "min": 120.0,
+        "max": 180.0,
+        "score": 0
+      },
+      {
+        "label": "gt_180",
+        "min": 180.0,
+        "max": null,
+        "score": 0
+      }
+    ],
+    "prior_imbalance": [
+      {
+        "label": "lt_0.02",
+        "min": null,
+        "max": 0.02,
+        "score": 1
+      },
+      {
+        "label": "0.02_0.05",
+        "min": 0.02,
+        "max": 0.05,
+        "score": 1
+      },
+      {
+        "label": "0.05_0.08",
+        "min": 0.05,
+        "max": 0.08,
+        "score": 0
+      },
+      {
+        "label": "gt_0.08",
+        "min": 0.08,
+        "max": null,
+        "score": 0
+      }
+    ],
+    "l1_spread_ticks_first_side": [
+      {
+        "label": "le_1.5",
+        "min": null,
+        "max": 1.5,
+        "score": 1
+      },
+      {
+        "label": "1.5_3",
+        "min": 1.5,
+        "max": 3.0,
+        "score": 0
+      },
+      {
+        "label": "gt_3",
+        "min": 3.0,
+        "max": null,
+        "score": 0
+      }
+    ],
+    "l1_spread_ticks_opposite_side": [
+      {
+        "label": "le_1.5",
+        "min": null,
+        "max": 1.5,
+        "score": 1
+      },
+      {
+        "label": "1.5_3",
+        "min": 1.5,
+        "max": 3.0,
+        "score": 0
+      },
+      {
+        "label": "gt_3",
+        "min": 3.0,
+        "max": null,
+        "score": 0
+      }
+    ],
+    "mid_skew_to_opposite": [
+      {
+        "label": "near_zero",
+        "min": -0.02,
+        "max": 0.02,
+        "score": 1
+      },
+      {
+        "label": "mild",
+        "min": -0.05,
+        "max": 0.05,
+        "score": 0
+      },
+      {
+        "label": "extreme",
+        "min": null,
+        "max": null,
+        "score": 0
+      }
+    ],
+    "buy_fill_count": [
+      {
+        "label": "le_1",
+        "min": null,
+        "max": 1.0,
+        "score": 1
+      },
+      {
+        "label": "2_3",
+        "min": 2.0,
+        "max": 3.0,
+        "score": 0
+      },
+      {
+        "label": "gt_3",
+        "min": 4.0,
+        "max": null,
+        "score": 0
+      }
+    ]
+  },
+  "research_window": {
+    "full_start_ts": 1777036676,
+    "full_end_ts": 1777170314,
+    "recent_start_ts": 1777161906,
+    "recent_end_ts": 1777163712,
+    "train_episode_count": 191,
+    "holdout_episode_count": 17
+  },
+  "coverage_stats": {
+    "full_episode_count": 1196,
+    "full_overlap_episode_count": 208,
+    "recent_episode_count": 21,
+    "recent_overlap_episode_count": 17,
+    "holdout_gate_on_completion_rate": 0.35294117647058826,
+    "holdout_baseline_completion_rate": 0.35294117647058826,
+    "holdout_lift_pct": 0.0
+  },
+  "provisional": true
+}

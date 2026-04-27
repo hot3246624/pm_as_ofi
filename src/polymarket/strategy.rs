@@ -7,6 +7,7 @@ use super::messages::{
 };
 use super::types::Side;
 
+pub mod completion_first;
 pub mod dip_buy;
 pub mod gabagool_corridor;
 pub mod gabagool_grid;
@@ -29,6 +30,7 @@ pub enum StrategyKind {
     GabagoolGrid,
     GabagoolCorridor,
     GlftMm,
+    CompletionFirst,
     PairArb,
     DipBuy,
     PhaseBuilder,
@@ -66,6 +68,8 @@ pub(crate) struct StrategyQuotes {
     pub(crate) yes_sell: Option<StrategyIntent>,
     pub(crate) no_buy: Option<StrategyIntent>,
     pub(crate) no_sell: Option<StrategyIntent>,
+    pub(crate) completion_first_open_yes: Option<completion_first::CompletionFirstOpenDecision>,
+    pub(crate) completion_first_open_no: Option<completion_first::CompletionFirstOpenDecision>,
     pub(crate) diagnostics: StrategyQuoteDiagnostics,
 }
 
@@ -99,6 +103,26 @@ impl StrategyQuotes {
 
     pub(crate) fn buy_for(&self, side: Side) -> Option<StrategyIntent> {
         self.get(OrderSlot::new(side, TradeDirection::Buy))
+    }
+
+    pub(crate) fn note_completion_first_open_eval(
+        &mut self,
+        decision: completion_first::CompletionFirstOpenDecision,
+    ) {
+        match decision.side {
+            Side::Yes => self.completion_first_open_yes = Some(decision),
+            Side::No => self.completion_first_open_no = Some(decision),
+        }
+    }
+
+    pub(crate) fn completion_first_open_eval(
+        &self,
+        side: Side,
+    ) -> Option<completion_first::CompletionFirstOpenDecision> {
+        match side {
+            Side::Yes => self.completion_first_open_yes,
+            Side::No => self.completion_first_open_no,
+        }
     }
 
     pub(crate) fn note_pair_arb_ofi_softened(&mut self) {
@@ -145,6 +169,8 @@ impl StrategyKind {
                 Some(Self::GabagoolCorridor)
             }
             "glft_mm" | "glft-mm" | "glftmm" => Some(Self::GlftMm),
+            "completion_first" | "completion-first" | "completionfirst" | "xuan_clone"
+            | "xuan-clone" | "xuanclone" => Some(Self::CompletionFirst),
             "pair_arb" | "pairarb" | "pair-arb" => Some(Self::PairArb),
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
@@ -165,6 +191,7 @@ impl StrategyKind {
             Self::GabagoolGrid => "gabagool_grid",
             Self::GabagoolCorridor => "gabagool_corridor",
             Self::GlftMm => "glft_mm",
+            Self::CompletionFirst => "completion_first",
             Self::PairArb => "pair_arb",
             Self::DipBuy => "dip_buy",
             Self::PhaseBuilder => "phase_builder",
@@ -197,6 +224,7 @@ impl StrategyKind {
             Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {
                 StrategyExecutionMode::UnifiedBuys
             }
+            Self::CompletionFirst => StrategyExecutionMode::UnifiedBuys,
             Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
             Self::DipBuy | Self::PhaseBuilder => StrategyExecutionMode::DirectionalHedgeOverlay,
@@ -258,10 +286,11 @@ pub(crate) struct StrategyRegistry;
 
 impl StrategyRegistry {
     fn entries() -> &'static [&'static dyn QuoteStrategy] {
-        static ENTRIES: [&'static dyn QuoteStrategy; 7] = [
+        static ENTRIES: [&'static dyn QuoteStrategy; 8] = [
             &gabagool_grid::GABAGOOL_GRID_STRATEGY,
             &gabagool_corridor::GABAGOOL_CORRIDOR_STRATEGY,
             &glft_mm::GLFT_MM_STRATEGY,
+            &completion_first::COMPLETION_FIRST_STRATEGY,
             &pair_arb::PAIR_ARB_STRATEGY,
             &dip_buy::DIP_BUY_STRATEGY,
             &phase_builder::PHASE_BUILDER_STRATEGY,
@@ -302,6 +331,14 @@ mod tests {
             Some(StrategyKind::GabagoolCorridor)
         );
         assert_eq!(StrategyKind::parse("glft-mm"), Some(StrategyKind::GlftMm));
+        assert_eq!(
+            StrategyKind::parse("completion_first"),
+            Some(StrategyKind::CompletionFirst)
+        );
+        assert_eq!(
+            StrategyKind::parse("xuan_clone"),
+            Some(StrategyKind::CompletionFirst)
+        );
         assert_eq!(StrategyKind::parse("pair_arb"), Some(StrategyKind::PairArb));
         assert_eq!(StrategyKind::parse("PAIR-ARB"), Some(StrategyKind::PairArb));
         assert_eq!(StrategyKind::parse("dipbuy"), Some(StrategyKind::DipBuy));
@@ -326,6 +363,7 @@ mod tests {
         assert!(names.contains(&"gabagool_grid"));
         assert!(names.contains(&"gabagool_corridor"));
         assert!(names.contains(&"glft_mm"));
+        assert!(names.contains(&"completion_first"));
         assert!(names.contains(&"pair_arb"));
         assert!(names.contains(&"dip_buy"));
         assert!(names.contains(&"phase_builder"));

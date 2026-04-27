@@ -40,6 +40,7 @@ use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
 use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta};
+use pm_as_ofi::polymarket::strategy::StrategyKind;
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -7806,15 +7807,32 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         // Opt-1: Pass market expiry timestamp so coordinator can apply A-S time decay.
         coord_cfg.market_end_ts = Some(effective_end_ts);
         coord_cfg.oracle_lag_sniping.market_enabled = false;
+        coord_cfg.completion_first.market_enabled = false;
         let market_interval_secs = detect_interval(&slug);
         apply_endgame_windows_for_interval(&mut coord_cfg, market_interval_secs);
         let mut inv_cfg = inv_cfg_base.clone();
         let oracle_lag_symbol = oracle_lag_symbol_from_slug(&slug);
+        let completion_first_active = coord_cfg.strategy == StrategyKind::CompletionFirst
+            && slug.starts_with("btc-updown-5m");
         let oracle_lag_sniping_active = coord_cfg.strategy.is_oracle_lag_sniping()
             && oracle_lag_symbol
                 .as_deref()
                 .map(|sym| oracle_lag_symbol_universe.contains(sym))
                 .unwrap_or(false);
+        if coord_cfg.strategy == StrategyKind::CompletionFirst {
+            if completion_first_active {
+                coord_cfg.completion_first.market_enabled = true;
+                info!(
+                    "🧩 completion_first enabled for {} | mode={:?}",
+                    slug, coord_cfg.completion_first.mode
+                );
+            } else {
+                warn!(
+                    "⚠️ PM_STRATEGY=completion_first currently only supports BTC 5m; slug='{}' stays inactive",
+                    slug
+                );
+            }
+        }
         if coord_cfg.strategy.is_oracle_lag_sniping() {
             if oracle_lag_sniping_active {
                 coord_cfg.oracle_lag_sniping.market_enabled = true;
@@ -8181,6 +8199,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             feedback_rx,
             slot_release_rx,
         )
+        .with_recorder(recorder.clone(), recorder_meta.clone())
         .with_obs_tx(coord_obs_tx);
         session_handles.push(tokio::spawn(coord.run()));
 
