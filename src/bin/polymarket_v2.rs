@@ -104,6 +104,25 @@ fn derive_market_prefix_from_env() -> Option<String> {
     }
 }
 
+fn env_flag_or(name: &str, default: bool) -> bool {
+    match env::var(name) {
+        Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+            "1" | "true" | "yes" | "on" => true,
+            "0" | "false" | "no" | "off" => false,
+            _ => default,
+        },
+        Err(_) => default,
+    }
+}
+
+fn local_price_source_names() -> String {
+    LOCAL_PRICE_SOURCES
+        .iter()
+        .map(|s| s.as_str())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 impl Settings {
     fn from_env() -> anyhow::Result<Self> {
         let market_slug = env::var("POLYMARKET_MARKET_SLUG")
@@ -4689,6 +4708,10 @@ fn local_price_agg_apply_source_bias(symbol: &str, source: LocalPriceSource, raw
     }
 }
 
+fn local_price_agg_bias_learning_enabled() -> bool {
+    env_flag_or("PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED", true)
+}
+
 fn local_price_agg_update_source_bias_bps(
     symbol: &str,
     source: LocalPriceSource,
@@ -8425,45 +8448,45 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
     match symbol {
         "bnb/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_coinbase",
+            source_subset_name: "full",
             rule: LocalBoundaryCloseRule::LastBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_COINBASE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
         },
         "btc/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_okx",
+            source_subset_name: "only_bybit_coinbase",
             rule: LocalBoundaryCloseRule::LastBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE,
         },
         "doge/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
             source_subset_name: "drop_okx",
-            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            rule: LocalBoundaryCloseRule::NearestAbs,
             min_sources: 1,
             allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
         },
         "eth/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_binance",
+            source_subset_name: "only_binance_coinbase",
             rule: LocalBoundaryCloseRule::LastBefore,
-            min_sources: 3,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE,
         },
         "hype/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "full",
-            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            source_subset_name: "drop_hyperliquid",
+            rule: LocalBoundaryCloseRule::NearestAbs,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID,
         },
         "sol/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_binance",
+            source_subset_name: "only_okx_coinbase",
             rule: LocalBoundaryCloseRule::LastBefore,
             min_sources: 2,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE,
         },
         "xrp/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -8484,50 +8507,18 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
 
 fn local_boundary_policy_source_weight(
     policy_name: &str,
-    symbol: &str,
+    _symbol: &str,
     source: LocalPriceSource,
 ) -> f64 {
     if policy_name != "boundary_weighted" {
         return local_price_agg_source_weight(source);
     }
-    match (symbol, source) {
-        ("bnb/usd", LocalPriceSource::Binance) => 2.578_491,
-        ("bnb/usd", LocalPriceSource::Bybit) => 0.207_523,
-        ("bnb/usd", LocalPriceSource::Hyperliquid) => 2.971_718,
-        ("bnb/usd", LocalPriceSource::Okx) => 1.856_930,
-
-        ("btc/usd", LocalPriceSource::Binance) => 1.797_995,
-        ("btc/usd", LocalPriceSource::Bybit) => 2.558_950,
-        ("btc/usd", LocalPriceSource::Coinbase) => 9.649_231,
-        ("btc/usd", LocalPriceSource::Hyperliquid) => 0.165_740,
-
-        ("doge/usd", LocalPriceSource::Binance) => 1.946_838,
-        ("doge/usd", LocalPriceSource::Bybit) => 0.772_736,
-        ("doge/usd", LocalPriceSource::Coinbase) => 1.494_323,
-        ("doge/usd", LocalPriceSource::Hyperliquid) => 7.569_670,
-
-        ("eth/usd", LocalPriceSource::Bybit) => 1.162_945,
-        ("eth/usd", LocalPriceSource::Coinbase) => 3.774_743,
-        ("eth/usd", LocalPriceSource::Hyperliquid) => 3.076_856,
-        ("eth/usd", LocalPriceSource::Okx) => 0.833_738,
-
-        ("hype/usd", LocalPriceSource::Binance) => 0.100_000,
-        ("hype/usd", LocalPriceSource::Bybit) => 0.100_000,
-        ("hype/usd", LocalPriceSource::Coinbase) => 0.250_000,
-        ("hype/usd", LocalPriceSource::Hyperliquid) => 1.500_000,
-        ("hype/usd", LocalPriceSource::Okx) => 3.000_000,
-
-        ("sol/usd", LocalPriceSource::Bybit) => 0.071_358,
-        ("sol/usd", LocalPriceSource::Coinbase) => 3.382_379,
-        ("sol/usd", LocalPriceSource::Hyperliquid) => 0.176_728,
-        ("sol/usd", LocalPriceSource::Okx) => 2.098_641,
-
-        ("xrp/usd", LocalPriceSource::Binance) => 1.509_501,
-        ("xrp/usd", LocalPriceSource::Bybit) => 1.029_301,
-        ("xrp/usd", LocalPriceSource::Coinbase) => 3.347_218,
-        ("xrp/usd", LocalPriceSource::Hyperliquid) => 0.672_930,
-
-        _ => local_price_agg_source_weight(source),
+    match source {
+        LocalPriceSource::Binance => 0.5,
+        LocalPriceSource::Bybit => 0.5,
+        LocalPriceSource::Okx => 0.5,
+        LocalPriceSource::Coinbase => 1.0,
+        LocalPriceSource::Hyperliquid => 1.5,
     }
 }
 
@@ -8542,7 +8533,7 @@ fn run_local_boundary_shadow_policy(
         let Some(tape) = tapes.get(source) else {
             continue;
         };
-        let Some((mut point, raw_close_price)) = pick_local_boundary_tape_close_point(
+        let Some((point, raw_close_price)) = pick_local_boundary_tape_close_point(
             tape,
             end_ms,
             LOCAL_BOUNDARY_POLICY_PRE_MS,
@@ -8551,7 +8542,6 @@ fn run_local_boundary_shadow_policy(
         ) else {
             continue;
         };
-        point.price = local_price_agg_apply_source_bias(symbol, *source, point.price);
         contributions.push(LocalCloseSourceContribution {
             source: *source,
             raw_close_price,
@@ -8825,6 +8815,12 @@ const LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID: &[LocalPriceSource] = &[
     LocalPriceSource::Okx,
     LocalPriceSource::Coinbase,
 ];
+const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE: &[LocalPriceSource] =
+    &[LocalPriceSource::Binance, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE: &[LocalPriceSource] =
+    &[LocalPriceSource::Bybit, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE: &[LocalPriceSource] =
+    &[LocalPriceSource::Okx, LocalPriceSource::Coinbase];
 
 const LOCAL_BOUNDARY_POLICY_PRE_MS: u64 = 5_000;
 const LOCAL_BOUNDARY_POLICY_POST_MS: u64 = 500;
@@ -8853,6 +8849,9 @@ fn local_price_agg_learn_source_biases_from_rtds(
     rtds_close: f64,
     points: &[LocalCloseSourceContribution],
 ) {
+    if !local_price_agg_bias_learning_enabled() {
+        return;
+    }
     if !rtds_close.is_finite() || rtds_close <= 0.0 {
         return;
     }
@@ -11746,8 +11745,10 @@ impl SharedIngressRuntime {
             let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
             log_symbols.sort();
             info!(
-                "🧠 shared ingress local_price_hub starting | symbols={} sources=binance,bybit,okx",
-                log_symbols.join(",")
+                "🧠 shared ingress local_price_hub starting | symbols={} sources={} bias_learning_enabled={}",
+                log_symbols.join(","),
+                local_price_source_names(),
+                local_price_agg_bias_learning_enabled(),
             );
             Some(LocalPriceHub::spawn(hub_symbols))
         } else {
@@ -11850,8 +11851,10 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
         log_symbols.sort();
         info!(
-            "🧠 local_price_hub starting | symbols={} sources=binance,bybit,okx",
-            log_symbols.join(",")
+            "🧠 local_price_hub starting | symbols={} sources={} bias_learning_enabled={}",
+            log_symbols.join(","),
+            local_price_source_names(),
+            local_price_agg_bias_learning_enabled(),
         );
         Some(LocalPriceHub::spawn(hub_symbols))
     } else {

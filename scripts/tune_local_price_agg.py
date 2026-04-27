@@ -277,17 +277,24 @@ def round_metrics(
     if valid == 0:
         return {
             "n": 0,
+            "missing": len(dataset),
+            "side_errors": float("inf"),
             "mean_bps": float("inf"),
             "p50_bps": float("inf"),
             "p95_bps": float("inf"),
+            "p99_bps": float("inf"),
             "side_match": 0.0,
             "match_12dp": 0.0,
         }
+    bps_sorted = sorted(bps)
     return {
         "n": valid,
+        "missing": len(dataset) - valid,
+        "side_errors": valid - side_hits,
         "mean_bps": statistics.fmean(bps),
         "p50_bps": statistics.median(bps),
-        "p95_bps": sorted(bps)[max(0, math.ceil(0.95 * len(bps)) - 1)],
+        "p95_bps": bps_sorted[max(0, math.ceil(0.95 * len(bps_sorted)) - 1)],
+        "p99_bps": bps_sorted[max(0, math.ceil(0.99 * len(bps_sorted)) - 1)],
         "side_match": side_hits / valid,
         "match_12dp": d12_hits / valid,
     }
@@ -408,7 +415,18 @@ def main() -> int:
                 }
             )
 
-    rows.sort(key=lambda r: (r["mean_bps"], -r["side_match"], -r["match_12dp"], r["p95_bps"]))
+    # For this project, direction correctness is the hard constraint.
+    # We sort lexicographically: first eliminate side flips, then reduce worst-case price error.
+    rows.sort(
+        key=lambda r: (
+            r["missing"],
+            r["side_errors"],
+            r["p99_bps"],
+            r["p95_bps"],
+            r["mean_bps"],
+            -r["match_12dp"],
+        )
+    )
 
     out_csv = Path(args.out_csv)
     out_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -423,9 +441,12 @@ def main() -> int:
                 "w_okx",
                 "w_coinbase",
                 "n",
+                "missing",
+                "side_errors",
                 "mean_bps",
                 "p50_bps",
                 "p95_bps",
+                "p99_bps",
                 "side_match",
                 "match_12dp",
             ],
@@ -511,8 +532,9 @@ def main() -> int:
         "Best weights => "
         f"binance={best['w_binance']}, bybit={best['w_bybit']}, okx={best['w_okx']}, coinbase={best['w_coinbase']}, "
         f"close_decay_ms={best['close_decay_ms']}, exact_boost={best['exact_boost']} | "
-        f"mean_bps={best['mean_bps']:.6f}, p95_bps={best['p95_bps']:.6f}, "
-        f"side_match={best['side_match']:.3f}, match_12dp={best['match_12dp']:.3f}"
+        f"side_errors={best['side_errors']}, side_match={best['side_match']:.3f}, "
+        f"mean_bps={best['mean_bps']:.6f}, p95_bps={best['p95_bps']:.6f}, p99_bps={best['p99_bps']:.6f}, "
+        f"match_12dp={best['match_12dp']:.3f}"
     )
     print(f"Top grid CSV: {out_csv}")
     print(f"Per-round CSV: {out_round}")
