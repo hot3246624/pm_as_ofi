@@ -23,7 +23,7 @@
 | `PM_INSTANCE_ID` | unset | 进程实例标识。建议每个独立进程都设置唯一值，避免日志、replay、recorder 路径互相覆盖 |
 | `PM_LOG_ROOT` | auto | 显式覆盖 runtime 日志根目录；默认写入 `logs/<instance_id>/runs/<timestamp>` |
 | `PM_RECORDER_ROOT` | `data/recorder` | 显式覆盖 recorder 根目录；多实例场景建议使用 `data/recorder/<instance_id>` |
-| `PM_SHARED_INGRESS_ROLE` | `standalone` | 跨进程共享公共数据平面的角色：`standalone / broker / client / auto`。二进制默认 `standalone`；`run_local_agg_lab.sh` 默认切到 `auto` |
+| `PM_SHARED_INGRESS_ROLE` | `standalone` | 跨进程共享公共数据平面的角色：`standalone / broker / client / auto`。二进制默认 `standalone`；策略启动脚本通常会切到 `auto` |
 | `PM_SHARED_INGRESS_ROOT` | `run/shared-ingress` | broker 与所有 client 共享的 Unix socket 根目录，必须完全一致 |
 | `PM_ENTRY_GRACE_SECONDS` | `30` | 新市场开盘后的可入场窗口 |
 | `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 连接超时 |
@@ -97,6 +97,31 @@
 - 若使用手工 `broker/client`，则必须**显式指定**哪个进程是 `broker`，其余进程是 `client`。
 - 若多个进程使用**同一个钱包**，共享数据平面并不能解决执行冲突；仍然需要单执行 authority。
 - 若多个进程使用**不同钱包**，可安全共用同一个 broker，因为 broker 不持有任何钱包密钥。
+
+### 策略启动入口
+
+- [run_local_agg_lab.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_local_agg_lab.sh)
+  - 仅适用于 `PM_STRATEGY=oracle_lag_sniping`
+- [run_pgt_fixed_shadow_next.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_pgt_fixed_shadow_next.sh)
+  - 仅适用于 `PM_STRATEGY=pair_gated_tranche_arb`
+- [run_strategy_instance.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_strategy_instance.sh)
+  - 统一入口；按 `PM_STRATEGY` 分流到上述专用脚本
+
+示例：
+
+```bash
+PM_INSTANCE_ID=agent-a \
+PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main \
+PM_STRATEGY=oracle_lag_sniping \
+./scripts/run_strategy_instance.sh
+```
+
+```bash
+PM_INSTANCE_ID=xuanxuan008_research \
+PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main \
+PM_STRATEGY=pair_gated_tranche_arb \
+./scripts/run_strategy_instance.sh btc-updown-5m
+```
 
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 

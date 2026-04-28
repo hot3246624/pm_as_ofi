@@ -92,7 +92,7 @@ PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-mai
 
 即可。
 
-示例：
+示例（`oracle_lag_sniping` / 本地聚合器实验线）：
 
 ```bash
 PM_INSTANCE_ID=local-agg-client-a \
@@ -251,11 +251,56 @@ PM_SHARED_INGRESS_ROLE=standalone
 6. client 若只是研究/回测/对照，继续 `PM_DRY_RUN=true`
 7. 不同 PR 只要**没有改 shared-ingress ABI**，可以共用同一个 `PM_SHARED_INGRESS_ROOT`
 
-## 10. 相关脚本
+## 10. 策略入口
+
+不要再把 [run_local_agg_lab.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_local_agg_lab.sh) 当成所有策略的统一入口。
+
+当前脚本分工：
+
+- [run_local_agg_lab.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_local_agg_lab.sh)
+  - **只用于** `PM_STRATEGY=oracle_lag_sniping`
+  - 内部硬编码：
+    - `PM_STRATEGY=oracle_lag_sniping`
+    - `PM_ORACLE_LAG_LAB_ONLY=true`
+    - `PM_LOCAL_PRICE_AGG_ENABLED=true`
+    - `PM_LOCAL_PRICE_AGG_DECISION_ENABLED=false`
+- [run_pgt_fixed_shadow_next.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_pgt_fixed_shadow_next.sh)
+  - **只用于** `PM_STRATEGY=pair_gated_tranche_arb`
+  - 内部会解析下一轮固定 market，并以 PGT shadow 方式启动
+- [run_strategy_instance.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_strategy_instance.sh)
+  - 通用包装入口
+  - 按 `PM_STRATEGY` 自动分流到对应脚本
+
+推荐：
+
+```bash
+PM_INSTANCE_ID=agent-a \
+PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main \
+PM_STRATEGY=oracle_lag_sniping \
+./scripts/run_strategy_instance.sh
+```
+
+PGT / xuan 研究线：
+
+```bash
+PM_INSTANCE_ID=xuanxuan008_research \
+PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main \
+PM_STRATEGY=pair_gated_tranche_arb \
+./scripts/run_strategy_instance.sh btc-updown-5m
+```
+
+说明：
+
+- `run_strategy_instance.sh` 只统一**入口分流**，不覆盖各自策略脚本内部的专属参数。
+- 如果你已经明确知道自己要跑哪条策略，也可以直接调用对应的策略专用脚本。
+
+## 11. 相关脚本
 
 - broker：
   - [run_shared_ingress_broker.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_shared_ingress_broker.sh)
 - 本地聚合器 lab：
   - [run_local_agg_lab.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_local_agg_lab.sh)
+- 通用策略入口：
+  - [run_strategy_instance.sh](/Users/hot/web3Scientist/pm_as_ofi/scripts/run_strategy_instance.sh)
 - 停止实例：
   - [stop_markets.sh](/Users/hot/web3Scientist/pm_as_ofi/stop_markets.sh)

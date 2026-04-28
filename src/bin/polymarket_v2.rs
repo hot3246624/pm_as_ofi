@@ -7784,6 +7784,51 @@ async fn run_post_close_winner_hint_listener(
                         ready_ms.saturating_sub(started_ms),
                         local_vs_rtds_detect_gap_ms,
                     );
+                } else if let Some(hit) = close_only_any_hit.filter(|hit| {
+                    close_only_filtered
+                        && weighted_shadow_candidate.is_none()
+                        && local_boundary_filtered_close_only_allowed_without_weighted(
+                            &symbol,
+                            close_only_filter_reason,
+                            hit,
+                            first_ref,
+                        )
+                }) {
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    info!(
+                        "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        "boundary_hybrid_close_only_then_weighted",
+                        "filtered_close_only_no_weighted",
+                        "close_only",
+                        hit.source_count,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
                 } else if let Some(hit) = weighted_shadow_candidate {
                     let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                         Side::Yes
@@ -7897,6 +7942,50 @@ async fn run_post_close_winner_hint_listener(
                             symbol,
                             "boundary_symbol_router_v1",
                             "close_only_fallback",
+                            "close_only",
+                            hit.source_count,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else if let Some(hit) = close_only_any_hit.filter(|hit| {
+                        close_only_filtered
+                            && local_boundary_filtered_close_only_allowed_without_weighted(
+                                &symbol,
+                                close_only_filter_reason,
+                                hit,
+                                first_ref,
+                            )
+                    }) {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        info!(
+                            "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v1",
+                            "filtered_close_only_fallback",
                             "close_only",
                             hit.source_count,
                             local_side_vs_rtds_open,
@@ -9629,7 +9718,7 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
-                && weighted_direction_margin_bps + 1e-9 < 0.5
+                && weighted_direction_margin_bps + 1e-9 < 0.6
             {
                 return false;
             }
@@ -9783,6 +9872,26 @@ fn local_boundary_hybrid_prefers_filtered_close_only_over_weighted(
                 && weighted_hit.close_exact_sources == 0
                 && weighted_hit.source_spread_bps <= 1.0 + 1e-9
                 && weighted_direction_margin_bps + 1e-9 < 1.8
+        }
+        _ => false,
+    }
+}
+
+fn local_boundary_filtered_close_only_allowed_without_weighted(
+    symbol: &str,
+    close_only_filter_reason: Option<&'static str>,
+    close_only_hit: &LocalCloseOnlyAggHit,
+    rtds_open: f64,
+) -> bool {
+    let close_only_direction_margin_bps =
+        ((close_only_hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    match symbol {
+        "sol/usd" => {
+            close_only_filter_reason == Some("preclose_near_flat")
+                && close_only_hit.source_count >= 3
+                && close_only_hit.close_exact_sources == 0
+                && close_only_hit.source_spread_bps + 1e-9 >= 4.0
+                && close_only_direction_margin_bps + 1e-9 >= 1.5
         }
         _ => false,
     }
