@@ -16,7 +16,10 @@ const HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const BASE_CLIP_QTY: f64 = 120.0;
 const MAX_CLIP_QTY: f64 = 250.0;
 const MIN_CLIP_QTY: f64 = 25.0;
-const SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT: f64 = 0.70;
+const SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT: f64 = 0.60;
+const SEED_THIN_SLACK_CLIP_MULT_TICK_0: f64 = 0.45;
+const SEED_THIN_SLACK_CLIP_MULT_TICK_1: f64 = 0.70;
+const SEED_THIN_SLACK_CLIP_MULT_TICK_2: f64 = 0.85;
 pub(crate) const PGT_OPEN_PAIR_BAND_WIDE_SECS: u64 = 150;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_SECS: u64 = 90;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_VALUE: f64 = 0.995;
@@ -159,12 +162,18 @@ impl PairGatedTrancheStrategy {
         let open_pair_band =
             pgt_effective_open_pair_band_value(coordinator.cfg().open_pair_band, remaining_secs);
         let tick = coordinator.cfg().tick_size.max(1e-9);
+        let future_completion_reserve_ticks =
+            pgt_seed_future_completion_reserve_ticks(remaining_secs);
         let yes_bid_cap = pgt_open_leg_ceiling_from_opposite_bid(open_pair_band, ub.no_bid)?;
         let no_bid_cap = pgt_open_leg_ceiling_from_opposite_bid(open_pair_band, ub.yes_bid)?;
+        let yes_completion_ref =
+            (ub.no_ask - tick).max(0.0) + future_completion_reserve_ticks * tick;
+        let no_completion_ref =
+            (ub.yes_ask - tick).max(0.0) + future_completion_reserve_ticks * tick;
         let yes_immediate_completion_cap =
-            (open_pair_band - (ub.no_ask - tick).max(0.0)).clamp(0.0, 1.0);
+            (open_pair_band - yes_completion_ref).clamp(0.0, 1.0);
         let no_immediate_completion_cap =
-            (open_pair_band - (ub.yes_ask - tick).max(0.0)).clamp(0.0, 1.0);
+            (open_pair_band - no_completion_ref).clamp(0.0, 1.0);
         let yes_ceiling = yes_bid_cap.min(yes_immediate_completion_cap);
         let no_ceiling = no_bid_cap.min(no_immediate_completion_cap);
         Some((yes_ceiling, no_ceiling))
@@ -182,10 +191,11 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let (best_bid, best_ask, opp_avg, same_qty, same_avg) = match side {
+        let (best_bid, best_ask, opp_ask, opp_avg, same_qty, same_avg) = match side {
             Side::Yes => (
                 input.book.yes_bid,
                 input.book.yes_ask,
+                input.book.no_ask,
                 input.inv.no_avg_cost,
                 input.inv.yes_qty,
                 input.inv.yes_avg_cost,
@@ -193,12 +203,13 @@ impl PairGatedTrancheStrategy {
             Side::No => (
                 input.book.no_bid,
                 input.book.no_ask,
+                input.book.yes_ask,
                 input.inv.yes_avg_cost,
                 input.inv.no_qty,
                 input.inv.no_avg_cost,
             ),
         };
-        if best_bid <= 0.0 || best_ask <= 0.0 {
+        if best_bid <= 0.0 || best_ask <= 0.0 || opp_ask <= 0.0 {
             return None;
         }
 
@@ -237,11 +248,20 @@ impl PairGatedTrancheStrategy {
             return None;
         }
         let taker_shadow_would_open = best_ask <= ceiling + 1e-9 && best_ask > price + 1e-9;
-        let size = if taker_shadow_would_open {
-            size
+        let open_path_mult = if taker_shadow_would_open {
+            1.0
         } else {
-            quantize_tenth(size * SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT)
+            SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT
         };
+        let open_pair_band =
+            pgt_effective_open_pair_band_value(coordinator.cfg().open_pair_band, coordinator.seconds_to_market_end().unwrap_or(u64::MAX));
+        let visible_slack_mult = seed_visible_completion_clip_mult(
+            open_pair_band,
+            price,
+            opp_ask,
+            coordinator.cfg().tick_size.max(1e-9),
+        );
+        let size = quantize_tenth(size * open_path_mult.min(visible_slack_mult));
         if size <= 0.0 {
             return None;
         }
@@ -514,6 +534,41 @@ pub(crate) fn pgt_open_leg_ceiling_from_opposite_bid(
     }
     let ceiling = (open_pair_band - opposite_bid).clamp(0.0, 1.0);
     if ceiling > 0.0 { Some(ceiling) } else { None }
+}
+
+pub(crate) fn pgt_seed_future_completion_reserve_ticks(remaining_secs: u64) -> f64 {
+    if remaining_secs == u64::MAX {
+        return 0.0;
+    }
+    if remaining_secs > PGT_OPEN_PAIR_BAND_WIDE_SECS {
+        1.0
+    } else if remaining_secs > PGT_OPEN_PAIR_BAND_MID_SECS {
+        0.5
+    } else {
+        0.0
+    }
+}
+
+fn seed_visible_completion_clip_mult(
+    open_pair_band: f64,
+    seed_price: f64,
+    opposite_ask: f64,
+    tick: f64,
+) -> f64 {
+    if open_pair_band <= 0.0 || seed_price <= 0.0 || opposite_ask <= 0.0 || tick <= 0.0 {
+        return SEED_THIN_SLACK_CLIP_MULT_TICK_0;
+    }
+    let immediate_maker_completion = (opposite_ask - tick).max(0.0);
+    let slack_ticks = ((open_pair_band - seed_price - immediate_maker_completion) / tick).floor();
+    if slack_ticks >= 3.0 {
+        1.0
+    } else if slack_ticks >= 2.0 {
+        SEED_THIN_SLACK_CLIP_MULT_TICK_2
+    } else if slack_ticks >= 1.0 {
+        SEED_THIN_SLACK_CLIP_MULT_TICK_1
+    } else {
+        SEED_THIN_SLACK_CLIP_MULT_TICK_0
+    }
 }
 
 fn imbalance_clip_mult(

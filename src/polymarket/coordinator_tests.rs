@@ -6040,6 +6040,100 @@ fn test_pair_gated_tranche_flat_seed_reserves_immediate_completion_budget_in_pri
 }
 
 #[test]
+fn test_pair_gated_tranche_flat_seed_reserves_future_completion_budget_early_round() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.pair_target = 0.97;
+    c.open_pair_band = 0.99;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    c.market_end_ts = Some(now_secs + 220);
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.48, 0.49, 0.51, 0.53),
+    );
+    let wide_quotes = pair_gated_tranche_quotes(
+        {
+            let mut cfg = cfg();
+            cfg.max_net_diff = 500.0;
+            cfg.open_pair_band = 0.99;
+            cfg.market_end_ts = Some(now_secs + 220);
+            cfg
+        },
+        InventorySnapshot::default(),
+        book(0.46, 0.48, 0.49, 0.50),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES seed quote");
+    let no = quotes.no_buy.expect("expected NO seed quote");
+    let wide_yes = wide_quotes
+        .yes_buy
+        .expect("expected YES wide-slack comparison seed quote");
+    assert!(
+        (yes.price - 0.47).abs() < 1e-9,
+        "early-round YES seed should reserve one extra tick of future completion budget instead of opening at 0.48"
+    );
+    assert!(
+        (no.price - 0.51).abs() < 1e-9,
+        "NO seed should remain maker-first while the future-completion reserve constrains only the expensive side"
+    );
+    assert!(
+        yes.size < wide_yes.size,
+        "thin visible completion slack should haircut the YES seed clip below the wide-slack case (thin={:.1}, wide={:.1})",
+        yes.size,
+        wide_yes.size
+    );
+    let ratio = yes.size / wide_yes.size.max(1.0);
+    assert!(
+        (0.55..0.65).contains(&ratio),
+        "thin visible completion slack should cut the seed clip to roughly 60% of the wide-slack case, got ratio={:.3}",
+        ratio
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_flat_seed_keeps_full_clip_when_visible_completion_slack_is_wide() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.open_pair_band = 0.99;
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    c.market_end_ts = Some(now_secs + 220);
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.46, 0.48, 0.49, 0.50),
+    );
+    let thin_quotes = pair_gated_tranche_quotes(
+        {
+            let mut cfg = cfg();
+            cfg.max_net_diff = 500.0;
+            cfg.open_pair_band = 0.99;
+            cfg.market_end_ts = Some(now_secs + 220);
+            cfg
+        },
+        InventorySnapshot::default(),
+        book(0.48, 0.49, 0.51, 0.53),
+    );
+
+    let yes = quotes.yes_buy.expect("expected YES wide-slack seed quote");
+    let thin_yes = thin_quotes
+        .yes_buy
+        .expect("expected YES thin-slack seed quote");
+    assert!(
+        yes.size > thin_yes.size,
+        "wide visible completion slack should preserve a larger clip than the thin-slack case (wide={:.1}, thin={:.1})",
+        yes.size,
+        thin_yes.size
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_flat_seed_haircuts_clip_when_immediate_completion_is_absent() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
@@ -6082,7 +6176,7 @@ fn test_pair_gated_tranche_flat_seed_haircuts_clip_when_immediate_completion_is_
 }
 
 #[test]
-fn test_pair_gated_tranche_flat_seed_widens_taker_open_room_early_round() {
+fn test_pair_gated_tranche_flat_seed_widens_early_round_budget_without_chasing_price() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
     c.open_pair_band = 0.99;
@@ -6121,12 +6215,12 @@ fn test_pair_gated_tranche_flat_seed_widens_taker_open_room_early_round() {
         "late-round base band should not treat the current ask as an immediately coverable first-leg open"
     );
     assert!(
-        early_quotes.diagnostics.pgt_taker_shadow_would_open > 0,
-        "early-round widened band should expose immediate taker-open room without changing the passive seed price"
+        early_quotes.diagnostics.pgt_taker_shadow_would_open == 0,
+        "future-completion reserve should keep early-round seed maker-first instead of reopening taker-open room"
     );
     assert!(
         early_yes.size > late_yes.size,
-        "early-round widened band should preserve a larger seed clip when the current ask fits inside the first-leg ceiling (late={:.1}, early={:.1})",
+        "early-round widened band should still preserve a larger seed clip than late-round base band (late={:.1}, early={:.1})",
         late_yes.size,
         early_yes.size
     );
