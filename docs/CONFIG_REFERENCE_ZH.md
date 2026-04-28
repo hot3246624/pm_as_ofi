@@ -72,6 +72,11 @@
   - 若不存在健康 broker，则当前实例自动拉起 sidecar broker。
   - 若已存在健康 broker，则当前实例直接作为 client 接入。
   - broker 在最后一个 client 离开后会按 idle grace 自动退出。
+- 共享兼容性按 shared-ingress ABI 判定，而不是按整个二进制 build 判定：
+  - `protocol_version`
+  - `schema_version`
+- 因此，不同 PR / 不同 build 只要没有修改 shared-ingress control/wire/schema，就可以共用同一个 `PM_SHARED_INGRESS_ROOT`。
+- `build_id` 仅用于观测和调试，不再作为默认拒绝复用 broker 的条件。
 - `PM_SHARED_INGRESS_ROLE=broker`
   - 当前进程只持有公共上游连接：
     - market WS

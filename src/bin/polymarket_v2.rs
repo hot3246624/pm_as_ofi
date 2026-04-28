@@ -167,6 +167,7 @@ fn shared_ingress_local_price_socket_path() -> PathBuf {
 }
 
 const SHARED_INGRESS_PROTOCOL_VERSION: u32 = 1;
+const SHARED_INGRESS_SCHEMA_VERSION: u32 = 1;
 const SHARED_INGRESS_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
 const SHARED_INGRESS_BROKER_STALE_MS: u64 = 5_000;
 const SHARED_INGRESS_CLIENT_STALE_MS: u64 = 5_000;
@@ -177,6 +178,8 @@ const SHARED_INGRESS_LOCK_STALE_MS: u64 = 15_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SharedIngressBrokerManifest {
     protocol_version: u32,
+    #[serde(default = "shared_ingress_schema_version")]
+    schema_version: u32,
     build_id: String,
     pid: u32,
     started_ms: u64,
@@ -189,6 +192,8 @@ struct SharedIngressBrokerManifest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SharedIngressClientLease {
     protocol_version: u32,
+    #[serde(default = "shared_ingress_schema_version")]
+    schema_version: u32,
     build_id: String,
     instance_id: String,
     pid: u32,
@@ -205,6 +210,10 @@ fn now_ms() -> u64 {
 
 fn shared_ingress_protocol_version() -> u32 {
     SHARED_INGRESS_PROTOCOL_VERSION
+}
+
+fn shared_ingress_schema_version() -> u32 {
+    SHARED_INGRESS_SCHEMA_VERSION
 }
 
 fn shared_ingress_build_id() -> String {
@@ -280,7 +289,7 @@ fn read_broker_manifest() -> Option<SharedIngressBrokerManifest> {
 
 fn is_broker_manifest_compatible(manifest: &SharedIngressBrokerManifest) -> bool {
     manifest.protocol_version == shared_ingress_protocol_version()
-        && manifest.build_id == shared_ingress_build_id()
+        && manifest.schema_version == shared_ingress_schema_version()
 }
 
 fn is_broker_manifest_fresh(manifest: &SharedIngressBrokerManifest) -> bool {
@@ -310,6 +319,12 @@ fn cleanup_stale_client_leases() {
             let _ = fs::remove_file(&path);
             continue;
         };
+        if lease.protocol_version != shared_ingress_protocol_version()
+            || lease.schema_version != shared_ingress_schema_version()
+        {
+            let _ = fs::remove_file(&path);
+            continue;
+        }
         if now_ms().saturating_sub(lease.last_heartbeat_ms) > SHARED_INGRESS_CLIENT_STALE_MS {
             let _ = fs::remove_file(&path);
         }
@@ -472,9 +487,10 @@ async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
                 }
                 if is_broker_manifest_fresh(&manifest) && !is_broker_manifest_compatible(&manifest) {
                     warn!(
-                        "♻️ shared ingress auto replacing incompatible broker | pid={} protocol={} build_id={}",
+                        "♻️ shared ingress auto replacing incompatible broker | pid={} protocol={} schema={} build_id={}",
                         manifest.pid,
                         manifest.protocol_version,
+                        manifest.schema_version,
                         manifest.build_id
                     );
                     kill_shared_ingress_broker_pid(manifest.pid).await;
@@ -507,6 +523,7 @@ fn spawn_shared_ingress_client_lease_heartbeat() {
         loop {
             let lease = SharedIngressClientLease {
                 protocol_version: shared_ingress_protocol_version(),
+                schema_version: shared_ingress_schema_version(),
                 build_id: build_id.clone(),
                 instance_id: instance.clone(),
                 pid: std::process::id(),
@@ -7338,6 +7355,11 @@ async fn run_post_close_winner_hint_listener(
                     let sol_safe_preclose_relief_applied = symbol == "sol/usd"
                         && all_preclose
                         && hit.close_exact_sources == 0
+                        && !(hit.source_count == 2
+                            && hit.source_spread_bps
+                                <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE
+                                    + 1e-9
+                            && direction_margin_bps + 1e-9 < 3.0)
                         && ((hit.source_count
                             >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_SOURCES
                             && hit.source_spread_bps
@@ -9579,8 +9601,7 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
-                && hit.source_spread_bps <= 1.0 + 1e-9
-                && weighted_direction_margin_bps + 1e-9 < 0.8
+                && weighted_direction_margin_bps + 1e-9 < 0.6
             {
                 return false;
             }
@@ -9589,7 +9610,6 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
-                && hit.source_spread_bps <= 0.1 + 1e-9
                 && weighted_direction_margin_bps + 1e-9 < 0.5
             {
                 return false;
@@ -9606,6 +9626,13 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             }
         }
         "sol/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 0.5
+            {
+                return false;
+            }
             if close_only_filter_reason == Some("preclose_near_flat")
                 && close_only_direction_margin_bps
                     .map(|v| v + 1e-9 < 0.2)
@@ -13373,8 +13400,10 @@ async fn main() -> anyhow::Result<()> {
     );
     if shared_ingress_role() == SharedIngressRole::Auto {
         info!(
-            "🤖 shared ingress auto mode | root={} build_id={}",
+            "🤖 shared ingress auto mode | root={} protocol={} schema={} build_id={}",
             shared_ingress_root().display(),
+            shared_ingress_protocol_version(),
+            shared_ingress_schema_version(),
             shared_ingress_build_id()
         );
         ensure_shared_ingress_broker_running().await?;
@@ -13923,6 +13952,7 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
     let started_ms = now_ms();
     let build_id = shared_ingress_build_id();
     let protocol_version = shared_ingress_protocol_version();
+    let schema_version = shared_ingress_schema_version();
     let mut heartbeat = tokio::time::interval(Duration::from_millis(
         SHARED_INGRESS_HEARTBEAT_INTERVAL_MS,
     ));
@@ -13937,6 +13967,7 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
             _ = heartbeat.tick() => {
                 let manifest = SharedIngressBrokerManifest {
                     protocol_version,
+                    schema_version,
                     build_id: build_id.clone(),
                     pid: std::process::id(),
                     started_ms,

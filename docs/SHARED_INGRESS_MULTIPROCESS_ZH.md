@@ -115,7 +115,16 @@ PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-mai
 - 首个实例会自动拉起 broker sidecar
 - 后续实例直接复用，不再重复建公网连接
 - 最后一个 client 退出后，broker 在 idle grace 后自动退出
-- 新代码启动时，如果 `protocol_version/build_id` 不兼容，会滚动替换 broker
+- broker 兼容性只按 shared-ingress ABI 判定：
+  - `protocol_version`
+  - `schema_version`
+- `build_id` 只保留为观测字段，不再作为默认硬阻断
+- 因此，不同 PR / 不同 build 只要没有改 shared-ingress 协议或广播 schema，仍然可以复用同一个 broker
+- 只有当你修改了：
+  - control 握手
+  - wire message
+  - chainlink / local_price / market 广播结构
+  才需要 bump `protocol_version` 或 `schema_version`，并滚动 broker
 
 ### 方案 B：一个手工 broker + 多个 client
 
@@ -220,7 +229,7 @@ PM_SHARED_INGRESS_ROLE=standalone
 - `auto` 模式下的单机选主
 - client 自动接入现有 broker
 - broker 无 client 后自动退出
-- 代码 build 变化触发 broker 代际切换
+- shared-ingress ABI 不兼容时触发 broker 代际切换
 
 ## 8. 当前仍未解决的问题
 
@@ -240,6 +249,7 @@ PM_SHARED_INGRESS_ROLE=standalone
 4. broker 不持有私钥
 5. 同钱包不要并行 live
 6. client 若只是研究/回测/对照，继续 `PM_DRY_RUN=true`
+7. 不同 PR 只要**没有改 shared-ingress ABI**，可以共用同一个 `PM_SHARED_INGRESS_ROOT`
 
 ## 10. 相关脚本
 
