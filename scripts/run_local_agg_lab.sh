@@ -70,6 +70,8 @@ export PM_LOG_ROOT="$LOG_ROOT"
 export PM_RECORDER_ROOT="$RECORDER_ROOT"
 export PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH="$BIAS_CACHE_PATH"
 export PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED="${PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED:-false}"
+export PM_SHARED_INGRESS_ROLE="${PM_SHARED_INGRESS_ROLE:-auto}"
+export PM_SHARED_INGRESS_ROOT="${PM_SHARED_INGRESS_ROOT:-$ROOT/run/shared-ingress}"
 
 # Lab mode: keep decision/data pipeline alive, but block all trading intents.
 export PM_ORACLE_LAG_LAB_ONLY=true

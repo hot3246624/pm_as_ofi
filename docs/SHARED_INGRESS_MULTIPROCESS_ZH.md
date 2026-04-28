@@ -29,8 +29,13 @@
 
 通过 `PM_SHARED_INGRESS_ROLE` 明确指定角色：
 
+- `auto`
+  - 推荐模式
+  - 启动时先检查共享 ingress broker 是否健康、是否兼容
+  - 若不存在健康 broker，则当前实例自动拉起 sidecar broker
+  - 若已存在健康 broker，则当前实例直接作为 client 接入
 - `standalone`
-  - 默认模式
+  - 兼容模式
   - 当前进程自己建立全部公共连接
 - `broker`
   - 只负责持有公共上游连接并向本机 client 广播标准化事件
@@ -38,17 +43,22 @@
   - 不再自行建立公共行情连接
   - 通过 Unix socket 向 broker 订阅数据
 
-### 重要约束
+### 当前推荐
 
-当前**没有自动选主**。
+日常多 agent / 多本地进程开发测试，直接用：
 
-也就是说：
+- `PM_SHARED_INGRESS_ROLE=auto`
 
-- 你必须显式决定谁是 `broker`
-- 其他进程显式设成 `client`
+不需要提前决定“谁是第一个、谁是第 n 个”。
 
-不要期待“第一个启动的 agent 自动变 broker，后面的自动变 client”。  
-这类自动选主在当前阶段会引入 split-brain 和误判，得不偿失。
+`auto` 的实际语义是：
+
+1. 先尝试连接现有 broker
+2. 若 broker 不存在、失活、或版本不兼容
+3. 通过单机锁选出一个 sidecar broker
+4. 其他实例全部作为 client 接入
+
+当前刻意**不做**运行中 client 自动晋升 broker，避免 split-brain。
 
 ## 3. 共享目录
 
@@ -70,9 +80,46 @@ PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-mai
 
 ## 4. 启动顺序
 
-### 方案 A：一个 broker + 多个 client
+### 方案 A：推荐，所有实例都用 `auto`
 
-这是当前推荐方案。
+这是现在的首选。
+
+所有 agent / 进程只要：
+
+- 使用不同的 `PM_INSTANCE_ID`
+- 共享同一个 `PM_SHARED_INGRESS_ROOT`
+- 统一 `PM_SHARED_INGRESS_ROLE=auto`
+
+即可。
+
+示例：
+
+```bash
+PM_INSTANCE_ID=local-agg-client-a \
+PM_SHARED_INGRESS_ROLE=auto \
+PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main \
+./scripts/run_local_agg_lab.sh
+```
+
+第二个实例只改 `PM_INSTANCE_ID`：
+
+```bash
+PM_INSTANCE_ID=local-agg-client-b \
+PM_SHARED_INGRESS_ROLE=auto \
+PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main \
+./scripts/run_local_agg_lab.sh
+```
+
+`auto` 运行特性：
+
+- 首个实例会自动拉起 broker sidecar
+- 后续实例直接复用，不再重复建公网连接
+- 最后一个 client 退出后，broker 在 idle grace 后自动退出
+- 新代码启动时，如果 `protocol_version/build_id` 不兼容，会滚动替换 broker
+
+### 方案 B：一个手工 broker + 多个 client
+
+这是高级/手工控制方案。
 
 1. 先启动 broker
 2. 再启动任意数量的 client
@@ -104,7 +151,7 @@ PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-mai
 ./scripts/run_local_agg_lab.sh
 ```
 
-### 方案 B：单独进程独跑
+### 方案 C：单独进程独跑
 
 如果某个 agent 不想共用 broker，就保持：
 
@@ -116,26 +163,21 @@ PM_SHARED_INGRESS_ROLE=standalone
 
 ## 5. “我是第一个还是第 n 个 agent”有区别吗？
 
-有区别，但区别不是自动判断，而是**角色不同**：
+如果你使用 `auto`：
 
-- 第一个应该由你**明确指定为 broker**
-- 第 n 个应明确指定为 `client`
+- 没区别
+- 不需要自己判断
+- 只需要：
+  - 唯一的 `PM_INSTANCE_ID`
+  - 相同的 `PM_SHARED_INGRESS_ROOT`
 
-所以，其他 agent 不需要“猜自己是不是第一个”。
+如果你使用手工 `broker/client`：
 
-它只需要知道两件事：
+- 才有区别
+- 第一个需要你显式起成 `broker`
+- 后续显式起成 `client`
 
-1. 当前有没有现成 broker
-2. 自己应该用哪组环境变量
-
-推荐约定：
-
-- 只保留一个固定 broker 名称，例如：
-  - `PM_INSTANCE_ID=shared-ingress-broker`
-- 其他所有 agent 一律：
-  - 各自唯一 `PM_INSTANCE_ID`
-  - `PM_SHARED_INGRESS_ROLE=client`
-  - 同一个 `PM_SHARED_INGRESS_ROOT`
+所以，当前推荐路径下，其他 agent 不需要猜“自己是不是第一个”。
 
 ## 6. 钱包怎么处理
 
@@ -175,6 +217,10 @@ PM_SHARED_INGRESS_ROLE=standalone
 - 多进程重复建立 RTDS / local price / market WS
 - 同实例日志目录互相覆盖
 - 同一实例重复启动导致的 compare 样本污染
+- `auto` 模式下的单机选主
+- client 自动接入现有 broker
+- broker 无 client 后自动退出
+- 代码 build 变化触发 broker 代际切换
 
 ## 8. 当前仍未解决的问题
 
@@ -188,10 +234,10 @@ PM_SHARED_INGRESS_ROLE=standalone
 
 ## 9. 推荐运行纪律
 
-1. broker 始终单独跑
-2. broker 不持有私钥
-3. 不同 client 使用不同 `PM_INSTANCE_ID`
-4. 不同 client 共用同一个 `PM_SHARED_INGRESS_ROOT`
+1. 默认优先用 `PM_SHARED_INGRESS_ROLE=auto`
+2. 不同 client 使用不同 `PM_INSTANCE_ID`
+3. 不同 client 共用同一个 `PM_SHARED_INGRESS_ROOT`
+4. broker 不持有私钥
 5. 同钱包不要并行 live
 6. client 若只是研究/回测/对照，继续 `PM_DRY_RUN=true`
 

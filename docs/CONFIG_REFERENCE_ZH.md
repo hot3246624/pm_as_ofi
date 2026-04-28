@@ -23,7 +23,7 @@
 | `PM_INSTANCE_ID` | unset | 进程实例标识。建议每个独立进程都设置唯一值，避免日志、replay、recorder 路径互相覆盖 |
 | `PM_LOG_ROOT` | auto | 显式覆盖 runtime 日志根目录；默认写入 `logs/<instance_id>/runs/<timestamp>` |
 | `PM_RECORDER_ROOT` | `data/recorder` | 显式覆盖 recorder 根目录；多实例场景建议使用 `data/recorder/<instance_id>` |
-| `PM_SHARED_INGRESS_ROLE` | `standalone` | 跨进程共享公共数据平面的角色：`standalone / broker / client` |
+| `PM_SHARED_INGRESS_ROLE` | `standalone` | 跨进程共享公共数据平面的角色：`standalone / broker / client / auto`。二进制默认 `standalone`；`run_local_agg_lab.sh` 默认切到 `auto` |
 | `PM_SHARED_INGRESS_ROOT` | `run/shared-ingress` | broker 与所有 client 共享的 Unix socket 根目录，必须完全一致 |
 | `PM_ENTRY_GRACE_SECONDS` | `30` | 新市场开盘后的可入场窗口 |
 | `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 连接超时 |
@@ -66,6 +66,12 @@
 
 ### 跨进程共享数据平面说明
 
+- `PM_SHARED_INGRESS_ROLE=auto`
+  - 推荐模式。
+  - 启动时先检查共享 broker 是否健康、是否兼容。
+  - 若不存在健康 broker，则当前实例自动拉起 sidecar broker。
+  - 若已存在健康 broker，则当前实例直接作为 client 接入。
+  - broker 在最后一个 client 离开后会按 idle grace 自动退出。
 - `PM_SHARED_INGRESS_ROLE=broker`
   - 当前进程只持有公共上游连接：
     - market WS
@@ -82,7 +88,8 @@
 
 - 同一组 `broker + clients` 必须共享同一个 `PM_SHARED_INGRESS_ROOT`。
 - 多个 client 可以共用一个 broker。
-- 当前架构不做自动选主。必须**显式指定**哪个进程是 `broker`，其余进程是 `client`。
+- `auto` 模式只在**启动期**做单机自动选主；运行中 client 不会自我晋升为 broker，避免 split-brain。
+- 若使用手工 `broker/client`，则必须**显式指定**哪个进程是 `broker`，其余进程是 `client`。
 - 若多个进程使用**同一个钱包**，共享数据平面并不能解决执行冲突；仍然需要单执行 authority。
 - 若多个进程使用**不同钱包**，可安全共用同一个 broker，因为 broker 不持有任何钱包密钥。
 

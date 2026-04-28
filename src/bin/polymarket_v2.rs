@@ -122,9 +122,15 @@ enum SharedIngressRole {
     Standalone,
     Broker,
     Client,
+    Auto,
 }
 
+static SHARED_INGRESS_ROLE_OVERRIDE: OnceLock<SharedIngressRole> = OnceLock::new();
+
 fn shared_ingress_role() -> SharedIngressRole {
+    if let Some(role) = SHARED_INGRESS_ROLE_OVERRIDE.get() {
+        return *role;
+    }
     match env::var("PM_SHARED_INGRESS_ROLE")
         .ok()
         .unwrap_or_default()
@@ -134,8 +140,13 @@ fn shared_ingress_role() -> SharedIngressRole {
     {
         "broker" => SharedIngressRole::Broker,
         "client" => SharedIngressRole::Client,
+        "auto" => SharedIngressRole::Auto,
         _ => SharedIngressRole::Standalone,
     }
+}
+
+fn set_shared_ingress_role_override(role: SharedIngressRole) {
+    let _ = SHARED_INGRESS_ROLE_OVERRIDE.set(role);
 }
 
 fn shared_ingress_root() -> PathBuf {
@@ -153,6 +164,365 @@ fn shared_ingress_chainlink_socket_path() -> PathBuf {
 
 fn shared_ingress_local_price_socket_path() -> PathBuf {
     shared_ingress_root().join("local_price.sock")
+}
+
+const SHARED_INGRESS_PROTOCOL_VERSION: u32 = 1;
+const SHARED_INGRESS_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
+const SHARED_INGRESS_BROKER_STALE_MS: u64 = 5_000;
+const SHARED_INGRESS_CLIENT_STALE_MS: u64 = 5_000;
+const SHARED_INGRESS_IDLE_SHUTDOWN_GRACE_MS: u64 = 8_000;
+const SHARED_INGRESS_BROKER_START_TIMEOUT_MS: u64 = 12_000;
+const SHARED_INGRESS_LOCK_STALE_MS: u64 = 15_000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedIngressBrokerManifest {
+    protocol_version: u32,
+    build_id: String,
+    pid: u32,
+    started_ms: u64,
+    last_heartbeat_ms: u64,
+    chainlink_socket: String,
+    local_price_socket: String,
+    market_socket: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedIngressClientLease {
+    protocol_version: u32,
+    build_id: String,
+    instance_id: String,
+    pid: u32,
+    started_ms: u64,
+    last_heartbeat_ms: u64,
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_millis() as u64
+}
+
+fn shared_ingress_protocol_version() -> u32 {
+    SHARED_INGRESS_PROTOCOL_VERSION
+}
+
+fn shared_ingress_build_id() -> String {
+    static BUILD_ID: OnceLock<String> = OnceLock::new();
+    BUILD_ID
+        .get_or_init(|| {
+            let exe = env::current_exe().ok();
+            let meta = exe.as_ref().and_then(|p| fs::metadata(p).ok());
+            let modified_ms = meta
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+            format!("exe:{}:{}", modified_ms, len)
+        })
+        .clone()
+}
+
+fn shared_ingress_idle_exit_enabled() -> bool {
+    env_flag_or("PM_SHARED_INGRESS_IDLE_EXIT_ENABLED", false)
+}
+
+fn shared_ingress_broker_log_path() -> PathBuf {
+    shared_ingress_root().join("broker.log")
+}
+
+fn shared_ingress_broker_runtime_log_root() -> PathBuf {
+    shared_ingress_root().join("broker-runtime")
+}
+
+fn shared_ingress_broker_bias_cache_path() -> PathBuf {
+    shared_ingress_root().join("local_price_agg_bias_cache.broker.json")
+}
+
+fn shared_ingress_broker_manifest_path() -> PathBuf {
+    shared_ingress_root().join("broker_manifest.json")
+}
+
+fn shared_ingress_broker_lock_path() -> PathBuf {
+    shared_ingress_root().join("broker.lock")
+}
+
+fn shared_ingress_clients_dir() -> PathBuf {
+    shared_ingress_root().join("clients")
+}
+
+fn shared_ingress_client_lease_path() -> PathBuf {
+    let instance = instance_id().unwrap_or_else(|| "shared-ingress-client".to_string());
+    shared_ingress_clients_dir().join(format!("{}-{}.json", instance, std::process::id()))
+}
+
+fn shared_ingress_market_socket_path() -> PathBuf {
+    shared_ingress_root().join("market.sock")
+}
+
+fn write_json_pretty_atomic<T: Serialize>(path: &PathBuf, value: &T) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_extension("tmp");
+    fs::write(&tmp_path, serde_json::to_vec_pretty(value)?)?;
+    fs::rename(&tmp_path, path)?;
+    Ok(())
+}
+
+fn read_broker_manifest() -> Option<SharedIngressBrokerManifest> {
+    let path = shared_ingress_broker_manifest_path();
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str::<SharedIngressBrokerManifest>(&raw).ok()
+}
+
+fn is_broker_manifest_compatible(manifest: &SharedIngressBrokerManifest) -> bool {
+    manifest.protocol_version == shared_ingress_protocol_version()
+        && manifest.build_id == shared_ingress_build_id()
+}
+
+fn is_broker_manifest_fresh(manifest: &SharedIngressBrokerManifest) -> bool {
+    now_ms().saturating_sub(manifest.last_heartbeat_ms) <= SHARED_INGRESS_BROKER_STALE_MS
+}
+
+fn is_broker_manifest_healthy(manifest: &SharedIngressBrokerManifest) -> bool {
+    is_broker_manifest_compatible(manifest)
+        && is_broker_manifest_fresh(manifest)
+        && PathBuf::from(&manifest.chainlink_socket).exists()
+        && PathBuf::from(&manifest.local_price_socket).exists()
+        && PathBuf::from(&manifest.market_socket).exists()
+}
+
+fn cleanup_stale_client_leases() {
+    let dir = shared_ingress_clients_dir();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(raw) = fs::read_to_string(&path) else {
+            let _ = fs::remove_file(&path);
+            continue;
+        };
+        let Ok(lease) = serde_json::from_str::<SharedIngressClientLease>(&raw) else {
+            let _ = fs::remove_file(&path);
+            continue;
+        };
+        if now_ms().saturating_sub(lease.last_heartbeat_ms) > SHARED_INGRESS_CLIENT_STALE_MS {
+            let _ = fs::remove_file(&path);
+        }
+    }
+}
+
+fn shared_ingress_active_client_count() -> usize {
+    cleanup_stale_client_leases();
+    fs::read_dir(shared_ingress_clients_dir())
+        .ok()
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("json"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+struct SharedIngressBrokerLockGuard {
+    path: PathBuf,
+}
+
+impl Drop for SharedIngressBrokerLockGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
+fn try_acquire_shared_ingress_broker_lock() -> anyhow::Result<Option<SharedIngressBrokerLockGuard>> {
+    let path = shared_ingress_broker_lock_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::create_dir(&path) {
+        Ok(()) => Ok(Some(SharedIngressBrokerLockGuard { path })),
+        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
+            let stale = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map(|d| now_ms().saturating_sub(d.as_millis() as u64) > SHARED_INGRESS_LOCK_STALE_MS)
+                .unwrap_or(true);
+            if stale {
+                let _ = fs::remove_dir_all(&path);
+                match fs::create_dir(&path) {
+                    Ok(()) => Ok(Some(SharedIngressBrokerLockGuard { path })),
+                    Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(None),
+                    Err(err) => Err(err.into()),
+                }
+            } else {
+                Ok(None)
+            }
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
+async fn kill_shared_ingress_broker_pid(pid: u32) {
+    if pid == 0 {
+        return;
+    }
+    let _ = tokio::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+    sleep(Duration::from_millis(600)).await;
+    let _ = tokio::process::Command::new("kill")
+        .arg("-KILL")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await;
+}
+
+async fn wait_for_shared_ingress_broker_healthy(timeout_ms: u64) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+    loop {
+        if let Some(manifest) = read_broker_manifest() {
+            if is_broker_manifest_healthy(&manifest) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("timed out waiting for healthy shared ingress broker");
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+}
+
+async fn spawn_shared_ingress_broker_sidecar() -> anyhow::Result<()> {
+    let root = shared_ingress_root();
+    fs::create_dir_all(&root)?;
+    let log_path = shared_ingress_broker_log_path();
+    if let Some(parent) = log_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)?;
+    let log_file_err = log_file.try_clone()?;
+    let exe = env::current_exe()?;
+    let mut cmd = tokio::process::Command::new(&exe);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::from(log_file))
+        .stderr(Stdio::from(log_file_err))
+        .process_group(0)
+        .env("PM_SHARED_INGRESS_ROLE", "broker")
+        .env("PM_SHARED_INGRESS_ROOT", &root)
+        .env("PM_SHARED_INGRESS_IDLE_EXIT_ENABLED", "true")
+        .env("PM_LOG_ROOT", shared_ingress_broker_runtime_log_root())
+        .env(
+            "PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH",
+            shared_ingress_broker_bias_cache_path(),
+        )
+        .env(
+            "PM_INSTANCE_ID",
+            env::var("PM_SHARED_INGRESS_BROKER_INSTANCE_ID")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "shared-ingress-broker-auto".to_string()),
+        );
+    if env::var("PM_ORACLE_LAG_SYMBOL_UNIVERSE").is_err() {
+        if let Ok(slug) = env::var("POLYMARKET_MARKET_SLUG") {
+            if let Some(sym) = oracle_lag_symbol_from_slug(&slug) {
+                cmd.env("PM_ORACLE_LAG_SYMBOL_UNIVERSE", sym);
+            }
+        }
+    }
+    let child = cmd.spawn()?;
+    info!(
+        "🚀 shared ingress auto spawned broker sidecar | pid={} root={} log={}",
+        child.id().unwrap_or_default(),
+        root.display(),
+        log_path.display()
+    );
+    Ok(())
+}
+
+async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
+    let root = shared_ingress_root();
+    fs::create_dir_all(shared_ingress_clients_dir())?;
+    let deadline = tokio::time::Instant::now()
+        + Duration::from_millis(SHARED_INGRESS_BROKER_START_TIMEOUT_MS);
+    loop {
+        if let Some(manifest) = read_broker_manifest() {
+            if is_broker_manifest_healthy(&manifest) {
+                return Ok(());
+            }
+        }
+        if let Some(_lock) = try_acquire_shared_ingress_broker_lock()? {
+            if let Some(manifest) = read_broker_manifest() {
+                if is_broker_manifest_healthy(&manifest) {
+                    return Ok(());
+                }
+                if is_broker_manifest_fresh(&manifest) && !is_broker_manifest_compatible(&manifest) {
+                    warn!(
+                        "♻️ shared ingress auto replacing incompatible broker | pid={} protocol={} build_id={}",
+                        manifest.pid,
+                        manifest.protocol_version,
+                        manifest.build_id
+                    );
+                    kill_shared_ingress_broker_pid(manifest.pid).await;
+                    let _ = fs::remove_file(shared_ingress_broker_manifest_path());
+                    let _ = fs::remove_file(shared_ingress_chainlink_socket_path());
+                    let _ = fs::remove_file(shared_ingress_local_price_socket_path());
+                    let _ = fs::remove_file(shared_ingress_market_socket_path());
+                }
+            }
+            spawn_shared_ingress_broker_sidecar().await?;
+            wait_for_shared_ingress_broker_healthy(SHARED_INGRESS_BROKER_START_TIMEOUT_MS).await?;
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!(
+                "timed out waiting to acquire shared ingress broker or observe healthy broker at {}",
+                root.display()
+            );
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+fn spawn_shared_ingress_client_lease_heartbeat() {
+    let lease_path = shared_ingress_client_lease_path();
+    let instance = instance_id().unwrap_or_else(|| "shared-ingress-client".to_string());
+    let build_id = shared_ingress_build_id();
+    let started_ms = now_ms();
+    tokio::spawn(async move {
+        loop {
+            let lease = SharedIngressClientLease {
+                protocol_version: shared_ingress_protocol_version(),
+                build_id: build_id.clone(),
+                instance_id: instance.clone(),
+                pid: std::process::id(),
+                started_ms,
+                last_heartbeat_ms: now_ms(),
+            };
+            if let Err(err) = write_json_pretty_atomic(&lease_path, &lease) {
+                warn!(
+                    "⚠️ shared ingress client lease heartbeat write failed | path={} err={}",
+                    lease_path.display(),
+                    err
+                );
+            }
+            sleep(Duration::from_millis(SHARED_INGRESS_HEARTBEAT_INTERVAL_MS)).await;
+        }
+    });
 }
 
 fn local_price_source_names() -> String {
@@ -12269,7 +12639,10 @@ async fn run_market_ws(
     recorder: Option<RecorderHandle>,
     recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
-    if shared_ingress_role() == SharedIngressRole::Client {
+    if matches!(
+        shared_ingress_role(),
+        SharedIngressRole::Client | SharedIngressRole::Auto
+    ) {
         return run_market_ws_remote_with_wall_guard(
             settings,
             ofi_tx,
@@ -12998,6 +13371,19 @@ async fn main() -> anyhow::Result<()> {
         active_instance_id.as_deref().unwrap_or("unset"),
         active_log_root.display()
     );
+    if shared_ingress_role() == SharedIngressRole::Auto {
+        info!(
+            "🤖 shared ingress auto mode | root={} build_id={}",
+            shared_ingress_root().display(),
+            shared_ingress_build_id()
+        );
+        ensure_shared_ingress_broker_running().await?;
+        set_shared_ingress_role_override(SharedIngressRole::Client);
+        info!(
+            "✅ shared ingress auto resolved to client | root={}",
+            shared_ingress_root().display()
+        );
+    }
     match shared_ingress_role() {
         SharedIngressRole::Broker => {
             info!(
@@ -13011,8 +13397,10 @@ async fn main() -> anyhow::Result<()> {
                 "🧵 shared ingress client mode | root={}",
                 shared_ingress_root().display()
             );
+            spawn_shared_ingress_client_lease_heartbeat();
         }
         SharedIngressRole::Standalone => {}
+        SharedIngressRole::Auto => unreachable!("auto role must resolve before worker startup"),
     }
 
     let is_multi_market_child = env::var("PM_MULTI_MARKET_CHILD")
@@ -13084,7 +13472,7 @@ fn build_chainlink_hub_for_symbols(symbols: &HashSet<String>) -> Option<Arc<Chai
     let mut log_symbols: Vec<String> = symbols.iter().cloned().collect();
     log_symbols.sort();
     match shared_ingress_role() {
-        SharedIngressRole::Client => {
+        SharedIngressRole::Client | SharedIngressRole::Auto => {
             let socket_path = shared_ingress_chainlink_socket_path();
             info!(
                 "🛰️ shared ingress chainlink_hub remote client | symbols={} socket={}",
@@ -13117,7 +13505,7 @@ fn build_local_price_hub_for_symbols(
     let mut log_symbols: Vec<String> = symbols.iter().cloned().collect();
     log_symbols.sort();
     match shared_ingress_role() {
-        SharedIngressRole::Client => {
+        SharedIngressRole::Client | SharedIngressRole::Auto => {
             let socket_path = shared_ingress_local_price_socket_path();
             info!(
                 "🧠 shared ingress local_price_hub remote client | symbols={} socket={} sources={} bias_learning_enabled={}",
@@ -13483,7 +13871,7 @@ async fn run_local_price_ingress_broker(hub: Arc<LocalPriceHub>) -> anyhow::Resu
 async fn run_market_ingress_broker(
     registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>>,
 ) -> anyhow::Result<()> {
-    let socket_path = shared_ingress_root().join("market.sock");
+    let socket_path = shared_ingress_market_socket_path();
     if let Some(parent) = socket_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -13532,34 +13920,83 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
     let market_registry_clone = Arc::clone(&market_registry);
     let mut market_task =
         tokio::spawn(async move { run_market_ingress_broker(market_registry_clone).await });
-    tokio::select! {
-        _ = tokio::signal::ctrl_c() => {
-            warn!("🛑 shared ingress broker received ctrl-c — shutting down");
-        }
-        joined = &mut chainlink_task => {
-            match joined {
-                Ok(Err(err)) => warn!("⚠️ shared ingress chainlink broker exited with error: {}", err),
-                Err(err) => warn!("⚠️ shared ingress chainlink broker join error: {}", err),
-                Ok(Ok(())) => info!("🏁 shared ingress chainlink broker exited cleanly"),
+    let started_ms = now_ms();
+    let build_id = shared_ingress_build_id();
+    let protocol_version = shared_ingress_protocol_version();
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(
+        SHARED_INGRESS_HEARTBEAT_INTERVAL_MS,
+    ));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut zero_clients_since: Option<tokio::time::Instant> = None;
+    loop {
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {
+                warn!("🛑 shared ingress broker received ctrl-c — shutting down");
+                break;
             }
-        }
-        joined = async {
-            match &mut local_price_task {
-                Some(task) => task.await.ok().and_then(Result::err),
-                None => None,
+            _ = heartbeat.tick() => {
+                let manifest = SharedIngressBrokerManifest {
+                    protocol_version,
+                    build_id: build_id.clone(),
+                    pid: std::process::id(),
+                    started_ms,
+                    last_heartbeat_ms: now_ms(),
+                    chainlink_socket: shared_ingress_chainlink_socket_path().display().to_string(),
+                    local_price_socket: shared_ingress_local_price_socket_path().display().to_string(),
+                    market_socket: shared_ingress_market_socket_path().display().to_string(),
+                };
+                if let Err(err) = write_json_pretty_atomic(&shared_ingress_broker_manifest_path(), &manifest) {
+                    warn!("⚠️ shared ingress broker manifest write failed | err={}", err);
+                }
+                if shared_ingress_idle_exit_enabled() {
+                    let active_clients = shared_ingress_active_client_count();
+                    if active_clients == 0 {
+                        match zero_clients_since {
+                            Some(since) if since.elapsed() >= Duration::from_millis(SHARED_INGRESS_IDLE_SHUTDOWN_GRACE_MS) => {
+                                info!(
+                                    "🛑 shared ingress broker idle shutdown | active_clients=0 grace_ms={}",
+                                    SHARED_INGRESS_IDLE_SHUTDOWN_GRACE_MS
+                                );
+                                break;
+                            }
+                            Some(_) => {}
+                            None => {
+                                zero_clients_since = Some(tokio::time::Instant::now());
+                            }
+                        }
+                    } else {
+                        zero_clients_since = None;
+                    }
+                }
             }
-        }, if local_price_task.is_some() => {
-            if let Some(err) = joined {
-                warn!("⚠️ shared ingress local_price broker exited with error: {}", err);
-            } else {
-                info!("🏁 shared ingress local_price broker exited");
+            joined = &mut chainlink_task => {
+                match joined {
+                    Ok(Err(err)) => warn!("⚠️ shared ingress chainlink broker exited with error: {}", err),
+                    Err(err) => warn!("⚠️ shared ingress chainlink broker join error: {}", err),
+                    Ok(Ok(())) => info!("🏁 shared ingress chainlink broker exited cleanly"),
+                }
+                break;
             }
-        }
-        joined = &mut market_task => {
-            match joined {
-                Ok(Err(err)) => warn!("⚠️ shared ingress market broker exited with error: {}", err),
-                Err(err) => warn!("⚠️ shared ingress market broker join error: {}", err),
-                Ok(Ok(())) => info!("🏁 shared ingress market broker exited cleanly"),
+            joined = async {
+                match &mut local_price_task {
+                    Some(task) => task.await.ok().and_then(Result::err),
+                    None => None,
+                }
+            }, if local_price_task.is_some() => {
+                if let Some(err) = joined {
+                    warn!("⚠️ shared ingress local_price broker exited with error: {}", err);
+                } else {
+                    info!("🏁 shared ingress local_price broker exited");
+                }
+                break;
+            }
+            joined = &mut market_task => {
+                match joined {
+                    Ok(Err(err)) => warn!("⚠️ shared ingress market broker exited with error: {}", err),
+                    Err(err) => warn!("⚠️ shared ingress market broker join error: {}", err),
+                    Ok(Ok(())) => info!("🏁 shared ingress market broker exited cleanly"),
+                }
+                break;
             }
         }
     }
@@ -13568,6 +14005,10 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
         task.abort();
     }
     market_task.abort();
+    let _ = fs::remove_file(shared_ingress_broker_manifest_path());
+    let _ = fs::remove_file(shared_ingress_chainlink_socket_path());
+    let _ = fs::remove_file(shared_ingress_local_price_socket_path());
+    let _ = fs::remove_file(shared_ingress_market_socket_path());
     Ok(())
 }
 
