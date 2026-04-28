@@ -19,6 +19,8 @@ use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio::time::sleep;
@@ -113,6 +115,44 @@ fn env_flag_or(name: &str, default: bool) -> bool {
         },
         Err(_) => default,
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SharedIngressRole {
+    Standalone,
+    Broker,
+    Client,
+}
+
+fn shared_ingress_role() -> SharedIngressRole {
+    match env::var("PM_SHARED_INGRESS_ROLE")
+        .ok()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "broker" => SharedIngressRole::Broker,
+        "client" => SharedIngressRole::Client,
+        _ => SharedIngressRole::Standalone,
+    }
+}
+
+fn shared_ingress_root() -> PathBuf {
+    env::var("PM_SHARED_INGRESS_ROOT")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("run/shared-ingress"))
+}
+
+fn shared_ingress_chainlink_socket_path() -> PathBuf {
+    shared_ingress_root().join("chainlink.sock")
+}
+
+fn shared_ingress_local_price_socket_path() -> PathBuf {
+    shared_ingress_root().join("local_price.sock")
 }
 
 fn local_price_source_names() -> String {
@@ -2035,6 +2075,10 @@ fn rotation_wait_duration(now_unix: u64, end_ts: u64) -> Duration {
 
 type ResolvedMarket = (String, String, String, Option<u64>);
 
+fn inferred_end_ts_from_slug(slug: &str) -> Option<u64> {
+    slug.rsplit('-').next()?.parse().ok()
+}
+
 fn resolve_timeout_ms() -> u64 {
     env::var("PM_RESOLVE_TIMEOUT_MS")
         .ok()
@@ -2613,6 +2657,7 @@ async fn run_pgt_shadow_harvest_lifecycle(
 ) {
     let mut first_sent = false;
     let mut retry_sent = false;
+    let mut first_attempt_was_eligible = false;
 
     loop {
         let now = unix_now_secs();
@@ -2627,7 +2672,12 @@ async fn run_pgt_shadow_harvest_lifecycle(
         let eligible = pairable_qty + 1e-9 >= PGT_SHADOW_HARVEST_MIN_PAIRABLE_QTY;
 
         let should_emit_first = !first_sent && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS;
-        let should_emit_retry = !retry_sent && remaining_secs <= PGT_SHADOW_HARVEST_RETRY_SECS;
+        let should_emit_retry = !retry_sent
+            && ((remaining_secs <= PGT_SHADOW_HARVEST_RETRY_SECS)
+                || (first_sent
+                    && !first_attempt_was_eligible
+                    && eligible
+                    && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS));
         let attempt = if should_emit_first {
             Some(1_u8)
         } else if should_emit_retry {
@@ -2660,6 +2710,7 @@ async fn run_pgt_shadow_harvest_lifecycle(
             }
             if attempt == 1 {
                 first_sent = true;
+                first_attempt_was_eligible = eligible;
             } else {
                 retry_sent = true;
             }
@@ -2792,6 +2843,16 @@ const LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_SOURCES: usize = 2;
 const LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 2.0;
 const LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS: f64 = 3.0;
 const LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 2.0;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_SOURCES: usize = 3;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 0.6;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS: f64 = 4.0;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS_TWO_SOURCE: f64 = 1.0;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE: f64 =
+    2.5;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_CONFIDENCE: f64 = 0.79;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES: usize = 2;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_DIRECTION_MARGIN_BPS: f64 = 2.0;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MAX_SOURCE_SPREAD_BPS: f64 = 5.1;
 
 fn unix_now_secs() -> u64 {
     SystemTime::now()
@@ -3788,6 +3849,89 @@ const CHAINLINK_HUB_TICK_STALL_RECONNECT_MS: u64 = 2_000;
 const CHAINLINK_HUB_RECENT_TICKS_PER_SYMBOL: usize = 16_384;
 const LOCAL_PRICE_HUB_RECENT_TICKS_PER_SYMBOL: usize = 16_384;
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SharedIngressSubscribeReq {
+    stream: String,
+    #[serde(default)]
+    symbols: Vec<String>,
+    #[serde(default)]
+    market_slug: Option<String>,
+    #[serde(default)]
+    market_id: Option<String>,
+    #[serde(default)]
+    yes_asset_id: Option<String>,
+    #[serde(default)]
+    no_asset_id: Option<String>,
+    #[serde(default)]
+    ws_base_url: Option<String>,
+    #[serde(default)]
+    custom_feature_enabled: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum SharedIngressWireMsg {
+    ChainlinkSnapshot {
+        symbol: String,
+        price: f64,
+        ts_ms: u64,
+    },
+    ChainlinkTick {
+        symbol: String,
+        price: f64,
+        ts_ms: u64,
+    },
+    LocalPriceSnapshot {
+        symbol: String,
+        price: f64,
+        ts_ms: u64,
+        source: String,
+    },
+    LocalPriceTick {
+        symbol: String,
+        price: f64,
+        ts_ms: u64,
+        source: String,
+    },
+    MarketBookTick {
+        yes_bid: f64,
+        yes_ask: f64,
+        no_bid: f64,
+        no_ask: f64,
+        ts_ms: u64,
+    },
+    MarketTradeTick {
+        asset_id: String,
+        trade_id: Option<String>,
+        market_side: String,
+        taker_side: String,
+        price: f64,
+        size: f64,
+        ts_ms: u64,
+    },
+    PostCloseBookUpdate {
+        side: String,
+        bid: f64,
+        ask: f64,
+        recv_ms: u64,
+    },
+    SnapshotDone,
+    Error {
+        message: String,
+    },
+}
+
+async fn shared_ingress_send_wire_line<W: AsyncWriteExt + Unpin>(
+    writer: &mut W,
+    msg: &SharedIngressWireMsg,
+) -> anyhow::Result<()> {
+    let mut line = serde_json::to_vec(msg)?;
+    line.push(b'\n');
+    writer.write_all(&line).await?;
+    writer.flush().await?;
+    Ok(())
+}
+
 #[derive(Clone)]
 struct ChainlinkHub {
     senders: Arc<HashMap<String, broadcast::Sender<(f64, u64)>>>,
@@ -3795,18 +3939,40 @@ struct ChainlinkHub {
 }
 
 impl ChainlinkHub {
-    fn spawn(symbols: HashSet<String>) -> Arc<Self> {
+    fn new(symbols: &HashSet<String>) -> Arc<Self> {
         let mut senders = HashMap::new();
         let mut recent_ticks = HashMap::new();
-        for sym in &symbols {
+        for sym in symbols {
             let (tx, _rx) = broadcast::channel::<(f64, u64)>(2048);
             senders.insert(sym.clone(), tx);
             recent_ticks.insert(sym.clone(), VecDeque::new());
         }
-        let hub = Arc::new(Self {
+        Arc::new(Self {
             senders: Arc::new(senders),
             recent_ticks: Arc::new(Mutex::new(recent_ticks)),
-        });
+        })
+    }
+
+    fn publish_tick(&self, symbol: &str, price: f64, ts_ms: u64) {
+        let sym = normalize_chainlink_symbol(symbol);
+        if sym.is_empty() || !price.is_finite() || price <= 0.0 {
+            return;
+        }
+        if let Ok(mut guard) = self.recent_ticks.lock() {
+            if let Some(buf) = guard.get_mut(&sym) {
+                buf.push_back((price, ts_ms));
+                while buf.len() > CHAINLINK_HUB_RECENT_TICKS_PER_SYMBOL {
+                    buf.pop_front();
+                }
+            }
+        }
+        if let Some(tx) = self.senders.get(&sym) {
+            let _ = tx.send((price, ts_ms));
+        }
+    }
+
+    fn spawn(symbols: HashSet<String>) -> Arc<Self> {
+        let hub = Self::new(&symbols);
         let ws_url = post_close_chainlink_ws_url();
         // One WS connection per symbol: the server only honours ONE active
         // subscription per connection, so sharing a single connection for N
@@ -3955,6 +4121,88 @@ impl ChainlinkHub {
         hub
     }
 
+    fn spawn_remote(symbols: HashSet<String>, socket_path: PathBuf) -> Arc<Self> {
+        let hub = Self::new(&symbols);
+        let target_symbols = symbols
+            .into_iter()
+            .map(|sym| normalize_chainlink_symbol(&sym))
+            .filter(|sym| !sym.is_empty())
+            .collect::<Vec<_>>();
+        let shared_hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            let mut reconnect_backoff = Duration::from_millis(300);
+            loop {
+                let connect = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    UnixStream::connect(&socket_path),
+                )
+                .await;
+                let Ok(Ok(stream)) = connect else {
+                    sleep(reconnect_backoff).await;
+                    reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+                    continue;
+                };
+                reconnect_backoff = Duration::from_millis(300);
+                let (read_half, mut write_half) = stream.into_split();
+                let req = SharedIngressSubscribeReq {
+                    stream: "chainlink".to_string(),
+                    symbols: target_symbols.clone(),
+                    market_slug: None,
+                    market_id: None,
+                    yes_asset_id: None,
+                    no_asset_id: None,
+                    ws_base_url: None,
+                    custom_feature_enabled: None,
+                };
+                let mut line = match serde_json::to_vec(&req) {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                line.push(b'\n');
+                if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err()
+                {
+                    continue;
+                }
+                let mut reader = BufReader::new(read_half);
+                let mut buf = String::new();
+                loop {
+                    buf.clear();
+                    let read = reader.read_line(&mut buf).await;
+                    let Ok(n) = read else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    let Ok(msg) = serde_json::from_str::<SharedIngressWireMsg>(buf.trim()) else {
+                        continue;
+                    };
+                    match msg {
+                        SharedIngressWireMsg::ChainlinkSnapshot {
+                            symbol,
+                            price,
+                            ts_ms,
+                        }
+                        | SharedIngressWireMsg::ChainlinkTick {
+                            symbol,
+                            price,
+                            ts_ms,
+                        } => {
+                            shared_hub.publish_tick(&symbol, price, ts_ms);
+                        }
+                        SharedIngressWireMsg::SnapshotDone => {}
+                        SharedIngressWireMsg::Error { message } => {
+                            warn!("⚠️ chainlink_remote_hub_error | msg={}", message);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
+        hub
+    }
+
     fn subscribe(&self, symbol: &str) -> Option<broadcast::Receiver<(f64, u64)>> {
         let sym = normalize_chainlink_symbol(symbol);
         self.senders.get(&sym).map(|tx| tx.subscribe())
@@ -3982,23 +4230,114 @@ struct LocalPriceHub {
 }
 
 impl LocalPriceHub {
-    fn spawn(symbols: HashSet<String>) -> Arc<Self> {
+    fn new(symbols: &HashSet<String>) -> Arc<Self> {
         let mut senders = HashMap::new();
         let mut recent_ticks = HashMap::new();
-        for sym in &symbols {
+        for sym in symbols {
             let (tx, _rx) = broadcast::channel::<(f64, u64, LocalPriceSource)>(4096);
             senders.insert(sym.clone(), tx);
             recent_ticks.insert(sym.clone(), VecDeque::new());
         }
-        let hub = Arc::new(Self {
+        Arc::new(Self {
             senders: Arc::new(senders),
             recent_ticks: Arc::new(Mutex::new(recent_ticks)),
-        });
+        })
+    }
+
+    fn spawn(symbols: HashSet<String>) -> Arc<Self> {
+        let hub = Self::new(&symbols);
         Self::spawn_binance_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_bybit_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_okx_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_hyperliquid_feeder(Arc::clone(&hub), symbols.clone());
         Self::spawn_coinbase_feeder(Arc::clone(&hub), symbols);
+        hub
+    }
+
+    fn spawn_remote(symbols: HashSet<String>, socket_path: PathBuf) -> Arc<Self> {
+        let hub = Self::new(&symbols);
+        let target_symbols = symbols
+            .into_iter()
+            .map(|sym| normalize_chainlink_symbol(&sym))
+            .filter(|sym| !sym.is_empty())
+            .collect::<Vec<_>>();
+        let shared_hub = Arc::clone(&hub);
+        tokio::spawn(async move {
+            let mut reconnect_backoff = Duration::from_millis(300);
+            loop {
+                let connect = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    UnixStream::connect(&socket_path),
+                )
+                .await;
+                let Ok(Ok(stream)) = connect else {
+                    sleep(reconnect_backoff).await;
+                    reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+                    continue;
+                };
+                reconnect_backoff = Duration::from_millis(300);
+                let (read_half, mut write_half) = stream.into_split();
+                let req = SharedIngressSubscribeReq {
+                    stream: "local_price".to_string(),
+                    symbols: target_symbols.clone(),
+                    market_slug: None,
+                    market_id: None,
+                    yes_asset_id: None,
+                    no_asset_id: None,
+                    ws_base_url: None,
+                    custom_feature_enabled: None,
+                };
+                let mut line = match serde_json::to_vec(&req) {
+                    Ok(v) => v,
+                    Err(_) => break,
+                };
+                line.push(b'\n');
+                if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err()
+                {
+                    continue;
+                }
+                let mut reader = BufReader::new(read_half);
+                let mut buf = String::new();
+                loop {
+                    buf.clear();
+                    let read = reader.read_line(&mut buf).await;
+                    let Ok(n) = read else {
+                        break;
+                    };
+                    if n == 0 {
+                        break;
+                    }
+                    let Ok(msg) = serde_json::from_str::<SharedIngressWireMsg>(buf.trim()) else {
+                        continue;
+                    };
+                    match msg {
+                        SharedIngressWireMsg::LocalPriceSnapshot {
+                            symbol,
+                            price,
+                            ts_ms,
+                            source,
+                        }
+                        | SharedIngressWireMsg::LocalPriceTick {
+                            symbol,
+                            price,
+                            ts_ms,
+                            source,
+                        } => {
+                            let Some(source) = LocalPriceSource::from_str(&source) else {
+                                continue;
+                            };
+                            shared_hub.publish_tick(&symbol, price, ts_ms, source);
+                        }
+                        SharedIngressWireMsg::SnapshotDone => {}
+                        SharedIngressWireMsg::Error { message } => {
+                            warn!("⚠️ local_price_remote_hub_error | msg={}", message);
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        });
         hub
     }
 
@@ -6574,6 +6913,8 @@ async fn run_post_close_winner_hint_listener(
                     .find(|outcome| outcome.policy_name == "boundary_weighted")
                     .and_then(|outcome| outcome.hit.as_ref());
                 let mut close_only_filtered = false;
+                let mut close_only_filter_reason: Option<&'static str> = None;
+                let mut close_only_direction_margin_bps: Option<f64> = None;
                 if let Some(hit) = compare_hit.base_hit.as_ref() {
                     local_price_agg_learn_source_biases_from_rtds(
                         &symbol,
@@ -6605,6 +6946,7 @@ async fn run_post_close_winner_hint_listener(
                     let direction_margin_bps = ((hit.close_price - first_ref).abs()
                         / first_ref.abs().max(1e-12))
                         * 10_000.0;
+                    close_only_direction_margin_bps = Some(direction_margin_bps);
                     let all_preclose = hit
                         .source_contributions
                         .iter()
@@ -6623,6 +6965,22 @@ async fn run_post_close_winner_hint_listener(
                                 + 1e-9
                         && direction_margin_bps + 1e-9
                             >= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS;
+                    let sol_safe_preclose_relief_applied = symbol == "sol/usd"
+                        && all_preclose
+                        && hit.close_exact_sources == 0
+                        && ((hit.source_count
+                            >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_SOURCES
+                            && hit.source_spread_bps
+                                <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS
+                                    + 1e-9
+                            && direction_margin_bps + 1e-9
+                                >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS)
+                            || (hit.source_count >= 2
+                                && hit.source_spread_bps
+                                    <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE
+                                        + 1e-9
+                                && direction_margin_bps + 1e-9
+                                    >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS_TWO_SOURCE));
                     let single_source_min_direction_margin_bps =
                         local_price_agg_single_source_min_direction_margin_bps()
                             .max(LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS_DEFAULT);
@@ -6634,10 +6992,12 @@ async fn run_post_close_winner_hint_listener(
                         && hit.close_exact_sources == 0
                         && !preclose_relief_applied
                         && !safe_preclose_relief_applied
+                        && !sol_safe_preclose_relief_applied
                         && !safe_single_source_relief_applied
                         && direction_margin_bps + 1e-9
                             < LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS
                     {
+                        close_only_filter_reason = Some("preclose_near_flat");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=preclose_near_flat direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -6673,6 +7033,7 @@ async fn run_post_close_winner_hint_listener(
                         && !safe_single_source_relief_applied
                         && direction_margin_bps + 1e-9 < single_source_min_direction_margin_bps
                     {
+                        close_only_filter_reason = Some("single_source_near_flat");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=single_source_near_flat direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -6719,6 +7080,13 @@ async fn run_post_close_winner_hint_listener(
                             <= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
                         && direction_margin_bps
                             >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS - 1e-9;
+                    let sol_safe_low_conf_relief_applied = symbol == "sol/usd"
+                        && hit.source_count >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES
+                        && (source_agreement >= 1.0 - 1e-9)
+                        && hit.source_spread_bps
+                            <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MAX_SOURCE_SPREAD_BPS + 1e-9
+                        && direction_margin_bps + 1e-9
+                            >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_DIRECTION_MARGIN_BPS;
                     let confidence = if hit.source_count == 1 {
                         if hit.close_exact_sources > 0 {
                             0.93
@@ -6748,12 +7116,18 @@ async fn run_post_close_winner_hint_listener(
                     let effective_min_confidence = if confidence_relief_applied
                         || strong_direction_relief_applied
                         || safe_low_conf_relief_applied
+                        || sol_safe_low_conf_relief_applied
                     {
-                        min_confidence.min(relief_min_confidence)
+                        min_confidence.min(if sol_safe_low_conf_relief_applied {
+                            LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_CONFIDENCE
+                        } else {
+                            relief_min_confidence
+                        })
                     } else {
                         min_confidence
                     };
                     if !close_only_filtered && confidence + 1e-9 < effective_min_confidence {
+                        close_only_filter_reason = Some("low_confidence");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=low_confidence confidence={:.3} min_confidence={:.3} effective_min_confidence={:.3} relief_applied={} strong_direction_relief_applied={} safe_low_conf_relief_applied={} agreement={:.3} direction_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -6850,6 +7224,15 @@ async fn run_post_close_winner_hint_listener(
                         first_obs,
                     );
                 }
+                let weighted_shadow_candidate = weighted_shadow_hit.filter(|hit| {
+                    local_boundary_weighted_candidate_allowed_for_policy(
+                        &symbol,
+                        close_only_filter_reason,
+                        close_only_direction_margin_bps,
+                        first_ref,
+                        hit,
+                    )
+                });
                 for outcome in &compare_hit.boundary_shadow_outcomes {
                     match outcome.hit.as_ref() {
                         Some(hit) => {
@@ -6910,7 +7293,34 @@ async fn run_post_close_winner_hint_listener(
                         }
                     }
                 }
-                if let Some(hit) = compare_hit.base_hit.as_ref().filter(|_| !close_only_filtered) {
+                let close_only_any_hit = compare_hit.base_hit.as_ref();
+                let close_only_primary_hit = close_only_any_hit.filter(|_| !close_only_filtered);
+                let hybrid_uses_weighted = match (close_only_primary_hit, weighted_shadow_candidate)
+                {
+                    (Some(close_only_hit), Some(weighted_hit)) => {
+                        local_boundary_hybrid_prefers_weighted_over_close_only(
+                            &symbol,
+                            close_only_hit,
+                            weighted_hit,
+                            first_ref,
+                        )
+                    }
+                    _ => false,
+                };
+                let hybrid_uses_filtered_close_only =
+                    match (close_only_any_hit, weighted_shadow_candidate) {
+                        (Some(close_only_hit), Some(weighted_hit)) if close_only_filtered => {
+                            local_boundary_hybrid_prefers_filtered_close_only_over_weighted(
+                                &symbol,
+                                close_only_filter_reason,
+                                close_only_hit,
+                                weighted_hit,
+                                first_ref,
+                            )
+                        }
+                        _ => false,
+                    };
+                if let Some(hit) = close_only_primary_hit.filter(|_| !hybrid_uses_weighted) {
                     let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                         Side::Yes
                     } else {
@@ -6946,7 +7356,43 @@ async fn run_post_close_winner_hint_listener(
                         ready_ms.saturating_sub(started_ms),
                         local_vs_rtds_detect_gap_ms,
                     );
-                } else if let Some(hit) = weighted_shadow_hit {
+                } else if let Some(hit) = close_only_any_hit.filter(|_| hybrid_uses_filtered_close_only) {
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    info!(
+                        "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        "boundary_hybrid_close_only_then_weighted",
+                        "filtered_close_only_fallback",
+                        "close_only",
+                        hit.source_count,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                } else if let Some(hit) = weighted_shadow_candidate {
                     let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                         Side::Yes
                     } else {
@@ -6990,6 +7436,193 @@ async fn run_post_close_winner_hint_listener(
                         "boundary_hybrid_close_only_then_weighted",
                         "weighted_fallback",
                         "hybrid",
+                        1,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        first_ref,
+                        first_side,
+                        first_obs,
+                    );
+                }
+                let router_prefers_weighted =
+                    local_boundary_symbol_router_prefers_weighted_primary(&symbol);
+                let router_allows_close_only_fallback =
+                    local_boundary_symbol_router_allows_close_only_fallback(&symbol);
+                if router_prefers_weighted {
+                    if let Some(hit) = weighted_shadow_candidate {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        info!(
+                            "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v1",
+                            hit.source_subset_name,
+                            hit.rule.as_str(),
+                            hit.min_sources,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else if let Some(hit) =
+                        close_only_primary_hit.filter(|_| router_allows_close_only_fallback)
+                    {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        info!(
+                            "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v1",
+                            "close_only_fallback",
+                            "close_only",
+                            hit.source_count,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ local_price_agg_boundary_shadow_unresolved | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v1",
+                            "weighted_primary",
+                            "weighted",
+                            1,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                    }
+                } else if let Some(hit) = close_only_primary_hit {
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    info!(
+                        "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        "boundary_symbol_router_v1",
+                        "close_only_primary",
+                        "close_only",
+                        hit.source_count,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                } else if let Some(hit) = weighted_shadow_candidate {
+                    let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                        Side::Yes
+                    } else {
+                        Side::No
+                    };
+                    let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                    let close_abs_diff = (hit.close_price - first_obs).abs();
+                    let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                    let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                    info!(
+                        "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                        slug,
+                        symbol,
+                        "boundary_symbol_router_v1",
+                        "weighted_fallback",
+                        hit.rule.as_str(),
+                        hit.min_sources,
+                        local_side_vs_rtds_open,
+                        first_side,
+                        side_match_vs_rtds_open,
+                        hit.close_price,
+                        hit.close_ts_ms,
+                        first_ref,
+                        first_obs,
+                        close_abs_diff,
+                        close_diff_bps,
+                        hit.source_count,
+                        hit.source_spread_bps,
+                        hit.close_exact_sources,
+                        started_ms,
+                        ready_ms,
+                        deadline_ms,
+                        ready_ms.saturating_sub(started_ms),
+                        local_vs_rtds_detect_gap_ms,
+                    );
+                } else {
+                    warn!(
+                        "⚠️ local_price_agg_boundary_shadow_unresolved | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                        slug,
+                        symbol,
+                        "boundary_symbol_router_v1",
+                        "close_only_primary",
+                        "close_only",
                         1,
                         started_ms,
                         ready_ms,
@@ -8448,24 +9081,24 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
     match symbol {
         "bnb/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "full",
-            rule: LocalBoundaryCloseRule::LastBefore,
-            min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_FULL,
+            source_subset_name: "drop_coinbase",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            min_sources: 2,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_COINBASE,
         },
         "btc/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "only_bybit_coinbase",
-            rule: LocalBoundaryCloseRule::LastBefore,
+            source_subset_name: "only_binance_hyperliquid",
+            rule: LocalBoundaryCloseRule::NearestAbs,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID,
         },
         "doge/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_okx",
+            source_subset_name: "only_binance_coinbase",
             rule: LocalBoundaryCloseRule::NearestAbs,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE,
         },
         "eth/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -8484,16 +9117,16 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         "sol/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
             source_subset_name: "only_okx_coinbase",
-            rule: LocalBoundaryCloseRule::LastBefore,
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
             min_sources: 2,
             allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE,
         },
         "xrp/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_okx",
-            rule: LocalBoundaryCloseRule::LastBefore,
+            source_subset_name: "drop_hyperliquid",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID,
         },
         _ => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -8507,11 +9140,43 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
 
 fn local_boundary_policy_source_weight(
     policy_name: &str,
-    _symbol: &str,
+    symbol: &str,
     source: LocalPriceSource,
 ) -> f64 {
     if policy_name != "boundary_weighted" {
         return local_price_agg_source_weight(source);
+    }
+    if symbol == "doge/usd" {
+        return match source {
+            LocalPriceSource::Binance => 0.873_213,
+            LocalPriceSource::Coinbase => 1.511_945,
+            _ => 0.0,
+        };
+    }
+    if symbol == "xrp/usd" {
+        return match source {
+            LocalPriceSource::Binance => 2.117_002,
+            LocalPriceSource::Bybit => 0.897_545,
+            LocalPriceSource::Coinbase => 1.831_380,
+            LocalPriceSource::Okx => 0.940_502,
+            LocalPriceSource::Hyperliquid => 0.0,
+        };
+    }
+    if symbol == "btc/usd" {
+        return match source {
+            LocalPriceSource::Binance => 0.216_240,
+            LocalPriceSource::Hyperliquid => 4.050_443,
+            _ => 0.0,
+        };
+    }
+    if symbol == "bnb/usd" {
+        return match source {
+            LocalPriceSource::Binance => 0.936_577,
+            LocalPriceSource::Bybit => 9.040_731,
+            LocalPriceSource::Okx => 0.050_000,
+            LocalPriceSource::Hyperliquid => 0.267_042,
+            LocalPriceSource::Coinbase => 0.0,
+        };
     }
     match source {
         LocalPriceSource::Binance => 0.5,
@@ -8519,6 +9184,210 @@ fn local_boundary_policy_source_weight(
         LocalPriceSource::Okx => 0.5,
         LocalPriceSource::Coinbase => 1.0,
         LocalPriceSource::Hyperliquid => 1.5,
+    }
+}
+
+fn local_boundary_weighted_candidate_allowed_for_policy(
+    symbol: &str,
+    close_only_filter_reason: Option<&'static str>,
+    close_only_direction_margin_bps: Option<f64>,
+    rtds_open: f64,
+    hit: &LocalBoundaryShadowHit,
+) -> bool {
+    let weighted_direction_margin_bps =
+        ((hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    match symbol {
+        "bnb/usd" => {
+            if close_only_filter_reason == Some("preclose_near_flat")
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+            {
+                return false;
+            }
+        }
+        "xrp/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps <= 1.0 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 0.8
+            {
+                return false;
+            }
+        }
+        "doge/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps <= 0.1 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 0.5
+            {
+                return false;
+            }
+        }
+        "hype/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps <= 1.0 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 1.8
+            {
+                return false;
+            }
+        }
+        "sol/usd" => {
+            if close_only_filter_reason == Some("preclose_near_flat")
+                && close_only_direction_margin_bps
+                    .map(|v| v + 1e-9 < 0.2)
+                    .unwrap_or(false)
+                && hit.source_count == 2
+                && hit.source_spread_bps <= 0.1 + 1e-9
+            {
+                return false;
+            }
+        }
+        _ => {}
+    }
+    true
+}
+
+fn local_boundary_symbol_router_prefers_weighted_primary(symbol: &str) -> bool {
+    !matches!(symbol, "eth/usd")
+}
+
+fn local_boundary_symbol_router_allows_close_only_fallback(symbol: &str) -> bool {
+    !matches!(symbol, "bnb/usd")
+}
+
+fn local_close_only_source_agreement(hit: &LocalCloseOnlyAggHit, rtds_open: f64) -> f64 {
+    if hit.source_contributions.is_empty() {
+        return 0.0;
+    }
+    let close_only_side = if hit.close_price >= rtds_open {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    let agree_cnt = hit
+        .source_contributions
+        .iter()
+        .filter(|src| {
+            let src_side = if src.adjusted_close_price >= rtds_open {
+                Side::Yes
+            } else {
+                Side::No
+            };
+            src_side == close_only_side
+        })
+        .count();
+    agree_cnt as f64 / hit.source_contributions.len() as f64
+}
+
+fn local_boundary_hybrid_prefers_weighted_over_close_only(
+    symbol: &str,
+    close_only_hit: &LocalCloseOnlyAggHit,
+    weighted_hit: &LocalBoundaryShadowHit,
+    rtds_open: f64,
+) -> bool {
+    let close_only_direction_margin_bps =
+        ((close_only_hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    let weighted_direction_margin_bps =
+        ((weighted_hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    let close_only_side = if close_only_hit.close_price >= rtds_open {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    let weighted_side = if weighted_hit.close_price >= rtds_open {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    if close_only_side == weighted_side {
+        return false;
+    }
+    match symbol {
+        "bnb/usd" => {
+            (close_only_hit.source_count == 1
+                && close_only_hit.close_exact_sources == 0
+                && close_only_direction_margin_bps + 1e-9 < 2.5
+                && weighted_hit.source_count >= 2
+                && weighted_direction_margin_bps + 1e-9 >= 1.25)
+                || (close_only_hit.source_count == 1
+                    && close_only_hit.close_exact_sources == 0
+                    && close_only_direction_margin_bps + 1e-9 < 3.6
+                    && weighted_hit.source_count >= 2
+                    && weighted_hit.source_spread_bps + 1e-9 >= 3.5
+                    && weighted_direction_margin_bps + 1e-9 >= 0.65)
+        }
+        _ => false,
+    }
+}
+
+fn local_boundary_hybrid_prefers_filtered_close_only_over_weighted(
+    symbol: &str,
+    close_only_filter_reason: Option<&'static str>,
+    close_only_hit: &LocalCloseOnlyAggHit,
+    weighted_hit: &LocalBoundaryShadowHit,
+    rtds_open: f64,
+) -> bool {
+    let close_only_direction_margin_bps =
+        ((close_only_hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    let weighted_direction_margin_bps =
+        ((weighted_hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    let close_only_side = if close_only_hit.close_price >= rtds_open {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    let weighted_side = if weighted_hit.close_price >= rtds_open {
+        Side::Yes
+    } else {
+        Side::No
+    };
+    if close_only_side == weighted_side {
+        return false;
+    }
+    let source_agreement = local_close_only_source_agreement(close_only_hit, rtds_open);
+    match symbol {
+        "doge/usd" => {
+            (close_only_filter_reason == Some("low_confidence")
+                && close_only_hit.source_count >= 2
+                && close_only_hit.close_exact_sources == 0
+                && source_agreement >= 1.0 - 1e-9
+                && close_only_hit.source_spread_bps <= 0.5 + 1e-9
+                && close_only_direction_margin_bps + 1e-9 >= 2.0
+                && weighted_hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && weighted_hit.source_count >= 2
+                && weighted_hit.close_exact_sources == 0
+                && weighted_hit.source_spread_bps <= 0.1 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 0.5)
+                || (close_only_filter_reason == Some("preclose_near_flat")
+                    && close_only_hit.source_count >= 3
+                    && close_only_hit.close_exact_sources == 0
+                    && source_agreement >= 1.0 - 1e-9
+                    && close_only_hit.source_spread_bps <= 3.1 + 1e-9
+                    && close_only_direction_margin_bps + 1e-9 >= 1.5
+                    && weighted_hit.rule == LocalBoundaryCloseRule::NearestAbs
+                    && weighted_hit.source_count >= 2
+                    && weighted_hit.close_exact_sources == 0
+                    && weighted_hit.source_spread_bps <= 0.1 + 1e-9
+                    && weighted_direction_margin_bps + 1e-9 < 0.5)
+        }
+        "hype/usd" => {
+            close_only_filter_reason == Some("low_confidence")
+                && close_only_hit.source_count >= 2
+                && close_only_hit.close_exact_sources == 0
+                && source_agreement >= 1.0 - 1e-9
+                && close_only_hit.source_spread_bps <= 3.0 + 1e-9
+                && close_only_direction_margin_bps + 1e-9 >= 2.3
+                && weighted_hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && weighted_hit.source_count >= 2
+                && weighted_hit.close_exact_sources == 0
+                && weighted_hit.source_spread_bps <= 1.0 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 1.8
+        }
+        _ => false,
     }
 }
 
@@ -8723,7 +9592,7 @@ struct LocalCloseOnlyAggHit {
     source_contributions: Vec<LocalCloseSourceContribution>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LocalBoundaryCloseRule {
     LastBefore,
     NearestAbs,
@@ -8817,6 +9686,8 @@ const LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID: &[LocalPriceSource] = &[
 ];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Binance, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID: &[LocalPriceSource] =
+    &[LocalPriceSource::Binance, LocalPriceSource::Hyperliquid];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Bybit, LocalPriceSource::Coinbase];
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE: &[LocalPriceSource] =
@@ -10637,6 +11508,299 @@ impl BookAssembler {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct SharedMarketFeedKey {
+    ws_base_url: String,
+    yes_asset_id: String,
+    no_asset_id: String,
+    custom_feature_enabled: bool,
+}
+
+#[derive(Clone)]
+struct SharedMarketIngressFeed {
+    tx: broadcast::Sender<SharedIngressWireMsg>,
+    recent: Arc<Mutex<VecDeque<SharedIngressWireMsg>>>,
+}
+
+impl SharedMarketIngressFeed {
+    fn new() -> Arc<Self> {
+        let (tx, _rx) = broadcast::channel::<SharedIngressWireMsg>(4096);
+        Arc::new(Self {
+            tx,
+            recent: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
+        })
+    }
+
+    fn publish(&self, msg: SharedIngressWireMsg) {
+        if let Ok(mut guard) = self.recent.lock() {
+            guard.push_back(msg.clone());
+            while guard.len() > 256 {
+                guard.pop_front();
+            }
+        }
+        let _ = self.tx.send(msg);
+    }
+
+    fn subscribe(&self) -> broadcast::Receiver<SharedIngressWireMsg> {
+        self.tx.subscribe()
+    }
+
+    fn snapshot(&self) -> Vec<SharedIngressWireMsg> {
+        let Ok(guard) = self.recent.lock() else {
+            return Vec::new();
+        };
+        guard.iter().cloned().collect()
+    }
+}
+
+async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIngressFeed>) {
+    let ws_connect_timeout = ws_connect_timeout_ms();
+    let ws_degrade_failures = ws_degrade_max_failures();
+    let mut backoff = Duration::from_millis(100);
+    let max_backoff = Duration::from_secs(5);
+    let mut consecutive_failures: u32 = 0;
+    let mut subscribe_custom_feature_enabled = settings.custom_feature;
+    loop {
+        let mut book_asm = BookAssembler::default();
+        let url = settings.ws_url("market");
+        info!(
+            "📡 shared ingress market broker connecting | slug={} url={}",
+            settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+            url
+        );
+        let connect_result = tokio::time::timeout(
+            Duration::from_millis(ws_connect_timeout),
+            connect_async(&url),
+        )
+        .await;
+        match connect_result {
+            Ok(Ok((ws, response))) => {
+                info!("✅ shared ingress market broker connected (status={:?})", response.status());
+                backoff = Duration::from_millis(100);
+                let (mut write, mut read) = ws.split();
+                let subscribe = json!({
+                    "type": "market",
+                    "operation": "subscribe",
+                    "markets": [],
+                    "assets_ids": settings.market_assets(),
+                    "asset_ids": settings.market_assets(),
+                    "initial_dump": true,
+                    "custom_feature_enabled": subscribe_custom_feature_enabled,
+                });
+                if let Err(err) = write.send(Message::Text(subscribe.to_string().into())).await {
+                    warn!("shared ingress market subscribe failed: {:?}", err);
+                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
+                let ping_handle = tokio::spawn(async move {
+                    let mut delay = tokio::time::interval(Duration::from_secs(5));
+                    loop {
+                        delay.tick().await;
+                        if write.send(Message::Text("PING".to_string().into())).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+                let mut session_raw_msg_count: u64 = 0;
+                let mut session_parsed_msg_count: u64 = 0;
+                let mut last_raw_msg_at = tokio::time::Instant::now();
+                let mut last_full_book_at: Option<tokio::time::Instant> = None;
+                let session_started_at = tokio::time::Instant::now();
+                let mut health_probe = tokio::time::interval(Duration::from_secs(10));
+                health_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = health_probe.tick() => {
+                            let now = tokio::time::Instant::now();
+                            let raw_silence = now.saturating_duration_since(last_raw_msg_at);
+                            let no_full_book_silence = now.saturating_duration_since(
+                                last_full_book_at.unwrap_or(session_started_at),
+                            );
+                            if raw_silence >= Duration::from_secs(30) {
+                                warn!(
+                                    "⚠️ shared ingress market broker raw stream silent for {:?} (raw_msgs={} parsed={}) — reconnecting",
+                                    raw_silence,
+                                    session_raw_msg_count,
+                                    session_parsed_msg_count,
+                                );
+                                ping_handle.abort();
+                                break;
+                            }
+                            if session_raw_msg_count > 0
+                                && no_full_book_silence
+                                    >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS)
+                            {
+                                warn!(
+                                    "⚠️ shared ingress market broker missing complete book for {:?} (raw={} parsed={}) — reconnecting",
+                                    no_full_book_silence,
+                                    session_raw_msg_count,
+                                    session_parsed_msg_count,
+                                );
+                                ping_handle.abort();
+                                break;
+                            }
+                        }
+                        msg = read.next() => {
+                            match msg {
+                                Some(Ok(Message::Text(text))) => {
+                                    session_raw_msg_count = session_raw_msg_count.saturating_add(1);
+                                    last_raw_msg_at = tokio::time::Instant::now();
+                                    let (parsed, _, _) = parse_ws_payload(&settings, &text);
+                                    for md_msg in parsed {
+                                        session_parsed_msg_count = session_parsed_msg_count.saturating_add(1);
+                                        match &md_msg {
+                                            MarketDataMsg::TradeTick {
+                                                asset_id,
+                                                trade_id,
+                                                market_side,
+                                                taker_side,
+                                                price,
+                                                size,
+                                                ..
+                                            } => {
+                                                feed.publish(SharedIngressWireMsg::MarketTradeTick {
+                                                    asset_id: asset_id.clone(),
+                                                    trade_id: trade_id.clone(),
+                                                    market_side: market_side.as_str().to_string(),
+                                                    taker_side: taker_side.as_str().to_string(),
+                                                    price: *price,
+                                                    size: *size,
+                                                    ts_ms: unix_now_millis_u64(),
+                                                });
+                                            }
+                                            MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                                                let recv_ms = unix_now_millis_u64();
+                                                if yes_bid.is_finite() || yes_ask.is_finite() {
+                                                    feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
+                                                        side: Side::Yes.as_str().to_string(),
+                                                        bid: (*yes_bid).max(0.0),
+                                                        ask: (*yes_ask).max(0.0),
+                                                        recv_ms,
+                                                    });
+                                                }
+                                                if no_bid.is_finite() || no_ask.is_finite() {
+                                                    feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
+                                                        side: Side::No.as_str().to_string(),
+                                                        bid: (*no_bid).max(0.0),
+                                                        ask: (*no_ask).max(0.0),
+                                                        recv_ms,
+                                                    });
+                                                }
+                                                feed.publish(SharedIngressWireMsg::MarketBookTick {
+                                                    yes_bid: *yes_bid,
+                                                    yes_ask: *yes_ask,
+                                                    no_bid: *no_bid,
+                                                    no_ask: *no_ask,
+                                                    ts_ms: recv_ms,
+                                                });
+                                                if book_asm.update(&md_msg).is_some() {
+                                                    last_full_book_at = Some(tokio::time::Instant::now());
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                Some(Ok(Message::Binary(bytes))) => {
+                                    session_raw_msg_count = session_raw_msg_count.saturating_add(1);
+                                    last_raw_msg_at = tokio::time::Instant::now();
+                                    let Ok(text) = std::str::from_utf8(&bytes) else {
+                                        continue;
+                                    };
+                                    let (parsed, _, _) = parse_ws_payload(&settings, text);
+                                    for md_msg in parsed {
+                                        session_parsed_msg_count = session_parsed_msg_count.saturating_add(1);
+                                        match &md_msg {
+                                            MarketDataMsg::TradeTick {
+                                                asset_id,
+                                                trade_id,
+                                                market_side,
+                                                taker_side,
+                                                price,
+                                                size,
+                                                ..
+                                            } => {
+                                                feed.publish(SharedIngressWireMsg::MarketTradeTick {
+                                                    asset_id: asset_id.clone(),
+                                                    trade_id: trade_id.clone(),
+                                                    market_side: market_side.as_str().to_string(),
+                                                    taker_side: taker_side.as_str().to_string(),
+                                                    price: *price,
+                                                    size: *size,
+                                                    ts_ms: unix_now_millis_u64(),
+                                                });
+                                            }
+                                            MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                                                let recv_ms = unix_now_millis_u64();
+                                                if yes_bid.is_finite() || yes_ask.is_finite() {
+                                                    feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
+                                                        side: Side::Yes.as_str().to_string(),
+                                                        bid: (*yes_bid).max(0.0),
+                                                        ask: (*yes_ask).max(0.0),
+                                                        recv_ms,
+                                                    });
+                                                }
+                                                if no_bid.is_finite() || no_ask.is_finite() {
+                                                    feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
+                                                        side: Side::No.as_str().to_string(),
+                                                        bid: (*no_bid).max(0.0),
+                                                        ask: (*no_ask).max(0.0),
+                                                        recv_ms,
+                                                    });
+                                                }
+                                                feed.publish(SharedIngressWireMsg::MarketBookTick {
+                                                    yes_bid: *yes_bid,
+                                                    yes_ask: *yes_ask,
+                                                    no_bid: *no_bid,
+                                                    no_ask: *no_ask,
+                                                    ts_ms: recv_ms,
+                                                });
+                                                if book_asm.update(&md_msg).is_some() {
+                                                    last_full_book_at = Some(tokio::time::Instant::now());
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                Some(Ok(_)) => {}
+                                Some(Err(err)) => {
+                                    warn!("⚠️ shared ingress market broker ws error: {:?}", err);
+                                    ping_handle.abort();
+                                    break;
+                                }
+                                None => {
+                                    ping_handle.abort();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Ok(Err(err)) => {
+                warn!("⚠️ shared ingress market broker connect error: {:?}", err);
+                consecutive_failures = consecutive_failures.saturating_add(1);
+            }
+            Err(_) => {
+                warn!("⚠️ shared ingress market broker connect timeout");
+                consecutive_failures = consecutive_failures.saturating_add(1);
+            }
+        }
+        if should_degrade_ws(consecutive_failures, ws_degrade_failures) {
+            warn!(
+                "🛑 shared ingress market broker degraded: consecutive_failures={} >= {} — resetting counter and retrying",
+                consecutive_failures,
+                ws_degrade_failures
+            );
+            consecutive_failures = 0;
+        }
+        sleep(backoff).await;
+        backoff = (backoff * 2).min(max_backoff);
+    }
+}
+
 // ─────────────────────────────────────────────────────────
 // WebSocket runner (with reconnection + wall-clock deadline)
 // ─────────────────────────────────────────────────────────
@@ -10658,7 +11822,7 @@ enum MarketEnd {
 const MARKET_WS_HARD_CUTOFF_GRACE_SECS: u64 = 45;
 // If we keep receiving raw payloads but never reconstruct a full 4-price book,
 // reconnect proactively because strategy cannot trade without complete book.
-const MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS: u64 = 30;
+const MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS: u64 = 12;
 
 fn try_forward_md(
     tx: &mpsc::Sender<MarketDataMsg>,
@@ -10672,6 +11836,136 @@ fn try_forward_md(
         }
         // Closed receiver is expected for non-GLFT strategies.
         Err(TrySendError::Closed(_)) => {}
+    }
+}
+
+async fn run_market_ws_remote_with_wall_guard(
+    settings: Settings,
+    ofi_tx: mpsc::Sender<MarketDataMsg>,
+    glft_tx: mpsc::Sender<MarketDataMsg>,
+    coord_tx: watch::Sender<MarketDataMsg>,
+    coord_accept_partial_book: bool,
+    post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
+    end_ts: u64,
+) -> MarketEnd {
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_else(|_| Duration::from_secs(0))
+        .as_secs();
+    let hard_cutoff_ts = end_ts.saturating_add(MARKET_WS_HARD_CUTOFF_GRACE_SECS);
+    let socket_path = shared_ingress_root().join("market.sock");
+    let mut reconnect_backoff = Duration::from_millis(200);
+    loop {
+        let now_unix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_else(|_| Duration::from_secs(0))
+            .as_secs();
+        if now_unix >= hard_cutoff_ts {
+            return MarketEnd::Expired;
+        }
+        let mut book_asm = BookAssembler::default();
+        let connect = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(&socket_path)).await;
+        let Ok(Ok(stream)) = connect else {
+            sleep(reconnect_backoff).await;
+            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+            continue;
+        };
+        reconnect_backoff = Duration::from_millis(200);
+        let (read_half, mut write_half) = stream.into_split();
+        let req = SharedIngressSubscribeReq {
+            stream: "market".to_string(),
+            symbols: Vec::new(),
+            market_slug: settings.market_slug.clone(),
+            market_id: Some(settings.market_id.clone()),
+            yes_asset_id: Some(settings.yes_asset_id.clone()),
+            no_asset_id: Some(settings.no_asset_id.clone()),
+            ws_base_url: Some(settings.ws_base_url.clone()),
+            custom_feature_enabled: Some(settings.custom_feature),
+        };
+        let mut line = match serde_json::to_vec(&req) {
+            Ok(v) => v,
+            Err(_) => return MarketEnd::WsDegraded { consecutive_failures: 1, remaining_secs: 0 },
+        };
+        line.push(b'\n');
+        if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err() {
+            sleep(reconnect_backoff).await;
+            continue;
+        }
+        let mut reader = BufReader::new(read_half);
+        let mut buf = String::new();
+        let mut last_raw_msg_at = tokio::time::Instant::now();
+        let mut last_full_book_at: Option<tokio::time::Instant> = None;
+        let session_started_at = tokio::time::Instant::now();
+        let mut health_probe = tokio::time::interval(Duration::from_secs(10));
+        let mut tx_drop_count: u64 = 0;
+        health_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            let now_unix = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_else(|_| Duration::from_secs(0))
+                .as_secs();
+            if now_unix >= hard_cutoff_ts {
+                return MarketEnd::Expired;
+            }
+            tokio::select! {
+                _ = health_probe.tick() => {
+                    let now = tokio::time::Instant::now();
+                    let raw_silence = now.saturating_duration_since(last_raw_msg_at);
+                    let no_full_book_silence = now.saturating_duration_since(
+                        last_full_book_at.unwrap_or(session_started_at),
+                    );
+                    if raw_silence >= Duration::from_secs(30)
+                        || no_full_book_silence >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS) {
+                        break;
+                    }
+                }
+                read = reader.read_line(&mut buf) => {
+                    let Ok(n) = read else { break; };
+                    if n == 0 { break; }
+                    last_raw_msg_at = tokio::time::Instant::now();
+                    let Ok(msg) = serde_json::from_str::<SharedIngressWireMsg>(buf.trim()) else {
+                        buf.clear();
+                        continue;
+                    };
+                    match msg {
+                        SharedIngressWireMsg::MarketTradeTick { asset_id, trade_id, market_side, taker_side, price, size, .. } => {
+                            let market_side = if market_side.eq_ignore_ascii_case("YES") { Side::Yes } else { Side::No };
+                            let taker_side = if taker_side.eq_ignore_ascii_case("BUY") { TakerSide::Buy } else { TakerSide::Sell };
+                            let md_msg = MarketDataMsg::TradeTick {
+                                asset_id,
+                                trade_id,
+                                market_side,
+                                taker_side,
+                                price,
+                                size,
+                                ts: Instant::now(),
+                            };
+                            try_forward_md(&ofi_tx, md_msg.clone(), &mut tx_drop_count);
+                            try_forward_md(&glft_tx, md_msg, &mut tx_drop_count);
+                        }
+                        SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                            let md_msg = MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, ts: Instant::now() };
+                            if coord_accept_partial_book {
+                                let _ = coord_tx.send(md_msg.clone());
+                            }
+                            if let Some(full) = book_asm.update(&md_msg) {
+                                last_full_book_at = Some(tokio::time::Instant::now());
+                                try_forward_md(&glft_tx, full.clone(), &mut tx_drop_count);
+                                let _ = coord_tx.send(full);
+                            }
+                        }
+                        SharedIngressWireMsg::PostCloseBookUpdate { side, bid, ask, recv_ms } => {
+                            let side = if side.eq_ignore_ascii_case("YES") { Side::Yes } else { Side::No };
+                            let _ = post_close_book_tx.try_send(PostCloseSideBookUpdate { side, bid, ask, recv_ms });
+                        }
+                        SharedIngressWireMsg::SnapshotDone => {}
+                        SharedIngressWireMsg::Error { .. } => break,
+                        _ => {}
+                    }
+                    buf.clear();
+                }
+            }
+        }
     }
 }
 
@@ -10975,6 +12269,18 @@ async fn run_market_ws(
     recorder: Option<RecorderHandle>,
     recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
+    if shared_ingress_role() == SharedIngressRole::Client {
+        return run_market_ws_remote_with_wall_guard(
+            settings,
+            ofi_tx,
+            glft_tx,
+            coord_tx,
+            coord_accept_partial_book,
+            post_close_book_tx,
+            end_ts,
+        )
+        .await;
+    }
     // Compute wall-clock deadline
     let now_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -11692,13 +12998,50 @@ async fn main() -> anyhow::Result<()> {
         active_instance_id.as_deref().unwrap_or("unset"),
         active_log_root.display()
     );
+    match shared_ingress_role() {
+        SharedIngressRole::Broker => {
+            info!(
+                "🧵 shared ingress broker mode | root={}",
+                shared_ingress_root().display()
+            );
+            return run_shared_ingress_broker().await;
+        }
+        SharedIngressRole::Client => {
+            info!(
+                "🧵 shared ingress client mode | root={}",
+                shared_ingress_root().display()
+            );
+        }
+        SharedIngressRole::Standalone => {}
+    }
 
     let is_multi_market_child = env::var("PM_MULTI_MARKET_CHILD")
         .ok()
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false);
+    let raw_market_slug = env::var("POLYMARKET_MARKET_SLUG").ok();
+    let exact_fixed_slug = raw_market_slug
+        .as_deref()
+        .map(|slug| !slug.trim().is_empty() && !is_prefix_slug(slug))
+        .unwrap_or(false);
+    let explicit_market_ids = env::var("POLYMARKET_MARKET_ID")
+        .ok()
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+        && env::var("POLYMARKET_YES_ASSET_ID")
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+        && env::var("POLYMARKET_NO_ASSET_ID")
+            .ok()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false);
     let multi_market_prefixes = parse_multi_market_prefixes_from_env();
-    if !is_multi_market_child && multi_market_prefixes.len() > 1 {
+    if exact_fixed_slug && explicit_market_ids && multi_market_prefixes.len() > 1 {
+        info!(
+            "🧷 exact fixed-mode slug+ids provided — bypassing multi-market supervisor and forcing single-market worker"
+        );
+    } else if !is_multi_market_child && multi_market_prefixes.len() > 1 {
         return run_multi_market_supervisor(multi_market_prefixes).await;
     }
     run_prefix_worker(None).await
@@ -11712,53 +13055,520 @@ struct SharedIngressRuntime {
     local_price_hub: Option<Arc<LocalPriceHub>>,
 }
 
-impl SharedIngressRuntime {
-    fn build(prefixes: &[String], coord_cfg: &CoordinatorConfig) -> Self {
-        let mut hub_symbols: HashSet<String> = HashSet::new();
-        if coord_cfg.strategy.is_oracle_lag_sniping() {
-            for prefix in prefixes {
-                if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
-                    hub_symbols.insert(format!("{}/usd", sym));
-                } else {
-                    warn!(
-                        "⚠️ shared ingress: could not derive symbol from prefix='{}' — this slug will not have a Chainlink feed",
-                        prefix
-                    );
-                }
+fn shared_ingress_hub_symbols(prefixes: &[String], coord_cfg: &CoordinatorConfig) -> HashSet<String> {
+    let mut hub_symbols: HashSet<String> = HashSet::new();
+    if coord_cfg.strategy.is_oracle_lag_sniping() {
+        for prefix in prefixes {
+            if let Some(sym) = oracle_lag_symbol_from_slug(prefix) {
+                hub_symbols.insert(format!("{}/usd", sym));
+            } else {
+                warn!(
+                    "⚠️ shared ingress: could not derive symbol from prefix='{}' — this slug will not have a Chainlink feed",
+                    prefix
+                );
             }
         }
-        let chainlink_hub = if hub_symbols.is_empty() {
-            None
-        } else {
-            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-            log_symbols.sort();
+        if hub_symbols.is_empty() {
+            for base in OracleLagSymbolUniverse::from_env().hub_symbols() {
+                hub_symbols.insert(format!("{}/usd", base));
+            }
+        }
+    }
+    hub_symbols
+}
+
+fn build_chainlink_hub_for_symbols(symbols: &HashSet<String>) -> Option<Arc<ChainlinkHub>> {
+    if symbols.is_empty() {
+        return None;
+    }
+    let mut log_symbols: Vec<String> = symbols.iter().cloned().collect();
+    log_symbols.sort();
+    match shared_ingress_role() {
+        SharedIngressRole::Client => {
+            let socket_path = shared_ingress_chainlink_socket_path();
             info!(
-                "🛰️ shared ingress chainlink_hub starting | symbols={}",
+                "🛰️ shared ingress chainlink_hub remote client | symbols={} socket={}",
+                log_symbols.join(","),
+                socket_path.display()
+            );
+            Some(ChainlinkHub::spawn_remote(
+                symbols.clone(),
+                socket_path,
+            ))
+        }
+        SharedIngressRole::Standalone | SharedIngressRole::Broker => {
+            info!(
+                "🛰️ shared ingress chainlink_hub local | symbols={}",
                 log_symbols.join(",")
             );
-            Some(ChainlinkHub::spawn(hub_symbols.clone()))
-        };
-        let local_price_hub = if coord_cfg.strategy.is_oracle_lag_sniping()
-            && local_price_agg_enabled()
-            && !hub_symbols.is_empty()
-        {
-            let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-            log_symbols.sort();
+            Some(ChainlinkHub::spawn(symbols.clone()))
+        }
+    }
+}
+
+fn build_local_price_hub_for_symbols(
+    symbols: &HashSet<String>,
+    coord_cfg: &CoordinatorConfig,
+) -> Option<Arc<LocalPriceHub>> {
+    if !coord_cfg.strategy.is_oracle_lag_sniping() || !local_price_agg_enabled() || symbols.is_empty()
+    {
+        return None;
+    }
+    let mut log_symbols: Vec<String> = symbols.iter().cloned().collect();
+    log_symbols.sort();
+    match shared_ingress_role() {
+        SharedIngressRole::Client => {
+            let socket_path = shared_ingress_local_price_socket_path();
             info!(
-                "🧠 shared ingress local_price_hub starting | symbols={} sources={} bias_learning_enabled={}",
+                "🧠 shared ingress local_price_hub remote client | symbols={} socket={} sources={} bias_learning_enabled={}",
+                log_symbols.join(","),
+                socket_path.display(),
+                local_price_source_names(),
+                local_price_agg_bias_learning_enabled(),
+            );
+            Some(LocalPriceHub::spawn_remote(
+                symbols.clone(),
+                socket_path,
+            ))
+        }
+        SharedIngressRole::Standalone | SharedIngressRole::Broker => {
+            info!(
+                "🧠 shared ingress local_price_hub local | symbols={} sources={} bias_learning_enabled={}",
                 log_symbols.join(","),
                 local_price_source_names(),
                 local_price_agg_bias_learning_enabled(),
             );
-            Some(LocalPriceHub::spawn(hub_symbols))
-        } else {
-            None
-        };
+            Some(LocalPriceHub::spawn(symbols.clone()))
+        }
+    }
+}
+
+impl SharedIngressRuntime {
+    fn build(prefixes: &[String], coord_cfg: &CoordinatorConfig) -> Self {
+        let hub_symbols = shared_ingress_hub_symbols(prefixes, coord_cfg);
+        let chainlink_hub = build_chainlink_hub_for_symbols(&hub_symbols);
+        let local_price_hub = build_local_price_hub_for_symbols(&hub_symbols, coord_cfg);
         Self {
             chainlink_hub,
             local_price_hub,
         }
     }
+}
+
+async fn handle_chainlink_ingress_client(
+    stream: UnixStream,
+    hub: Arc<ChainlinkHub>,
+) -> anyhow::Result<()> {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    if n == 0 {
+        anyhow::bail!("chainlink client closed before subscribe");
+    }
+    let req: SharedIngressSubscribeReq = serde_json::from_str(line.trim())?;
+    if req.stream != "chainlink" {
+        shared_ingress_send_wire_line(
+            &mut write_half,
+            &SharedIngressWireMsg::Error {
+                message: format!("unexpected stream '{}'", req.stream),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    let mut symbols = req
+        .symbols
+        .into_iter()
+        .map(|s| normalize_chainlink_symbol(&s))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols.dedup();
+    for symbol in &symbols {
+        for (price, ts_ms) in hub.snapshot_recent_ticks(symbol) {
+            shared_ingress_send_wire_line(
+                &mut write_half,
+                &SharedIngressWireMsg::ChainlinkSnapshot {
+                    symbol: symbol.clone(),
+                    price,
+                    ts_ms,
+                },
+            )
+            .await?;
+        }
+    }
+    shared_ingress_send_wire_line(&mut write_half, &SharedIngressWireMsg::SnapshotDone).await?;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<SharedIngressWireMsg>();
+    let mut tasks = Vec::new();
+    for symbol in symbols {
+        let Some(mut sub) = hub.subscribe(&symbol) else {
+            continue;
+        };
+        let tx_clone = tx.clone();
+        let symbol_clone = symbol.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                match sub.recv().await {
+                    Ok((price, ts_ms)) => {
+                        if tx_clone
+                            .send(SharedIngressWireMsg::ChainlinkTick {
+                                symbol: symbol_clone.clone(),
+                                price,
+                                ts_ms,
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
+    }
+    drop(tx);
+    while let Some(msg) = rx.recv().await {
+        if shared_ingress_send_wire_line(&mut write_half, &msg)
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+    for task in tasks {
+        task.abort();
+    }
+    Ok(())
+}
+
+async fn handle_local_price_ingress_client(
+    stream: UnixStream,
+    hub: Arc<LocalPriceHub>,
+) -> anyhow::Result<()> {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    if n == 0 {
+        anyhow::bail!("local_price client closed before subscribe");
+    }
+    let req: SharedIngressSubscribeReq = serde_json::from_str(line.trim())?;
+    if req.stream != "local_price" {
+        shared_ingress_send_wire_line(
+            &mut write_half,
+            &SharedIngressWireMsg::Error {
+                message: format!("unexpected stream '{}'", req.stream),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    let mut symbols = req
+        .symbols
+        .into_iter()
+        .map(|s| normalize_chainlink_symbol(&s))
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    symbols.sort();
+    symbols.dedup();
+    for symbol in &symbols {
+        for (price, ts_ms, source) in hub.snapshot_recent_ticks(symbol) {
+            shared_ingress_send_wire_line(
+                &mut write_half,
+                &SharedIngressWireMsg::LocalPriceSnapshot {
+                    symbol: symbol.clone(),
+                    price,
+                    ts_ms,
+                    source: source.as_str().to_string(),
+                },
+            )
+            .await?;
+        }
+    }
+    shared_ingress_send_wire_line(&mut write_half, &SharedIngressWireMsg::SnapshotDone).await?;
+
+    let (tx, mut rx) = mpsc::unbounded_channel::<SharedIngressWireMsg>();
+    let mut tasks = Vec::new();
+    for symbol in symbols {
+        let Some(mut sub) = hub.subscribe(&symbol) else {
+            continue;
+        };
+        let tx_clone = tx.clone();
+        let symbol_clone = symbol.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                match sub.recv().await {
+                    Ok((price, ts_ms, source)) => {
+                        if tx_clone
+                            .send(SharedIngressWireMsg::LocalPriceTick {
+                                symbol: symbol_clone.clone(),
+                                price,
+                                ts_ms,
+                                source: source.as_str().to_string(),
+                            })
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        }));
+    }
+    drop(tx);
+    while let Some(msg) = rx.recv().await {
+        if shared_ingress_send_wire_line(&mut write_half, &msg)
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+    for task in tasks {
+        task.abort();
+    }
+    Ok(())
+}
+
+async fn handle_market_ingress_client(
+    stream: UnixStream,
+    registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>>,
+) -> anyhow::Result<()> {
+    let (read_half, mut write_half) = stream.into_split();
+    let mut reader = BufReader::new(read_half);
+    let mut line = String::new();
+    let n = reader.read_line(&mut line).await?;
+    if n == 0 {
+        anyhow::bail!("market client closed before subscribe");
+    }
+    let req: SharedIngressSubscribeReq = serde_json::from_str(line.trim())?;
+    if req.stream != "market" {
+        shared_ingress_send_wire_line(
+            &mut write_half,
+            &SharedIngressWireMsg::Error {
+                message: format!("unexpected stream '{}'", req.stream),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    let yes_asset_id = req
+        .yes_asset_id
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("market subscribe missing yes_asset_id"))?;
+    let no_asset_id = req
+        .no_asset_id
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .ok_or_else(|| anyhow::anyhow!("market subscribe missing no_asset_id"))?;
+    let ws_base_url = req
+        .ws_base_url
+        .clone()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "wss://ws-subscriptions-clob.polymarket.com/ws".to_string());
+    let key = SharedMarketFeedKey {
+        ws_base_url: ws_base_url.clone(),
+        yes_asset_id: yes_asset_id.clone(),
+        no_asset_id: no_asset_id.clone(),
+        custom_feature_enabled: req.custom_feature_enabled.unwrap_or(false),
+    };
+    let feed = {
+        let mut guard = registry.lock().expect("market registry poisoned");
+        if let Some(feed) = guard.get(&key) {
+            Arc::clone(feed)
+        } else {
+            let feed = SharedMarketIngressFeed::new();
+            let mut settings = Settings {
+                market_slug: req.market_slug.clone(),
+                market_id: req.market_id.clone().unwrap_or_default(),
+                yes_asset_id: yes_asset_id.clone(),
+                no_asset_id: no_asset_id.clone(),
+                ws_base_url: ws_base_url.clone(),
+                rest_url: String::new(),
+                private_key: None,
+                funder_address: None,
+                custom_feature: key.custom_feature_enabled,
+            };
+            if settings.market_slug.is_none() {
+                settings.market_slug = Some(format!("{}-{}", &yes_asset_id[..8.min(yes_asset_id.len())], &no_asset_id[..8.min(no_asset_id.len())]));
+            }
+            let feed_clone = Arc::clone(&feed);
+            tokio::spawn(async move {
+                run_market_ws_broker_feed(settings, feed_clone).await;
+            });
+            guard.insert(key.clone(), Arc::clone(&feed));
+            feed
+        }
+    };
+    for msg in feed.snapshot() {
+        shared_ingress_send_wire_line(&mut write_half, &msg).await?;
+    }
+    shared_ingress_send_wire_line(&mut write_half, &SharedIngressWireMsg::SnapshotDone).await?;
+    let mut rx = feed.subscribe();
+    loop {
+        match rx.recv().await {
+            Ok(msg) => {
+                if shared_ingress_send_wire_line(&mut write_half, &msg)
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+        }
+    }
+    Ok(())
+}
+
+async fn run_chainlink_ingress_broker(hub: Arc<ChainlinkHub>) -> anyhow::Result<()> {
+    let socket_path = shared_ingress_chainlink_socket_path();
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::remove_file(&socket_path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    let listener = UnixListener::bind(&socket_path)?;
+    info!(
+        "🛰️ shared ingress chainlink broker listening | socket={}",
+        socket_path.display()
+    );
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let hub_clone = Arc::clone(&hub);
+        tokio::spawn(async move {
+            if let Err(err) = handle_chainlink_ingress_client(stream, hub_clone).await {
+                warn!("⚠️ shared ingress chainlink client error | err={}", err);
+            }
+        });
+    }
+}
+
+async fn run_local_price_ingress_broker(hub: Arc<LocalPriceHub>) -> anyhow::Result<()> {
+    let socket_path = shared_ingress_local_price_socket_path();
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::remove_file(&socket_path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    let listener = UnixListener::bind(&socket_path)?;
+    info!(
+        "🧠 shared ingress local_price broker listening | socket={}",
+        socket_path.display()
+    );
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let hub_clone = Arc::clone(&hub);
+        tokio::spawn(async move {
+            if let Err(err) = handle_local_price_ingress_client(stream, hub_clone).await {
+                warn!("⚠️ shared ingress local_price client error | err={}", err);
+            }
+        });
+    }
+}
+
+async fn run_market_ingress_broker(
+    registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>>,
+) -> anyhow::Result<()> {
+    let socket_path = shared_ingress_root().join("market.sock");
+    if let Some(parent) = socket_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::remove_file(&socket_path) {
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    let listener = UnixListener::bind(&socket_path)?;
+    info!(
+        "📡 shared ingress market broker listening | socket={}",
+        socket_path.display()
+    );
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let registry_clone = Arc::clone(&registry);
+        tokio::spawn(async move {
+            if let Err(err) = handle_market_ingress_client(stream, registry_clone).await {
+                warn!("⚠️ shared ingress market client error | err={}", err);
+            }
+        });
+    }
+}
+
+async fn run_shared_ingress_broker() -> anyhow::Result<()> {
+    let coord_cfg = CoordinatorConfig::from_env();
+    let prefixes = parse_multi_market_prefixes_from_env();
+    let hub_symbols = shared_ingress_hub_symbols(&prefixes, &coord_cfg);
+    if hub_symbols.is_empty() {
+        anyhow::bail!("shared ingress broker has no symbols to serve");
+    }
+    let chainlink_hub = ChainlinkHub::spawn(hub_symbols.clone());
+    let local_price_hub = if coord_cfg.strategy.is_oracle_lag_sniping() && local_price_agg_enabled()
+    {
+        Some(LocalPriceHub::spawn(hub_symbols.clone()))
+    } else {
+        None
+    };
+    let market_registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let mut chainlink_task =
+        tokio::spawn(async move { run_chainlink_ingress_broker(chainlink_hub).await });
+    let mut local_price_task = local_price_hub.map(|hub| {
+        tokio::spawn(async move { run_local_price_ingress_broker(hub).await })
+    });
+    let market_registry_clone = Arc::clone(&market_registry);
+    let mut market_task =
+        tokio::spawn(async move { run_market_ingress_broker(market_registry_clone).await });
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            warn!("🛑 shared ingress broker received ctrl-c — shutting down");
+        }
+        joined = &mut chainlink_task => {
+            match joined {
+                Ok(Err(err)) => warn!("⚠️ shared ingress chainlink broker exited with error: {}", err),
+                Err(err) => warn!("⚠️ shared ingress chainlink broker join error: {}", err),
+                Ok(Ok(())) => info!("🏁 shared ingress chainlink broker exited cleanly"),
+            }
+        }
+        joined = async {
+            match &mut local_price_task {
+                Some(task) => task.await.ok().and_then(Result::err),
+                None => None,
+            }
+        }, if local_price_task.is_some() => {
+            if let Some(err) = joined {
+                warn!("⚠️ shared ingress local_price broker exited with error: {}", err);
+            } else {
+                info!("🏁 shared ingress local_price broker exited");
+            }
+        }
+        joined = &mut market_task => {
+            match joined {
+                Ok(Err(err)) => warn!("⚠️ shared ingress market broker exited with error: {}", err),
+                Err(err) => warn!("⚠️ shared ingress market broker join error: {}", err),
+                Ok(Ok(())) => info!("🏁 shared ingress market broker exited cleanly"),
+            }
+        }
+    }
+    chainlink_task.abort();
+    if let Some(task) = local_price_task.take() {
+        task.abort();
+    }
+    market_task.abort();
+    Ok(())
 }
 
 struct WorkerCtx {
@@ -11831,13 +13641,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         for base in oracle_lag_symbol_universe.hub_symbols() {
             hub_symbols.insert(format!("{}/usd", base));
         }
-        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-        log_symbols.sort();
-        info!(
-            "🛰️ chainlink_hub starting | symbols={}",
-            log_symbols.join(",")
-        );
-        Some(ChainlinkHub::spawn(hub_symbols))
+        build_chainlink_hub_for_symbols(&hub_symbols)
     } else {
         None
     };
@@ -11848,15 +13652,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         for base in oracle_lag_symbol_universe.hub_symbols() {
             hub_symbols.insert(format!("{}/usd", base));
         }
-        let mut log_symbols: Vec<String> = hub_symbols.iter().cloned().collect();
-        log_symbols.sort();
-        info!(
-            "🧠 local_price_hub starting | symbols={} sources={} bias_learning_enabled={}",
-            log_symbols.join(","),
-            local_price_source_names(),
-            local_price_agg_bias_learning_enabled(),
-        );
-        Some(LocalPriceHub::spawn(hub_symbols))
+        build_local_price_hub_for_symbols(&hub_symbols, &coord_cfg_base)
     } else {
         None
     };
@@ -12411,7 +14207,30 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             preloaded_market = Some(pre);
         }
 
-        let resolved = if let Some((pre_slug, pre_res)) = preloaded_market.take() {
+        let manual_resolved = if !prefix_mode
+            && base_settings.market_slug.as_deref() == Some(slug.as_str())
+            && !base_settings.market_id.trim().is_empty()
+            && !base_settings.yes_asset_id.trim().is_empty()
+            && !base_settings.no_asset_id.trim().is_empty()
+        {
+            let inferred_end = inferred_end_ts_from_slug(&slug);
+            info!(
+                "🧷 Using explicit market ids from env for {} (skip gamma resolve)",
+                slug
+            );
+            Some((
+                base_settings.market_id.clone(),
+                base_settings.yes_asset_id.clone(),
+                base_settings.no_asset_id.clone(),
+                inferred_end,
+            ))
+        } else {
+            None
+        };
+
+        let resolved = if let Some(ids) = manual_resolved {
+            Ok(ids)
+        } else if let Some((pre_slug, pre_res)) = preloaded_market.take() {
             if pre_slug == slug {
                 preloading_slug = None;
                 info!("⚡ Using pre-resolved market data for {}", slug);
@@ -13132,6 +14951,48 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         let pgt_local_winner_side = shared_pgt_winner_side
             .as_ref()
             .and_then(|shared| shared.lock().ok().and_then(|guard| *guard));
+        if recorder.enabled() && coord_cfg.strategy.is_pair_gated_tranche_arb() {
+            let end_inv = inv_watch_rx_postclose.borrow().working;
+            let coord_obs = *coord_obs_rx.borrow();
+            let paired_qty = end_inv.yes_qty.min(end_inv.no_qty).max(0.0);
+            let pair_cost = if end_inv.yes_qty > 0.0 && end_inv.no_qty > 0.0 {
+                end_inv.yes_avg_cost + end_inv.no_avg_cost
+            } else {
+                0.0
+            };
+            let residual_qty = (end_inv.yes_qty - end_inv.no_qty).abs();
+            recorder.emit_own_inventory_event(
+                &recorder_meta,
+                "pgt_shadow_summary",
+                json!({
+                    "reason": format!("{:?}", reason),
+                    "round_end_ts": ws_round_end_ts,
+                    "winner_side": pgt_local_winner_side.map(|s| s.as_str().to_string()),
+                    "paired_qty": paired_qty,
+                    "pair_cost": pair_cost,
+                    "residual_qty": residual_qty,
+                    "yes_qty": end_inv.yes_qty,
+                    "no_qty": end_inv.no_qty,
+                    "yes_avg_cost": end_inv.yes_avg_cost,
+                    "no_avg_cost": end_inv.no_avg_cost,
+                    "pgt_seed_quotes": coord_obs.pgt_seed_quotes,
+                    "pgt_completion_quotes": coord_obs.pgt_completion_quotes,
+                    "pgt_taker_shadow_would_open": coord_obs.pgt_taker_shadow_would_open,
+                    "pgt_taker_shadow_would_close": coord_obs.pgt_taker_shadow_would_close,
+                    "pgt_dispatch_taker_open": coord_obs.pgt_dispatch_taker_open,
+                    "pgt_dispatch_taker_close": coord_obs.pgt_dispatch_taker_close,
+                    "pgt_dispatch_place": coord_obs.pgt_dispatch_place,
+                    "pgt_dispatch_retain": coord_obs.pgt_dispatch_retain,
+                    "pgt_dispatch_clear": coord_obs.pgt_dispatch_clear,
+                    "maker_only_missed_open_round": paired_qty <= 1e-9
+                        && coord_obs.pgt_taker_shadow_would_open > 0
+                        && coord_obs.pgt_dispatch_taker_open == 0,
+                    "maker_only_missed_close_round": paired_qty <= 1e-9
+                        && coord_obs.pgt_taker_shadow_would_close > 0
+                        && coord_obs.pgt_dispatch_taker_close == 0,
+                }),
+            );
+        }
         if market_settled && recorder.enabled() {
             recorder.emit_own_inventory_event(
                 &recorder_meta,

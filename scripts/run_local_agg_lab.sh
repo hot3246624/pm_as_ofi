@@ -5,12 +5,61 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 INSTANCE_ID="${PM_INSTANCE_ID:-local-agg-lab}"
-LOG_ROOT="${PM_LOG_ROOT:-$ROOT/logs/$INSTANCE_ID}"
-RECORDER_ROOT="${PM_RECORDER_ROOT:-$ROOT/data/recorder/$INSTANCE_ID}"
-BIAS_CACHE_PATH="${PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH:-$ROOT/logs/local_price_agg_bias_cache.shared.json}"
-mkdir -p "$LOG_ROOT"
-
+INSTANCE_ROOT="$ROOT/logs/$INSTANCE_ID"
 STAMP="$(date +%Y%m%d_%H%M%S)"
+LOG_ROOT="${PM_LOG_ROOT:-$INSTANCE_ROOT/runs/$STAMP}"
+RECORDER_ROOT="${PM_RECORDER_ROOT:-$ROOT/data/recorder/$INSTANCE_ID}"
+PID_DIR="$ROOT/pids/$INSTANCE_ID"
+RUNNER_PIDFILE="$PID_DIR/local_agg_lab.pid"
+BIAS_CACHE_PATH="${PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH:-$INSTANCE_ROOT/local_price_agg_bias_cache.instance.json}"
+mkdir -p "$LOG_ROOT" "$INSTANCE_ROOT" "$PID_DIR"
+ln -sfn "$LOG_ROOT" "$INSTANCE_ROOT/current"
+
+stop_process_group() {
+  local pid="$1"
+  kill -0 "$pid" 2>/dev/null || return 0
+  local pgid
+  pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
+  if [[ -n "$pgid" ]]; then
+    kill -- "-$pgid" 2>/dev/null || true
+    sleep 1
+  fi
+  kill "$pid" 2>/dev/null || true
+}
+
+if [[ -f "$RUNNER_PIDFILE" ]]; then
+  OLD_PID="$(cat "$RUNNER_PIDFILE" 2>/dev/null || true)"
+  if [[ -n "${OLD_PID:-}" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+    echo "[$(date '+%F %T')] stopping existing lab runner from pidfile: $OLD_PID"
+    stop_process_group "$OLD_PID"
+  fi
+  rm -f "$RUNNER_PIDFILE"
+fi
+
+# Same-instance single-writer guard:
+# if an older lab is still writing under this LOG_ROOT, stop it before
+# starting a new challenger. This prevents duplicated compare lines and
+# polluted coverage stats.
+if command -v lsof >/dev/null 2>&1; then
+  EXISTING_PIDS=()
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    EXISTING_PIDS+=("$pid")
+  done < <(
+    lsof +D "$LOG_ROOT" 2>/dev/null \
+      | awk 'NR > 1 {print $2}' \
+      | sort -u
+  )
+  if [ "${#EXISTING_PIDS[@]}" -gt 0 ]; then
+    echo "[$(date '+%F %T')] stopping existing lab writers under $LOG_ROOT: ${EXISTING_PIDS[*]}"
+    for pid in "${EXISTING_PIDS[@]}"; do
+      [[ "$pid" = "$$" ]] && continue
+      stop_process_group "$pid"
+    done
+    sleep 1
+  fi
+fi
+
 LOG_FILE="${1:-$LOG_ROOT/local_agg_lab_${STAMP}.log}"
 
 export PM_STRATEGY=oracle_lag_sniping
@@ -40,6 +89,9 @@ echo "  PM_LOCAL_PRICE_AGG_DECISION_ENABLED=$PM_LOCAL_PRICE_AGG_DECISION_ENABLED
 echo "  PM_SELF_BUILT_PRICE_AGG_ENABLED=$PM_SELF_BUILT_PRICE_AGG_ENABLED"
 echo "  PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH=$PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH"
 echo "  PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED=$PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED"
+
+echo "$$" > "$RUNNER_PIDFILE"
+trap 'rm -f "$RUNNER_PIDFILE"' EXIT
 
 if [[ -x "$ROOT/scripts/rebuild_local_price_agg_bias_cache.py" || -f "$ROOT/scripts/rebuild_local_price_agg_bias_cache.py" ]]; then
   python3 "$ROOT/scripts/rebuild_local_price_agg_bias_cache.py" \
