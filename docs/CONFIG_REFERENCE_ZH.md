@@ -20,6 +20,11 @@
 | 参数 | 模板值 | 说明 |
 | --- | --- | --- |
 | `PM_DRY_RUN` | `true` | 模板默认先演习 |
+| `PM_INSTANCE_ID` | unset | 进程实例标识。建议每个独立进程都设置唯一值，避免日志、replay、recorder 路径互相覆盖 |
+| `PM_LOG_ROOT` | auto | 显式覆盖 runtime 日志根目录；默认写入 `logs/<instance_id>/runs/<timestamp>` |
+| `PM_RECORDER_ROOT` | `data/recorder` | 显式覆盖 recorder 根目录；多实例场景建议使用 `data/recorder/<instance_id>` |
+| `PM_SHARED_INGRESS_ROLE` | `standalone` | 跨进程共享公共数据平面的角色：`standalone / broker / client` |
+| `PM_SHARED_INGRESS_ROOT` | `run/shared-ingress` | broker 与所有 client 共享的 Unix socket 根目录，必须完全一致 |
 | `PM_ENTRY_GRACE_SECONDS` | `30` | 新市场开盘后的可入场窗口 |
 | `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 连接超时 |
 | `PM_WS_DEGRADE_MAX_FAILURES` | `12` | 连续失败后提前结束本轮 |
@@ -58,6 +63,28 @@
 | `PM_ORACLE_LAG_SYMBOL_UNIVERSE` | `hype,btc,eth,sol,bnb,doge,xrp` | 仅 `oracle_lag_sniping` 使用：允许激活的 5m symbol 列表；`*` 表示全部 |
 | `PM_MULTI_MARKET_PREFIXES` | unset | 逗号分隔的市场前缀并发列表；设置后主进程进入 supervisor 模式并拉起多个子进程（每个前缀一个） |
 | `PM_INPROC_SUPERVISOR` | auto | 多市场模式下是否使用 in-proc 单进程多worker；`oracle_lag_sniping` 默认为 `true`，设 `0/false` 可强制回退多进程 |
+
+### 跨进程共享数据平面说明
+
+- `PM_SHARED_INGRESS_ROLE=broker`
+  - 当前进程只持有公共上游连接：
+    - market WS
+    - Chainlink RTDS
+    - Local Price feeds
+  - 不应持有钱包私钥执行真实交易。
+- `PM_SHARED_INGRESS_ROLE=client`
+  - 当前进程不再自行建立以上公共行情连接。
+  - 它只通过 `PM_SHARED_INGRESS_ROOT` 下的 Unix socket 订阅 broker 广播出来的标准化事件。
+- `PM_SHARED_INGRESS_ROLE=standalone`
+  - 默认模式，当前进程自行建立所有连接。
+
+运行约束：
+
+- 同一组 `broker + clients` 必须共享同一个 `PM_SHARED_INGRESS_ROOT`。
+- 多个 client 可以共用一个 broker。
+- 当前架构不做自动选主。必须**显式指定**哪个进程是 `broker`，其余进程是 `client`。
+- 若多个进程使用**同一个钱包**，共享数据平面并不能解决执行冲突；仍然需要单执行 authority。
+- 若多个进程使用**不同钱包**，可安全共用同一个 broker，因为 broker 不持有任何钱包密钥。
 
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 
