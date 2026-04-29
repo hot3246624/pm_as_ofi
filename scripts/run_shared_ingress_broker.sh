@@ -10,7 +10,7 @@ STAMP="$(date +%Y%m%d_%H%M%S)"
 LOG_ROOT="${PM_LOG_ROOT:-$INSTANCE_ROOT/runs/$STAMP}"
 PID_DIR="$ROOT/pids/$INSTANCE_ID"
 RUNNER_PIDFILE="$PID_DIR/shared_ingress_broker.pid"
-SHARED_INGRESS_ROOT="${PM_SHARED_INGRESS_ROOT:-$INSTANCE_ROOT/shared-ingress}"
+SHARED_INGRESS_ROOT="${PM_SHARED_INGRESS_ROOT:-$ROOT/run/shared-ingress-main}"
 mkdir -p "$LOG_ROOT" "$INSTANCE_ROOT" "$PID_DIR" "$SHARED_INGRESS_ROOT"
 ln -sfn "$LOG_ROOT" "$INSTANCE_ROOT/current"
 

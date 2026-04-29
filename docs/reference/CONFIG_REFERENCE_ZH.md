@@ -24,7 +24,7 @@
 | `PM_LOG_ROOT` | auto | 显式覆盖 runtime 日志根目录；默认写入 `logs/<instance_id>/runs/<timestamp>` |
 | `PM_RECORDER_ROOT` | `data/recorder` | 显式覆盖 recorder 根目录；多实例场景建议使用 `data/recorder/<instance_id>` |
 | `PM_SHARED_INGRESS_ROLE` | `standalone` | 跨进程共享公共数据平面的角色：`standalone / broker / client / auto`。二进制默认 `standalone`；策略启动脚本通常会切到 `auto` |
-| `PM_SHARED_INGRESS_ROOT` | `run/shared-ingress` | broker 与所有 client 共享的 Unix socket 根目录，必须完全一致 |
+| `PM_SHARED_INGRESS_ROOT` | `run/shared-ingress-main` | broker 与所有 client 共享的 Unix socket 根目录，必须完全一致 |
 | `PM_ENTRY_GRACE_SECONDS` | `30` | 新市场开盘后的可入场窗口 |
 | `PM_WS_CONNECT_TIMEOUT_MS` | `6000` | Market WS 连接超时 |
 | `PM_WS_DEGRADE_MAX_FAILURES` | `12` | 连续失败后提前结束本轮 |
