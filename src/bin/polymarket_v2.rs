@@ -12163,6 +12163,124 @@ fn parse_price_value(v: &Value) -> Option<f64> {
         .filter(|p| *p > 0.0 && *p < 1.0)
 }
 
+fn is_market_ws_keepalive_text(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("PING")
+        || trimmed.eq_ignore_ascii_case("PONG")
+}
+
+fn collect_market_ws_asset_ids(value: &Value, out: &mut Vec<String>) {
+    if out.len() >= 12 {
+        return;
+    }
+    match value {
+        Value::Array(values) => {
+            for value in values.iter().take(8) {
+                collect_market_ws_asset_ids(value, out);
+                if out.len() >= 12 {
+                    break;
+                }
+            }
+        }
+        Value::Object(map) => {
+            for key in ["asset_id", "assetId", "token_id", "tokenID"] {
+                if let Some(asset_id) = map.get(key).and_then(|v| v.as_str()) {
+                    if !out.iter().any(|existing| existing == asset_id) {
+                        out.push(asset_id.to_string());
+                    }
+                }
+            }
+            for key in ["asset_ids", "assets_ids"] {
+                if let Some(asset_ids) = map.get(key).and_then(|v| v.as_array()) {
+                    for asset_id in asset_ids.iter().filter_map(|v| v.as_str()).take(8) {
+                        if !out.iter().any(|existing| existing == asset_id) {
+                            out.push(asset_id.to_string());
+                        }
+                        if out.len() >= 12 {
+                            return;
+                        }
+                    }
+                }
+            }
+            for key in ["price_changes", "changes", "orders"] {
+                if let Some(items) = map.get(key).and_then(|v| v.as_array()) {
+                    for item in items.iter().take(8) {
+                        collect_market_ws_asset_ids(item, out);
+                        if out.len() >= 12 {
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn market_ws_payload_debug_summary(settings: &Settings, text: &str) -> String {
+    let trimmed = text.trim();
+    if is_market_ws_keepalive_text(trimmed) {
+        return format!("reason=keepalive_text payload={}", trimmed);
+    }
+
+    let raw_len = trimmed.len();
+    let value = match serde_json::from_str::<Value>(trimmed) {
+        Ok(value) => value,
+        Err(err) => {
+            return format!("reason=parse_error err={} raw_len={}", err, raw_len);
+        }
+    };
+
+    let first_value = value
+        .as_array()
+        .and_then(|values| values.first())
+        .unwrap_or(&value);
+    let array_len = value.as_array().map(|values| values.len()).unwrap_or(0);
+    let event_type = first_value
+        .get("event_type")
+        .or_else(|| first_value.get("type"))
+        .or_else(|| first_value.get("event"))
+        .or_else(|| first_value.get("channel"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let keys = first_value
+        .as_object()
+        .map(|map| map.keys().take(12).cloned().collect::<Vec<_>>().join(","))
+        .unwrap_or_else(|| "non_object".to_string());
+
+    let mut asset_ids = Vec::new();
+    collect_market_ws_asset_ids(&value, &mut asset_ids);
+    let matched_sides = asset_ids
+        .iter()
+        .filter_map(|asset_id| classify_side(asset_id, settings))
+        .map(|side| side.as_str())
+        .collect::<Vec<_>>()
+        .join(",");
+    let asset_ids_summary = if asset_ids.is_empty() {
+        "none".to_string()
+    } else {
+        asset_ids.join(",")
+    };
+    let matched_sides = if matched_sides.is_empty() {
+        "none".to_string()
+    } else {
+        matched_sides
+    };
+
+    format!(
+        "reason=no_parsed_market_event event_type={} array_len={} keys=[{}] asset_ids=[{}] matched_sides=[{}] expected_yes={} expected_no={} raw_len={}",
+        event_type,
+        array_len,
+        keys,
+        asset_ids_summary,
+        matched_sides,
+        settings.yes_asset_id,
+        settings.no_asset_id,
+        raw_len
+    )
+}
+
 /// Parse a WS message into MarketDataMsg events.
 fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
     let mut msgs = Vec::new();
@@ -12754,7 +12872,14 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
     let mut backoff = Duration::from_millis(100);
     let max_backoff = Duration::from_secs(5);
     let mut consecutive_failures: u32 = 0;
-    let subscribe_custom_feature_enabled = settings.custom_feature;
+    // Prefix feeds only need book/trade data. Leaving the Polymarket custom
+    // feature on fans global `new_market` events into every prefix connection.
+    // Keep fixed feeds unchanged because they are already stable.
+    let subscribe_custom_feature_enabled = if is_fixed_market_feed {
+        settings.custom_feature
+    } else {
+        false
+    };
     let mut shutdown_rx = feed.shutdown_receiver();
     'outer: loop {
         if feed.shutdown_requested() || feed.subscriber_count() == 0 {
@@ -12841,6 +12966,16 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                     "initial_dump": true,
                     "custom_feature_enabled": subscribe_custom_feature_enabled,
                 });
+                if !is_fixed_market_feed {
+                    info!(
+                        "📤 shared ingress market broker subscribe | slug={} market_id={} yes_asset_id={} no_asset_id={} custom_feature_enabled={}",
+                        settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                        settings.market_id,
+                        settings.yes_asset_id,
+                        settings.no_asset_id,
+                        subscribe_custom_feature_enabled
+                    );
+                }
                 if let Err(err) = write
                     .send(Message::Text(subscribe.to_string().into()))
                     .await
@@ -12863,10 +12998,12 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                 let mut session_parsed_msg_count: u64 = 0;
                 let mut session_trade_tick_count: u64 = 0;
                 let mut session_book_tick_count: u64 = 0;
+                let mut session_keepalive_msg_count: u64 = 0;
                 let mut session_unknown_event_count: u64 = 0;
                 let mut session_parse_drop_count: u64 = 0;
                 let mut session_last_parse_drop_reason: Option<String> = None;
                 let mut session_parse_drop_log_count: u64 = 0;
+                let mut session_noop_log_count: u64 = 0;
                 let mut last_raw_msg_at = tokio::time::Instant::now();
                 let mut last_full_book_at: Option<tokio::time::Instant> = None;
                 let session_started_at = tokio::time::Instant::now();
@@ -12916,13 +13053,14 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     "bootstrap_lane_never_became_usable"
                                 };
                                 warn!(
-                                    "⚠️ shared ingress market broker unhealthy ({}) for {:?} | slug={} yes_asset_id={} no_asset_id={} raw={} parsed={} book_ticks={} trade_ticks={} unknown={} dropped={} last_drop={:?} — reconnecting",
+                                    "⚠️ shared ingress market broker unhealthy ({}) for {:?} | slug={} yes_asset_id={} no_asset_id={} raw={} keepalive={} parsed={} book_ticks={} trade_ticks={} unknown={} dropped={} last_drop={:?} — reconnecting",
                                     reason,
                                     no_full_book_silence.max(raw_silence),
                                     settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
                                     settings.yes_asset_id,
                                     settings.no_asset_id,
                                     session_raw_msg_count,
+                                    session_keepalive_msg_count,
                                     session_parsed_msg_count,
                                     session_book_tick_count,
                                     session_trade_tick_count,
@@ -12937,16 +13075,38 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                         msg = read.next() => {
                             match msg {
                                 Some(Ok(Message::Text(text))) => {
+                                    let text_ref: &str = &text;
+                                    if !is_fixed_market_feed
+                                        && is_market_ws_keepalive_text(text_ref)
+                                    {
+                                        session_keepalive_msg_count =
+                                            session_keepalive_msg_count.saturating_add(1);
+                                        continue;
+                                    }
                                     session_raw_msg_count = session_raw_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
                                     let (parsed, unknown_events, parse_drops, drop_reasons) =
-                                        parse_ws_payload(&settings, &text);
+                                        parse_ws_payload(&settings, text_ref);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
                                     session_parse_drop_count = session_parse_drop_count
                                         .saturating_add(parse_drops);
                                     if let Some(reason) = drop_reasons.last() {
                                         session_last_parse_drop_reason = Some(reason.clone());
+                                    }
+                                    if parsed.is_empty() && drop_reasons.is_empty() {
+                                        let summary =
+                                            market_ws_payload_debug_summary(&settings, text_ref);
+                                        session_last_parse_drop_reason = Some(summary.clone());
+                                        if !is_fixed_market_feed && session_noop_log_count < 5 {
+                                            warn!(
+                                                "⚠️ shared ingress market broker parser noop | slug={} {}",
+                                                settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                                                summary
+                                            );
+                                            session_noop_log_count =
+                                                session_noop_log_count.saturating_add(1);
+                                        }
                                     }
                                     if !drop_reasons.is_empty() && session_parse_drop_log_count < 5 {
                                         warn!(
@@ -13026,11 +13186,18 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     }
                                 }
                                 Some(Ok(Message::Binary(bytes))) => {
-                                    session_raw_msg_count = session_raw_msg_count.saturating_add(1);
-                                    last_raw_msg_at = tokio::time::Instant::now();
                                     let Ok(text) = std::str::from_utf8(&bytes) else {
                                         continue;
                                     };
+                                    if !is_fixed_market_feed
+                                        && is_market_ws_keepalive_text(text)
+                                    {
+                                        session_keepalive_msg_count =
+                                            session_keepalive_msg_count.saturating_add(1);
+                                        continue;
+                                    }
+                                    session_raw_msg_count = session_raw_msg_count.saturating_add(1);
+                                    last_raw_msg_at = tokio::time::Instant::now();
                                     let (parsed, unknown_events, parse_drops, drop_reasons) =
                                         parse_ws_payload(&settings, text);
                                     session_unknown_event_count = session_unknown_event_count
@@ -13039,6 +13206,20 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                         .saturating_add(parse_drops);
                                     if let Some(reason) = drop_reasons.last() {
                                         session_last_parse_drop_reason = Some(reason.clone());
+                                    }
+                                    if parsed.is_empty() && drop_reasons.is_empty() {
+                                        let summary =
+                                            market_ws_payload_debug_summary(&settings, text);
+                                        session_last_parse_drop_reason = Some(summary.clone());
+                                        if !is_fixed_market_feed && session_noop_log_count < 5 {
+                                            warn!(
+                                                "⚠️ shared ingress market broker parser noop | slug={} {}",
+                                                settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                                                summary
+                                            );
+                                            session_noop_log_count =
+                                                session_noop_log_count.saturating_add(1);
+                                        }
                                     }
                                     if !drop_reasons.is_empty() && session_parse_drop_log_count < 5 {
                                         warn!(
