@@ -17,7 +17,7 @@ const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
 const PGT_SAME_SIDE_RELEASE_QUARANTINE_MS: u64 = 1_200;
 const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
-const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = false;
+const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = true;
 
 impl StrategyCoordinator {
     pub(super) fn pgt_buy_retain_decision(
@@ -29,14 +29,24 @@ impl StrategyCoordinator {
     ) -> (bool, &'static str) {
         match reason {
             BidReason::Provide => {
-                if slot_age < std::time::Duration::from_millis(1_500) {
-                    (delta_ticks >= -6.0 - 1e-9, "pgt_flat_seed_time_hold")
-                } else {
-                    (
-                        delta_ticks >= -3.0 - 1e-9,
-                        "pgt_seed_holds_between_large_down_moves",
-                    )
+                if delta_ticks <= 0.0 + 1e-9 {
+                    return (true, "pgt_seed_no_chase_down");
                 }
+                let min_age = if remaining_secs <= 45 {
+                    std::time::Duration::from_secs(5)
+                } else if remaining_secs <= 90 {
+                    std::time::Duration::from_secs(10)
+                } else {
+                    std::time::Duration::from_secs(20)
+                };
+                let min_up_ticks = if remaining_secs <= 90 { 2.0 } else { 3.0 };
+                if slot_age < min_age {
+                    return (true, "pgt_seed_upward_refresh_throttled");
+                }
+                if delta_ticks < min_up_ticks - 1e-9 {
+                    return (true, "pgt_seed_upward_refresh_too_small");
+                }
+                (false, "pgt_seed_upward_refresh_allowed")
             }
             BidReason::Hedge => {
                 if delta_ticks <= 0.0 + 1e-9 {

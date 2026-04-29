@@ -753,12 +753,11 @@ impl StrategyCoordinator {
             if pair_arb_force_freshness_republish {
                 needs_reprice = true;
             }
-            if needs_reprice
-                && self.cfg.strategy.is_pair_gated_tranche_arb()
+            let pgt_buy_retain_candidate = self.cfg.strategy.is_pair_gated_tranche_arb()
                 && slot_direction == Some(slot.direction)
-                && (slot_size - size).abs() <= 0.1
                 && slot.direction == TradeDirection::Buy
-            {
+                && (reason == BidReason::Provide || (slot_size - size).abs() <= 0.1);
+            if needs_reprice && pgt_buy_retain_candidate {
                 if slot_reason != Some(reason) {
                     debug!(
                         "🔁 PGT mode-transition reprice {:?}: live_reason={:?} new_reason={:?} strategic_target={:.4} live={:.4}",

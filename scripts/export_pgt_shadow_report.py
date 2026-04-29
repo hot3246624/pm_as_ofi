@@ -308,6 +308,11 @@ def order_lifecycle_metrics(
             if first_seed_ms is not None and first_fill_ms is not None
             else None
         ),
+        "first_completion_delay_s": (
+            (first_cover_ms - first_fill_ms) / 1000.0
+            if first_fill_ms is not None and first_cover_ms is not None
+            else None
+        ),
         "seed_live_before_first_fill_or_cancel_s": seed_live_secs,
         "initial_seed_accept_count": len(initial_seed_accepts),
         "initial_seed_side_count": len({r["side"] for r in initial_seed_accepts}),
@@ -452,6 +457,19 @@ def median(values: list[float]) -> float | None:
     return (values[mid - 1] + values[mid]) / 2.0
 
 
+def percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    values = sorted(values)
+    if len(values) == 1:
+        return values[0]
+    rank = (len(values) - 1) * pct / 100.0
+    lo = int(rank)
+    hi = min(lo + 1, len(values) - 1)
+    frac = rank - lo
+    return values[lo] * (1.0 - frac) + values[hi] * frac
+
+
 def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def collect(key: str) -> list[float]:
         return [float(r[key]) for r in rows if r.get(key) is not None]
@@ -538,6 +556,10 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "median_first_seed_to_first_fill_s": median(
             collect("first_seed_to_first_fill_s")
         ),
+        "median_first_completion_delay_s": median(collect("first_completion_delay_s")),
+        "p90_first_completion_delay_s": percentile(
+            collect("first_completion_delay_s"), 90.0
+        ),
         "median_seed_live_before_first_fill_or_cancel_s": median(
             collect("seed_live_before_first_fill_or_cancel_s")
         ),
@@ -616,6 +638,7 @@ def main() -> None:
         "first_same_side_add_accept_rel_s",
         "harvest_cancel_first_rel_s",
         "first_seed_to_first_fill_s",
+        "first_completion_delay_s",
         "seed_live_before_first_fill_or_cancel_s",
         "initial_seed_accept_count",
         "initial_seed_side_count",

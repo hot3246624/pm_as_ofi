@@ -54,6 +54,19 @@ def median(values: list[float]) -> float | None:
     return (values[mid - 1] + values[mid]) / 2.0
 
 
+def percentile(values: list[float], pct: float) -> float | None:
+    if not values:
+        return None
+    values = sorted(values)
+    if len(values) == 1:
+        return values[0]
+    rank = (len(values) - 1) * pct / 100.0
+    lo = int(rank)
+    hi = min(lo + 1, len(values) - 1)
+    frac = rank - lo
+    return values[lo] * (1.0 - frac) + values[hi] * frac
+
+
 def resolve_report_path(args: argparse.Namespace) -> Path:
     if args.report_json:
         return Path(args.report_json)
@@ -142,6 +155,8 @@ def build_gap(
     median_dual_seed_accept = median(collect("dual_seed_accept_rel_s"))
     median_first_buy_fill = median(collect("first_buy_fill_rel_s"))
     median_first_seed_to_fill = median(collect("first_seed_to_first_fill_s"))
+    median_first_completion_delay = median(collect("first_completion_delay_s"))
+    p90_first_completion_delay = percentile(collect("first_completion_delay_s"), 90.0)
     median_seed_live = median(collect("seed_live_before_first_fill_or_cancel_s"))
     active_episode_rounds = sum(
         1 for row in rows if float(row.get("has_active_episode") or 0.0) > 0.5
@@ -198,6 +213,8 @@ def build_gap(
             "dual_seed_accept_rel_s": median_dual_seed_accept,
             "first_buy_fill_rel_s": median_first_buy_fill,
             "first_seed_to_first_fill_s": median_first_seed_to_fill,
+            "first_completion_delay_s": median_first_completion_delay,
+            "p90_first_completion_delay_s": p90_first_completion_delay,
             "seed_live_before_first_fill_or_cancel_s": median_seed_live,
         },
         "pgt_rates": {

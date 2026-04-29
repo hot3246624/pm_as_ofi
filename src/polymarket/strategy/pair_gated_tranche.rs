@@ -992,10 +992,7 @@ pub(crate) fn pgt_same_side_add_state_eligible(active: PairTranche) -> bool {
         && active.residual_qty >= SAME_SIDE_ADD_MIN_RESIDUAL_QTY - 1e-9
 }
 
-pub(crate) fn pgt_same_side_add_clip_qty(
-    active: PairTranche,
-    min_order_size: f64,
-) -> Option<f64> {
+pub(crate) fn pgt_same_side_add_clip_qty(active: PairTranche, min_order_size: f64) -> Option<f64> {
     if !pgt_same_side_add_state_eligible(active) {
         return None;
     }

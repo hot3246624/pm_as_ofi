@@ -202,6 +202,7 @@ class ExportPgtShadowReportTests(unittest.TestCase):
         self.assertAlmostEqual(row["first_completion_accept_rel_s"], -79.999)
         self.assertAlmostEqual(row["first_same_side_add_accept_rel_s"], -70.0)
         self.assertAlmostEqual(row["first_seed_to_first_fill_s"], 120.0)
+        self.assertAlmostEqual(row["first_completion_delay_s"], 70.0)
         self.assertAlmostEqual(row["seed_live_before_first_fill_or_cancel_s"], 120.0)
         self.assertEqual(row["initial_seed_accept_count"], 2)
         self.assertEqual(row["initial_seed_side_count"], 2)
@@ -210,6 +211,8 @@ class ExportPgtShadowReportTests(unittest.TestCase):
         self.assertEqual(summary["seed_exposed_rounds"], 1)
         self.assertEqual(summary["seed_exposed_fill_rounds"], 1)
         self.assertAlmostEqual(summary["seed_exposed_fill_ratio"], 1.0)
+        self.assertAlmostEqual(summary["median_first_completion_delay_s"], 70.0)
+        self.assertAlmostEqual(summary["p90_first_completion_delay_s"], 70.0)
 
 
 if __name__ == "__main__":

@@ -6776,7 +6776,7 @@ fn test_pair_gated_tranche_shadow_taker_open_stays_disabled_across_epochs() {
 }
 
 #[test]
-fn test_pair_gated_tranche_shadow_taker_limit_does_not_upgrade_hedge_intent() {
+fn test_pair_gated_tranche_shadow_taker_close_upgrades_hedge_intent() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
     c.dry_run = true;
@@ -6814,8 +6814,12 @@ fn test_pair_gated_tranche_shadow_taker_limit_does_not_upgrade_hedge_intent() {
         Some(0.48),
     );
     assert!(
-        matches!(close_action, ProvideSideAction::Place { intent } if intent.reason == BidReason::Hedge),
-        "PGT default shadow boundary is maker-first: taker-close limits remain counterfactual, not execution"
+        matches!(
+            close_action,
+            ProvideSideAction::ShadowTakerClose { intent, limit_price }
+                if intent.reason == BidReason::Hedge && (limit_price - 0.48).abs() < 1e-9
+        ),
+        "PGT shadow should execute bounded taker-close once the strategy emits a close limit"
     );
 }
 
@@ -8311,6 +8315,65 @@ async fn test_pair_gated_tranche_seed_does_not_reprice_on_same_price_size_only_d
         timeout(Duration::from_millis(30), er.recv()).await.is_err(),
         "PGT flat seed should hold same-price live order instead of repricing on size-only drift",
     );
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_seed_does_not_chase_downward_price_or_size_drift() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.49, 57.6, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial seed SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(120);
+    coord.yes_last_ts = Instant::now() - Duration::from_secs(120);
+
+    coord
+        .slot_place_or_reprice(slot, 0.40, 43.2, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT flat seed should retain the live order instead of chasing lower target price/size drift",
+    );
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_seed_allows_slow_upward_refresh() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::YES_BUY, 0.49, 57.6, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
+        other => panic!("expected initial seed SetTarget, got {:?}", other),
+    }
+
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(25);
+    coord.yes_last_ts = Instant::now() - Duration::from_secs(25);
+
+    coord
+        .slot_place_or_reprice(slot, 0.53, 57.6, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.reason, BidReason::Provide);
+            assert!((target.price - 0.53).abs() < 1e-9);
+        }
+        other => panic!("expected throttled upward seed refresh, got {:?}", other),
+    }
 }
 
 #[tokio::test]

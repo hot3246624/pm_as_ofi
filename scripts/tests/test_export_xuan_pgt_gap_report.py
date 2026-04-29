@@ -38,6 +38,7 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
                     "dual_seed_accept_rel_s": -270.0,
                     "first_buy_fill_rel_s": -180.0,
                     "first_seed_to_first_fill_s": 180.0,
+                    "first_completion_delay_s": 70.0,
                     "seed_live_before_first_fill_or_cancel_s": 180.0,
                     "has_active_episode": 1.0,
                     "residual_round": 1.0,
@@ -60,6 +61,7 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
                     "dual_seed_accept_rel_s": -260.0,
                     "first_buy_fill_rel_s": None,
                     "first_seed_to_first_fill_s": None,
+                    "first_completion_delay_s": None,
                     "seed_live_before_first_fill_or_cancel_s": 325.0,
                     "has_active_episode": 0.0,
                     "residual_round": 0.0,
@@ -78,6 +80,8 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertAlmostEqual(out["pgt_medians"]["first_seed_accept_rel_s"], -355.0)
         self.assertAlmostEqual(out["pgt_medians"]["dual_seed_accept_rel_s"], -265.0)
         self.assertAlmostEqual(out["pgt_medians"]["first_buy_fill_rel_s"], -180.0)
+        self.assertAlmostEqual(out["pgt_medians"]["first_completion_delay_s"], 70.0)
+        self.assertAlmostEqual(out["pgt_medians"]["p90_first_completion_delay_s"], 70.0)
         self.assertAlmostEqual(out["pgt_medians"]["seed_live_before_first_fill_or_cancel_s"], 252.5)
         self.assertTrue(out["within_xuan_windows"]["merge_requested_first_rel_s"])
         self.assertTrue(out["within_xuan_windows"]["redeem_requested_first_rel_s"])
