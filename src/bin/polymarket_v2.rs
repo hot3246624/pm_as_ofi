@@ -10402,6 +10402,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_single_last_near_flat");
             }
+            if hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 1.5
+            {
+                return Some("doge_last_multi_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count >= 3
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 8.0
+            {
+                return Some("doge_last_high_spread");
+            }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0

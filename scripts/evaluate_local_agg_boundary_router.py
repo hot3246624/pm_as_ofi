@@ -525,6 +525,10 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
     elif symbol == "doge/usd":
         if rule == "last_before" and source_count == 1 and exact_sources == 0 and margin_bps < 1.5:
             return "doge_single_last_near_flat"
+        if rule == "last_before" and source_count >= 2 and exact_sources == 0 and margin_bps < 1.5:
+            return "doge_last_multi_near_flat"
+        if rule == "last_before" and source_count >= 3 and exact_sources == 0 and spread_bps >= 8.0:
+            return "doge_last_high_spread"
         if rule == "nearest_abs" and source_count >= 2 and exact_sources == 0 and margin_bps < 0.5:
             return "doge_nearest_near_flat"
     elif symbol == "hype/usd":
