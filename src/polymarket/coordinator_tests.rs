@@ -7053,6 +7053,53 @@ fn test_pair_gated_tranche_active_state_only_quotes_completion_side() {
 }
 
 #[test]
+fn test_pair_gated_tranche_completion_shadow_taker_signal_stops_in_freeze() {
+    let inv = InventoryState {
+        yes_qty: 57.6,
+        no_qty: 0.0,
+        yes_avg_cost: 0.47,
+        no_avg_cost: 0.0,
+        net_diff: 57.6,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 57.6, 0.47)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut pre_freeze = cfg();
+    pre_freeze.dry_run = true;
+    pre_freeze.endgame_freeze_secs = 2;
+    pre_freeze.market_end_ts = Some(now_secs + 3);
+    let pre_freeze_quotes =
+        pair_gated_tranche_quotes(pre_freeze, inventory, book(0.47, 0.48, 0.49, 0.50));
+    assert_eq!(
+        pre_freeze_quotes.diagnostics.pgt_taker_shadow_would_close,
+        1
+    );
+    assert!(
+        pre_freeze_quotes
+            .pgt_taker_close_limit_for(Side::No)
+            .is_some(),
+        "pre-freeze completion should still expose the shadow taker-close limit"
+    );
+
+    let mut freeze = cfg();
+    freeze.dry_run = true;
+    freeze.endgame_freeze_secs = 2;
+    freeze.market_end_ts = Some(now_secs + 2);
+    let freeze_quotes = pair_gated_tranche_quotes(freeze, inventory, book(0.47, 0.48, 0.49, 0.50));
+    assert_eq!(freeze_quotes.diagnostics.pgt_taker_shadow_would_close, 0);
+    assert!(
+        freeze_quotes.pgt_taker_close_limit_for(Side::No).is_none(),
+        "freeze/post-close should not be counted as a taker-close opportunity"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_completion_is_maker_first_not_aggressive() {
     let inv = InventoryState {
         yes_qty: 100.0,
