@@ -7119,6 +7119,132 @@ fn test_pair_gated_tranche_completion_shadow_taker_signal_stops_in_freeze() {
 }
 
 #[test]
+fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
+    let mut snapshot = ledger.snapshot;
+    if let Some(mut active) = snapshot.active_tranche {
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(80));
+        snapshot.active_tranche = Some(active);
+    }
+    let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.20, 0.22, 0.47, 0.48));
+    let hedge = quotes.no_buy.expect("expected NO completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        quotes.pgt_taker_close_limit_for(Side::No).is_some(),
+        "shadow timeout should allow a bounded repair taker-close before the late 90s window"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_timeout_repair_cap_ramps_gradually() {
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
+    let now = Instant::now();
+    let mut age_80_snapshot = ledger.snapshot;
+    if let Some(mut active) = age_80_snapshot.active_tranche {
+        active.last_transition_at = Some(now - Duration::from_secs(80));
+        age_80_snapshot.active_tranche = Some(active);
+    }
+    let mut age_95_snapshot = ledger.snapshot;
+    if let Some(mut active) = age_95_snapshot.active_tranche {
+        active.last_transition_at = Some(now - Duration::from_secs(95));
+        age_95_snapshot.active_tranche = Some(active);
+    }
+    let inventory_80 =
+        test_inventory_snapshot_with_ledger(inv, age_80_snapshot, ledger.episode_metrics);
+    let inventory_95 =
+        test_inventory_snapshot_with_ledger(inv, age_95_snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let early = pair_gated_tranche_quotes(c.clone(), inventory_80, book(0.20, 0.22, 0.48, 0.49));
+    assert!(
+        early.pgt_taker_close_limit_for(Side::No).is_none(),
+        "age 80s should only allow pair_cost 1.01, not immediately jump to a 1.02 repair"
+    );
+
+    let later = pair_gated_tranche_quotes(c, inventory_95, book(0.20, 0.22, 0.48, 0.49));
+    assert!(
+        later.pgt_taker_close_limit_for(Side::No).is_some(),
+        "age 95s should allow the next repair band"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_live_timeout_does_not_allow_unfunded_repair() {
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
+    let mut snapshot = ledger.snapshot;
+    if let Some(mut active) = snapshot.active_tranche {
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(95));
+        snapshot.active_tranche = Some(active);
+    }
+    let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.dry_run = false;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.20, 0.22, 0.48, 0.49));
+    let hedge = quotes
+        .no_buy
+        .expect("expected conservative live completion quote");
+    assert!(
+        hedge.price <= 0.47 + 1e-9,
+        "live completion must not use shadow-only unfunded repair bands"
+    );
+    assert!(
+        quotes.pgt_taker_close_limit_for(Side::No).is_none(),
+        "live mode must not expose dry-run taker-close"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_completion_is_maker_first_not_aggressive() {
     let inv = InventoryState {
         yes_qty: 100.0,
