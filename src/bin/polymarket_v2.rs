@@ -10362,6 +10362,15 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
                 && weighted_side_yes
+                && hit.source_spread_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps + 1e-9 < 1.5
+            {
+                return Some("bnb_mid_spread_yes_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
                 && hit.source_spread_bps <= 0.8 + 1e-9
                 && weighted_direction_margin_bps + 1e-9 < 2.2
             {
@@ -10446,7 +10455,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 return Some("doge_last_multi_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
-                && hit.source_count >= 3
+                && hit.source_count >= 2
                 && hit.close_exact_sources == 0
                 && hit.source_spread_bps + 1e-9 >= 8.0
             {

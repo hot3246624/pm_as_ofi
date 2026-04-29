@@ -1,6 +1,6 @@
 # 本地价格聚合器收敛计划
 
-更新时间：2026-04-29 22:35 CST
+更新时间：2026-04-29 23:25 CST
 
 ## 目标
 
@@ -38,6 +38,8 @@
 | latest train | 660 | 0 | 76 | 67 | 0.862845 | 4.413691 |
 | current unseen `20260429_210600` | 43 | 0 | 2 | 2 | 0.893107 | 3.753107 |
 | current unseen `20260429_220724` pre-guard observation | 12 | 0 | 2 | 0 | n/a | 3.415719 |
+| current unseen `20260429_223509` raw router_v1 | 44 | 1 | 0 | n/a | 1.495656 | 8.264534 |
+| current unseen `20260429_223509` post-guard replay | 42 | 0 | 2 | n/a | 1.333700 | 4.098987 |
 
 已修复的 accepted side mismatch：
 
@@ -53,6 +55,11 @@
 
 - DOGE：`last_before` 多源、0 exact、direction margin < 1.5bps 时过滤为 `doge_last_multi_near_flat`，拦截历史 train `5.440670bps` outlier。
 - DOGE：`last_before` source_count >= 3、0 exact、source spread >= 8bps 时过滤为 `doge_last_high_spread`，拦截 `20260429_220724` 新 unseen 中的 7.673766bps / 6.071739bps outlier。
+- DOGE：`last_before` source_count >= 2、0 exact、source spread >= 8bps 时同样过滤为 `doge_last_high_spread`，拦截 `20260429_223509` 新 unseen 中的 8.264534bps accepted tail。
+
+已新增的 BNB guardrail：
+
+- BNB：`after_then_before`、2 source、0 exact、local side Yes、source spread >= 1.5bps、direction margin < 1.5bps 时过滤为 `bnb_mid_spread_yes_near_flat`，拦截 `20260429_223509` 新 unseen 中的 accepted side mismatch。
 
 已新增的 HYPE tail guardrail：
 
@@ -84,7 +91,7 @@
 | --- | --- | --- |
 | T+0 | 修复当前 HYPE/XRP 两个 guardrail，重建 release，重启 challenger | 已完成，离线 latest test/train side=0 |
 | T+30m | 检查新增 unseen rounds | 已完成，`20260429_210600` 当前 43 accepted、side=0 |
-| T+2h | 汇总 20+ 新轮次 | DOGE/HYPE tail guardrail 已补齐，需重建 release 并重启 challenger 验证 |
+| T+2h | 汇总 20+ 新轮次 | 22:35 run 暴露 BNB side mismatch / DOGE high-spread tail，guardrail 已补齐，需重建 release 并重启 challenger 验证 |
 | T+12h | 过夜 shadow/dry-run | rolling 100 accepted side=0 |
 | T+24h | 冻结候选 router 或继续 shadow | 满足 G0/G1/G4 才进入生产集成评估 |
 
