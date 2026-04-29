@@ -138,6 +138,11 @@ def build_gap(
     median_dual_seed_quotes = median(collect("dual_seed_quotes"))
     median_taker_shadow_would_open = median(collect("taker_shadow_would_open"))
     median_dispatch_taker_open = median(collect("dispatch_taker_open"))
+    median_first_seed_accept = median(collect("first_seed_accept_rel_s"))
+    median_dual_seed_accept = median(collect("dual_seed_accept_rel_s"))
+    median_first_buy_fill = median(collect("first_buy_fill_rel_s"))
+    median_first_seed_to_fill = median(collect("first_seed_to_first_fill_s"))
+    median_seed_live = median(collect("seed_live_before_first_fill_or_cancel_s"))
     active_episode_rounds = sum(
         1 for row in rows if float(row.get("has_active_episode") or 0.0) > 0.5
     )
@@ -161,6 +166,15 @@ def build_gap(
     single_seed_released_to_dual_rounds = sum(
         1 for row in rows if float(row.get("single_seed_released_to_dual") or 0.0) > 0.5
     )
+    seed_exposed_rounds = sum(
+        1 for row in rows if row.get("first_seed_accept_rel_s") is not None
+    )
+    seed_exposed_fill_rounds = sum(
+        1 for row in rows if row.get("first_buy_fill_rel_s") is not None
+    )
+    dual_seed_rounds = sum(
+        1 for row in rows if row.get("dual_seed_accept_rel_s") is not None
+    )
 
     summary = {
         "markets": len(rows),
@@ -180,6 +194,11 @@ def build_gap(
             "dual_seed_quotes": median_dual_seed_quotes,
             "taker_shadow_would_open": median_taker_shadow_would_open,
             "dispatch_taker_open": median_dispatch_taker_open,
+            "first_seed_accept_rel_s": median_first_seed_accept,
+            "dual_seed_accept_rel_s": median_dual_seed_accept,
+            "first_buy_fill_rel_s": median_first_buy_fill,
+            "first_seed_to_first_fill_s": median_first_seed_to_fill,
+            "seed_live_before_first_fill_or_cancel_s": median_seed_live,
         },
         "pgt_rates": {
             "active_episode_rounds": active_episode_rounds,
@@ -195,6 +214,17 @@ def build_gap(
             ),
             "total_taker_shadow_would_close": total_taker_shadow_would_close,
             "total_dispatch_taker_close": total_dispatch_taker_close,
+            "seed_exposed_rounds": seed_exposed_rounds,
+            "seed_exposed_fill_rounds": seed_exposed_fill_rounds,
+            "seed_exposed_fill_ratio": (
+                seed_exposed_fill_rounds / seed_exposed_rounds
+                if seed_exposed_rounds
+                else None
+            ),
+            "dual_seed_rounds": dual_seed_rounds,
+            "dual_seed_ratio": (
+                dual_seed_rounds / seed_exposed_rounds if seed_exposed_rounds else None
+            ),
         },
         "xuan_targets": XUAN_TARGETS,
         "pgt_shadow_gates": PGT_SHADOW_GATES,

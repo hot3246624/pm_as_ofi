@@ -22,6 +22,7 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         payload = {
             "rows": [
                 {
+                    "slug": "btc-updown-5m-100",
                     "clean_closed_episode_ratio": 0.92,
                     "same_side_add_qty_ratio": 0.08,
                     "episode_close_delay_p90": 80.0,
@@ -33,11 +34,17 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
                     "taker_shadow_would_close": 4.0,
                     "dispatch_taker_open": 0.0,
                     "dispatch_taker_close": 2.0,
+                    "first_seed_accept_rel_s": -360.0,
+                    "dual_seed_accept_rel_s": -270.0,
+                    "first_buy_fill_rel_s": -180.0,
+                    "first_seed_to_first_fill_s": 180.0,
+                    "seed_live_before_first_fill_or_cancel_s": 180.0,
                     "has_active_episode": 1.0,
                     "residual_round": 1.0,
                     "maker_only_missed_open_round": 1.0,
                 },
                 {
+                    "slug": "btc-updown-5m-200",
                     "clean_closed_episode_ratio": 0.90,
                     "same_side_add_qty_ratio": 0.12,
                     "episode_close_delay_p90": 90.0,
@@ -49,6 +56,11 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
                     "taker_shadow_would_close": 0.0,
                     "dispatch_taker_open": 0.0,
                     "dispatch_taker_close": 0.0,
+                    "first_seed_accept_rel_s": -350.0,
+                    "dual_seed_accept_rel_s": -260.0,
+                    "first_buy_fill_rel_s": None,
+                    "first_seed_to_first_fill_s": None,
+                    "seed_live_before_first_fill_or_cancel_s": 325.0,
                     "has_active_episode": 0.0,
                     "residual_round": 0.0,
                     "maker_only_missed_open_round": 0.0,
@@ -61,8 +73,12 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertIsNone(out["filters"]["max_end_ts"])
         self.assertAlmostEqual(out["pgt_medians"]["clean_closed_episode_ratio"], 0.91)
         self.assertAlmostEqual(out["pgt_medians"]["same_side_add_qty_ratio"], 0.10)
-        self.assertAlmostEqual(out["pgt_medians"]["summary_pair_cost"], 1.0)
+        self.assertAlmostEqual(out["pgt_medians"]["summary_pair_cost"], 0.99)
         self.assertAlmostEqual(out["pgt_medians"]["single_seed_flip_count"], 0.5)
+        self.assertAlmostEqual(out["pgt_medians"]["first_seed_accept_rel_s"], -355.0)
+        self.assertAlmostEqual(out["pgt_medians"]["dual_seed_accept_rel_s"], -265.0)
+        self.assertAlmostEqual(out["pgt_medians"]["first_buy_fill_rel_s"], -180.0)
+        self.assertAlmostEqual(out["pgt_medians"]["seed_live_before_first_fill_or_cancel_s"], 252.5)
         self.assertTrue(out["within_xuan_windows"]["merge_requested_first_rel_s"])
         self.assertTrue(out["within_xuan_windows"]["redeem_requested_first_rel_s"])
         self.assertTrue(out["passes_pgt_shadow_gate"]["clean_closed_episode_ratio"])
@@ -77,6 +93,10 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertAlmostEqual(out["pgt_rates"]["taker_close_dispatch_round_ratio"], 1.0)
         self.assertAlmostEqual(out["pgt_rates"]["total_taker_shadow_would_close"], 4.0)
         self.assertAlmostEqual(out["pgt_rates"]["total_dispatch_taker_close"], 2.0)
+        self.assertEqual(out["pgt_rates"]["seed_exposed_rounds"], 2)
+        self.assertEqual(out["pgt_rates"]["seed_exposed_fill_rounds"], 1)
+        self.assertAlmostEqual(out["pgt_rates"]["seed_exposed_fill_ratio"], 0.5)
+        self.assertEqual(out["pgt_rates"]["dual_seed_rounds"], 2)
         self.assertEqual(out["counterfactual_readout"]["maker_only_missed_open_rounds"], 1)
         self.assertEqual(out["counterfactual_readout"]["single_seed_flip_rounds"], 1)
         self.assertAlmostEqual(out["counterfactual_readout"]["median_taker_shadow_open_gap"], 3.0)

@@ -159,6 +159,164 @@ def payload_metric(payload_json: str | None, key: str) -> float | None:
         return None
 
 
+def rel_secs(ms: int | None, end_ms: int | None) -> float | None:
+    if ms is None or end_ms is None:
+        return None
+    return (int(ms) - int(end_ms)) / 1000.0
+
+
+def normalized_side(v: Any) -> str:
+    return str(v or "").strip().upper()
+
+
+def buy_fill_rows(conn: sqlite3.Connection, slug: str) -> list[tuple[int, str]]:
+    rows = conn.execute(
+        """
+        SELECT recv_unix_ms, payload_json
+        FROM own_inventory_events
+        WHERE slug = ? AND event = 'fill_snapshot'
+        ORDER BY recv_unix_ms ASC, capture_seq ASC
+        """,
+        (slug,),
+    ).fetchall()
+    out: list[tuple[int, str]] = []
+    for recv_ms, payload_json in rows:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except Exception:
+            continue
+        if normalized_side(payload.get("direction")) != "BUY":
+            continue
+        side = normalized_side(payload.get("side"))
+        if side not in {"YES", "NO"}:
+            continue
+        out.append((int(recv_ms), side))
+    return out
+
+
+def order_lifecycle_metrics(
+    conn: sqlite3.Connection, slug: str, end_ms: int | None
+) -> dict[str, Any]:
+    accepted = conn.execute(
+        """
+        SELECT recv_unix_ms, side, direction, reason, price, size
+        FROM own_order_lifecycle
+        WHERE slug = ? AND event = 'order_accepted'
+        ORDER BY recv_unix_ms ASC, capture_seq ASC
+        """,
+        (slug,),
+    ).fetchall()
+    buy_accepts = [
+        {
+            "recv_ms": int(r[0]),
+            "side": normalized_side(r[1]),
+            "direction": normalized_side(r[2]),
+            "reason": str(r[3] or ""),
+            "price": as_float(r[4]),
+            "size": as_float(r[5]),
+        }
+        for r in accepted
+        if normalized_side(r[2]) == "BUY" and normalized_side(r[1]) in {"YES", "NO"}
+    ]
+    buy_fills = buy_fill_rows(conn, slug)
+
+    first_fill_ms = buy_fills[0][0] if buy_fills else None
+    first_fill_side = buy_fills[0][1] if buy_fills else None
+    first_cover_ms = None
+    if first_fill_side:
+        for fill_ms, side in buy_fills[1:]:
+            if side != first_fill_side:
+                first_cover_ms = fill_ms
+                break
+
+    seed_accepts = [r for r in buy_accepts if r["reason"] == "Provide"]
+    first_seed_ms = seed_accepts[0]["recv_ms"] if seed_accepts else None
+
+    pre_fill_cutoff = first_fill_ms if first_fill_ms is not None else end_ms
+    initial_seed_accepts = [
+        r
+        for r in seed_accepts
+        if pre_fill_cutoff is None or r["recv_ms"] <= pre_fill_cutoff
+    ]
+    seen_seed_sides: set[str] = set()
+    dual_seed_ms = None
+    for row in initial_seed_accepts:
+        seen_seed_sides.add(row["side"])
+        if len(seen_seed_sides) >= 2:
+            dual_seed_ms = row["recv_ms"]
+            break
+
+    completion_accepts = [
+        r
+        for r in buy_accepts
+        if r["reason"] == "Hedge"
+        and (first_fill_ms is None or r["recv_ms"] >= first_fill_ms)
+    ]
+    first_completion_accept_ms = (
+        completion_accepts[0]["recv_ms"] if completion_accepts else None
+    )
+
+    same_side_add_accepts: list[dict[str, Any]] = []
+    if first_fill_ms is not None and first_fill_side:
+        cover_cutoff = first_cover_ms if first_cover_ms is not None else end_ms
+        same_side_add_accepts = [
+            r
+            for r in seed_accepts
+            if r["side"] == first_fill_side
+            and r["recv_ms"] > first_fill_ms
+            and (cover_cutoff is None or r["recv_ms"] <= cover_cutoff)
+        ]
+
+    cancel_rows = conn.execute(
+        """
+        SELECT recv_unix_ms, reason
+        FROM own_order_lifecycle
+        WHERE slug = ? AND event IN ('cancel_ack', 'cancel_sent')
+        ORDER BY recv_unix_ms ASC, capture_seq ASC
+        """,
+        (slug,),
+    ).fetchall()
+    first_harvest_cancel_ms = next(
+        (
+            int(recv_ms)
+            for recv_ms, reason in cancel_rows
+            if str(reason or "") == "EndgameRiskGate"
+        ),
+        None,
+    )
+
+    seed_live_until_ms = first_fill_ms or first_harvest_cancel_ms or end_ms
+    seed_live_secs = (
+        (seed_live_until_ms - first_seed_ms) / 1000.0
+        if first_seed_ms is not None and seed_live_until_ms is not None
+        else None
+    )
+
+    return {
+        "first_seed_accept_rel_s": rel_secs(first_seed_ms, end_ms),
+        "dual_seed_accept_rel_s": rel_secs(dual_seed_ms, end_ms),
+        "first_buy_fill_rel_s": rel_secs(first_fill_ms, end_ms),
+        "first_cover_fill_rel_s": rel_secs(first_cover_ms, end_ms),
+        "first_completion_accept_rel_s": rel_secs(first_completion_accept_ms, end_ms),
+        "first_same_side_add_accept_rel_s": rel_secs(
+            same_side_add_accepts[0]["recv_ms"] if same_side_add_accepts else None,
+            end_ms,
+        ),
+        "harvest_cancel_first_rel_s": rel_secs(first_harvest_cancel_ms, end_ms),
+        "first_seed_to_first_fill_s": (
+            (first_fill_ms - first_seed_ms) / 1000.0
+            if first_seed_ms is not None and first_fill_ms is not None
+            else None
+        ),
+        "seed_live_before_first_fill_or_cancel_s": seed_live_secs,
+        "initial_seed_accept_count": len(initial_seed_accepts),
+        "initial_seed_side_count": len({r["side"] for r in initial_seed_accepts}),
+        "completion_accept_count": len(completion_accepts),
+        "same_side_add_accept_count_before_cover": len(same_side_add_accepts),
+        "maker_buy_accept_count": len(seed_accepts) + len(completion_accepts),
+    }
+
+
 def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     slugs = [
         r[0]
@@ -189,6 +347,7 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         merge_requested_count = count_event(conn, slug, "merge_requested")
         merge_executed_count = count_event(conn, slug, "merge_executed")
         redeem_requested_count = count_event(conn, slug, "redeem_requested")
+        lifecycle = order_lifecycle_metrics(conn, slug, end_ms)
         has_any_payload = bool(summary_payload) or metric is not None
         has_active_episode = (
             1.0
@@ -265,6 +424,7 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "merge_requested_count": merge_requested_count,
             "merge_executed_count": merge_executed_count,
             "redeem_requested_count": redeem_requested_count,
+            **lifecycle,
         }
         row["merge_skipped_first_rel_s"], row["merge_skipped_last_rel_s"] = (
             first_last_rel_secs(conn, slug, "merge_skipped", end_ms)
@@ -316,6 +476,15 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     taker_close_dispatched_rounds = sum(
         1 for r in rows if float(r.get("dispatch_taker_close") or 0.0) > 0.0
     )
+    seed_exposed_rounds = sum(
+        1 for r in rows if r.get("first_seed_accept_rel_s") is not None
+    )
+    dual_seed_rounds = sum(
+        1 for r in rows if r.get("dual_seed_accept_rel_s") is not None
+    )
+    first_fill_rounds = sum(
+        1 for r in rows if r.get("first_buy_fill_rel_s") is not None
+    )
     total_taker_shadow_would_close = sum(collect("taker_shadow_would_close"))
     total_dispatch_taker_close = sum(collect("dispatch_taker_close"))
 
@@ -354,6 +523,24 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "total_taker_shadow_would_close": total_taker_shadow_would_close,
         "total_dispatch_taker_close": total_dispatch_taker_close,
+        "seed_exposed_rounds": seed_exposed_rounds,
+        "seed_exposed_fill_rounds": first_fill_rounds,
+        "seed_exposed_fill_ratio": (
+            first_fill_rounds / seed_exposed_rounds if seed_exposed_rounds else None
+        ),
+        "dual_seed_rounds": dual_seed_rounds,
+        "dual_seed_ratio": (
+            dual_seed_rounds / seed_exposed_rounds if seed_exposed_rounds else None
+        ),
+        "median_first_seed_accept_rel_s": median(collect("first_seed_accept_rel_s")),
+        "median_dual_seed_accept_rel_s": median(collect("dual_seed_accept_rel_s")),
+        "median_first_buy_fill_rel_s": median(collect("first_buy_fill_rel_s")),
+        "median_first_seed_to_first_fill_s": median(
+            collect("first_seed_to_first_fill_s")
+        ),
+        "median_seed_live_before_first_fill_or_cancel_s": median(
+            collect("seed_live_before_first_fill_or_cancel_s")
+        ),
         "total_maker_only_missed_open_rounds": int(
             sum(int(r["maker_only_missed_open_round"] or 0) for r in rows)
         ),
@@ -421,6 +608,20 @@ def main() -> None:
         "merge_requested_count",
         "merge_executed_count",
         "redeem_requested_count",
+        "first_seed_accept_rel_s",
+        "dual_seed_accept_rel_s",
+        "first_buy_fill_rel_s",
+        "first_cover_fill_rel_s",
+        "first_completion_accept_rel_s",
+        "first_same_side_add_accept_rel_s",
+        "harvest_cancel_first_rel_s",
+        "first_seed_to_first_fill_s",
+        "seed_live_before_first_fill_or_cancel_s",
+        "initial_seed_accept_count",
+        "initial_seed_side_count",
+        "completion_accept_count",
+        "same_side_add_accept_count_before_cover",
+        "maker_buy_accept_count",
         "merge_skipped_first_rel_s",
         "merge_skipped_last_rel_s",
         "merge_requested_first_rel_s",
