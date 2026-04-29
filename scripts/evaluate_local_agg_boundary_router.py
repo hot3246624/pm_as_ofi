@@ -207,6 +207,14 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
     elif symbol == "xrp/usd":
         if rule == "nearest_abs" and source_count >= 2 and exact_sources == 0 and margin_bps < 0.45:
             return "xrp_nearest_near_flat"
+        if (
+            rule == "nearest_abs"
+            and source_count >= 2
+            and exact_sources == 0
+            and spread_bps >= 2.0
+            and margin_bps < 2.0
+        ):
+            return "xrp_nearest_wide_spread_near_flat"
         if rule == "nearest_abs" and source_count == 1 and exact_sources == 0 and margin_bps < 0.5:
             return "xrp_single_nearest_near_flat"
         if rule == "last_before" and exact_sources == 0 and side_yes and margin_bps < 1.5:
@@ -227,6 +235,14 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
             and margin_bps < 2.0
         ):
             return "hype_two_after_tight_near_flat"
+        if (
+            rule == "after_then_before"
+            and source_count == 2
+            and exact_sources == 0
+            and spread_bps >= 2.0
+            and margin_bps < 1.5
+        ):
+            return "hype_two_after_wide_spread_near_flat"
         if rule == "nearest_abs" and exact_sources == 0:
             if source_count >= 2 and spread_bps <= 1.0 and margin_bps < 1.8:
                 return "hype_nearest_near_flat"

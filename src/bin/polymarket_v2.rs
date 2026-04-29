@@ -10301,6 +10301,14 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 return Some("xrp_nearest_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 2.0
+                && weighted_direction_margin_bps + 1e-9 < 2.0
+            {
+                return Some("xrp_nearest_wide_spread_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
                 && weighted_direction_margin_bps + 1e-9 < 0.5
@@ -10346,6 +10354,14 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 2.0
             {
                 return Some("hype_two_after_tight_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 2.0
+                && weighted_direction_margin_bps + 1e-9 < 1.5
+            {
+                return Some("hype_two_after_wide_spread_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.close_exact_sources == 0
