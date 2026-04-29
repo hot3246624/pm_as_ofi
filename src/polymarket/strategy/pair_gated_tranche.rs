@@ -10,7 +10,7 @@ use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, Strateg
 
 const RESIDUAL_EPS: f64 = 10.0;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
-const TAIL_COMPLETION_ONLY_SECS: u64 = 45;
+const TAIL_COMPLETION_ONLY_SECS: u64 = 25;
 const HARVEST_WINDOW_SECS: u64 = 25;
 const HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const BASE_CLIP_QTY: f64 = 120.0;

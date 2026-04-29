@@ -14,7 +14,7 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 }
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
-const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 45;
+const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
 
 impl StrategyCoordinator {
     pub(super) fn pgt_buy_retain_decision(

@@ -7654,7 +7654,7 @@ fn test_pair_gated_tranche_tail_blocks_new_seed_with_diagnostic() {
         .unwrap_or_default()
         .as_secs();
     let mut c = cfg();
-    c.market_end_ts = Some(now_secs + 45);
+    c.market_end_ts = Some(now_secs + 20);
     let quotes = pair_gated_tranche_quotes(
         c,
         InventorySnapshot::default(),
@@ -7664,6 +7664,27 @@ fn test_pair_gated_tranche_tail_blocks_new_seed_with_diagnostic() {
     assert!(quotes.yes_buy.is_none());
     assert!(quotes.no_buy.is_none());
     assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 1);
+}
+
+#[test]
+fn test_pair_gated_tranche_keeps_seed_alive_before_harvest_window() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 40);
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.54, 0.48, 0.52),
+    );
+
+    assert!(
+        quotes.yes_buy.is_some() || quotes.no_buy.is_some(),
+        "PGT should keep flat seed quotes alive until the t-25s harvest cutoff"
+    );
+    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 0);
 }
 
 #[tokio::test]
@@ -7960,7 +7981,7 @@ async fn test_pair_gated_tranche_stale_holds_existing_buy_quote_instead_of_clear
 }
 
 #[tokio::test]
-async fn test_pair_gated_tranche_tail_force_clears_orphan_seed_orders() {
+async fn test_pair_gated_tranche_tail_force_does_not_clear_before_harvest_cutoff() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairGatedTrancheArb;
     config.market_end_ts = Some(
@@ -7969,6 +7990,30 @@ async fn test_pair_gated_tranche_tail_force_clears_orphan_seed_orders() {
             .unwrap()
             .as_secs()
             + 40,
+    );
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+    let inv = InventoryState::default();
+    let quotes = StrategyQuotes::default();
+    let mut st = coord.init_execution_state(&inv, quotes);
+
+    coord.maybe_pgt_force_clear_tail_seed_orders(&mut st).await;
+
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "PGT should not force-clear flat seed orders before the t-25s harvest cutoff"
+    );
+}
+
+#[tokio::test]
+async fn test_pair_gated_tranche_tail_force_clears_orphan_seed_orders() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 20,
     );
     let (_o, _i, _m, _k, mut er, mut coord) = make(config);
     let inv = InventoryState::default();
