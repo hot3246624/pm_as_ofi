@@ -776,6 +776,8 @@ impl StrategyCoordinator {
                         self.pgt_buy_retain_decision(reason, delta_ticks, slot_age, remaining_secs);
                     if retain {
                         self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                        self.stats.pgt_dispatch_retain =
+                            self.stats.pgt_dispatch_retain.saturating_add(1);
                         debug!(
                         "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
                         slot, retain_reason, price, slot_price, delta_ticks,
@@ -787,6 +789,11 @@ impl StrategyCoordinator {
                     slot, retain_reason, price, slot_price, delta_ticks,
                 );
                 }
+            }
+            if !needs_reprice && pgt_buy_retain_candidate {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                self.stats.pgt_dispatch_retain = self.stats.pgt_dispatch_retain.saturating_add(1);
+                return;
             }
             // PairArb is BUY-only and pair-cost-first:
             // both candidate roles are state/event-driven and hold between
@@ -1923,6 +1930,9 @@ impl StrategyCoordinator {
         self.sync_buy_side_wrapper(slot);
 
         self.stats.placed += 1;
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && slot.direction == TradeDirection::Buy {
+            self.stats.pgt_dispatch_place = self.stats.pgt_dispatch_place.saturating_add(1);
+        }
         if replacing {
             self.stats.replace_events = self.stats.replace_events.saturating_add(1);
         } else {

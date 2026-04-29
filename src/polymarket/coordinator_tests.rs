@@ -8303,6 +8303,10 @@ async fn test_pair_gated_tranche_seed_does_not_reprice_on_same_price_size_only_d
         Ok(Some(OrderManagerCmd::SetTarget(_))) => {}
         other => panic!("expected initial seed SetTarget, got {:?}", other),
     }
+    assert_eq!(
+        coord.stats.pgt_dispatch_place, 1,
+        "PGT place metric should count actual SetTarget publishes"
+    );
 
     let slot = OrderSlot::NO_BUY;
     coord.slot_last_ts[slot.index()] = Instant::now() - Duration::from_secs(3);
@@ -8314,6 +8318,14 @@ async fn test_pair_gated_tranche_seed_does_not_reprice_on_same_price_size_only_d
     assert!(
         timeout(Duration::from_millis(30), er.recv()).await.is_err(),
         "PGT flat seed should hold same-price live order instead of repricing on size-only drift",
+    );
+    assert_eq!(
+        coord.stats.pgt_dispatch_place, 1,
+        "PGT place metric must not count retained size-only intents as order placement"
+    );
+    assert_eq!(
+        coord.stats.pgt_dispatch_retain, 1,
+        "retained size-only PGT intents should be visible as retain pressure"
     );
 }
 

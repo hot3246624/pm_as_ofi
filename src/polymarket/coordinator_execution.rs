@@ -1715,9 +1715,6 @@ impl StrategyCoordinator {
                     }
                     return;
                 }
-                if self.cfg.strategy.is_pair_gated_tranche_arb() {
-                    self.stats.pgt_dispatch_place = self.stats.pgt_dispatch_place.saturating_add(1);
-                }
                 self.place_or_reprice(
                     side,
                     intent.direction,

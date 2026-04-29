@@ -1,6 +1,6 @@
 # PGT/xuan Shadow 验收计划
 
-更新时间：2026-04-29 21:18 CST
+更新时间：2026-04-29 21:27 CST
 
 目标：在不影响 `oracle_lag_sniping` / `pair_arb` / `glft_mm` 的前提下，将 `pair_gated_tranche_arb` 的 BTC 5m shadow 行为收敛到接近 xuanxuan008 的 completion-first 特征，并确认是否具备进入更长期 shadow soak 的条件。
 
@@ -13,7 +13,7 @@
 | A3 | seed latch release | 单边 seed 最迟约 30s 释放到双边，避免 90s 单边暴露 | 已从样本看到约 30s 后释放双边 | 通过 | 继续累计样本 |
 | A4 | first fill 捕获 | `seed_exposed_fill_ratio` 持续提升；短样本不作为硬门槛 | 近期 5 个完整样本约 40%，样本少 | 观察中 | 至少再收集 10-20 轮 |
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | `1777465200` 出现 6/57.6=10.4%，符合 | 通过 | 防止多次 same-side add 回归 |
-| A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468200` 实际 `placed=8`、`cancel=4`、`replace_per_min=0.22`，无真实挂撤风暴；但 `PGTGate.dispatch_place` 仍偏高，属于观测口径/内部 intent 压力 | 部分通过 | 区分真实订单生命周期与内部 dispatch 计数 |
+| A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468200` 实际 `placed=8`、`cancel=4`、`replace_per_min=0.22`，无真实挂撤风暴；已修正 `PGTGate.dispatch_place` 口径，只统计真实 maker SetTarget | 通过 | 下一轮确认新口径 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | `1777468200` `dispatch_taker_close=2`，`first_completion_delay_s=90.128`，`episode_close_delay_p90=90.128` | 通过 | 继续累计样本 |
 | A8 | taker-close 成本边界 | 75s 只 breakeven；90s 后最多 1.01；120s 1.015；tail 最高 1.03 | `1777468200` 最终 `summary_pair_cost=1.0100`，刚好落在 90s repair 上限 | 通过 | 继续看是否系统性贴上限 |
 | A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.01 | `1777468200` 单轮 `summary_pair_cost=1.0100`、`paired_locked_pnl=-0.7950`，闭合质量偏保守 | 观察中 | 累计样本后决定是否放慢/收紧 taker-close |
@@ -23,7 +23,7 @@
 
 ## 当前硬阻塞
 
-1. `completion` maker 阶段实际订单生命周期已稳定，但 `PGTGate.dispatch_place` 仍偏高；需要修正指标或减少内部 intent 压力，避免误判为挂撤风暴。
+1. `completion` maker 阶段实际订单生命周期已稳定；`PGTGate.dispatch_place` 误报问题已修复，下一轮需确认新口径下 `place` 接近真实 `placed`。
 2. `taker-close` 已能在收紧后的 repair band 下闭环，但 `summary_pair_cost=1.0100` 处于边界；需要确认长期不是用负 EV 换 clean close。
 3. first fill 成交率仍样本不足，不能只靠一两轮判断策略质量。
 
@@ -63,10 +63,11 @@
 - taker-close 通路正常：两次机会都发出并闭合。
 - 没有真实挂撤风暴。
 - 当前主要问题从“能不能闭合”转为“闭合是否足够赚钱”。
+- 后续修复已完成：`PGTGate.dispatch_place` 不再统计被下层 retain 的内部 intent，只统计真实 maker SetTarget；被保留的 PGT buy intent 计入 `dispatch_retain`。
 
 ## 推进顺序
 
 1. 继续跑 fixed BTC PGT shadow，累计至少 10 个 active episode。
 2. 用 replay/gap report 每轮追踪 `summary_pair_cost`、`first_completion_delay_s`、`dispatch_taker_close`、`clean_closed_episode_ratio`。
 3. 若 `summary_pair_cost` 长期贴近或超过 1.01，优先收紧 taker-close 或延后 repair，而不是放宽成交。
-4. 若 `PGTGate.dispatch_place` 继续高但真实 `placed/cancel/replace` 低，修正指标命名/计数，避免误导策略验收。
+4. 下一轮重点确认修正后的 `PGTGate.dispatch_place` 与真实订单生命周期一致。
