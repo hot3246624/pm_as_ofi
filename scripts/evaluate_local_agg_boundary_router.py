@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable
@@ -15,6 +17,41 @@ DEFAULT_WEIGHTS = {
     "coinbase": 1.0,
     "hyperliquid": 1.5,
 }
+
+CLOSE_ONLY_WEIGHTS = {
+    "binance": 1.0,
+    "bybit": 1.0,
+    "okx": 1.0,
+    "coinbase": 1.0,
+    "hyperliquid": 0.5,
+}
+
+LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS = 2_500
+LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS = 12.0
+LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS = 900.0
+LOCAL_PRICE_AGG_EXACT_BOOST = 1.25
+LOCAL_PRICE_AGG_COMPARE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS = 5.5
+LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS = 6.0
+LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_SOURCES = 2
+LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS = 3.0
+LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS = 2.0
+LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS = 2.0
+LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS = 5.0
+LOCAL_PRICE_AGG_MIN_CONFIDENCE = 0.85
+LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE = 0.80
+LOCAL_PRICE_AGG_RELIEF_MAX_SOURCE_SPREAD_BPS = 2.0
+LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_SOURCES = 2
+LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MAX_SOURCE_SPREAD_BPS = 5.0
+LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS = 3.0
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_SOURCES = 3
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS = 4.0
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS = 0.6
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE = 2.5
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS_TWO_SOURCE = 1.0
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_CONFIDENCE = 0.79
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES = 2
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MAX_SOURCE_SPREAD_BPS = 5.1
+LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_DIRECTION_MARGIN_BPS = 2.0
 
 ROUTER_POLICY = {
     "bnb/usd": {
@@ -77,6 +114,29 @@ ROUTER_POLICY = {
 }
 
 
+def load_bias_cache(path: str) -> dict[tuple[str, str], float]:
+    if not path:
+        return {}
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        rows = json.loads(p.read_text())
+    except Exception:
+        return {}
+    biases = {}
+    for row in rows if isinstance(rows, list) else []:
+        symbol = str(row.get("symbol", "")).lower()
+        source = str(row.get("source", "")).lower()
+        try:
+            bias_bps = float(row.get("bias_bps", 0.0))
+        except Exception:
+            continue
+        if symbol and source and math.isfinite(bias_bps):
+            biases[(symbol, source)] = bias_bps
+    return biases
+
+
 def allowed_sources(source_subset: str) -> set[str]:
     if source_subset == "full":
         return set(DEFAULT_WEIGHTS)
@@ -109,6 +169,186 @@ def pick_price(
         before = [(off, price) for off, price in pts if off <= 0]
         return max(before, key=lambda x: x[0]) if before else None
     raise ValueError(f"unsupported rule={rule}")
+
+
+def pick_close_only_price(src_points: Iterable[tuple[int, float]], close_tol_ms: int) -> tuple[int, float, bool, int] | None:
+    pts = [(off, price) for off, price in src_points if -close_tol_ms <= off <= close_tol_ms]
+    if not pts:
+        return None
+    exact = [(off, price) for off, price in pts if off == 0]
+    if exact:
+        off, price = exact[-1]
+        return off, price, True, 0
+    after = [(off, price) for off, price in pts if off > 0]
+    if after:
+        off, price = min(after, key=lambda x: x[0])
+        return off, price, False, abs(off)
+    off, price = min(pts, key=lambda x: (abs(x[0]), x[0]))
+    return off, price, False, abs(off)
+
+
+def temporal_weight(abs_delta_ms: int) -> float:
+    return 1.0 / (1.0 + (abs_delta_ms / LOCAL_PRICE_AGG_CLOSE_TIME_DECAY_MS))
+
+
+def apply_source_bias(symbol: str, source: str, price: float, biases: dict[tuple[str, str], float]) -> float:
+    bias_bps = biases.get((symbol, source), 0.0)
+    adjusted = price * (1.0 + bias_bps / 10_000.0)
+    return adjusted if math.isfinite(adjusted) and adjusted > 0.0 else price
+
+
+def close_only_hit(sample: dict, biases: dict[tuple[str, str], float]) -> dict | None:
+    per_source = []
+    for source in DEFAULT_WEIGHTS:
+        picked = pick_close_only_price(
+            (
+                (off, price)
+                for src, off, price in sample["close_points"]
+                if src == source
+            ),
+            LOCAL_PRICE_AGG_CLOSE_TOLERANCE_MS,
+        )
+        if picked is None:
+            continue
+        off, raw_price, exact, abs_delta_ms = picked
+        price = apply_source_bias(sample["symbol"], source, raw_price, biases)
+        weight = (
+            CLOSE_ONLY_WEIGHTS.get(source, 1.0)
+            * temporal_weight(abs_delta_ms)
+            * (LOCAL_PRICE_AGG_EXACT_BOOST if exact else 1.0)
+        )
+        if weight > 0:
+            per_source.append((source, off, price, weight, exact))
+    if not per_source:
+        return None
+    price_values = [price for _, _, price, _, _ in per_source]
+    source_spread_bps = 0.0
+    if len(price_values) >= 2:
+        center = sum(price_values) / len(price_values)
+        source_spread_bps = (max(price_values) - min(price_values)) / max(abs(center), 1e-12) * 10_000.0
+    if source_spread_bps > LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS + 1e-9:
+        return None
+    weight_sum = sum(weight for _, _, _, weight, _ in per_source)
+    if weight_sum <= 0:
+        return None
+    close_price = sum(price * weight for _, _, price, weight, _ in per_source) / weight_sum
+    return {
+        "close_price": close_price,
+        "source_count": len(per_source),
+        "source_spread_bps": source_spread_bps,
+        "exact_sources": sum(1 for *_, exact in per_source if exact),
+        "source_offsets": [off for _, off, _, _, _ in per_source],
+        "source_prices": [(source, price) for source, _, price, _, _ in per_source],
+    }
+
+
+def close_only_filter_reason(symbol: str, hit: dict | None, rtds_open: float) -> tuple[str | None, float | None]:
+    if hit is None:
+        return None, None
+    close_price = hit["close_price"]
+    side_yes = close_price >= rtds_open
+    source_agreement = 0.0
+    if hit["source_prices"]:
+        source_agreement = sum(1 for _, price in hit["source_prices"] if (price >= rtds_open) == side_yes) / len(hit["source_prices"])
+    direction_margin_bps = abs(close_price - rtds_open) / max(abs(rtds_open), 1e-12) * 10_000.0
+    all_preclose = hit["exact_sources"] == 0 and all(off < 0 for off in hit["source_offsets"])
+    preclose_relief = (
+        all_preclose
+        and direction_margin_bps + 1e-9 >= LOCAL_PRICE_AGG_COMPARE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS
+        and direction_margin_bps + 1e-9 < LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS
+    )
+    safe_preclose_relief = (
+        all_preclose
+        and hit["source_count"] >= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_SOURCES
+        and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
+        and direction_margin_bps + 1e-9 >= LOCAL_PRICE_AGG_COMPARE_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS
+    )
+    sol_safe_preclose_relief = (
+        symbol == "sol/usd"
+        and all_preclose
+        and not (
+            hit["source_count"] == 2
+            and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE + 1e-9
+            and direction_margin_bps + 1e-9 < 3.0
+        )
+        and (
+            (
+                hit["source_count"] >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_SOURCES
+                and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
+                and direction_margin_bps + 1e-9 >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS
+            )
+            or (
+                hit["source_count"] >= 2
+                and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE + 1e-9
+                and direction_margin_bps + 1e-9 >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS_TWO_SOURCE
+            )
+        )
+    )
+    safe_single_source_relief = (
+        hit["source_count"] == 1
+        and hit["exact_sources"] == 0
+        and direction_margin_bps + 1e-9 >= LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS
+    )
+    if (
+        all_preclose
+        and not preclose_relief
+        and not safe_preclose_relief
+        and not sol_safe_preclose_relief
+        and not safe_single_source_relief
+        and direction_margin_bps + 1e-9 < LOCAL_PRICE_AGG_COMPARE_PRECLOSE_MIN_DIRECTION_MARGIN_BPS
+    ):
+        return "preclose_near_flat", direction_margin_bps
+    single_source_min_margin = max(1.25, LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS)
+    if (
+        hit["source_count"] == 1
+        and hit["exact_sources"] == 0
+        and not safe_single_source_relief
+        and direction_margin_bps + 1e-9 < single_source_min_margin
+    ):
+        return "single_source_near_flat", direction_margin_bps
+    strong_direction_relief = (
+        hit["source_count"] >= 3
+        and source_agreement >= 1.0 - 1e-9
+        and hit["source_spread_bps"] <= 5.0 + 1e-9
+        and direction_margin_bps >= 10.0 - 1e-9
+    )
+    confidence_relief = (
+        hit["source_count"] >= 2
+        and source_agreement >= 1.0 - 1e-9
+        and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
+        and direction_margin_bps >= LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS - 1e-9
+    )
+    safe_low_conf_relief = (
+        hit["source_count"] >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_SOURCES
+        and source_agreement >= 1.0 - 1e-9
+        and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MAX_SOURCE_SPREAD_BPS + 1e-9
+        and direction_margin_bps >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS - 1e-9
+    )
+    sol_safe_low_conf_relief = (
+        symbol == "sol/usd"
+        and hit["source_count"] >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES
+        and source_agreement >= 1.0 - 1e-9
+        and hit["source_spread_bps"] <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MAX_SOURCE_SPREAD_BPS + 1e-9
+        and direction_margin_bps + 1e-9 >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_DIRECTION_MARGIN_BPS
+    )
+    if hit["source_count"] == 1:
+        confidence = 0.93 if hit["exact_sources"] > 0 else 0.87
+    else:
+        source_factor = min(hit["source_count"], 3) / 3.0
+        spread_factor = max(0.0, min(1.0, 1.0 - (hit["source_spread_bps"] / LOCAL_PRICE_AGG_MAX_SOURCE_SPREAD_BPS)))
+        exact_factor = min(hit["exact_sources"], 2) / 2.0
+        confidence = max(0.0, min(1.0, 0.50 * source_agreement + 0.20 * source_factor + 0.20 * spread_factor + 0.10 * exact_factor))
+    effective_min_confidence = (
+        min(
+            LOCAL_PRICE_AGG_MIN_CONFIDENCE,
+            LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_CONFIDENCE if sol_safe_low_conf_relief else LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE,
+        )
+        if confidence_relief or strong_direction_relief or safe_low_conf_relief or sol_safe_low_conf_relief
+        else LOCAL_PRICE_AGG_MIN_CONFIDENCE
+    )
+    if confidence + 1e-9 < effective_min_confidence:
+        return "low_confidence", direction_margin_bps
+    return None, direction_margin_bps
 
 
 def instance_samples(path: Path) -> list[dict]:
@@ -163,7 +403,9 @@ def select_samples(samples: list[dict], sample_mode: str, instance_id: str) -> l
 
 
 def router_filter_reason(symbol: str, rule: str, source_count: int, exact_sources: int,
-                         spread_bps: float, margin_bps: float, side_yes: bool) -> str | None:
+                         spread_bps: float, margin_bps: float, side_yes: bool,
+                         close_only_reason: str | None = None,
+                         close_only_margin_bps: float | None = None) -> str | None:
     if symbol == "bnb/usd":
         if (
             rule == "after_then_before"
@@ -199,6 +441,8 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
             and margin_bps < 1.0
         ):
             return "bnb_yes_near_flat"
+        if close_only_reason == "preclose_near_flat" and source_count == 1 and exact_sources == 0:
+            return "bnb_close_only_preclose_near_flat"
     elif symbol == "btc/usd":
         if rule == "after_then_before" and source_count == 1 and exact_sources == 0 and margin_bps < 0.25:
             return "btc_single_near_flat"
@@ -270,12 +514,22 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
     elif symbol == "sol/usd":
         if rule == "after_then_before" and source_count == 2 and exact_sources == 0 and margin_bps < 1.0:
             return "sol_after_near_flat"
+        if (
+            close_only_reason == "preclose_near_flat"
+            and close_only_margin_bps is not None
+            and close_only_margin_bps < 0.2
+            and source_count == 2
+            and spread_bps <= 0.1
+        ):
+            return "sol_close_only_preclose_near_flat"
     return None
 
 
-def evaluate_sample(sample: dict, pre_ms: int, post_ms: int) -> dict:
+def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[str, str], float]) -> dict:
     symbol = sample["symbol"]
     policy = ROUTER_POLICY[symbol]
+    fallback_hit = close_only_hit(sample, biases)
+    fallback_filter_reason, fallback_margin_bps = close_only_filter_reason(symbol, fallback_hit, sample["rtds_open"])
     per_source = []
     for source in allowed_sources(policy["source_subset"]):
         picked = pick_price(
@@ -294,7 +548,38 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int) -> dict:
         if weight > 0.0:
             per_source.append((source, picked[0], picked[1], weight))
 
+    rtds_open = sample["rtds_open"]
+    rtds_close = sample["rtds_close"]
     if len(per_source) < policy["min_sources"]:
+        if symbol == "hype/usd" and fallback_hit is not None and fallback_filter_reason is None:
+            pred_close = fallback_hit["close_price"]
+            side_yes = pred_close >= rtds_open
+            truth_yes = rtds_close >= rtds_open
+            close_diff_bps = abs(pred_close - rtds_close) / max(abs(rtds_close), 1e-12) * 10_000.0
+            margin_bps = abs(pred_close - rtds_open) / max(abs(rtds_open), 1e-12) * 10_000.0
+            return {
+                "status": "ok",
+                "filter_reason": "",
+                "symbol": symbol,
+                "round_end_ts": sample["round_end_ts"],
+                "instance_id": sample["instance_id"],
+                "log_file": sample.get("log_file", ""),
+                "source_subset": "close_only_fallback",
+                "rule": "close_only",
+                "min_sources": 1,
+                "pred_close": pred_close,
+                "rtds_open": rtds_open,
+                "rtds_close": rtds_close,
+                "pred_yes": side_yes,
+                "truth_yes": truth_yes,
+                "side_error": side_yes != truth_yes,
+                "close_diff_bps": close_diff_bps,
+                "direction_margin_bps": margin_bps,
+                "source_count": fallback_hit["source_count"],
+                "source_spread_bps": fallback_hit["source_spread_bps"],
+                "exact_sources": fallback_hit["exact_sources"],
+                "sources": ";".join(source for source, _ in sorted(fallback_hit["source_prices"])),
+            }
         return {
             "status": "missing",
             "symbol": symbol,
@@ -305,8 +590,6 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int) -> dict:
     pred_close = sum(weight * price for _, _, price, weight in per_source) / sum(
         weight for _, _, _, weight in per_source
     )
-    rtds_open = sample["rtds_open"]
-    rtds_close = sample["rtds_close"]
     side_yes = pred_close >= rtds_open
     truth_yes = rtds_close >= rtds_open
     exact_sources = sum(1 for _, off, _, _ in per_source if off == 0)
@@ -324,7 +607,38 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int) -> dict:
         spread_bps,
         margin_bps,
         side_yes,
+        fallback_filter_reason,
+        fallback_margin_bps,
     )
+    if reason and symbol == "hype/usd" and fallback_hit is not None and fallback_filter_reason is None:
+        pred_close = fallback_hit["close_price"]
+        side_yes = pred_close >= rtds_open
+        truth_yes = rtds_close >= rtds_open
+        close_diff_bps = abs(pred_close - rtds_close) / max(abs(rtds_close), 1e-12) * 10_000.0
+        margin_bps = abs(pred_close - rtds_open) / max(abs(rtds_open), 1e-12) * 10_000.0
+        return {
+            "status": "ok",
+            "filter_reason": "",
+            "symbol": symbol,
+            "round_end_ts": sample["round_end_ts"],
+            "instance_id": sample["instance_id"],
+            "log_file": sample.get("log_file", ""),
+            "source_subset": "close_only_fallback",
+            "rule": "close_only",
+            "min_sources": 1,
+            "pred_close": pred_close,
+            "rtds_open": rtds_open,
+            "rtds_close": rtds_close,
+            "pred_yes": side_yes,
+            "truth_yes": truth_yes,
+            "side_error": side_yes != truth_yes,
+            "close_diff_bps": close_diff_bps,
+            "direction_margin_bps": margin_bps,
+            "source_count": fallback_hit["source_count"],
+            "source_spread_bps": fallback_hit["source_spread_bps"],
+            "exact_sources": fallback_hit["exact_sources"],
+            "sources": ";".join(source for source, _ in sorted(fallback_hit["source_prices"])),
+        }
     return {
         "status": "filtered" if reason else "ok",
         "filter_reason": reason or "",
@@ -358,6 +672,11 @@ def main() -> int:
     parser.add_argument("--pre-ms", type=int, default=5000)
     parser.add_argument("--post-ms", type=int, default=500)
     parser.add_argument(
+        "--bias-cache",
+        default="logs/local-agg-boundary-challenger-lab/local_price_agg_bias_cache.instance.json",
+        help="optional local close-only source bias cache used to mirror runtime fallback decisions",
+    )
+    parser.add_argument(
         "--sample-mode",
         choices=("best", "latest", "all"),
         default="best",
@@ -375,6 +694,7 @@ def main() -> int:
         )
         if sample["symbol"] in ROUTER_POLICY
     ]
+    biases = load_bias_cache(args.bias_cache)
     rounds = sorted({sample["round_end_ts"] for sample in samples})
     test_rounds = set(rounds[-args.test_rounds:]) if args.test_rounds > 0 else set()
 
@@ -382,7 +702,7 @@ def main() -> int:
     summary = defaultdict(lambda: {"ok": 0, "side": 0, "filtered": 0, "missing": 0, "bps_sum": 0.0, "bps_max": 0.0})
     reasons = Counter()
     for sample in samples:
-        row = evaluate_sample(sample, args.pre_ms, args.post_ms)
+        row = evaluate_sample(sample, args.pre_ms, args.post_ms, biases)
         split = "test" if sample["round_end_ts"] in test_rounds else "train"
         row["split"] = split
         rows.append(row)
