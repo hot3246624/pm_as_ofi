@@ -107,7 +107,7 @@ def main():
             mismatch = [x for x in accepted if x.get('side_match_vs_rtds_open') == 'false']
             bps_values = [float(x['close_diff_bps']) for x in accepted if x.get('close_diff_bps')]
             acc_syms = ', '.join(x.get('symbol', '?') for x in accepted)
-            filt_syms = ', '.join(f"{x.get('symbol','?')}:{x.get('reason','?')}" for x in filtered)
+            filt_syms = ', '.join(f"{x.get('symbol','?')}:{x.get('filter_reason') or x.get('reason','?')}" for x in filtered)
             unr_syms = ', '.join(f"{x.get('symbol','?')}:{x.get('reason','?')}" for x in unresolved)
             prefix = f'ROUND {r}' if policy == policies[0] else ' ' * (len(r) + 6)
             label = f'{prefix} [{policy}]'
