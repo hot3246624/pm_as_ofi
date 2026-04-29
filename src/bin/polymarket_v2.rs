@@ -3305,6 +3305,30 @@ const PGT_SHADOW_REDEEM_FIRST_SECS: u64 = 35;
 const PGT_SHADOW_REDEEM_RETRY_SECS: u64 = 50;
 const PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS: u64 = 2_000;
 
+fn pgt_shadow_harvest_attempt(
+    first_sent: bool,
+    retry_sent: bool,
+    first_attempt_was_eligible: bool,
+    shadow_merge_completed: bool,
+    eligible: bool,
+    remaining_secs: u64,
+) -> Option<u8> {
+    if !first_sent && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS {
+        return Some(1);
+    }
+    if retry_sent || shadow_merge_completed || !eligible {
+        return None;
+    }
+    if remaining_secs <= PGT_SHADOW_HARVEST_RETRY_SECS
+        || (first_sent
+            && !first_attempt_was_eligible
+            && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS)
+    {
+        return Some(2);
+    }
+    None
+}
+
 fn pgt_shadow_redeem_target(
     snapshot: &InventorySnapshot,
     winner_side: Option<Side>,
@@ -3326,6 +3350,7 @@ async fn run_pgt_shadow_harvest_lifecycle(
     let mut first_sent = false;
     let mut retry_sent = false;
     let mut first_attempt_was_eligible = false;
+    let mut shadow_merge_completed = false;
 
     loop {
         let now = unix_now_secs();
@@ -3339,20 +3364,14 @@ async fn run_pgt_shadow_harvest_lifecycle(
         let mergeable_full_sets = snap.pair_ledger.capital_state.mergeable_full_sets.max(0.0);
         let eligible = pairable_qty + 1e-9 >= PGT_SHADOW_HARVEST_MIN_PAIRABLE_QTY;
 
-        let should_emit_first = !first_sent && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS;
-        let should_emit_retry = !retry_sent
-            && ((remaining_secs <= PGT_SHADOW_HARVEST_RETRY_SECS)
-                || (first_sent
-                    && !first_attempt_was_eligible
-                    && eligible
-                    && remaining_secs <= PGT_SHADOW_HARVEST_FIRST_SECS));
-        let attempt = if should_emit_first {
-            Some(1_u8)
-        } else if should_emit_retry {
-            Some(2_u8)
-        } else {
-            None
-        };
+        let attempt = pgt_shadow_harvest_attempt(
+            first_sent,
+            retry_sent,
+            first_attempt_was_eligible,
+            shadow_merge_completed,
+            eligible,
+            remaining_secs,
+        );
 
         if let Some(attempt) = attempt {
             let payload = json!({
@@ -3373,6 +3392,7 @@ async fn run_pgt_shadow_harvest_lifecycle(
                     payload.clone(),
                 );
                 recorder.emit_own_inventory_event(&recorder_meta, "merge_executed", payload);
+                shadow_merge_completed = true;
             } else {
                 recorder.emit_own_inventory_event(&recorder_meta, "merge_skipped", payload);
             }
@@ -17576,6 +17596,30 @@ mod tests {
         assert_eq!(
             pgt_shadow_redeem_target(&snapshot, Some(Side::No)),
             Some((Side::No, 7.0))
+        );
+    }
+
+    #[test]
+    fn test_pgt_shadow_harvest_does_not_retry_after_shadow_merge_completed() {
+        assert_eq!(
+            pgt_shadow_harvest_attempt(false, false, false, false, true, 25),
+            Some(1)
+        );
+        assert_eq!(
+            pgt_shadow_harvest_attempt(true, false, true, true, true, 18),
+            None
+        );
+    }
+
+    #[test]
+    fn test_pgt_shadow_harvest_retries_when_first_attempt_was_ineligible() {
+        assert_eq!(
+            pgt_shadow_harvest_attempt(true, false, false, false, true, 24),
+            Some(2)
+        );
+        assert_eq!(
+            pgt_shadow_harvest_attempt(true, false, false, false, false, 18),
+            None
         );
     }
 
