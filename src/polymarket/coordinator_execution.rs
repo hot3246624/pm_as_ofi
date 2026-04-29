@@ -276,6 +276,8 @@ impl StrategyCoordinator {
             block_no_provide: false,
             block_reason_yes: None,
             block_reason_no: None,
+            pgt_taker_close_limit_yes: quotes.pgt_taker_close_limit_for(Side::Yes),
+            pgt_taker_close_limit_no: quotes.pgt_taker_close_limit_for(Side::No),
             force_taker_side: None,
             force_taker_size: 0.0,
             block_maker_hedge: false,
@@ -798,6 +800,7 @@ impl StrategyCoordinator {
             shadow_taker_open
                 .filter(|candidate| candidate.side == Side::Yes)
                 .map(|candidate| candidate.limit_price),
+            st.pgt_taker_close_limit_for(Side::Yes),
         )
         .await;
         self.dispatch_provide_side(
@@ -813,6 +816,7 @@ impl StrategyCoordinator {
             shadow_taker_open
                 .filter(|candidate| candidate.side == Side::No)
                 .map(|candidate| candidate.limit_price),
+            st.pgt_taker_close_limit_for(Side::No),
         )
         .await;
     }
@@ -829,6 +833,7 @@ impl StrategyCoordinator {
         toxic_blocked: bool,
         stale: bool,
         shadow_taker_limit_price: Option<f64>,
+        pgt_taker_close_limit_price: Option<f64>,
     ) {
         if hedge_dispatched {
             return;
@@ -853,6 +858,7 @@ impl StrategyCoordinator {
             toxic_blocked,
             stale,
             shadow_taker_limit_price,
+            pgt_taker_close_limit_price,
         );
         self.apply_provide_side_action(inv, ub, side, action).await;
     }
@@ -1531,6 +1537,7 @@ impl StrategyCoordinator {
         toxic_blocked: bool,
         stale: bool,
         shadow_taker_limit_price: Option<f64>,
+        pgt_taker_close_limit_price: Option<f64>,
     ) -> ProvideSideAction {
         if let Some(intent) = intent {
             if !allow_provide {
@@ -1542,6 +1549,19 @@ impl StrategyCoordinator {
                 if intent.reason == BidReason::Provide {
                     if let Some(limit_price) = shadow_taker_limit_price {
                         return ProvideSideAction::ShadowTaker {
+                            intent,
+                            limit_price,
+                        };
+                    }
+                }
+                if intent.reason == BidReason::Hedge
+                    && self.cfg.strategy.is_pair_gated_tranche_arb()
+                    && self.cfg.dry_run
+                    && self.pgt_shadow_taker_close_fired_epoch[side.index()]
+                        != Some(self.pgt_decision_epoch)
+                {
+                    if let Some(limit_price) = pgt_taker_close_limit_price {
+                        return ProvideSideAction::ShadowTakerClose {
                             intent,
                             limit_price,
                         };
@@ -1659,6 +1679,29 @@ impl StrategyCoordinator {
                     intent.direction,
                     intent.size,
                     TradePurpose::Provide,
+                    Some(limit_price),
+                )
+                .await;
+            }
+            ProvideSideAction::ShadowTakerClose {
+                intent,
+                limit_price,
+            } => {
+                if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.pgt_shadow_taker_close_fired_epoch[side.index()] =
+                        Some(self.pgt_decision_epoch);
+                    self.stats.pgt_dispatch_taker_close =
+                        self.stats.pgt_dispatch_taker_close.saturating_add(1);
+                }
+                info!(
+                    "⚡ PGT shadow taker-close | side={:?} price={:.4} size={:.2} limit={:.4}",
+                    side, intent.price, intent.size, limit_price
+                );
+                self.dispatch_taker_intent(
+                    side,
+                    intent.direction,
+                    intent.size,
+                    TradePurpose::Hedge,
                     Some(limit_price),
                 )
                 .await;

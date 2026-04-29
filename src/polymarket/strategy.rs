@@ -83,6 +83,7 @@ pub(crate) struct StrategyQuotes {
     pub(crate) yes_sell: Option<StrategyIntent>,
     pub(crate) no_buy: Option<StrategyIntent>,
     pub(crate) no_sell: Option<StrategyIntent>,
+    pub(crate) pgt_taker_close_limit: [Option<f64>; 2],
     pub(crate) diagnostics: StrategyQuoteDiagnostics,
 }
 
@@ -116,6 +117,14 @@ impl StrategyQuotes {
 
     pub(crate) fn buy_for(&self, side: Side) -> Option<StrategyIntent> {
         self.get(OrderSlot::new(side, TradeDirection::Buy))
+    }
+
+    pub(crate) fn set_pgt_taker_close_limit(&mut self, side: Side, limit_price: f64) {
+        self.pgt_taker_close_limit[side.index()] = Some(limit_price);
+    }
+
+    pub(crate) fn pgt_taker_close_limit_for(&self, side: Side) -> Option<f64> {
+        self.pgt_taker_close_limit[side.index()]
     }
 
     pub(crate) fn note_pair_arb_ofi_softened(&mut self) {

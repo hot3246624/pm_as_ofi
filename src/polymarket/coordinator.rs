@@ -952,6 +952,8 @@ struct ExecutionState {
     block_no_provide: bool,
     block_reason_yes: Option<CancelReason>,
     block_reason_no: Option<CancelReason>,
+    pgt_taker_close_limit_yes: Option<f64>,
+    pgt_taker_close_limit_no: Option<f64>,
     force_taker_side: Option<Side>,
     force_taker_size: f64,
     block_maker_hedge: bool,
@@ -988,6 +990,10 @@ enum ProvideSideAction {
         intent: StrategyIntent,
     },
     ShadowTaker {
+        intent: StrategyIntent,
+        limit_price: f64,
+    },
+    ShadowTakerClose {
         intent: StrategyIntent,
         limit_price: f64,
     },
@@ -1073,6 +1079,13 @@ impl ExecutionState {
         match side {
             Side::Yes => self.block_reason_yes,
             Side::No => self.block_reason_no,
+        }
+    }
+
+    fn pgt_taker_close_limit_for(&self, side: Side) -> Option<f64> {
+        match side {
+            Side::Yes => self.pgt_taker_close_limit_yes,
+            Side::No => self.pgt_taker_close_limit_no,
         }
     }
 
@@ -2028,8 +2041,10 @@ impl StrategyCoordinator {
         if pgt_dual_seed {
             self.stats.pgt_dual_seed_quotes = self.stats.pgt_dual_seed_quotes.saturating_add(1);
             if had_single_seed_before && !self.stats.pgt_single_seed_released_to_dual_recorded {
-                self.stats.pgt_single_seed_released_to_dual =
-                    self.stats.pgt_single_seed_released_to_dual.saturating_add(1);
+                self.stats.pgt_single_seed_released_to_dual = self
+                    .stats
+                    .pgt_single_seed_released_to_dual
+                    .saturating_add(1);
                 self.stats.pgt_single_seed_released_to_dual_recorded = true;
             }
         }
@@ -2145,9 +2160,10 @@ impl StrategyCoordinator {
             return None;
         }
         let now = Instant::now();
-        if let (Some(side), Some(until)) =
-            (self.pgt_flat_seed_latched_side, self.pgt_flat_seed_latched_until)
-        {
+        if let (Some(side), Some(until)) = (
+            self.pgt_flat_seed_latched_side,
+            self.pgt_flat_seed_latched_until,
+        ) {
             if now < until {
                 return Some(side);
             }
@@ -2167,11 +2183,7 @@ impl StrategyCoordinator {
         self.cfg.strategy.is_pair_gated_tranche_arb() && self.pgt_flat_seed_latch_exhausted
     }
 
-    fn update_pgt_flat_seed_latch(
-        &mut self,
-        quotes: &StrategyQuotes,
-        has_active_tranche: bool,
-    ) {
+    fn update_pgt_flat_seed_latch(&mut self, quotes: &StrategyQuotes, has_active_tranche: bool) {
         if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
             self.pgt_flat_seed_latched_side = None;
             self.pgt_flat_seed_latched_since = None;
@@ -2203,8 +2215,7 @@ impl StrategyCoordinator {
                 self.pgt_flat_seed_latched_side,
                 self.pgt_flat_seed_latched_since,
                 self.pgt_flat_seed_latched_until,
-            )
-            {
+            ) {
                 if now.duration_since(since) >= Duration::from_millis(PGT_FLAT_SEED_LATCH_MAX_MS) {
                     self.pgt_flat_seed_latched_side = None;
                     self.pgt_flat_seed_latched_since = None;

@@ -23,10 +23,12 @@ const SEED_THIN_SLACK_CLIP_MULT_TICK_2: f64 = 0.85;
 pub(crate) const PGT_OPEN_PAIR_BAND_WIDE_SECS: u64 = 150;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_SECS: u64 = 90;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_VALUE: f64 = 0.995;
+const SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 
 struct CompletionPlan {
     intent: StrategyIntent,
     taker_shadow_would_close: bool,
+    taker_close_limit: Option<f64>,
 }
 
 struct SeedPlan {
@@ -79,6 +81,9 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                 quotes.note_pgt_completion_quote();
                 if plan.taker_shadow_would_close {
                     quotes.note_pgt_taker_shadow_would_close();
+                }
+                if let Some(limit_price) = plan.taker_close_limit {
+                    quotes.set_pgt_taker_close_limit(plan.intent.side, limit_price);
                 }
                 quotes.set(plan.intent);
             } else {
@@ -403,7 +408,9 @@ impl PairGatedTrancheStrategy {
                         Some(Side::No) => return FlatSeedSelection::NoOnly,
                         None => {}
                     }
-                    if latch_exhausted && !yes.taker_shadow_would_open && !no.taker_shadow_would_open
+                    if latch_exhausted
+                        && !yes.taker_shadow_would_open
+                        && !no.taker_shadow_would_open
                     {
                         return FlatSeedSelection::Dual;
                     }
@@ -458,9 +465,13 @@ impl PairGatedTrancheStrategy {
                                     FlatSeedSelection::YesOnly
                                 } else if size_ratio <= (1.0 / 1.20) && slack_gap <= 1.5 {
                                     FlatSeedSelection::NoOnly
-                                } else if score_gap >= 0.75 || (fill_gap >= 1.0 && slack_gap >= -1.0) {
+                                } else if score_gap >= 0.75
+                                    || (fill_gap >= 1.0 && slack_gap >= -1.0)
+                                {
                                     FlatSeedSelection::YesOnly
-                                } else if score_gap <= -0.75 || (fill_gap <= -1.0 && slack_gap <= 1.0) {
+                                } else if score_gap <= -0.75
+                                    || (fill_gap <= -1.0 && slack_gap <= 1.0)
+                                {
                                     FlatSeedSelection::NoOnly
                                 } else {
                                     FlatSeedSelection::Dual
@@ -554,8 +565,19 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
+        let taker_shadow_would_close = best_ask <= ceiling + 1e-9 && best_ask > price + 1e-9;
+        let taker_close_limit = if coordinator.cfg().dry_run
+            && remaining_secs <= SHADOW_TAKER_CLOSE_SECS
+            && taker_shadow_would_close
+        {
+            Some(coordinator.safe_price(best_ask))
+        } else {
+            None
+        };
+
         Some(CompletionPlan {
-            taker_shadow_would_close: best_ask <= ceiling + 1e-9 && best_ask > price + 1e-9,
+            taker_shadow_would_close,
+            taker_close_limit,
             intent: StrategyIntent {
                 side: hedge_side,
                 direction: TradeDirection::Buy,
