@@ -266,6 +266,9 @@ def order_lifecycle_metrics(
             and r["recv_ms"] > first_fill_ms
             and (cover_cutoff is None or r["recv_ms"] <= cover_cutoff)
         ]
+    same_side_add_accept_qty = sum(
+        float(r["size"] or 0.0) for r in same_side_add_accepts
+    )
 
     cancel_rows = conn.execute(
         """
@@ -318,6 +321,7 @@ def order_lifecycle_metrics(
         "initial_seed_side_count": len({r["side"] for r in initial_seed_accepts}),
         "completion_accept_count": len(completion_accepts),
         "same_side_add_accept_count_before_cover": len(same_side_add_accepts),
+        "same_side_add_accept_qty_before_cover": same_side_add_accept_qty,
         "maker_buy_accept_count": len(seed_accepts) + len(completion_accepts),
     }
 
@@ -353,6 +357,16 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         merge_executed_count = count_event(conn, slug, "merge_executed")
         redeem_requested_count = count_event(conn, slug, "redeem_requested")
         lifecycle = order_lifecycle_metrics(conn, slug, end_ms)
+        lifecycle_same_side_qty = as_float(
+            lifecycle.get("same_side_add_accept_qty_before_cover")
+        )
+        if (
+            (same_side_ratio is None or same_side_ratio <= 1e-12)
+            and lifecycle_same_side_qty is not None
+            and lifecycle_same_side_qty > 1e-9
+            and (summary_paired_qty or 0.0) > 1e-9
+        ):
+            same_side_ratio = lifecycle_same_side_qty / float(summary_paired_qty)
         has_any_payload = bool(summary_payload) or metric is not None
         has_active_episode = (
             1.0
@@ -644,6 +658,7 @@ def main() -> None:
         "initial_seed_side_count",
         "completion_accept_count",
         "same_side_add_accept_count_before_cover",
+        "same_side_add_accept_qty_before_cover",
         "maker_buy_accept_count",
         "merge_skipped_first_rel_s",
         "merge_skipped_last_rel_s",

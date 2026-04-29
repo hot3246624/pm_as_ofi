@@ -208,9 +208,14 @@ class ExportPgtShadowReportTests(unittest.TestCase):
         self.assertEqual(row["initial_seed_side_count"], 2)
         self.assertEqual(row["completion_accept_count"], 1)
         self.assertEqual(row["same_side_add_accept_count_before_cover"], 1)
+        self.assertAlmostEqual(row["same_side_add_accept_qty_before_cover"], 6.0)
+        self.assertAlmostEqual(row["same_side_add_qty_ratio"], 6.0 / 57.6)
         self.assertEqual(summary["seed_exposed_rounds"], 1)
         self.assertEqual(summary["seed_exposed_fill_rounds"], 1)
         self.assertAlmostEqual(summary["seed_exposed_fill_ratio"], 1.0)
+        self.assertAlmostEqual(
+            summary["median_same_side_add_qty_ratio"], 6.0 / 57.6
+        )
         self.assertAlmostEqual(summary["median_first_completion_delay_s"], 70.0)
         self.assertAlmostEqual(summary["p90_first_completion_delay_s"], 70.0)
 
