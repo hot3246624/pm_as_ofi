@@ -9907,10 +9907,10 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
     match symbol {
         "bnb/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_coinbase",
+            source_subset_name: "drop_okx",
             rule: LocalBoundaryCloseRule::AfterThenBefore,
-            min_sources: 2,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_COINBASE,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
         },
         "btc/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9921,10 +9921,10 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         },
         "doge/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_okx",
-            rule: LocalBoundaryCloseRule::NearestAbs,
+            source_subset_name: "drop_binance",
+            rule: LocalBoundaryCloseRule::LastBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
         },
         "eth/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9937,7 +9937,7 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
             policy_name: "boundary_weighted",
             source_subset_name: "drop_binance",
             rule: LocalBoundaryCloseRule::AfterThenBefore,
-            min_sources: 1,
+            min_sources: 2,
             allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
         },
         "sol/usd" => LocalBoundaryShadowPolicySpec {
@@ -9949,10 +9949,10 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         },
         "xrp/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_bybit",
+            source_subset_name: "only_binance_coinbase",
             rule: LocalBoundaryCloseRule::NearestAbs,
-            min_sources: 2,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BYBIT,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE,
         },
         _ => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9978,7 +9978,7 @@ fn local_boundary_policy_source_weight(
             LocalPriceSource::Bybit => 0.5,
             LocalPriceSource::Coinbase => 1.0,
             LocalPriceSource::Hyperliquid => 1.5,
-            LocalPriceSource::Okx => 0.0,
+            LocalPriceSource::Okx => 0.5,
         };
     }
     if symbol == "xrp/usd" {
@@ -9998,11 +9998,11 @@ fn local_boundary_policy_source_weight(
     }
     if symbol == "bnb/usd" {
         return match source {
-            LocalPriceSource::Binance => 0.936_577,
-            LocalPriceSource::Bybit => 9.040_731,
-            LocalPriceSource::Okx => 0.050_000,
-            LocalPriceSource::Hyperliquid => 0.267_042,
-            LocalPriceSource::Coinbase => 0.0,
+            LocalPriceSource::Binance => 0.5,
+            LocalPriceSource::Bybit => 0.5,
+            LocalPriceSource::Okx => 0.5,
+            LocalPriceSource::Coinbase => 1.0,
+            LocalPriceSource::Hyperliquid => 1.5,
         };
     }
     if symbol == "hype/usd" {
@@ -10063,7 +10063,7 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
-                && weighted_direction_margin_bps + 1e-9 < 0.6
+                && weighted_direction_margin_bps + 1e-9 < 1.0
             {
                 return false;
             }
