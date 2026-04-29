@@ -48,7 +48,7 @@
 
 本手册不承担 `glft_mm` 独立策略规格书的角色。  
 `glft_mm` 的专属说明见：
-- `docs/STRATEGY_GLFT_MM_ZH.md`
+- `docs/strategies/STRATEGY_GLFT_MM_ZH.md`
 
 这里仅保留所有策略共享的系统边界。
 

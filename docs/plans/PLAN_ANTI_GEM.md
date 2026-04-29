@@ -1,7 +1,7 @@
 # Pair-Gated Tranche V1.2 优化分析与重构实现计划
 
 ## Summary
-基于 `docs/XUANXUAN008_STRATEGY_V2_ZH.md` 的新证据，将策略重心从“是否能一对一配对”升级为“高 merged_ratio、低有效残余、临近结束批量 MERGE、补腿 clip 自适应”的完整复刻。实施目标是让当前 `PairGatedTrancheArb` 从概念状态机变成可 shadow 验收的策略执行框架，同时保留 maker/taker、PnL 口径等未裁决项为研究任务。
+基于 `docs/research/xuan/XUANXUAN008_STRATEGY_V2_ZH.md` 的新证据，将策略重心从“是否能一对一配对”升级为“高 merged_ratio、低有效残余、临近结束批量 MERGE、补腿 clip 自适应”的完整复刻。实施目标是让当前 `PairGatedTrancheArb` 从概念状态机变成可 shadow 验收的策略执行框架，同时保留 maker/taker、PnL 口径等未裁决项为研究任务。
 
 ## Key Changes
 - **文档重构**

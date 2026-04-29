@@ -1,14 +1,14 @@
 # Pair_Arb 升级计划 v3.1
 
-> ⚠️ **本文档已被 `docs/PLAN_PAIR_ARB_V3_2_ZH.md` 增量修订** — v3.2 基于单 round 高粒度交易细节加入 6 项 patch（Phase H 收尾大 clip / abandon-sell 阈值放宽 / depth-aware clip size / BS-3 部分回答 / CadenceTracker 字段扩展 / 发布矩阵更新）。本文档保留作为 v3.1 三层架构基线。
+> ⚠️ **本文档已被 `docs/plans/PLAN_PAIR_ARB_V3_2_ZH.md` 增量修订** — v3.2 基于单 round 高粒度交易细节加入 6 项 patch（Phase H 收尾大 clip / abandon-sell 阈值放宽 / depth-aware clip size / BS-3 部分回答 / CadenceTracker 字段扩展 / 发布矩阵更新）。本文档保留作为 v3.1 三层架构基线。
 
 ---
 
 # Pair_Arb 升级计划 v3.1
 
 > **生成日期**：2026-04-25
-> **取代**：`docs/PLAN_PAIR_ARB_V3_ZH.md`（v3 抓对了研究方向，但实施上仍在补丁旧 pair_arb；v3.1 重写实施骨架）
-> **证据基础**：`docs/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 1000 笔 trades + 95 个连续 BTC 5m markets
+> **取代**：`docs/plans/PLAN_PAIR_ARB_V3_ZH.md`（v3 抓对了研究方向，但实施上仍在补丁旧 pair_arb；v3.1 重写实施骨架）
+> **证据基础**：`docs/research/xuan/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 1000 笔 trades + 95 个连续 BTC 5m markets
 > **核心原则**：研究、会计、执行三层分离
 
 ---
@@ -366,8 +366,8 @@ F   Dynamic pair_target                    （删除）
 
 ## 12. 关联文档
 
-- `docs/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 实证基础
-- `docs/PLAN_PAIR_ARB_V3_ZH.md` — 前一版（v3，已被本文档取代）
-- `docs/STRATEGY_PAIR_ARB_ZH.md` — 现有 pair_arb 实现说明（baseline）
-- `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md` — pair_arb 上线检查清单
-- v3.1 上线前需新建：`docs/STRATEGY_TRANCHE_ARB_ZH.md` + `docs/GO_LIVE_TRANCHE_ARB_CHECKLIST_ZH.md`
+- `docs/research/xuan/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 实证基础
+- `docs/plans/PLAN_PAIR_ARB_V3_ZH.md` — 前一版（v3，已被本文档取代）
+- `docs/strategies/STRATEGY_PAIR_ARB_ZH.md` — 现有 pair_arb 实现说明（baseline）
+- `docs/runbooks/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md` — pair_arb 上线检查清单
+- v3.1 上线前需新建：`docs/strategies/STRATEGY_TRANCHE_ARB_ZH.md` + `docs/runbooks/GO_LIVE_TRANCHE_ARB_CHECKLIST_ZH.md`

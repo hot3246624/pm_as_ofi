@@ -81,6 +81,46 @@
   - cancel / cancel-all
 - 验证订单构造不再依赖 `feeRateBps / nonce / taker`
 
+### 恢复后最小 smoke 顺序
+
+先跑只读 smoke，不直接碰主策略：
+
+```bash
+cargo run --quiet --bin probe_clob_v2
+```
+
+期望先看到：
+
+1. `auth_ok`
+2. `allowance_update_ok` 或明确的 allowance 更新告警
+3. `collateral balance_raw=...`
+4. 如已提供 `POLYMARKET_YES_ASSET_ID / POLYMARKET_NO_ASSET_ID`，还能看到两侧 `book ... best_bid / best_ask`
+
+只有在以下条件同时满足时，才允许最小真实单 smoke：
+
+1. `pUSD` balance 非零
+2. exchange / adapter allowance 非零
+3. 明确知道当前 `PM_SIGNATURE_TYPE` 与 `POLYMARKET_FUNDER_ADDRESS` 匹配
+
+最小真实单 smoke 通过独立 probe 控制，不走主策略：
+
+```bash
+PM_V2_SMOKE_PLACE_ORDER=true \
+PM_V2_SMOKE_SIDE=yes \
+PM_V2_SMOKE_DIRECTION=buy \
+PM_V2_SMOKE_PRICE=0.01 \
+PM_V2_SMOKE_SIZE=5 \
+PM_V2_SMOKE_ORDER_TYPE=GTC \
+PM_V2_SMOKE_POST_ONLY=true \
+cargo run --quiet --bin probe_clob_v2
+```
+
+若只是验证下单链路，建议继续保持：
+
+- 极小名义金额
+- `post_only=true`
+- 成功后立即 `cancel_all`
+
 2. **Collateral / claim / merge**
 - pUSD collateral 日志、fatal guard、allowance 语义正确
 - allowance 缺失时提示 wrap/pUSD，而不是 USDC.e 旧文案

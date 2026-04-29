@@ -33,6 +33,18 @@
 | `PM_RECONCILE_INTERVAL_SECS` | `30` | REST 对账周期 |
 | `PM_COORD_WATCHDOG_MS` | `500` | 无行情时的风控心跳 |
 | `PM_STRATEGY_METRICS_LOG_SECS` | `15` | 指标日志周期 |
+
+### Live 执行前置条件
+
+CLOB V2 live maker/taker 现在走本地 V2 签名与 `POST /order`，不再依赖旧的 V1 下单 builder。恢复真钱交易前必须满足：
+
+1. 钱包里已有 `pUSD` collateral。
+2. `pUSD / CTF / V2 exchange` allowance 已就绪。
+3. `POLYMARKET_FUNDER_ADDRESS` 与 `PM_SIGNATURE_TYPE` 匹配当前账户形态：
+   - `0 = EOA`
+   - `1 = Proxy`
+   - `2 = GnosisSafe`
+4. `POLYMARKET_API_KEY / SECRET / PASSPHRASE` 如显式填写，必须与当前 signer/funder/signature_type 对应；否则请留空，让程序自动派生。
 | `PM_POST_CLOSE_WINDOW_SECS` | `105` | 仅 `oracle_lag_sniping` 使用：收盘后继续运行的窗口（秒） |
 | `PM_POST_CLOSE_CHAINLINK_WS_URL` | `wss://ws-live-data.polymarket.com` | 仅 `oracle_lag_sniping` 使用：Chainlink RTDS 地址 |
 | `PM_POST_CLOSE_CHAINLINK_MAX_WAIT_SECS` | `8` | 仅 `oracle_lag_sniping` 使用：收盘后等待 Chainlink 胜负提示的最大秒数 |
@@ -173,7 +185,7 @@ PM_STRATEGY=pair_gated_tranche_arb \
   - 仅在市场结束后窗口内尝试胜方 BUY 报价；仅激活 `PM_ORACLE_LAG_SYMBOL_UNIVERSE` 中的 `*-updown-5m`。
   - 胜方价格 `>0.993` 时不做 taker；maker 仍允许挂单。
 - 实盘前操作清单见：
-  - [ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md)
+  - [ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/runbooks/ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md)
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 

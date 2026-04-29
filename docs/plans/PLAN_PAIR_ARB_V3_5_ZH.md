@@ -1,7 +1,7 @@
 # Pair_Arb 升级计划 v3.5 — `v3.3` 研究纪律 × `v3.4` 操作纪律
 
 > **生成日期**：2026-04-25  
-> **取代**：`docs/PLAN_PAIR_ARB_V3_3_ZH.md` 与 `v3.4` 合并评审结论  
+> **取代**：`docs/plans/PLAN_PAIR_ARB_V3_3_ZH.md` 与 `v3.4` 合并评审结论  
 > **定位**：`v3.5` 不是另起炉灶，而是以 `v3.3` 为主线，吸收 `v3.4` 的有效增强，并明确拒绝 `v3.4` 对目标、阈值、fallback、时间盒的回退。  
 > **主旨**：研究层继续尽最大可能还原 `xuanxuan008` 的机制；工程层只上线已裁决、且对我方确有显著差距的部分。
 
@@ -426,8 +426,8 @@ PM_PAIR_ARB_HARVEST_MIN_INTERVAL_SECS=20
 
 ## 11. 关联文档
 
-- [PLAN_PAIR_ARB_V3_3_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/PLAN_PAIR_ARB_V3_3_ZH.md)
-- [PLAN_PAIR_ARB_V3_2_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/PLAN_PAIR_ARB_V3_2_ZH.md)
-- [PLAN_PAIR_ARB_V3_1_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/PLAN_PAIR_ARB_V3_1_ZH.md)
-- [PLAN_Codex.md](/Users/hot/web3Scientist/pm_as_ofi/docs/PLAN_Codex.md)
-- [XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md)
+- [PLAN_PAIR_ARB_V3_3_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/plans/PLAN_PAIR_ARB_V3_3_ZH.md)
+- [PLAN_PAIR_ARB_V3_2_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/plans/PLAN_PAIR_ARB_V3_2_ZH.md)
+- [PLAN_PAIR_ARB_V3_1_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/plans/PLAN_PAIR_ARB_V3_1_ZH.md)
+- [PLAN_Codex.md](/Users/hot/web3Scientist/pm_as_ofi/docs/plans/PLAN_Codex.md)
+- [XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/research/xuan/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md)

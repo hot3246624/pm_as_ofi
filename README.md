@@ -139,14 +139,15 @@ sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM capital_st
 
 ## 推荐阅读顺序
 
-1. `docs/STRATEGY_V2_CORE_ZH.md`
-2. `docs/STRATEGY_PAIR_ARB_ZH.md`
-3. `docs/STRATEGY_GLFT_MM_ZH.md`
-4. `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
-5. `docs/CONFIG_REFERENCE_ZH.md`
-6. `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
-7. `docs/TESTING.md`
-8. `docs/ADDING_STRATEGY_ZH.md`
+1. `docs/README.md`
+2. `docs/architecture/STRATEGY_V2_CORE_ZH.md`
+3. `docs/strategies/STRATEGY_PAIR_ARB_ZH.md`
+4. `docs/strategies/STRATEGY_GLFT_MM_ZH.md`
+5. `docs/strategies/STRATEGY_GABAGOOL_GRID_ZH.md`
+6. `docs/reference/CONFIG_REFERENCE_ZH.md`
+7. `docs/runbooks/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
+8. `docs/reference/TESTING.md`
+9. `docs/reference/ADDING_STRATEGY_ZH.md`
 
 ## 当前推荐验证参数基线（pair_arb）
 

@@ -1,7 +1,7 @@
 # Pair_Arb 升级计划 v3.2 — 基于单 round 高粒度交易细节的增量修订
 
 > **生成日期**：2026-04-25
-> **基线**：`docs/PLAN_PAIR_ARB_V3_1_ZH.md`（三层分离架构）
+> **基线**：`docs/plans/PLAN_PAIR_ARB_V3_1_ZH.md`（三层分离架构）
 > **新证据**：`/Users/hot/web3Scientist/poly_trans_research/analysis_table.html` + `trades.json`
 >   - 单 round 14 笔 trades 全细节（`btc-updown-5m-1777059600`, 2026-04-24 15:40:36–15:43:28 ET）
 >   - 含 size / price / cum 持仓 / pair cost / locked PnL 时序
@@ -266,9 +266,9 @@ struct Tranche {
 
 ## 7. 关联文档
 
-- `docs/PLAN_PAIR_ARB_V3_1_ZH.md` — v3.1 三层分离架构（基线）
-- `docs/PLAN_PAIR_ARB_V3_ZH.md` — v3 (superseded)
-- `docs/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 1000 笔统计研究
+- `docs/plans/PLAN_PAIR_ARB_V3_1_ZH.md` — v3.1 三层分离架构（基线）
+- `docs/plans/PLAN_PAIR_ARB_V3_ZH.md` — v3 (superseded)
+- `docs/research/xuan/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 1000 笔统计研究
 - `/Users/hot/web3Scientist/poly_trans_research/analysis_table.html` — v3.2 证据 round
 - `/Users/hot/web3Scientist/poly_trans_research/trades.json` — v3.2 证据原始数据
 - v3.2 enforce 前 待补：多 round cross-validation 报告（owner: 用户）

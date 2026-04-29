@@ -1,6 +1,6 @@
 # Pair_Arb 升级计划 v3
 
-> ⚠️ **本文档已被 `docs/PLAN_PAIR_ARB_V3_1_ZH.md` 取代** — v3 抓对了研究方向，但实施上仍把新逻辑塞回旧 pair_arb + 聚合库存。v3.1 把架构改成"研究/会计/执行三层分离"，新建 `tranche_arb` 策略线，并加发布矩阵。本文档保留作为 v3 → v3.1 的演进对照。
+> ⚠️ **本文档已被 `docs/plans/PLAN_PAIR_ARB_V3_1_ZH.md` 取代** — v3 抓对了研究方向，但实施上仍把新逻辑塞回旧 pair_arb + 聚合库存。v3.1 把架构改成"研究/会计/执行三层分离"，新建 `tranche_arb` 策略线，并加发布矩阵。本文档保留作为 v3 → v3.1 的演进对照。
 
 ---
 
@@ -8,7 +8,7 @@
 
 > **生成日期**：2026-04-25
 > **取代**：v2（centered on completion hazard）。v2 的 hazard 框架方向对，但**控制变量定义错了**，且 Phase C/E 基于未证实假设。
-> **证据基础**：`docs/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 1000 笔 trades + 95 个连续 BTC 5m markets 实证
+> **证据基础**：`docs/research/xuan/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 1000 笔 trades + 95 个连续 BTC 5m markets 实证
 
 ---
 
@@ -371,6 +371,6 @@ PM_PAIR_ARB_ABANDON_MAX_SLIPPAGE_TICKS=5
 
 ## 关联文档
 
-- `docs/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 实证基础
-- `docs/STRATEGY_PAIR_ARB_ZH.md` — 现有 pair_arb 实现说明
-- `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md` — 上线检查清单（v3 上线前需更新）
+- `docs/research/xuan/XUANXUAN008_STRATEGY_DECONSTRUCTION_ZH.md` — 实证基础
+- `docs/strategies/STRATEGY_PAIR_ARB_ZH.md` — 现有 pair_arb 实现说明
+- `docs/runbooks/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md` — 上线检查清单（v3 上线前需更新）

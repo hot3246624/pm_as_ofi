@@ -2,10 +2,10 @@
 
 **摘要**
 
-- 采用 `docs/PLAN_PAIR_ARB_V3_5_ZH.md` 作为总治理框架，保留四层纪律、2 周 shadow、`FAK/SELL/abandon` 默认关闭、`pair_arb` 仅作 baseline。
-- 采纳 `docs/PLAN_PAIR_ARB_V3_5_EVAL_OPTIMIZATION_ZH.md` 的两个核心升级：`H-0 Pair-Gated Tranche Automaton` 和 `H-5 Repair-Budgeted Variable Pair Cost`，并把它们提升为新主线的行为核心。
-- 采纳 `docs/XUANXUAN008_STRATEGY_DEEP_DIVE_ZH.md` 的主判断：`xuan` 的最可信 edge 不是固定 `pair_target`，而是“小 tranche 一对一推进 + surplus/repair 预算 + rolling merge`。
-- 采纳 `docs/STRATEGY_PAIR_GATED_TRANCHE_V1_ZH.md` 作为实现骨架，但做两处收敛：`maker-first` 作为 V1 默认执行边界；`bounded taker completion` 只做显式预留，不进入默认 enforce。
+- 采用 `docs/plans/PLAN_PAIR_ARB_V3_5_ZH.md` 作为总治理框架，保留四层纪律、2 周 shadow、`FAK/SELL/abandon` 默认关闭、`pair_arb` 仅作 baseline。
+- 采纳 `docs/plans/PLAN_PAIR_ARB_V3_5_EVAL_OPTIMIZATION_ZH.md` 的两个核心升级：`H-0 Pair-Gated Tranche Automaton` 和 `H-5 Repair-Budgeted Variable Pair Cost`，并把它们提升为新主线的行为核心。
+- 采纳 `docs/research/xuan/XUANXUAN008_STRATEGY_DEEP_DIVE_ZH.md` 的主判断：`xuan` 的最可信 edge 不是固定 `pair_target`，而是“小 tranche 一对一推进 + surplus/repair 预算 + rolling merge`。
+- 采纳 `docs/strategies/STRATEGY_PAIR_GATED_TRANCHE_V1_ZH.md` 作为实现骨架，但做两处收敛：`maker-first` 作为 V1 默认执行边界；`bounded taker completion` 只做显式预留，不进入默认 enforce。
 - 不把 `H-2 two-sided seed`、`H-3 depth-aware sizing`、`H-4 abandon 放宽` 放进 V1 核心；它们继续是后续候选研究项，不阻塞 V1 主线。
 
 **关键改动**

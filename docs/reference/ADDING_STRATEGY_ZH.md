@@ -121,7 +121,7 @@ impl QuoteStrategy for MyStrategy {
 - `CoordinatorConfig`
 - `from_env()`
 - `.env.example`
-- `docs/CONFIG_REFERENCE_ZH.md`
+- `docs/reference/CONFIG_REFERENCE_ZH.md`
 
 ### 步骤 4：补测试
 
@@ -135,17 +135,17 @@ impl QuoteStrategy for MyStrategy {
 
 至少同步：
 - `README.md`
-- `docs/STRATEGY_V2_CORE_ZH.md`
-- `docs/CONFIG_REFERENCE_ZH.md`
+- `docs/architecture/STRATEGY_V2_CORE_ZH.md`
+- `docs/reference/CONFIG_REFERENCE_ZH.md`
 - `.env.example`
 
 如果该策略将成为 live 主线或长期维护策略，还应新增独立规格书：
-- `docs/STRATEGY_<YOUR_STRATEGY>_ZH.md`
+- `docs/strategies/STRATEGY_<YOUR_STRATEGY>_ZH.md`
 
 如果只是实验/回放策略：
 - 不必强行新增完整规格书
 - 但至少要在 `README.md` 里说明定位
-- 并在 `docs/CONFIG_REFERENCE_ZH.md` / `.env.example` 标清哪些参数只服务该策略
+- 并在 `docs/reference/CONFIG_REFERENCE_ZH.md` / `.env.example` 标清哪些参数只服务该策略
 
 ## 5. 开发原则
 
