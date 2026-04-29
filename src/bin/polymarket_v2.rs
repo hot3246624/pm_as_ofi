@@ -7785,6 +7785,42 @@ async fn run_post_close_winner_hint_listener(
                         close_only_filtered = true;
                     }
                     if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && direction_margin_bps + 1e-9 >= 20.0
+                    {
+                        close_only_filter_reason = Some("hype_close_only_single_far_margin");
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_far_margin direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            20.0,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
                         && hit.source_count == 1
                         && hit.close_exact_sources == 0
                         && !safe_single_source_relief_applied
@@ -10425,6 +10461,15 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             }
         }
         "hype/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count >= 3
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 2.0
+                && hit.source_spread_bps <= 4.0 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 >= 40.0
+            {
+                return Some("hype_three_source_stale_spread_fallback");
+            }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0

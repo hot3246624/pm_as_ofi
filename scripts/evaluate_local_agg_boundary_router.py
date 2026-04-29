@@ -317,6 +317,13 @@ def close_only_filter_reason(symbol: str, hit: dict | None, rtds_open: float) ->
         return "preclose_near_flat", direction_margin_bps
     single_source_min_margin = max(1.25, LOCAL_PRICE_AGG_RELIEF_MIN_DIRECTION_MARGIN_BPS)
     if (
+        symbol == "hype/usd"
+        and hit["source_count"] == 1
+        and hit["exact_sources"] == 0
+        and direction_margin_bps + 1e-9 >= 20.0
+    ):
+        return "hype_close_only_single_far_margin", direction_margin_bps
+    if (
         hit["source_count"] == 1
         and hit["exact_sources"] == 0
         and not safe_single_source_relief
@@ -532,6 +539,8 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
         if rule == "nearest_abs" and source_count >= 2 and exact_sources == 0 and margin_bps < 0.5:
             return "doge_nearest_near_flat"
     elif symbol == "hype/usd":
+        if rule == "after_then_before" and source_count >= 3 and exact_sources == 0 and 2.0 <= spread_bps <= 4.0 and margin_bps >= 40.0:
+            return "hype_three_source_stale_spread_fallback"
         if rule == "after_then_before" and source_count == 1 and exact_sources == 0 and margin_bps < 3.0:
             return "hype_single_after_near_flat"
         if (
