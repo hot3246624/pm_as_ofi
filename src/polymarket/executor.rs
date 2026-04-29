@@ -1839,7 +1839,15 @@ impl Executor {
         purpose: TradePurpose,
         limit_price: Option<f64>,
     ) {
-        let mut size = Self::normalize_taker_size_for_market_buy(size);
+        let mut size = if self.cfg.dry_run
+            && direction == TradeDirection::Buy
+            && matches!(purpose, TradePurpose::Hedge)
+            && limit_price.is_some()
+        {
+            Self::normalize_taker_size_2dp(size)
+        } else {
+            Self::normalize_taker_size_for_market_buy(size)
+        };
 
         // Oracle-lag single-shot all-in sizing:
         // for BUY taker snipes, derive executable size from real-time free pUSD
@@ -2616,6 +2624,13 @@ impl Executor {
         } else {
             size_2dp
         }
+    }
+
+    fn normalize_taker_size_2dp(size: f64) -> f64 {
+        if !size.is_finite() || size <= 0.0 {
+            return 0.0;
+        }
+        (size * 100.0).floor() / 100.0
     }
 
     fn is_marketable_min_error(lower: &str) -> bool {
@@ -3530,6 +3545,63 @@ mod tests {
             (fill.price - 0.52).abs() < 1e-9,
             "dry-run limit FAK should fill at its limit, not one tick worse"
         );
+        assert!(matches!(done, OrderResult::TakerHedgeDone { side } if side == Side::Yes));
+    }
+
+    #[tokio::test]
+    async fn dry_run_limited_taker_hedge_preserves_fractional_shares() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        exec.handle_place_taker(
+            Side::Yes,
+            TradeDirection::Buy,
+            57.6,
+            TradePurpose::Hedge,
+            Some(0.51),
+        )
+        .await;
+
+        let fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("dry-run taker hedge should emit simulated fill");
+        let done = result_rx
+            .recv()
+            .await
+            .expect("dry-run taker hedge should emit done");
+
+        assert_eq!(fill.side, Side::Yes);
+        assert_eq!(fill.direction, TradeDirection::Buy);
+        assert!((fill.filled_size - 57.6).abs() < 1e-9);
+        assert!((fill.price - 0.51).abs() < 1e-9);
         assert!(matches!(done, OrderResult::TakerHedgeDone { side } if side == Side::Yes));
     }
 
