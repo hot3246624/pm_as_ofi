@@ -1557,9 +1557,12 @@ impl StrategyCoordinator {
                 if intent.reason == BidReason::Hedge
                     && self.cfg.strategy.is_pair_gated_tranche_arb()
                     && self.cfg.dry_run
-                    && self.pgt_shadow_taker_close_fired_epoch[side.index()]
-                        != Some(self.pgt_decision_epoch)
                 {
+                    if self.pgt_shadow_taker_close_fired_epoch[side.index()]
+                        == Some(self.pgt_decision_epoch)
+                    {
+                        return ProvideSideAction::None;
+                    }
                     if let Some(limit_price) = pgt_taker_close_limit_price {
                         return ProvideSideAction::ShadowTakerClose {
                             intent,

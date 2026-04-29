@@ -6934,6 +6934,54 @@ fn test_pair_gated_tranche_shadow_taker_close_fires_once_per_epoch() {
 }
 
 #[test]
+fn test_pair_gated_tranche_shadow_taker_close_blocks_same_epoch_maker_reopen() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    let (_o, _i, _m, _k, _e, mut coord) = make(c);
+    coord.pgt_decision_epoch = 19;
+    let hedge_intent = StrategyIntent {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.49,
+        size: 57.6,
+        reason: BidReason::Hedge,
+    };
+
+    coord.pgt_shadow_taker_close_fired_epoch[Side::No.index()] = Some(coord.pgt_decision_epoch);
+    let blocked = coord.decide_provide_side_action(
+        Side::No,
+        Some(hedge_intent),
+        true,
+        None,
+        false,
+        false,
+        None,
+        None,
+    );
+    assert!(
+        matches!(blocked, ProvideSideAction::None),
+        "after a shadow taker-close fires, same-side maker hedge must not reopen until inventory bumps the epoch"
+    );
+
+    coord.pgt_decision_epoch += 1;
+    let reopened = coord.decide_provide_side_action(
+        Side::No,
+        Some(hedge_intent),
+        true,
+        None,
+        false,
+        false,
+        None,
+        None,
+    );
+    assert!(
+        matches!(reopened, ProvideSideAction::Place { intent } if intent.reason == BidReason::Hedge),
+        "new epoch should allow maker hedge placement again"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_inventory_gate_bypasses_global_max_net_diff() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
