@@ -169,19 +169,53 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         clean_ratio = float(metric[0]) if metric and metric[0] is not None else None
         same_side_ratio = float(metric[1]) if metric and metric[1] is not None else None
         payload_json = metric[2] if metric else None
+        round_buy_fill_count = payload_metric(payload_json, "round_buy_fill_count")
+        summary_paired_qty = as_float(summary_payload.get("paired_qty"))
+        summary_pair_cost = as_float(summary_payload.get("pair_cost"))
+        summary_residual_qty = as_float(summary_payload.get("residual_qty"))
+        taker_shadow_would_close = as_float(
+            summary_payload.get("pgt_taker_shadow_would_close")
+        )
+        dispatch_taker_close = as_float(summary_payload.get("pgt_dispatch_taker_close"))
+        tranche_opened_count = count_event(conn, slug, "tranche_opened")
+        same_side_add_count = count_event(conn, slug, "same_side_add_before_covered")
+        merge_skipped_count = count_event(conn, slug, "merge_skipped")
+        merge_requested_count = count_event(conn, slug, "merge_requested")
+        merge_executed_count = count_event(conn, slug, "merge_executed")
+        redeem_requested_count = count_event(conn, slug, "redeem_requested")
+        has_any_payload = bool(summary_payload) or metric is not None
+        has_active_episode = (
+            1.0
+            if (round_buy_fill_count or 0.0) > 0.0
+            or tranche_opened_count > 0
+            or (summary_paired_qty or 0.0) > 0.0
+            or (summary_residual_qty or 0.0) > 0.0
+            else 0.0
+            if has_any_payload
+            else None
+        )
+        residual_round = (
+            1.0
+            if (summary_residual_qty or 0.0) > 1e-6
+            else 0.0
+            if has_any_payload
+            else None
+        )
         row = {
             "slug": slug,
             "clean_closed_episode_ratio": clean_ratio,
             "same_side_add_qty_ratio": same_side_ratio,
             "episode_close_delay_p50": payload_metric(payload_json, "episode_close_delay_p50"),
             "episode_close_delay_p90": payload_metric(payload_json, "episode_close_delay_p90"),
-            "round_buy_fill_count": payload_metric(payload_json, "round_buy_fill_count"),
+            "round_buy_fill_count": round_buy_fill_count,
             "conditional_second_same_side_would_allow": payload_metric(
                 payload_json, "conditional_second_same_side_would_allow"
             ),
-            "summary_paired_qty": as_float(summary_payload.get("paired_qty")),
-            "summary_pair_cost": as_float(summary_payload.get("pair_cost")),
-            "summary_residual_qty": as_float(summary_payload.get("residual_qty")),
+            "summary_paired_qty": summary_paired_qty,
+            "summary_pair_cost": summary_pair_cost,
+            "summary_residual_qty": summary_residual_qty,
+            "has_active_episode": has_active_episode,
+            "residual_round": residual_round,
             "single_seed_first_side": summary_payload.get("pgt_single_seed_first_side"),
             "single_seed_last_side": summary_payload.get("pgt_single_seed_last_side"),
             "single_seed_flip_count": as_float(
@@ -200,8 +234,12 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "dispatch_taker_open": as_float(
                 summary_payload.get("pgt_dispatch_taker_open")
             ),
-            "dispatch_taker_close": as_float(
-                summary_payload.get("pgt_dispatch_taker_close")
+            "dispatch_taker_close": dispatch_taker_close,
+            "taker_close_dispatch_gap": (
+                taker_shadow_would_close - dispatch_taker_close
+                if taker_shadow_would_close is not None
+                and dispatch_taker_close is not None
+                else None
             ),
             "maker_only_missed_open_round": 1.0
             if summary_payload.get("maker_only_missed_open_round")
@@ -213,12 +251,12 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             else 0.0
             if summary_payload
             else None,
-            "tranche_opened_count": count_event(conn, slug, "tranche_opened"),
-            "same_side_add_count": count_event(conn, slug, "same_side_add_before_covered"),
-            "merge_skipped_count": count_event(conn, slug, "merge_skipped"),
-            "merge_requested_count": count_event(conn, slug, "merge_requested"),
-            "merge_executed_count": count_event(conn, slug, "merge_executed"),
-            "redeem_requested_count": count_event(conn, slug, "redeem_requested"),
+            "tranche_opened_count": tranche_opened_count,
+            "same_side_add_count": same_side_add_count,
+            "merge_skipped_count": merge_skipped_count,
+            "merge_requested_count": merge_requested_count,
+            "merge_executed_count": merge_executed_count,
+            "redeem_requested_count": redeem_requested_count,
         }
         row["merge_skipped_first_rel_s"], row["merge_skipped_last_rel_s"] = (
             first_last_rel_secs(conn, slug, "merge_skipped", end_ms)
@@ -250,8 +288,30 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     def collect(key: str) -> list[float]:
         return [float(r[key]) for r in rows if r.get(key) is not None]
 
+    active_rows = [r for r in rows if r.get("has_active_episode") is not None]
+    active_episode_rounds = sum(
+        1 for r in active_rows if float(r.get("has_active_episode") or 0.0) > 0.5
+    )
+    residual_rounds = sum(
+        1 for r in rows if float(r.get("residual_round") or 0.0) > 0.5
+    )
+    taker_close_opportunity_rounds = sum(
+        1 for r in rows if float(r.get("taker_shadow_would_close") or 0.0) > 0.0
+    )
+    taker_close_dispatched_rounds = sum(
+        1 for r in rows if float(r.get("dispatch_taker_close") or 0.0) > 0.0
+    )
+    total_taker_shadow_would_close = sum(collect("taker_shadow_would_close"))
+    total_dispatch_taker_close = sum(collect("dispatch_taker_close"))
+
     return {
         "markets": len(rows),
+        "active_episode_rounds": active_episode_rounds,
+        "active_episode_ratio": (
+            active_episode_rounds / len(active_rows) if active_rows else None
+        ),
+        "residual_rounds": residual_rounds,
+        "residual_round_ratio": (residual_rounds / len(rows) if rows else None),
         "median_clean_closed_episode_ratio": median(collect("clean_closed_episode_ratio")),
         "median_same_side_add_qty_ratio": median(collect("same_side_add_qty_ratio")),
         "median_episode_close_delay_p50": median(collect("episode_close_delay_p50")),
@@ -270,6 +330,15 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         ),
         "median_taker_shadow_would_open": median(collect("taker_shadow_would_open")),
         "median_dispatch_taker_open": median(collect("dispatch_taker_open")),
+        "taker_close_opportunity_rounds": taker_close_opportunity_rounds,
+        "taker_close_dispatched_rounds": taker_close_dispatched_rounds,
+        "taker_close_dispatch_round_ratio": (
+            taker_close_dispatched_rounds / taker_close_opportunity_rounds
+            if taker_close_opportunity_rounds
+            else None
+        ),
+        "total_taker_shadow_would_close": total_taker_shadow_would_close,
+        "total_dispatch_taker_close": total_dispatch_taker_close,
         "total_maker_only_missed_open_rounds": int(
             sum(int(r["maker_only_missed_open_round"] or 0) for r in rows)
         ),
@@ -313,6 +382,8 @@ def main() -> None:
         "summary_paired_qty",
         "summary_pair_cost",
         "summary_residual_qty",
+        "has_active_episode",
+        "residual_round",
         "single_seed_first_side",
         "single_seed_last_side",
         "single_seed_flip_count",
@@ -322,6 +393,7 @@ def main() -> None:
         "taker_shadow_would_close",
         "dispatch_taker_open",
         "dispatch_taker_close",
+        "taker_close_dispatch_gap",
         "maker_only_missed_open_round",
         "maker_only_missed_close_round",
         "tranche_opened_count",

@@ -34,6 +34,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--date", help="YYYY-MM-DD; resolves data/replay_reports/pgt_shadow_report_<date>.json")
     p.add_argument("--report-json", help="Direct path to pgt shadow report json")
     p.add_argument("--output-json", help="Optional explicit output path")
+    p.add_argument("--min-end-ts", type=int, help="Only include slugs with trailing end_ts >= this value")
+    p.add_argument("--max-end-ts", type=int, help="Only include slugs with trailing end_ts <= this value")
     return p.parse_args()
 
 
@@ -57,8 +59,40 @@ def resolve_report_path(args: argparse.Namespace) -> Path:
     return report_dir / f"pgt_shadow_report_{args.date}.json"
 
 
-def build_gap(payload: dict[str, Any]) -> dict[str, Any]:
-    rows = payload.get("rows") or []
+def slug_end_ts(slug: str) -> int | None:
+    tail = slug.rsplit("-", 1)[-1]
+    try:
+        return int(tail)
+    except Exception:
+        return None
+
+
+def filter_rows(
+    rows: list[dict[str, Any]],
+    min_end_ts: int | None = None,
+    max_end_ts: int | None = None,
+) -> list[dict[str, Any]]:
+    if min_end_ts is None and max_end_ts is None:
+        return rows
+    out = []
+    for row in rows:
+        end_ts = slug_end_ts(str(row.get("slug") or ""))
+        if end_ts is None:
+            continue
+        if min_end_ts is not None and end_ts < min_end_ts:
+            continue
+        if max_end_ts is not None and end_ts > max_end_ts:
+            continue
+        out.append(row)
+    return out
+
+
+def build_gap(
+    payload: dict[str, Any],
+    min_end_ts: int | None = None,
+    max_end_ts: int | None = None,
+) -> dict[str, Any]:
+    rows = filter_rows(payload.get("rows") or [], min_end_ts, max_end_ts)
 
     def collect(key: str) -> list[float]:
         out = []
@@ -79,6 +113,20 @@ def build_gap(payload: dict[str, Any]) -> dict[str, Any]:
     median_dual_seed_quotes = median(collect("dual_seed_quotes"))
     median_taker_shadow_would_open = median(collect("taker_shadow_would_open"))
     median_dispatch_taker_open = median(collect("dispatch_taker_open"))
+    active_episode_rounds = sum(
+        1 for row in rows if float(row.get("has_active_episode") or 0.0) > 0.5
+    )
+    residual_rounds = sum(
+        1 for row in rows if float(row.get("residual_round") or 0.0) > 0.5
+    )
+    taker_close_opportunity_rounds = sum(
+        1 for row in rows if float(row.get("taker_shadow_would_close") or 0.0) > 0.0
+    )
+    taker_close_dispatched_rounds = sum(
+        1 for row in rows if float(row.get("dispatch_taker_close") or 0.0) > 0.0
+    )
+    total_taker_shadow_would_close = sum(collect("taker_shadow_would_close"))
+    total_dispatch_taker_close = sum(collect("dispatch_taker_close"))
     maker_only_missed_open_rounds = sum(
         1 for row in rows if float(row.get("maker_only_missed_open_round") or 0.0) > 0.5
     )
@@ -91,6 +139,10 @@ def build_gap(payload: dict[str, Any]) -> dict[str, Any]:
 
     summary = {
         "markets": len(rows),
+        "filters": {
+            "min_end_ts": min_end_ts,
+            "max_end_ts": max_end_ts,
+        },
         "pgt_medians": {
             "clean_closed_episode_ratio": median_clean,
             "same_side_add_qty_ratio": median_same_side,
@@ -102,6 +154,21 @@ def build_gap(payload: dict[str, Any]) -> dict[str, Any]:
             "dual_seed_quotes": median_dual_seed_quotes,
             "taker_shadow_would_open": median_taker_shadow_would_open,
             "dispatch_taker_open": median_dispatch_taker_open,
+        },
+        "pgt_rates": {
+            "active_episode_rounds": active_episode_rounds,
+            "active_episode_ratio": (active_episode_rounds / len(rows)) if rows else None,
+            "residual_rounds": residual_rounds,
+            "residual_round_ratio": (residual_rounds / len(rows)) if rows else None,
+            "taker_close_opportunity_rounds": taker_close_opportunity_rounds,
+            "taker_close_dispatched_rounds": taker_close_dispatched_rounds,
+            "taker_close_dispatch_round_ratio": (
+                taker_close_dispatched_rounds / taker_close_opportunity_rounds
+                if taker_close_opportunity_rounds
+                else None
+            ),
+            "total_taker_shadow_would_close": total_taker_shadow_would_close,
+            "total_dispatch_taker_close": total_dispatch_taker_close,
         },
         "xuan_targets": XUAN_TARGETS,
         "pgt_shadow_gates": PGT_SHADOW_GATES,
@@ -162,12 +229,16 @@ def main() -> None:
     if not report_path.exists():
         raise SystemExit(f"report json not found: {report_path}")
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    out = build_gap(payload)
+    out = build_gap(payload, min_end_ts=args.min_end_ts, max_end_ts=args.max_end_ts)
 
     if args.output_json:
         output_path = Path(args.output_json)
     else:
         suffix = report_path.stem.removeprefix("pgt_shadow_report_")
+        if args.min_end_ts is not None:
+            suffix = f"{suffix}_from_{args.min_end_ts}"
+        if args.max_end_ts is not None:
+            suffix = f"{suffix}_to_{args.max_end_ts}"
         output_path = report_path.with_name(f"xuan_pgt_gap_report_{suffix}.json")
     output_path.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(out, ensure_ascii=False, indent=2))

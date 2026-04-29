@@ -30,7 +30,11 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
                     "summary_pair_cost": 0.99,
                     "single_seed_flip_count": 1.0,
                     "taker_shadow_would_open": 5.0,
+                    "taker_shadow_would_close": 4.0,
                     "dispatch_taker_open": 0.0,
+                    "dispatch_taker_close": 2.0,
+                    "has_active_episode": 1.0,
+                    "residual_round": 1.0,
                     "maker_only_missed_open_round": 1.0,
                 },
                 {
@@ -42,13 +46,19 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
                     "summary_pair_cost": 1.01,
                     "single_seed_flip_count": 0.0,
                     "taker_shadow_would_open": 1.0,
+                    "taker_shadow_would_close": 0.0,
                     "dispatch_taker_open": 0.0,
+                    "dispatch_taker_close": 0.0,
+                    "has_active_episode": 0.0,
+                    "residual_round": 0.0,
                     "maker_only_missed_open_round": 0.0,
                 },
             ]
         }
         out = gap_mod.build_gap(payload)
         self.assertEqual(out["markets"], 2)
+        self.assertIsNone(out["filters"]["min_end_ts"])
+        self.assertIsNone(out["filters"]["max_end_ts"])
         self.assertAlmostEqual(out["pgt_medians"]["clean_closed_episode_ratio"], 0.91)
         self.assertAlmostEqual(out["pgt_medians"]["same_side_add_qty_ratio"], 0.10)
         self.assertAlmostEqual(out["pgt_medians"]["summary_pair_cost"], 1.0)
@@ -58,9 +68,41 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertTrue(out["passes_pgt_shadow_gate"]["clean_closed_episode_ratio"])
         self.assertTrue(out["passes_pgt_shadow_gate"]["same_side_add_qty_ratio"])
         self.assertTrue(out["passes_pgt_shadow_gate"]["episode_close_delay_p90"])
+        self.assertEqual(out["pgt_rates"]["active_episode_rounds"], 1)
+        self.assertAlmostEqual(out["pgt_rates"]["active_episode_ratio"], 0.5)
+        self.assertEqual(out["pgt_rates"]["residual_rounds"], 1)
+        self.assertAlmostEqual(out["pgt_rates"]["residual_round_ratio"], 0.5)
+        self.assertEqual(out["pgt_rates"]["taker_close_opportunity_rounds"], 1)
+        self.assertEqual(out["pgt_rates"]["taker_close_dispatched_rounds"], 1)
+        self.assertAlmostEqual(out["pgt_rates"]["taker_close_dispatch_round_ratio"], 1.0)
+        self.assertAlmostEqual(out["pgt_rates"]["total_taker_shadow_would_close"], 4.0)
+        self.assertAlmostEqual(out["pgt_rates"]["total_dispatch_taker_close"], 2.0)
         self.assertEqual(out["counterfactual_readout"]["maker_only_missed_open_rounds"], 1)
         self.assertEqual(out["counterfactual_readout"]["single_seed_flip_rounds"], 1)
         self.assertAlmostEqual(out["counterfactual_readout"]["median_taker_shadow_open_gap"], 3.0)
+
+    def test_build_gap_can_filter_by_slug_end_ts(self):
+        payload = {
+            "rows": [
+                {
+                    "slug": "btc-updown-5m-100",
+                    "has_active_episode": 1.0,
+                    "taker_shadow_would_close": 3.0,
+                    "dispatch_taker_close": 0.0,
+                },
+                {
+                    "slug": "btc-updown-5m-200",
+                    "has_active_episode": 1.0,
+                    "taker_shadow_would_close": 1.0,
+                    "dispatch_taker_close": 1.0,
+                },
+            ]
+        }
+        out = gap_mod.build_gap(payload, min_end_ts=200)
+        self.assertEqual(out["markets"], 1)
+        self.assertEqual(out["filters"]["min_end_ts"], 200)
+        self.assertEqual(out["pgt_rates"]["taker_close_opportunity_rounds"], 1)
+        self.assertEqual(out["pgt_rates"]["taker_close_dispatched_rounds"], 1)
 
 
 if __name__ == "__main__":
