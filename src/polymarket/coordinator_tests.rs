@@ -7247,7 +7247,7 @@ fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
     let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
     let mut snapshot = ledger.snapshot;
     if let Some(mut active) = snapshot.active_tranche {
-        active.last_transition_at = Some(Instant::now() - Duration::from_secs(80));
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(95));
         snapshot.active_tranche = Some(active);
     }
     let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
@@ -7266,7 +7266,7 @@ fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
     assert_eq!(hedge.reason, BidReason::Hedge);
     assert!(
         quotes.pgt_taker_close_limit_for(Side::No).is_some(),
-        "shadow timeout should allow a bounded repair taker-close before the late 90s window"
+        "shadow timeout should allow a bounded repair taker-close after the 90s SLA window"
     );
 }
 
@@ -7309,13 +7309,13 @@ fn test_pair_gated_tranche_shadow_timeout_repair_cap_ramps_gradually() {
     let early = pair_gated_tranche_quotes(c.clone(), inventory_80, book(0.20, 0.22, 0.48, 0.49));
     assert!(
         early.pgt_taker_close_limit_for(Side::No).is_none(),
-        "age 80s should only allow pair_cost 1.01, not immediately jump to a 1.02 repair"
+        "age 80s should still be breakeven-only, not spend the 1.01 repair band"
     );
 
-    let later = pair_gated_tranche_quotes(c, inventory_95, book(0.20, 0.22, 0.48, 0.49));
+    let later = pair_gated_tranche_quotes(c, inventory_95, book(0.20, 0.22, 0.47, 0.48));
     assert!(
         later.pgt_taker_close_limit_for(Side::No).is_some(),
-        "age 95s should allow the next repair band"
+        "age 95s should allow the 1.01 repair band"
     );
 }
 
