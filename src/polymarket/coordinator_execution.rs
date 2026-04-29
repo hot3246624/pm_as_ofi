@@ -15,6 +15,7 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
+const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
 
 impl StrategyCoordinator {
     pub(super) fn pgt_buy_retain_decision(
@@ -879,6 +880,13 @@ impl StrategyCoordinator {
         no_stale: bool,
     ) -> Option<PgtShadowTakerOpenCandidate> {
         if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
+            return None;
+        }
+        if !PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED {
+            // Keep taker-open as a strategy counterfactual only. Executing the
+            // first leg aggressively can strand an expensive residual that later
+            // needs lossy repair, which is the opposite of PGT's maker-first
+            // replication target.
             return None;
         }
         if inv.net_diff.abs() > PAIR_ARB_NET_EPS {

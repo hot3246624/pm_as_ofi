@@ -6623,7 +6623,7 @@ fn test_pair_gated_tranche_flat_seed_widens_early_round_budget_without_chasing_p
 }
 
 #[test]
-fn test_pair_gated_tranche_selects_single_shadow_taker_open_candidate_in_dry_run() {
+fn test_pair_gated_tranche_shadow_taker_open_execution_is_disabled_by_default() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
     c.dry_run = true;
@@ -6663,25 +6663,18 @@ fn test_pair_gated_tranche_selects_single_shadow_taker_open_candidate_in_dry_run
         block_maker_hedge: false,
         endgame_phase: EndgamePhase::Normal,
     };
-    let candidate = coord
-        .pgt_shadow_taker_open_candidate(
-            &InventoryState::default(),
-            &book(0.46, 0.47, 0.45, 0.46),
-            &st,
-            false,
-            false,
-            false,
-            false,
-        )
-        .expect("expected a single PGT shadow taker-open candidate");
-    assert_eq!(
-        candidate.side,
-        Side::No,
-        "lower ask side should win first-leg taker-open tie"
+    let candidate = coord.pgt_shadow_taker_open_candidate(
+        &InventoryState::default(),
+        &book(0.46, 0.47, 0.45, 0.46),
+        &st,
+        false,
+        false,
+        false,
+        false,
     );
     assert!(
-        (candidate.limit_price - 0.54).abs() < 1e-9,
-        "shadow taker-open limit should respect the first-leg ceiling"
+        candidate.is_none(),
+        "PGT should keep taker-open as counterfactual-only instead of aggressively opening first-leg residual"
     );
     let action = coord.decide_provide_side_action(
         Side::No,
@@ -6690,17 +6683,17 @@ fn test_pair_gated_tranche_selects_single_shadow_taker_open_candidate_in_dry_run
         None,
         false,
         false,
-        Some(candidate.limit_price),
+        None,
         None,
     );
     assert!(
-        matches!(action, ProvideSideAction::ShadowTaker { .. }),
-        "eligible dry-run PGT seed should route through shadow taker-open instead of maker place"
+        matches!(action, ProvideSideAction::Place { intent } if intent.reason == BidReason::Provide),
+        "eligible PGT seed should remain maker-first when taker-open execution is disabled"
     );
 }
 
 #[test]
-fn test_pair_gated_tranche_shadow_taker_open_fires_once_per_epoch() {
+fn test_pair_gated_tranche_shadow_taker_open_stays_disabled_across_epochs() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
     c.dry_run = true;
@@ -6742,18 +6735,16 @@ fn test_pair_gated_tranche_shadow_taker_open_fires_once_per_epoch() {
         endgame_phase: EndgamePhase::Normal,
     };
     let book = book(0.46, 0.47, 0.45, 0.46);
-    let first = coord
-        .pgt_shadow_taker_open_candidate(
-            &InventoryState::default(),
-            &book,
-            &st,
-            false,
-            false,
-            false,
-            false,
-        )
-        .expect("expected first candidate");
-    assert_eq!(first.side, Side::No);
+    let first = coord.pgt_shadow_taker_open_candidate(
+        &InventoryState::default(),
+        &book,
+        &st,
+        false,
+        false,
+        false,
+        false,
+    );
+    assert!(first.is_none(), "taker-open execution should be disabled");
     coord.pgt_shadow_taker_open_fired_epoch = Some(coord.pgt_decision_epoch);
     let second = coord.pgt_shadow_taker_open_candidate(
         &InventoryState::default(),
@@ -6766,21 +6757,22 @@ fn test_pair_gated_tranche_shadow_taker_open_fires_once_per_epoch() {
     );
     assert!(
         second.is_none(),
-        "same-side shadow taker-open should be suppressed after the first fire in the same epoch"
+        "disabled taker-open should remain absent after a fired-epoch marker"
     );
     coord.pgt_decision_epoch += 1;
-    let third = coord
-        .pgt_shadow_taker_open_candidate(
-            &InventoryState::default(),
-            &book,
-            &st,
-            false,
-            false,
-            false,
-            false,
-        )
-        .expect("expected candidate after epoch bump");
-    assert_eq!(third.side, Side::No);
+    let third = coord.pgt_shadow_taker_open_candidate(
+        &InventoryState::default(),
+        &book,
+        &st,
+        false,
+        false,
+        false,
+        false,
+    );
+    assert!(
+        third.is_none(),
+        "disabled taker-open should not reappear after an epoch bump"
+    );
 }
 
 #[test]
