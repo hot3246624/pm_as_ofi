@@ -722,6 +722,11 @@ impl InventoryManager {
                 "capital_pressure_merge_batch_shadow": curr.pair_ledger.capital_state.capital_pressure_merge_batch_shadow,
                 "clean_closed_episode_ratio": curr.episode_metrics.clean_closed_episode_ratio,
                 "same_side_add_qty_ratio": curr.episode_metrics.same_side_add_qty_ratio,
+                "residual_before_new_open_p90": curr.episode_metrics.residual_before_new_open_p90,
+                "episode_close_delay_p50": curr.episode_metrics.episode_close_delay_p50,
+                "episode_close_delay_p90": curr.episode_metrics.episode_close_delay_p90,
+                "round_buy_fill_count": curr.episode_metrics.round_buy_fill_count,
+                "conditional_second_same_side_would_allow": curr.episode_metrics.conditional_second_same_side_would_allow,
             }),
         );
     }

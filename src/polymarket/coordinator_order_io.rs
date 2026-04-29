@@ -712,8 +712,8 @@ impl StrategyCoordinator {
                 && slot_direction == Some(slot.direction)
                 && slot_reason == Some(reason)
                 && price_gap <= reprice_eps;
-            let size_change_triggers_reprice = (slot_size - size).abs() > 0.1
-                && !pgt_ignore_size_only_reprice;
+            let size_change_triggers_reprice =
+                (slot_size - size).abs() > 0.1 && !pgt_ignore_size_only_reprice;
             let mut needs_reprice = force_glft_drift_reprice
                 || cross_reprice_override
                 || slot_direction != Some(slot.direction)
@@ -769,21 +769,21 @@ impl StrategyCoordinator {
                         slot_price,
                     );
                 } else {
-                let tick = self.cfg.tick_size.max(1e-9);
-                let delta_ticks = (price - slot_price) / tick;
-                let slot_age = self.slot_last_ts(slot).elapsed();
-                let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
-                let (retain, retain_reason) =
-                    self.pgt_buy_retain_decision(reason, delta_ticks, slot_age, remaining_secs);
-                if retain {
-                    self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
-                    debug!(
+                    let tick = self.cfg.tick_size.max(1e-9);
+                    let delta_ticks = (price - slot_price) / tick;
+                    let slot_age = self.slot_last_ts(slot).elapsed();
+                    let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+                    let (retain, retain_reason) =
+                        self.pgt_buy_retain_decision(reason, delta_ticks, slot_age, remaining_secs);
+                    if retain {
+                        self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                        debug!(
                         "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
                         slot, retain_reason, price, slot_price, delta_ticks,
                     );
-                    return;
-                }
-                debug!(
+                        return;
+                    }
+                    debug!(
                     "🔁 PGT reprice {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
                     slot, retain_reason, price, slot_price, delta_ticks,
                 );

@@ -19,7 +19,6 @@ use anyhow::Context;
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE as BASE64_URL_SAFE};
 use base64::Engine as _;
 use hmac::{Hmac, Mac as _};
-use polymarket_client_sdk::contract_config;
 use polymarket_client_sdk::ctf::types::{
     MergePositionsRequest, RedeemNegRiskRequest, RedeemPositionsRequest,
 };
@@ -34,6 +33,8 @@ use rust_decimal::prelude::FromPrimitive;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::Sha256;
+
+use crate::polymarket::clob_v2::v2_contract_config;
 
 sol! {
     /// Minimal Safe EIP-712 transaction payload used by the relayer flow.
@@ -260,7 +261,7 @@ pub async fn scan_claimable_positions(
 }
 
 /// Scan currently mergeable YES/NO inventory for one market and return
-/// the maximum full-set amount that can be merged (in USDC units).
+/// the maximum full-set amount that can be merged (in pUSD units).
 pub async fn scan_mergeable_full_set_usdc(
     data_api_url: &str,
     user: Address,
@@ -375,9 +376,7 @@ pub async fn execute_market_merge(
                 .await
                 .with_context(|| format!("connect rpc failed: {}", cfg.rpc_url))?;
             let standard = CtfClient::new(provider, POLYGON)?;
-            let collateral = contract_config(POLYGON, false)
-                .context("missing contract config for polygon mainnet")?
-                .collateral;
+            let collateral = v2_contract_config(false).collateral;
             let req =
                 MergePositionsRequest::for_binary_market(collateral, condition_id, amount_u256);
             let resp = standard.merge_positions(&req).await?;
@@ -398,8 +397,7 @@ pub async fn execute_market_merge(
             let signer_wallet: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> = pk
                 .parse()
                 .context("invalid POLYMARKET_PRIVATE_KEY for SAFE merge signing")?;
-            let standard_cfg = contract_config(POLYGON, false)
-                .context("missing standard contract config for polygon")?;
+            let standard_cfg = v2_contract_config(false);
             let to = standard_cfg.conditional_tokens;
             let collateral = standard_cfg.collateral;
             let call = IConditionalTokensAutoClaim::mergePositionsCall {
@@ -894,9 +892,7 @@ async fn run_eoa_onchain_claims(
 
     let standard = CtfClient::new(provider.clone(), POLYGON)?;
     let neg_risk = CtfClient::with_neg_risk(provider, POLYGON)?;
-    let collateral = contract_config(POLYGON, false)
-        .context("missing contract config for polygon mainnet")?
-        .collateral;
+    let collateral = v2_contract_config(false).collateral;
     let mut claimed = 0_usize;
 
     for c in candidates {
@@ -962,10 +958,8 @@ async fn run_safe_relayer_claims(
         .as_ref()
         .context("POLYMARKET_BUILDER_* credentials are required for SAFE relayer claim")?;
 
-    let standard_cfg =
-        contract_config(POLYGON, false).context("missing standard contract config for polygon")?;
-    let neg_cfg =
-        contract_config(POLYGON, true).context("missing neg-risk contract config for polygon")?;
+    let standard_cfg = v2_contract_config(false);
+    let neg_cfg = v2_contract_config(true);
     let ctf_contract = standard_cfg.conditional_tokens;
     let collateral = standard_cfg.collateral;
     let neg_risk_adapter = neg_cfg

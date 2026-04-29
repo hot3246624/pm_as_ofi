@@ -123,6 +123,7 @@ pub struct EpisodeMetrics {
     pub residual_before_new_open_p90: f64,
     pub episode_close_delay_p50: f64,
     pub episode_close_delay_p90: f64,
+    pub round_buy_fill_count: u64,
     pub conditional_second_same_side_would_allow: u64,
 }
 
@@ -294,6 +295,7 @@ impl WorkingTranche {
 
 #[derive(Debug, Default)]
 struct EpisodeStats {
+    buy_fill_count: u64,
     total_open_qty: f64,
     total_closed: u64,
     clean_closed: u64,
@@ -329,6 +331,7 @@ impl PairLedgerBuilder {
         if qty <= PAIR_LEDGER_EPS {
             return;
         }
+        self.stats.buy_fill_count = self.stats.buy_fill_count.saturating_add(1);
         if let Some(active) = self.active.as_mut() {
             if active.first_side() == Some(side) {
                 active.add_first(qty, price, ts, true);
@@ -503,6 +506,7 @@ impl PairLedgerBuilder {
             residual_before_new_open_p90: percentile(&self.stats.residual_before_new_open, 0.90),
             episode_close_delay_p50: percentile(&self.stats.close_delays_secs, 0.50),
             episode_close_delay_p90: percentile(&self.stats.close_delays_secs, 0.90),
+            round_buy_fill_count: self.stats.buy_fill_count,
             conditional_second_same_side_would_allow: self
                 .stats
                 .conditional_second_same_side_would_allow,
@@ -539,14 +543,28 @@ pub(crate) fn build_pair_ledger(
 }
 
 pub fn urgency_budget_shadow_5m(remaining_secs: u64, has_active_tranche: bool) -> f64 {
-    if remaining_secs > 60 {
+    if !has_active_tranche {
+        return 0.0;
+    }
+    if remaining_secs > 120 {
         return 0.0;
     }
     if remaining_secs <= 15 {
-        return if has_active_tranche { 0.005 } else { 0.0 };
+        return 0.080;
     }
-    let fraction = (60.0 - remaining_secs as f64) / 45.0;
-    (fraction * 0.005).clamp(0.0, 0.005)
+    if remaining_secs <= 30 {
+        return 0.070;
+    }
+    if remaining_secs <= 45 {
+        return 0.060;
+    }
+    if remaining_secs <= 60 {
+        return 0.045;
+    }
+    if remaining_secs <= 90 {
+        return 0.025;
+    }
+    0.010
 }
 
 fn sum_lots(lots: &VecDeque<Lot>) -> f64 {
@@ -770,5 +788,17 @@ mod tests {
         assert_eq!(active.state, TrancheState::CompletionOnly);
         assert!((active.pairable_qty - 50.0).abs() < 1e-9);
         assert!((active.residual_qty - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn urgency_budget_shadow_5m_steps_up_into_close() {
+        assert!((urgency_budget_shadow_5m(121, true) - 0.0).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(100, true) - 0.010).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(90, true) - 0.025).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(60, true) - 0.045).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(45, true) - 0.060).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(30, true) - 0.070).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(15, true) - 0.080).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(15, false) - 0.0).abs() < 1e-9);
     }
 }

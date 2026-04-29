@@ -46,3 +46,7 @@ path = "src/bin/polymarket_v2.rs"
 [[bin]]
 name = "probe_clob_trades"
 path = "src/bin/probe_clob_trades.rs"
+
+[[bin]]
+name = "probe_clob_v2"
+path = "src/bin/probe_clob_v2.rs"

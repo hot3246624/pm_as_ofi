@@ -66,7 +66,7 @@ impl RecorderConfig {
             .ok()
             .filter(|s| !s.trim().is_empty())
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("data/recorder"));
+            .unwrap_or_else(default_recorder_root);
         let md_queue_cap = std::env::var("PM_RECORDER_MD_QUEUE_CAP")
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
@@ -95,6 +95,34 @@ impl RecorderConfig {
             flush_every: Duration::from_millis(flush_every_ms),
             market_mode,
         }
+    }
+}
+
+fn default_recorder_root() -> PathBuf {
+    let base = PathBuf::from("data/recorder");
+    let Some(instance_id) = std::env::var("PM_INSTANCE_ID")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return base;
+    };
+    base.join(sanitize_instance_id(&instance_id))
+}
+
+fn sanitize_instance_id(raw: &str) -> String {
+    let sanitized = raw
+        .trim()
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | '_' | '-' => ch,
+            _ => '_',
+        })
+        .collect::<String>();
+    if sanitized.is_empty() {
+        "default".to_string()
+    } else {
+        sanitized
     }
 }
 

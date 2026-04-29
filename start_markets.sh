@@ -22,6 +22,17 @@ fi
 
 source .env
 
+INSTANCE_ID="${PM_INSTANCE_ID:-}"
+if [ -n "$INSTANCE_ID" ]; then
+    LOG_ROOT="${PM_LOG_ROOT:-logs/$INSTANCE_ID}"
+    RECORDER_ROOT="${PM_RECORDER_ROOT:-data/recorder/$INSTANCE_ID}"
+    PID_ROOT="pids/$INSTANCE_ID"
+else
+    LOG_ROOT="${PM_LOG_ROOT:-logs}"
+    RECORDER_ROOT="${PM_RECORDER_ROOT:-data/recorder}"
+    PID_ROOT="pids"
+fi
+
 # 关键: 清理 PM_ORACLE_LAG_SYMBOL_UNIVERSE, 让 supervisor 为每个子进程自动设置
 # 它自己的 symbol (run_multi_market_supervisor 的 is_err() 分支). 若 .env 里设置了
 # 全集, supervisor 就不会 narrow 每个子进程 -> 每个 hub 仍订阅全部 7 个 symbol,
@@ -46,9 +57,9 @@ MARKETS=(
 
 PREFIXES=$(IFS=,; echo "${MARKETS[*]}")
 
-mkdir -p logs
-mkdir -p pids
-rm -f pids/*.pid
+mkdir -p "$LOG_ROOT"
+mkdir -p "$PID_ROOT"
+rm -f "$PID_ROOT"/*.pid
 
 echo -e "${YELLOW}Markets to run:${NC}"
 for market in "${MARKETS[@]}"; do
@@ -71,10 +82,13 @@ else
 fi
 echo ""
 
-LOG_FILE="logs/supervisor-$(date +%Y%m%d-%H%M%S).log"
+LOG_FILE="$LOG_ROOT/supervisor-$(date +%Y%m%d-%H%M%S).log"
 
 echo -e "${GREEN}Starting supervisor with prefixes:${NC} $PREFIXES"
 echo -e "${GREEN}Log:${NC} $LOG_FILE"
+if [ -n "$INSTANCE_ID" ]; then
+    echo -e "${GREEN}Instance:${NC} $INSTANCE_ID"
+fi
 
 # PM_INPROC_SUPERVISOR=1 selects the in-process (Stage D) path:
 # one tokio runtime, one shared ChainlinkHub, per-slug tasks inside
@@ -82,16 +96,31 @@ echo -e "${GREEN}Log:${NC} $LOG_FILE"
 # unset — it still works but doesn't scale past ~10 markets.
 # oracle_lag_sniping: 市场收盘后 book 自然无更新，3s 默认 stale TTL 会阻断所有收盘后下单。
 # 30s 与硬关闭阈值 (is_book_stale) 对齐，oracle_lag 策略在开盘期间不报价，延长不影响常规风险控制。
-PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
-PM_INPROC_SUPERVISOR=1 \
-PM_DRY_RUN="$DRY_RUN_FLAG" \
-PM_STALE_TTL_MS=30000 \
-RUST_LOG=info \
-nohup cargo run --bin polymarket_v2 --release \
-    > "$LOG_FILE" 2>&1 &
+if [ -n "$INSTANCE_ID" ]; then
+    PM_INSTANCE_ID="$INSTANCE_ID" \
+    PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
+    PM_INPROC_SUPERVISOR=1 \
+    PM_DRY_RUN="$DRY_RUN_FLAG" \
+    PM_STALE_TTL_MS=30000 \
+    PM_LOG_ROOT="$LOG_ROOT" \
+    PM_RECORDER_ROOT="$RECORDER_ROOT" \
+    RUST_LOG=info \
+    nohup cargo run --bin polymarket_v2 --release \
+        > "$LOG_FILE" 2>&1 &
+else
+    PM_MULTI_MARKET_PREFIXES="$PREFIXES" \
+    PM_INPROC_SUPERVISOR=1 \
+    PM_DRY_RUN="$DRY_RUN_FLAG" \
+    PM_STALE_TTL_MS=30000 \
+    PM_LOG_ROOT="$LOG_ROOT" \
+    PM_RECORDER_ROOT="$RECORDER_ROOT" \
+    RUST_LOG=info \
+    nohup cargo run --bin polymarket_v2 --release \
+        > "$LOG_FILE" 2>&1 &
+fi
 
 SUPERVISOR_PID=$!
-echo $SUPERVISOR_PID > pids/supervisor.pid
+echo $SUPERVISOR_PID > "$PID_ROOT/supervisor.pid"
 
 echo -e "  ${GREEN}✓${NC} supervisor PID: $SUPERVISOR_PID"
 echo ""

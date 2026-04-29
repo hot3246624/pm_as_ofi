@@ -577,7 +577,7 @@ impl OrderManager {
                     {
                         self.oracle_lag_live_reprice_needed(slot, &live, &desired)
                     } else {
-                        live != desired
+                        live != desired || live.reason != desired.reason
                     };
                     if should_reprice {
                         let _ = self
@@ -909,6 +909,64 @@ mod tests {
         let tracker = om.tracker(OrderSlot::NO_BUY);
         assert!(matches!(tracker.state, OrderState::Idle));
         assert!(tracker.desired.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_live_buy_reason_change_same_price_forces_reprice() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, mut exec_rx) = mpsc::channel(16);
+        let (result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
+        let h = tokio::spawn(om.run());
+
+        let slot = OrderSlot::YES_BUY;
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                slot,
+                0.52,
+                96.0,
+                BidReason::Provide,
+            )))
+            .await;
+
+        let first = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(first, ExecutionCmd::ExecuteIntent { .. }));
+
+        let _ = result_tx
+            .send(OrderResult::OrderPlaced {
+                slot,
+                target: target(slot, 0.52, 96.0, BidReason::Provide),
+            })
+            .await;
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                slot,
+                0.52,
+                96.0,
+                BidReason::Hedge,
+            )))
+            .await;
+
+        let second = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(
+            second,
+            ExecutionCmd::CancelSlot {
+                slot: OrderSlot::YES_BUY,
+                reason: CancelReason::Reprice,
+            }
+        ));
+
+        drop(cmd_tx);
+        let _ = h.await;
     }
 
     #[tokio::test]

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -32,10 +33,21 @@ TRANCHE_EVENTS = {
     "tranche_overshoot_rolled",
     "same_side_add_before_covered",
     "merge_pairable_reduced",
+    "merge_skipped",
+    "merge_requested",
+    "merge_executed",
+    "redeem_requested",
 }
 BUDGET_EVENTS = {"surplus_bank_updated", "repair_budget_spent"}
 CAPITAL_EVENTS = {"capital_state_snapshot"}
-INVENTORY_EVENTS = {"fill_snapshot", "merge_sync", *TRANCHE_EVENTS, *BUDGET_EVENTS, *CAPITAL_EVENTS}
+INVENTORY_EVENTS = {
+    "fill_snapshot",
+    "merge_sync",
+    "pgt_shadow_summary",
+    *TRANCHE_EVENTS,
+    *BUDGET_EVENTS,
+    *CAPITAL_EVENTS,
+}
 SETTLEMENT_EVENTS = {"redeem_result", "market_resolved"}
 
 
@@ -53,9 +65,15 @@ class Envelope:
 
 
 def parse_args() -> argparse.Namespace:
+    instance_id = os.environ.get("PM_INSTANCE_ID", "").strip()
+    input_root = "data/recorder"
+    output_root = "data/replay"
+    if instance_id:
+        input_root = f"{input_root}/{instance_id}"
+        output_root = f"{output_root}/{instance_id}"
     p = argparse.ArgumentParser()
-    p.add_argument("--input-root", default="data/recorder")
-    p.add_argument("--output-root", default="data/replay")
+    p.add_argument("--input-root", default=input_root)
+    p.add_argument("--output-root", default=output_root)
     p.add_argument("--date", required=True, help="YYYY-MM-DD")
     return p.parse_args()
 

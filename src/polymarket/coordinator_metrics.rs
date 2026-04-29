@@ -285,6 +285,17 @@ impl StrategyCoordinator {
         PgtGateLogSnapshot {
             seed_quotes: self.stats.pgt_seed_quotes,
             completion_quotes: self.stats.pgt_completion_quotes,
+            taker_shadow_would_open: self.stats.pgt_taker_shadow_would_open,
+            taker_shadow_would_close: self.stats.pgt_taker_shadow_would_close,
+            skip_geometry_guard: self.stats.pgt_skip_geometry_guard,
+            single_seed_bias: self.stats.pgt_single_seed_bias,
+            single_seed_first_side: self.stats.pgt_single_seed_first_side,
+            single_seed_last_side: self.stats.pgt_single_seed_last_side,
+            single_seed_flip_count: self.stats.pgt_single_seed_flip_count,
+            dual_seed_quotes: self.stats.pgt_dual_seed_quotes,
+            single_seed_released_to_dual: self.stats.pgt_single_seed_released_to_dual,
+            entry_pressure_sides: self.stats.pgt_entry_pressure_sides,
+            entry_pressure_extra_ticks: self.stats.pgt_entry_pressure_extra_ticks,
             skip_harvest: self.stats.pgt_skip_harvest,
             skip_tail_completion_only: self.stats.pgt_skip_tail_completion_only,
             skip_residual_guard: self.stats.pgt_skip_residual_guard,
@@ -295,6 +306,8 @@ impl StrategyCoordinator {
             dispatch_intents: self.stats.pgt_dispatch_intents,
             dispatch_blocked: self.stats.pgt_dispatch_blocked,
             dispatch_place: self.stats.pgt_dispatch_place,
+            dispatch_taker_open: self.stats.pgt_dispatch_taker_open,
+            dispatch_taker_close: self.stats.pgt_dispatch_taker_close,
             dispatch_retain: self.stats.pgt_dispatch_retain,
             dispatch_clear: self.stats.pgt_dispatch_clear,
             stale_target_dropped: self.stats.pgt_stale_target_dropped,
@@ -366,9 +379,27 @@ impl StrategyCoordinator {
         self.pgt_gate_last_snapshot = cur;
 
         let seed_delta = cur.seed_quotes.saturating_sub(prev.seed_quotes);
-        let completion_delta = cur
-            .completion_quotes
-            .saturating_sub(prev.completion_quotes);
+        let completion_delta = cur.completion_quotes.saturating_sub(prev.completion_quotes);
+        let taker_shadow_would_open_delta = cur
+            .taker_shadow_would_open
+            .saturating_sub(prev.taker_shadow_would_open);
+        let taker_shadow_would_close_delta = cur
+            .taker_shadow_would_close
+            .saturating_sub(prev.taker_shadow_would_close);
+        let skip_geometry_guard_delta = cur
+            .skip_geometry_guard
+            .saturating_sub(prev.skip_geometry_guard);
+        let single_seed_bias_delta = cur.single_seed_bias.saturating_sub(prev.single_seed_bias);
+        let dual_seed_delta = cur.dual_seed_quotes.saturating_sub(prev.dual_seed_quotes);
+        let single_seed_released_delta = cur
+            .single_seed_released_to_dual
+            .saturating_sub(prev.single_seed_released_to_dual);
+        let entry_pressure_sides_delta = cur
+            .entry_pressure_sides
+            .saturating_sub(prev.entry_pressure_sides);
+        let entry_pressure_extra_ticks_delta = cur
+            .entry_pressure_extra_ticks
+            .saturating_sub(prev.entry_pressure_extra_ticks);
         let skip_harvest_delta = cur.skip_harvest.saturating_sub(prev.skip_harvest);
         let skip_tail_delta = cur
             .skip_tail_completion_only
@@ -379,18 +410,18 @@ impl StrategyCoordinator {
         let skip_capital_delta = cur
             .skip_capital_guard
             .saturating_sub(prev.skip_capital_guard);
-        let skip_invalid_book_delta = cur
-            .skip_invalid_book
-            .saturating_sub(prev.skip_invalid_book);
+        let skip_invalid_book_delta = cur.skip_invalid_book.saturating_sub(prev.skip_invalid_book);
         let skip_no_seed_delta = cur.skip_no_seed.saturating_sub(prev.skip_no_seed);
         let post_flow_delta = cur.post_flow_quotes.saturating_sub(prev.post_flow_quotes);
-        let dispatch_intents_delta = cur
-            .dispatch_intents
-            .saturating_sub(prev.dispatch_intents);
-        let dispatch_blocked_delta = cur
-            .dispatch_blocked
-            .saturating_sub(prev.dispatch_blocked);
+        let dispatch_intents_delta = cur.dispatch_intents.saturating_sub(prev.dispatch_intents);
+        let dispatch_blocked_delta = cur.dispatch_blocked.saturating_sub(prev.dispatch_blocked);
         let dispatch_place_delta = cur.dispatch_place.saturating_sub(prev.dispatch_place);
+        let dispatch_taker_open_delta = cur
+            .dispatch_taker_open
+            .saturating_sub(prev.dispatch_taker_open);
+        let dispatch_taker_close_delta = cur
+            .dispatch_taker_close
+            .saturating_sub(prev.dispatch_taker_close);
         let dispatch_retain_delta = cur.dispatch_retain.saturating_sub(prev.dispatch_retain);
         let dispatch_clear_delta = cur.dispatch_clear.saturating_sub(prev.dispatch_clear);
         let stale_target_dropped_delta = cur
@@ -398,13 +429,17 @@ impl StrategyCoordinator {
             .saturating_sub(prev.stale_target_dropped);
 
         info!(
-            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow)={}/{}/{} dispatch(intent/blocked/place/retain/clear/stale_drop)={}/{}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed)={}/{}/{}/{}/{}/{}",
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed/geometry)={}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
             seed_delta,
             completion_delta,
             post_flow_delta,
+            taker_shadow_would_open_delta,
+            taker_shadow_would_close_delta,
             dispatch_intents_delta,
             dispatch_blocked_delta,
             dispatch_place_delta,
+            dispatch_taker_open_delta,
+            dispatch_taker_close_delta,
             dispatch_retain_delta,
             dispatch_clear_delta,
             stale_target_dropped_delta,
@@ -414,6 +449,12 @@ impl StrategyCoordinator {
             skip_capital_delta,
             skip_invalid_book_delta,
             skip_no_seed_delta,
+            skip_geometry_guard_delta,
+            single_seed_bias_delta,
+            dual_seed_delta,
+            single_seed_released_delta,
+            entry_pressure_sides_delta,
+            entry_pressure_extra_ticks_delta,
         );
     }
 

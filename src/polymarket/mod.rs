@@ -1,5 +1,6 @@
 // ─── Polymarket V2 Core Modules ───
 pub mod claims;
+pub mod clob_v2;
 pub mod coordinator;
 pub mod executor;
 pub mod glft;

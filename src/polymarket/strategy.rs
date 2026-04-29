@@ -69,6 +69,12 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pgt_skip_capital_guard: u8,
     pub(crate) pgt_skip_invalid_book: u8,
     pub(crate) pgt_skip_no_seed: u8,
+    pub(crate) pgt_skip_geometry_guard: u8,
+    pub(crate) pgt_single_seed_bias: u8,
+    pub(crate) pgt_entry_pressure_sides: u8,
+    pub(crate) pgt_entry_pressure_extra_ticks: u8,
+    pub(crate) pgt_taker_shadow_would_open: u8,
+    pub(crate) pgt_taker_shadow_would_close: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -182,6 +188,39 @@ impl StrategyQuotes {
 
     pub(crate) fn note_pgt_skip_no_seed(&mut self) {
         self.diagnostics.pgt_skip_no_seed = self.diagnostics.pgt_skip_no_seed.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_geometry_guard(&mut self) {
+        self.diagnostics.pgt_skip_geometry_guard =
+            self.diagnostics.pgt_skip_geometry_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_single_seed_bias(&mut self) {
+        self.diagnostics.pgt_single_seed_bias =
+            self.diagnostics.pgt_single_seed_bias.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_entry_pressure(&mut self, extra_ticks: u8) {
+        self.diagnostics.pgt_entry_pressure_sides =
+            self.diagnostics.pgt_entry_pressure_sides.saturating_add(1);
+        self.diagnostics.pgt_entry_pressure_extra_ticks = self
+            .diagnostics
+            .pgt_entry_pressure_extra_ticks
+            .saturating_add(extra_ticks);
+    }
+
+    pub(crate) fn note_pgt_taker_shadow_would_close(&mut self) {
+        self.diagnostics.pgt_taker_shadow_would_close = self
+            .diagnostics
+            .pgt_taker_shadow_would_close
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_taker_shadow_would_open(&mut self) {
+        self.diagnostics.pgt_taker_shadow_would_open = self
+            .diagnostics
+            .pgt_taker_shadow_would_open
+            .saturating_add(1);
     }
 }
 

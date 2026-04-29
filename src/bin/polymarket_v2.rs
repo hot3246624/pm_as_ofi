@@ -17,6 +17,7 @@ use std::io::{BufWriter, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -304,35 +305,78 @@ fn is_broker_manifest_healthy(manifest: &SharedIngressBrokerManifest) -> bool {
         && PathBuf::from(&manifest.market_socket).exists()
 }
 
-fn cleanup_stale_client_leases() {
+fn shared_ingress_pid_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+fn cleanup_stale_broker_artifacts() -> bool {
+    let Some(manifest) = read_broker_manifest() else {
+        return false;
+    };
+    if shared_ingress_pid_alive(manifest.pid) {
+        return false;
+    }
+    warn!(
+        "🧹 removing stale shared ingress broker artifacts | pid={} build_id={} protocol={} schema={}",
+        manifest.pid, manifest.build_id, manifest.protocol_version, manifest.schema_version
+    );
+    let _ = fs::remove_file(shared_ingress_broker_manifest_path());
+    let _ = fs::remove_file(shared_ingress_chainlink_socket_path());
+    let _ = fs::remove_file(shared_ingress_local_price_socket_path());
+    let _ = fs::remove_file(shared_ingress_market_socket_path());
+    true
+}
+
+#[derive(Default, Debug, Clone, Copy)]
+struct SharedIngressLeaseCleanupStats {
+    removed_stale: usize,
+    removed_invalid: usize,
+}
+
+fn cleanup_stale_client_leases() -> SharedIngressLeaseCleanupStats {
+    let mut stats = SharedIngressLeaseCleanupStats::default();
     let dir = shared_ingress_clients_dir();
     let Ok(entries) = fs::read_dir(&dir) else {
-        return;
+        return stats;
     };
     for entry in entries.flatten() {
         let path = entry.path();
         let Ok(raw) = fs::read_to_string(&path) else {
             let _ = fs::remove_file(&path);
+            stats.removed_invalid += 1;
             continue;
         };
         let Ok(lease) = serde_json::from_str::<SharedIngressClientLease>(&raw) else {
             let _ = fs::remove_file(&path);
+            stats.removed_invalid += 1;
             continue;
         };
         if lease.protocol_version != shared_ingress_protocol_version()
             || lease.schema_version != shared_ingress_schema_version()
         {
             let _ = fs::remove_file(&path);
+            stats.removed_invalid += 1;
             continue;
         }
         if now_ms().saturating_sub(lease.last_heartbeat_ms) > SHARED_INGRESS_CLIENT_STALE_MS {
             let _ = fs::remove_file(&path);
+            stats.removed_stale += 1;
         }
     }
+    stats
 }
 
 fn shared_ingress_active_client_count() -> usize {
-    cleanup_stale_client_leases();
     fs::read_dir(shared_ingress_clients_dir())
         .ok()
         .map(|entries| {
@@ -354,7 +398,8 @@ impl Drop for SharedIngressBrokerLockGuard {
     }
 }
 
-fn try_acquire_shared_ingress_broker_lock() -> anyhow::Result<Option<SharedIngressBrokerLockGuard>> {
+fn try_acquire_shared_ingress_broker_lock() -> anyhow::Result<Option<SharedIngressBrokerLockGuard>>
+{
     let path = shared_ingress_broker_lock_path();
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -366,7 +411,9 @@ fn try_acquire_shared_ingress_broker_lock() -> anyhow::Result<Option<SharedIngre
                 .and_then(|m| m.modified())
                 .ok()
                 .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| now_ms().saturating_sub(d.as_millis() as u64) > SHARED_INGRESS_LOCK_STALE_MS)
+                .map(|d| {
+                    now_ms().saturating_sub(d.as_millis() as u64) > SHARED_INGRESS_LOCK_STALE_MS
+                })
                 .unwrap_or(true);
             if stale {
                 let _ = fs::remove_dir_all(&path);
@@ -407,6 +454,7 @@ async fn kill_shared_ingress_broker_pid(pid: u32) {
 async fn wait_for_shared_ingress_broker_healthy(timeout_ms: u64) -> anyhow::Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
     loop {
+        cleanup_stale_broker_artifacts();
         if let Some(manifest) = read_broker_manifest() {
             if is_broker_manifest_healthy(&manifest) {
                 return Ok(());
@@ -452,6 +500,32 @@ async fn spawn_shared_ingress_broker_sidecar() -> anyhow::Result<()> {
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "shared-ingress-broker-auto".to_string()),
         );
+    for key in [
+        "PM_STRATEGY",
+        "PM_MULTI_MARKET_PREFIXES",
+        "PM_ORACLE_LAG_SYMBOL_UNIVERSE",
+        "PM_LOCAL_PRICE_AGG_ENABLED",
+        "PM_LOCAL_PRICE_AGG_DECISION_ENABLED",
+        "PM_SELF_BUILT_PRICE_AGG_ENABLED",
+        "PM_ORACLE_LAG_LAB_ONLY",
+        "PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED",
+        "PM_LOCAL_PRICE_AGG_SOURCES",
+    ] {
+        if let Ok(value) = env::var(key) {
+            if !value.trim().is_empty() {
+                cmd.env(key, value);
+            }
+        }
+    }
+    for key in [
+        "PM_MULTI_MARKET_CHILD",
+        "POLYMARKET_MARKET_SLUG",
+        "POLYMARKET_MARKET_ID",
+        "POLYMARKET_YES_ASSET_ID",
+        "POLYMARKET_NO_ASSET_ID",
+    ] {
+        cmd.env_remove(key);
+    }
     if env::var("PM_ORACLE_LAG_SYMBOL_UNIVERSE").is_err() {
         if let Ok(slug) = env::var("POLYMARKET_MARKET_SLUG") {
             if let Some(sym) = oracle_lag_symbol_from_slug(&slug) {
@@ -472,9 +546,10 @@ async fn spawn_shared_ingress_broker_sidecar() -> anyhow::Result<()> {
 async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
     let root = shared_ingress_root();
     fs::create_dir_all(shared_ingress_clients_dir())?;
-    let deadline = tokio::time::Instant::now()
-        + Duration::from_millis(SHARED_INGRESS_BROKER_START_TIMEOUT_MS);
+    let deadline =
+        tokio::time::Instant::now() + Duration::from_millis(SHARED_INGRESS_BROKER_START_TIMEOUT_MS);
     loop {
+        cleanup_stale_broker_artifacts();
         if let Some(manifest) = read_broker_manifest() {
             if is_broker_manifest_healthy(&manifest) {
                 return Ok(());
@@ -485,7 +560,8 @@ async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
                 if is_broker_manifest_healthy(&manifest) {
                     return Ok(());
                 }
-                if is_broker_manifest_fresh(&manifest) && !is_broker_manifest_compatible(&manifest) {
+                if is_broker_manifest_fresh(&manifest) && !is_broker_manifest_compatible(&manifest)
+                {
                     warn!(
                         "♻️ shared ingress auto replacing incompatible broker | pid={} protocol={} schema={} build_id={}",
                         manifest.pid,
@@ -1904,7 +1980,7 @@ async fn try_recycle_merge(
         "proactive headroom".to_string()
     };
     info!(
-        "♻️ Recycler trigger[{}]: evt.reason={} rejects={} free={:.2} allowance_ok={} mergeable={:.2} -> merge {:.2} USDC ({})",
+        "♻️ Recycler trigger[{}]: evt.reason={} rejects={} free={:.2} allowance_ok={} mergeable={:.2} -> merge {:.2} pUSD ({})",
         trigger.label(),
         evt_reason,
         reject_count,
@@ -3023,6 +3099,7 @@ const PGT_SHADOW_HARVEST_RETRY_SECS: u64 = 18;
 const PGT_SHADOW_HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const PGT_SHADOW_REDEEM_FIRST_SECS: u64 = 35;
 const PGT_SHADOW_REDEEM_RETRY_SECS: u64 = 50;
+const PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS: u64 = 2_000;
 
 fn pgt_shadow_redeem_target(
     snapshot: &InventorySnapshot,
@@ -3128,6 +3205,16 @@ async fn run_pgt_shadow_redeem_lifecycle(
         return;
     }
 
+    info!(
+        "🧾 PGT shadow-redeem lifecycle start | slug={} market_end_ts={} now={} local_winner_side={:?} residual_qty={:.2} yes_qty={:.2} no_qty={:.2}",
+        recorder_meta.slug,
+        market_end_ts,
+        unix_now_secs(),
+        local_winner_side,
+        residual_qty,
+        yes_qty,
+        no_qty
+    );
     let mut resolved_winner_side: Option<Side> = local_winner_side;
     for (attempt, delay_secs) in [
         (1_u8, PGT_SHADOW_REDEEM_FIRST_SECS),
@@ -3135,14 +3222,36 @@ async fn run_pgt_shadow_redeem_lifecycle(
     ] {
         let fire_at = market_end_ts.saturating_add(delay_secs);
         let now = unix_now_secs();
+        let sleep_secs = fire_at.saturating_sub(now);
+        info!(
+            "🧾 PGT shadow-redeem attempt scheduled | slug={} attempt={} post_close_secs={} fire_at={} now={} sleep_secs={}",
+            recorder_meta.slug, attempt, delay_secs, fire_at, now, sleep_secs
+        );
         if fire_at > now {
-            sleep(Duration::from_secs(fire_at - now)).await;
+            sleep(Duration::from_secs(sleep_secs)).await;
         }
 
         if resolved_winner_side.is_none() {
-            resolved_winner_side = fetch_gamma_winner_hint(&recorder_meta.slug)
-                .await
-                .map(|(side, _)| side);
+            info!(
+                "🧾 PGT shadow-redeem fetching gamma winner | slug={} attempt={} timeout_ms={}",
+                recorder_meta.slug, attempt, PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS
+            );
+            match tokio::time::timeout(
+                Duration::from_millis(PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS),
+                fetch_gamma_winner_hint(&recorder_meta.slug),
+            )
+            .await
+            {
+                Ok(hit) => {
+                    resolved_winner_side = hit.map(|(side, _)| side);
+                }
+                Err(_) => {
+                    warn!(
+                        "⚠️ PGT shadow-redeem gamma winner fetch timed out | slug={} attempt={} timeout_ms={}",
+                        recorder_meta.slug, attempt, PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS
+                    );
+                }
+            }
         }
         let target = pgt_shadow_redeem_target(&final_snapshot, resolved_winner_side);
 
@@ -3164,7 +3273,19 @@ async fn run_pgt_shadow_redeem_lifecycle(
                 "winner_side_only_target": true,
             }),
         );
+        info!(
+            "🧾 PGT shadow-redeem requested | slug={} attempt={} target_side={:?} target_qty={:.2}",
+            recorder_meta.slug,
+            attempt,
+            target.map(|(side, _)| side),
+            target.map(|(_, qty)| qty).unwrap_or(0.0)
+        );
     }
+    info!(
+        "🧾 PGT shadow-redeem lifecycle done | slug={} now={}",
+        recorder_meta.slug,
+        unix_now_secs()
+    );
 }
 
 fn round_claim_missing_requirements(
@@ -3233,9 +3354,9 @@ const LOCAL_PRICE_AGG_COMPARE_SAFE_SINGLE_SOURCE_RELIEF_MIN_DIRECTION_MARGIN_BPS
 const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_SOURCES: usize = 3;
 const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS: f64 = 0.6;
 const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS: f64 = 4.0;
-const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS_TWO_SOURCE: f64 = 1.0;
-const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE: f64 =
-    2.5;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MIN_DIRECTION_MARGIN_BPS_TWO_SOURCE: f64 =
+    1.0;
+const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_PRECLOSE_RELIEF_MAX_SOURCE_SPREAD_BPS_TWO_SOURCE: f64 = 2.5;
 const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_CONFIDENCE: f64 = 0.79;
 const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES: usize = 2;
 const LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_DIRECTION_MARGIN_BPS: f64 = 2.0;
@@ -4319,6 +4440,25 @@ async fn shared_ingress_send_wire_line<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
+fn partial_book_tick_from_post_close_update(side: Side, bid: f64, ask: f64) -> MarketDataMsg {
+    match side {
+        Side::Yes => MarketDataMsg::BookTick {
+            yes_bid: bid,
+            yes_ask: ask,
+            no_bid: f64::NAN,
+            no_ask: f64::NAN,
+            ts: Instant::now(),
+        },
+        Side::No => MarketDataMsg::BookTick {
+            yes_bid: f64::NAN,
+            yes_ask: f64::NAN,
+            no_bid: bid,
+            no_ask: ask,
+            ts: Instant::now(),
+        },
+    }
+}
+
 #[derive(Clone)]
 struct ChainlinkHub {
     senders: Arc<HashMap<String, broadcast::Sender<(f64, u64)>>>,
@@ -4519,11 +4659,10 @@ impl ChainlinkHub {
         tokio::spawn(async move {
             let mut reconnect_backoff = Duration::from_millis(300);
             loop {
-                let connect = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    UnixStream::connect(&socket_path),
-                )
-                .await;
+                let _ = ensure_shared_ingress_broker_running().await;
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(&socket_path))
+                        .await;
                 let Ok(Ok(stream)) = connect else {
                     sleep(reconnect_backoff).await;
                     reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
@@ -4546,8 +4685,7 @@ impl ChainlinkHub {
                     Err(_) => break,
                 };
                 line.push(b'\n');
-                if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err()
-                {
+                if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err() {
                     continue;
                 }
                 let mut reader = BufReader::new(read_half);
@@ -4652,11 +4790,10 @@ impl LocalPriceHub {
         tokio::spawn(async move {
             let mut reconnect_backoff = Duration::from_millis(300);
             loop {
-                let connect = tokio::time::timeout(
-                    Duration::from_secs(2),
-                    UnixStream::connect(&socket_path),
-                )
-                .await;
+                let _ = ensure_shared_ingress_broker_running().await;
+                let connect =
+                    tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(&socket_path))
+                        .await;
                 let Ok(Ok(stream)) = connect else {
                     sleep(reconnect_backoff).await;
                     reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
@@ -4679,8 +4816,7 @@ impl LocalPriceHub {
                     Err(_) => break,
                 };
                 line.push(b'\n');
-                if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err()
-                {
+                if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err() {
                     continue;
                 }
                 let mut reader = BufReader::new(read_half);
@@ -7473,10 +7609,12 @@ async fn run_post_close_winner_hint_listener(
                         && direction_margin_bps
                             >= LOCAL_PRICE_AGG_SAFE_LOW_CONF_RELIEF_MIN_DIRECTION_MARGIN_BPS - 1e-9;
                     let sol_safe_low_conf_relief_applied = symbol == "sol/usd"
-                        && hit.source_count >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES
+                        && hit.source_count
+                            >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_SOURCES
                         && (source_agreement >= 1.0 - 1e-9)
                         && hit.source_spread_bps
-                            <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MAX_SOURCE_SPREAD_BPS + 1e-9
+                            <= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MAX_SOURCE_SPREAD_BPS
+                                + 1e-9
                         && direction_margin_bps + 1e-9
                             >= LOCAL_PRICE_AGG_COMPARE_SOL_SAFE_LOW_CONF_MIN_DIRECTION_MARGIN_BPS;
                     let confidence = if hit.source_count == 1 {
@@ -7748,7 +7886,9 @@ async fn run_post_close_winner_hint_listener(
                         ready_ms.saturating_sub(started_ms),
                         local_vs_rtds_detect_gap_ms,
                     );
-                } else if let Some(hit) = close_only_any_hit.filter(|_| hybrid_uses_filtered_close_only) {
+                } else if let Some(hit) =
+                    close_only_any_hit.filter(|_| hybrid_uses_filtered_close_only)
+                {
                     let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                         Side::Yes
                     } else {
@@ -9416,7 +9556,8 @@ fn pick_local_boundary_tape_close_point(
             .min_by_key(|(ts_ms, _, _)| *ts_ms)
             .copied()
             .or_else(|| {
-                ticks.iter()
+                ticks
+                    .iter()
                     .filter(|(_, _, offset_ms)| *offset_ms <= 0)
                     .max_by_key(|(ts_ms, _, _)| *ts_ms)
                     .copied()
@@ -9569,17 +9710,17 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         },
         "btc/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "only_binance_hyperliquid",
-            rule: LocalBoundaryCloseRule::NearestAbs,
+            source_subset_name: "only_bybit_coinbase",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE,
         },
         "doge/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "only_binance_coinbase",
+            source_subset_name: "drop_okx",
             rule: LocalBoundaryCloseRule::NearestAbs,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
         },
         "eth/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9604,10 +9745,10 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         },
         "xrp/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_hyperliquid",
-            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            source_subset_name: "drop_okx",
+            rule: LocalBoundaryCloseRule::LastBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_OKX,
         },
         _ => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9629,24 +9770,26 @@ fn local_boundary_policy_source_weight(
     }
     if symbol == "doge/usd" {
         return match source {
-            LocalPriceSource::Binance => 0.873_213,
-            LocalPriceSource::Coinbase => 1.511_945,
-            _ => 0.0,
+            LocalPriceSource::Binance => 0.5,
+            LocalPriceSource::Bybit => 0.5,
+            LocalPriceSource::Coinbase => 1.0,
+            LocalPriceSource::Hyperliquid => 1.5,
+            LocalPriceSource::Okx => 0.0,
         };
     }
     if symbol == "xrp/usd" {
         return match source {
-            LocalPriceSource::Binance => 2.117_002,
-            LocalPriceSource::Bybit => 0.897_545,
-            LocalPriceSource::Coinbase => 1.831_380,
-            LocalPriceSource::Okx => 0.940_502,
-            LocalPriceSource::Hyperliquid => 0.0,
+            LocalPriceSource::Binance => 2.729_171,
+            LocalPriceSource::Bybit => 1.448_722,
+            LocalPriceSource::Coinbase => 5.245_196,
+            LocalPriceSource::Okx => 0.0,
+            LocalPriceSource::Hyperliquid => 0.087_531,
         };
     }
     if symbol == "btc/usd" {
         return match source {
-            LocalPriceSource::Binance => 0.216_240,
-            LocalPriceSource::Hyperliquid => 4.050_443,
+            LocalPriceSource::Bybit => 0.877_227,
+            LocalPriceSource::Coinbase => 1.841_626,
             _ => 0.0,
         };
     }
@@ -9679,9 +9822,25 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
         ((hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
     match symbol {
         "bnb/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 0.6
+            {
+                return false;
+            }
             if close_only_filter_reason == Some("preclose_near_flat")
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
+            {
+                return false;
+            }
+        }
+        "btc/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 0.6
             {
                 return false;
             }
@@ -9706,10 +9865,21 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
         }
         "hype/usd" => {
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
-                && hit.source_count >= 2
                 && hit.close_exact_sources == 0
-                && hit.source_spread_bps <= 1.0 + 1e-9
-                && weighted_direction_margin_bps + 1e-9 < 1.8
+                && ((hit.source_count >= 2
+                    && hit.source_spread_bps <= 1.0 + 1e-9
+                    && weighted_direction_margin_bps + 1e-9 < 1.8)
+                    || (hit.source_count == 1 && weighted_direction_margin_bps + 1e-9 < 2.0))
+            {
+                return false;
+            }
+        }
+        "eth/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps <= 1.1 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 0.2
             {
                 return false;
             }
@@ -9738,11 +9908,12 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
 }
 
 fn local_boundary_symbol_router_prefers_weighted_primary(symbol: &str) -> bool {
-    !matches!(symbol, "eth/usd")
+    let _ = symbol;
+    true
 }
 
 fn local_boundary_symbol_router_allows_close_only_fallback(symbol: &str) -> bool {
-    !matches!(symbol, "bnb/usd")
+    !matches!(symbol, "bnb/usd" | "doge/usd" | "eth/usd" | "sol/usd")
 }
 
 fn local_close_only_source_agreement(hit: &LocalCloseOnlyAggHit, rtds_open: f64) -> f64 {
@@ -9805,6 +9976,19 @@ fn local_boundary_hybrid_prefers_weighted_over_close_only(
                     && weighted_hit.source_count >= 2
                     && weighted_hit.source_spread_bps + 1e-9 >= 3.5
                     && weighted_direction_margin_bps + 1e-9 >= 0.65)
+        }
+        "eth/usd" => {
+            close_only_hit.close_exact_sources == 0
+                && weighted_hit.source_count >= 2
+                && weighted_hit.rule == LocalBoundaryCloseRule::LastBefore
+        }
+        "doge/usd" => {
+            close_only_hit.close_exact_sources == 0 && weighted_hit.source_count >= 2
+        }
+        "sol/usd" => {
+            close_only_hit.close_exact_sources == 0
+                && weighted_hit.source_count >= 2
+                && weighted_hit.rule == LocalBoundaryCloseRule::AfterThenBefore
         }
         _ => false,
     }
@@ -9878,23 +10062,12 @@ fn local_boundary_hybrid_prefers_filtered_close_only_over_weighted(
 }
 
 fn local_boundary_filtered_close_only_allowed_without_weighted(
-    symbol: &str,
-    close_only_filter_reason: Option<&'static str>,
-    close_only_hit: &LocalCloseOnlyAggHit,
-    rtds_open: f64,
+    _symbol: &str,
+    _close_only_filter_reason: Option<&'static str>,
+    _close_only_hit: &LocalCloseOnlyAggHit,
+    _rtds_open: f64,
 ) -> bool {
-    let close_only_direction_margin_bps =
-        ((close_only_hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
-    match symbol {
-        "sol/usd" => {
-            close_only_filter_reason == Some("preclose_near_flat")
-                && close_only_hit.source_count >= 3
-                && close_only_hit.close_exact_sources == 0
-                && close_only_hit.source_spread_bps + 1e-9 >= 4.0
-                && close_only_direction_margin_bps + 1e-9 >= 1.5
-        }
-        _ => false,
-    }
+    false
 }
 
 fn run_local_boundary_shadow_policy(
@@ -11906,15 +12079,166 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
     msgs
 }
 
+fn parse_ws_message_with_drop_reason(
+    settings: &Settings,
+    value: &Value,
+) -> (Vec<MarketDataMsg>, Option<String>) {
+    let msgs = parse_ws_message(settings, value);
+    if !msgs.is_empty() {
+        return (msgs, None);
+    }
+
+    let event_type = value
+        .get("event_type")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    let reason = match event_type {
+        "book" => {
+            let asset_id = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("missing");
+            let side_known = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .and_then(|asset_id| classify_side(asset_id, settings))
+                .is_some();
+            let bids = value
+                .get("bids")
+                .or_else(|| value.get("buys"))
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
+                .unwrap_or(0);
+            let asks = value
+                .get("asks")
+                .or_else(|| value.get("sells"))
+                .and_then(|v| v.as_array())
+                .map(|v| v.len())
+                .unwrap_or(0);
+            if !side_known {
+                format!(
+                    "event_type=book asset_id={} reason=asset_id_unmatched yes={} no={} bids={} asks={}",
+                    asset_id, settings.yes_asset_id, settings.no_asset_id, bids, asks
+                )
+            } else {
+                format!(
+                    "event_type=book asset_id={} reason=no_valid_top_of_book bids={} asks={}",
+                    asset_id, bids, asks
+                )
+            }
+        }
+        "price_change" => {
+            let changes = value
+                .get("price_changes")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let asset_ids: Vec<String> = changes
+                .iter()
+                .filter_map(|ch| ch.get("asset_id").and_then(|v| v.as_str()))
+                .map(|s| s.to_string())
+                .collect();
+            let matched = asset_ids
+                .iter()
+                .filter(|asset_id| classify_side(asset_id, settings).is_some())
+                .count();
+            if matched == 0 {
+                format!(
+                    "event_type=price_change asset_ids=[{}] reason=no_matching_asset_id yes={} no={}",
+                    asset_ids.join(","),
+                    settings.yes_asset_id,
+                    settings.no_asset_id
+                )
+            } else {
+                format!(
+                    "event_type=price_change asset_ids=[{}] reason=no_valid_best_bid_ask matched={}",
+                    asset_ids.join(","),
+                    matched
+                )
+            }
+        }
+        "best_bid_ask" => {
+            let asset_id = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("missing");
+            let side_known = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .and_then(|asset_id| classify_side(asset_id, settings))
+                .is_some();
+            if !side_known {
+                format!(
+                    "event_type=best_bid_ask asset_id={} reason=asset_id_unmatched yes={} no={}",
+                    asset_id, settings.yes_asset_id, settings.no_asset_id
+                )
+            } else {
+                format!(
+                    "event_type=best_bid_ask asset_id={} reason=no_valid_best_bid_ask",
+                    asset_id
+                )
+            }
+        }
+        "last_trade_price" => {
+            let asset_id = value
+                .get("asset_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("missing");
+            if classify_side(asset_id, settings).is_none() {
+                format!(
+                    "event_type=last_trade_price asset_id={} reason=asset_id_unmatched yes={} no={}",
+                    asset_id, settings.yes_asset_id, settings.no_asset_id
+                )
+            } else if value.get("size").is_none() {
+                format!(
+                    "event_type=last_trade_price asset_id={} reason=missing_size",
+                    asset_id
+                )
+            } else if value.get("side").and_then(|v| v.as_str()).is_none() {
+                format!(
+                    "event_type=last_trade_price asset_id={} reason=missing_side",
+                    asset_id
+                )
+            } else {
+                let side_val = value
+                    .get("side")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
+                format!(
+                    "event_type=last_trade_price asset_id={} reason=invalid_trade_payload side={}",
+                    asset_id, side_val
+                )
+            }
+        }
+        _ => format!("event_type={} reason=unknown_event", event_type),
+    };
+
+    (msgs, Some(reason))
+}
+
 /// Parse one WS text payload and return parsed market-data messages plus ingest stats.
-fn parse_ws_payload(settings: &Settings, text: &str) -> (Vec<MarketDataMsg>, u64, u64) {
+fn parse_ws_payload(
+    settings: &Settings,
+    text: &str,
+) -> (Vec<MarketDataMsg>, u64, u64, Vec<String>) {
     let mut out = Vec::new();
     let mut unknown_events = 0_u64;
     let mut parse_drops = 0_u64;
+    let mut drop_reasons = Vec::new();
+    let trimmed = text.trim();
+    if trimmed.is_empty()
+        || trimmed.eq_ignore_ascii_case("PING")
+        || trimmed.eq_ignore_ascii_case("PONG")
+    {
+        return (out, unknown_events, parse_drops, drop_reasons);
+    }
 
-    let value = match serde_json::from_str::<Value>(text) {
+    let value = match serde_json::from_str::<Value>(trimmed) {
         Ok(v) => v,
-        Err(_) => return (out, unknown_events, 1),
+        Err(err) => {
+            drop_reasons.push(format!("event_type=parse_error reason={}", err));
+            return (out, unknown_events, 1, drop_reasons);
+        }
     };
 
     let values = if value.is_array() {
@@ -11936,14 +12260,17 @@ fn parse_ws_payload(settings: &Settings, text: &str) -> (Vec<MarketDataMsg>, u64
             unknown_events = unknown_events.saturating_add(1);
         }
 
-        let parsed = parse_ws_message(settings, val);
+        let (parsed, drop_reason) = parse_ws_message_with_drop_reason(settings, val);
         if known_event && parsed.is_empty() {
             parse_drops = parse_drops.saturating_add(1);
+            if let Some(reason) = drop_reason {
+                drop_reasons.push(reason);
+            }
         }
         out.extend(parsed);
     }
 
-    (out, unknown_events, parse_drops)
+    (out, unknown_events, parse_drops, drop_reasons)
 }
 
 // ─────────────────────────────────────────────────────────
@@ -11998,9 +12325,13 @@ impl BookAssembler {
                 self.no_seen = true;
             }
 
-            // Emit once both sides are initialized and both bids are known.
-            // Asks may be 0.0 post-close (no liquidity), which is meaningful.
-            if self.yes_seen && self.no_seen && self.yes_bid > 0.0 && self.no_bid > 0.0 {
+            // Emit once both sides have been observed at least once.
+            // A bid/ask of 0.0 is a valid "known empty" state on Polymarket,
+            // especially post-close. Requiring bid > 0.0 incorrectly suppresses
+            // full-book emission for feeds that only show liquidity on one side
+            // after reconnect, which then cascades into shared-ingress remote
+            // starvation despite a live partial stream.
+            if self.yes_seen && self.no_seen {
                 return Some(MarketDataMsg::BookTick {
                     yes_bid: self.yes_bid,
                     yes_ask: self.yes_ask,
@@ -12022,18 +12353,22 @@ struct SharedMarketFeedKey {
     custom_feature_enabled: bool,
 }
 
-#[derive(Clone)]
 struct SharedMarketIngressFeed {
     tx: broadcast::Sender<SharedIngressWireMsg>,
     recent: Arc<Mutex<VecDeque<SharedIngressWireMsg>>>,
+    subscriber_count: AtomicUsize,
+    shutdown_tx: watch::Sender<bool>,
 }
 
 impl SharedMarketIngressFeed {
     fn new() -> Arc<Self> {
         let (tx, _rx) = broadcast::channel::<SharedIngressWireMsg>(4096);
+        let (shutdown_tx, _shutdown_rx) = watch::channel(false);
         Arc::new(Self {
             tx,
             recent: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
+            subscriber_count: AtomicUsize::new(0),
+            shutdown_tx,
         })
     }
 
@@ -12057,6 +12392,108 @@ impl SharedMarketIngressFeed {
         };
         guard.iter().cloned().collect()
     }
+
+    fn snapshot_and_subscribe(
+        &self,
+    ) -> (
+        Vec<SharedIngressWireMsg>,
+        broadcast::Receiver<SharedIngressWireMsg>,
+    ) {
+        let Ok(guard) = self.recent.lock() else {
+            return (Vec::new(), self.tx.subscribe());
+        };
+        // Hold the recent-buffer lock across snapshot+subscribe so a producer
+        // cannot publish into the gap between replay and live attach. This is
+        // critical for fixed-round feeds, where the initial dump may be the
+        // only burst of book/trade traffic the client will ever see.
+        let snapshot = guard.iter().cloned().collect();
+        let rx = self.tx.subscribe();
+        (snapshot, rx)
+    }
+
+    fn acquire_subscriber(&self) -> usize {
+        self.subscriber_count.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    fn release_subscriber(&self) -> usize {
+        self.subscriber_count
+            .fetch_sub(1, Ordering::AcqRel)
+            .saturating_sub(1)
+    }
+
+    fn subscriber_count(&self) -> usize {
+        self.subscriber_count.load(Ordering::Acquire)
+    }
+
+    fn request_shutdown(&self) {
+        let _ = self.shutdown_tx.send(true);
+    }
+
+    fn shutdown_requested(&self) -> bool {
+        *self.shutdown_tx.borrow()
+    }
+
+    fn shutdown_receiver(&self) -> watch::Receiver<bool> {
+        self.shutdown_tx.subscribe()
+    }
+}
+
+struct SharedMarketFeedLease {
+    key: SharedMarketFeedKey,
+    feed: Arc<SharedMarketIngressFeed>,
+    registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>>,
+}
+
+impl SharedMarketFeedLease {
+    fn new(
+        key: SharedMarketFeedKey,
+        feed: Arc<SharedMarketIngressFeed>,
+        registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>>,
+    ) -> (Self, usize) {
+        let subscribers = feed.acquire_subscriber();
+        Self {
+            key,
+            feed,
+            registry,
+        }
+        .into_with_subscribers(subscribers)
+    }
+
+    fn into_with_subscribers(self, subscribers: usize) -> (Self, usize) {
+        (self, subscribers)
+    }
+}
+
+impl Drop for SharedMarketFeedLease {
+    fn drop(&mut self) {
+        let remaining = self.feed.release_subscriber();
+        if remaining > 0 {
+            info!(
+                "📉 shared ingress market feed subscriber released | yes_asset_id={} no_asset_id={} subscribers_remaining={}",
+                self.key.yes_asset_id, self.key.no_asset_id, remaining
+            );
+            return;
+        }
+        info!(
+            "🛑 shared ingress market feed shutdown requested | yes_asset_id={} no_asset_id={} subscribers_remaining=0",
+            self.key.yes_asset_id, self.key.no_asset_id
+        );
+        self.feed.request_shutdown();
+        let mut guard = self
+            .registry
+            .lock()
+            .expect("shared ingress market registry poisoned");
+        if let Some(existing) = guard.get(&self.key) {
+            if Arc::ptr_eq(existing, &self.feed) {
+                guard.remove(&self.key);
+            }
+        }
+        let registry_len = guard.len();
+        info!(
+            "🧹 shared ingress market feed released | yes_asset_id={} no_asset_id={} subscribers=0 registry_size={}",
+            self.key.yes_asset_id, self.key.no_asset_id, registry_len
+        );
+    }
 }
 
 async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIngressFeed>) {
@@ -12066,12 +12503,27 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
     let max_backoff = Duration::from_secs(5);
     let mut consecutive_failures: u32 = 0;
     let mut subscribe_custom_feature_enabled = settings.custom_feature;
-    loop {
+    let mut shutdown_rx = feed.shutdown_receiver();
+    'outer: loop {
+        if feed.shutdown_requested() {
+            info!(
+                "🛑 shared ingress market broker feed exiting idle | slug={} subscribers={}",
+                settings
+                    .market_slug
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                feed.subscriber_count(),
+            );
+            break;
+        }
         let mut book_asm = BookAssembler::default();
         let url = settings.ws_url("market");
         info!(
             "📡 shared ingress market broker connecting | slug={} url={}",
-            settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+            settings
+                .market_slug
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             url
         );
         let connect_result = tokio::time::timeout(
@@ -12081,7 +12533,10 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
         .await;
         match connect_result {
             Ok(Ok((ws, response))) => {
-                info!("✅ shared ingress market broker connected (status={:?})", response.status());
+                info!(
+                    "✅ shared ingress market broker connected (status={:?})",
+                    response.status()
+                );
                 backoff = Duration::from_millis(100);
                 let (mut write, mut read) = ws.split();
                 let subscribe = json!({
@@ -12093,7 +12548,10 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                     "initial_dump": true,
                     "custom_feature_enabled": subscribe_custom_feature_enabled,
                 });
-                if let Err(err) = write.send(Message::Text(subscribe.to_string().into())).await {
+                if let Err(err) = write
+                    .send(Message::Text(subscribe.to_string().into()))
+                    .await
+                {
                     warn!("shared ingress market subscribe failed: {:?}", err);
                     consecutive_failures = consecutive_failures.saturating_add(1);
                     sleep(Duration::from_secs(2)).await;
@@ -12103,13 +12561,23 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                     let mut delay = tokio::time::interval(Duration::from_secs(5));
                     loop {
                         delay.tick().await;
-                        if write.send(Message::Text("PING".to_string().into())).await.is_err() {
+                        if write
+                            .send(Message::Ping(Vec::new().into()))
+                            .await
+                            .is_err()
+                        {
                             break;
                         }
                     }
                 });
                 let mut session_raw_msg_count: u64 = 0;
                 let mut session_parsed_msg_count: u64 = 0;
+                let mut session_trade_tick_count: u64 = 0;
+                let mut session_book_tick_count: u64 = 0;
+                let mut session_unknown_event_count: u64 = 0;
+                let mut session_parse_drop_count: u64 = 0;
+                let mut session_last_parse_drop_reason: Option<String> = None;
+                let mut session_parse_drop_log_count: u64 = 0;
                 let mut last_raw_msg_at = tokio::time::Instant::now();
                 let mut last_full_book_at: Option<tokio::time::Instant> = None;
                 let session_started_at = tokio::time::Instant::now();
@@ -12117,31 +12585,67 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                 health_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
+                        changed = shutdown_rx.changed() => {
+                            match changed {
+                                Ok(()) if *shutdown_rx.borrow() => {
+                                    info!(
+                                        "🛑 shared ingress market broker feed shutdown requested | slug={}",
+                                        settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string())
+                                    );
+                                    ping_handle.abort();
+                                    break 'outer;
+                                }
+                                Ok(()) => {}
+                                Err(_) => {
+                                    ping_handle.abort();
+                                    break 'outer;
+                                }
+                            }
+                        }
                         _ = health_probe.tick() => {
                             let now = tokio::time::Instant::now();
                             let raw_silence = now.saturating_duration_since(last_raw_msg_at);
                             let no_full_book_silence = now.saturating_duration_since(
                                 last_full_book_at.unwrap_or(session_started_at),
                             );
-                            if raw_silence >= Duration::from_secs(30) {
+                            if raw_silence
+                                >= Duration::from_secs(MARKET_WS_NO_RAW_RECONNECT_SECS)
+                            {
                                 warn!(
-                                    "⚠️ shared ingress market broker raw stream silent for {:?} (raw_msgs={} parsed={}) — reconnecting",
+                                    "⚠️ shared ingress market broker raw stream silent for {:?} | slug={} raw_msgs={} parsed={} book_ticks={} trade_ticks={} unknown={} dropped={} last_drop={:?} — reconnecting",
                                     raw_silence,
+                                    settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
                                     session_raw_msg_count,
                                     session_parsed_msg_count,
+                                    session_book_tick_count,
+                                    session_trade_tick_count,
+                                    session_unknown_event_count,
+                                    session_parse_drop_count,
+                                    session_last_parse_drop_reason,
                                 );
                                 ping_handle.abort();
                                 break;
                             }
+                            let lane_never_became_usable = session_book_tick_count == 0
+                                && session_trade_tick_count == 0;
                             if session_raw_msg_count > 0
+                                && lane_never_became_usable
                                 && no_full_book_silence
                                     >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS)
                             {
                                 warn!(
-                                    "⚠️ shared ingress market broker missing complete book for {:?} (raw={} parsed={}) — reconnecting",
+                                    "⚠️ shared ingress market broker bootstrap lane never became usable for {:?} | slug={} yes_asset_id={} no_asset_id={} raw={} parsed={} book_ticks={} trade_ticks={} unknown={} dropped={} last_drop={:?} — reconnecting",
                                     no_full_book_silence,
+                                    settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                                    settings.yes_asset_id,
+                                    settings.no_asset_id,
                                     session_raw_msg_count,
                                     session_parsed_msg_count,
+                                    session_book_tick_count,
+                                    session_trade_tick_count,
+                                    session_unknown_event_count,
+                                    session_parse_drop_count,
+                                    session_last_parse_drop_reason,
                                 );
                                 ping_handle.abort();
                                 break;
@@ -12152,7 +12656,24 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                 Some(Ok(Message::Text(text))) => {
                                     session_raw_msg_count = session_raw_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
-                                    let (parsed, _, _) = parse_ws_payload(&settings, &text);
+                                    let (parsed, unknown_events, parse_drops, drop_reasons) =
+                                        parse_ws_payload(&settings, &text);
+                                    session_unknown_event_count = session_unknown_event_count
+                                        .saturating_add(unknown_events);
+                                    session_parse_drop_count = session_parse_drop_count
+                                        .saturating_add(parse_drops);
+                                    if let Some(reason) = drop_reasons.last() {
+                                        session_last_parse_drop_reason = Some(reason.clone());
+                                    }
+                                    if !drop_reasons.is_empty() && session_parse_drop_log_count < 5 {
+                                        warn!(
+                                            "⚠️ shared ingress market broker parser drop | slug={} reasons={}",
+                                            settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                                            drop_reasons.join(" || ")
+                                        );
+                                        session_parse_drop_log_count =
+                                            session_parse_drop_log_count.saturating_add(1);
+                                    }
                                     for md_msg in parsed {
                                         session_parsed_msg_count = session_parsed_msg_count.saturating_add(1);
                                         match &md_msg {
@@ -12165,6 +12686,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                 size,
                                                 ..
                                             } => {
+                                                session_trade_tick_count =
+                                                    session_trade_tick_count.saturating_add(1);
                                                 feed.publish(SharedIngressWireMsg::MarketTradeTick {
                                                     asset_id: asset_id.clone(),
                                                     trade_id: trade_id.clone(),
@@ -12176,6 +12699,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                 });
                                             }
                                             MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                                                session_book_tick_count =
+                                                    session_book_tick_count.saturating_add(1);
                                                 let recv_ms = unix_now_millis_u64();
                                                 if yes_bid.is_finite() || yes_ask.is_finite() {
                                                     feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
@@ -12193,14 +12718,23 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                         recv_ms,
                                                     });
                                                 }
-                                                feed.publish(SharedIngressWireMsg::MarketBookTick {
-                                                    yes_bid: *yes_bid,
-                                                    yes_ask: *yes_ask,
-                                                    no_bid: *no_bid,
-                                                    no_ask: *no_ask,
-                                                    ts_ms: recv_ms,
-                                                });
-                                                if book_asm.update(&md_msg).is_some() {
+                                                if let Some(full) = book_asm.update(&md_msg) {
+                                                    if let MarketDataMsg::BookTick {
+                                                        yes_bid,
+                                                        yes_ask,
+                                                        no_bid,
+                                                        no_ask,
+                                                        ..
+                                                    } = &full
+                                                    {
+                                                        feed.publish(SharedIngressWireMsg::MarketBookTick {
+                                                            yes_bid: *yes_bid,
+                                                            yes_ask: *yes_ask,
+                                                            no_bid: *no_bid,
+                                                            no_ask: *no_ask,
+                                                            ts_ms: recv_ms,
+                                                        });
+                                                    }
                                                     last_full_book_at = Some(tokio::time::Instant::now());
                                                 }
                                             }
@@ -12214,7 +12748,24 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     let Ok(text) = std::str::from_utf8(&bytes) else {
                                         continue;
                                     };
-                                    let (parsed, _, _) = parse_ws_payload(&settings, text);
+                                    let (parsed, unknown_events, parse_drops, drop_reasons) =
+                                        parse_ws_payload(&settings, text);
+                                    session_unknown_event_count = session_unknown_event_count
+                                        .saturating_add(unknown_events);
+                                    session_parse_drop_count = session_parse_drop_count
+                                        .saturating_add(parse_drops);
+                                    if let Some(reason) = drop_reasons.last() {
+                                        session_last_parse_drop_reason = Some(reason.clone());
+                                    }
+                                    if !drop_reasons.is_empty() && session_parse_drop_log_count < 5 {
+                                        warn!(
+                                            "⚠️ shared ingress market broker parser drop | slug={} reasons={}",
+                                            settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                                            drop_reasons.join(" || ")
+                                        );
+                                        session_parse_drop_log_count =
+                                            session_parse_drop_log_count.saturating_add(1);
+                                    }
                                     for md_msg in parsed {
                                         session_parsed_msg_count = session_parsed_msg_count.saturating_add(1);
                                         match &md_msg {
@@ -12227,6 +12778,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                 size,
                                                 ..
                                             } => {
+                                                session_trade_tick_count =
+                                                    session_trade_tick_count.saturating_add(1);
                                                 feed.publish(SharedIngressWireMsg::MarketTradeTick {
                                                     asset_id: asset_id.clone(),
                                                     trade_id: trade_id.clone(),
@@ -12238,6 +12791,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                 });
                                             }
                                             MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                                                session_book_tick_count =
+                                                    session_book_tick_count.saturating_add(1);
                                                 let recv_ms = unix_now_millis_u64();
                                                 if yes_bid.is_finite() || yes_ask.is_finite() {
                                                     feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
@@ -12255,14 +12810,23 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                         recv_ms,
                                                     });
                                                 }
-                                                feed.publish(SharedIngressWireMsg::MarketBookTick {
-                                                    yes_bid: *yes_bid,
-                                                    yes_ask: *yes_ask,
-                                                    no_bid: *no_bid,
-                                                    no_ask: *no_ask,
-                                                    ts_ms: recv_ms,
-                                                });
-                                                if book_asm.update(&md_msg).is_some() {
+                                                if let Some(full) = book_asm.update(&md_msg) {
+                                                    if let MarketDataMsg::BookTick {
+                                                        yes_bid,
+                                                        yes_ask,
+                                                        no_bid,
+                                                        no_ask,
+                                                        ..
+                                                    } = &full
+                                                    {
+                                                        feed.publish(SharedIngressWireMsg::MarketBookTick {
+                                                            yes_bid: *yes_bid,
+                                                            yes_ask: *yes_ask,
+                                                            no_bid: *no_bid,
+                                                            no_ask: *no_ask,
+                                                            ts_ms: recv_ms,
+                                                        });
+                                                    }
                                                     last_full_book_at = Some(tokio::time::Instant::now());
                                                 }
                                             }
@@ -12329,6 +12893,7 @@ const MARKET_WS_HARD_CUTOFF_GRACE_SECS: u64 = 45;
 // If we keep receiving raw payloads but never reconstruct a full 4-price book,
 // reconnect proactively because strategy cannot trade without complete book.
 const MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS: u64 = 12;
+const MARKET_WS_NO_RAW_RECONNECT_SECS: u64 = 12;
 
 fn try_forward_md(
     tx: &mpsc::Sender<MarketDataMsg>,
@@ -12362,6 +12927,7 @@ async fn run_market_ws_remote_with_wall_guard(
     let socket_path = shared_ingress_root().join("market.sock");
     let mut reconnect_backoff = Duration::from_millis(200);
     loop {
+        let _ = ensure_shared_ingress_broker_running().await;
         let now_unix = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_else(|_| Duration::from_secs(0))
@@ -12370,7 +12936,8 @@ async fn run_market_ws_remote_with_wall_guard(
             return MarketEnd::Expired;
         }
         let mut book_asm = BookAssembler::default();
-        let connect = tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(&socket_path)).await;
+        let connect =
+            tokio::time::timeout(Duration::from_secs(2), UnixStream::connect(&socket_path)).await;
         let Ok(Ok(stream)) = connect else {
             sleep(reconnect_backoff).await;
             reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
@@ -12390,13 +12957,25 @@ async fn run_market_ws_remote_with_wall_guard(
         };
         let mut line = match serde_json::to_vec(&req) {
             Ok(v) => v,
-            Err(_) => return MarketEnd::WsDegraded { consecutive_failures: 1, remaining_secs: 0 },
+            Err(_) => {
+                return MarketEnd::WsDegraded {
+                    consecutive_failures: 1,
+                    remaining_secs: 0,
+                }
+            }
         };
         line.push(b'\n');
         if write_half.write_all(&line).await.is_err() || write_half.flush().await.is_err() {
             sleep(reconnect_backoff).await;
             continue;
         }
+        info!(
+            "📡 shared ingress market remote subscribed | slug={} yes_asset_id={} no_asset_id={} coord_accept_partial_book={}",
+            settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+            settings.yes_asset_id,
+            settings.no_asset_id,
+            coord_accept_partial_book
+        );
         let mut reader = BufReader::new(read_half);
         let mut buf = String::new();
         let mut last_raw_msg_at = tokio::time::Instant::now();
@@ -12404,6 +12983,12 @@ async fn run_market_ws_remote_with_wall_guard(
         let session_started_at = tokio::time::Instant::now();
         let mut health_probe = tokio::time::interval(Duration::from_secs(10));
         let mut tx_drop_count: u64 = 0;
+        let mut session_wire_msg_count: u64 = 0;
+        let mut session_wire_trade_tick_count: u64 = 0;
+        let mut session_wire_book_tick_count: u64 = 0;
+        let mut session_coord_partial_forward_count: u64 = 0;
+        let mut session_full_book_emit_count: u64 = 0;
+        let mut session_post_close_update_count: u64 = 0;
         health_probe.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             let now_unix = SystemTime::now()
@@ -12420,8 +13005,37 @@ async fn run_market_ws_remote_with_wall_guard(
                     let no_full_book_silence = now.saturating_duration_since(
                         last_full_book_at.unwrap_or(session_started_at),
                     );
-                    if raw_silence >= Duration::from_secs(30)
-                        || no_full_book_silence >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS) {
+                    let partial_lane_healthy =
+                        coord_accept_partial_book && session_coord_partial_forward_count > 0;
+                    let no_initial_wire = session_wire_msg_count == 0
+                        && raw_silence >= Duration::from_secs(MARKET_WS_NO_RAW_RECONNECT_SECS);
+                    let lane_never_became_usable = session_wire_book_tick_count == 0
+                        && session_wire_trade_tick_count == 0
+                        && session_full_book_emit_count == 0
+                        && session_post_close_update_count == 0
+                        && !partial_lane_healthy;
+                    let no_tradeable_book_lane = lane_never_became_usable
+                        && no_full_book_silence
+                            >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS);
+                    if no_initial_wire || no_tradeable_book_lane {
+                        let reason = if no_initial_wire {
+                            "no_initial_wire"
+                        } else {
+                            "bootstrap_lane_never_became_usable"
+                        };
+                        warn!(
+                            "⚠️ shared ingress market remote unhealthy ({}) for {:?} | slug={} wire_msgs={} wire_book_ticks={} wire_trade_ticks={} coord_partial_forwards={} full_book_emits={} post_close_updates={} tx_dropped={} — reconnecting",
+                            reason,
+                            no_full_book_silence.max(raw_silence),
+                            settings.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+                            session_wire_msg_count,
+                            session_wire_book_tick_count,
+                            session_wire_trade_tick_count,
+                            session_coord_partial_forward_count,
+                            session_full_book_emit_count,
+                            session_post_close_update_count,
+                            tx_drop_count,
+                        );
                         break;
                     }
                 }
@@ -12429,12 +13043,15 @@ async fn run_market_ws_remote_with_wall_guard(
                     let Ok(n) = read else { break; };
                     if n == 0 { break; }
                     last_raw_msg_at = tokio::time::Instant::now();
+                    session_wire_msg_count = session_wire_msg_count.saturating_add(1);
                     let Ok(msg) = serde_json::from_str::<SharedIngressWireMsg>(buf.trim()) else {
                         buf.clear();
                         continue;
                     };
                     match msg {
                         SharedIngressWireMsg::MarketTradeTick { asset_id, trade_id, market_side, taker_side, price, size, .. } => {
+                            session_wire_trade_tick_count =
+                                session_wire_trade_tick_count.saturating_add(1);
                             let market_side = if market_side.eq_ignore_ascii_case("YES") { Side::Yes } else { Side::No };
                             let taker_side = if taker_side.eq_ignore_ascii_case("BUY") { TakerSide::Buy } else { TakerSide::Sell };
                             let md_msg = MarketDataMsg::TradeTick {
@@ -12450,18 +13067,33 @@ async fn run_market_ws_remote_with_wall_guard(
                             try_forward_md(&glft_tx, md_msg, &mut tx_drop_count);
                         }
                         SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                            session_wire_book_tick_count =
+                                session_wire_book_tick_count.saturating_add(1);
                             let md_msg = MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, ts: Instant::now() };
                             if coord_accept_partial_book {
                                 let _ = coord_tx.send(md_msg.clone());
+                                session_coord_partial_forward_count =
+                                    session_coord_partial_forward_count.saturating_add(1);
                             }
                             if let Some(full) = book_asm.update(&md_msg) {
                                 last_full_book_at = Some(tokio::time::Instant::now());
                                 try_forward_md(&glft_tx, full.clone(), &mut tx_drop_count);
                                 let _ = coord_tx.send(full);
+                                session_full_book_emit_count =
+                                    session_full_book_emit_count.saturating_add(1);
                             }
                         }
                         SharedIngressWireMsg::PostCloseBookUpdate { side, bid, ask, recv_ms } => {
+                            session_post_close_update_count =
+                                session_post_close_update_count.saturating_add(1);
                             let side = if side.eq_ignore_ascii_case("YES") { Side::Yes } else { Side::No };
+                            if coord_accept_partial_book {
+                                let md_msg =
+                                    partial_book_tick_from_post_close_update(side, bid, ask);
+                                let _ = coord_tx.send(md_msg);
+                                session_coord_partial_forward_count =
+                                    session_coord_partial_forward_count.saturating_add(1);
+                            }
                             let _ = post_close_book_tx.try_send(PostCloseSideBookUpdate { side, bid, ask, recv_ms });
                         }
                         SharedIngressWireMsg::SnapshotDone => {}
@@ -12899,7 +13531,7 @@ async fn run_market_ws(
                     let mut delay = tokio::time::interval(Duration::from_secs(5));
                     loop {
                         delay.tick().await;
-                        if write.send(Message::Text("PING".to_string())).await.is_err() {
+                        if write.send(Message::Ping(Vec::new().into())).await.is_err() {
                             break;
                         }
                     }
@@ -12930,7 +13562,9 @@ async fn run_market_ws(
                             );
 
                             // Connection appears alive but no raw payloads: force reconnect.
-                            if raw_silence >= Duration::from_secs(30) {
+                            if raw_silence
+                                >= Duration::from_secs(MARKET_WS_NO_RAW_RECONNECT_SECS)
+                            {
                                 warn!(
                                     "⚠️ Market WS raw stream silent for {:?} (raw_msgs={} parsed={} book_ticks={} trade_ticks={}) — reconnecting",
                                     raw_silence,
@@ -12958,14 +13592,19 @@ async fn run_market_ws(
                                 break;
                             }
 
-                            // Raw payloads exist, but no complete 4-price book ever formed (or has stalled)
-                            // for too long. Strategy cannot trade in this state, so reconnect.
+                            // During bootstrap, raw payloads may arrive but never produce any usable
+                            // market-data lane (neither full book nor trades). Reconnect in that case.
+                            // After a session has already produced usable market data, do not reconnect
+                            // merely because the market went quiet; that creates reconnect storms on
+                            // naturally low-throughput rounds.
+                            let bootstrap_lane_missing = !session_had_market_data;
                             if session_raw_msg_count > 0
+                                && bootstrap_lane_missing
                                 && no_full_book_silence
                                     >= Duration::from_secs(MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS)
                             {
                                 warn!(
-                                    "⚠️ Market WS missing complete book for {:?} (raw={} parsed={} partial_yes={} partial_no={} full_book={} trade={} unknown={} dropped={} tx_dropped={}) — reconnecting",
+                                    "⚠️ Market WS bootstrap lane never became usable for {:?} (raw={} parsed={} partial_yes={} partial_no={} full_book={} trade={} unknown={} dropped={} tx_dropped={}) — reconnecting",
                                     no_full_book_silence,
                                     session_raw_msg_count,
                                     session_parsed_msg_count,
@@ -13009,7 +13648,7 @@ async fn run_market_ws(
                                         rec.record_market_ws_raw(meta, &text);
                                     }
 
-                                    let (parsed, unknown_events, parse_drops) =
+                                    let (parsed, unknown_events, parse_drops, _drop_reasons) =
                                         parse_ws_payload(&settings, &text);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -13161,7 +13800,7 @@ async fn run_market_ws(
                                             {
                                                 rec.record_market_ws_raw(meta, text);
                                             }
-                                            let (parsed, unknown_events, parse_drops) =
+                                            let (parsed, unknown_events, parse_drops, _drop_reasons) =
                                                 parse_ws_payload(&settings, text);
                                             session_unknown_event_count = session_unknown_event_count
                                                 .saturating_add(unknown_events);
@@ -13581,7 +14220,10 @@ struct SharedIngressRuntime {
     local_price_hub: Option<Arc<LocalPriceHub>>,
 }
 
-fn shared_ingress_hub_symbols(prefixes: &[String], coord_cfg: &CoordinatorConfig) -> HashSet<String> {
+fn shared_ingress_hub_symbols(
+    prefixes: &[String],
+    coord_cfg: &CoordinatorConfig,
+) -> HashSet<String> {
     let mut hub_symbols: HashSet<String> = HashSet::new();
     if coord_cfg.strategy.is_oracle_lag_sniping() {
         for prefix in prefixes {
@@ -13617,10 +14259,7 @@ fn build_chainlink_hub_for_symbols(symbols: &HashSet<String>) -> Option<Arc<Chai
                 log_symbols.join(","),
                 socket_path.display()
             );
-            Some(ChainlinkHub::spawn_remote(
-                symbols.clone(),
-                socket_path,
-            ))
+            Some(ChainlinkHub::spawn_remote(symbols.clone(), socket_path))
         }
         SharedIngressRole::Standalone | SharedIngressRole::Broker => {
             info!(
@@ -13636,7 +14275,9 @@ fn build_local_price_hub_for_symbols(
     symbols: &HashSet<String>,
     coord_cfg: &CoordinatorConfig,
 ) -> Option<Arc<LocalPriceHub>> {
-    if !coord_cfg.strategy.is_oracle_lag_sniping() || !local_price_agg_enabled() || symbols.is_empty()
+    if !coord_cfg.strategy.is_oracle_lag_sniping()
+        || !local_price_agg_enabled()
+        || symbols.is_empty()
     {
         return None;
     }
@@ -13652,10 +14293,7 @@ fn build_local_price_hub_for_symbols(
                 local_price_source_names(),
                 local_price_agg_bias_learning_enabled(),
             );
-            Some(LocalPriceHub::spawn_remote(
-                symbols.clone(),
-                socket_path,
-            ))
+            Some(LocalPriceHub::spawn_remote(symbols.clone(), socket_path))
         }
         SharedIngressRole::Standalone | SharedIngressRole::Broker => {
             info!(
@@ -13904,10 +14542,10 @@ async fn handle_market_ingress_client(
         no_asset_id: no_asset_id.clone(),
         custom_feature_enabled: req.custom_feature_enabled.unwrap_or(false),
     };
-    let feed = {
+    let (feed, reused_existing, registry_len) = {
         let mut guard = registry.lock().expect("market registry poisoned");
         if let Some(feed) = guard.get(&key) {
-            Arc::clone(feed)
+            (Arc::clone(feed), true, guard.len())
         } else {
             let feed = SharedMarketIngressFeed::new();
             let mut settings = Settings {
@@ -13922,33 +14560,68 @@ async fn handle_market_ingress_client(
                 custom_feature: key.custom_feature_enabled,
             };
             if settings.market_slug.is_none() {
-                settings.market_slug = Some(format!("{}-{}", &yes_asset_id[..8.min(yes_asset_id.len())], &no_asset_id[..8.min(no_asset_id.len())]));
+                settings.market_slug = Some(format!(
+                    "{}-{}",
+                    &yes_asset_id[..8.min(yes_asset_id.len())],
+                    &no_asset_id[..8.min(no_asset_id.len())]
+                ));
             }
             let feed_clone = Arc::clone(&feed);
             tokio::spawn(async move {
                 run_market_ws_broker_feed(settings, feed_clone).await;
             });
             guard.insert(key.clone(), Arc::clone(&feed));
-            feed
+            let registry_len = guard.len();
+            (feed, false, registry_len)
         }
     };
-    for msg in feed.snapshot() {
+    let (lease, subscribers) =
+        SharedMarketFeedLease::new(key.clone(), Arc::clone(&feed), Arc::clone(&registry));
+    let _lease = lease;
+    info!(
+        "📡 shared ingress market feed attached | slug={} yes_asset_id={} no_asset_id={} reused_existing={} subscribers={} registry_size={}",
+        req.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
+        yes_asset_id,
+        no_asset_id,
+        reused_existing,
+        subscribers,
+        registry_len
+    );
+    let (snapshot, mut rx) = feed.snapshot_and_subscribe();
+    for msg in snapshot {
         shared_ingress_send_wire_line(&mut write_half, &msg).await?;
     }
     shared_ingress_send_wire_line(&mut write_half, &SharedIngressWireMsg::SnapshotDone).await?;
-    let mut rx = feed.subscribe();
+    line.clear();
     loop {
-        match rx.recv().await {
-            Ok(msg) => {
-                if shared_ingress_send_wire_line(&mut write_half, &msg)
-                    .await
-                    .is_err()
-                {
-                    break;
+        tokio::select! {
+            recv = rx.recv() => {
+                match recv {
+                    Ok(msg) => {
+                        if shared_ingress_send_wire_line(&mut write_half, &msg)
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                 }
             }
-            Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-            Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+            read = reader.read_line(&mut line) => {
+                match read {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        // Market ingress clients do not send runtime control messages today.
+                        // Drain any unexpected bytes and keep the lease alive until the peer
+                        // actually closes, so empty feeds can still be released on EOF.
+                        line.clear();
+                        continue;
+                    }
+                    Err(_) => break,
+                }
+            }
         }
     }
     Ok(())
@@ -14039,22 +14712,19 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
     let prefixes = parse_multi_market_prefixes_from_env();
     let hub_symbols = shared_ingress_hub_symbols(&prefixes, &coord_cfg);
     if hub_symbols.is_empty() {
-        anyhow::bail!("shared ingress broker has no symbols to serve");
+        info!(
+            "🪫 shared ingress broker starting in market-only mode | no chainlink/local_price symbols configured"
+        );
     }
     let chainlink_hub = ChainlinkHub::spawn(hub_symbols.clone());
-    let local_price_hub = if coord_cfg.strategy.is_oracle_lag_sniping() && local_price_agg_enabled()
-    {
-        Some(LocalPriceHub::spawn(hub_symbols.clone()))
-    } else {
-        None
-    };
+    let local_price_hub = LocalPriceHub::spawn(hub_symbols.clone());
     let market_registry: Arc<Mutex<HashMap<SharedMarketFeedKey, Arc<SharedMarketIngressFeed>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     let mut chainlink_task =
         tokio::spawn(async move { run_chainlink_ingress_broker(chainlink_hub).await });
-    let mut local_price_task = local_price_hub.map(|hub| {
-        tokio::spawn(async move { run_local_price_ingress_broker(hub).await })
-    });
+    let mut local_price_task = Some(tokio::spawn(async move {
+        run_local_price_ingress_broker(local_price_hub).await
+    }));
     let market_registry_clone = Arc::clone(&market_registry);
     let mut market_task =
         tokio::spawn(async move { run_market_ingress_broker(market_registry_clone).await });
@@ -14062,11 +14732,11 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
     let build_id = shared_ingress_build_id();
     let protocol_version = shared_ingress_protocol_version();
     let schema_version = shared_ingress_schema_version();
-    let mut heartbeat = tokio::time::interval(Duration::from_millis(
-        SHARED_INGRESS_HEARTBEAT_INTERVAL_MS,
-    ));
+    let mut heartbeat =
+        tokio::time::interval(Duration::from_millis(SHARED_INGRESS_HEARTBEAT_INTERVAL_MS));
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut zero_clients_since: Option<tokio::time::Instant> = None;
+    let mut last_market_registry_len: Option<usize> = None;
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => {
@@ -14088,8 +14758,24 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
                 if let Err(err) = write_json_pretty_atomic(&shared_ingress_broker_manifest_path(), &manifest) {
                     warn!("⚠️ shared ingress broker manifest write failed | err={}", err);
                 }
+                let cleanup = cleanup_stale_client_leases();
+                if cleanup.removed_stale > 0 || cleanup.removed_invalid > 0 {
+                    info!(
+                        "🧹 shared ingress client lease cleanup | removed_stale={} removed_invalid={}",
+                        cleanup.removed_stale, cleanup.removed_invalid
+                    );
+                }
+                let active_clients = shared_ingress_active_client_count();
+                let market_registry_len = market_registry.lock().map(|g| g.len()).unwrap_or_default();
+                if last_market_registry_len != Some(market_registry_len) {
+                    info!(
+                        "📊 shared ingress market registry size | feeds={} active_clients={}",
+                        market_registry_len,
+                        active_clients
+                    );
+                    last_market_registry_len = Some(market_registry_len);
+                }
                 if shared_ingress_idle_exit_enabled() {
-                    let active_clients = shared_ingress_active_client_count();
                     if active_clients == 0 {
                         match zero_clients_since {
                             Some(since) if since.elapsed() >= Duration::from_millis(SHARED_INGRESS_IDLE_SHUTDOWN_GRACE_MS) => {
@@ -14478,6 +15164,11 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
              Set PM_DRY_RUN=true or fix private key / auth config."
         );
     }
+    if !dry_run {
+        info!(
+            "🛠️ CLOB V2 execution path enabled: live maker/taker orders use local V2 signing and POST /order."
+        );
+    }
     #[allow(unused_imports)]
     use alloy::signers::Signer;
     let signer_address = signer.as_ref().map(|s| format!("{:?}", s.address()));
@@ -14486,9 +15177,9 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     if !dry_run {
         use alloy::primitives::Address;
         use alloy::primitives::U256;
+        use pm_as_ofi::polymarket::clob_v2::{v2_contract_config, V2_CONTRACTS};
         use polymarket_client_sdk::clob::types::request::BalanceAllowanceRequest;
         use polymarket_client_sdk::clob::types::{AssetType, SignatureType};
-        use polymarket_client_sdk::{contract_config, POLYGON};
         use rust_decimal::Decimal;
 
         let is_api_key_unauthorized = |err: &dyn std::fmt::Display| -> bool {
@@ -14522,16 +15213,18 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                         .filter_map(|v| parse_u256_allowance(v))
                         .max()
                         .unwrap_or(U256::ZERO);
-                    let main_cfg = contract_config(POLYGON, false);
-                    let neg_cfg = contract_config(POLYGON, true);
                     let expected_spenders: Vec<(&str, Option<Address>)> = vec![
-                        ("exchange", main_cfg.map(|c| c.exchange)),
-                        ("neg_risk_exchange", neg_cfg.map(|c| c.exchange)),
-                        ("neg_risk_adapter", neg_cfg.and_then(|c| c.neg_risk_adapter)),
+                        ("pUSD_ctf", Some(V2_CONTRACTS.ctf)),
+                        ("exchange", Some(v2_contract_config(false).exchange)),
+                        ("neg_risk_exchange", Some(v2_contract_config(true).exchange)),
+                        (
+                            "neg_risk_adapter",
+                            v2_contract_config(true).neg_risk_adapter,
+                        ),
                     ];
 
                     info!(
-                        "💰 Preflight collateral: balance={} max_allowance={} allowance_entries={}",
+                        "💰 Preflight pUSD collateral: balance={} max_allowance={} allowance_entries={}",
                         resp.balance,
                         max_allowance,
                         resp.allowances.len()
@@ -14554,7 +15247,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                             .map(|(k, v)| format!("{k:?}={v}"))
                             .collect();
                         warn!(
-                            "⚠️ Preflight indicates insufficient balance/allowance for trading \
+                            "⚠️ Preflight indicates insufficient pUSD balance/allowance for trading \
                              (balance={} max_allowance={} samples={:?})",
                             resp.balance, max_allowance, samples
                         );
@@ -14580,7 +15273,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                                     .max()
                                     .unwrap_or(U256::ZERO);
                                 info!(
-                                    "🧪 Collateral probe sig_type={} balance={} max_allowance={} entries={}",
+                                    "🧪 pUSD collateral probe sig_type={} balance={} max_allowance={} entries={}",
                                     sig as u8,
                                     probe.balance,
                                     probe_max,
@@ -14601,8 +15294,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                         && !allow_zero_allowance
                     {
                         anyhow::bail!(
-                            "🚨 FATAL: wallet balance is non-zero but CLOB collateral allowance is zero. \
-                             Use the same signer/funder to approve USDC for Polymarket contracts, then retry. \
+                            "🚨 FATAL: wallet balance is non-zero but CLOB pUSD allowance is zero. \
+                             Wrap USDC.e into pUSD via CollateralOnramp, approve pUSD for CTF, and approve outcome tokens for the V2 exchanges, then retry. \
                              Set PM_ALLOW_ZERO_ALLOWANCE=true to bypass this guard."
                         );
                     }
@@ -14986,7 +15679,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     .build();
 
                 if let Ok(resp) = client.balance_allowance(req).await {
-                    // Polymarket returns collateral balance in 6 decimals (1 USDC = 1,000,000)
+                    // Polymarket returns pUSD collateral in 6 decimals (1 pUSD = 1_000_000 base units)
                     let raw_balance =
                         rust_decimal::prelude::ToPrimitive::to_f64(&resp.balance).unwrap_or(0.0);
                     let balance_f64 = raw_balance / 1_000_000.0;
@@ -15013,7 +15706,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
 
                     if sizing.bid_target.is_some() || sizing.net_target.is_some() {
                         info!(
-                            "💡 [DYNAMIC SIZING] Balance: {:.2} USDC -> target BID_SIZE={} MAX_NET_DIFF={} | floors BID_SIZE={:.1} MAX_NET_DIFF={:.1} -> effective BID_SIZE={:.1} MAX_NET_DIFF={:.1} (bid_pct={}, net_pct={})",
+                            "💡 [DYNAMIC SIZING] Balance: {:.2} pUSD -> target BID_SIZE={} MAX_NET_DIFF={} | floors BID_SIZE={:.1} MAX_NET_DIFF={:.1} -> effective BID_SIZE={:.1} MAX_NET_DIFF={:.1} (bid_pct={}, net_pct={})",
                             balance_f64,
                             sizing
                                 .bid_target
@@ -15565,6 +16258,15 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "pgt_dispatch_place": coord_obs.pgt_dispatch_place,
                     "pgt_dispatch_retain": coord_obs.pgt_dispatch_retain,
                     "pgt_dispatch_clear": coord_obs.pgt_dispatch_clear,
+                    "pgt_single_seed_first_side": coord_obs
+                        .pgt_single_seed_first_side
+                        .map(|s| s.as_str().to_string()),
+                    "pgt_single_seed_last_side": coord_obs
+                        .pgt_single_seed_last_side
+                        .map(|s| s.as_str().to_string()),
+                    "pgt_single_seed_flip_count": coord_obs.pgt_single_seed_flip_count,
+                    "pgt_dual_seed_quotes": coord_obs.pgt_dual_seed_quotes,
+                    "pgt_single_seed_released_to_dual": coord_obs.pgt_single_seed_released_to_dual,
                     "maker_only_missed_open_round": paired_qty <= 1e-9
                         && coord_obs.pgt_taker_shadow_would_open > 0
                         && coord_obs.pgt_dispatch_taker_open == 0,
@@ -15778,13 +16480,18 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "🧾 Fixed mode: waiting up to {}s for pgt shadow-redeem task before exit",
                     wait_secs
                 );
-                match tokio::time::timeout(Duration::from_secs(wait_secs), handle).await {
-                    Ok(joined) => {
+                let mut handle = handle;
+                tokio::select! {
+                    joined = &mut handle => {
                         if let Err(e) = joined {
                             warn!("⚠️ PGT shadow-redeem task join failed: {:?}", e);
                         }
                     }
-                    Err(_) => warn!("⚠️ PGT shadow-redeem task timed out on fixed-mode exit"),
+                    _ = sleep(Duration::from_secs(wait_secs)) => {
+                        warn!("⚠️ PGT shadow-redeem task timed out on fixed-mode exit — aborting");
+                        handle.abort();
+                        let _ = handle.await;
+                    }
                 }
             }
             if let Some(handle) = round_claim_task.take() {
@@ -15793,13 +16500,18 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "💸 Fixed mode: waiting up to {}s for background round-claim task before exit",
                     wait_secs
                 );
-                match tokio::time::timeout(Duration::from_secs(wait_secs), handle).await {
-                    Ok(joined) => {
+                let mut handle = handle;
+                tokio::select! {
+                    joined = &mut handle => {
                         if let Err(e) = joined {
                             warn!("⚠️ Round claim background task join failed: {:?}", e);
                         }
                     }
-                    Err(_) => warn!("⚠️ Round claim background task timed out on fixed-mode exit"),
+                    _ = sleep(Duration::from_secs(wait_secs)) => {
+                        warn!("⚠️ Round claim background task timed out on fixed-mode exit — aborting");
+                        handle.abort();
+                        let _ = handle.await;
+                    }
                 }
             }
             info!("📌 Fixed mode — exiting");

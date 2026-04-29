@@ -2,8 +2,8 @@ use std::collections::HashSet;
 use std::env;
 use std::str::FromStr;
 
-use anyhow::{Context, Result};
 use alloy::primitives::Address;
+use anyhow::{Context, Result};
 use pm_as_ofi::polymarket::executor::init_clob_client;
 use polymarket_client_sdk::auth::Credentials;
 use polymarket_client_sdk::clob::types::request::TradesRequest;
@@ -163,8 +163,12 @@ async fn main() -> Result<()> {
     let target = env::var("PM_PROBE_TRADER").unwrap_or_else(|_| DEFAULT_TARGET.to_string());
     let target_addr = Address::from_str(&target)
         .with_context(|| format!("PM_PROBE_TRADER is not a valid address: {target}"))?;
-    let after = env::var("PM_PROBE_AFTER").ok().and_then(|v| v.parse::<i64>().ok());
-    let before = env::var("PM_PROBE_BEFORE").ok().and_then(|v| v.parse::<i64>().ok());
+    let after = env::var("PM_PROBE_AFTER")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok());
+    let before = env::var("PM_PROBE_BEFORE")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok());
     let tx_hint = env::var("PM_PROBE_TX_HASH").ok();
 
     println!(
@@ -177,8 +181,7 @@ async fn main() -> Result<()> {
         before
     );
 
-    let (client, _) =
-        init_clob_client(&rest_url, private_key.as_deref(), funder, api_creds).await;
+    let (client, _) = init_clob_client(&rest_url, private_key.as_deref(), funder, api_creds).await;
     let client = client.context("authenticated CLOB client unavailable")?;
 
     let maker_req = TradesRequest::builder().maker_address(target_addr).build();
@@ -187,8 +190,29 @@ async fn main() -> Result<()> {
     window_req.after = after;
     window_req.before = before;
 
-    fetch_once(&client, "maker", target_addr, &maker_req, tx_hint.as_deref()).await?;
-    fetch_once(&client, "taker", target_addr, &taker_req, tx_hint.as_deref()).await?;
-    fetch_once(&client, "window", target_addr, &window_req, tx_hint.as_deref()).await?;
+    fetch_once(
+        &client,
+        "maker",
+        target_addr,
+        &maker_req,
+        tx_hint.as_deref(),
+    )
+    .await?;
+    fetch_once(
+        &client,
+        "taker",
+        target_addr,
+        &taker_req,
+        tx_hint.as_deref(),
+    )
+    .await?;
+    fetch_once(
+        &client,
+        "window",
+        target_addr,
+        &window_req,
+        tx_hint.as_deref(),
+    )
+    .await?;
     Ok(())
 }

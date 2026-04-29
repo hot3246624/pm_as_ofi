@@ -50,6 +50,89 @@ def envelope(
 
 
 class BuildReplayDbTests(unittest.TestCase):
+    def test_build_for_slug_records_shadow_lifecycle_events(self):
+        with tempfile.TemporaryDirectory(prefix="pm_as_ofi_replay_") as tmp:
+            root = Path(tmp)
+            day = "2026-04-26"
+            slug_dir = root / day / "btc-updown-5m-shadow"
+            write_jsonl(
+                slug_dir / "events.jsonl",
+                [
+                    envelope(
+                        "events",
+                        {
+                            "event": "merge_requested",
+                            "data": {
+                                "attempt": 1,
+                                "pairable_qty": 12.0,
+                                "mergeable_full_sets": 10.0,
+                            },
+                        },
+                        capture_seq=1,
+                    ),
+                    envelope(
+                        "events",
+                        {
+                            "event": "merge_executed",
+                            "data": {
+                                "attempt": 1,
+                                "pairable_qty": 12.0,
+                                "mergeable_full_sets": 10.0,
+                            },
+                        },
+                        capture_seq=2,
+                    ),
+                    envelope(
+                        "events",
+                        {
+                            "event": "redeem_requested",
+                            "data": {
+                                "attempt": 1,
+                                "residual_qty": 4.0,
+                                "yes_qty": 4.0,
+                                "no_qty": 0.0,
+                            },
+                        },
+                        capture_seq=3,
+                    ),
+                    envelope(
+                        "events",
+                        {
+                            "event": "pgt_shadow_summary",
+                            "data": {
+                                "paired_qty": 12.0,
+                                "pair_cost": 0.99,
+                                "residual_qty": 0.0,
+                                "pgt_taker_shadow_would_open": 7,
+                                "pgt_dispatch_taker_open": 0,
+                                "maker_only_missed_open_round": True,
+                            },
+                        },
+                        capture_seq=4,
+                    ),
+                ],
+            )
+
+            conn = sqlite3.connect(":memory:")
+            try:
+                build_replay_db.init_db(conn)
+                build_replay_db.build_for_slug(conn, day, slug_dir)
+                conn.commit()
+                rows = conn.execute(
+                    "SELECT event, payload_json FROM pair_tranche_events ORDER BY capture_seq"
+                ).fetchall()
+                summary_rows = conn.execute(
+                    "SELECT event, payload_json FROM own_inventory_events WHERE event = 'pgt_shadow_summary'"
+                ).fetchall()
+            finally:
+                conn.close()
+
+            self.assertEqual([r[0] for r in rows], ["merge_requested", "merge_executed", "redeem_requested"])
+            self.assertIn('"pairable_qty":12.0', rows[0][1])
+            self.assertIn('"residual_qty":4.0', rows[2][1])
+            self.assertEqual(len(summary_rows), 1)
+            self.assertIn('"pair_cost":0.99', summary_rows[0][1])
+
     def test_build_for_slug_prefers_structured_market_md(self):
         with tempfile.TemporaryDirectory(prefix="pm_as_ofi_replay_") as tmp:
             root = Path(tmp)

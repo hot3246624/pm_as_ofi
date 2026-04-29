@@ -35,6 +35,8 @@ const GLFT_SOURCE_BLOCK_RETAIN_HOLD_BINANCE_MS: u64 = 1_500;
 // Require stale to persist briefly before clearing live targets.
 // This avoids cancel/reprovide ping-pong during short WS reconnect flaps.
 const BOOK_SIDE_STALE_CLEAR_HOLD_MS: u64 = 2_500;
+const PGT_FLAT_SEED_LATCH_MS: u64 = 60_000;
+const PGT_FLAT_SEED_LATCH_MAX_MS: u64 = 90_000;
 const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
 const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
 const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
@@ -305,11 +307,11 @@ impl CoordinatorConfig {
         }
         if let Ok(v) = std::env::var("PM_OPEN_PAIR_BAND") {
             if let Ok(f) = v.parse::<f64>() {
-                if (0.0..1.0).contains(&f) {
+                if f > 0.0 && f <= 1.0 {
                     self.open_pair_band = f;
                 } else {
                     warn!(
-                        "⚠️ Ignoring invalid PM_OPEN_PAIR_BAND={} (must satisfy 0 < p < 1), using {}",
+                        "⚠️ Ignoring invalid PM_OPEN_PAIR_BAND={} (must satisfy 0 < p <= 1), using {}",
                         f, self.open_pair_band
                     );
                 }
@@ -791,6 +793,8 @@ struct Stats {
     pgt_dispatch_intents: u64,
     pgt_dispatch_blocked: u64,
     pgt_dispatch_place: u64,
+    pgt_dispatch_taker_open: u64,
+    pgt_dispatch_taker_close: u64,
     pgt_dispatch_retain: u64,
     pgt_dispatch_clear: u64,
     pgt_stale_target_dropped: u64,
@@ -805,6 +809,18 @@ struct Stats {
     pgt_skip_capital_guard: u64,
     pgt_skip_invalid_book: u64,
     pgt_skip_no_seed: u64,
+    pgt_skip_geometry_guard: u64,
+    pgt_single_seed_bias: u64,
+    pgt_single_seed_first_side: Option<Side>,
+    pgt_single_seed_last_side: Option<Side>,
+    pgt_single_seed_flip_count: u64,
+    pgt_dual_seed_quotes: u64,
+    pgt_single_seed_released_to_dual: u64,
+    pgt_single_seed_released_to_dual_recorded: bool,
+    pgt_entry_pressure_sides: u64,
+    pgt_entry_pressure_extra_ticks: u64,
+    pgt_taker_shadow_would_open: u64,
+    pgt_taker_shadow_would_close: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -826,10 +842,23 @@ struct PgtGateLogSnapshot {
     skip_capital_guard: u64,
     skip_invalid_book: u64,
     skip_no_seed: u64,
+    taker_shadow_would_open: u64,
+    taker_shadow_would_close: u64,
+    skip_geometry_guard: u64,
+    single_seed_bias: u64,
+    single_seed_first_side: Option<Side>,
+    single_seed_last_side: Option<Side>,
+    single_seed_flip_count: u64,
+    dual_seed_quotes: u64,
+    single_seed_released_to_dual: u64,
+    entry_pressure_sides: u64,
+    entry_pressure_extra_ticks: u64,
     post_flow_quotes: u64,
     dispatch_intents: u64,
     dispatch_blocked: u64,
     dispatch_place: u64,
+    dispatch_taker_open: u64,
+    dispatch_taker_close: u64,
     dispatch_retain: u64,
     dispatch_clear: u64,
     stale_target_dropped: u64,
@@ -955,8 +984,16 @@ pub(crate) struct ProjectedBuyMetrics {
 #[derive(Debug, Clone, Copy)]
 enum ProvideSideAction {
     None,
-    Place { intent: StrategyIntent },
-    Clear { reason: CancelReason },
+    Place {
+        intent: StrategyIntent,
+    },
+    ShadowTaker {
+        intent: StrategyIntent,
+        limit_price: f64,
+    },
+    Clear {
+        reason: CancelReason,
+    },
 }
 
 impl ExecutionState {
@@ -1095,6 +1132,12 @@ pub struct StrategyCoordinator {
     slot_pair_arb_cross_reject_reprice_pending: [bool; 4],
     slot_pair_arb_state_republish_latched: [bool; 4],
     pgt_same_side_release_quarantine_until: [Option<Instant>; 2],
+    pgt_flat_seed_latched_side: Option<Side>,
+    pgt_flat_seed_latched_since: Option<Instant>,
+    pgt_flat_seed_latched_until: Option<Instant>,
+    pgt_flat_seed_latch_exhausted: bool,
+    pgt_shadow_taker_open_fired_epoch: Option<u64>,
+    pgt_shadow_taker_close_fired_epoch: [Option<u64>; 2],
     pair_arb_slot_blocked_for_ms: [u64; 4],
     pair_arb_slot_blocked_at: [Option<Instant>; 4],
     yes_target: Option<DesiredTarget>,
@@ -1260,10 +1303,23 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_skip_capital_guard: u64,
     pub pgt_skip_invalid_book: u64,
     pub pgt_skip_no_seed: u64,
+    pub pgt_skip_geometry_guard: u64,
+    pub pgt_single_seed_bias: u64,
+    pub pgt_single_seed_first_side: Option<Side>,
+    pub pgt_single_seed_last_side: Option<Side>,
+    pub pgt_single_seed_flip_count: u64,
+    pub pgt_dual_seed_quotes: u64,
+    pub pgt_single_seed_released_to_dual: u64,
+    pub pgt_entry_pressure_sides: u64,
+    pub pgt_entry_pressure_extra_ticks: u64,
+    pub pgt_taker_shadow_would_open: u64,
+    pub pgt_taker_shadow_would_close: u64,
     pub pgt_post_flow_quotes: u64,
     pub pgt_dispatch_intents: u64,
     pub pgt_dispatch_blocked: u64,
     pub pgt_dispatch_place: u64,
+    pub pgt_dispatch_taker_open: u64,
+    pub pgt_dispatch_taker_close: u64,
     pub pgt_dispatch_retain: u64,
     pub pgt_dispatch_clear: u64,
     pub pgt_stale_target_dropped: u64,
@@ -1453,6 +1509,12 @@ impl StrategyCoordinator {
             slot_pair_arb_cross_reject_reprice_pending: [false; 4],
             slot_pair_arb_state_republish_latched: [false; 4],
             pgt_same_side_release_quarantine_until: [None; 2],
+            pgt_flat_seed_latched_side: None,
+            pgt_flat_seed_latched_since: None,
+            pgt_flat_seed_latched_until: None,
+            pgt_flat_seed_latch_exhausted: false,
+            pgt_shadow_taker_open_fired_epoch: None,
+            pgt_shadow_taker_close_fired_epoch: [None, None],
             pair_arb_slot_blocked_for_ms: [0; 4],
             pair_arb_slot_blocked_at: [None; 4],
             yes_target: None,
@@ -1776,7 +1838,7 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={} stale_target_dropped={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} taker_shadow_would_open={} taker_shadow_would_close={} dispatch_taker_open={} dispatch_taker_close={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={} stale_target_dropped={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
@@ -1785,7 +1847,7 @@ impl StrategyCoordinator {
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked, self.stats.pair_arb_stale_target_dropped, self.stats.pair_arb_state_forced_republish,
             self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none,
-            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed, self.stats.pgt_stale_target_dropped,
+            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_taker_shadow_would_open, self.stats.pgt_taker_shadow_would_close, self.stats.pgt_dispatch_taker_open, self.stats.pgt_dispatch_taker_close, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed, self.stats.pgt_stale_target_dropped,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
@@ -1840,16 +1902,29 @@ impl StrategyCoordinator {
             pair_arb_state_forced_republish: self.stats.pair_arb_state_forced_republish,
             pgt_seed_quotes: self.stats.pgt_seed_quotes,
             pgt_completion_quotes: self.stats.pgt_completion_quotes,
+            pgt_entry_pressure_sides: self.stats.pgt_entry_pressure_sides,
+            pgt_entry_pressure_extra_ticks: self.stats.pgt_entry_pressure_extra_ticks,
+            pgt_taker_shadow_would_open: self.stats.pgt_taker_shadow_would_open,
+            pgt_taker_shadow_would_close: self.stats.pgt_taker_shadow_would_close,
             pgt_skip_harvest: self.stats.pgt_skip_harvest,
             pgt_skip_tail_completion_only: self.stats.pgt_skip_tail_completion_only,
             pgt_skip_residual_guard: self.stats.pgt_skip_residual_guard,
             pgt_skip_capital_guard: self.stats.pgt_skip_capital_guard,
             pgt_skip_invalid_book: self.stats.pgt_skip_invalid_book,
             pgt_skip_no_seed: self.stats.pgt_skip_no_seed,
+            pgt_skip_geometry_guard: self.stats.pgt_skip_geometry_guard,
+            pgt_single_seed_bias: self.stats.pgt_single_seed_bias,
+            pgt_single_seed_first_side: self.stats.pgt_single_seed_first_side,
+            pgt_single_seed_last_side: self.stats.pgt_single_seed_last_side,
+            pgt_single_seed_flip_count: self.stats.pgt_single_seed_flip_count,
+            pgt_dual_seed_quotes: self.stats.pgt_dual_seed_quotes,
+            pgt_single_seed_released_to_dual: self.stats.pgt_single_seed_released_to_dual,
             pgt_post_flow_quotes: self.stats.pgt_post_flow_quotes,
             pgt_dispatch_intents: self.stats.pgt_dispatch_intents,
             pgt_dispatch_blocked: self.stats.pgt_dispatch_blocked,
             pgt_dispatch_place: self.stats.pgt_dispatch_place,
+            pgt_dispatch_taker_open: self.stats.pgt_dispatch_taker_open,
+            pgt_dispatch_taker_close: self.stats.pgt_dispatch_taker_close,
             pgt_dispatch_retain: self.stats.pgt_dispatch_retain,
             pgt_dispatch_clear: self.stats.pgt_dispatch_clear,
             pgt_stale_target_dropped: self.stats.pgt_stale_target_dropped,
@@ -1858,6 +1933,16 @@ impl StrategyCoordinator {
     }
 
     fn record_strategy_quote_diagnostics(&mut self, quotes: &StrategyQuotes) {
+        let had_single_seed_before = self.stats.pgt_single_seed_bias > 0;
+        let pgt_single_seed_side = if quotes.diagnostics.pgt_single_seed_bias > 0 {
+            match (quotes.yes_buy.is_some(), quotes.no_buy.is_some()) {
+                (true, false) => Some(Side::Yes),
+                (false, true) => Some(Side::No),
+                _ => None,
+            }
+        } else {
+            None
+        };
         self.stats.pair_arb_ofi_softened_quotes = self
             .stats
             .pair_arb_ofi_softened_quotes
@@ -1910,6 +1995,58 @@ impl StrategyCoordinator {
             .stats
             .pgt_skip_no_seed
             .saturating_add(quotes.diagnostics.pgt_skip_no_seed as u64);
+        self.stats.pgt_skip_geometry_guard = self
+            .stats
+            .pgt_skip_geometry_guard
+            .saturating_add(quotes.diagnostics.pgt_skip_geometry_guard as u64);
+        self.stats.pgt_single_seed_bias = self
+            .stats
+            .pgt_single_seed_bias
+            .saturating_add(quotes.diagnostics.pgt_single_seed_bias as u64);
+        if let Some(side) = pgt_single_seed_side {
+            if self.stats.pgt_single_seed_first_side.is_none() {
+                self.stats.pgt_single_seed_first_side = Some(side);
+            }
+            if let Some(prev_side) = self.stats.pgt_single_seed_last_side {
+                if prev_side != side {
+                    self.stats.pgt_single_seed_flip_count =
+                        self.stats.pgt_single_seed_flip_count.saturating_add(1);
+                }
+            }
+            self.stats.pgt_single_seed_last_side = Some(side);
+        }
+        let pgt_dual_seed = matches!(
+            (&quotes.yes_buy, &quotes.no_buy),
+            (Some(yes), Some(no))
+                if yes.reason == BidReason::Provide
+                    && no.reason == BidReason::Provide
+                    && yes.direction == TradeDirection::Buy
+                    && no.direction == TradeDirection::Buy
+        );
+        if pgt_dual_seed {
+            self.stats.pgt_dual_seed_quotes = self.stats.pgt_dual_seed_quotes.saturating_add(1);
+            if had_single_seed_before && !self.stats.pgt_single_seed_released_to_dual_recorded {
+                self.stats.pgt_single_seed_released_to_dual =
+                    self.stats.pgt_single_seed_released_to_dual.saturating_add(1);
+                self.stats.pgt_single_seed_released_to_dual_recorded = true;
+            }
+        }
+        self.stats.pgt_entry_pressure_sides = self
+            .stats
+            .pgt_entry_pressure_sides
+            .saturating_add(quotes.diagnostics.pgt_entry_pressure_sides as u64);
+        self.stats.pgt_entry_pressure_extra_ticks = self
+            .stats
+            .pgt_entry_pressure_extra_ticks
+            .saturating_add(quotes.diagnostics.pgt_entry_pressure_extra_ticks as u64);
+        self.stats.pgt_taker_shadow_would_open = self
+            .stats
+            .pgt_taker_shadow_would_open
+            .saturating_add(quotes.diagnostics.pgt_taker_shadow_would_open as u64);
+        self.stats.pgt_taker_shadow_would_close = self
+            .stats
+            .pgt_taker_shadow_would_close
+            .saturating_add(quotes.diagnostics.pgt_taker_shadow_would_close as u64);
     }
 
     pub(super) fn execution_toxic_block_applies(&self) -> bool {
@@ -1921,6 +2058,7 @@ impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
 
     fn update_book(&mut self, yb: f64, ya: f64, nb: f64, na: f64) {
+        let pgt_bid_only_freshness = self.cfg.strategy.is_pair_gated_tranche_arb();
         if yb.is_finite() {
             self.book.yes_bid = yb.max(0.0);
         }
@@ -1936,15 +2074,29 @@ impl StrategyCoordinator {
 
         // P5 FIX: Update per-side timestamps independently.
         // Shared timestamp caused YES updates to mask NO staleness.
-        if yb.is_finite() && ya.is_finite() && self.book.yes_bid > 0.0 && self.book.yes_ask > 0.0 {
+        let yes_fresh = if pgt_bid_only_freshness {
+            yb.is_finite() && self.book.yes_bid > 0.0
+        } else {
+            yb.is_finite() && ya.is_finite() && self.book.yes_bid > 0.0 && self.book.yes_ask > 0.0
+        };
+        if yes_fresh {
             self.last_valid_book.yes_bid = self.book.yes_bid;
-            self.last_valid_book.yes_ask = self.book.yes_ask;
+            if self.book.yes_ask > 0.0 {
+                self.last_valid_book.yes_ask = self.book.yes_ask;
+            }
             self.last_valid_ts_yes = Instant::now();
             self.yes_stale_since = None;
         }
-        if nb.is_finite() && na.is_finite() && self.book.no_bid > 0.0 && self.book.no_ask > 0.0 {
+        let no_fresh = if pgt_bid_only_freshness {
+            nb.is_finite() && self.book.no_bid > 0.0
+        } else {
+            nb.is_finite() && na.is_finite() && self.book.no_bid > 0.0 && self.book.no_ask > 0.0
+        };
+        if no_fresh {
             self.last_valid_book.no_bid = self.book.no_bid;
-            self.last_valid_book.no_ask = self.book.no_ask;
+            if self.book.no_ask > 0.0 {
+                self.last_valid_book.no_ask = self.book.no_ask;
+            }
             self.last_valid_ts_no = Instant::now();
             self.no_stale_since = None;
         }
@@ -1969,6 +2121,109 @@ impl StrategyCoordinator {
         let since = stale_since.get_or_insert(now);
         now.saturating_duration_since(*since)
             >= Duration::from_millis(BOOK_SIDE_STALE_CLEAR_HOLD_MS)
+    }
+
+    fn pgt_should_hold_buy_target_on_global_stale(&self, side: Side) -> bool {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() {
+            return false;
+        }
+        let slot = OrderSlot::new(side, TradeDirection::Buy);
+        self.slot_target_active(slot)
+            && matches!(
+                self.side_target_reason(side),
+                Some(BidReason::Provide | BidReason::Hedge)
+            )
+    }
+
+    pub(crate) fn pgt_flat_seed_latched_side(&self) -> Option<Side> {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() {
+            return None;
+        }
+        if self.pgt_flat_seed_latch_exhausted {
+            return None;
+        }
+        let now = Instant::now();
+        if let (Some(side), Some(until)) =
+            (self.pgt_flat_seed_latched_side, self.pgt_flat_seed_latched_until)
+        {
+            if now < until {
+                return Some(side);
+            }
+        }
+        let yes_active = self.slot_target_active(OrderSlot::YES_BUY)
+            && matches!(self.side_target_reason(Side::Yes), Some(BidReason::Provide));
+        let no_active = self.slot_target_active(OrderSlot::NO_BUY)
+            && matches!(self.side_target_reason(Side::No), Some(BidReason::Provide));
+        match (yes_active, no_active) {
+            (true, false) => Some(Side::Yes),
+            (false, true) => Some(Side::No),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn pgt_flat_seed_latch_exhausted(&self) -> bool {
+        self.cfg.strategy.is_pair_gated_tranche_arb() && self.pgt_flat_seed_latch_exhausted
+    }
+
+    fn update_pgt_flat_seed_latch(
+        &mut self,
+        quotes: &StrategyQuotes,
+        has_active_tranche: bool,
+    ) {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
+            self.pgt_flat_seed_latched_side = None;
+            self.pgt_flat_seed_latched_since = None;
+            self.pgt_flat_seed_latched_until = None;
+            self.pgt_flat_seed_latch_exhausted = false;
+            return;
+        }
+        if has_active_tranche {
+            self.pgt_flat_seed_latched_side = None;
+            self.pgt_flat_seed_latched_since = None;
+            self.pgt_flat_seed_latched_until = None;
+            self.pgt_flat_seed_latch_exhausted = false;
+            return;
+        }
+        if self.pgt_flat_seed_latch_exhausted {
+            return;
+        }
+        let now = Instant::now();
+        if quotes.diagnostics.pgt_single_seed_bias == 0 {
+            return;
+        }
+        let side = match (quotes.yes_buy.is_some(), quotes.no_buy.is_some()) {
+            (true, false) => Some(Side::Yes),
+            (false, true) => Some(Side::No),
+            _ => None,
+        };
+        if let Some(side) = side {
+            if let (Some(latched_side), Some(since), Some(until)) = (
+                self.pgt_flat_seed_latched_side,
+                self.pgt_flat_seed_latched_since,
+                self.pgt_flat_seed_latched_until,
+            )
+            {
+                if now.duration_since(since) >= Duration::from_millis(PGT_FLAT_SEED_LATCH_MAX_MS) {
+                    self.pgt_flat_seed_latched_side = None;
+                    self.pgt_flat_seed_latched_since = None;
+                    self.pgt_flat_seed_latched_until = None;
+                    self.pgt_flat_seed_latch_exhausted = true;
+                    return;
+                }
+                if latched_side == side {
+                    self.pgt_flat_seed_latched_until =
+                        Some(now + Duration::from_millis(PGT_FLAT_SEED_LATCH_MS));
+                    return;
+                }
+                if now < until {
+                    return;
+                }
+            }
+            self.pgt_flat_seed_latched_side = Some(side);
+            self.pgt_flat_seed_latched_since = Some(now);
+            self.pgt_flat_seed_latched_until =
+                Some(now + Duration::from_millis(PGT_FLAT_SEED_LATCH_MS));
+        }
     }
 
     /// Raw (non-fallback) ask for the given side. Zero means no current ask.
@@ -2574,12 +2829,20 @@ impl StrategyCoordinator {
         // Priority 1: 30s Staleness Guard (Critical Shutdown)
         if self.is_book_stale() && !post_close_stale_immune {
             if self.yes_target.is_some() {
-                warn!("⚠️ Book expired (>30s) — clearing YES");
-                self.clear_target(Side::Yes, CancelReason::StaleData).await;
+                if self.pgt_should_hold_buy_target_on_global_stale(Side::Yes) {
+                    debug!("🧭 PGT stale hold — retaining YES across global book expiry");
+                } else {
+                    warn!("⚠️ Book expired (>30s) — clearing YES");
+                    self.clear_target(Side::Yes, CancelReason::StaleData).await;
+                }
             }
             if self.no_target.is_some() {
-                warn!("⚠️ Book expired (>30s) — clearing NO");
-                self.clear_target(Side::No, CancelReason::StaleData).await;
+                if self.pgt_should_hold_buy_target_on_global_stale(Side::No) {
+                    debug!("🧭 PGT stale hold — retaining NO across global book expiry");
+                } else {
+                    warn!("⚠️ Book expired (>30s) — clearing NO");
+                    self.clear_target(Side::No, CancelReason::StaleData).await;
+                }
             }
             return;
         }
@@ -2600,6 +2863,14 @@ impl StrategyCoordinator {
                             self.clear_target(Side::Yes, CancelReason::ToxicFlow).await;
                         }
                     } else {
+                        let pgt_retain_on_stale = self.cfg.strategy.is_pair_gated_tranche_arb()
+                            && slot.direction == TradeDirection::Buy
+                            && self.slot_target(slot).is_some_and(|t| {
+                                matches!(t.reason, BidReason::Provide | BidReason::Hedge)
+                            });
+                        if pgt_retain_on_stale {
+                            continue;
+                        }
                         self.clear_slot_target(slot, CancelReason::StaleData).await;
                     }
                 }
@@ -2619,6 +2890,14 @@ impl StrategyCoordinator {
                             self.clear_target(Side::No, CancelReason::ToxicFlow).await;
                         }
                     } else {
+                        let pgt_retain_on_stale = self.cfg.strategy.is_pair_gated_tranche_arb()
+                            && slot.direction == TradeDirection::Buy
+                            && self.slot_target(slot).is_some_and(|t| {
+                                matches!(t.reason, BidReason::Provide | BidReason::Hedge)
+                            });
+                        if pgt_retain_on_stale {
+                            continue;
+                        }
                         self.clear_slot_target(slot, CancelReason::StaleData).await;
                     }
                 }
@@ -2715,10 +2994,14 @@ impl StrategyCoordinator {
             yes_toxic_blocked,
             no_toxic_blocked,
         );
+        self.update_pgt_flat_seed_latch(&quotes, inv_snapshot.pair_ledger.active_tranche.is_some());
         if self.cfg.strategy.is_pair_gated_tranche_arb() {
-            let remaining_quotes = u64::from(quotes.yes_buy.is_some()) + u64::from(quotes.no_buy.is_some());
-            self.stats.pgt_post_flow_quotes =
-                self.stats.pgt_post_flow_quotes.saturating_add(remaining_quotes);
+            let remaining_quotes =
+                u64::from(quotes.yes_buy.is_some()) + u64::from(quotes.no_buy.is_some());
+            self.stats.pgt_post_flow_quotes = self
+                .stats
+                .pgt_post_flow_quotes
+                .saturating_add(remaining_quotes);
         }
         self.execute_quotes(
             &working_inv,

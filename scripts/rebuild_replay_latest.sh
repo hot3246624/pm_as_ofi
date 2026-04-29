@@ -4,9 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-mkdir -p "$ROOT/logs" "$ROOT/data/replay_recorder"
+INSTANCE_ID="${PM_INSTANCE_ID:-default}"
+LOG_ROOT="${PM_LOG_ROOT:-$ROOT/logs/$INSTANCE_ID}"
+RECORDER_ROOT="${PM_RECORDER_ROOT:-$ROOT/data/recorder/$INSTANCE_ID}"
+REPLAY_ROOT="${PM_REPLAY_ROOT:-$ROOT/data/replay_recorder/$INSTANCE_ID}"
 
-LOCK_DIR="$ROOT/logs/rebuild_replay.lock"
+mkdir -p "$LOG_ROOT" "$REPLAY_ROOT"
+
+LOCK_DIR="$LOG_ROOT/rebuild_replay.lock"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] skip rebuild (lock held)"
   exit 0
@@ -22,7 +27,7 @@ PY
 )"
 
 for day in $DAYS; do
-  raw_dir="$ROOT/data/recorder/$day"
+  raw_dir="$RECORDER_ROOT/$day"
   if [[ ! -d "$raw_dir" ]]; then
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] skip day=$day (raw dir missing)"
     continue
@@ -30,7 +35,7 @@ for day in $DAYS; do
 
   echo "[$(date '+%Y-%m-%d %H:%M:%S')] build replay day=$day"
   /usr/bin/python3 "$ROOT/scripts/build_replay_db.py" \
-    --input-root "$ROOT/data/recorder" \
-    --output-root "$ROOT/data/replay_recorder" \
+    --input-root "$RECORDER_ROOT" \
+    --output-root "$REPLAY_ROOT" \
     --date "$day"
 done

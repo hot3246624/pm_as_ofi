@@ -49,14 +49,14 @@ impl StrategyCoordinator {
                     } else {
                         3.0
                     };
-                    let age_based_max_up_ticks: f64 = if slot_age >= std::time::Duration::from_secs(20)
-                    {
-                        0.0
-                    } else if slot_age >= std::time::Duration::from_secs(10) {
-                        1.0
-                    } else {
-                        f64::INFINITY
-                    };
+                    let age_based_max_up_ticks: f64 =
+                        if slot_age >= std::time::Duration::from_secs(20) {
+                            0.0
+                        } else if slot_age >= std::time::Duration::from_secs(10) {
+                            1.0
+                        } else {
+                            f64::INFINITY
+                        };
                     let max_up_ticks = if slot_age < std::time::Duration::from_millis(1_200) {
                         time_based_max_up_ticks.max(1.0)
                     } else {
@@ -79,7 +79,9 @@ impl StrategyCoordinator {
         self.pair_arb_slot_blocked_at[idx] = None;
         self.slot_pair_arb_cross_reject_reprice_pending[idx] = false;
         self.slot_pair_arb_state_republish_latched[idx] = false;
-        if self.cfg.strategy.is_pair_gated_tranche_arb() && event.slot.direction == TradeDirection::Buy {
+        if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && event.slot.direction == TradeDirection::Buy
+        {
             self.pgt_same_side_release_quarantine_until[event.slot.side.index()] =
                 Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
         }
@@ -735,8 +737,15 @@ impl StrategyCoordinator {
         st.apply_blocked_provide();
         let yes_toxic_blocked = yes_toxic_blocked && self.execution_toxic_block_applies();
         let no_toxic_blocked = no_toxic_blocked && self.execution_toxic_block_applies();
-        let shadow_taker_open =
-            self.pgt_shadow_taker_open_candidate(inv, ub, st, yes_toxic_blocked, no_toxic_blocked, yes_stale, no_stale);
+        let shadow_taker_open = self.pgt_shadow_taker_open_candidate(
+            inv,
+            ub,
+            st,
+            yes_toxic_blocked,
+            no_toxic_blocked,
+            yes_stale,
+            no_stale,
+        );
 
         self.dispatch_provide_side(
             inv,
@@ -889,8 +898,7 @@ impl StrategyCoordinator {
         if intent.direction != TradeDirection::Buy || intent.reason != BidReason::Provide {
             return None;
         }
-        if self
-            .pgt_same_side_release_quarantine_until[side.index()]
+        if self.pgt_same_side_release_quarantine_until[side.index()]
             .is_some_and(|until| until > std::time::Instant::now())
         {
             return None;
@@ -1012,8 +1020,7 @@ impl StrategyCoordinator {
             if self.cfg.strategy.is_pair_gated_tranche_arb()
                 && slot.direction == TradeDirection::Buy
             {
-                self.slot_pgt_intent_epochs[slot.index()] =
-                    intent.map(|_| self.pgt_decision_epoch);
+                self.slot_pgt_intent_epochs[slot.index()] = intent.map(|_| self.pgt_decision_epoch);
             } else {
                 self.slot_pgt_intent_epochs[slot.index()] = None;
             }
@@ -1496,7 +1503,10 @@ impl StrategyCoordinator {
             if intent.price > 0.0 && intent.size > 0.0 {
                 if intent.reason == BidReason::Provide {
                     if let Some(limit_price) = shadow_taker_limit_price {
-                        return ProvideSideAction::ShadowTaker { intent, limit_price };
+                        return ProvideSideAction::ShadowTaker {
+                            intent,
+                            limit_price,
+                        };
                     }
                 }
                 return ProvideSideAction::Place { intent };
@@ -1593,7 +1603,10 @@ impl StrategyCoordinator {
                 )
                 .await;
             }
-            ProvideSideAction::ShadowTaker { intent, limit_price } => {
+            ProvideSideAction::ShadowTaker {
+                intent,
+                limit_price,
+            } => {
                 if self.cfg.strategy.is_pair_gated_tranche_arb() {
                     self.pgt_shadow_taker_open_fired_epoch = Some(self.pgt_decision_epoch);
                     self.stats.pgt_dispatch_taker_open =

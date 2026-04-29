@@ -27,11 +27,19 @@ stop_process_group() {
   kill "$pid" 2>/dev/null || true
 }
 
+pid_is_alive() {
+  local pid="$1"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  kill -0 "$pid" 2>/dev/null
+}
+
 if [[ -f "$RUNNER_PIDFILE" ]]; then
   OLD_PID="$(cat "$RUNNER_PIDFILE" 2>/dev/null || true)"
-  if [[ -n "${OLD_PID:-}" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
+  if [[ -n "${OLD_PID:-}" ]] && pid_is_alive "$OLD_PID"; then
     echo "[$(date '+%F %T')] stopping existing lab runner from pidfile: $OLD_PID"
     stop_process_group "$OLD_PID"
+  elif [[ -n "${OLD_PID:-}" ]]; then
+    echo "[$(date '+%F %T')] removing stale lab pidfile: $OLD_PID"
   fi
   rm -f "$RUNNER_PIDFILE"
 fi
@@ -93,7 +101,16 @@ echo "  PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH=$PM_LOCAL_PRICE_AGG_BIAS_CACHE_PATH"
 echo "  PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED=$PM_LOCAL_PRICE_AGG_BIAS_LEARNING_ENABLED"
 
 echo "$$" > "$RUNNER_PIDFILE"
-trap 'rm -f "$RUNNER_PIDFILE"' EXIT
+cleanup_runner_pidfile() {
+  if [[ -f "$RUNNER_PIDFILE" ]]; then
+    local pid
+    pid="$(cat "$RUNNER_PIDFILE" 2>/dev/null || true)"
+    if [[ "$pid" == "$$" ]]; then
+      rm -f "$RUNNER_PIDFILE"
+    fi
+  fi
+}
+trap cleanup_runner_pidfile EXIT INT TERM
 
 if [[ -x "$ROOT/scripts/rebuild_local_price_agg_bias_cache.py" || -f "$ROOT/scripts/rebuild_local_price_agg_bias_cache.py" ]]; then
   python3 "$ROOT/scripts/rebuild_local_price_agg_bias_cache.py" \
