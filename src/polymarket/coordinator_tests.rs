@@ -6485,7 +6485,7 @@ fn test_pair_gated_tranche_flat_seed_latch_exhausts_after_max_age_without_fill()
     cfg.dry_run = true;
     let (_o, _i, _m, _k, _e, mut coord) = make(cfg);
     coord.pgt_flat_seed_latched_side = Some(Side::Yes);
-    coord.pgt_flat_seed_latched_since = Some(std::time::Instant::now() - Duration::from_secs(91));
+    coord.pgt_flat_seed_latched_since = Some(std::time::Instant::now() - Duration::from_secs(31));
     coord.pgt_flat_seed_latched_until = Some(std::time::Instant::now() + Duration::from_secs(60));
 
     let mut quotes = StrategyQuotes::default();
@@ -6511,7 +6511,7 @@ fn test_pair_gated_tranche_flat_seed_latch_does_not_rearm_after_timeout_once_max
     cfg.dry_run = true;
     let (_o, _i, _m, _k, _e, mut coord) = make(cfg);
     coord.pgt_flat_seed_latched_side = Some(Side::No);
-    coord.pgt_flat_seed_latched_since = Some(std::time::Instant::now() - Duration::from_secs(91));
+    coord.pgt_flat_seed_latched_since = Some(std::time::Instant::now() - Duration::from_secs(31));
     coord.pgt_flat_seed_latched_until = Some(std::time::Instant::now() - Duration::from_secs(1));
 
     let mut quotes = StrategyQuotes::default();
@@ -8052,6 +8052,39 @@ async fn test_pair_gated_tranche_seed_retain_holds_between_large_down_moves() {
     assert!(
         (live.price - 0.40).abs() < 1e-9,
         "retained PGT seed price should stay at the original live quote"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_keep_existing_seed_ignores_size_and_non_improving_drift() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.reprice_threshold = 0.001;
+    let (_o, _i, _m, _k, _e, mut coord) = make(config);
+    let slot = OrderSlot::NO_BUY;
+    coord.slot_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 57.6,
+        reason: BidReason::Provide,
+    });
+    coord.no_target = coord.slot_targets[slot.index()].clone();
+
+    let inv = InventoryState::default();
+    assert!(
+        coord.keep_existing_maker_if_safe(
+            &inv,
+            Side::No,
+            TradeDirection::Buy,
+            0.49,
+            43.2,
+            0.49,
+            0.49,
+            0.51,
+            BidReason::Provide,
+        ),
+        "PGT flat seed should keep queue position when the strategy only shrinks size or lowers target price",
     );
 }
 

@@ -715,7 +715,10 @@ impl StrategyCoordinator {
         if current.direction != direction || current.reason != reason {
             return false;
         }
-        if (current.size - size).abs() > 0.1 {
+        let pgt_flat_seed = self.cfg.strategy.is_pair_gated_tranche_arb()
+            && direction == TradeDirection::Buy
+            && reason == BidReason::Provide;
+        if (current.size - size).abs() > 0.1 && !pgt_flat_seed {
             return false;
         }
         if self.cfg.strategy.is_glft_mm()
@@ -738,11 +741,11 @@ impl StrategyCoordinator {
         if current.price > effective_ceiling + 1e-9 {
             return false;
         }
-        let safe_limit = if self.cfg.strategy.is_pair_arb()
+        let loose_buy_keep_safety = direction == TradeDirection::Buy
             && reason == BidReason::Provide
-            && direction == TradeDirection::Buy
-        {
-            // PairArb retain path: existing live orders should use a looser
+            && (self.cfg.strategy.is_pair_arb() || pgt_flat_seed);
+        let safe_limit = if loose_buy_keep_safety {
+            // PairArb/PGT retain path: existing live BUY orders should use a looser
             // keep-safety bound than fresh submit safety.
             // We only require the resting BUY to stay at least one tick below
             // best ask, which avoids churn from over-strict post-only margins.
@@ -825,6 +828,16 @@ impl StrategyCoordinator {
                 (current.price - side_trusted_mid).abs() > trusted_mid_keep_cap;
             if trusted_mid_misaligned && order_age >= trusted_keep_grace {
                 return false;
+            }
+        }
+        if pgt_flat_seed {
+            let tick = self.cfg.tick_size.max(1e-9);
+            let delta_ticks = (price - current.price) / tick;
+            let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+            let (retain, _) =
+                self.pgt_buy_retain_decision(reason, delta_ticks, order_age, remaining_secs);
+            if retain {
+                return true;
             }
         }
         let band = self.maker_keep_band(reason) + 1e-9;

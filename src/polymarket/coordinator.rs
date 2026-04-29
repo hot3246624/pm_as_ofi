@@ -35,8 +35,8 @@ const GLFT_SOURCE_BLOCK_RETAIN_HOLD_BINANCE_MS: u64 = 1_500;
 // Require stale to persist briefly before clearing live targets.
 // This avoids cancel/reprovide ping-pong during short WS reconnect flaps.
 const BOOK_SIDE_STALE_CLEAR_HOLD_MS: u64 = 2_500;
-const PGT_FLAT_SEED_LATCH_MS: u64 = 60_000;
-const PGT_FLAT_SEED_LATCH_MAX_MS: u64 = 90_000;
+const PGT_FLAT_SEED_LATCH_MS: u64 = 20_000;
+const PGT_FLAT_SEED_LATCH_MAX_MS: u64 = 30_000;
 const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
 const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
 const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
