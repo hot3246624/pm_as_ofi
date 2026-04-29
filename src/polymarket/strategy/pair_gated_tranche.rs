@@ -27,6 +27,11 @@ const SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const EPISODE_TIMEOUT_SECS: f64 = 75.0;
 const SHADOW_MAX_REPAIR_PAIR_COST: f64 = 1.04;
 const SHADOW_TAIL_MAX_REPAIR_PAIR_COST: f64 = 1.06;
+pub(crate) const PGT_MAX_SAME_SIDE_ADD_COUNT: u32 = 1;
+const SAME_SIDE_ADD_FRACTION: f64 = 0.105;
+const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
+const SAME_SIDE_ADD_MIN_FIRST_QTY: f64 = 45.0;
+const SAME_SIDE_ADD_MIN_RESIDUAL_QTY: f64 = 45.0;
 
 struct CompletionPlan {
     intent: StrategyIntent,
@@ -80,6 +85,8 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                 quotes.note_pgt_skip_harvest();
                 return quotes;
             }
+            let same_side_add =
+                self.same_side_add_intent(coordinator, input, active, remaining_secs);
             if let Some(plan) = self.completion_intent(coordinator, input, active, remaining_secs) {
                 quotes.note_pgt_completion_quote();
                 if plan.taker_shadow_would_close {
@@ -91,6 +98,9 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                 quotes.set(plan.intent);
             } else {
                 quotes.note_pgt_skip_invalid_book();
+            }
+            if let Some(intent) = same_side_add {
+                quotes.set(intent);
             }
             return quotes;
         }
@@ -605,6 +615,52 @@ impl PairGatedTrancheStrategy {
         })
     }
 
+    fn same_side_add_intent(
+        &self,
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+        active: PairTranche,
+        remaining_secs: u64,
+    ) -> Option<StrategyIntent> {
+        if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
+            return None;
+        }
+        let side = active.first_side?;
+        let size = pgt_same_side_add_clip_qty(active, coordinator.cfg().min_order_size)?;
+        let (best_bid, best_ask, opposite_ask) = match side {
+            Side::Yes => (input.book.yes_bid, input.book.yes_ask, input.book.no_ask),
+            Side::No => (input.book.no_bid, input.book.no_ask, input.book.yes_ask),
+        };
+        if best_bid <= 0.0 || best_ask <= 0.0 || opposite_ask <= 0.0 || active.first_vwap <= 0.0 {
+            return None;
+        }
+
+        let tick = coordinator.cfg().tick_size.max(1e-9);
+        let open_pair_band =
+            pgt_effective_open_pair_band_value(coordinator.cfg().open_pair_band, remaining_secs);
+        let visible_completion_ref = (opposite_ask - tick).max(0.0);
+        let avg_improvement_cap = active.first_vwap - tick;
+        let geometry_cap = open_pair_band - visible_completion_ref - MIN_EDGE_PER_PAIR;
+        let ceiling = avg_improvement_cap.min(geometry_cap).clamp(0.0, 1.0);
+        if ceiling <= 0.0 {
+            return None;
+        }
+
+        let price = self.passive_seed_price(coordinator, side, ceiling, best_bid, best_ask)?;
+        if price <= 0.0 || price > ceiling + 1e-9 {
+            return None;
+        }
+        coordinator.simulate_buy(input.inv, side, size, price)?;
+
+        Some(StrategyIntent {
+            side,
+            direction: TradeDirection::Buy,
+            price,
+            size,
+            reason: BidReason::Provide,
+        })
+    }
+
     fn passive_seed_price(
         &self,
         coordinator: &StrategyCoordinator,
@@ -926,6 +982,30 @@ fn pgt_shadow_completion_pair_cost_cap(remaining_secs: u64, completion_age_secs:
         cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
     }
     cap.min(SHADOW_TAIL_MAX_REPAIR_PAIR_COST)
+}
+
+pub(crate) fn pgt_same_side_add_state_eligible(active: PairTranche) -> bool {
+    active.first_side.is_some()
+        && active.same_side_add_count < PGT_MAX_SAME_SIDE_ADD_COUNT
+        && active.hedge_qty <= 1e-9
+        && active.first_qty >= SAME_SIDE_ADD_MIN_FIRST_QTY - 1e-9
+        && active.residual_qty >= SAME_SIDE_ADD_MIN_RESIDUAL_QTY - 1e-9
+}
+
+pub(crate) fn pgt_same_side_add_clip_qty(
+    active: PairTranche,
+    min_order_size: f64,
+) -> Option<f64> {
+    if !pgt_same_side_add_state_eligible(active) {
+        return None;
+    }
+    let raw = (active.first_qty * SAME_SIDE_ADD_FRACTION).min(SAME_SIDE_ADD_MAX_QTY);
+    let qty = quantize_tenth(raw);
+    if qty + 1e-9 >= min_order_size.max(0.0) {
+        Some(qty)
+    } else {
+        None
+    }
 }
 
 fn pgt_completion_urgency_bonus(

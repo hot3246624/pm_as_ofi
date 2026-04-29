@@ -7064,6 +7064,124 @@ fn test_pair_gated_tranche_active_state_only_quotes_completion_side() {
 }
 
 #[test]
+fn test_pair_gated_tranche_active_state_allows_one_bounded_same_side_add_before_hedge() {
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.46, 0.48));
+    let same_side = quotes
+        .yes_buy
+        .expect("expected one bounded same-side add quote");
+    assert_eq!(same_side.reason, BidReason::Provide);
+    assert_eq!(same_side.side, Side::Yes);
+    assert!((same_side.size - 10.0).abs() < 1e-9);
+    assert!(
+        same_side.price <= 0.52 + 1e-9,
+        "same-side add must improve the first-leg VWAP instead of averaging up"
+    );
+
+    let hedge = quotes.no_buy.expect("expected completion quote to remain live");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+}
+
+#[test]
+fn test_pair_gated_tranche_active_state_blocks_second_same_side_add() {
+    let inv = InventoryState {
+        yes_qty: 106.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.527,
+        no_avg_cost: 0.0,
+        net_diff: 106.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 96.0, 0.53),
+            pgt_fill(Side::Yes, 10.0, 0.50),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.49, 0.50, 0.46, 0.48));
+    assert!(
+        quotes.yes_buy.is_none(),
+        "PGT should enforce MAX_SAME_SIDE_RUN=1 at strategy level"
+    );
+    assert!(
+        quotes.no_buy.is_some(),
+        "blocking the second same-side add must not suppress completion"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_execution_gate_allows_bounded_same_side_add() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    let (_o, inv_tx, _m, _k, _e, coord) = make(c);
+
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    inv_tx.0.send(inventory).unwrap();
+
+    let allowed = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.50,
+        size: 10.0,
+        reason: BidReason::Provide,
+    };
+    assert!(
+        coord.can_place_strategy_intent(&inv, Some(allowed)),
+        "execution gate should allow the one bounded same-side add"
+    );
+
+    let oversized = StrategyIntent {
+        size: 20.0,
+        ..allowed
+    };
+    assert!(
+        !coord.can_place_strategy_intent(&inv, Some(oversized)),
+        "execution gate should reject same-side add larger than the strategy clip"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_completion_shadow_taker_signal_stops_in_freeze() {
     let inv = InventoryState {
         yes_qty: 57.6,

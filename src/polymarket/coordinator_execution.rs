@@ -793,38 +793,68 @@ impl StrategyCoordinator {
             no_stale,
         );
 
-        self.dispatch_provide_side(
-            inv,
-            ub,
-            Side::Yes,
-            st.intent_for(Side::Yes),
-            st.allow_provide_for(Side::Yes),
-            st.block_reason_for(Side::Yes),
-            st.hedge_dispatched_for(Side::Yes),
-            yes_toxic_blocked,
-            yes_stale,
-            shadow_taker_open
-                .filter(|candidate| candidate.side == Side::Yes)
-                .map(|candidate| candidate.limit_price),
-            st.pgt_taker_close_limit_for(Side::Yes),
-        )
-        .await;
-        self.dispatch_provide_side(
-            inv,
-            ub,
-            Side::No,
-            st.intent_for(Side::No),
-            st.allow_provide_for(Side::No),
-            st.block_reason_for(Side::No),
-            st.hedge_dispatched_for(Side::No),
-            no_toxic_blocked,
-            no_stale,
-            shadow_taker_open
-                .filter(|candidate| candidate.side == Side::No)
-                .map(|candidate| candidate.limit_price),
-            st.pgt_taker_close_limit_for(Side::No),
-        )
-        .await;
+        let yes_is_pgt_completion = self.cfg.strategy.is_pair_gated_tranche_arb()
+            && matches!(
+                st.intent_for(Side::Yes),
+                Some(intent) if intent.reason == BidReason::Hedge
+            );
+        let no_is_pgt_completion = self.cfg.strategy.is_pair_gated_tranche_arb()
+            && matches!(
+                st.intent_for(Side::No),
+                Some(intent) if intent.reason == BidReason::Hedge
+            );
+        let side_order = if no_is_pgt_completion && !yes_is_pgt_completion {
+            [Side::No, Side::Yes]
+        } else {
+            [Side::Yes, Side::No]
+        };
+
+        for side in side_order {
+            let (
+                intent,
+                allow_provide,
+                block_reason,
+                hedge_dispatched,
+                toxic_blocked,
+                stale,
+                pgt_taker_close_limit,
+            ) = match side {
+                Side::Yes => (
+                    st.intent_for(Side::Yes),
+                    st.allow_provide_for(Side::Yes),
+                    st.block_reason_for(Side::Yes),
+                    st.hedge_dispatched_for(Side::Yes),
+                    yes_toxic_blocked,
+                    yes_stale,
+                    st.pgt_taker_close_limit_for(Side::Yes),
+                ),
+                Side::No => (
+                    st.intent_for(Side::No),
+                    st.allow_provide_for(Side::No),
+                    st.block_reason_for(Side::No),
+                    st.hedge_dispatched_for(Side::No),
+                    no_toxic_blocked,
+                    no_stale,
+                    st.pgt_taker_close_limit_for(Side::No),
+                ),
+            };
+            self.dispatch_provide_side(
+                inv,
+                ub,
+                side,
+                intent,
+                allow_provide,
+                block_reason,
+                hedge_dispatched,
+                toxic_blocked,
+                stale,
+                shadow_taker_open
+                    .filter(|candidate| candidate.side == side)
+                    .map(|candidate| candidate.limit_price),
+                pgt_taker_close_limit,
+            )
+            .await;
+        }
     }
 
     pub(super) async fn dispatch_provide_side(

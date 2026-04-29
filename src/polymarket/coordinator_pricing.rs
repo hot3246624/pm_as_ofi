@@ -1,6 +1,7 @@
 use tracing::debug;
 
 use super::*;
+use crate::polymarket::strategy::pair_gated_tranche::pgt_same_side_add_clip_qty;
 
 impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
@@ -548,7 +549,14 @@ impl StrategyCoordinator {
                 Side::Yes => Side::No,
                 Side::No => Side::Yes,
             };
-            return intent.side == completion_side && intent.size <= active.residual_qty + 1e-6;
+            if intent.side == completion_side {
+                return intent.size <= active.residual_qty + 1e-6;
+            }
+            if intent.side == first_side && intent.reason == BidReason::Provide {
+                return pgt_same_side_add_clip_qty(active, self.cfg.min_order_size)
+                    .is_some_and(|max_qty| intent.size <= max_qty + 1e-6);
+            }
+            return false;
         }
 
         !ledger.capital_state.would_block_new_open_due_to_capital
