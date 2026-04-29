@@ -7659,6 +7659,11 @@ async fn run_post_close_winner_hint_listener(
                     .iter()
                     .find(|outcome| outcome.policy_name == "boundary_weighted")
                     .and_then(|outcome| outcome.hit.as_ref());
+                let router_source_fallback_hit = compare_hit
+                    .boundary_shadow_outcomes
+                    .iter()
+                    .find(|outcome| outcome.policy_name == "boundary_symbol_router_fallback")
+                    .and_then(|outcome| outcome.hit.as_ref());
                 let mut close_only_filtered = false;
                 let mut close_only_filter_reason: Option<&'static str> = None;
                 let mut close_only_direction_margin_bps: Option<f64> = None;
@@ -8260,8 +8265,52 @@ async fn run_post_close_winner_hint_listener(
                     local_boundary_symbol_router_prefers_weighted_primary(&symbol);
                 let router_allows_close_only_fallback =
                     local_boundary_symbol_router_allows_close_only_fallback(&symbol);
+                let router_source_fallback_candidate = router_source_fallback_hit.filter(|hit| {
+                    local_boundary_symbol_router_source_fallback_allowed(
+                        &symbol,
+                        weighted_shadow_hit,
+                        hit,
+                        first_ref,
+                    )
+                });
                 if router_prefers_weighted {
                     if let Some(hit) = weighted_shadow_candidate {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        info!(
+                            "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v1",
+                            hit.source_subset_name,
+                            hit.rule.as_str(),
+                            hit.min_sources,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else if let Some(hit) = router_source_fallback_candidate {
                         let local_side_vs_rtds_open = if hit.close_price >= first_ref {
                             Side::Yes
                         } else {
@@ -10163,6 +10212,28 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
     }
 }
 
+fn local_boundary_symbol_router_fallback_policy_spec(
+    symbol: &str,
+) -> Option<LocalBoundaryShadowPolicySpec> {
+    match symbol {
+        "bnb/usd" => Some(LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_symbol_router_fallback",
+            source_subset_name: "bnb_okx_fallback",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_OKX,
+        }),
+        "sol/usd" => Some(LocalBoundaryShadowPolicySpec {
+            policy_name: "boundary_symbol_router_fallback",
+            source_subset_name: "sol_coinbase_fallback",
+            rule: LocalBoundaryCloseRule::AfterThenBefore,
+            min_sources: 1,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE,
+        }),
+        _ => None,
+    }
+}
+
 fn local_boundary_policy_source_weight(
     policy_name: &str,
     symbol: &str,
@@ -10445,6 +10516,36 @@ fn local_boundary_symbol_router_prefers_weighted_primary(symbol: &str) -> bool {
 
 fn local_boundary_symbol_router_allows_close_only_fallback(symbol: &str) -> bool {
     symbol == "hype/usd"
+}
+
+fn local_boundary_symbol_router_source_fallback_allowed(
+    symbol: &str,
+    weighted_shadow_hit: Option<&LocalBoundaryShadowHit>,
+    hit: &LocalBoundaryShadowHit,
+    rtds_open: f64,
+) -> bool {
+    if weighted_shadow_hit.is_some() {
+        return false;
+    }
+    let direction_margin_bps =
+        ((hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
+    match symbol {
+        "bnb/usd" => {
+            hit.source_subset_name == "bnb_okx_fallback"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && direction_margin_bps + 1e-9 >= 7.0
+        }
+        "sol/usd" => {
+            hit.source_subset_name == "sol_coinbase_fallback"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && direction_margin_bps + 1e-9 >= 5.0
+        }
+        _ => false,
+    }
 }
 
 fn local_close_only_source_agreement(hit: &LocalCloseOnlyAggHit, rtds_open: f64) -> f64 {
@@ -10899,6 +11000,7 @@ const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID: &[LocalPriceSource] =
 const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Bybit, LocalPriceSource::Coinbase];
 const LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE: &[LocalPriceSource] = &[LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_OKX: &[LocalPriceSource] = &[LocalPriceSource::Okx];
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Okx, LocalPriceSource::Coinbase];
 
@@ -11109,12 +11211,20 @@ async fn run_local_price_close_aggregator(
         source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
     });
 
-    let boundary_shadow_outcomes = vec![run_local_boundary_shadow_policy(
+    let mut boundary_shadow_outcomes = vec![run_local_boundary_shadow_policy(
         &target_symbol,
         local_boundary_policy_specs_weighted(&target_symbol),
         &tapes,
         end_ms,
     )];
+    if let Some(spec) = local_boundary_symbol_router_fallback_policy_spec(&target_symbol) {
+        boundary_shadow_outcomes.push(run_local_boundary_shadow_policy(
+            &target_symbol,
+            spec,
+            &tapes,
+            end_ms,
+        ));
+    }
 
     if source_hits.len() < min_sources {
         return LocalCloseAggCompareResult {

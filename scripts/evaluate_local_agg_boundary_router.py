@@ -113,6 +113,23 @@ ROUTER_POLICY = {
     },
 }
 
+ROUTER_SOURCE_FALLBACK_POLICY = {
+    "bnb/usd": {
+        "source_subset": "bnb_okx_fallback",
+        "rule": "after_then_before",
+        "min_sources": 1,
+        "sources": {"okx"},
+        "min_margin_bps": 7.0,
+    },
+    "sol/usd": {
+        "source_subset": "sol_coinbase_fallback",
+        "rule": "after_then_before",
+        "min_sources": 1,
+        "sources": {"coinbase"},
+        "min_margin_bps": 5.0,
+    },
+}
+
 
 def load_bias_cache(path: str) -> dict[tuple[str, str], float]:
     if not path:
@@ -351,6 +368,48 @@ def close_only_filter_reason(symbol: str, hit: dict | None, rtds_open: float) ->
     return None, direction_margin_bps
 
 
+def source_fallback_hit(sample: dict) -> dict | None:
+    fallback = ROUTER_SOURCE_FALLBACK_POLICY.get(sample["symbol"])
+    if fallback is None:
+        return None
+    per_source = []
+    for source in fallback["sources"]:
+        picked = pick_price(
+            (
+                (off, price)
+                for src, off, price in sample["close_points"]
+                if src == source
+            ),
+            fallback["rule"],
+            5000,
+            500,
+        )
+        if picked is not None:
+            per_source.append((source, picked[0], picked[1]))
+    if len(per_source) < fallback["min_sources"]:
+        return None
+    pred_close = sum(price for _, _, price in per_source) / len(per_source)
+    rtds_open = sample["rtds_open"]
+    direction_margin_bps = abs(pred_close - rtds_open) / max(abs(rtds_open), 1e-12) * 10_000.0
+    exact_sources = sum(1 for _, off, _ in per_source if off == 0)
+    if exact_sources != 0 or direction_margin_bps + 1e-9 < fallback["min_margin_bps"]:
+        return None
+    prices = [price for _, _, price in per_source]
+    spread_bps = 0.0
+    if len(prices) >= 2:
+        spread_bps = (max(prices) - min(prices)) / max(abs(pred_close), 1e-12) * 10_000.0
+    return {
+        "source_subset": fallback["source_subset"],
+        "rule": fallback["rule"],
+        "min_sources": fallback["min_sources"],
+        "close_price": pred_close,
+        "source_count": len(per_source),
+        "source_spread_bps": spread_bps,
+        "exact_sources": exact_sources,
+        "sources": ";".join(source for source, _, _ in sorted(per_source)),
+    }
+
+
 def instance_samples(path: Path) -> list[dict]:
     rows = list(csv.DictReader(path.open()))
     by_instance = defaultdict(list)
@@ -551,6 +610,36 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[
     rtds_open = sample["rtds_open"]
     rtds_close = sample["rtds_close"]
     if len(per_source) < policy["min_sources"]:
+        fallback_source_hit = source_fallback_hit(sample)
+        if fallback_source_hit is not None:
+            pred_close = fallback_source_hit["close_price"]
+            side_yes = pred_close >= rtds_open
+            truth_yes = rtds_close >= rtds_open
+            close_diff_bps = abs(pred_close - rtds_close) / max(abs(rtds_close), 1e-12) * 10_000.0
+            margin_bps = abs(pred_close - rtds_open) / max(abs(rtds_open), 1e-12) * 10_000.0
+            return {
+                "status": "ok",
+                "filter_reason": "",
+                "symbol": symbol,
+                "round_end_ts": sample["round_end_ts"],
+                "instance_id": sample["instance_id"],
+                "log_file": sample.get("log_file", ""),
+                "source_subset": fallback_source_hit["source_subset"],
+                "rule": fallback_source_hit["rule"],
+                "min_sources": fallback_source_hit["min_sources"],
+                "pred_close": pred_close,
+                "rtds_open": rtds_open,
+                "rtds_close": rtds_close,
+                "pred_yes": side_yes,
+                "truth_yes": truth_yes,
+                "side_error": side_yes != truth_yes,
+                "close_diff_bps": close_diff_bps,
+                "direction_margin_bps": margin_bps,
+                "source_count": fallback_source_hit["source_count"],
+                "source_spread_bps": fallback_source_hit["source_spread_bps"],
+                "exact_sources": fallback_source_hit["exact_sources"],
+                "sources": fallback_source_hit["sources"],
+            }
         if symbol == "hype/usd" and fallback_hit is not None and fallback_filter_reason is None:
             pred_close = fallback_hit["close_price"]
             side_yes = pred_close >= rtds_open

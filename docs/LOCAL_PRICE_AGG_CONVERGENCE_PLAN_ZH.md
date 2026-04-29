@@ -1,6 +1,6 @@
 # 本地价格聚合器收敛计划
 
-更新时间：2026-04-29
+更新时间：2026-04-29 22:10 CST
 
 ## 目标
 
@@ -30,23 +30,28 @@
 
 ## 当前基线
 
-最新 close-only boundary 数据集评估基线，已包含 HYPE/XRP wide-spread near-flat guardrail，并已修正 evaluator，使其与运行时的 HYPE `close_only_fallback`、BNB/SOL close-only filter reason 保持一致：
+最新 close-only boundary 数据集评估基线，已包含 HYPE/XRP wide-spread near-flat guardrail，并已修正 evaluator，使其与运行时的 HYPE `close_only_fallback`、BNB/SOL close-only filter reason、BNB/SOL strict source fallback 保持一致：
 
 | 样本段 | ok | side | filtered | missing | mean_bps | max_bps |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| latest test | 115 | 0 | 15 | 9 | 1.155327 | 6.801403 |
-| latest train | 762 | 0 | 73 | 83 | 0.898039 | 5.440670 |
-| current unseen `20260429_210600` | 12 | 0 | 1 | 2 | 0.685041 | 1.927020 |
+| latest test | 254 | 0 | 23 | 14 | 1.041058 | 6.801403 |
+| latest train | 678 | 0 | 66 | 59 | 0.881584 | 5.440670 |
+| current unseen `20260429_210600` | 43 | 0 | 2 | 2 | 0.893107 | 3.753107 |
 
 已修复的 accepted side mismatch：
 
 - HYPE：`after_then_before`、2 source、0 exact、source spread >= 2bps、direction margin < 1.5bps。
 - XRP：`nearest_abs`、>=2 source、0 exact、source spread >= 2bps、direction margin < 2.0bps。
 
+已新增的 strict source fallback：
+
+- BNB：仅在 weighted primary missing 时启用 `okx` 单源 `after_then_before`，要求 0 exact 且 direction margin >= 7bps；current unseen 新增 1 个 accepted，side=0。
+- SOL：仅在 weighted primary missing 时启用 `coinbase` 单源 `after_then_before`，要求 0 exact 且 direction margin >= 5bps；current unseen 新增 2 个 accepted，side=0。
+
 当前剩余瓶颈：
 
-- G0/G4：latest test、latest train、当前 unseen 都已经是 `side=0`，但 rolling 100 accepted 还需要继续采样确认。
-- G2：missing 主要集中在 SOL，其次是 HYPE 的极少数 primary/fallback 都不可用样本。
+- G0/G4：latest test、latest train、当前 unseen 都已经是 `side=0`，但 rolling 100 accepted 还需要继续采样确认；当前进度为 43/100 accepted。
+- G2：current unseen accepted coverage 已到 43/47=91.5%，但 latest test accepted coverage 约 87.3%，仍需继续观察 per-symbol 稳定性。
 - G3：latest test `p95` 已接近目标，但 `max_bps=6.801403` 仍超出 5bps，主要来自 HYPE outlier；DOGE train 也有 `5.440670bps` outlier。
 
 结论：当前优先级已经从“清零 accepted side mismatch”切换为“继续采样确认 rolling 0 side，同时针对 HYPE/SOL coverage 和 HYPE/DOGE outlier 做定向优化”。
@@ -58,7 +63,7 @@
 | P0 | shared-ingress 与多实例隔离稳定 | broker/client 稳定，日志按 instance 隔离 | 已完成基础版 |
 | P1 | boundary tape 与评估器稳定 | 可重复生成 close-only dataset 和 router eval | 已完成，evaluator 已对齐运行时 fallback/filter |
 | P2 | router v1 清零 accepted side mismatch | 最新 test/train/unseen 均 side=0 | 已达到当前样本，继续 rolling 验证 |
-| P3 | 覆盖率提升 | 在 side=0 前提下减少 filtered/missing | 进行中，优先 SOL/HYPE |
+| P3 | 覆盖率提升 | 在 side=0 前提下减少 filtered/missing | 进行中，SOL/BNB strict fallback 已提升 current coverage |
 | P4 | 延迟验收 | 本地 final ready p95 <= 500ms，冲刺 <= 300ms | 进行中 |
 | P5 | 生产集成评估 | shadow -> dry-run -> limited enable | 阻塞于 P2/P4 |
 
@@ -67,8 +72,8 @@
 | 时间点 | 动作 | 验收 |
 | --- | --- | --- |
 | T+0 | 修复当前 HYPE/XRP 两个 guardrail，重建 release，重启 challenger | 已完成，离线 latest test/train side=0 |
-| T+30m | 检查新增 unseen rounds | 已开始，`20260429_210600` 当前 side=0 |
-| T+2h | 汇总 20+ 新轮次 | side=0，记录覆盖率、filtered/missing、latency |
+| T+30m | 检查新增 unseen rounds | 已完成，`20260429_210600` 当前 43 accepted、side=0 |
+| T+2h | 汇总 20+ 新轮次 | 新 release 已于 `20260429_220724` 重启 challenger，等待下一批 unseen |
 | T+12h | 过夜 shadow/dry-run | rolling 100 accepted side=0 |
 | T+24h | 冻结候选 router 或继续 shadow | 满足 G0/G1/G4 才进入生产集成评估 |
 
@@ -82,7 +87,7 @@
 
 ## 下一步
 
-1. 继续采样到 current unseen 至少 20+ 行，再判断 rolling 稳定性。
+1. 继续采样 `20260429_220724` 新 release run，目标 rolling 100 accepted side=0；下一次建议在 22:40 CST 后复盘。
 2. 定向分析 HYPE `max_bps=6.801403` outlier，优先比较 fallback、source spread、source timestamp offset，而不是扩大无约束全局搜索。
-3. 定向分析 SOL missing，确认是 source availability、`only_okx_coinbase` min_sources 约束，还是 close-only filter 导致。
-4. 维持 `pm_local_agg_challenger` 和 shared-ingress broker 运行；下一次建议在 30 分钟后复盘新增 unseen rounds。
+3. 继续观察 SOL/BNB strict source fallback 在新 unseen 中是否保持 side=0；任何 side mismatch 立即回滚为 missing。
+4. 维持 `pm_local_agg_challenger` 和 shared-ingress broker 运行，下一批至少 20+ 新 rows 后再决定是否进入下一轮规则搜索。
