@@ -6903,6 +6903,25 @@ fn test_pair_gated_tranche_shadow_taker_close_limit_appears_in_late_phase() {
 }
 
 #[test]
+fn test_pair_gated_tranche_shadow_taker_close_is_blocked_in_freeze() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.endgame_freeze_secs = 2;
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+
+    let blocked = coord.pgt_shadow_taker_close_limit_for_side(Side::Yes, 0.47, 0.52, 0.49, 2);
+    assert!(
+        blocked.is_none(),
+        "PGT shadow taker-close must not execute in freeze/post-close"
+    );
+    let allowed = coord
+        .pgt_shadow_taker_close_limit_for_side(Side::Yes, 0.47, 0.52, 0.49, 3)
+        .expect("expected pre-freeze taker-close candidate");
+    assert!((allowed - 0.49).abs() < 1e-9);
+}
+
+#[test]
 fn test_pair_gated_tranche_shadow_taker_close_fires_once_per_epoch() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;

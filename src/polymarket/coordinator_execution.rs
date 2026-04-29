@@ -214,11 +214,12 @@ impl StrategyCoordinator {
             return;
         }
         let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
-        if remaining_secs > PGT_TAIL_NO_NEW_OPEN_SECS {
+        let freeze_active = remaining_secs <= self.cfg.endgame_freeze_secs;
+        if !freeze_active && remaining_secs > PGT_TAIL_NO_NEW_OPEN_SECS {
             return;
         }
         let active_tranche_exists = self.inv_rx.borrow().pair_ledger.active_tranche.is_some();
-        if active_tranche_exists {
+        if active_tranche_exists && !freeze_active {
             return;
         }
 
@@ -239,7 +240,11 @@ impl StrategyCoordinator {
                 slot,
                 CancelReason::EndgameRiskGate,
                 SlotResetScope::Full,
-                "pgt_tail_no_new_open",
+                if freeze_active {
+                    "pgt_freeze_no_buy"
+                } else {
+                    "pgt_tail_no_new_open"
+                },
             )
             .await;
         }
@@ -994,6 +999,9 @@ impl StrategyCoordinator {
             return None;
         }
         if remaining_secs > PGT_SHADOW_TAKER_CLOSE_SECS {
+            return None;
+        }
+        if remaining_secs <= self.cfg.endgame_freeze_secs {
             return None;
         }
         if self.pgt_shadow_taker_close_fired_epoch[side.index()] == Some(self.pgt_decision_epoch) {
