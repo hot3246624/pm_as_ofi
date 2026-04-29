@@ -10345,7 +10345,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
                 && weighted_side_yes
-                && weighted_direction_margin_bps + 1e-9 < 1.0
+                && weighted_direction_margin_bps + 1e-9 < 2.5
             {
                 return Some("bnb_single_yes_near_flat");
             }
@@ -10375,6 +10375,15 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 2.2
             {
                 return Some("bnb_tight_spread_yes_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit.source_spread_bps <= 1.0 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 >= 15.0
+            {
+                return Some("bnb_two_tight_spread_yes_far_margin");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
@@ -10497,6 +10506,13 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 10.0
+            {
+                return Some("hype_two_after_very_high_spread");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
                 && hit.source_spread_bps <= 1.0 + 1e-9
                 && weighted_direction_margin_bps + 1e-9 < 2.0
             {
@@ -10506,7 +10522,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
                 && hit.source_spread_bps + 1e-9 >= 2.0
-                && weighted_direction_margin_bps + 1e-9 < 1.5
+                && weighted_direction_margin_bps + 1e-9 < 2.0
             {
                 return Some("hype_two_after_wide_spread_near_flat");
             }
