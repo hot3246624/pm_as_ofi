@@ -9914,10 +9914,10 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         },
         "btc/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "only_bybit_coinbase",
+            source_subset_name: "only_coinbase",
             rule: LocalBoundaryCloseRule::AfterThenBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE,
         },
         "doge/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9928,17 +9928,17 @@ fn local_boundary_policy_specs_weighted(symbol: &str) -> LocalBoundaryShadowPoli
         },
         "eth/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "only_binance_coinbase",
+            source_subset_name: "only_coinbase",
             rule: LocalBoundaryCloseRule::LastBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_COINBASE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE,
         },
         "hype/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
-            source_subset_name: "drop_coinbase",
+            source_subset_name: "drop_binance",
             rule: LocalBoundaryCloseRule::AfterThenBefore,
             min_sources: 1,
-            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_COINBASE,
+            allowed_sources: LOCAL_BOUNDARY_SOURCES_DROP_BINANCE,
         },
         "sol/usd" => LocalBoundaryShadowPolicySpec {
             policy_name: "boundary_weighted",
@@ -9992,8 +9992,7 @@ fn local_boundary_policy_source_weight(
     }
     if symbol == "btc/usd" {
         return match source {
-            LocalPriceSource::Bybit => 0.877_227,
-            LocalPriceSource::Coinbase => 1.841_626,
+            LocalPriceSource::Coinbase => 1.0,
             _ => 0.0,
         };
     }
@@ -10008,11 +10007,11 @@ fn local_boundary_policy_source_weight(
     }
     if symbol == "hype/usd" {
         return match source {
-            LocalPriceSource::Binance => 1.025_203,
-            LocalPriceSource::Bybit => 2.023_480,
-            LocalPriceSource::Coinbase => 0.0,
-            LocalPriceSource::Okx => 1.078_578,
-            LocalPriceSource::Hyperliquid => 5.191_416,
+            LocalPriceSource::Bybit => 1.0,
+            LocalPriceSource::Coinbase => 1.0,
+            LocalPriceSource::Okx => 1.0,
+            LocalPriceSource::Hyperliquid => 0.25,
+            LocalPriceSource::Binance => 0.0,
         };
     }
     match source {
@@ -10035,9 +10034,20 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
         ((hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
     match symbol {
         "bnb/usd" => {
+            let weighted_side_yes = hit.close_price >= rtds_open;
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit.source_spread_bps <= 0.8 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 2.2
+            {
+                return false;
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
                 && weighted_direction_margin_bps + 1e-9 < 0.6
             {
                 return false;
@@ -10078,6 +10088,13 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             }
         }
         "hype/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 3.0
+            {
+                return false;
+            }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.close_exact_sources == 0
                 && ((hit.source_count >= 2
@@ -10089,6 +10106,14 @@ fn local_boundary_weighted_candidate_allowed_for_policy(
             }
         }
         "eth/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps <= 1.5 + 1e-9
+                && weighted_direction_margin_bps + 1e-9 < 0.35
+            {
+                return false;
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
@@ -10127,7 +10152,8 @@ fn local_boundary_symbol_router_prefers_weighted_primary(symbol: &str) -> bool {
 }
 
 fn local_boundary_symbol_router_allows_close_only_fallback(symbol: &str) -> bool {
-    !matches!(symbol, "bnb/usd" | "doge/usd" | "eth/usd" | "sol/usd")
+    let _ = symbol;
+    false
 }
 
 fn local_close_only_source_agreement(hit: &LocalCloseOnlyAggHit, rtds_open: f64) -> f64 {
@@ -10581,6 +10607,7 @@ const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID: &[LocalPriceSource] =
     &[LocalPriceSource::Binance, LocalPriceSource::Hyperliquid];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Bybit, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE: &[LocalPriceSource] = &[LocalPriceSource::Coinbase];
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Okx, LocalPriceSource::Coinbase];
 
