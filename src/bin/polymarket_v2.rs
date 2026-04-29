@@ -341,11 +341,12 @@ fn shared_ingress_required_capabilities_from_env() -> SharedIngressBrokerCapabil
     let coord_cfg = CoordinatorConfig::from_env();
     let prefixes = parse_multi_market_prefixes_from_env();
     let chainlink_symbols = shared_ingress_hub_symbols(&prefixes, &coord_cfg);
-    let local_price_symbols = if coord_cfg.strategy.is_oracle_lag_sniping() && local_price_agg_enabled() {
-        chainlink_symbols.clone()
-    } else {
-        HashSet::new()
-    };
+    let local_price_symbols =
+        if coord_cfg.strategy.is_oracle_lag_sniping() && local_price_agg_enabled() {
+            chainlink_symbols.clone()
+        } else {
+            HashSet::new()
+        };
     SharedIngressBrokerCapabilities {
         market_enabled: true,
         chainlink_symbols: sorted_symbol_vec(&chainlink_symbols),
@@ -368,8 +369,11 @@ fn shared_ingress_capabilities_satisfy(
     {
         return false;
     }
-    let have_local_price: HashSet<&str> =
-        have.local_price_symbols.iter().map(|s| s.as_str()).collect();
+    let have_local_price: HashSet<&str> = have
+        .local_price_symbols
+        .iter()
+        .map(|s| s.as_str())
+        .collect();
     if need
         .local_price_symbols
         .iter()
@@ -630,12 +634,12 @@ async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
     fs::create_dir_all(shared_ingress_clients_dir())?;
     let deadline =
         tokio::time::Instant::now() + Duration::from_millis(SHARED_INGRESS_BROKER_START_TIMEOUT_MS);
-    let grace_deadline = if shared_ingress_caps_market_only(&required_caps) && market_only_wait_ms > 0
-    {
-        Some(tokio::time::Instant::now() + Duration::from_millis(market_only_wait_ms))
-    } else {
-        None
-    };
+    let grace_deadline =
+        if shared_ingress_caps_market_only(&required_caps) && market_only_wait_ms > 0 {
+            Some(tokio::time::Instant::now() + Duration::from_millis(market_only_wait_ms))
+        } else {
+            None
+        };
     loop {
         cleanup_stale_broker_artifacts();
         if let Some(manifest) = read_broker_manifest() {
@@ -2699,12 +2703,33 @@ fn shared_ingress_market_connect_semaphore() -> &'static Semaphore {
     SEM.get_or_init(|| Semaphore::new(shared_ingress_market_connect_permits()))
 }
 
+fn shared_ingress_fixed_market_connect_permits() -> usize {
+    env::var("PM_SHARED_INGRESS_FIXED_MARKET_CONNECT_PERMITS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(1, 8))
+        .unwrap_or(2)
+}
+
+fn shared_ingress_fixed_market_connect_semaphore() -> &'static Semaphore {
+    static SEM: OnceLock<Semaphore> = OnceLock::new();
+    SEM.get_or_init(|| Semaphore::new(shared_ingress_fixed_market_connect_permits()))
+}
+
 fn shared_ingress_market_connect_jitter_ms() -> u64 {
     env::var("PM_SHARED_INGRESS_MARKET_CONNECT_JITTER_MS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v.clamp(0, 5000))
         .unwrap_or(1200)
+}
+
+fn shared_ingress_fixed_market_connect_jitter_ms() -> u64 {
+    env::var("PM_SHARED_INGRESS_FIXED_MARKET_CONNECT_JITTER_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(0, 5000))
+        .unwrap_or(0)
 }
 
 fn shared_ingress_market_health_jitter_ms() -> u64 {
@@ -2726,6 +2751,22 @@ fn shared_ingress_market_feed_jitter_ms(settings: &Settings, ceiling_ms: u64) ->
     settings.no_asset_id.hash(&mut hasher);
     settings.custom_feature.hash(&mut hasher);
     hasher.finish() % ceiling_ms
+}
+
+fn is_fixed_market_slug(slug: Option<&str>) -> bool {
+    let Some(slug) = slug else {
+        return false;
+    };
+    let Some((_, suffix)) = slug.rsplit_once('-') else {
+        return false;
+    };
+    if suffix.len() != 10 || !suffix.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    suffix
+        .parse::<u64>()
+        .map(|ts| (1_000_000_000..=4_102_444_800).contains(&ts))
+        .unwrap_or(false)
 }
 
 fn shared_ingress_market_only_auto_wait_ms() -> u64 {
@@ -10155,9 +10196,7 @@ fn local_boundary_hybrid_prefers_weighted_over_close_only(
                 && weighted_hit.source_count >= 2
                 && weighted_hit.rule == LocalBoundaryCloseRule::LastBefore
         }
-        "doge/usd" => {
-            close_only_hit.close_exact_sources == 0 && weighted_hit.source_count >= 2
-        }
+        "doge/usd" => close_only_hit.close_exact_sources == 0 && weighted_hit.source_count >= 2,
         "sol/usd" => {
             close_only_hit.close_exact_sources == 0
                 && weighted_hit.source_count >= 2
@@ -12672,17 +12711,26 @@ impl Drop for SharedMarketFeedLease {
 async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIngressFeed>) {
     let ws_connect_timeout = ws_connect_timeout_ms();
     let ws_degrade_failures = ws_degrade_max_failures();
+    let is_fixed_market_feed = is_fixed_market_slug(settings.market_slug.as_deref());
+    let connect_jitter_ceiling_ms = if is_fixed_market_feed {
+        shared_ingress_fixed_market_connect_jitter_ms()
+    } else {
+        shared_ingress_market_connect_jitter_ms()
+    };
     let connect_jitter_ms =
-        shared_ingress_market_feed_jitter_ms(&settings, shared_ingress_market_connect_jitter_ms());
-    let health_jitter_ms =
-        shared_ingress_market_feed_jitter_ms(&settings, shared_ingress_market_health_jitter_ms());
+        shared_ingress_market_feed_jitter_ms(&settings, connect_jitter_ceiling_ms);
+    let health_jitter_ms = if is_fixed_market_feed {
+        0
+    } else {
+        shared_ingress_market_feed_jitter_ms(&settings, shared_ingress_market_health_jitter_ms())
+    };
     let mut backoff = Duration::from_millis(100);
     let max_backoff = Duration::from_secs(5);
     let mut consecutive_failures: u32 = 0;
-    let mut subscribe_custom_feature_enabled = settings.custom_feature;
+    let subscribe_custom_feature_enabled = settings.custom_feature;
     let mut shutdown_rx = feed.shutdown_receiver();
     'outer: loop {
-        if feed.shutdown_requested() {
+        if feed.shutdown_requested() || feed.subscriber_count() == 0 {
             info!(
                 "🛑 shared ingress market broker feed exiting idle | slug={} subscribers={}",
                 settings
@@ -12696,26 +12744,58 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
         let mut book_asm = BookAssembler::default();
         let url = settings.ws_url("market");
         info!(
-            "📡 shared ingress market broker connecting | slug={} url={}",
+            "📡 shared ingress market broker connecting | slug={} url={} fixed_round={} subscribers={} connect_jitter_ms={}",
             settings
                 .market_slug
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string()),
-            url
+            url,
+            is_fixed_market_feed,
+            feed.subscriber_count(),
+            connect_jitter_ms
         );
         if connect_jitter_ms > 0 {
             sleep(Duration::from_millis(connect_jitter_ms)).await;
-            if feed.shutdown_requested() {
+            if feed.shutdown_requested() || feed.subscriber_count() == 0 {
+                info!(
+                    "🛑 shared ingress market broker feed canceled before connect | slug={} subscribers={}",
+                    settings
+                        .market_slug
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    feed.subscriber_count(),
+                );
                 break;
             }
         }
         let connect_result = {
-            let _connect_permit = shared_ingress_market_connect_semaphore()
-                .acquire()
-                .await
-                .expect("shared ingress market connect semaphore closed");
-            tokio::time::timeout(Duration::from_millis(ws_connect_timeout), connect_async(&url))
-                .await
+            let _connect_permit = if is_fixed_market_feed {
+                shared_ingress_fixed_market_connect_semaphore()
+                    .acquire()
+                    .await
+                    .expect("shared ingress fixed market connect semaphore closed")
+            } else {
+                shared_ingress_market_connect_semaphore()
+                    .acquire()
+                    .await
+                    .expect("shared ingress market connect semaphore closed")
+            };
+            if feed.shutdown_requested() || feed.subscriber_count() == 0 {
+                info!(
+                    "🛑 shared ingress market broker feed canceled after permit | slug={} subscribers={}",
+                    settings
+                        .market_slug
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    feed.subscriber_count(),
+                );
+                break 'outer;
+            }
+            tokio::time::timeout(
+                Duration::from_millis(ws_connect_timeout),
+                connect_async(&url),
+            )
+            .await
         };
         match connect_result {
             Ok(Ok((ws, response))) => {
@@ -12747,11 +12827,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                     let mut delay = tokio::time::interval(Duration::from_secs(5));
                     loop {
                         delay.tick().await;
-                        if write
-                            .send(Message::Ping(Vec::new().into()))
-                            .await
-                            .is_err()
-                        {
+                        if write.send(Message::Ping(Vec::new().into())).await.is_err() {
                             break;
                         }
                     }
@@ -13045,6 +13121,17 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                 ws_degrade_failures
             );
             consecutive_failures = 0;
+        }
+        if feed.shutdown_requested() || feed.subscriber_count() == 0 {
+            info!(
+                "🛑 shared ingress market broker feed exiting before reconnect | slug={} subscribers={}",
+                settings
+                    .market_slug
+                    .clone()
+                    .unwrap_or_else(|| "unknown".to_string()),
+                feed.subscriber_count(),
+            );
+            break;
         }
         sleep(backoff).await;
         backoff = (backoff * 2).min(max_backoff);
@@ -14711,10 +14798,10 @@ async fn handle_market_ingress_client(
         no_asset_id: no_asset_id.clone(),
         custom_feature_enabled: req.custom_feature_enabled.unwrap_or(false),
     };
-    let (feed, reused_existing, registry_len) = {
+    let (feed, reused_existing, registry_len, spawn_settings) = {
         let mut guard = registry.lock().expect("market registry poisoned");
         if let Some(feed) = guard.get(&key) {
-            (Arc::clone(feed), true, guard.len())
+            (Arc::clone(feed), true, guard.len(), None)
         } else {
             let feed = SharedMarketIngressFeed::new();
             let mut settings = Settings {
@@ -14735,18 +14822,20 @@ async fn handle_market_ingress_client(
                     &no_asset_id[..8.min(no_asset_id.len())]
                 ));
             }
-            let feed_clone = Arc::clone(&feed);
-            tokio::spawn(async move {
-                run_market_ws_broker_feed(settings, feed_clone).await;
-            });
             guard.insert(key.clone(), Arc::clone(&feed));
             let registry_len = guard.len();
-            (feed, false, registry_len)
+            (feed, false, registry_len, Some(settings))
         }
     };
     let (lease, subscribers) =
         SharedMarketFeedLease::new(key.clone(), Arc::clone(&feed), Arc::clone(&registry));
     let _lease = lease;
+    if let Some(settings) = spawn_settings {
+        let feed_clone = Arc::clone(&feed);
+        tokio::spawn(async move {
+            run_market_ws_broker_feed(settings, feed_clone).await;
+        });
+    }
     info!(
         "📡 shared ingress market feed attached | slug={} yes_asset_id={} no_asset_id={} reused_existing={} subscribers={} registry_size={}",
         req.market_slug.clone().unwrap_or_else(|| "unknown".to_string()),
@@ -14880,11 +14969,12 @@ async fn run_shared_ingress_broker() -> anyhow::Result<()> {
     let coord_cfg = CoordinatorConfig::from_env();
     let prefixes = parse_multi_market_prefixes_from_env();
     let hub_symbols = shared_ingress_hub_symbols(&prefixes, &coord_cfg);
-    let local_price_symbols = if coord_cfg.strategy.is_oracle_lag_sniping() && local_price_agg_enabled() {
-        hub_symbols.clone()
-    } else {
-        HashSet::new()
-    };
+    let local_price_symbols =
+        if coord_cfg.strategy.is_oracle_lag_sniping() && local_price_agg_enabled() {
+            hub_symbols.clone()
+        } else {
+            HashSet::new()
+        };
     if hub_symbols.is_empty() {
         info!(
             "🪫 shared ingress broker starting in market-only mode | no chainlink/local_price symbols configured"
