@@ -14,6 +14,7 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 }
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
+const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 45;
 
 impl StrategyCoordinator {
     pub(super) fn pgt_buy_retain_decision(
@@ -191,6 +192,7 @@ impl StrategyCoordinator {
 
         let mut st = self.init_execution_state(inv, quotes);
         self.apply_endgame_controls(inv, ub, &mut st);
+        self.maybe_pgt_force_clear_tail_seed_orders(&mut st).await;
         if self.should_execute_directional_hedges(&st) {
             self.execute_hedges(inv, ub, yes_stale, no_stale, &mut st)
                 .await;
@@ -205,6 +207,42 @@ impl StrategyCoordinator {
             &mut st,
         )
         .await;
+    }
+
+    pub(super) async fn maybe_pgt_force_clear_tail_seed_orders(&mut self, st: &mut ExecutionState) {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() {
+            return;
+        }
+        let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+        if remaining_secs > PGT_TAIL_NO_NEW_OPEN_SECS {
+            return;
+        }
+        let active_tranche_exists = self.inv_rx.borrow().pair_ledger.active_tranche.is_some();
+        if active_tranche_exists {
+            return;
+        }
+
+        st.disable_all_provide_with_reason(CancelReason::EndgameRiskGate);
+        st.intent_yes = None;
+        st.intent_no = None;
+
+        let has_local_buy_target = self.slot_target_active(OrderSlot::YES_BUY)
+            || self.slot_target_active(OrderSlot::NO_BUY);
+        if self.pgt_tail_seed_force_clear_sent && !has_local_buy_target {
+            return;
+        }
+        self.pgt_tail_seed_force_clear_sent = true;
+
+        for slot in [OrderSlot::YES_BUY, OrderSlot::NO_BUY] {
+            self.stats.pgt_dispatch_clear = self.stats.pgt_dispatch_clear.saturating_add(1);
+            self.force_clear_slot_target(
+                slot,
+                CancelReason::EndgameRiskGate,
+                SlotResetScope::Full,
+                "pgt_tail_no_new_open",
+            )
+            .await;
+        }
     }
 
     pub(super) fn should_execute_directional_hedges(&self, st: &ExecutionState) -> bool {

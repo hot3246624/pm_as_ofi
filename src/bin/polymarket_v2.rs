@@ -16106,6 +16106,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 tick_size: coord_cfg.tick_size,
                 reconcile_interval_secs,
                 dry_run,
+                market_end_ts: coord_cfg.market_end_ts,
                 pgt_shadow_same_side_provide_cooldown_ms: if dry_run
                     && coord_cfg.strategy.is_pair_gated_tranche_arb()
                 {

@@ -1202,6 +1202,64 @@ impl StrategyCoordinator {
         self.clear_slot_target_with_scope(slot, reason, scope).await;
     }
 
+    pub(super) async fn force_clear_slot_target(
+        &mut self,
+        slot: OrderSlot,
+        reason: CancelReason,
+        scope: SlotResetScope,
+        context: &'static str,
+    ) {
+        if self.slot_target(slot).is_some() {
+            self.clear_slot_target_with_scope(slot, reason, scope).await;
+            return;
+        }
+
+        self.slot_shadow_targets[slot.index()] = None;
+        self.slot_shadow_since[slot.index()] = None;
+        self.slot_last_publish_reason[slot.index()] = None;
+        self.slot_pair_arb_state_keys[slot.index()] = None;
+        self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+        self.slot_pair_arb_target_epochs[slot.index()] = None;
+        self.slot_pair_arb_intent_epochs[slot.index()] = None;
+        self.slot_pgt_target_epochs[slot.index()] = None;
+        self.slot_pgt_intent_epochs[slot.index()] = None;
+        self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
+        self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
+        self.slot_pair_arb_state_republish_latched[slot.index()] = false;
+        match scope {
+            SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
+            SlotResetScope::Full => self.full_reset_slot_publish_state(slot),
+        }
+        match slot {
+            OrderSlot::YES_BUY => self.yes_target = None,
+            OrderSlot::NO_BUY => self.no_target = None,
+            _ => {}
+        }
+        self.sync_buy_side_wrapper(slot);
+
+        debug!(
+            "🗑️ ForceCancel {} ({:?}, {:?}) context={}",
+            slot.as_str(),
+            reason,
+            scope,
+            context
+        );
+        if self.cfg.dry_run {
+            info!(
+                "📝 DRY force cancel {} ({:?}, {:?}) context={}",
+                slot.as_str(),
+                reason,
+                scope,
+                context
+            );
+        }
+
+        let _ = self
+            .om_tx
+            .send(OrderManagerCmd::ClearTarget { slot, reason })
+            .await;
+    }
+
     pub(super) async fn clear_slot_target_with_scope(
         &mut self,
         slot: OrderSlot,

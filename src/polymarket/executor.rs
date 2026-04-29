@@ -92,6 +92,7 @@ pub struct ExecutorConfig {
     pub tick_size: f64,
     pub reconcile_interval_secs: u64,
     pub dry_run: bool,
+    pub market_end_ts: Option<u64>,
     pub pgt_shadow_same_side_provide_cooldown_ms: u64,
 }
 
@@ -349,6 +350,17 @@ impl Executor {
         }
     }
 
+    fn dry_run_market_touch_cutoff_reached(&self) -> bool {
+        let Some(market_end_ts) = self.cfg.market_end_ts else {
+            return false;
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        now >= market_end_ts
+    }
+
     async fn try_emit_dry_run_fill(
         &self,
         order_id: String,
@@ -409,6 +421,10 @@ impl Executor {
     }
 
     async fn handle_dry_run_market_data(&mut self, msg: MarketDataMsg) {
+        if self.dry_run_market_touch_cutoff_reached() {
+            self.dry_run_pending_touch_fills.clear();
+            return;
+        }
         let now = Instant::now();
         match msg {
             MarketDataMsg::BookTick {
@@ -503,6 +519,10 @@ impl Executor {
     }
 
     async fn flush_dry_run_pending_touch_fills(&mut self) {
+        if self.dry_run_market_touch_cutoff_reached() {
+            self.dry_run_pending_touch_fills.clear();
+            return;
+        }
         let now = Instant::now();
         let ready: Vec<(String, Side, TradeDirection, f64, f64)> = self
             .dry_run_pending_touch_fills
@@ -2789,7 +2809,7 @@ pub async fn init_clob_client(
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use tokio::sync::{mpsc, watch};
 
@@ -2813,6 +2833,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: false,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -2889,6 +2910,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: false,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -2939,6 +2961,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: false,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -2980,6 +3003,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3047,6 +3071,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3107,6 +3132,87 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dry_run_market_touch_does_not_fill_after_market_end() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
+            yes_bid: 0.45,
+            yes_ask: 0.55,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        });
+        let market_end_ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .saturating_sub(1);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: Some(market_end_ts),
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            5.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        let touch_msg = MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.50,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        };
+        let _ = md_tx.send(touch_msg.clone());
+        exec.handle_dry_run_market_data(touch_msg).await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        assert!(
+            sim_fill_rx.try_recv().is_err(),
+            "post-market dry-run market-touch should not emit synthetic fills"
+        );
+        assert!(exec.dry_run_pending_touch_fills.is_empty());
+    }
+
+    #[tokio::test]
     async fn dry_run_market_touch_cancel_before_confirm_suppresses_fill() {
         let (cmd_tx, cmd_rx) = mpsc::channel(4);
         drop(cmd_tx);
@@ -3130,6 +3236,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3210,6 +3317,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3304,6 +3412,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3379,6 +3488,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3437,6 +3547,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 0,
             },
             None,
@@ -3492,6 +3603,7 @@ mod tests {
                 tick_size: 0.01,
                 reconcile_interval_secs: 30,
                 dry_run: true,
+                market_end_ts: None,
                 pgt_shadow_same_side_provide_cooldown_ms: 1200,
             },
             None,

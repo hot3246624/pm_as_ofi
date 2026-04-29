@@ -7895,6 +7895,53 @@ async fn test_pair_gated_tranche_stale_holds_existing_buy_quote_instead_of_clear
     );
 }
 
+#[tokio::test]
+async fn test_pair_gated_tranche_tail_force_clears_orphan_seed_orders() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 40,
+    );
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+    let inv = InventoryState::default();
+    let quotes = StrategyQuotes::default();
+    let mut st = coord.init_execution_state(&inv, quotes);
+
+    coord
+        .maybe_pgt_force_clear_tail_seed_orders(&mut st)
+        .await;
+
+    let mut cleared = Vec::new();
+    for _ in 0..2 {
+        match timeout(Duration::from_millis(50), er.recv()).await {
+            Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+                cleared.push((slot, reason));
+            }
+            other => panic!("expected PGT tail force ClearTarget, got {:?}", other),
+        }
+    }
+    cleared.sort_by_key(|(slot, _)| slot.index());
+    assert_eq!(
+        cleared,
+        vec![
+            (OrderSlot::YES_BUY, CancelReason::EndgameRiskGate),
+            (OrderSlot::NO_BUY, CancelReason::EndgameRiskGate),
+        ]
+    );
+
+    coord
+        .maybe_pgt_force_clear_tail_seed_orders(&mut st)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "tail force-clear should be a one-shot when no local buy target reappears"
+    );
+}
+
 #[test]
 fn test_pair_gated_tranche_global_book_stale_holds_existing_buy_target() {
     let mut config = cfg();
