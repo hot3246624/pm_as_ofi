@@ -10395,7 +10395,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
-                && weighted_direction_margin_bps + 1e-9 < 0.25
+                && weighted_direction_margin_bps + 1e-9 < 1.25
             {
                 return Some("btc_single_near_flat");
             }
@@ -10470,6 +10470,14 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             }
         }
         "hype/usd" => {
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 8.0
+                && weighted_direction_margin_bps + 1e-9 >= 30.0
+            {
+                return Some("hype_after_high_spread_margin");
+            }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count >= 3
                 && hit.close_exact_sources == 0

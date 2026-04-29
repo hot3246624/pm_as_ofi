@@ -1,6 +1,6 @@
 # 本地价格聚合器收敛计划
 
-更新时间：2026-04-29 23:25 CST
+更新时间：2026-04-30 00:07 CST
 
 ## 目标
 
@@ -30,16 +30,18 @@
 
 ## 当前基线
 
-最新 close-only boundary 数据集评估基线，已包含 HYPE/XRP wide-spread near-flat guardrail、DOGE last-before guardrail、HYPE stale-spread fallback / single-source guardrail，并已修正 evaluator，使其与运行时的 HYPE `close_only_fallback`、BNB/SOL close-only filter reason、BNB/SOL strict source fallback 保持一致：
+最新 close-only boundary 数据集评估基线，已包含 HYPE/XRP wide-spread near-flat guardrail、DOGE last-before guardrail、BTC single-source near-flat guardrail、HYPE stale/high-spread guardrail，并已修正 evaluator，使其与运行时的 HYPE `close_only_fallback`、BNB/SOL close-only filter reason、BNB/SOL strict source fallback 保持一致：
 
 | 样本段 | ok | side | filtered | missing | mean_bps | max_bps |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| latest test | 250 | 0 | 24 | 17 | 1.016569 | 4.402462 |
-| latest train | 660 | 0 | 76 | 67 | 0.862845 | 4.413691 |
+| latest test | 249 | 0 | 25 | 17 | 1.019993 | 4.402462 |
+| latest train | 652 | 0 | 84 | 67 | 0.855923 | 4.413691 |
 | current unseen `20260429_210600` | 43 | 0 | 2 | 2 | 0.893107 | 3.753107 |
 | current unseen `20260429_220724` pre-guard observation | 12 | 0 | 2 | 0 | n/a | 3.415719 |
 | current unseen `20260429_223509` raw router_v1 | 44 | 1 | 0 | n/a | 1.495656 | 8.264534 |
 | current unseen `20260429_223509` post-guard replay | 42 | 0 | 2 | n/a | 1.333700 | 4.098987 |
+| current unseen `20260429_232345` raw router_v1 | 54 | 1 | 8 | 1 | 1.426143 | 5.274113 |
+| current unseen `20260429_232345` post-guard replay | 50 | 0 | 12 | 1 | 1.231579 | 4.011575 |
 
 已修复的 accepted side mismatch：
 
@@ -61,18 +63,23 @@
 
 - BNB：`after_then_before`、2 source、0 exact、local side Yes、source spread >= 1.5bps、direction margin < 1.5bps 时过滤为 `bnb_mid_spread_yes_near_flat`，拦截 `20260429_223509` 新 unseen 中的 accepted side mismatch。
 
+已新增的 BTC guardrail：
+
+- BTC：`after_then_before`、单 Coinbase source、0 exact、direction margin < 1.25bps 时过滤为 `btc_single_near_flat`，拦截 `20260429_232345` 新 unseen 中的 accepted side mismatch。
+
 已新增的 HYPE tail guardrail：
 
 - HYPE：`after_then_before`、source_count >= 3、0 exact、source spread 2-4bps、direction margin >= 40bps 时，不再接受 weighted primary，改走 close-only fallback；拦截 latest test `6.801403bps` outlier。
+- HYPE：`after_then_before`、source_count >= 2、0 exact、source spread >= 8bps、direction margin >= 30bps 时过滤为 `hype_after_high_spread_margin`，拦截 `20260429_232345` 新 unseen 中的 5.274113bps / 5.079526bps tail。
 - HYPE：close-only 仅 1 source、0 exact、direction margin >= 20bps 时直接 missing，避免单一 Hyperliquid close-only 在大幅偏离 open 时形成 >5bps accepted tail。
 
 当前剩余瓶颈：
 
-- G0/G4：latest test、latest train、当前 unseen 都已经是 `side=0`，但 rolling 100 accepted 还需要继续采样确认；当前稳定样本仍不足 100 accepted。
-- G2：current unseen accepted coverage 已到 43/47=91.5%；latest test accepted coverage 在 HYPE tail guard 后约 85.9%，仍需继续观察 per-symbol 稳定性。
-- G3：latest test/train max 均已进入 5bps 内；下一步重点是 rolling unseen 是否维持 `side=0` 且 `max<=5bps`。
+- G0/G4：latest test、latest train、`20260429_232345` post-guard replay 都已经是 `side=0`，但 rolling 100 accepted 还需要继续采样确认。
+- G2：latest test accepted coverage 约 85.6%；`20260429_232345` post-guard accepted=50、filtered=12、missing=1，覆盖率代价可接受但需要继续观察 HYPE/BTC 是否过度过滤。
+- G3：latest test/train 和 `20260429_232345` post-guard max 均已进入 5bps 内；下一步重点是 rolling unseen 是否维持 `side=0` 且 `max<=5bps`。
 
-结论：当前优先级已经从“清零 accepted side mismatch”切换为“继续采样确认 rolling 0 side，同时针对 HYPE/SOL coverage 和 HYPE/DOGE outlier 做定向优化”。
+结论：当前优先级仍是“rolling unseen 清零 accepted side mismatch”。本轮 BTC/HYPE guard 修复了最新 unseen 的错向和 >5bps tail，下一步必须重建 release、重启 challenger，让运行时产生新样本验证。
 
 ## 推进路线
 
@@ -91,7 +98,8 @@
 | --- | --- | --- |
 | T+0 | 修复当前 HYPE/XRP 两个 guardrail，重建 release，重启 challenger | 已完成，离线 latest test/train side=0 |
 | T+30m | 检查新增 unseen rounds | 已完成，`20260429_210600` 当前 43 accepted、side=0 |
-| T+2h | 汇总 20+ 新轮次 | 22:35 run 暴露 BNB side mismatch / DOGE high-spread tail，guardrail 已补齐，需重建 release 并重启 challenger 验证 |
+| T+2h | 汇总 20+ 新轮次 | 22:35 run 暴露 BNB side mismatch / DOGE high-spread tail，guardrail 已补齐 |
+| T+3h | 汇总下一批 unseen | 23:23 run 暴露 BTC single-source near-flat side mismatch 和 HYPE high-spread tail，guardrail 已补齐，需重建 release 并重启 challenger 验证 |
 | T+12h | 过夜 shadow/dry-run | rolling 100 accepted side=0 |
 | T+24h | 冻结候选 router 或继续 shadow | 满足 G0/G1/G4 才进入生产集成评估 |
 
@@ -105,7 +113,7 @@
 
 ## 下一步
 
-1. 重建 release 并重启 challenger，让 DOGE/HYPE guardrail 生效；目标 rolling 100 accepted side=0 且 accepted max<=5bps。
-2. 继续观察 HYPE tail guard 的 coverage 代价；如果 unseen HYPE missing 过高，再单独研究 HYPE source timing，而不是直接放宽单源规则。
+1. 重建 release 并重启 challenger，让 BTC/HYPE guardrail 生效；目标 rolling 100 accepted side=0 且 accepted max<=5bps。
+2. 继续观察 HYPE high-spread guard 的 coverage 代价；如果 unseen HYPE missing 过高，再单独研究 HYPE source timing，而不是直接放宽高分歧样本。
 3. 继续观察 SOL/BNB strict source fallback 在新 unseen 中是否保持 side=0；任何 side mismatch 立即回滚为 missing。
 4. 下一次建议在重启后 30 分钟复盘；若 30 分钟内 side=0 且 max<=5bps，再进入 2 小时 rolling 验收。

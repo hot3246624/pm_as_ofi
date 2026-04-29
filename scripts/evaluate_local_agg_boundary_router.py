@@ -519,7 +519,7 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
         if close_only_reason == "preclose_near_flat" and source_count == 1 and exact_sources == 0:
             return "bnb_close_only_preclose_near_flat"
     elif symbol == "btc/usd":
-        if rule == "after_then_before" and source_count == 1 and exact_sources == 0 and margin_bps < 0.25:
+        if rule == "after_then_before" and source_count == 1 and exact_sources == 0 and margin_bps < 1.25:
             return "btc_single_near_flat"
         if rule == "after_then_before" and source_count == 2 and exact_sources == 0 and margin_bps < 1.0:
             return "btc_two_source_near_flat"
@@ -548,6 +548,14 @@ def router_filter_reason(symbol: str, rule: str, source_count: int, exact_source
         if rule == "nearest_abs" and source_count >= 2 and exact_sources == 0 and margin_bps < 0.5:
             return "doge_nearest_near_flat"
     elif symbol == "hype/usd":
+        if (
+            rule == "after_then_before"
+            and source_count >= 2
+            and exact_sources == 0
+            and spread_bps >= 8.0
+            and margin_bps >= 30.0
+        ):
+            return "hype_after_high_spread_margin"
         if rule == "after_then_before" and source_count >= 3 and exact_sources == 0 and 2.0 <= spread_bps <= 4.0 and margin_bps >= 40.0:
             return "hype_three_source_stale_spread_fallback"
         if rule == "after_then_before" and source_count == 1 and exact_sources == 0 and margin_bps < 3.0:
