@@ -1010,7 +1010,7 @@ impl StrategyCoordinator {
         if best_ask <= 0.0 || ceiling <= 0.0 || maker_price <= 0.0 {
             return None;
         }
-        if best_ask > ceiling + 1e-9 || best_ask <= maker_price + 1e-9 {
+        if best_ask > ceiling + 1e-9 {
             return None;
         }
         Some(self.safe_price(best_ask))

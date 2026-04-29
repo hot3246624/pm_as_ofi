@@ -568,8 +568,7 @@ impl PairGatedTrancheStrategy {
         let taker_close_window = coordinator.cfg().dry_run
             && remaining_secs <= SHADOW_TAKER_CLOSE_SECS
             && remaining_secs > coordinator.cfg().endgame_freeze_secs;
-        let taker_shadow_would_close =
-            taker_close_window && best_ask <= ceiling + 1e-9 && best_ask > price + 1e-9;
+        let taker_shadow_would_close = taker_close_window && best_ask <= ceiling + 1e-9;
         let taker_close_limit = if taker_shadow_would_close {
             Some(coordinator.safe_price(best_ask))
         } else {

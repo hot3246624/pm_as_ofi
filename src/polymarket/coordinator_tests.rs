@@ -6903,6 +6903,25 @@ fn test_pair_gated_tranche_shadow_taker_close_limit_appears_in_late_phase() {
 }
 
 #[test]
+fn test_pair_gated_tranche_shadow_taker_close_allows_marketable_maker_price() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 80,
+    );
+    let (_o, _i, _m, _k, _e, coord) = make(c);
+    let limit = coord
+        .pgt_shadow_taker_close_limit_for_side(Side::No, 0.50, 0.50, 0.50, 80)
+        .expect("marketable maker-price completion should route through taker-close");
+    assert!((limit - 0.50).abs() < 1e-9);
+}
+
+#[test]
 fn test_pair_gated_tranche_shadow_taker_close_is_blocked_in_freeze() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
@@ -7084,7 +7103,7 @@ fn test_pair_gated_tranche_completion_shadow_taker_signal_stops_in_freeze() {
         pre_freeze_quotes
             .pgt_taker_close_limit_for(Side::No)
             .is_some(),
-        "pre-freeze completion should still expose the shadow taker-close limit"
+        "pre-freeze completion should expose taker-close when ask is inside ceiling, including maker-price equality"
     );
 
     let mut freeze = cfg();
