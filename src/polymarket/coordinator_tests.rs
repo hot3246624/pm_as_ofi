@@ -6814,8 +6814,8 @@ fn test_pair_gated_tranche_shadow_taker_limit_does_not_upgrade_hedge_intent() {
         Some(0.48),
     );
     assert!(
-        matches!(close_action, ProvideSideAction::ShadowTakerClose { intent, limit_price } if intent.reason == BidReason::Hedge && (limit_price - 0.48).abs() < 1e-9),
-        "completion hedge should use the dedicated PGT taker-close path when strategy supplies a close limit"
+        matches!(close_action, ProvideSideAction::Place { intent } if intent.reason == BidReason::Hedge),
+        "PGT default shadow boundary is maker-first: taker-close limits remain counterfactual, not execution"
     );
 }
 
@@ -7097,7 +7097,9 @@ fn test_pair_gated_tranche_active_state_allows_one_bounded_same_side_add_before_
         "same-side add must improve the first-leg VWAP instead of averaging up"
     );
 
-    let hedge = quotes.no_buy.expect("expected completion quote to remain live");
+    let hedge = quotes
+        .no_buy
+        .expect("expected completion quote to remain live");
     assert_eq!(hedge.reason, BidReason::Hedge);
 }
 

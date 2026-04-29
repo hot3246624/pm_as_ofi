@@ -16,6 +16,7 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
 const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
+const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = false;
 
 impl StrategyCoordinator {
     pub(super) fn pgt_buy_retain_decision(
@@ -700,33 +701,35 @@ impl StrategyCoordinator {
         }
 
         let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
-        if let Some(limit_price) = self.pgt_shadow_taker_close_limit_for_side(
-            hedge_side,
-            hedge_px,
-            ceiling,
-            book_ask,
-            remaining_secs,
-        ) {
-            if self.cfg.strategy.is_pair_gated_tranche_arb() {
-                self.pgt_shadow_taker_close_fired_epoch[hedge_side.index()] =
-                    Some(self.pgt_decision_epoch);
-                self.stats.pgt_dispatch_taker_close =
-                    self.stats.pgt_dispatch_taker_close.saturating_add(1);
-            }
-            info!(
-                "⚡ PGT shadow taker-close | side={:?} maker_price={:.4} size={:.2} limit={:.4} ceiling={:.4}",
-                hedge_side, hedge_px, hedge_size, limit_price, ceiling
-            );
-            self.dispatch_taker_intent(
+        if PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED {
+            if let Some(limit_price) = self.pgt_shadow_taker_close_limit_for_side(
                 hedge_side,
-                TradeDirection::Buy,
-                hedge_size,
-                TradePurpose::Hedge,
-                Some(limit_price),
-            )
-            .await;
-            st.mark_hedge_dispatched(hedge_side);
-            return;
+                hedge_px,
+                ceiling,
+                book_ask,
+                remaining_secs,
+            ) {
+                if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.pgt_shadow_taker_close_fired_epoch[hedge_side.index()] =
+                        Some(self.pgt_decision_epoch);
+                    self.stats.pgt_dispatch_taker_close =
+                        self.stats.pgt_dispatch_taker_close.saturating_add(1);
+                }
+                info!(
+                    "⚡ PGT shadow taker-close | side={:?} maker_price={:.4} size={:.2} limit={:.4} ceiling={:.4}",
+                    hedge_side, hedge_px, hedge_size, limit_price, ceiling
+                );
+                self.dispatch_taker_intent(
+                    hedge_side,
+                    TradeDirection::Buy,
+                    hedge_size,
+                    TradePurpose::Hedge,
+                    Some(limit_price),
+                )
+                .await;
+                st.mark_hedge_dispatched(hedge_side);
+                return;
+            }
         }
 
         if self.keep_existing_maker_if_safe(
@@ -1609,11 +1612,13 @@ impl StrategyCoordinator {
                     {
                         return ProvideSideAction::None;
                     }
-                    if let Some(limit_price) = pgt_taker_close_limit_price {
-                        return ProvideSideAction::ShadowTakerClose {
-                            intent,
-                            limit_price,
-                        };
+                    if PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED {
+                        if let Some(limit_price) = pgt_taker_close_limit_price {
+                            return ProvideSideAction::ShadowTakerClose {
+                                intent,
+                                limit_price,
+                            };
+                        }
                     }
                 }
                 return ProvideSideAction::Place { intent };
