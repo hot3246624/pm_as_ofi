@@ -26,6 +26,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--date", help="YYYY-MM-DD replay date")
     p.add_argument("--db", help="direct path to replay sqlite")
     p.add_argument("--output-dir", default=default_output_dir)
+    p.add_argument(
+        "--include-incomplete",
+        action="store_true",
+        help="include rounds that have not emitted pgt_shadow_summary yet",
+    )
     return p.parse_args()
 
 
@@ -166,6 +171,7 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         end_ms = session_end_ms(conn, slug)
         metric = latest_metric_row(conn, slug)
         summary_payload = latest_shadow_summary_payload(conn, slug) or {}
+        has_shadow_summary = bool(summary_payload)
         clean_ratio = float(metric[0]) if metric and metric[0] is not None else None
         same_side_ratio = float(metric[1]) if metric and metric[1] is not None else None
         payload_json = metric[2] if metric else None
@@ -203,6 +209,8 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         )
         row = {
             "slug": slug,
+            "round_complete": 1.0 if has_shadow_summary else 0.0,
+            "has_shadow_summary": 1.0 if has_shadow_summary else 0.0,
             "clean_closed_episode_ratio": clean_ratio,
             "same_side_add_qty_ratio": same_side_ratio,
             "episode_close_delay_p50": payload_metric(payload_json, "episode_close_delay_p50"),
@@ -289,6 +297,13 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         return [float(r[key]) for r in rows if r.get(key) is not None]
 
     active_rows = [r for r in rows if r.get("has_active_episode") is not None]
+    filled_rows = [
+        r for r in rows if float(r.get("has_active_episode") or 0.0) > 0.5
+    ]
+
+    def collect_filled(key: str) -> list[float]:
+        return [float(r[key]) for r in filled_rows if r.get(key) is not None]
+
     active_episode_rounds = sum(
         1 for r in active_rows if float(r.get("has_active_episode") or 0.0) > 0.5
     )
@@ -320,8 +335,8 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "median_conditional_second_same_side_would_allow": median(
             collect("conditional_second_same_side_would_allow")
         ),
-        "median_summary_pair_cost": median(collect("summary_pair_cost")),
-        "median_summary_paired_qty": median(collect("summary_paired_qty")),
+        "median_summary_pair_cost": median(collect_filled("summary_pair_cost")),
+        "median_summary_paired_qty": median(collect_filled("summary_paired_qty")),
         "median_summary_residual_qty": median(collect("summary_residual_qty")),
         "median_single_seed_flip_count": median(collect("single_seed_flip_count")),
         "median_dual_seed_quotes": median(collect("dual_seed_quotes")),
@@ -370,9 +385,13 @@ def main() -> None:
         rows = build_rows(conn)
     finally:
         conn.close()
+    if not args.include_incomplete:
+        rows = [r for r in rows if float(r.get("round_complete") or 0.0) > 0.5]
 
     fieldnames = [
         "slug",
+        "round_complete",
+        "has_shadow_summary",
         "clean_closed_episode_ratio",
         "same_side_add_qty_ratio",
         "episode_close_delay_p50",
@@ -417,6 +436,7 @@ def main() -> None:
         writer.writerows(rows)
 
     summary = build_summary(rows)
+    summary["include_incomplete"] = args.include_incomplete
     json_path.write_text(
         json.dumps({"summary": summary, "rows": rows}, ensure_ascii=False, indent=2),
         encoding="utf-8",

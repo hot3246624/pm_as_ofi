@@ -36,6 +36,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--output-json", help="Optional explicit output path")
     p.add_argument("--min-end-ts", type=int, help="Only include slugs with trailing end_ts >= this value")
     p.add_argument("--max-end-ts", type=int, help="Only include slugs with trailing end_ts <= this value")
+    p.add_argument(
+        "--include-incomplete",
+        action="store_true",
+        help="include rows without pgt_shadow_summary/round_complete",
+    )
     return p.parse_args()
 
 
@@ -71,11 +76,14 @@ def filter_rows(
     rows: list[dict[str, Any]],
     min_end_ts: int | None = None,
     max_end_ts: int | None = None,
+    include_incomplete: bool = False,
 ) -> list[dict[str, Any]]:
-    if min_end_ts is None and max_end_ts is None:
-        return rows
     out = []
     for row in rows:
+        if not include_incomplete:
+            complete = row.get("round_complete", row.get("has_shadow_summary", 1.0))
+            if complete is not None and float(complete or 0.0) <= 0.5:
+                continue
         end_ts = slug_end_ts(str(row.get("slug") or ""))
         if end_ts is None:
             continue
@@ -91,12 +99,29 @@ def build_gap(
     payload: dict[str, Any],
     min_end_ts: int | None = None,
     max_end_ts: int | None = None,
+    include_incomplete: bool = False,
 ) -> dict[str, Any]:
-    rows = filter_rows(payload.get("rows") or [], min_end_ts, max_end_ts)
+    rows = filter_rows(
+        payload.get("rows") or [],
+        min_end_ts,
+        max_end_ts,
+        include_incomplete=include_incomplete,
+    )
 
     def collect(key: str) -> list[float]:
         out = []
         for row in rows:
+            value = row.get(key)
+            if value is None:
+                continue
+            out.append(float(value))
+        return out
+
+    def collect_active(key: str) -> list[float]:
+        out = []
+        for row in rows:
+            if float(row.get("has_active_episode") or 0.0) <= 0.5:
+                continue
             value = row.get(key)
             if value is None:
                 continue
@@ -108,7 +133,7 @@ def build_gap(
     median_delay_p90 = median(collect("episode_close_delay_p90"))
     median_merge_first = median(collect("merge_requested_first_rel_s"))
     median_redeem_first = median(collect("redeem_requested_first_rel_s"))
-    median_pair_cost = median(collect("summary_pair_cost"))
+    median_pair_cost = median(collect_active("summary_pair_cost"))
     median_single_seed_flip_count = median(collect("single_seed_flip_count"))
     median_dual_seed_quotes = median(collect("dual_seed_quotes"))
     median_taker_shadow_would_open = median(collect("taker_shadow_would_open"))
@@ -142,6 +167,7 @@ def build_gap(
         "filters": {
             "min_end_ts": min_end_ts,
             "max_end_ts": max_end_ts,
+            "include_incomplete": include_incomplete,
         },
         "pgt_medians": {
             "clean_closed_episode_ratio": median_clean,
@@ -229,7 +255,12 @@ def main() -> None:
     if not report_path.exists():
         raise SystemExit(f"report json not found: {report_path}")
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    out = build_gap(payload, min_end_ts=args.min_end_ts, max_end_ts=args.max_end_ts)
+    out = build_gap(
+        payload,
+        min_end_ts=args.min_end_ts,
+        max_end_ts=args.max_end_ts,
+        include_incomplete=args.include_incomplete,
+    )
 
     if args.output_json:
         output_path = Path(args.output_json)

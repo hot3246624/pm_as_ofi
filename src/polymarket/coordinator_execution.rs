@@ -15,6 +15,7 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
+const PGT_SAME_SIDE_RELEASE_QUARANTINE_MS: u64 = 1_200;
 const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
 const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = false;
 
@@ -85,8 +86,10 @@ impl StrategyCoordinator {
         if self.cfg.strategy.is_pair_gated_tranche_arb()
             && event.slot.direction == TradeDirection::Buy
         {
-            self.pgt_same_side_release_quarantine_until[event.slot.side.index()] =
-                Some(std::time::Instant::now() + std::time::Duration::from_millis(500));
+            self.pgt_same_side_release_quarantine_until[event.slot.side.index()] = Some(
+                std::time::Instant::now()
+                    + std::time::Duration::from_millis(PGT_SAME_SIDE_RELEASE_QUARANTINE_MS),
+            );
         }
     }
 
