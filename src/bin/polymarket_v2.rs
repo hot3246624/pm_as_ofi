@@ -8389,8 +8389,7 @@ async fn run_post_close_winner_hint_listener(
                         };
                         let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
                         let close_abs_diff = (hit.close_price - first_obs).abs();
-                        let close_diff_bps =
-                            close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
                         let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
                         warn!(
                             "⚠️ local_price_agg_boundary_shadow_filtered | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} filter_reason={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
@@ -8526,6 +8525,137 @@ async fn run_post_close_winner_hint_listener(
                         first_side,
                         first_obs,
                     );
+                }
+                if symbol == "hype/usd" {
+                    if let Some(hit) = close_only_primary_hit {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        info!(
+                            "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v2",
+                            "close_only_primary",
+                            "close_only",
+                            hit.source_count,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else if let Some(hit) = weighted_shadow_candidate {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        info!(
+                            "🧪 local_price_agg_boundary_shadow_vs_rtds | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v2",
+                            "weighted_fallback",
+                            hit.rule.as_str(),
+                            hit.min_sources,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else if let (Some(hit), Some(filter_reason)) =
+                        (weighted_shadow_hit, weighted_shadow_filter_reason)
+                    {
+                        let local_side_vs_rtds_open = if hit.close_price >= first_ref {
+                            Side::Yes
+                        } else {
+                            Side::No
+                        };
+                        let side_match_vs_rtds_open = local_side_vs_rtds_open == first_side;
+                        let close_abs_diff = (hit.close_price - first_obs).abs();
+                        let close_diff_bps = close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0;
+                        let local_vs_rtds_detect_gap_ms = first_ms.saturating_sub(ready_ms);
+                        warn!(
+                            "⚠️ local_price_agg_boundary_shadow_filtered | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} filter_reason={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} local_to_rtds_detect_gap_ms={}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v2",
+                            hit.source_subset_name,
+                            hit.rule.as_str(),
+                            hit.min_sources,
+                            filter_reason,
+                            local_side_vs_rtds_open,
+                            first_side,
+                            side_match_vs_rtds_open,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            close_abs_diff,
+                            close_diff_bps,
+                            hit.source_count,
+                            hit.source_spread_bps,
+                            hit.close_exact_sources,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            local_vs_rtds_detect_gap_ms,
+                        );
+                    } else {
+                        warn!(
+                            "⚠️ local_price_agg_boundary_shadow_unresolved | slug={} symbol={} compare_mode=boundary_shadow_open_from_rtds policy={} source_subset={} rule={} min_sources={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            "boundary_symbol_router_v2",
+                            "close_only_primary",
+                            "close_only",
+                            1,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                    }
                 }
             }
             Err(err) => {
@@ -10169,6 +10299,13 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 0.45
             {
                 return Some("xrp_nearest_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 0.5
+            {
+                return Some("xrp_single_nearest_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.close_exact_sources == 0
