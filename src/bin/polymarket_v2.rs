@@ -10428,8 +10428,7 @@ fn local_boundary_symbol_router_prefers_weighted_primary(symbol: &str) -> bool {
 }
 
 fn local_boundary_symbol_router_allows_close_only_fallback(symbol: &str) -> bool {
-    let _ = symbol;
-    false
+    symbol == "hype/usd"
 }
 
 fn local_close_only_source_agreement(hit: &LocalCloseOnlyAggHit, rtds_open: f64) -> f64 {
