@@ -24,7 +24,7 @@ XUAN_TARGETS = {
 
 PGT_SHADOW_GATES = {
     "clean_closed_episode_ratio_min": 0.90,
-    "same_side_add_qty_ratio_max": 0.10,
+    "same_side_add_qty_ratio_max": 0.15,
     "episode_close_delay_p90_max": 100.0,
 }
 

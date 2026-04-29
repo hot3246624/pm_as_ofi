@@ -128,6 +128,24 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertEqual(out["pgt_rates"]["taker_close_opportunity_rounds"], 1)
         self.assertEqual(out["pgt_rates"]["taker_close_dispatched_rounds"], 1)
 
+    def test_same_side_gate_matches_xuan_shadow_band(self):
+        payload = {
+            "rows": [
+                {
+                    "slug": "btc-updown-5m-100",
+                    "same_side_add_qty_ratio": 0.14,
+                    "has_active_episode": 1.0,
+                }
+            ]
+        }
+        out = gap_mod.build_gap(payload)
+        self.assertEqual(out["pgt_shadow_gates"]["same_side_add_qty_ratio_max"], 0.15)
+        self.assertTrue(out["passes_pgt_shadow_gate"]["same_side_add_qty_ratio"])
+
+        payload["rows"][0]["same_side_add_qty_ratio"] = 0.16
+        out = gap_mod.build_gap(payload)
+        self.assertFalse(out["passes_pgt_shadow_gate"]["same_side_add_qty_ratio"])
+
 
 if __name__ == "__main__":
     unittest.main()
