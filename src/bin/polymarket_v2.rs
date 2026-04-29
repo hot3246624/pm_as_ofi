@@ -3334,10 +3334,10 @@ fn pgt_shadow_redeem_target(
     winner_side: Option<Side>,
 ) -> Option<(Side, f64)> {
     let side = winner_side?;
-    let qty = match side {
-        Side::Yes => snapshot.working.yes_qty.max(0.0),
-        Side::No => snapshot.working.no_qty.max(0.0),
-    };
+    if snapshot.pair_ledger.residual_side != Some(side) {
+        return None;
+    }
+    let qty = snapshot.pair_ledger.residual_qty.max(0.0);
     (qty > 1e-9).then_some((side, qty))
 }
 
@@ -17689,19 +17689,18 @@ mod tests {
     }
 
     #[test]
-    fn test_pgt_shadow_redeem_target_only_targets_resolved_winner_side() {
+    fn test_pgt_shadow_redeem_target_only_targets_resolved_winner_residual() {
         let mut snapshot = InventorySnapshot::default();
         snapshot.working.yes_qty = 12.0;
         snapshot.working.no_qty = 3.0;
+        snapshot.pair_ledger.residual_side = Some(Side::Yes);
+        snapshot.pair_ledger.residual_qty = 9.0;
 
         assert_eq!(
             pgt_shadow_redeem_target(&snapshot, Some(Side::Yes)),
-            Some((Side::Yes, 12.0))
+            Some((Side::Yes, 9.0))
         );
-        assert_eq!(
-            pgt_shadow_redeem_target(&snapshot, Some(Side::No)),
-            Some((Side::No, 3.0))
-        );
+        assert_eq!(pgt_shadow_redeem_target(&snapshot, Some(Side::No)), None);
         assert_eq!(pgt_shadow_redeem_target(&snapshot, None), None);
     }
 
@@ -17710,12 +17709,25 @@ mod tests {
         let mut snapshot = InventorySnapshot::default();
         snapshot.working.yes_qty = 0.0;
         snapshot.working.no_qty = 7.0;
+        snapshot.pair_ledger.residual_side = Some(Side::No);
+        snapshot.pair_ledger.residual_qty = 7.0;
 
         assert_eq!(pgt_shadow_redeem_target(&snapshot, Some(Side::Yes)), None);
         assert_eq!(
             pgt_shadow_redeem_target(&snapshot, Some(Side::No)),
             Some((Side::No, 7.0))
         );
+    }
+
+    #[test]
+    fn test_pgt_shadow_redeem_target_ignores_pairable_full_sets() {
+        let mut snapshot = InventorySnapshot::default();
+        snapshot.working.yes_qty = 57.6;
+        snapshot.working.no_qty = 57.6;
+        snapshot.pair_ledger.capital_state.mergeable_full_sets = 57.6;
+
+        assert_eq!(pgt_shadow_redeem_target(&snapshot, Some(Side::Yes)), None);
+        assert_eq!(pgt_shadow_redeem_target(&snapshot, Some(Side::No)), None);
     }
 
     #[test]
