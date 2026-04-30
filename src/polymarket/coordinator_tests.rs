@@ -7122,6 +7122,43 @@ fn test_pair_gated_tranche_active_state_allows_one_bounded_same_side_add_before_
 }
 
 #[test]
+fn test_pair_gated_tranche_same_side_add_expires_before_repair_window() {
+    let inv = InventoryState {
+        yes_qty: 96.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
+    let mut snapshot = ledger.snapshot;
+    if let Some(mut active) = snapshot.active_tranche {
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(50));
+        snapshot.active_tranche = Some(active);
+    }
+    let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.46, 0.48));
+    assert!(
+        quotes.yes_buy.is_none(),
+        "stale same-side add must be cleared before repair/taker-close can create late residual"
+    );
+    let hedge = quotes
+        .no_buy
+        .expect("same-side expiry must not suppress completion");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+}
+
+#[test]
 fn test_pair_gated_tranche_active_state_blocks_second_same_side_add() {
     let inv = InventoryState {
         yes_qty: 106.0,

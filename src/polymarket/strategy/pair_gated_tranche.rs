@@ -35,6 +35,7 @@ const SAME_SIDE_ADD_FRACTION: f64 = 0.105;
 const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
 const SAME_SIDE_ADD_MIN_FIRST_QTY: f64 = 45.0;
 const SAME_SIDE_ADD_MIN_RESIDUAL_QTY: f64 = 45.0;
+const SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS: f64 = 45.0;
 
 struct CompletionPlan {
     intent: StrategyIntent,
@@ -541,11 +542,7 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let completion_age_secs = active
-            .last_transition_at
-            .map(|ts| ts.elapsed().as_secs_f64())
-            .or_else(|| active.opened_at.map(|ts| ts.elapsed().as_secs_f64()))
-            .unwrap_or(0.0);
+        let completion_age_secs = pgt_active_tranche_age_secs(active);
         let repair_budget_per_share =
             input.pair_ledger.repair_budget_available / active.residual_qty.max(1.0);
         let urgency_shadow = urgency_budget_shadow_5m(remaining_secs, true)
@@ -631,6 +628,12 @@ impl PairGatedTrancheStrategy {
         remaining_secs: u64,
     ) -> Option<StrategyIntent> {
         if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
+            return None;
+        }
+        if remaining_secs <= SHADOW_TAKER_CLOSE_SECS {
+            return None;
+        }
+        if pgt_active_tranche_age_secs(active) >= SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS {
             return None;
         }
         let side = active.first_side?;
@@ -987,6 +990,14 @@ fn pgt_shadow_completion_pair_cost_cap(remaining_secs: u64, completion_age_secs:
         cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
     }
     cap.min(SHADOW_TAIL_MAX_REPAIR_PAIR_COST)
+}
+
+fn pgt_active_tranche_age_secs(active: PairTranche) -> f64 {
+    active
+        .last_transition_at
+        .map(|ts| ts.elapsed().as_secs_f64())
+        .or_else(|| active.opened_at.map(|ts| ts.elapsed().as_secs_f64()))
+        .unwrap_or(0.0)
 }
 
 pub(crate) fn pgt_same_side_add_state_eligible(active: PairTranche) -> bool {
