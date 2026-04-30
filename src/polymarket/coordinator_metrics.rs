@@ -302,6 +302,9 @@ impl StrategyCoordinator {
             skip_capital_guard: self.stats.pgt_skip_capital_guard,
             skip_invalid_book: self.stats.pgt_skip_invalid_book,
             skip_no_seed: self.stats.pgt_skip_no_seed,
+            seed_reject_no_visible_breakeven_path: self
+                .stats
+                .pgt_seed_reject_no_visible_breakeven_path,
             post_flow_quotes: self.stats.pgt_post_flow_quotes,
             dispatch_intents: self.stats.pgt_dispatch_intents,
             dispatch_blocked: self.stats.pgt_dispatch_blocked,
@@ -412,6 +415,9 @@ impl StrategyCoordinator {
             .saturating_sub(prev.skip_capital_guard);
         let skip_invalid_book_delta = cur.skip_invalid_book.saturating_sub(prev.skip_invalid_book);
         let skip_no_seed_delta = cur.skip_no_seed.saturating_sub(prev.skip_no_seed);
+        let seed_reject_no_visible_breakeven_delta = cur
+            .seed_reject_no_visible_breakeven_path
+            .saturating_sub(prev.seed_reject_no_visible_breakeven_path);
         let post_flow_delta = cur.post_flow_quotes.saturating_sub(prev.post_flow_quotes);
         let dispatch_intents_delta = cur.dispatch_intents.saturating_sub(prev.dispatch_intents);
         let dispatch_blocked_delta = cur.dispatch_blocked.saturating_sub(prev.dispatch_blocked);
@@ -429,7 +435,7 @@ impl StrategyCoordinator {
             .saturating_sub(prev.stale_target_dropped);
 
         info!(
-            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed/geometry)={}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed/geometry/no_visible_be)={}/{}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
             seed_delta,
             completion_delta,
             post_flow_delta,
@@ -450,6 +456,7 @@ impl StrategyCoordinator {
             skip_invalid_book_delta,
             skip_no_seed_delta,
             skip_geometry_guard_delta,
+            seed_reject_no_visible_breakeven_delta,
             single_seed_bias_delta,
             dual_seed_delta,
             single_seed_released_delta,

@@ -70,6 +70,7 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pgt_skip_invalid_book: u8,
     pub(crate) pgt_skip_no_seed: u8,
     pub(crate) pgt_skip_geometry_guard: u8,
+    pub(crate) pgt_seed_reject_no_visible_breakeven_path: u8,
     pub(crate) pgt_single_seed_bias: u8,
     pub(crate) pgt_entry_pressure_sides: u8,
     pub(crate) pgt_entry_pressure_extra_ticks: u8,
@@ -202,6 +203,13 @@ impl StrategyQuotes {
     pub(crate) fn note_pgt_skip_geometry_guard(&mut self) {
         self.diagnostics.pgt_skip_geometry_guard =
             self.diagnostics.pgt_skip_geometry_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_seed_reject_no_visible_breakeven_path(&mut self) {
+        self.diagnostics.pgt_seed_reject_no_visible_breakeven_path = self
+            .diagnostics
+            .pgt_seed_reject_no_visible_breakeven_path
+            .saturating_add(1);
     }
 
     pub(crate) fn note_pgt_single_seed_bias(&mut self) {

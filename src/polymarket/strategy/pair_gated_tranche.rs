@@ -146,10 +146,10 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         }
 
         let yes_seed = self
-            .flat_seed_intent_for_side(coordinator, input, Side::Yes, raw_yes, size)
+            .flat_seed_intent_for_side(coordinator, input, Side::Yes, raw_yes, size, &mut quotes)
             .filter(|seed| pgt_seed_open_window_allowed(seed, remaining_secs));
         let no_seed = self
-            .flat_seed_intent_for_side(coordinator, input, Side::No, raw_no, size)
+            .flat_seed_intent_for_side(coordinator, input, Side::No, raw_no, size, &mut quotes)
             .filter(|seed| pgt_seed_open_window_allowed(seed, remaining_secs));
         if yes_seed.is_none() && no_seed.is_none() && remaining_secs <= PRICE_AWARE_NO_NEW_OPEN_SECS
         {
@@ -284,6 +284,7 @@ impl PairGatedTrancheStrategy {
         side: Side,
         raw_price: f64,
         size: f64,
+        quotes: &mut StrategyQuotes,
     ) -> Option<SeedPlan> {
         if raw_price <= 0.0 || size <= 0.0 {
             return None;
@@ -388,6 +389,7 @@ impl PairGatedTrancheStrategy {
         if visible_breakeven_completion_slack_ticks
             < SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS - 1e-9
         {
+            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
         let open_path_mult = if taker_shadow_would_open {

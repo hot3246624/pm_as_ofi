@@ -810,6 +810,7 @@ struct Stats {
     pgt_skip_invalid_book: u64,
     pgt_skip_no_seed: u64,
     pgt_skip_geometry_guard: u64,
+    pgt_seed_reject_no_visible_breakeven_path: u64,
     pgt_single_seed_bias: u64,
     pgt_single_seed_first_side: Option<Side>,
     pgt_single_seed_last_side: Option<Side>,
@@ -845,6 +846,7 @@ struct PgtGateLogSnapshot {
     taker_shadow_would_open: u64,
     taker_shadow_would_close: u64,
     skip_geometry_guard: u64,
+    seed_reject_no_visible_breakeven_path: u64,
     single_seed_bias: u64,
     single_seed_first_side: Option<Side>,
     single_seed_last_side: Option<Side>,
@@ -1318,6 +1320,7 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_skip_invalid_book: u64,
     pub pgt_skip_no_seed: u64,
     pub pgt_skip_geometry_guard: u64,
+    pub pgt_seed_reject_no_visible_breakeven_path: u64,
     pub pgt_single_seed_bias: u64,
     pub pgt_single_seed_first_side: Option<Side>,
     pub pgt_single_seed_last_side: Option<Side>,
@@ -1853,7 +1856,7 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         info!(
-            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} taker_shadow_would_open={} taker_shadow_would_close={} dispatch_taker_open={} dispatch_taker_close={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={} stale_target_dropped={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
+            "🎯 Shutdown | ticks={} placed={} publish(events={} replace={} cancel={} initial={} policy={} safety={} recovery={}) policy(transitions={} noop_ticks={}) cancel(toxic={} stale={} inv={} reprice={}) ofi(heat_events={} toxic_events={} kill_events={} blocked_ticks={} pair_arb_softened={} pair_arb_suppressed={} pairing_upward_reprice={} opposite_slot_blocked={} stale_target_dropped={} state_forced_republish={}) pair_arb_gate(keep={} skip_inv={} skip_sim={}) pgt(seed={} completion={} taker_shadow_would_open={} taker_shadow_would_close={} dispatch_taker_open={} dispatch_taker_close={} skip_harvest={} skip_tail={} skip_residual={} skip_capital={} skip_invalid_book={} skip_no_seed={} no_visible_be={} stale_target_dropped={}) ref(blocked_ms={} source={} source_binance={} source_poly={} divergence={}) retain(hits={} soft_reset={} full_reset={}) publish(shadow_suppressed={} budget_suppressed={} forced_realign(total={} hard={})) skip(debounce={} backoff={} empty={} inv_limit={})",
             self.stats.ticks, self.stats.placed,
             self.stats.publish_events, self.stats.replace_events, self.stats.cancel_events,
             self.stats.publish_from_initial, self.stats.publish_from_policy, self.stats.publish_from_safety, self.stats.publish_from_recovery,
@@ -1862,7 +1865,7 @@ impl StrategyCoordinator {
             self.stats.ofi_heat_events, self.stats.ofi_toxic_events, self.stats.ofi_kill_events, self.stats.ofi_blocked_ticks,
             self.stats.pair_arb_ofi_softened_quotes, self.stats.pair_arb_ofi_suppressed_quotes, self.stats.pair_arb_pairing_upward_reprice, self.stats.pair_arb_opposite_slot_blocked, self.stats.pair_arb_stale_target_dropped, self.stats.pair_arb_state_forced_republish,
             self.stats.pair_arb_keep_candidates, self.stats.pair_arb_skip_inventory_gate, self.stats.pair_arb_skip_simulate_buy_none,
-            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_taker_shadow_would_open, self.stats.pgt_taker_shadow_would_close, self.stats.pgt_dispatch_taker_open, self.stats.pgt_dispatch_taker_close, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed, self.stats.pgt_stale_target_dropped,
+            self.stats.pgt_seed_quotes, self.stats.pgt_completion_quotes, self.stats.pgt_taker_shadow_would_open, self.stats.pgt_taker_shadow_would_close, self.stats.pgt_dispatch_taker_open, self.stats.pgt_dispatch_taker_close, self.stats.pgt_skip_harvest, self.stats.pgt_skip_tail_completion_only, self.stats.pgt_skip_residual_guard, self.stats.pgt_skip_capital_guard, self.stats.pgt_skip_invalid_book, self.stats.pgt_skip_no_seed, self.stats.pgt_seed_reject_no_visible_breakeven_path, self.stats.pgt_stale_target_dropped,
             self.stats.reference_blocked_ms, self.stats.blocked_due_source, self.stats.blocked_due_binance, self.stats.blocked_due_poly, self.stats.blocked_due_divergence,
             self.stats.retain_hits, self.stats.soft_reset_count, self.stats.full_reset_count,
             self.stats.shadow_suppressed_updates, self.stats.publish_budget_suppressed, self.stats.forced_realign_count, self.stats.forced_realign_hard_count,
@@ -1928,6 +1931,9 @@ impl StrategyCoordinator {
             pgt_skip_invalid_book: self.stats.pgt_skip_invalid_book,
             pgt_skip_no_seed: self.stats.pgt_skip_no_seed,
             pgt_skip_geometry_guard: self.stats.pgt_skip_geometry_guard,
+            pgt_seed_reject_no_visible_breakeven_path: self
+                .stats
+                .pgt_seed_reject_no_visible_breakeven_path,
             pgt_single_seed_bias: self.stats.pgt_single_seed_bias,
             pgt_single_seed_first_side: self.stats.pgt_single_seed_first_side,
             pgt_single_seed_last_side: self.stats.pgt_single_seed_last_side,
@@ -2014,6 +2020,10 @@ impl StrategyCoordinator {
             .stats
             .pgt_skip_geometry_guard
             .saturating_add(quotes.diagnostics.pgt_skip_geometry_guard as u64);
+        self.stats.pgt_seed_reject_no_visible_breakeven_path = self
+            .stats
+            .pgt_seed_reject_no_visible_breakeven_path
+            .saturating_add(quotes.diagnostics.pgt_seed_reject_no_visible_breakeven_path as u64);
         self.stats.pgt_single_seed_bias = self
             .stats
             .pgt_single_seed_bias

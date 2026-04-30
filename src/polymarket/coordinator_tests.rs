@@ -6160,6 +6160,10 @@ fn test_pair_gated_tranche_flat_seed_requires_visible_breakeven_taker_path() {
         quotes.no_buy.is_none(),
         "NO@0.49 with YES ask already at 0.52 has no visible breakeven taker-completion path"
     );
+    assert_eq!(
+        quotes.diagnostics.pgt_seed_reject_no_visible_breakeven_path,
+        1
+    );
 }
 
 #[test]
