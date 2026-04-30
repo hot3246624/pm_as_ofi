@@ -24,14 +24,9 @@ const SEED_THIN_SLACK_CLIP_MULT_TICK_2: f64 = 0.85;
 pub(crate) const PGT_OPEN_PAIR_BAND_WIDE_SECS: u64 = 150;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_SECS: u64 = 90;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_VALUE: f64 = 0.995;
-const SHADOW_TAKER_CLOSE_SECS: u64 = 90;
-const EPISODE_TIMEOUT_SECS: f64 = 75.0;
-const SHADOW_EARLY_REPAIR_PAIR_COST: f64 = 1.005;
-const SHADOW_MAX_REPAIR_PAIR_COST: f64 = 1.01;
-const SHADOW_TAIL_MAX_REPAIR_PAIR_COST: f64 = 1.015;
 const EXPENSIVE_SEED_PRICE: f64 = 0.50;
 const EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS: f64 = 1.0;
-pub(crate) const PGT_MAX_SAME_SIDE_ADD_COUNT: u32 = 1;
+pub(crate) const PGT_MAX_SAME_SIDE_ADD_COUNT: u32 = 0;
 const SAME_SIDE_ADD_FRACTION: f64 = 0.105;
 const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
 const SAME_SIDE_ADD_MIN_FIRST_QTY: f64 = 45.0;
@@ -551,24 +546,10 @@ impl PairGatedTrancheStrategy {
             + pgt_completion_urgency_bonus(active.first_vwap, remaining_secs, completion_age_secs);
         let urgency_ceiling =
             1.0 - active.first_vwap - MIN_EDGE_PER_PAIR + repair_budget_per_share + urgency_shadow;
-        // Live/enforce remains conservative: urgency can spend remaining edge
-        // but only realized repair budget may cross breakeven. Shadow mode also
-        // evaluates xuan-like timeout repair bands so we can measure whether
-        // faster completion improves cohort quality before enabling anything
-        // with real capital.
+        // Urgency can spend remaining edge, but only realized repair budget may
+        // cross breakeven. Shadow no longer grants unfunded timeout repair.
         let funded_loss_ceiling = 1.0 - active.first_vwap + repair_budget_per_share;
-        let conservative_ceiling = urgency_ceiling.min(funded_loss_ceiling);
-        let ceiling = if coordinator.cfg().dry_run {
-            let shadow_pair_cost_cap =
-                pgt_shadow_completion_pair_cost_cap(remaining_secs, completion_age_secs);
-            if shadow_pair_cost_cap > 1.0 + 1e-9 {
-                conservative_ceiling.max(shadow_pair_cost_cap - active.first_vwap)
-            } else {
-                conservative_ceiling
-            }
-        } else {
-            conservative_ceiling
-        };
+        let ceiling = urgency_ceiling.min(funded_loss_ceiling);
         if ceiling <= 0.0 {
             return None;
         }
@@ -597,11 +578,9 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let taker_close_window = coordinator.cfg().dry_run
-            && (remaining_secs <= SHADOW_TAKER_CLOSE_SECS
-                || completion_age_secs >= EPISODE_TIMEOUT_SECS)
-            && remaining_secs > coordinator.cfg().endgame_freeze_secs;
-        let taker_shadow_would_close = taker_close_window && best_ask <= ceiling + 1e-9;
+        let taker_shadow_would_close = coordinator.cfg().dry_run
+            && remaining_secs > coordinator.cfg().endgame_freeze_secs
+            && best_ask <= funded_loss_ceiling + 1e-9;
         let taker_close_limit = if taker_shadow_would_close {
             Some(coordinator.safe_price(best_ask))
         } else {
@@ -968,29 +947,6 @@ fn pgt_completion_urgency_mult(first_vwap: f64) -> f64 {
     } else {
         1.0
     }
-}
-
-fn pgt_shadow_completion_pair_cost_cap(remaining_secs: u64, completion_age_secs: f64) -> f64 {
-    let mut cap: f64 = 1.0;
-    if completion_age_secs >= 90.0 {
-        cap = cap.max(SHADOW_EARLY_REPAIR_PAIR_COST);
-    }
-    if completion_age_secs >= 150.0 {
-        cap = cap.max(SHADOW_MAX_REPAIR_PAIR_COST);
-    }
-    if completion_age_secs >= 210.0 {
-        cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
-    }
-    if remaining_secs <= 60 {
-        cap = cap.max(SHADOW_EARLY_REPAIR_PAIR_COST);
-    }
-    if remaining_secs <= 15 && completion_age_secs >= 150.0 {
-        cap = cap.max(SHADOW_MAX_REPAIR_PAIR_COST);
-    }
-    if remaining_secs <= 10 && completion_age_secs >= 210.0 {
-        cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
-    }
-    cap.min(SHADOW_TAIL_MAX_REPAIR_PAIR_COST)
 }
 
 fn pgt_active_tranche_age_secs(active: PairTranche) -> f64 {

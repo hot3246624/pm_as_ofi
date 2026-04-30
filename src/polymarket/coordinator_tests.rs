@@ -7080,7 +7080,7 @@ fn test_pair_gated_tranche_active_state_only_quotes_completion_side() {
 }
 
 #[test]
-fn test_pair_gated_tranche_active_state_allows_one_bounded_same_side_add_before_hedge() {
+fn test_pair_gated_tranche_active_state_disables_same_side_add_by_default() {
     let inv = InventoryState {
         yes_qty: 96.0,
         no_qty: 0.0,
@@ -7102,15 +7102,9 @@ fn test_pair_gated_tranche_active_state_allows_one_bounded_same_side_add_before_
     );
 
     let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.46, 0.48));
-    let same_side = quotes
-        .yes_buy
-        .expect("expected one bounded same-side add quote");
-    assert_eq!(same_side.reason, BidReason::Provide);
-    assert_eq!(same_side.side, Side::Yes);
-    assert!((same_side.size - 10.0).abs() < 1e-9);
     assert!(
-        same_side.price <= 0.52 + 1e-9,
-        "same-side add must improve the first-leg VWAP instead of averaging up"
+        quotes.yes_buy.is_none(),
+        "PGT keeps same-side add disabled until completion quality is stable"
     );
 
     let hedge = quotes
@@ -7196,7 +7190,7 @@ fn test_pair_gated_tranche_active_state_blocks_second_same_side_add() {
 }
 
 #[test]
-fn test_pair_gated_tranche_execution_gate_allows_bounded_same_side_add() {
+fn test_pair_gated_tranche_execution_gate_rejects_same_side_add_when_disabled() {
     let mut c = cfg();
     c.strategy = StrategyKind::PairGatedTrancheArb;
     let (_o, inv_tx, _m, _k, _e, coord) = make(c);
@@ -7222,8 +7216,8 @@ fn test_pair_gated_tranche_execution_gate_allows_bounded_same_side_add() {
         reason: BidReason::Provide,
     };
     assert!(
-        coord.can_place_strategy_intent(&inv, Some(allowed)),
-        "execution gate should allow the one bounded same-side add"
+        !coord.can_place_strategy_intent(&inv, Some(allowed)),
+        "execution gate should reject same-side add while PGT same-side add is disabled"
     );
 
     let oversized = StrategyIntent {
@@ -7284,7 +7278,39 @@ fn test_pair_gated_tranche_completion_shadow_taker_signal_stops_in_freeze() {
 }
 
 #[test]
-fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
+fn test_pair_gated_tranche_shadow_taker_close_allows_immediate_breakeven_completion() {
+    let inv = InventoryState {
+        yes_qty: 0.0,
+        no_qty: 96.0,
+        yes_avg_cost: 0.0,
+        no_avg_cost: 0.49,
+        net_diff: -96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::No, 96.0, 0.49)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.47, 0.48));
+    let hedge = quotes.yes_buy.expect("expected YES completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        quotes.pgt_taker_close_limit_for(Side::Yes).is_some(),
+        "shadow should immediately take breakeven-or-better completion instead of waiting for timeout"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_shadow_timeout_does_not_allow_unfunded_repair_taker_close() {
     let inv = InventoryState {
         yes_qty: 96.0,
         no_qty: 0.0,
@@ -7314,13 +7340,13 @@ fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
     let hedge = quotes.no_buy.expect("expected NO completion quote");
     assert_eq!(hedge.reason, BidReason::Hedge);
     assert!(
-        quotes.pgt_taker_close_limit_for(Side::No).is_some(),
-        "shadow timeout should allow a bounded 1c repair taker-close after the 150s SLA window"
+        quotes.pgt_taker_close_limit_for(Side::No).is_none(),
+        "shadow timeout must not spend an unfunded 1c repair band"
     );
 }
 
 #[test]
-fn test_pair_gated_tranche_shadow_timeout_repair_cap_ramps_gradually() {
+fn test_pair_gated_tranche_shadow_timeout_repair_cap_stays_breakeven_only() {
     let inv = InventoryState {
         yes_qty: 96.0,
         no_qty: 0.0,
@@ -7395,8 +7421,8 @@ fn test_pair_gated_tranche_shadow_timeout_repair_cap_ramps_gradually() {
 
     let later = pair_gated_tranche_quotes(c, inventory_155, book(0.20, 0.22, 0.47, 0.48));
     assert!(
-        later.pgt_taker_close_limit_for(Side::No).is_some(),
-        "age 155s should allow the 1.01 repair band"
+        later.pgt_taker_close_limit_for(Side::No).is_none(),
+        "age 155s must still not allow unfunded repair above breakeven"
     );
 }
 
