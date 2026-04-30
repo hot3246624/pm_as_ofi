@@ -8120,6 +8120,31 @@ fn test_pair_gated_tranche_no_new_open_blocks_late_seed_with_diagnostic() {
 }
 
 #[test]
+fn test_pair_gated_tranche_price_aware_window_allows_only_cheap_late_seed() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 170);
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.51, 0.48, 0.50),
+    );
+
+    assert!(
+        quotes.yes_buy.is_none(),
+        "expensive 0.50 seed should remain blocked inside t-180"
+    );
+    let no = quotes
+        .no_buy
+        .expect("cheap seed should survive until t-150");
+    assert!(no.price <= 0.49 + 1e-9, "got {}", no.price);
+    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 0);
+}
+
+#[test]
 fn test_pair_gated_tranche_keeps_seed_alive_before_harvest_window() {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

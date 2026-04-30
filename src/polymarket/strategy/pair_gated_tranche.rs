@@ -11,7 +11,10 @@ use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, Strateg
 const RESIDUAL_EPS: f64 = 10.0;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
 const TAIL_COMPLETION_ONLY_SECS: u64 = 25;
-const NO_NEW_OPEN_SECS: u64 = 180;
+const PRICE_AWARE_NO_NEW_OPEN_SECS: u64 = 180;
+const HARD_NO_NEW_OPEN_SECS: u64 = 150;
+const LATE_OPEN_MAX_SEED_PRICE: f64 = 0.49;
+const LATE_OPEN_MIN_VISIBLE_COMPLETION_SLACK_TICKS: f64 = -1.0;
 const HARVEST_WINDOW_SECS: u64 = 25;
 const HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const BASE_CLIP_QTY: f64 = 120.0;
@@ -73,7 +76,7 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
     ) -> StrategyQuotes {
         let mut quotes = StrategyQuotes::default();
         let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
-        let no_new_open = remaining_secs <= NO_NEW_OPEN_SECS;
+        let hard_no_new_open = remaining_secs <= HARD_NO_NEW_OPEN_SECS;
         let harvest_window_active = self.should_shadow_harvest(input, remaining_secs);
 
         if let Some(active) = input
@@ -109,7 +112,7 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             quotes.note_pgt_skip_harvest();
             return quotes;
         }
-        if no_new_open {
+        if hard_no_new_open {
             quotes.note_pgt_skip_tail_completion_only();
             return quotes;
         }
@@ -139,8 +142,17 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             return quotes;
         }
 
-        let yes_seed = self.flat_seed_intent_for_side(coordinator, input, Side::Yes, raw_yes, size);
-        let no_seed = self.flat_seed_intent_for_side(coordinator, input, Side::No, raw_no, size);
+        let yes_seed = self
+            .flat_seed_intent_for_side(coordinator, input, Side::Yes, raw_yes, size)
+            .filter(|seed| pgt_seed_open_window_allowed(seed, remaining_secs));
+        let no_seed = self
+            .flat_seed_intent_for_side(coordinator, input, Side::No, raw_no, size)
+            .filter(|seed| pgt_seed_open_window_allowed(seed, remaining_secs));
+        if yes_seed.is_none() && no_seed.is_none() && remaining_secs <= PRICE_AWARE_NO_NEW_OPEN_SECS
+        {
+            quotes.note_pgt_skip_tail_completion_only();
+            return quotes;
+        }
         let latched_side = if coordinator.cfg().dry_run {
             coordinator.pgt_flat_seed_latched_side()
         } else {
@@ -610,7 +622,7 @@ impl PairGatedTrancheStrategy {
         if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
             return None;
         }
-        if remaining_secs <= NO_NEW_OPEN_SECS {
+        if remaining_secs <= PRICE_AWARE_NO_NEW_OPEN_SECS {
             return None;
         }
         if pgt_active_tranche_age_secs(active) >= SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS {
@@ -899,6 +911,18 @@ pub(crate) fn pgt_seed_future_completion_reserve_ticks(
     base + extra
 }
 
+fn pgt_seed_open_window_allowed(seed: &SeedPlan, remaining_secs: u64) -> bool {
+    if remaining_secs > PRICE_AWARE_NO_NEW_OPEN_SECS {
+        return true;
+    }
+    if remaining_secs <= HARD_NO_NEW_OPEN_SECS {
+        return false;
+    }
+
+    seed.intent.price <= LATE_OPEN_MAX_SEED_PRICE + 1e-9
+        && seed.visible_completion_slack_ticks >= LATE_OPEN_MIN_VISIBLE_COMPLETION_SLACK_TICKS
+}
+
 fn pgt_shadow_entry_pressure_extra_ticks(
     dry_run: bool,
     remaining_secs: u64,
@@ -911,7 +935,7 @@ fn pgt_shadow_entry_pressure_extra_ticks(
     ceiling: f64,
     tick: f64,
 ) -> u8 {
-    if !dry_run || remaining_secs <= NO_NEW_OPEN_SECS {
+    if !dry_run || remaining_secs <= PRICE_AWARE_NO_NEW_OPEN_SECS {
         return 0;
     }
     if taker_shadow_would_open || tick <= 0.0 || best_ask <= 0.0 || ceiling <= 0.0 {
