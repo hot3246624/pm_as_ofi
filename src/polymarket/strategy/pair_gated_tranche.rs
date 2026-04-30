@@ -11,6 +11,7 @@ use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, Strateg
 const RESIDUAL_EPS: f64 = 10.0;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
 const TAIL_COMPLETION_ONLY_SECS: u64 = 25;
+const NO_NEW_OPEN_SECS: u64 = 180;
 const HARVEST_WINDOW_SECS: u64 = 25;
 const HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const BASE_CLIP_QTY: f64 = 120.0;
@@ -77,7 +78,7 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
     ) -> StrategyQuotes {
         let mut quotes = StrategyQuotes::default();
         let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
-        let no_new_open = remaining_secs <= TAIL_COMPLETION_ONLY_SECS;
+        let no_new_open = remaining_secs <= NO_NEW_OPEN_SECS;
         let harvest_window_active = self.should_shadow_harvest(input, remaining_secs);
 
         if let Some(active) = input
@@ -630,7 +631,7 @@ impl PairGatedTrancheStrategy {
         if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
             return None;
         }
-        if remaining_secs <= SHADOW_TAKER_CLOSE_SECS {
+        if remaining_secs <= NO_NEW_OPEN_SECS {
             return None;
         }
         if pgt_active_tranche_age_secs(active) >= SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS {
@@ -931,7 +932,7 @@ fn pgt_shadow_entry_pressure_extra_ticks(
     ceiling: f64,
     tick: f64,
 ) -> u8 {
-    if !dry_run || remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
+    if !dry_run || remaining_secs <= NO_NEW_OPEN_SECS {
         return 0;
     }
     if taker_shadow_would_open || tick <= 0.0 || best_ask <= 0.0 || ceiling <= 0.0 {

@@ -6584,7 +6584,7 @@ fn test_pair_gated_tranche_flat_seed_shadow_bias_exhaustion_restores_dual_seed()
 }
 
 #[test]
-fn test_pair_gated_tranche_flat_seed_widens_early_round_budget_without_chasing_price() {
+fn test_pair_gated_tranche_flat_seed_blocks_late_open_and_keeps_early_maker_first() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
     c.open_pair_band = 0.99;
@@ -6612,13 +6612,17 @@ fn test_pair_gated_tranche_flat_seed_widens_early_round_budget_without_chasing_p
         book(0.50, 0.51, 0.49, 0.50),
     );
 
-    let late_yes = late_quotes.yes_buy.expect("expected late-window YES seed");
+    assert!(
+        late_quotes.yes_buy.is_none() && late_quotes.no_buy.is_none(),
+        "late no-new-open window must not keep first-leg seed orders alive"
+    );
+    assert_eq!(late_quotes.diagnostics.pgt_skip_tail_completion_only, 1);
     let early_yes = early_quotes
         .yes_buy
         .expect("expected early-window YES seed");
     assert!(
-        early_yes.price <= late_yes.price + 1e-9,
-        "widening the early-round band should not turn maker-first seed into a more aggressive price"
+        early_yes.price <= 0.50 + 1e-9,
+        "early-round seed should remain maker-first instead of chasing to the ask"
     );
     assert!(
         late_quotes.diagnostics.pgt_taker_shadow_would_open == 0,
@@ -6627,12 +6631,6 @@ fn test_pair_gated_tranche_flat_seed_widens_early_round_budget_without_chasing_p
     assert!(
         early_quotes.diagnostics.pgt_taker_shadow_would_open == 0,
         "future-completion reserve should keep early-round seed maker-first instead of reopening taker-open room"
-    );
-    assert!(
-        early_yes.size > late_yes.size,
-        "early-round widened band should still preserve a larger seed clip than late-round base band (late={:.1}, early={:.1})",
-        late_yes.size,
-        early_yes.size
     );
 }
 
@@ -7100,7 +7098,7 @@ fn test_pair_gated_tranche_active_state_allows_one_bounded_same_side_add_before_
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
-            + 180,
+            + 220,
     );
 
     let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.46, 0.48));
@@ -7144,7 +7142,7 @@ fn test_pair_gated_tranche_same_side_add_expires_before_repair_window() {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
-            + 180,
+            + 220,
     );
 
     let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.46, 0.48));
@@ -7183,7 +7181,7 @@ fn test_pair_gated_tranche_active_state_blocks_second_same_side_add() {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
-            + 180,
+            + 220,
     );
 
     let quotes = pair_gated_tranche_quotes(c, inventory, book(0.49, 0.50, 0.46, 0.48));
@@ -8077,13 +8075,32 @@ fn test_pair_gated_tranche_tail_blocks_new_seed_with_diagnostic() {
 }
 
 #[test]
+fn test_pair_gated_tranche_no_new_open_blocks_late_seed_with_diagnostic() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 120);
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.50, 0.54, 0.48, 0.52),
+    );
+
+    assert!(quotes.yes_buy.is_none());
+    assert!(quotes.no_buy.is_none());
+    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 1);
+}
+
+#[test]
 fn test_pair_gated_tranche_keeps_seed_alive_before_harvest_window() {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let mut c = cfg();
-    c.market_end_ts = Some(now_secs + 40);
+    c.market_end_ts = Some(now_secs + 220);
     let quotes = pair_gated_tranche_quotes(
         c,
         InventorySnapshot::default(),
@@ -8092,7 +8109,7 @@ fn test_pair_gated_tranche_keeps_seed_alive_before_harvest_window() {
 
     assert!(
         quotes.yes_buy.is_some() || quotes.no_buy.is_some(),
-        "PGT should keep flat seed quotes alive until the t-25s harvest cutoff"
+        "PGT should keep flat seed quotes alive before the t-180s no-new-open cutoff"
     );
     assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 0);
 }
