@@ -76,6 +76,10 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertAlmostEqual(out["pgt_medians"]["clean_closed_episode_ratio"], 0.91)
         self.assertAlmostEqual(out["pgt_medians"]["same_side_add_qty_ratio"], 0.10)
         self.assertAlmostEqual(out["pgt_medians"]["summary_pair_cost"], 0.99)
+        self.assertEqual(out["pgt_distributions"]["summary_pair_cost_rounds"], 1)
+        self.assertAlmostEqual(out["pgt_distributions"]["summary_pair_cost_p90"], 0.99)
+        self.assertAlmostEqual(out["pgt_distributions"]["summary_pair_cost_max"], 0.99)
+        self.assertEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_02_rounds"], 0)
         self.assertAlmostEqual(out["pgt_medians"]["single_seed_flip_count"], 0.5)
         self.assertAlmostEqual(out["pgt_medians"]["first_seed_accept_rel_s"], -355.0)
         self.assertAlmostEqual(out["pgt_medians"]["dual_seed_accept_rel_s"], -265.0)
@@ -88,6 +92,10 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertTrue(out["passes_pgt_shadow_gate"]["clean_closed_episode_ratio"])
         self.assertTrue(out["passes_pgt_shadow_gate"]["same_side_add_qty_ratio"])
         self.assertTrue(out["passes_pgt_shadow_gate"]["episode_close_delay_p90"])
+        self.assertTrue(out["passes_pgt_shadow_gate"]["p90_first_completion_delay_s"])
+        self.assertTrue(out["passes_pgt_shadow_gate"]["summary_pair_cost_median"])
+        self.assertTrue(out["passes_pgt_shadow_gate"]["summary_pair_cost_p90"])
+        self.assertTrue(out["passes_pgt_shadow_gate"]["summary_pair_cost_tail"])
         self.assertEqual(out["pgt_rates"]["active_episode_rounds"], 1)
         self.assertAlmostEqual(out["pgt_rates"]["active_episode_ratio"], 0.5)
         self.assertEqual(out["pgt_rates"]["residual_rounds"], 1)
@@ -145,6 +153,41 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         payload["rows"][0]["same_side_add_qty_ratio"] = 0.16
         out = gap_mod.build_gap(payload)
         self.assertFalse(out["passes_pgt_shadow_gate"]["same_side_add_qty_ratio"])
+
+    def test_pair_cost_gate_ignores_zero_qty_rows_and_flags_expensive_tail(self):
+        payload = {
+            "rows": [
+                {
+                    "slug": "btc-updown-5m-100",
+                    "has_active_episode": 1.0,
+                    "summary_paired_qty": 0.0,
+                    "summary_pair_cost": 0.0,
+                    "first_completion_delay_s": 10.0,
+                },
+                {
+                    "slug": "btc-updown-5m-200",
+                    "has_active_episode": 1.0,
+                    "summary_paired_qty": 10.0,
+                    "summary_pair_cost": 0.99,
+                    "first_completion_delay_s": 20.0,
+                },
+                {
+                    "slug": "btc-updown-5m-300",
+                    "has_active_episode": 1.0,
+                    "summary_paired_qty": 10.0,
+                    "summary_pair_cost": 1.029,
+                    "first_completion_delay_s": 150.0,
+                },
+            ]
+        }
+        out = gap_mod.build_gap(payload)
+
+        self.assertEqual(out["pgt_distributions"]["summary_pair_cost_rounds"], 2)
+        self.assertAlmostEqual(out["pgt_medians"]["summary_pair_cost"], 1.0095)
+        self.assertEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_02_rounds"], 1)
+        self.assertFalse(out["passes_pgt_shadow_gate"]["summary_pair_cost_median"])
+        self.assertFalse(out["passes_pgt_shadow_gate"]["summary_pair_cost_tail"])
+        self.assertFalse(out["passes_pgt_shadow_gate"]["p90_first_completion_delay_s"])
 
 
 if __name__ == "__main__":

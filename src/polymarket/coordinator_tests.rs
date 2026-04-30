@@ -7247,7 +7247,7 @@ fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
     let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 96.0, 0.53)], PathKind::MakerShadow);
     let mut snapshot = ledger.snapshot;
     if let Some(mut active) = snapshot.active_tranche {
-        active.last_transition_at = Some(Instant::now() - Duration::from_secs(95));
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(125));
         snapshot.active_tranche = Some(active);
     }
     let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
@@ -7266,7 +7266,7 @@ fn test_pair_gated_tranche_shadow_timeout_allows_bounded_repair_taker_close() {
     assert_eq!(hedge.reason, BidReason::Hedge);
     assert!(
         quotes.pgt_taker_close_limit_for(Side::No).is_some(),
-        "shadow timeout should allow a bounded repair taker-close after the 90s SLA window"
+        "shadow timeout should allow a bounded 1c repair taker-close after the 120s SLA window"
     );
 }
 
@@ -7292,10 +7292,17 @@ fn test_pair_gated_tranche_shadow_timeout_repair_cap_ramps_gradually() {
         active.last_transition_at = Some(now - Duration::from_secs(95));
         age_95_snapshot.active_tranche = Some(active);
     }
+    let mut age_125_snapshot = ledger.snapshot;
+    if let Some(mut active) = age_125_snapshot.active_tranche {
+        active.last_transition_at = Some(now - Duration::from_secs(125));
+        age_125_snapshot.active_tranche = Some(active);
+    }
     let inventory_80 =
         test_inventory_snapshot_with_ledger(inv, age_80_snapshot, ledger.episode_metrics);
     let inventory_95 =
         test_inventory_snapshot_with_ledger(inv, age_95_snapshot, ledger.episode_metrics);
+    let inventory_125 =
+        test_inventory_snapshot_with_ledger(inv, age_125_snapshot, ledger.episode_metrics);
     let mut c = cfg();
     c.dry_run = true;
     c.market_end_ts = Some(
@@ -7312,10 +7319,16 @@ fn test_pair_gated_tranche_shadow_timeout_repair_cap_ramps_gradually() {
         "age 80s should still be breakeven-only, not spend the 1.01 repair band"
     );
 
-    let later = pair_gated_tranche_quotes(c, inventory_95, book(0.20, 0.22, 0.47, 0.48));
+    let delayed = pair_gated_tranche_quotes(c.clone(), inventory_95, book(0.20, 0.22, 0.47, 0.48));
+    assert!(
+        delayed.pgt_taker_close_limit_for(Side::No).is_none(),
+        "age 95s should not spend a full 1c repair band after the tail cap tightening"
+    );
+
+    let later = pair_gated_tranche_quotes(c, inventory_125, book(0.20, 0.22, 0.47, 0.48));
     assert!(
         later.pgt_taker_close_limit_for(Side::No).is_some(),
-        "age 95s should allow the 1.01 repair band"
+        "age 125s should allow the 1.01 repair band"
     );
 }
 

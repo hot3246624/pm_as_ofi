@@ -26,6 +26,10 @@ PGT_SHADOW_GATES = {
     "clean_closed_episode_ratio_min": 0.90,
     "same_side_add_qty_ratio_max": 0.15,
     "episode_close_delay_p90_max": 100.0,
+    "p90_first_completion_delay_s_max": 100.0,
+    "summary_pair_cost_median_max": 1.00,
+    "summary_pair_cost_p90_max": 1.02,
+    "summary_pair_cost_gt_1_02_ratio_max": 0.0,
 }
 
 
@@ -141,12 +145,38 @@ def build_gap(
             out.append(float(value))
         return out
 
+    def collect_active_pair_cost() -> list[float]:
+        out = []
+        for row in rows:
+            if float(row.get("has_active_episode") or 0.0) <= 0.5:
+                continue
+            paired_qty = row.get("summary_paired_qty")
+            if paired_qty is not None and float(paired_qty or 0.0) <= 1e-9:
+                continue
+            value = row.get("summary_pair_cost")
+            if value is None:
+                continue
+            value = float(value)
+            if value <= 0.0:
+                continue
+            out.append(value)
+        return out
+
     median_clean = median(collect("clean_closed_episode_ratio"))
     median_same_side = median(collect("same_side_add_qty_ratio"))
     median_delay_p90 = median(collect("episode_close_delay_p90"))
     median_merge_first = median(collect("merge_requested_first_rel_s"))
     median_redeem_first = median(collect("redeem_requested_first_rel_s"))
-    median_pair_cost = median(collect_active("summary_pair_cost"))
+    pair_costs = collect_active_pair_cost()
+    median_pair_cost = median(pair_costs)
+    p90_pair_cost = percentile(pair_costs, 90.0)
+    max_pair_cost = max(pair_costs) if pair_costs else None
+    pair_cost_gt_1_00_rounds = sum(1 for value in pair_costs if value > 1.00 + 1e-9)
+    pair_cost_gt_1_01_rounds = sum(1 for value in pair_costs if value > 1.01 + 1e-9)
+    pair_cost_gt_1_02_rounds = sum(1 for value in pair_costs if value > 1.02 + 1e-9)
+    pair_cost_gt_1_02_ratio = (
+        pair_cost_gt_1_02_rounds / len(pair_costs) if pair_costs else None
+    )
     median_single_seed_flip_count = median(collect("single_seed_flip_count"))
     median_dual_seed_quotes = median(collect("dual_seed_quotes"))
     median_taker_shadow_would_open = median(collect("taker_shadow_would_open"))
@@ -243,6 +273,15 @@ def build_gap(
                 dual_seed_rounds / seed_exposed_rounds if seed_exposed_rounds else None
             ),
         },
+        "pgt_distributions": {
+            "summary_pair_cost_rounds": len(pair_costs),
+            "summary_pair_cost_p90": p90_pair_cost,
+            "summary_pair_cost_max": max_pair_cost,
+            "summary_pair_cost_gt_1_00_rounds": pair_cost_gt_1_00_rounds,
+            "summary_pair_cost_gt_1_01_rounds": pair_cost_gt_1_01_rounds,
+            "summary_pair_cost_gt_1_02_rounds": pair_cost_gt_1_02_rounds,
+            "summary_pair_cost_gt_1_02_ratio": pair_cost_gt_1_02_ratio,
+        },
         "xuan_targets": XUAN_TARGETS,
         "pgt_shadow_gates": PGT_SHADOW_GATES,
         "gap_vs_xuan": {
@@ -270,6 +309,22 @@ def build_gap(
             ),
             "episode_close_delay_p90": (
                 median_delay_p90 is not None and median_delay_p90 <= PGT_SHADOW_GATES["episode_close_delay_p90_max"]
+            ),
+            "p90_first_completion_delay_s": (
+                p90_first_completion_delay is not None
+                and p90_first_completion_delay <= PGT_SHADOW_GATES["p90_first_completion_delay_s_max"]
+            ),
+            "summary_pair_cost_median": (
+                median_pair_cost is not None
+                and median_pair_cost <= PGT_SHADOW_GATES["summary_pair_cost_median_max"]
+            ),
+            "summary_pair_cost_p90": (
+                p90_pair_cost is not None
+                and p90_pair_cost <= PGT_SHADOW_GATES["summary_pair_cost_p90_max"]
+            ),
+            "summary_pair_cost_tail": (
+                pair_cost_gt_1_02_ratio is not None
+                and pair_cost_gt_1_02_ratio <= PGT_SHADOW_GATES["summary_pair_cost_gt_1_02_ratio_max"]
             ),
         },
         "counterfactual_readout": {

@@ -25,8 +25,9 @@ pub(crate) const PGT_OPEN_PAIR_BAND_MID_SECS: u64 = 90;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_VALUE: f64 = 0.995;
 const SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const EPISODE_TIMEOUT_SECS: f64 = 75.0;
-const SHADOW_MAX_REPAIR_PAIR_COST: f64 = 1.02;
-const SHADOW_TAIL_MAX_REPAIR_PAIR_COST: f64 = 1.03;
+const SHADOW_EARLY_REPAIR_PAIR_COST: f64 = 1.005;
+const SHADOW_MAX_REPAIR_PAIR_COST: f64 = 1.01;
+const SHADOW_TAIL_MAX_REPAIR_PAIR_COST: f64 = 1.015;
 pub(crate) const PGT_MAX_SAME_SIDE_ADD_COUNT: u32 = 1;
 const SAME_SIDE_ADD_FRACTION: f64 = 0.105;
 const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
@@ -961,21 +962,21 @@ fn pgt_completion_urgency_mult(first_vwap: f64) -> f64 {
 fn pgt_shadow_completion_pair_cost_cap(remaining_secs: u64, completion_age_secs: f64) -> f64 {
     let mut cap: f64 = 1.0;
     if completion_age_secs >= 90.0 {
-        cap = cap.max(1.01);
+        cap = cap.max(SHADOW_EARLY_REPAIR_PAIR_COST);
     }
     if completion_age_secs >= 120.0 {
-        cap = cap.max(1.015);
-    }
-    if completion_age_secs >= 150.0 {
         cap = cap.max(SHADOW_MAX_REPAIR_PAIR_COST);
     }
+    if completion_age_secs >= 180.0 {
+        cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
+    }
     if remaining_secs <= 60 {
-        cap = cap.max(1.01);
+        cap = cap.max(SHADOW_EARLY_REPAIR_PAIR_COST);
     }
     if remaining_secs <= 45 {
         cap = cap.max(SHADOW_MAX_REPAIR_PAIR_COST);
     }
-    if remaining_secs <= 30 {
+    if remaining_secs <= 20 {
         cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
     }
     cap.min(SHADOW_TAIL_MAX_REPAIR_PAIR_COST)
