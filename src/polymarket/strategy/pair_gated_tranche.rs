@@ -964,19 +964,19 @@ fn pgt_shadow_completion_pair_cost_cap(remaining_secs: u64, completion_age_secs:
     if completion_age_secs >= 90.0 {
         cap = cap.max(SHADOW_EARLY_REPAIR_PAIR_COST);
     }
-    if completion_age_secs >= 120.0 {
+    if completion_age_secs >= 150.0 {
         cap = cap.max(SHADOW_MAX_REPAIR_PAIR_COST);
     }
-    if completion_age_secs >= 180.0 {
+    if completion_age_secs >= 210.0 {
         cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
     }
     if remaining_secs <= 60 {
         cap = cap.max(SHADOW_EARLY_REPAIR_PAIR_COST);
     }
-    if remaining_secs <= 45 {
+    if remaining_secs <= 15 && completion_age_secs >= 150.0 {
         cap = cap.max(SHADOW_MAX_REPAIR_PAIR_COST);
     }
-    if remaining_secs <= 20 {
+    if remaining_secs <= 10 && completion_age_secs >= 210.0 {
         cap = cap.max(SHADOW_TAIL_MAX_REPAIR_PAIR_COST);
     }
     cap.min(SHADOW_TAIL_MAX_REPAIR_PAIR_COST)

@@ -15,7 +15,7 @@
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
-| A8 | taker-close 成本边界 | 75s 只 breakeven；90s 只允许半 tick repair；120s 才允许 1c repair；tail 最高 1.015 | 旧口径过夜样本 `pair_cost_p90=1.0191`，`max=1.0291`，有 2 轮 `>1.02` | 未通过 | 已收紧 shadow repair cap，禁止 1.03 tail |
+| A8 | taker-close 成本边界 | 75s 只 breakeven；90s 只允许半 tick repair；150s 才允许 1c repair；极端老 episode 才允许 1.015 | 旧口径过夜样本 `pair_cost_p90=1.0191`，`max=1.0291`，有 2 轮 `>1.02`；新 cap 首轮仍因 t-45 时间兜底打到 `1.0100`，已继续移除该兜底 | 未通过 | 用新 cap 继续验证 clean close / pair cost 权衡 |
 | A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.01 | 过夜 paired 样本中位 `1.0100`；60 轮 paired 中 53 轮 `>1.00`、12 轮 `>1.01` | 未通过 | 优先降低负 EV completion，不再用宽 tail 换 clean close |
 | A10 | merge/redeem 生命周期 | merge 主要在 t-25 到 t-18；redeem 在 +35/+50；无 residual 积压 | 近期报告显示 merge/redeem 窗口符合 | 通过 | 长样本确认 |
 | A11 | replay/report 可观测性 | 报告包含 seed/cover delay、dispatch_taker_close、pair_cost、same-side 指标 | 已新增 `first_completion_delay_s` / p90 | 通过 | 每轮重建 gap report |
@@ -51,7 +51,7 @@
 - 旧 shadow repair band 过宽，已经从“可闭合验证”进入“负 EV 控制”阶段。
 - 报表已补 `p90_first_completion_delay_s`、`summary_pair_cost_p90`、`summary_pair_cost_tail` gate。
 - pair-cost 统计现在忽略 `summary_paired_qty=0` 的伪 active 行，避免 `pair_cost=0` 污染验收。
-- 策略已收紧：90s 只允许半 tick repair，120s 才允许 1c repair，tail 最高 `1.015`，不再允许 `1.03`。
+- 策略已收紧：90s 只允许半 tick repair，150s 才允许 1c repair，极端老 episode 才允许 `1.015`；不再允许 t-45 纯时间兜底触发 1c repair。
 
 ## 样本明细：`btc-updown-5m-1777468200`
 
