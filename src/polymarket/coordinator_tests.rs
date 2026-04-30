@@ -7278,7 +7278,7 @@ fn test_pair_gated_tranche_completion_shadow_taker_signal_stops_in_freeze() {
 }
 
 #[test]
-fn test_pair_gated_tranche_shadow_taker_close_allows_immediate_breakeven_completion() {
+fn test_pair_gated_tranche_fresh_completion_waits_for_positive_edge() {
     let inv = InventoryState {
         yes_qty: 0.0,
         no_qty: 96.0,
@@ -7288,8 +7288,53 @@ fn test_pair_gated_tranche_shadow_taker_close_allows_immediate_breakeven_complet
         portfolio_cost: 0.0,
     };
     let ledger = build_pair_ledger(&[pgt_fill(Side::No, 96.0, 0.49)], PathKind::MakerShadow);
-    let inventory =
-        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let mut snapshot = ledger.snapshot;
+    if let Some(mut active) = snapshot.active_tranche {
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(20));
+        snapshot.active_tranche = Some(active);
+    }
+    let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
+    let mut c = cfg();
+    c.dry_run = true;
+    c.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 180,
+    );
+
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.50, 0.51, 0.47, 0.48));
+    let hedge = quotes.yes_buy.expect("expected YES completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        hedge.price <= 0.50 + 1e-9,
+        "fresh completion should quote only positive-edge prices before breakeven unlock, got {:.4}",
+        hedge.price
+    );
+    assert!(
+        quotes.pgt_taker_close_limit_for(Side::Yes).is_none(),
+        "fresh completion should not taker-close pure breakeven and sacrifice maker edge"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_aged_completion_unlocks_breakeven_taker_close() {
+    let inv = InventoryState {
+        yes_qty: 0.0,
+        no_qty: 96.0,
+        yes_avg_cost: 0.0,
+        no_avg_cost: 0.49,
+        net_diff: -96.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::No, 96.0, 0.49)], PathKind::MakerShadow);
+    let mut snapshot = ledger.snapshot;
+    if let Some(mut active) = snapshot.active_tranche {
+        active.last_transition_at = Some(Instant::now() - Duration::from_secs(65));
+        snapshot.active_tranche = Some(active);
+    }
+    let inventory = test_inventory_snapshot_with_ledger(inv, snapshot, ledger.episode_metrics);
     let mut c = cfg();
     c.dry_run = true;
     c.market_end_ts = Some(
@@ -7305,7 +7350,7 @@ fn test_pair_gated_tranche_shadow_taker_close_allows_immediate_breakeven_complet
     assert_eq!(hedge.reason, BidReason::Hedge);
     assert!(
         quotes.pgt_taker_close_limit_for(Side::Yes).is_some(),
-        "shadow should immediately take breakeven-or-better completion instead of waiting for timeout"
+        "aged completion should unlock breakeven taker-close as the safety fallback"
     );
 }
 
@@ -7881,7 +7926,7 @@ fn test_pair_gated_tranche_cheap_first_leg_gets_earlier_breakeven_completion_bon
         young_snapshot.active_tranche = Some(active);
     }
     if let Some(mut active) = aged_snapshot.active_tranche {
-        active.last_transition_at = Some(now - Duration::from_secs(45));
+        active.last_transition_at = Some(now - Duration::from_secs(65));
         aged_snapshot.active_tranche = Some(active);
     }
 

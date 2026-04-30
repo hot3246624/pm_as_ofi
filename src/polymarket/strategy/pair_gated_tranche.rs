@@ -35,6 +35,8 @@ const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
 const SAME_SIDE_ADD_MIN_FIRST_QTY: f64 = 45.0;
 const SAME_SIDE_ADD_MIN_RESIDUAL_QTY: f64 = 45.0;
 const SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS: f64 = 45.0;
+const PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS: f64 = 60.0;
+const PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS: u64 = 90;
 
 struct CompletionPlan {
     intent: StrategyIntent,
@@ -561,7 +563,15 @@ impl PairGatedTrancheStrategy {
         // Urgency can spend remaining edge, but only realized repair budget may
         // cross breakeven. Shadow no longer grants unfunded timeout repair.
         let funded_loss_ceiling = 1.0 - active.first_vwap + repair_budget_per_share;
-        let ceiling = urgency_ceiling.min(funded_loss_ceiling);
+        let positive_edge_ceiling =
+            1.0 - active.first_vwap - MIN_EDGE_PER_PAIR + repair_budget_per_share;
+        let breakeven_unlocked = completion_age_secs >= PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS
+            || remaining_secs <= PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS;
+        let ceiling = if breakeven_unlocked {
+            urgency_ceiling.min(funded_loss_ceiling)
+        } else {
+            positive_edge_ceiling.min(funded_loss_ceiling)
+        };
         if ceiling <= 0.0 {
             return None;
         }
@@ -590,9 +600,12 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
+        let profit_taker_would_close = best_ask <= positive_edge_ceiling + 1e-9;
+        let breakeven_taker_would_close =
+            breakeven_unlocked && best_ask <= funded_loss_ceiling + 1e-9;
         let taker_shadow_would_close = coordinator.cfg().dry_run
             && remaining_secs > coordinator.cfg().endgame_freeze_secs
-            && best_ask <= funded_loss_ceiling + 1e-9;
+            && (profit_taker_would_close || breakeven_taker_would_close);
         let taker_close_limit = if taker_shadow_would_close {
             Some(coordinator.safe_price(best_ask))
         } else {
