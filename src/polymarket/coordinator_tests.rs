@@ -6142,6 +6142,27 @@ fn test_pair_gated_tranche_expensive_flat_seed_requires_visible_completion_slack
 }
 
 #[test]
+fn test_pair_gated_tranche_flat_seed_requires_visible_breakeven_taker_path() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.open_pair_band = 1.0;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.48, 0.52, 0.49, 0.50),
+    );
+
+    assert!(
+        quotes.yes_buy.is_some(),
+        "safe side should remain eligible when visible completion can still close at breakeven"
+    );
+    assert!(
+        quotes.no_buy.is_none(),
+        "NO@0.49 with YES ask already at 0.52 has no visible breakeven taker-completion path"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_flat_seed_shadow_entry_pressure_adds_ticks_when_slack_is_wide() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
@@ -6385,8 +6406,8 @@ fn test_pair_gated_tranche_flat_seed_shadow_biases_single_side_on_thin_balanced_
     );
     assert_eq!(shadow_quotes.diagnostics.pgt_single_seed_bias, 1);
     assert!(
-        live_quotes.yes_buy.is_some() && live_quotes.no_buy.is_some(),
-        "live path should keep the same thin book dual-sided until the shadow-only bias is proven"
+        live_quotes.yes_buy.is_none() && live_quotes.no_buy.is_some(),
+        "live path should also block the side without a visible breakeven completion path"
     );
 }
 

@@ -29,6 +29,7 @@ pub(crate) const PGT_OPEN_PAIR_BAND_MID_SECS: u64 = 90;
 pub(crate) const PGT_OPEN_PAIR_BAND_MID_VALUE: f64 = 0.995;
 const EXPENSIVE_SEED_PRICE: f64 = 0.50;
 const EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS: f64 = 1.0;
+const SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS: f64 = 0.0;
 pub(crate) const PGT_MAX_SAME_SIDE_ADD_COUNT: u32 = 0;
 const SAME_SIDE_ADD_FRACTION: f64 = 0.105;
 const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
@@ -380,6 +381,12 @@ impl PairGatedTrancheStrategy {
         }
         if price > EXPENSIVE_SEED_PRICE + 1e-9
             && visible_completion_slack_ticks < EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS
+        {
+            return None;
+        }
+        let visible_breakeven_completion_slack_ticks = ((1.0 - price - opp_ask) / tick).max(-10.0);
+        if visible_breakeven_completion_slack_ticks
+            < SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS - 1e-9
         {
             return None;
         }
