@@ -10362,6 +10362,35 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 return Some("bnb_single_yes_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 7.0
+                && close_abs_delta_ms <= 1_200
+            {
+                return Some("bnb_single_yes_fast_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count <= 2
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 < 1.7
+            {
+                return Some("bnb_no_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Bybit)
+                && weighted_direction_margin_bps + 1e-9 >= 10.0
+            {
+                return Some("bnb_single_bybit_no_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count >= 3
                 && hit.close_exact_sources == 0
                 && weighted_side_yes
@@ -10474,7 +10503,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
-                && weighted_direction_margin_bps + 1e-9 < 1.0
+                && weighted_direction_margin_bps + 1e-9 < 1.3
             {
                 return Some("xrp_single_nearest_near_flat");
             }
@@ -10517,6 +10546,16 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
                 && hit.source_spread_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps + 1e-9 >= 5.0
+                && close_abs_delta_ms >= 1_000
+                && close_abs_delta_ms <= 1_800
+            {
+                return Some("doge_multi_last_midspread_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && hit.source_spread_bps + 1e-9 >= 1.5
                 && weighted_direction_margin_bps + 1e-9 < 3.5
                 && close_abs_delta_ms >= 1_800
             {
@@ -10552,6 +10591,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             }
         }
         "hype/usd" => {
+            let weighted_side_yes = hit.close_price >= rtds_open;
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
@@ -10577,6 +10617,13 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 return Some("hype_single_after_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count >= 3
+                && hit.close_exact_sources == 0
+                && weighted_direction_margin_bps + 1e-9 < 1.2
+            {
+                return Some("hype_three_after_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
                 && hit.source_spread_bps + 1e-9 >= 10.0
@@ -10590,6 +10637,15 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 >= 15.0
             {
                 return Some("hype_two_after_high_spread_mid_margin");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count >= 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit.source_spread_bps + 1e-9 >= 6.0
+                && weighted_direction_margin_bps + 1e-9 < 2.3
+            {
+                return Some("hype_after_high_spread_yes_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2

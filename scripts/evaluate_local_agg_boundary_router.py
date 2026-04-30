@@ -475,7 +475,8 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
                          spread_bps: float, margin_bps: float, side_yes: bool,
                          close_abs_delta_ms: int | None = None,
                          close_only_reason: str | None = None,
-                         close_only_margin_bps: float | None = None) -> str | None:
+                         close_only_margin_bps: float | None = None,
+                         sources: tuple[str, ...] | None = None) -> str | None:
     if symbol == "bnb/usd":
         if (
             source_subset == "bnb_okx_fallback"
@@ -493,6 +494,33 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and margin_bps < 4.0
         ):
             return "bnb_single_yes_near_flat"
+        if (
+            rule == "after_then_before"
+            and source_count == 1
+            and exact_sources == 0
+            and side_yes
+            and margin_bps >= 7.0
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 1_200
+        ):
+            return "bnb_single_yes_fast_tail"
+        if (
+            rule == "after_then_before"
+            and source_count <= 2
+            and exact_sources == 0
+            and not side_yes
+            and margin_bps < 1.7
+        ):
+            return "bnb_no_near_flat"
+        if (
+            rule == "after_then_before"
+            and source_count == 1
+            and exact_sources == 0
+            and not side_yes
+            and sources == ("bybit",)
+            and margin_bps >= 10.0
+        ):
+            return "bnb_single_bybit_no_tail"
         if (
             rule == "after_then_before"
             and source_count >= 3
@@ -581,7 +609,7 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and margin_bps < 2.0
         ):
             return "xrp_nearest_wide_spread_near_flat"
-        if rule == "nearest_abs" and source_count == 1 and exact_sources == 0 and margin_bps < 1.0:
+        if rule == "nearest_abs" and source_count == 1 and exact_sources == 0 and margin_bps < 1.3:
             return "xrp_single_nearest_near_flat"
         if rule == "last_before" and exact_sources == 0 and side_yes and margin_bps < 1.5:
             return "xrp_last_yes_near_flat"
@@ -613,6 +641,15 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and close_abs_delta_ms <= 800
         ):
             return "doge_three_last_fast_spread_near_flat"
+        if (
+            rule == "last_before"
+            and source_count >= 2
+            and exact_sources == 0
+            and spread_bps >= 1.5
+            and margin_bps >= 5.0
+            and 1_000 <= close_abs_delta_ms <= 1_800
+        ):
+            return "doge_multi_last_midspread_tail"
         if (
             rule == "last_before"
             and source_count >= 2
@@ -651,6 +688,8 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             return "hype_three_source_stale_spread_fallback"
         if rule == "after_then_before" and source_count == 1 and exact_sources == 0 and margin_bps < 3.0:
             return "hype_single_after_near_flat"
+        if rule == "after_then_before" and source_count >= 3 and exact_sources == 0 and margin_bps < 1.2:
+            return "hype_three_after_near_flat"
         if rule == "after_then_before" and source_count == 2 and exact_sources == 0 and spread_bps >= 10.0:
             return "hype_two_after_very_high_spread"
         if (
@@ -661,6 +700,15 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and margin_bps >= 15.0
         ):
             return "hype_two_after_high_spread_mid_margin"
+        if (
+            rule == "after_then_before"
+            and source_count >= 2
+            and exact_sources == 0
+            and side_yes
+            and spread_bps >= 6.0
+            and margin_bps < 2.3
+        ):
+            return "hype_after_high_spread_yes_near_flat"
         if (
             rule == "after_then_before"
             and source_count == 2
@@ -760,6 +808,7 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[
                 fallback_source_hit.get("close_abs_delta_ms"),
                 fallback_filter_reason,
                 fallback_margin_bps,
+                tuple(fallback_source_hit["sources"].split(";")),
             )
             return {
                 "status": "filtered" if reason else "ok",
@@ -802,6 +851,7 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[
                 None,
                 fallback_filter_reason,
                 fallback_margin_bps,
+                tuple(source for source, _ in sorted(fallback_hit["source_prices"])),
             )
             return {
                 "status": "filtered" if reason else "ok",
@@ -859,6 +909,7 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[
         close_abs_delta_ms,
         fallback_filter_reason,
         fallback_margin_bps,
+        tuple(source for source, _, _, _ in sorted(per_source)),
     )
     if reason and symbol == "hype/usd" and fallback_hit is not None and fallback_filter_reason is None:
         pred_close = fallback_hit["close_price"]
@@ -878,6 +929,7 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[
             None,
             fallback_filter_reason,
             fallback_margin_bps,
+            tuple(source for source, _ in sorted(fallback_hit["source_prices"])),
         )
         if fallback_reason:
             return {

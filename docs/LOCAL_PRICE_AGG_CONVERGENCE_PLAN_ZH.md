@@ -50,6 +50,7 @@
 
 - HYPE：`after_then_before`、2 source、0 exact、source spread >= 2bps、direction margin < 2.0bps。
 - XRP：`nearest_abs`、>=2 source、0 exact、source spread >= 2bps、direction margin < 2.0bps。
+- XRP：`nearest_abs`、单源、0 exact、direction margin < 1.3bps 时过滤为 `xrp_single_nearest_near_flat`，拦截旧 challenger 汇总中的 near-boundary side mismatch。
 
 已新增的 strict source fallback：
 
@@ -64,12 +65,16 @@
 - DOGE：`last_before` 单源、0 exact、close 点距边界 <= 1000ms、direction margin >= 4bps 时过滤为 `doge_single_last_fast_far_margin`，拦截 overnight 中两个 >5bps 单源尾部。
 - DOGE：`last_before` >=3 source、0 exact、source spread >= 3.8bps、direction margin >= 7bps、close 点距边界 <= 500ms 时过滤为 `doge_three_last_fast_spread_tail`。
 - DOGE：`last_before` >=3 source、0 exact、source spread >= 4bps、direction margin < 3.5bps、close 点距边界 <= 800ms 时过滤为 `doge_three_last_fast_spread_near_flat`，拦截 overnight 新增的 7.331641bps side mismatch。
+- DOGE：`last_before` >=2 source、0 exact、source spread >= 1.5bps、direction margin >= 5bps、close 点距边界在 1000-1800ms 时过滤为 `doge_multi_last_midspread_tail`，拦截 `20260430_095416` 新 live run 中的 DOGE side mismatch / >5bps tail。
 - DOGE：`last_before` >=2 source、0 exact、source spread >= 1.5bps、direction margin < 3.5bps、close 点距边界 >= 1800ms 时过滤为 `doge_multi_last_stale_near_flat`。
 
 已新增的 BNB guardrail：
 
 - BNB：`after_then_before`、2 source、0 exact、local side Yes、source spread >= 1.5bps、direction margin < 1.5bps 时过滤为 `bnb_mid_spread_yes_near_flat`，拦截 `20260429_223509` 新 unseen 中的 accepted side mismatch。
 - BNB：`after_then_before`、单源、0 exact、local side Yes、direction margin < 4bps 时过滤为 `bnb_single_yes_near_flat`，拦截 `20260430_000805` 和 overnight 中的 accepted side mismatch。
+- BNB：`after_then_before`、单源、0 exact、local side Yes、direction margin >= 7bps、close 点距边界 <= 1200ms 时过滤为 `bnb_single_yes_fast_tail`，拦截 `20260430_095416` 新 live run 中的 BNB >5bps tail。
+- BNB：`after_then_before`、<=2 source、0 exact、local side No、direction margin < 1.7bps 时过滤为 `bnb_no_near_flat`，拦截旧 challenger 汇总中的 near-boundary side mismatch。
+- BNB：`after_then_before`、单源 Bybit、0 exact、local side No、direction margin >= 10bps 时过滤为 `bnb_single_bybit_no_tail`，拦截旧 challenger 汇总中 `5.011356bps` tail。
 - BNB：`after_then_before`、>=3 source、0 exact、local side Yes、direction margin < 2bps 时过滤为 `bnb_three_yes_near_flat`。
 - BNB：`after_then_before`、2 source、0 exact、local side Yes、source spread <= 0.55bps、direction margin >= 3bps 时过滤为 `bnb_two_tight_spread_yes_tail`。
 - BNB：`after_then_before`、2 source、0 exact、local side Yes、source spread >= 1.5bps、direction margin < 5bps 时过滤为 `bnb_two_wide_spread_yes_near_flat`。
@@ -84,8 +89,10 @@
 
 - HYPE：`after_then_before`、source_count >= 3、0 exact、source spread 2-4bps、direction margin >= 40bps 时，不再接受 weighted primary，改走 close-only fallback；拦截 latest test `6.801403bps` outlier。
 - HYPE：`after_then_before`、source_count >= 2、0 exact、source spread >= 8bps、direction margin >= 30bps 时过滤为 `hype_after_high_spread_margin`，拦截 `20260429_232345` 新 unseen 中的 5.274113bps / 5.079526bps tail。
+- HYPE：`after_then_before`、>=3 source、0 exact、direction margin < 1.2bps 时过滤为 `hype_three_after_near_flat`，拦截旧 challenger 汇总中的 near-boundary side mismatch。
 - HYPE：`after_then_before`、2 source、0 exact、source spread >= 10bps 时过滤为 `hype_two_after_very_high_spread`，拦截 `20260430_000805` 中的 5.968113bps / 5.922938bps tail。
 - HYPE：`after_then_before`、2 source、0 exact、source spread >= 6bps、direction margin >= 15bps 时过滤为 `hype_two_after_high_spread_mid_margin`。
+- HYPE：`after_then_before`、>=2 source、0 exact、local side Yes、source spread >= 6bps、direction margin < 2.3bps 时过滤为 `hype_after_high_spread_yes_near_flat`，拦截 `20260430_095416` 新 live run 中的 HYPE side mismatch。
 - HYPE：`after_then_before`、2 source、0 exact、source spread >= 1.5bps、direction margin < 1.8bps 时过滤为 `hype_two_after_wide_spread_near_flat`。
 - HYPE：`close_only_fallback` 单源、0 exact、direction margin < 3bps 时不再允许 fallback accepted，拦截 overnight close-only side mismatch。
 - HYPE：close-only 仅 1 source、0 exact、direction margin >= 20bps 时直接 missing，避免单一 Hyperliquid close-only 在大幅偏离 open 时形成 >5bps accepted tail。
