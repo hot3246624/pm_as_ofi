@@ -12,6 +12,7 @@
 | A2 | seed 初始挂单稳定性 | 每 30s `dispatch_place` 应接近 0-2，`retain` 为主；不得出现数百次撤挂 | `1777465200` 修复后多窗口 `place=0/1`、`retain` 为主 | 通过 | 长样本确认 |
 | A3 | seed latch release | 单边 seed 最迟约 30s 释放到双边，避免 90s 单边暴露 | 已从样本看到约 30s 后释放双边 | 通过 | 继续累计样本 |
 | A4 | first fill 捕获 | `seed_exposed_fill_ratio` 持续提升；短样本不作为硬门槛 | 最新连续 5 个 active episode 均有 first fill | 观察中 | 至少再收集 10-20 轮 |
+| A4b | expensive seed guard | first-leg `price > 0.50` 必须有至少 1 tick 可见 completion slack | 新 cap 复测轮 `1777514400` 证明 no time-only repair 后，`NO@0.51` 会留下 `79.5` residual；已新增 expensive seed guard | 观察中 | 复跑确认 `NO@0.51` 被拒，优先选择更便宜一侧 |
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
@@ -52,6 +53,7 @@
 - 报表已补 `p90_first_completion_delay_s`、`summary_pair_cost_p90`、`summary_pair_cost_tail` gate。
 - pair-cost 统计现在忽略 `summary_paired_qty=0` 的伪 active 行，避免 `pair_cost=0` 污染验收。
 - 策略已收紧：90s 只允许半 tick repair，150s 才允许 1c repair，极端老 episode 才允许 `1.015`；不再允许 t-45 纯时间兜底触发 1c repair。
+- 新 cap 复测轮 `1777514400` 没有触发 taker-close，验证修复生效；但 `NO@0.51` first-leg 无法闭合，最终留下 `79.5` residual，因此继续补 expensive seed guard，而不是回滚到宽 repair。
 
 ## 样本明细：`btc-updown-5m-1777468200`
 

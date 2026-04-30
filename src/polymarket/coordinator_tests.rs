@@ -6028,14 +6028,13 @@ fn test_pair_gated_tranche_flat_seed_reserves_immediate_completion_budget_in_pri
     );
 
     let yes = quotes.yes_buy.expect("expected YES seed quote");
-    let no = quotes.no_buy.expect("expected NO seed quote");
     assert!(
         (yes.price - 0.47).abs() < 1e-9,
         "YES flat seed should reserve room for NO completion at ask-1tick instead of spending the full open band"
     );
     assert!(
-        (no.price - 0.51).abs() < 1e-9,
-        "NO flat seed should still remain maker-first while respecting immediate completion budget"
+        quotes.no_buy.is_none(),
+        "expensive NO seed should be skipped when visible completion slack is below one tick"
     );
 }
 
@@ -6068,7 +6067,6 @@ fn test_pair_gated_tranche_flat_seed_reserves_future_completion_budget_early_rou
     );
 
     let yes = quotes.yes_buy.expect("expected YES seed quote");
-    let no = quotes.no_buy.expect("expected NO seed quote");
     let wide_yes = wide_quotes
         .yes_buy
         .expect("expected YES wide-slack comparison seed quote");
@@ -6077,8 +6075,8 @@ fn test_pair_gated_tranche_flat_seed_reserves_future_completion_budget_early_rou
         "220s early-round YES seed should still reserve one tick of future completion budget"
     );
     assert!(
-        (0.50..=0.51).contains(&no.price),
-        "NO seed should remain maker-first while the future-completion reserve primarily constrains the expensive side"
+        quotes.no_buy.is_none(),
+        "expensive NO seed should not open without at least one visible completion slack tick"
     );
     assert!(
         yes.size < wide_yes.size,
@@ -6112,14 +6110,34 @@ fn test_pair_gated_tranche_flat_seed_adds_extra_future_reserve_when_opposite_ask
     );
 
     let yes = quotes.yes_buy.expect("expected YES seed quote");
-    let no = quotes.no_buy.expect("expected NO seed quote");
     assert!(
         (yes.price - 0.46).abs() < 1e-9,
         "early-round YES seed should reserve one extra tick when the opposite ask is already expensive"
     );
     assert!(
-        (no.price - 0.51).abs() < 1e-9,
-        "only the side facing the expensive opposite ask should pay the extra completion reserve"
+        quotes.no_buy.is_none(),
+        "expensive NO seed should still require at least one visible completion slack tick"
+    );
+}
+
+#[test]
+fn test_pair_gated_tranche_expensive_flat_seed_requires_visible_completion_slack() {
+    let mut c = cfg();
+    c.max_net_diff = 500.0;
+    c.open_pair_band = 1.0;
+    let quotes = pair_gated_tranche_quotes(
+        c,
+        InventorySnapshot::default(),
+        book(0.48, 0.49, 0.51, 0.52),
+    );
+
+    let yes = quotes
+        .yes_buy
+        .expect("cheap YES seed should remain eligible");
+    assert!((yes.price - 0.48).abs() < 1e-9);
+    assert!(
+        quotes.no_buy.is_none(),
+        "NO@0.51 with only breakeven visible completion should not open an episode"
     );
 }
 
@@ -6181,7 +6199,7 @@ fn test_pair_gated_tranche_flat_seed_live_mode_does_not_apply_shadow_entry_press
 }
 
 #[test]
-fn test_pair_gated_tranche_flat_seed_shadow_entry_pressure_can_activate_on_moderate_spread() {
+fn test_pair_gated_tranche_flat_seed_filters_expensive_entry_pressure_without_slack() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
     c.open_pair_band = 1.0;
@@ -6203,29 +6221,25 @@ fn test_pair_gated_tranche_flat_seed_shadow_entry_pressure_can_activate_on_moder
         book(0.50, 0.53, 0.45, 0.48),
     );
 
-    let shadow_yes = shadow_quotes
-        .yes_buy
-        .expect("expected YES shadow seed quote");
-    let shadow_no = shadow_quotes.no_buy.expect("expected NO shadow seed quote");
-    let live_yes = live_quotes.yes_buy.expect("expected YES live seed quote");
+    let shadow_yes = shadow_quotes.yes_buy;
+    let shadow_no = shadow_quotes.no_buy;
+    let _live_yes = live_quotes.yes_buy.expect("expected YES live seed quote");
     let live_no = live_quotes.no_buy.expect("expected NO live seed quote");
     assert!(
-        shadow_yes.price > live_yes.price || shadow_no.price > live_no.price,
-        "shadow entry-pressure should improve at least one seed side on a moderate spread book while remaining maker-only (shadow yes/no {:.3}/{:.3}, live yes/no {:.3}/{:.3})",
-        shadow_yes.price,
-        shadow_no.price,
-        live_yes.price,
-        live_no.price
+        shadow_yes.is_some() || shadow_no.is_some(),
+        "shadow entry-pressure should leave at least one seed side eligible"
     );
     assert!(
-        shadow_quotes.diagnostics.pgt_entry_pressure_sides >= 1,
-        "moderate-spread shadow entry-pressure should activate on at least one side"
+        shadow_yes.is_none(),
+        "expensive YES shadow seed should be filtered when entry pressure consumes visible completion slack"
     );
+    let shadow_no = shadow_no.expect("expected cheap NO shadow seed quote");
     assert!(
-        shadow_quotes.diagnostics.pgt_entry_pressure_extra_ticks >= 1,
-        "moderate-spread shadow entry-pressure should accumulate at least one extra tick, got {}",
-        shadow_quotes.diagnostics.pgt_entry_pressure_extra_ticks
+        (shadow_no.price - live_no.price).abs() < 1e-9,
+        "cheap side should remain maker-first when only the expensive side fails the slack guard"
     );
+    assert_eq!(shadow_quotes.diagnostics.pgt_entry_pressure_sides, 0);
+    assert_eq!(shadow_quotes.diagnostics.pgt_entry_pressure_extra_ticks, 0);
 }
 
 #[test]

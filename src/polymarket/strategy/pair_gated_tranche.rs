@@ -28,6 +28,8 @@ const EPISODE_TIMEOUT_SECS: f64 = 75.0;
 const SHADOW_EARLY_REPAIR_PAIR_COST: f64 = 1.005;
 const SHADOW_MAX_REPAIR_PAIR_COST: f64 = 1.01;
 const SHADOW_TAIL_MAX_REPAIR_PAIR_COST: f64 = 1.015;
+const EXPENSIVE_SEED_PRICE: f64 = 0.50;
+const EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS: f64 = 1.0;
 pub(crate) const PGT_MAX_SAME_SIDE_ADD_COUNT: u32 = 1;
 const SAME_SIDE_ADD_FRACTION: f64 = 0.105;
 const SAME_SIDE_ADD_MAX_QTY: f64 = 25.0;
@@ -364,6 +366,11 @@ impl PairGatedTrancheStrategy {
             visible_completion_slack_ticks = ((open_pair_band - price - opp_ask) / tick).max(-10.0);
             fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
             preference_score = visible_completion_slack_ticks - 0.60 * fill_distance_ticks;
+        }
+        if price > EXPENSIVE_SEED_PRICE + 1e-9
+            && visible_completion_slack_ticks < EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS
+        {
+            return None;
         }
         let open_path_mult = if taker_shadow_would_open {
             1.0
