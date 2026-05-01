@@ -499,6 +499,9 @@ pub enum OrderResult {
     },
     /// Order placement failed — Coordinator should reset the slot.
     OrderFailed { slot: OrderSlot, cooldown_ms: u64 },
+    /// Order was intentionally suppressed by the executor. OMS must clear the
+    /// stale desired target instead of retrying it after a cooldown.
+    OrderSuppressed { slot: OrderSlot },
     /// Executor still sees tracked live orders on this slot.
     /// OMS should reconcile by canceling the stale live slot, not by treating this
     /// as a fresh place failure.

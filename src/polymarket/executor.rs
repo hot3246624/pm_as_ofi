@@ -1266,10 +1266,7 @@ impl Executor {
             );
             let _ = self
                 .result_tx
-                .send(OrderResult::OrderFailed {
-                    slot,
-                    cooldown_ms: self.cfg.pgt_shadow_same_side_provide_cooldown_ms,
-                })
+                .send(OrderResult::OrderSuppressed { slot })
                 .await;
             return;
         }
@@ -3786,11 +3783,10 @@ mod tests {
         let result = result_rx
             .recv()
             .await
-            .expect("cooldown should emit failure result");
+            .expect("suppression should emit result");
         assert!(matches!(
             result,
-            OrderResult::OrderFailed { slot, cooldown_ms }
-                if slot == OrderSlot::NO_BUY && cooldown_ms == 1200
+            OrderResult::OrderSuppressed { slot } if slot == OrderSlot::NO_BUY
         ));
         assert!(exec.slot_orders(OrderSlot::NO_BUY).is_empty());
     }

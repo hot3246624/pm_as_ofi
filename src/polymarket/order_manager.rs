@@ -191,6 +191,10 @@ impl OrderManager {
                             self.pump_slot(slot).await;
                             self.pump_side_taker(slot.side).await;
                         }
+                        Some(OrderResult::OrderSuppressed { slot }) => {
+                            self.handle_suppressed(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
                         Some(OrderResult::SlotBusy { slot }) => {
                             self.handle_slot_busy(slot).await;
                             self.pump_slot(slot).await;
@@ -382,6 +386,15 @@ impl OrderManager {
                 cooldown_ms / 1000,
             );
         }
+    }
+
+    async fn handle_suppressed(&mut self, slot: OrderSlot) {
+        let tracker = self.tracker_mut(slot);
+        tracker.state = OrderState::Idle;
+        tracker.desired = None;
+        tracker.pair_arb_local_unreleased_matched_notional_usdc = 0.0;
+        tracker.clear_reason = CancelReason::Reprice;
+        info!("🧭 OMS: {} suppressed -> target cleared", slot.as_str());
     }
 
     async fn handle_slot_busy(&mut self, slot: OrderSlot) {
@@ -923,6 +936,57 @@ mod tests {
         let tracker = om.tracker(OrderSlot::NO_BUY);
         assert!(matches!(tracker.state, OrderState::Idle));
         assert!(tracker.desired.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_suppressed_order_clears_desired_without_retry() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(16);
+        let (exec_tx, mut exec_rx) = mpsc::channel(16);
+        let (result_tx, result_rx) = mpsc::channel(16);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(16);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
+        let h = tokio::spawn(om.run());
+        let slot = OrderSlot::NO_BUY;
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                slot,
+                0.69,
+                160.0,
+                BidReason::Provide,
+            )))
+            .await;
+
+        let first = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(first, ExecutionCmd::ExecuteIntent { .. }));
+
+        let _ = result_tx.send(OrderResult::OrderSuppressed { slot }).await;
+        match timeout(Duration::from_millis(250), exec_rx.recv()).await {
+            Err(_) => {}
+            Ok(None) => {}
+            Ok(Some(cmd)) => panic!("suppressed target must not retry, got {:?}", cmd),
+        }
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                slot,
+                0.68,
+                160.0,
+                BidReason::Provide,
+            )))
+            .await;
+        let second = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        assert!(matches!(second, ExecutionCmd::ExecuteIntent { .. }));
+
+        drop(cmd_tx);
+        let _ = h.await;
     }
 
     #[tokio::test]
