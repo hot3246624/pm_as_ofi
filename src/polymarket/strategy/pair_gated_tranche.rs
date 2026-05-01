@@ -45,6 +45,7 @@ const XUAN_LADDER_STOP_BEFORE_END_SECS: u64 = 25;
 const XUAN_LADDER_OPEN_PAIR_CAP: f64 = 1.040;
 const XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP: f64 = 1.040;
 const XUAN_LADDER_COMPLETION_LATE_PAIR_CAP: f64 = 1.080;
+const XUAN_LADDER_TAKER_CLOSE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
 
@@ -72,6 +73,7 @@ struct PgtTuning {
     open_pair_band_cap: Option<f64>,
     completion_early_pair_cap: f64,
     completion_late_pair_cap: f64,
+    taker_close_pair_cap: f64,
     fixed_clip_qty: Option<f64>,
     clip_profile: PgtClipProfile,
     preserve_seed_clip_qty: bool,
@@ -93,6 +95,7 @@ impl PgtTuning {
             open_pair_band_cap: None,
             completion_early_pair_cap: 1.0 - MIN_EDGE_PER_PAIR,
             completion_late_pair_cap: 1.0,
+            taker_close_pair_cap: 1.0,
             fixed_clip_qty: None,
             clip_profile: PgtClipProfile::Adaptive,
             preserve_seed_clip_qty: false,
@@ -116,6 +119,7 @@ impl PgtTuning {
             open_pair_band_cap: Some(0.980),
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 0.995,
+            taker_close_pair_cap: 0.995,
             fixed_clip_qty: Some(57.6),
             clip_profile: PgtClipProfile::Adaptive,
             preserve_seed_clip_qty: true,
@@ -139,6 +143,7 @@ impl PgtTuning {
             open_pair_band_cap: Some(0.970),
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 1.000,
+            taker_close_pair_cap: 1.000,
             fixed_clip_qty: Some(30.0),
             clip_profile: PgtClipProfile::Adaptive,
             preserve_seed_clip_qty: true,
@@ -166,6 +171,7 @@ impl PgtTuning {
             open_pair_band_cap: Some(XUAN_LADDER_OPEN_PAIR_CAP),
             completion_early_pair_cap: XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP,
             completion_late_pair_cap: XUAN_LADDER_COMPLETION_LATE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_LADDER_TAKER_CLOSE_PAIR_CAP,
             fixed_clip_qty: None,
             clip_profile: PgtClipProfile::XuanLadderV1,
             preserve_seed_clip_qty: true,
@@ -760,11 +766,17 @@ impl PairGatedTrancheStrategy {
             .completion_late_pair_cap
             .max(early_pair_cap)
             .clamp(0.0, 1.20);
+        let taker_close_pair_cap = tuning
+            .taker_close_pair_cap
+            .min(late_pair_cap)
+            .clamp(0.0, 1.20);
         let positive_edge_ceiling = early_pair_cap - active.first_vwap + repair_budget_per_share;
         let urgency_ceiling = positive_edge_ceiling + urgency_shadow;
         // Urgency can spend remaining edge, but only realized repair budget may
         // cross the profile's late pair-cost cap.
         let funded_loss_ceiling = late_pair_cap - active.first_vwap + repair_budget_per_share;
+        let taker_close_ceiling =
+            taker_close_pair_cap - active.first_vwap + repair_budget_per_share;
         let breakeven_unlocked = completion_age_secs >= PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS
             || remaining_secs <= PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS;
         let ceiling = if breakeven_unlocked {
@@ -800,9 +812,10 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let profit_taker_would_close = best_ask <= positive_edge_ceiling + 1e-9;
+        let profit_taker_would_close =
+            best_ask <= positive_edge_ceiling.min(taker_close_ceiling) + 1e-9;
         let breakeven_taker_would_close =
-            breakeven_unlocked && best_ask <= funded_loss_ceiling + 1e-9;
+            breakeven_unlocked && best_ask <= funded_loss_ceiling.min(taker_close_ceiling) + 1e-9;
         let taker_shadow_would_close = coordinator.cfg().dry_run
             && remaining_secs > coordinator.cfg().endgame_freeze_secs
             && (profit_taker_would_close || breakeven_taker_would_close);
@@ -1380,6 +1393,7 @@ mod profile_tests {
         assert_eq!(tuning.open_pair_band(0.99), 0.980);
         assert_eq!(tuning.completion_early_pair_cap, 0.975);
         assert_eq!(tuning.completion_late_pair_cap, 0.995);
+        assert_eq!(tuning.taker_close_pair_cap, 0.995);
         assert_eq!(tuning.fixed_clip_qty, Some(57.6));
         assert!(tuning.preserve_seed_clip_qty);
     }
@@ -1396,6 +1410,7 @@ mod profile_tests {
         assert_eq!(tuning.open_pair_band(0.99), 0.970);
         assert_eq!(tuning.completion_early_pair_cap, 0.975);
         assert_eq!(tuning.completion_late_pair_cap, 1.000);
+        assert_eq!(tuning.taker_close_pair_cap, 1.000);
         assert_eq!(tuning.fixed_clip_qty, Some(30.0));
         assert!(tuning.preserve_seed_clip_qty);
     }
@@ -1416,6 +1431,10 @@ mod profile_tests {
         assert_eq!(
             tuning.completion_late_pair_cap,
             XUAN_LADDER_COMPLETION_LATE_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.taker_close_pair_cap,
+            XUAN_LADDER_TAKER_CLOSE_PAIR_CAP
         );
         assert_eq!(tuning.fixed_clip_qty, None);
         assert_eq!(tuning.clip_profile, PgtClipProfile::XuanLadderV1);
