@@ -1843,9 +1843,12 @@ impl StrategyCoordinator {
                 .await;
             }
             ProvideSideAction::Clear { reason } => {
+                let slot = OrderSlot::new(side, TradeDirection::Buy);
+                if self.cfg.strategy.is_pair_gated_tranche_arb() && !self.slot_target_active(slot) {
+                    return;
+                }
                 if self.cfg.strategy.is_pair_gated_tranche_arb() {
                     self.stats.pgt_dispatch_clear = self.stats.pgt_dispatch_clear.saturating_add(1);
-                    let slot = OrderSlot::new(side, TradeDirection::Buy);
                     if reason == CancelReason::Reprice
                         && self.pgt_should_retain_absent_seed_intent(inv, ub, slot)
                     {

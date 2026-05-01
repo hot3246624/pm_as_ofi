@@ -8805,6 +8805,35 @@ async fn test_pair_gated_tranche_stale_holds_existing_buy_quote_instead_of_clear
 }
 
 #[tokio::test]
+async fn test_pair_gated_tranche_clear_without_target_is_noop() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+    let inv = InventoryState::default();
+    let ub = book(0.48, 0.50, 0.49, 0.51);
+
+    coord
+        .apply_provide_side_action(
+            &inv,
+            &ub,
+            Side::Yes,
+            ProvideSideAction::Clear {
+                reason: CancelReason::StaleData,
+            },
+        )
+        .await;
+
+    assert_eq!(
+        coord.stats.pgt_dispatch_clear, 0,
+        "absent-target PGT clear should not pollute clear metrics"
+    );
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "absent-target PGT clear should not send OMS ClearTarget"
+    );
+}
+
+#[tokio::test]
 async fn test_pair_gated_tranche_tail_force_does_not_clear_before_harvest_cutoff() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairGatedTrancheArb;
