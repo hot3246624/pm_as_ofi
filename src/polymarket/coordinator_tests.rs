@@ -1097,6 +1097,55 @@ async fn test_pair_arb_absent_intent_retain_does_not_clear_active_buy() {
 }
 
 #[tokio::test]
+async fn test_pair_gated_tranche_absent_intent_retain_does_not_clear_safe_seed() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 120,
+    );
+    let (o, i, m, _, mut er, mut coord) = make(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    coord.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.30,
+        size: 2.0,
+        reason: BidReason::Provide,
+    });
+
+    let ub = book(0.29, 0.35, 0.20, 0.24);
+    let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
+    coord
+        .apply_provide_side_action(
+            &InventoryState::default(),
+            &ub,
+            Side::Yes,
+            ProvideSideAction::Clear {
+                reason: CancelReason::Reprice,
+            },
+        )
+        .await;
+
+    assert!(
+        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
+        "PGT absent-intent retain should not emit clear while the seed is still maker-safe"
+    );
+    assert!(
+        coord.slot_target(OrderSlot::YES_BUY).is_some(),
+        "PGT retain should keep the active flat seed target"
+    );
+    assert!(
+        coord.stats.pgt_dispatch_retain > 0,
+        "PGT retain path should be observable"
+    );
+}
+
+#[tokio::test]
 async fn test_reprice_when_existing_provide_no_longer_maker_safe() {
     let (o, i, m, _, mut er, mut coord) = make(cfg());
     let _ = o.send(OfiSnapshot::default());

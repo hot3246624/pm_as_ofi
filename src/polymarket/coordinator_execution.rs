@@ -577,6 +577,51 @@ impl StrategyCoordinator {
         false
     }
 
+    fn pgt_should_retain_absent_seed_intent(
+        &self,
+        inv: &InventoryState,
+        ub: &Book,
+        slot: OrderSlot,
+    ) -> bool {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() || slot.direction != TradeDirection::Buy {
+            return false;
+        }
+        let Some(current) = self.slot_target(slot).cloned() else {
+            return false;
+        };
+        if current.reason != BidReason::Provide {
+            return false;
+        }
+        if self.seconds_to_market_end().unwrap_or(u64::MAX) <= PGT_TAIL_NO_NEW_OPEN_SECS {
+            return false;
+        }
+        let snapshot = self.inv_rx.borrow();
+        if snapshot.pair_ledger.active_tranche.is_some()
+            || snapshot.pair_ledger.residual_qty.abs() > PAIR_ARB_NET_EPS
+            || snapshot
+                .pair_ledger
+                .capital_state
+                .would_block_new_open_due_to_capital
+        {
+            return false;
+        }
+        let (best_bid, best_ask) = match slot.side {
+            Side::Yes => (ub.yes_bid, ub.yes_ask),
+            Side::No => (ub.no_bid, ub.no_ask),
+        };
+        self.keep_existing_maker_if_safe(
+            inv,
+            slot.side,
+            slot.direction,
+            current.price,
+            current.size,
+            current.price,
+            best_bid,
+            best_ask,
+            current.reason,
+        )
+    }
+
     pub(super) async fn execute_hedges(
         &mut self,
         inv: &InventoryState,
@@ -1776,6 +1821,15 @@ impl StrategyCoordinator {
             ProvideSideAction::Clear { reason } => {
                 if self.cfg.strategy.is_pair_gated_tranche_arb() {
                     self.stats.pgt_dispatch_clear = self.stats.pgt_dispatch_clear.saturating_add(1);
+                    let slot = OrderSlot::new(side, TradeDirection::Buy);
+                    if reason == CancelReason::Reprice
+                        && self.pgt_should_retain_absent_seed_intent(inv, ub, slot)
+                    {
+                        self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                        self.stats.pgt_dispatch_retain =
+                            self.stats.pgt_dispatch_retain.saturating_add(1);
+                        return;
+                    }
                 }
                 if self.cfg.strategy.is_pair_arb() {
                     let slot = OrderSlot::new(side, TradeDirection::Buy);
