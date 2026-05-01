@@ -55,6 +55,7 @@ struct PgtTuning {
     completion_early_pair_cap: f64,
     completion_late_pair_cap: f64,
     fixed_clip_qty: Option<f64>,
+    preserve_seed_clip_qty: bool,
     base_clip_qty: f64,
     min_clip_qty: f64,
     max_clip_qty: f64,
@@ -69,6 +70,7 @@ impl PgtTuning {
             completion_early_pair_cap: 1.0 - MIN_EDGE_PER_PAIR,
             completion_late_pair_cap: 1.0,
             fixed_clip_qty: None,
+            preserve_seed_clip_qty: false,
             base_clip_qty: BASE_CLIP_QTY,
             min_clip_qty: MIN_CLIP_QTY,
             max_clip_qty: MAX_CLIP_QTY,
@@ -84,6 +86,7 @@ impl PgtTuning {
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 0.995,
             fixed_clip_qty: Some(57.6),
+            preserve_seed_clip_qty: true,
             base_clip_qty: 57.6,
             min_clip_qty: 57.6,
             max_clip_qty: 57.6,
@@ -99,6 +102,7 @@ impl PgtTuning {
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 1.000,
             fixed_clip_qty: Some(30.0),
+            preserve_seed_clip_qty: true,
             base_clip_qty: 30.0,
             min_clip_qty: 30.0,
             max_clip_qty: 30.0,
@@ -358,8 +362,9 @@ impl PairGatedTrancheStrategy {
         // But we also reserve room for the opposite leg to complete at
         // ask-1tick if that ask is already visible now; otherwise we enter
         // first-leg fills that only close after drifting into negative pair
-        // cost. Clip haircut still handles the "no immediate completion" case,
-        // but price itself must not consume the entire completion budget.
+        // cost. Legacy clip haircut still handles the "no immediate completion"
+        // case, while replay profiles preserve searched seed clip size and use
+        // price gates to control completion budget.
         let open_pair_band =
             pgt_effective_open_pair_band_value(coordinator.cfg().open_pair_band, remaining_secs);
         let tick = coordinator.cfg().tick_size.max(1e-9);
@@ -495,13 +500,17 @@ impl PairGatedTrancheStrategy {
             quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
-        let open_path_mult = if taker_shadow_would_open {
+        let preserve_seed_clip_qty = pgt_tuning().preserve_seed_clip_qty;
+        let open_path_mult = if taker_shadow_would_open || preserve_seed_clip_qty {
             1.0
         } else {
             SEED_NO_IMMEDIATE_COMPLETION_CLIP_MULT
         };
-        let visible_slack_mult =
-            seed_visible_completion_clip_mult(open_pair_band, price, opp_ask, tick);
+        let visible_slack_mult = if preserve_seed_clip_qty {
+            1.0
+        } else {
+            seed_visible_completion_clip_mult(open_pair_band, price, opp_ask, tick)
+        };
         let size = quantize_tenth(size * open_path_mult.min(visible_slack_mult));
         if size <= 0.0 {
             return None;
@@ -1265,6 +1274,7 @@ mod profile_tests {
         assert_eq!(tuning.completion_early_pair_cap, 0.975);
         assert_eq!(tuning.completion_late_pair_cap, 0.995);
         assert_eq!(tuning.fixed_clip_qty, Some(57.6));
+        assert!(tuning.preserve_seed_clip_qty);
     }
 
     #[test]
@@ -1276,6 +1286,7 @@ mod profile_tests {
         assert_eq!(tuning.completion_early_pair_cap, 0.975);
         assert_eq!(tuning.completion_late_pair_cap, 1.000);
         assert_eq!(tuning.fixed_clip_qty, Some(30.0));
+        assert!(tuning.preserve_seed_clip_qty);
     }
 }
 

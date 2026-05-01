@@ -200,7 +200,9 @@ PM_OPEN_PAIR_BAND=0.98
 - seed pair cap = `0.980`；
 - early completion pair cap = `0.975`；
 - late completion pair cap = `0.995`；
-- fixed clip = `57.6` shares。
+- fixed seed clip = `57.6` shares。
+
+Replay profile 会保留上述 seed clip 作为实际下单目标，不再套用 legacy 的 seed-size haircut（例如没有 immediate completion path 时乘 `0.60`）。这样 shadow 样本才是在验证 replay 搜索得到的参数，而不是另一个更保守的变体。
 
 该 profile 来自 public market-side replay 参数搜索；它用于 shadow 验证真实 completion fill rate，不是 enforce 配置。
 

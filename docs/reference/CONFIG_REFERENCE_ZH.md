@@ -158,8 +158,10 @@ profile 说明：
 | profile | 用途 | 关键参数 |
 | --- | --- | --- |
 | `legacy` | 原始 PGT 行为 | 不改硬编码参数 |
-| `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed clip `57.6` |
-| `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed clip `30.0` |
+| `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed seed clip `57.6` |
+| `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed seed clip `30.0` |
+
+Replay profile 下的 `fixed seed clip` 是 replay 搜索里的实际 seed clip。它会绕过 legacy seed 缩量逻辑，例如 “no immediate completion 时乘 `0.60`” 和 thin-slack clip haircut；否则 shadow 样本会变成不同策略，不能直接验证 replay 候选。
 
 注意：这是 public market-side replay 得出的 shadow profile，不是实盘盈利证明。promotion 到 enforce 前需要用小额实盘验证 maker queue / completion fill truth。
 
