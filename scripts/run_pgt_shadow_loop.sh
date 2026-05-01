@@ -14,18 +14,46 @@ PGT_SHADOW_PROFILE="${PM_PGT_SHADOW_PROFILE:-xuan_ladder_v1}"
 BACKOFF_SEC="${PM_PGT_SHADOW_LOOP_BACKOFF_SEC:-5}"
 MAX_ROUNDS="${PM_PGT_SHADOW_LOOP_MAX_ROUNDS:-0}"
 LOOP_LOG="${PM_PGT_SHADOW_LOOP_LOG:-$LOG_ROOT/pgt_shadow_loop.log}"
+INTERVAL_SECS="${PM_PGT_SHADOW_LOOP_INTERVAL_SECS:-300}"
+MIN_REMAINING_SECS="${PM_PGT_SHADOW_LOOP_MIN_REMAINING_SECS:-180}"
 
 mkdir -p "$LOG_ROOT" "$RECORDER_ROOT" "$SHARED_INGRESS_ROOT"
 
 trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S")] pgt shadow loop interrupted; exiting" >> "$LOOP_LOG"; exit 130' INT TERM
 
+choose_round_offset() {
+  if [[ -n "${PM_PGT_SHADOW_LOOP_ROUND_OFFSET:-}" ]]; then
+    echo "$PM_PGT_SHADOW_LOOP_ROUND_OFFSET"
+    return
+  fi
+  if [[ ! "$INTERVAL_SECS" =~ ^[0-9]+$ ]] || [[ ! "$MIN_REMAINING_SECS" =~ ^[0-9]+$ ]] || (( INTERVAL_SECS <= 0 )); then
+    echo "1"
+    return
+  fi
+
+  # Polymarket crypto 5m slug timestamps are round starts. The fixed launcher
+  # treats its min-remaining guard as if the slug timestamp were an end time, so
+  # the loop computes the offset itself and disables that guard below.
+  local now current_start elapsed remaining
+  now="$(date +%s)"
+  current_start="$(( (now / INTERVAL_SECS) * INTERVAL_SECS ))"
+  elapsed="$(( now - current_start ))"
+  remaining="$(( INTERVAL_SECS - elapsed ))"
+  if (( remaining >= MIN_REMAINING_SECS )); then
+    echo "0"
+  else
+    echo "1"
+  fi
+}
+
 round=0
 while true; do
   round=$((round + 1))
   started_at="$(date '+%Y-%m-%d %H:%M:%S')"
+  fixed_round_offset="$(choose_round_offset)"
   {
     echo "[$started_at] pgt shadow loop round=$round prefix=$PREFIX instance_id=$INSTANCE_ID"
-    echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE"
+    echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset min_remaining_secs=$MIN_REMAINING_SECS"
   } >> "$LOOP_LOG"
 
   PM_INSTANCE_ID="$INSTANCE_ID" \
@@ -35,6 +63,8 @@ while true; do
   PM_SHARED_INGRESS_ROOT="$SHARED_INGRESS_ROOT" \
   PM_STRATEGY=pair_gated_tranche_arb \
   PM_PGT_SHADOW_PROFILE="$PGT_SHADOW_PROFILE" \
+  PM_FIXED_ROUND_OFFSET="$fixed_round_offset" \
+  PM_FIXED_MIN_REMAINING_SECS="${PM_FIXED_MIN_REMAINING_SECS:-disabled}" \
     bash "$ROOT/scripts/run_strategy_instance.sh" "$PREFIX" >> "$LOOP_LOG" 2>&1
   exit_code=$?
 
