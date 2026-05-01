@@ -35,7 +35,10 @@ const GLFT_SOURCE_BLOCK_RETAIN_HOLD_BINANCE_MS: u64 = 1_500;
 // Require stale to persist briefly before clearing live targets.
 // This avoids cancel/reprovide ping-pong during short WS reconnect flaps.
 const BOOK_SIDE_STALE_CLEAR_HOLD_MS: u64 = 2_500;
-const PGT_SAME_SIDE_RELEASE_QUARANTINE_MS: u64 = 1_200;
+// PGT seed quotes are intentionally low-cadence. If a seed is filled or has to
+// be cleared because the same-side book became unsafe, wait for the book to
+// stabilize before trying the same side again.
+const PGT_SAME_SIDE_RELEASE_QUARANTINE_MS: u64 = 4_000;
 const PGT_FLAT_SEED_LATCH_MS: u64 = 20_000;
 const PGT_FLAT_SEED_LATCH_MAX_MS: u64 = 30_000;
 const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
