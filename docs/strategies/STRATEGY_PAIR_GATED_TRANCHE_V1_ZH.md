@@ -206,6 +206,23 @@ Replay profile 会保留上述 seed clip 作为实际下单目标，不再套用
 
 该 profile 来自 public market-side replay 参数搜索；它用于 shadow 验证真实 completion fill rate，不是 enforce 配置。
 
+2026-05-01 xuan 最新 public trade 行为分析后新增 shadow profile：
+
+```text
+PM_PGT_SHADOW_PROFILE=xuan_ladder_v1
+PM_PAIR_TARGET=0.975
+PM_OPEN_PAIR_BAND=0.98
+```
+
+`xuan_ladder_v1` 不是替代 `replay_focused_v1` 的安全参数，而是专门用于验证“最新 xuan 等额 tranche ladder”能否在我们执行路径里复现：
+
+- 开盘后 `4s` 开始允许 first leg；
+- 收盘前 `25s` 停止新 first leg，保留 completion/harvest；
+- seed pair cap 内部提升到 `1.040`，不受 launcher 默认 `PM_OPEN_PAIR_BAND=0.98` 压制；
+- completion early/late pair cap = `1.040 / 1.080`，用于观察 xuan 公开样本中常见的 `1.02-1.07` 配对成本区间；
+- clip 由轮内时间决定：`t+4-44s => 120`，`t+45-119s => 160`，`t+120-209s => 210`，`t+210-259s => 135`，尾部 `80` shares；
+- 仍为 shadow-only，不应直接 enforce。当前 OMS 仍是一侧一个 maker slot，不能完整表达 xuan 一轮内多 tranche 同时 ladder，只能先验证时间窗口、报价位置和 completion 压力。
+
 first leg 报价不追求强方向预测，只要求：
 
 - market liquidity ok

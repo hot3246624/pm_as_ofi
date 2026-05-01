@@ -39,23 +39,44 @@ const SAME_SIDE_ADD_MIN_RESIDUAL_QTY: f64 = 45.0;
 const SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS: f64 = 45.0;
 const PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS: f64 = 60.0;
 const PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS: u64 = 90;
+const XUAN_LADDER_ROUND_SECS: u64 = 300;
+const XUAN_LADDER_START_OFFSET_SECS: u64 = 4;
+const XUAN_LADDER_STOP_BEFORE_END_SECS: u64 = 25;
+const XUAN_LADDER_OPEN_PAIR_CAP: f64 = 1.040;
+const XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP: f64 = 1.040;
+const XUAN_LADDER_COMPLETION_LATE_PAIR_CAP: f64 = 1.080;
+const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
+const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PgtShadowProfile {
     Legacy,
     ReplayFocusedV1,
     ReplayLowerClipV1,
+    XuanLadderV1,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PgtClipProfile {
+    Adaptive,
+    XuanLadderV1,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct PgtTuning {
     profile: PgtShadowProfile,
     seed_open_max_remaining_secs: Option<u64>,
+    seed_open_min_remaining_secs: Option<u64>,
+    hard_no_new_open_secs: u64,
+    price_aware_no_new_open_secs: u64,
     open_pair_band_cap: Option<f64>,
     completion_early_pair_cap: f64,
     completion_late_pair_cap: f64,
     fixed_clip_qty: Option<f64>,
+    clip_profile: PgtClipProfile,
     preserve_seed_clip_qty: bool,
+    expensive_seed_min_visible_slack_ticks: f64,
+    seed_min_visible_breakeven_slack_ticks: f64,
     base_clip_qty: f64,
     min_clip_qty: f64,
     max_clip_qty: f64,
@@ -66,11 +87,18 @@ impl PgtTuning {
         Self {
             profile: PgtShadowProfile::Legacy,
             seed_open_max_remaining_secs: None,
+            seed_open_min_remaining_secs: None,
+            hard_no_new_open_secs: HARD_NO_NEW_OPEN_SECS,
+            price_aware_no_new_open_secs: PRICE_AWARE_NO_NEW_OPEN_SECS,
             open_pair_band_cap: None,
             completion_early_pair_cap: 1.0 - MIN_EDGE_PER_PAIR,
             completion_late_pair_cap: 1.0,
             fixed_clip_qty: None,
+            clip_profile: PgtClipProfile::Adaptive,
             preserve_seed_clip_qty: false,
+            expensive_seed_min_visible_slack_ticks: EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS,
+            seed_min_visible_breakeven_slack_ticks:
+                SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS,
             base_clip_qty: BASE_CLIP_QTY,
             min_clip_qty: MIN_CLIP_QTY,
             max_clip_qty: MAX_CLIP_QTY,
@@ -82,11 +110,18 @@ impl PgtTuning {
             profile: PgtShadowProfile::ReplayFocusedV1,
             // 5m round: entry_start=75s means only open when remaining <=225s.
             seed_open_max_remaining_secs: Some(225),
+            seed_open_min_remaining_secs: Some(HARD_NO_NEW_OPEN_SECS),
+            hard_no_new_open_secs: HARD_NO_NEW_OPEN_SECS,
+            price_aware_no_new_open_secs: PRICE_AWARE_NO_NEW_OPEN_SECS,
             open_pair_band_cap: Some(0.980),
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 0.995,
             fixed_clip_qty: Some(57.6),
+            clip_profile: PgtClipProfile::Adaptive,
             preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS,
+            seed_min_visible_breakeven_slack_ticks:
+                SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS,
             base_clip_qty: 57.6,
             min_clip_qty: 57.6,
             max_clip_qty: 57.6,
@@ -98,14 +133,47 @@ impl PgtTuning {
             profile: PgtShadowProfile::ReplayLowerClipV1,
             // 5m round: entry_start=60s means only open when remaining <=240s.
             seed_open_max_remaining_secs: Some(240),
+            seed_open_min_remaining_secs: Some(HARD_NO_NEW_OPEN_SECS),
+            hard_no_new_open_secs: HARD_NO_NEW_OPEN_SECS,
+            price_aware_no_new_open_secs: PRICE_AWARE_NO_NEW_OPEN_SECS,
             open_pair_band_cap: Some(0.970),
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 1.000,
             fixed_clip_qty: Some(30.0),
+            clip_profile: PgtClipProfile::Adaptive,
             preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS,
+            seed_min_visible_breakeven_slack_ticks:
+                SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS,
             base_clip_qty: 30.0,
             min_clip_qty: 30.0,
             max_clip_qty: 30.0,
+        }
+    }
+
+    fn xuan_ladder_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanLadderV1,
+            // Recent xuan samples start as early as t+4s and keep opening until
+            // late round. This profile is shadow-only; it intentionally models
+            // the public ladder shape rather than the conservative replay subset.
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_LADDER_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_LADDER_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_LADDER_OPEN_PAIR_CAP),
+            completion_early_pair_cap: XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP,
+            completion_late_pair_cap: XUAN_LADDER_COMPLETION_LATE_PAIR_CAP,
+            fixed_clip_qty: None,
+            clip_profile: PgtClipProfile::XuanLadderV1,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS,
+            seed_min_visible_breakeven_slack_ticks: XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS,
+            base_clip_qty: 135.0,
+            min_clip_qty: 45.0,
+            max_clip_qty: 250.0,
         }
     }
 
@@ -118,6 +186,7 @@ impl PgtTuning {
             "" | "legacy" | "default" => Self::legacy(),
             "replay_focused_v1" | "focused" | "focused_v1" => Self::replay_focused_v1(),
             "replay_lower_clip_v1" | "lower_clip" | "lower_clip_v1" => Self::replay_lower_clip_v1(),
+            "xuan_ladder_v1" | "xuan_ladder" | "xuan_latest" | "xuan" => Self::xuan_ladder_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -130,7 +199,11 @@ impl PgtTuning {
 
     fn open_pair_band(self, base: f64) -> f64 {
         if let Some(cap) = self.open_pair_band_cap {
-            base.min(cap)
+            if self.profile == PgtShadowProfile::XuanLadderV1 {
+                base.max(cap)
+            } else {
+                base.min(cap)
+            }
         } else {
             base
         }
@@ -181,8 +254,9 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         input: StrategyTickInput<'_>,
     ) -> StrategyQuotes {
         let mut quotes = StrategyQuotes::default();
+        let tuning = pgt_tuning();
         let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
-        let hard_no_new_open = remaining_secs <= HARD_NO_NEW_OPEN_SECS;
+        let hard_no_new_open = remaining_secs <= tuning.hard_no_new_open_secs;
         let harvest_window_active = self.should_shadow_harvest(input, remaining_secs);
 
         if let Some(active) = input
@@ -488,19 +562,20 @@ impl PairGatedTrancheStrategy {
             fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
             preference_score = visible_completion_slack_ticks - 0.60 * fill_distance_ticks;
         }
+        let tuning = pgt_tuning();
         if price > EXPENSIVE_SEED_PRICE + 1e-9
-            && visible_completion_slack_ticks < EXPENSIVE_SEED_MIN_VISIBLE_SLACK_TICKS
+            && visible_completion_slack_ticks < tuning.expensive_seed_min_visible_slack_ticks
         {
             return None;
         }
         let visible_breakeven_completion_slack_ticks = ((1.0 - price - opp_ask) / tick).max(-10.0);
         if visible_breakeven_completion_slack_ticks
-            < SEED_MIN_VISIBLE_BREAKEVEN_COMPLETION_SLACK_TICKS - 1e-9
+            < tuning.seed_min_visible_breakeven_slack_ticks - 1e-9
         {
             quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
-        let preserve_seed_clip_qty = pgt_tuning().preserve_seed_clip_qty;
+        let preserve_seed_clip_qty = tuning.preserve_seed_clip_qty;
         let open_path_mult = if taker_shadow_would_open || preserve_seed_clip_qty {
             1.0
         } else {
@@ -680,11 +755,11 @@ impl PairGatedTrancheStrategy {
             * pgt_completion_urgency_mult(active.first_vwap)
             + pgt_completion_urgency_bonus(active.first_vwap, remaining_secs, completion_age_secs);
         let tuning = pgt_tuning();
-        let early_pair_cap = tuning.completion_early_pair_cap.clamp(0.0, 1.0);
+        let early_pair_cap = tuning.completion_early_pair_cap.clamp(0.0, 1.20);
         let late_pair_cap = tuning
             .completion_late_pair_cap
             .max(early_pair_cap)
-            .clamp(0.0, 1.0);
+            .clamp(0.0, 1.20);
         let positive_edge_ceiling = early_pair_cap - active.first_vwap + repair_budget_per_share;
         let urgency_ceiling = positive_edge_ceiling + urgency_shadow;
         // Urgency can spend remaining edge, but only realized repair budget may
@@ -760,7 +835,7 @@ impl PairGatedTrancheStrategy {
         if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
             return None;
         }
-        if remaining_secs <= PRICE_AWARE_NO_NEW_OPEN_SECS {
+        if remaining_secs <= pgt_tuning().price_aware_no_new_open_secs {
             return None;
         }
         if pgt_active_tranche_age_secs(active) >= SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS {
@@ -851,6 +926,10 @@ impl PairGatedTrancheStrategy {
         let tuning = pgt_tuning();
         if let Some(fixed) = tuning.fixed_clip_qty {
             return fixed.clamp(tuning.min_clip_qty, tuning.max_clip_qty);
+        }
+        if tuning.clip_profile == PgtClipProfile::XuanLadderV1 {
+            return pgt_xuan_ladder_clip_qty(remaining_secs)
+                .clamp(tuning.min_clip_qty, tuning.max_clip_qty);
         }
 
         let session_mult = session_clip_mult_utc();
@@ -1065,17 +1144,23 @@ fn pgt_profile_seed_open_remaining_allowed(remaining_secs: u64) -> bool {
             return false;
         }
     }
+    if let Some(min_remaining) = tuning.seed_open_min_remaining_secs {
+        if remaining_secs < min_remaining {
+            return false;
+        }
+    }
     true
 }
 
 fn pgt_seed_open_window_allowed(seed: &SeedPlan, remaining_secs: u64) -> bool {
+    let tuning = pgt_tuning();
     if !pgt_profile_seed_open_remaining_allowed(remaining_secs) {
         return false;
     }
-    if remaining_secs > PRICE_AWARE_NO_NEW_OPEN_SECS {
+    if remaining_secs > tuning.price_aware_no_new_open_secs {
         return true;
     }
-    if remaining_secs <= HARD_NO_NEW_OPEN_SECS {
+    if remaining_secs <= tuning.hard_no_new_open_secs {
         return false;
     }
 
@@ -1095,7 +1180,7 @@ fn pgt_shadow_entry_pressure_extra_ticks(
     ceiling: f64,
     tick: f64,
 ) -> u8 {
-    if !dry_run || remaining_secs <= PRICE_AWARE_NO_NEW_OPEN_SECS {
+    if !dry_run || remaining_secs <= pgt_tuning().price_aware_no_new_open_secs {
         return 0;
     }
     if taker_shadow_would_open || tick <= 0.0 || best_ask <= 0.0 || ceiling <= 0.0 {
@@ -1203,6 +1288,28 @@ fn seed_visible_completion_clip_mult(
     }
 }
 
+fn pgt_round_elapsed_secs(remaining_secs: u64) -> Option<u64> {
+    if remaining_secs == u64::MAX || remaining_secs > XUAN_LADDER_ROUND_SECS {
+        None
+    } else {
+        Some(XUAN_LADDER_ROUND_SECS - remaining_secs)
+    }
+}
+
+fn pgt_xuan_ladder_clip_qty(remaining_secs: u64) -> f64 {
+    let Some(elapsed) = pgt_round_elapsed_secs(remaining_secs) else {
+        return 0.0;
+    };
+
+    match elapsed {
+        0..=44 => 120.0,
+        45..=119 => 160.0,
+        120..=209 => 210.0,
+        210..=259 => 135.0,
+        _ => 80.0,
+    }
+}
+
 fn imbalance_clip_mult(
     coordinator: &StrategyCoordinator,
     input: StrategyTickInput<'_>,
@@ -1282,11 +1389,51 @@ mod profile_tests {
         let tuning = PgtTuning::replay_lower_clip_v1();
         assert_eq!(tuning.profile, PgtShadowProfile::ReplayLowerClipV1);
         assert_eq!(tuning.seed_open_max_remaining_secs, Some(240));
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(HARD_NO_NEW_OPEN_SECS)
+        );
         assert_eq!(tuning.open_pair_band(0.99), 0.970);
         assert_eq!(tuning.completion_early_pair_cap, 0.975);
         assert_eq!(tuning.completion_late_pair_cap, 1.000);
         assert_eq!(tuning.fixed_clip_qty, Some(30.0));
         assert!(tuning.preserve_seed_clip_qty);
+    }
+
+    #[test]
+    fn xuan_ladder_profile_matches_recent_public_shape() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanLadderV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(296));
+        assert_eq!(tuning.seed_open_min_remaining_secs, Some(25));
+        assert_eq!(tuning.hard_no_new_open_secs, 25);
+        assert_eq!(tuning.price_aware_no_new_open_secs, 25);
+        assert_eq!(tuning.open_pair_band(0.98), XUAN_LADDER_OPEN_PAIR_CAP);
+        assert_eq!(
+            tuning.completion_early_pair_cap,
+            XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.completion_late_pair_cap,
+            XUAN_LADDER_COMPLETION_LATE_PAIR_CAP
+        );
+        assert_eq!(tuning.fixed_clip_qty, None);
+        assert_eq!(tuning.clip_profile, PgtClipProfile::XuanLadderV1);
+        assert!(tuning.preserve_seed_clip_qty);
+        assert_eq!(
+            tuning.seed_min_visible_breakeven_slack_ticks,
+            XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_clip_schedule_tracks_elapsed_offsets() {
+        assert_eq!(pgt_xuan_ladder_clip_qty(296), 120.0);
+        assert_eq!(pgt_xuan_ladder_clip_qty(255), 160.0);
+        assert_eq!(pgt_xuan_ladder_clip_qty(180), 210.0);
+        assert_eq!(pgt_xuan_ladder_clip_qty(90), 135.0);
+        assert_eq!(pgt_xuan_ladder_clip_qty(25), 80.0);
+        assert_eq!(pgt_xuan_ladder_clip_qty(301), 0.0);
     }
 }
 
