@@ -221,6 +221,7 @@ PM_OPEN_PAIR_BAND=0.98
 - seed pair cap 内部提升到 `1.040`，不受 launcher 默认 `PM_OPEN_PAIR_BAND=0.98` 压制；
 - completion pair cap 改为按残仓年龄分阶段放宽：`<20s => 1.000`，`20-45s => 1.010`，`45-90s => 1.020`，`>=90s => 1.040`；尾部 `<=45s` 允许 maker repair 到 `1.040`；
 - taker-close pair cap 单独限制为 `1.000`，避免 shadow 因放宽 maker completion cap 而主动跨价补成负边际配对；
+- 若本轮已闭合过配对且最近 pair cost 没有正盈余、repair budget 为空，则后续新 first leg 必须有可见 breakeven completion path，避免亏损 tranche 后继续用宽入口叠加负成本；
 - clip 由轮内时间决定：`t+4-44s => 120`，`t+45-119s => 160`，`t+120-209s => 210`，`t+210-259s => 135`，尾部 `80` shares；
 - 仍为 shadow-only，不应直接 enforce。当前 OMS 仍是一侧一个 maker slot，不能完整表达 xuan 一轮内多 tranche 同时 ladder，只能先验证时间窗口、报价位置和 completion 压力。
 

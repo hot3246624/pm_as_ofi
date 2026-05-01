@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::polymarket::coordinator::{StrategyCoordinator, PAIR_ARB_NET_EPS};
 use crate::polymarket::messages::{BidReason, TradeDirection};
-use crate::polymarket::pair_ledger::{urgency_budget_shadow_5m, PairTranche};
+use crate::polymarket::pair_ledger::{urgency_budget_shadow_5m, PairLedgerSnapshot, PairTranche};
 use crate::polymarket::types::Side;
 
 use super::pair_arb::PairArbStrategy;
@@ -53,6 +53,9 @@ const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
 const XUAN_LADDER_TAKER_CLOSE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
+const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
+const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
+const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PgtShadowProfile {
@@ -580,9 +583,14 @@ impl PairGatedTrancheStrategy {
             return None;
         }
         let visible_breakeven_completion_slack_ticks = ((1.0 - price - opp_ask) / tick).max(-10.0);
-        if visible_breakeven_completion_slack_ticks
-            < tuning.seed_min_visible_breakeven_slack_ticks - 1e-9
-        {
+        let recent_pair_cost = pgt_recent_closed_pair_cost(input.pair_ledger);
+        let min_visible_breakeven_slack_ticks = pgt_seed_min_visible_breakeven_slack_ticks(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            input.pair_ledger.repair_budget_available,
+            recent_pair_cost,
+        );
+        if visible_breakeven_completion_slack_ticks < min_visible_breakeven_slack_ticks - 1e-9 {
             quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
@@ -1363,6 +1371,47 @@ fn pgt_effective_completion_pair_caps(
     (early, late, taker)
 }
 
+fn pgt_recent_closed_pair_cost(pair_ledger: &PairLedgerSnapshot) -> Option<f64> {
+    let (notional, qty) = pair_ledger
+        .recent_closed
+        .iter()
+        .flatten()
+        .filter(|tranche| tranche.pairable_qty > f64::EPSILON)
+        .fold((0.0, 0.0), |(notional, qty), tranche| {
+            (
+                notional + tranche.pairable_qty * tranche.pair_cost_tranche,
+                qty + tranche.pairable_qty,
+            )
+        });
+    if qty > f64::EPSILON {
+        Some(notional / qty)
+    } else {
+        None
+    }
+}
+
+fn pgt_seed_min_visible_breakeven_slack_ticks(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    repair_budget_available: f64,
+    recent_pair_cost: Option<f64>,
+) -> f64 {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return tuning.seed_min_visible_breakeven_slack_ticks;
+    }
+
+    let cost_brake_active = round_buy_fill_count >= XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS
+        && repair_budget_available <= f64::EPSILON
+        && recent_pair_cost
+            .map(|cost| cost >= XUAN_LADDER_COST_BRAKE_PAIR_COST - 1e-9)
+            .unwrap_or(false);
+    if cost_brake_active {
+        XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS
+    } else {
+        tuning.seed_min_visible_breakeven_slack_ticks
+    }
+}
+
 fn imbalance_clip_mult(
     coordinator: &StrategyCoordinator,
     input: StrategyTickInput<'_>,
@@ -1526,6 +1575,27 @@ mod profile_tests {
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
             (1.000, 1.020, 1.000)
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_seed_cost_brake_only_after_unprofitable_closed_pair() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_seed_min_visible_breakeven_slack_ticks(tuning, 0, 0.0, None),
+            XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
+        );
+        assert_eq!(
+            pgt_seed_min_visible_breakeven_slack_ticks(tuning, 2, 0.0, Some(0.990)),
+            XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
+        );
+        assert_eq!(
+            pgt_seed_min_visible_breakeven_slack_ticks(tuning, 2, 0.0, Some(1.000)),
+            XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS
+        );
+        assert_eq!(
+            pgt_seed_min_visible_breakeven_slack_ticks(tuning, 2, 1.0, Some(1.000)),
+            XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
         );
     }
 }
