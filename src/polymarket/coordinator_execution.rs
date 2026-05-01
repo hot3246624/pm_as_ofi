@@ -767,6 +767,7 @@ impl StrategyCoordinator {
                 remaining_secs,
             ) {
                 if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.pgt_taker_close_rescue_fired = true;
                     self.pgt_shadow_taker_close_fired_epoch[hedge_side.index()] =
                         Some(self.pgt_decision_epoch);
                     self.stats.pgt_dispatch_taker_close =
@@ -1798,6 +1799,7 @@ impl StrategyCoordinator {
                 limit_price,
             } => {
                 if self.cfg.strategy.is_pair_gated_tranche_arb() {
+                    self.pgt_taker_close_rescue_fired = true;
                     self.pgt_shadow_taker_close_fired_epoch[side.index()] =
                         Some(self.pgt_decision_epoch);
                     self.stats.pgt_dispatch_taker_close =

@@ -8304,6 +8304,45 @@ fn test_pair_gated_tranche_tail_blocks_new_seed_with_diagnostic() {
 }
 
 #[test]
+fn test_pair_gated_tranche_rescue_close_blocks_new_flat_seed() {
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let mut cfg = cfg();
+    cfg.strategy = StrategyKind::PairGatedTrancheArb;
+    cfg.dry_run = true;
+    cfg.max_net_diff = 500.0;
+    cfg.open_pair_band = 1.0;
+    cfg.market_end_ts = Some(now_secs + 80);
+    let (_o, _i, _m, _k, _e, mut coord) = make(cfg);
+    coord.pgt_taker_close_rescue_fired = true;
+
+    let inv = InventoryState::default();
+    let metrics = coord.derive_inventory_metrics(&inv);
+    let inventory = test_inventory_snapshot(inv);
+    let quotes = StrategyKind::PairGatedTrancheArb.compute_quotes(
+        &coord,
+        StrategyTickInput {
+            inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &inventory,
+            pair_ledger: &inventory.pair_ledger,
+            episode_metrics: &inventory.episode_metrics,
+            book: &book(0.45, 0.46, 0.43, 0.44),
+            metrics: &metrics,
+            ofi: None,
+            glft: None,
+        },
+    );
+
+    assert!(quotes.yes_buy.is_none(), "got {:?}", quotes);
+    assert!(quotes.no_buy.is_none(), "got {:?}", quotes);
+    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 1);
+}
+
+#[test]
 fn test_pair_gated_tranche_no_new_open_blocks_late_seed_with_diagnostic() {
     let now_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
