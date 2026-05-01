@@ -1279,6 +1279,16 @@ impl StrategyCoordinator {
         let was_oracle_lag_maker = self
             .slot_target(slot)
             .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
+        let pgt_seed_reprice_clear = self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+            && reason == CancelReason::Reprice
+            && self
+                .slot_target(slot)
+                .is_some_and(|t| t.reason == BidReason::Provide);
+        if pgt_seed_reprice_clear {
+            self.pgt_same_side_release_quarantine_until[slot.side.index()] =
+                Some(Instant::now() + Duration::from_millis(PGT_SAME_SIDE_RELEASE_QUARANTINE_MS));
+        }
         self.note_cancel_reason(reason);
 
         self.slot_targets[slot.index()] = None;

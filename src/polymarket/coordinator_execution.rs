@@ -15,7 +15,6 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
-const PGT_SAME_SIDE_RELEASE_QUARANTINE_MS: u64 = 1_200;
 const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
 const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = true;
 

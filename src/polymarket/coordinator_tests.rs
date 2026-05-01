@@ -8879,6 +8879,52 @@ async fn test_pair_gated_tranche_release_quarantine_blocks_stale_same_side_buy()
     );
 }
 
+#[tokio::test]
+async fn test_pair_gated_tranche_seed_reprice_clear_starts_same_side_quarantine() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.debounce_ms = 0;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.40, 96.0, BidReason::Provide, None)
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTarget(target))) => {
+            assert_eq!(target.slot(), OrderSlot::NO_BUY)
+        }
+        other => panic!("expected initial NO_BUY SetTarget, got {:?}", other),
+    }
+
+    coord
+        .clear_slot_target_with_scope(
+            OrderSlot::NO_BUY,
+            CancelReason::Reprice,
+            SlotResetScope::Full,
+        )
+        .await;
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+            assert_eq!(slot, OrderSlot::NO_BUY);
+            assert_eq!(reason, CancelReason::Reprice);
+        }
+        other => panic!("expected NO_BUY ClearTarget, got {:?}", other),
+    }
+    assert!(
+        coord.pgt_same_side_release_quarantine_until[Side::No.index()]
+            .is_some_and(|until| until > Instant::now()),
+        "PGT Reprice clear should arm same-side seed quarantine"
+    );
+
+    coord
+        .slot_place_or_reprice(OrderSlot::NO_BUY, 0.39, 96.0, BidReason::Provide, None)
+        .await;
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "same-side seed should not immediately re-open after Reprice clear"
+    );
+}
+
 // ── Debounce ──
 
 #[tokio::test]
