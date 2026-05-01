@@ -7988,7 +7988,7 @@ fn test_pair_gated_tranche_cheap_first_leg_gets_earlier_breakeven_completion_bon
 }
 
 #[test]
-fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
+fn test_pair_gated_tranche_tail_completion_clip_uses_full_residual() {
     let mut c = cfg();
     c.max_net_diff = 500.0;
     let inv = InventoryState {
@@ -8014,7 +8014,7 @@ fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
         .as_secs();
 
     let mut far_cfg = c.clone();
-    far_cfg.market_end_ts = Some(now_secs + 90);
+    far_cfg.market_end_ts = Some(now_secs + 120);
     let far = pair_gated_tranche_quotes(far_cfg, inventory, book(0.20, 0.22, 0.56, 0.58))
         .no_buy
         .expect("far completion quote");
@@ -8026,8 +8026,13 @@ fn test_pair_gated_tranche_tail_completion_clip_is_larger() {
         .expect("tail completion quote");
 
     assert!(
-        tail.size > far.size,
-        "tail completion clip should be larger than normal-window clip (far={:.1}, tail={:.1})",
+        far.size < 280.0 - 1e-9,
+        "normal-window completion should still use the ladder clip (far={:.1})",
+        far.size,
+    );
+    assert!(
+        (tail.size - 280.0).abs() < 1e-9,
+        "tail completion should cover the full residual before freeze (far={:.1}, tail={:.1})",
         far.size,
         tail.size,
     );
@@ -8123,6 +8128,85 @@ fn test_pair_gated_tranche_harvest_window_blocks_new_seed_quotes() {
         "harvest window should suppress new NO seed"
     );
     assert_eq!(quotes.diagnostics.pgt_skip_harvest, 1);
+}
+
+#[test]
+fn test_pair_gated_tranche_harvest_window_keeps_residual_completion_live() {
+    let inv = InventoryState {
+        yes_qty: 100.0,
+        no_qty: 80.0,
+        yes_avg_cost: 0.40,
+        no_avg_cost: 0.52,
+        net_diff: 20.0,
+        portfolio_cost: 0.92,
+    };
+    let ledger = build_pair_ledger(
+        &[
+            pgt_fill(Side::Yes, 100.0, 0.40),
+            pgt_fill(Side::No, 80.0, 0.52),
+        ],
+        PathKind::MakerShadow,
+    );
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut c = cfg();
+    c.market_end_ts = Some(now_secs + 20);
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.20, 0.22, 0.56, 0.58));
+
+    assert!(
+        quotes.yes_buy.is_none(),
+        "active residual state must not reopen the first-leg side in harvest"
+    );
+    let hedge = quotes
+        .no_buy
+        .expect("harvest window should keep residual completion live");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert_eq!(hedge.side, Side::No);
+    assert!((hedge.size - 20.0).abs() < 1e-9);
+    assert_eq!(quotes.diagnostics.pgt_completion_quotes, 1);
+    assert_eq!(quotes.diagnostics.pgt_skip_harvest, 0);
+}
+
+#[test]
+fn test_pair_gated_tranche_tail_completion_uses_full_residual_size() {
+    let inv = InventoryState {
+        yes_qty: 0.0,
+        no_qty: 120.0,
+        yes_avg_cost: 0.0,
+        no_avg_cost: 0.46,
+        net_diff: -120.0,
+        portfolio_cost: 55.2,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::No, 120.0, 0.46)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut c = cfg();
+    c.dry_run = true;
+    c.market_end_ts = Some(now_secs + 20);
+    let quotes = pair_gated_tranche_quotes(c, inventory, book(0.48, 0.50, 0.44, 0.46));
+
+    let hedge = quotes
+        .yes_buy
+        .expect("tail residual should produce YES completion quote");
+    assert_eq!(hedge.reason, BidReason::Hedge);
+    assert!(
+        (hedge.size - 120.0).abs() < 1e-9,
+        "tail completion should cover the full residual instead of the late ladder clip"
+    );
+    assert!(
+        quotes.pgt_taker_close_limit_for(Side::Yes).is_some(),
+        "tail full-residual completion should still expose the taker-close path when ask is inside breakeven"
+    );
 }
 
 #[test]

@@ -39,6 +39,7 @@ const SAME_SIDE_ADD_MIN_RESIDUAL_QTY: f64 = 45.0;
 const SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS: f64 = 45.0;
 const PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS: f64 = 60.0;
 const PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS: u64 = 90;
+const COMPLETION_FULL_RESIDUAL_REMAINING_SECS: u64 = 90;
 const XUAN_LADDER_ROUND_SECS: u64 = 300;
 const XUAN_LADDER_START_OFFSET_SECS: u64 = 4;
 const XUAN_LADDER_STOP_BEFORE_END_SECS: u64 = 25;
@@ -278,10 +279,6 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             .active_tranche
             .filter(|tranche| tranche.first_side.is_some() && tranche.residual_qty > f64::EPSILON)
         {
-            if harvest_window_active {
-                quotes.note_pgt_skip_harvest();
-                return quotes;
-            }
             let same_side_add =
                 self.same_side_add_intent(coordinator, input, active, remaining_secs);
             if let Some(plan) = self.completion_intent(coordinator, input, active, remaining_secs) {
@@ -810,9 +807,13 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let size = self
-            .adaptive_clip_qty(coordinator, input, Some(active), remaining_secs)
-            .min(active.residual_qty.max(0.0));
+        let raw_size = if remaining_secs <= COMPLETION_FULL_RESIDUAL_REMAINING_SECS {
+            active.residual_qty.max(0.0)
+        } else {
+            self.adaptive_clip_qty(coordinator, input, Some(active), remaining_secs)
+                .min(active.residual_qty.max(0.0))
+        };
+        let size = raw_size.min(active.residual_qty.max(0.0));
         let size = quantize_tenth(size);
         if size <= 0.0 {
             return None;
