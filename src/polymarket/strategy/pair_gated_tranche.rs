@@ -43,8 +43,13 @@ const XUAN_LADDER_ROUND_SECS: u64 = 300;
 const XUAN_LADDER_START_OFFSET_SECS: u64 = 4;
 const XUAN_LADDER_STOP_BEFORE_END_SECS: u64 = 25;
 const XUAN_LADDER_OPEN_PAIR_CAP: f64 = 1.040;
-const XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP: f64 = 1.040;
-const XUAN_LADDER_COMPLETION_LATE_PAIR_CAP: f64 = 1.080;
+const XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 1.010;
+const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.020;
+const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.040;
+const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
+const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
+const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
 const XUAN_LADDER_TAKER_CLOSE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
@@ -169,8 +174,8 @@ impl PgtTuning {
             hard_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
             price_aware_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
             open_pair_band_cap: Some(XUAN_LADDER_OPEN_PAIR_CAP),
-            completion_early_pair_cap: XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP,
-            completion_late_pair_cap: XUAN_LADDER_COMPLETION_LATE_PAIR_CAP,
+            completion_early_pair_cap: XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP,
             taker_close_pair_cap: XUAN_LADDER_TAKER_CLOSE_PAIR_CAP,
             fixed_clip_qty: None,
             clip_profile: PgtClipProfile::XuanLadderV1,
@@ -761,15 +766,8 @@ impl PairGatedTrancheStrategy {
             * pgt_completion_urgency_mult(active.first_vwap)
             + pgt_completion_urgency_bonus(active.first_vwap, remaining_secs, completion_age_secs);
         let tuning = pgt_tuning();
-        let early_pair_cap = tuning.completion_early_pair_cap.clamp(0.0, 1.20);
-        let late_pair_cap = tuning
-            .completion_late_pair_cap
-            .max(early_pair_cap)
-            .clamp(0.0, 1.20);
-        let taker_close_pair_cap = tuning
-            .taker_close_pair_cap
-            .min(late_pair_cap)
-            .clamp(0.0, 1.20);
+        let (early_pair_cap, late_pair_cap, taker_close_pair_cap) =
+            pgt_effective_completion_pair_caps(tuning, remaining_secs, completion_age_secs);
         let positive_edge_ceiling = early_pair_cap - active.first_vwap + repair_budget_per_share;
         let urgency_ceiling = positive_edge_ceiling + urgency_shadow;
         // Urgency can spend remaining edge, but only realized repair budget may
@@ -1323,6 +1321,48 @@ fn pgt_xuan_ladder_clip_qty(remaining_secs: u64) -> f64 {
     }
 }
 
+fn pgt_effective_completion_pair_caps(
+    tuning: PgtTuning,
+    remaining_secs: u64,
+    completion_age_secs: f64,
+) -> (f64, f64, f64) {
+    let default_early = tuning.completion_early_pair_cap.clamp(0.0, 1.20);
+    let default_late = tuning
+        .completion_late_pair_cap
+        .max(default_early)
+        .clamp(0.0, 1.20);
+    let default_taker = tuning
+        .taker_close_pair_cap
+        .min(default_late)
+        .clamp(0.0, 1.20);
+
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return (default_early, default_late, default_taker);
+    }
+
+    let age_pair_cap = if completion_age_secs < XUAN_LADDER_COMPLETION_FRESH_AGE_SECS {
+        XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP
+    } else if completion_age_secs < XUAN_LADDER_COMPLETION_WARM_AGE_SECS {
+        XUAN_LADDER_COMPLETION_WARM_PAIR_CAP
+    } else if completion_age_secs < XUAN_LADDER_COMPLETION_STALE_AGE_SECS {
+        XUAN_LADDER_COMPLETION_STALE_PAIR_CAP
+    } else {
+        XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
+    };
+
+    let tail_cap = if remaining_secs <= 45 {
+        XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
+    } else if remaining_secs <= 90 {
+        age_pair_cap.max(XUAN_LADDER_COMPLETION_STALE_PAIR_CAP)
+    } else {
+        age_pair_cap
+    };
+    let early = age_pair_cap.min(default_early).clamp(0.0, 1.20);
+    let late = tail_cap.max(early).min(default_late).clamp(0.0, 1.20);
+    let taker = default_taker.min(early).min(late).clamp(0.0, 1.20);
+    (early, late, taker)
+}
+
 fn imbalance_clip_mult(
     coordinator: &StrategyCoordinator,
     input: StrategyTickInput<'_>,
@@ -1426,11 +1466,11 @@ mod profile_tests {
         assert_eq!(tuning.open_pair_band(0.98), XUAN_LADDER_OPEN_PAIR_CAP);
         assert_eq!(
             tuning.completion_early_pair_cap,
-            XUAN_LADDER_COMPLETION_EARLY_PAIR_CAP
+            XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
         );
         assert_eq!(
             tuning.completion_late_pair_cap,
-            XUAN_LADDER_COMPLETION_LATE_PAIR_CAP
+            XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
         );
         assert_eq!(
             tuning.taker_close_pair_cap,
@@ -1453,6 +1493,40 @@ mod profile_tests {
         assert_eq!(pgt_xuan_ladder_clip_qty(90), 135.0);
         assert_eq!(pgt_xuan_ladder_clip_qty(25), 80.0);
         assert_eq!(pgt_xuan_ladder_clip_qty(301), 0.0);
+    }
+
+    #[test]
+    fn xuan_ladder_completion_caps_stage_by_residual_age() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 280, 5.0),
+            (1.000, 1.000, 1.000)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 260, 30.0),
+            (1.010, 1.010, 1.000)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 180, 70.0),
+            (1.020, 1.020, 1.000)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 120, 95.0),
+            (1.040, 1.040, 1.000)
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_completion_caps_allow_tail_repair_without_taker_loss() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 40, 8.0),
+            (1.000, 1.040, 1.000)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 80, 8.0),
+            (1.000, 1.020, 1.000)
+        );
     }
 }
 
