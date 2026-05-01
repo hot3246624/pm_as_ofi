@@ -186,6 +186,24 @@ PM_PGT_BASE_CLIP=120
 PM_PGT_MAX_CLIP=250
 ```
 
+2026-05-01 BTC 5m replay 后新增 shadow profile：
+
+```text
+PM_PGT_SHADOW_PROFILE=replay_focused_v1
+PM_PAIR_TARGET=0.975
+PM_OPEN_PAIR_BAND=0.98
+```
+
+`replay_focused_v1` 只在 shadow/profile 显式启用时生效：
+
+- 开盘前 75s 不开 first leg；
+- seed pair cap = `0.980`；
+- early completion pair cap = `0.975`；
+- late completion pair cap = `0.995`；
+- fixed clip = `57.6` shares。
+
+该 profile 来自 public market-side replay 参数搜索；它用于 shadow 验证真实 completion fill rate，不是 enforce 配置。
+
 first leg 报价不追求强方向预测，只要求：
 
 - market liquidity ok
@@ -428,4 +446,3 @@ V1 的目标不是复制 xuan 的所有细节，而是吸收最明确的 edge：
 ```
 
 这是一个新策略，不是旧 `pair_arb` 的参数调优。
-

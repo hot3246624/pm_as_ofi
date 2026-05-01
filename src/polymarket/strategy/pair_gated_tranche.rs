@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::polymarket::coordinator::{StrategyCoordinator, PAIR_ARB_NET_EPS};
@@ -38,6 +39,104 @@ const SAME_SIDE_ADD_MIN_RESIDUAL_QTY: f64 = 45.0;
 const SAME_SIDE_ADD_MAX_COMPLETION_AGE_SECS: f64 = 45.0;
 const PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS: f64 = 60.0;
 const PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS: u64 = 90;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PgtShadowProfile {
+    Legacy,
+    ReplayFocusedV1,
+    ReplayLowerClipV1,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PgtTuning {
+    profile: PgtShadowProfile,
+    seed_open_max_remaining_secs: Option<u64>,
+    open_pair_band_cap: Option<f64>,
+    completion_early_pair_cap: f64,
+    completion_late_pair_cap: f64,
+    fixed_clip_qty: Option<f64>,
+    base_clip_qty: f64,
+    min_clip_qty: f64,
+    max_clip_qty: f64,
+}
+
+impl PgtTuning {
+    fn legacy() -> Self {
+        Self {
+            profile: PgtShadowProfile::Legacy,
+            seed_open_max_remaining_secs: None,
+            open_pair_band_cap: None,
+            completion_early_pair_cap: 1.0 - MIN_EDGE_PER_PAIR,
+            completion_late_pair_cap: 1.0,
+            fixed_clip_qty: None,
+            base_clip_qty: BASE_CLIP_QTY,
+            min_clip_qty: MIN_CLIP_QTY,
+            max_clip_qty: MAX_CLIP_QTY,
+        }
+    }
+
+    fn replay_focused_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::ReplayFocusedV1,
+            // 5m round: entry_start=75s means only open when remaining <=225s.
+            seed_open_max_remaining_secs: Some(225),
+            open_pair_band_cap: Some(0.980),
+            completion_early_pair_cap: 0.975,
+            completion_late_pair_cap: 0.995,
+            fixed_clip_qty: Some(57.6),
+            base_clip_qty: 57.6,
+            min_clip_qty: 57.6,
+            max_clip_qty: 57.6,
+        }
+    }
+
+    fn replay_lower_clip_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::ReplayLowerClipV1,
+            // 5m round: entry_start=60s means only open when remaining <=240s.
+            seed_open_max_remaining_secs: Some(240),
+            open_pair_band_cap: Some(0.970),
+            completion_early_pair_cap: 0.975,
+            completion_late_pair_cap: 1.000,
+            fixed_clip_qty: Some(30.0),
+            base_clip_qty: 30.0,
+            min_clip_qty: 30.0,
+            max_clip_qty: 30.0,
+        }
+    }
+
+    fn from_env() -> Self {
+        let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase();
+        match raw.as_str() {
+            "" | "legacy" | "default" => Self::legacy(),
+            "replay_focused_v1" | "focused" | "focused_v1" => Self::replay_focused_v1(),
+            "replay_lower_clip_v1" | "lower_clip" | "lower_clip_v1" => Self::replay_lower_clip_v1(),
+            _ => {
+                eprintln!(
+                    "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
+                    raw
+                );
+                Self::legacy()
+            }
+        }
+    }
+
+    fn open_pair_band(self, base: f64) -> f64 {
+        if let Some(cap) = self.open_pair_band_cap {
+            base.min(cap)
+        } else {
+            base
+        }
+    }
+}
+
+fn pgt_tuning() -> PgtTuning {
+    static TUNING: OnceLock<PgtTuning> = OnceLock::new();
+    *TUNING.get_or_init(PgtTuning::from_env)
+}
 
 struct CompletionPlan {
     intent: StrategyIntent,
@@ -129,6 +228,10 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             .would_block_new_open_due_to_capital
         {
             quotes.note_pgt_skip_capital_guard();
+            return quotes;
+        }
+        if !pgt_profile_seed_open_remaining_allowed(remaining_secs) {
+            quotes.note_pgt_skip_geometry_guard();
             return quotes;
         }
 
@@ -567,13 +670,17 @@ impl PairGatedTrancheStrategy {
         let urgency_shadow = urgency_budget_shadow_5m(remaining_secs, true)
             * pgt_completion_urgency_mult(active.first_vwap)
             + pgt_completion_urgency_bonus(active.first_vwap, remaining_secs, completion_age_secs);
-        let urgency_ceiling =
-            1.0 - active.first_vwap - MIN_EDGE_PER_PAIR + repair_budget_per_share + urgency_shadow;
+        let tuning = pgt_tuning();
+        let early_pair_cap = tuning.completion_early_pair_cap.clamp(0.0, 1.0);
+        let late_pair_cap = tuning
+            .completion_late_pair_cap
+            .max(early_pair_cap)
+            .clamp(0.0, 1.0);
+        let positive_edge_ceiling = early_pair_cap - active.first_vwap + repair_budget_per_share;
+        let urgency_ceiling = positive_edge_ceiling + urgency_shadow;
         // Urgency can spend remaining edge, but only realized repair budget may
-        // cross breakeven. Shadow no longer grants unfunded timeout repair.
-        let funded_loss_ceiling = 1.0 - active.first_vwap + repair_budget_per_share;
-        let positive_edge_ceiling =
-            1.0 - active.first_vwap - MIN_EDGE_PER_PAIR + repair_budget_per_share;
+        // cross the profile's late pair-cost cap.
+        let funded_loss_ceiling = late_pair_cap - active.first_vwap + repair_budget_per_share;
         let breakeven_unlocked = completion_age_secs >= PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS
             || remaining_secs <= PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS;
         let ceiling = if breakeven_unlocked {
@@ -732,14 +839,19 @@ impl PairGatedTrancheStrategy {
         active: Option<PairTranche>,
         remaining_secs: u64,
     ) -> f64 {
+        let tuning = pgt_tuning();
+        if let Some(fixed) = tuning.fixed_clip_qty {
+            return fixed.clamp(tuning.min_clip_qty, tuning.max_clip_qty);
+        }
+
         let session_mult = session_clip_mult_utc();
         let imbalance_mult = imbalance_clip_mult(coordinator, input, active);
         let trade_index = input.episode_metrics.round_buy_fill_count.max(1) as f64;
         let trade_index_mult = (1.0 - 0.05 * (trade_index - 1.0)).max(0.70);
         let tail_mult = if remaining_secs <= 30 { 1.16 } else { 1.0 };
 
-        (BASE_CLIP_QTY * session_mult * imbalance_mult * trade_index_mult * tail_mult)
-            .clamp(MIN_CLIP_QTY, MAX_CLIP_QTY)
+        (tuning.base_clip_qty * session_mult * imbalance_mult * trade_index_mult * tail_mult)
+            .clamp(tuning.min_clip_qty, tuning.max_clip_qty)
     }
 
     fn passive_completion_price(
@@ -884,6 +996,10 @@ impl PairGatedTrancheStrategy {
 }
 
 pub(crate) fn pgt_effective_open_pair_band_value(base: f64, remaining_secs: u64) -> f64 {
+    let tuning = pgt_tuning();
+    if tuning.profile != PgtShadowProfile::Legacy {
+        return tuning.open_pair_band(base);
+    }
     if remaining_secs == u64::MAX {
         return base;
     }
@@ -933,7 +1049,20 @@ pub(crate) fn pgt_seed_future_completion_reserve_ticks(
     base + extra
 }
 
+fn pgt_profile_seed_open_remaining_allowed(remaining_secs: u64) -> bool {
+    let tuning = pgt_tuning();
+    if let Some(max_remaining) = tuning.seed_open_max_remaining_secs {
+        if remaining_secs == u64::MAX || remaining_secs > max_remaining {
+            return false;
+        }
+    }
+    true
+}
+
 fn pgt_seed_open_window_allowed(seed: &SeedPlan, remaining_secs: u64) -> bool {
+    if !pgt_profile_seed_open_remaining_allowed(remaining_secs) {
+        return false;
+    }
     if remaining_secs > PRICE_AWARE_NO_NEW_OPEN_SECS {
         return true;
     }
@@ -1120,6 +1249,33 @@ fn opposite_side(side: Side) -> Side {
     match side {
         Side::Yes => Side::No,
         Side::No => Side::Yes,
+    }
+}
+
+#[cfg(test)]
+mod profile_tests {
+    use super::*;
+
+    #[test]
+    fn replay_focused_profile_matches_replay_search_candidate() {
+        let tuning = PgtTuning::replay_focused_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::ReplayFocusedV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(225));
+        assert_eq!(tuning.open_pair_band(0.99), 0.980);
+        assert_eq!(tuning.completion_early_pair_cap, 0.975);
+        assert_eq!(tuning.completion_late_pair_cap, 0.995);
+        assert_eq!(tuning.fixed_clip_qty, Some(57.6));
+    }
+
+    #[test]
+    fn replay_lower_clip_profile_matches_risk_control_candidate() {
+        let tuning = PgtTuning::replay_lower_clip_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::ReplayLowerClipV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(240));
+        assert_eq!(tuning.open_pair_band(0.99), 0.970);
+        assert_eq!(tuning.completion_early_pair_cap, 0.975);
+        assert_eq!(tuning.completion_late_pair_cap, 1.000);
+        assert_eq!(tuning.fixed_clip_qty, Some(30.0));
     }
 }
 

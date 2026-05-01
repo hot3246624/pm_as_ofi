@@ -143,6 +143,26 @@ PM_STRATEGY=pair_gated_tranche_arb \
 ./scripts/run_strategy_instance.sh btc-updown-5m
 ```
 
+### PGT Shadow Replay Profile
+
+`run_pgt_fixed_shadow_next.sh` 默认启用：
+
+```bash
+PM_PGT_SHADOW_PROFILE=replay_focused_v1
+PM_PAIR_TARGET=0.975
+PM_OPEN_PAIR_BAND=0.98
+```
+
+profile 说明：
+
+| profile | 用途 | 关键参数 |
+| --- | --- | --- |
+| `legacy` | 原始 PGT 行为 | 不改硬编码参数 |
+| `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed clip `57.6` |
+| `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed clip `30.0` |
+
+注意：这是 public market-side replay 得出的 shadow profile，不是实盘盈利证明。promotion 到 enforce 前需要用小额实盘验证 maker queue / completion fill truth。
+
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 
 | 参数 | 模板值 | 说明 |

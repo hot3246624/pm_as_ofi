@@ -25,6 +25,9 @@ LOG_ROOT="${PM_LOG_ROOT:-$ROOT/logs/$INSTANCE_ID}"
 RECORDER_ROOT="${PM_RECORDER_ROOT:-$ROOT/data/recorder/$INSTANCE_ID}"
 SHARED_INGRESS_ROLE="${PM_SHARED_INGRESS_ROLE:-auto}"
 SHARED_INGRESS_ROOT="${PM_SHARED_INGRESS_ROOT:-$ROOT/run/shared-ingress-main}"
+PGT_SHADOW_PROFILE="${PM_PGT_SHADOW_PROFILE:-replay_focused_v1}"
+PGT_PAIR_TARGET="${PM_PAIR_TARGET:-0.975}"
+PGT_OPEN_PAIR_BAND="${PM_OPEN_PAIR_BAND:-0.98}"
 BINARY="$ROOT/target/debug/polymarket_v2"
 
 mkdir -p "$LOG_ROOT" "$RECORDER_ROOT" "$SHARED_INGRESS_ROOT"
@@ -42,12 +45,18 @@ echo "min_remaining_secs=$MIN_REMAINING_SECS"
 echo "instance_id=$INSTANCE_ID"
 echo "shared_ingress_role=$SHARED_INGRESS_ROLE"
 echo "shared_ingress_root=$SHARED_INGRESS_ROOT"
+echo "pgt_shadow_profile=$PGT_SHADOW_PROFILE"
+echo "pair_target=$PGT_PAIR_TARGET"
+echo "open_pair_band=$PGT_OPEN_PAIR_BAND"
 
 exec env \
   -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
   -u PM_MULTI_MARKET_PREFIXES -u PM_MULTI_MARKET_CHILD -u PM_ORACLE_LAG_SYMBOL_UNIVERSE \
   PM_DRY_RUN=true \
   PM_STRATEGY=pair_gated_tranche_arb \
+  PM_PGT_SHADOW_PROFILE="$PGT_SHADOW_PROFILE" \
+  PM_PAIR_TARGET="$PGT_PAIR_TARGET" \
+  PM_OPEN_PAIR_BAND="$PGT_OPEN_PAIR_BAND" \
   PM_RECORDER_ENABLED=true \
   PM_AUTO_CLAIM=false \
   PM_INSTANCE_ID="$INSTANCE_ID" \
