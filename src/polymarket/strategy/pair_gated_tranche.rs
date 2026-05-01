@@ -45,9 +45,9 @@ const XUAN_LADDER_START_OFFSET_SECS: u64 = 4;
 const XUAN_LADDER_STOP_BEFORE_END_SECS: u64 = 25;
 const XUAN_LADDER_OPEN_PAIR_CAP: f64 = 1.040;
 const XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 1.010;
-const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.020;
-const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.040;
+const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -1554,15 +1554,15 @@ mod profile_tests {
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 260, 30.0),
-            (1.010, 1.010, 1.000)
+            (1.000, 1.000, 1.000)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 180, 70.0),
-            (1.020, 1.020, 1.000)
+            (1.000, 1.000, 1.000)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 120, 95.0),
-            (1.040, 1.040, 1.000)
+            (1.010, 1.010, 1.000)
         );
     }
 
@@ -1571,11 +1571,11 @@ mod profile_tests {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 8.0),
-            (1.000, 1.040, 1.000)
+            (1.000, 1.010, 1.000)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
-            (1.000, 1.020, 1.000)
+            (1.000, 1.000, 1.000)
         );
     }
 
