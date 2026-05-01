@@ -244,10 +244,19 @@ impl OrderManager {
                             size,
                             purpose,
                             limit_price,
+                            expected_fill_price,
                         }) => {
                             let oracle_lag_fast_path = matches!(purpose, TradePurpose::OracleLagSnipe)
                                 && self.side_slots_idle(side);
-                            self.handle_one_shot_taker(side, direction, size, purpose, limit_price).await;
+                            self.handle_one_shot_taker(
+                                side,
+                                direction,
+                                size,
+                                purpose,
+                                limit_price,
+                                expected_fill_price,
+                            )
+                            .await;
                             if oracle_lag_fast_path {
                                 debug!(
                                     "⚡ OMS fast one-shot taker path | side={:?} purpose={:?} reason=slots_idle_skip_side_pump",
@@ -305,6 +314,7 @@ impl OrderManager {
         size: f64,
         purpose: TradePurpose,
         limit_price: Option<f64>,
+        expected_fill_price: Option<f64>,
     ) {
         if size <= 0.0 {
             return;
@@ -320,6 +330,7 @@ impl OrderManager {
             urgency: TradeUrgency::TakerFak,
             size,
             price: limit_price,
+            expected_fill_price,
             purpose,
             local_unreleased_matched_notional_usdc: 0.0,
         });
@@ -552,6 +563,7 @@ impl OrderManager {
                             urgency: TradeUrgency::MakerPostOnly,
                             size: desired.size,
                             price: Some(desired.price),
+                            expected_fill_price: None,
                             purpose: match desired.reason {
                                 BidReason::Provide => TradePurpose::Provide,
                                 BidReason::OracleLagProvide => TradePurpose::OracleLagSnipe,
@@ -642,6 +654,7 @@ mod tests {
                 size: 2.0,
                 purpose: TradePurpose::Hedge,
                 limit_price: None,
+                expected_fill_price: None,
             })
             .await;
 
@@ -704,6 +717,7 @@ mod tests {
                 size: 2.0,
                 purpose: TradePurpose::Hedge,
                 limit_price: None,
+                expected_fill_price: None,
             })
             .await;
 

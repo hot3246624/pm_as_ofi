@@ -652,7 +652,15 @@ impl Executor {
                                     "purpose": "Hedge",
                                 }),
                             );
-                            self.handle_place_taker(side, direction, size, TradePurpose::Hedge, None).await;
+                            self.handle_place_taker(
+                                side,
+                                direction,
+                                size,
+                                TradePurpose::Hedge,
+                                None,
+                                None,
+                            )
+                            .await;
                         }
                         Some(ExecutionCmd::CancelOrder { order_id, reason }) => {
                             let _ = self.handle_cancel_order(&order_id, reason).await;
@@ -1193,6 +1201,7 @@ impl Executor {
                     intent.size,
                     intent.purpose,
                     intent.price,
+                    intent.expected_fill_price,
                 )
                 .await;
             }
@@ -1838,6 +1847,7 @@ impl Executor {
         size: f64,
         purpose: TradePurpose,
         limit_price: Option<f64>,
+        expected_fill_price: Option<f64>,
     ) {
         let mut size = if self.cfg.dry_run
             && direction == TradeDirection::Buy
@@ -1907,7 +1917,9 @@ impl Executor {
                 direction, side, size, purpose
             );
             let dry_order_id = Self::next_dry_run_order_id(OrderSlot::new(side, direction));
-            let fill_price = if let Some(limit) = limit_price {
+            let fill_price = if let Some(price) = expected_fill_price {
+                price.clamp(0.0, 1.0)
+            } else if let Some(limit) = limit_price {
                 limit.clamp(0.0, 1.0)
             } else {
                 let ref_price = 0.5;
@@ -3526,6 +3538,7 @@ mod tests {
             5.0,
             TradePurpose::Provide,
             Some(0.52),
+            None,
         )
         .await;
 
@@ -3586,6 +3599,7 @@ mod tests {
             57.6,
             TradePurpose::Hedge,
             Some(0.51),
+            None,
         )
         .await;
 
@@ -3602,6 +3616,61 @@ mod tests {
         assert_eq!(fill.direction, TradeDirection::Buy);
         assert!((fill.filled_size - 57.6).abs() < 1e-9);
         assert!((fill.price - 0.51).abs() < 1e-9);
+        assert!(matches!(done, OrderResult::TakerHedgeDone { side } if side == Side::Yes));
+    }
+
+    #[tokio::test]
+    async fn dry_run_taker_expected_fill_price_overrides_limit_for_scoring() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        exec.handle_place_taker(
+            Side::Yes,
+            TradeDirection::Buy,
+            160.0,
+            TradePurpose::Hedge,
+            Some(0.24),
+            Some(0.23),
+        )
+        .await;
+
+        let fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("dry-run taker should emit simulated fill");
+        let done = result_rx
+            .recv()
+            .await
+            .expect("dry-run taker should emit done");
+
+        assert!((fill.price - 0.23).abs() < 1e-9);
         assert!(matches!(done, OrderResult::TakerHedgeDone { side } if side == Side::Yes));
     }
 

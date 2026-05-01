@@ -1371,6 +1371,7 @@ impl StrategyCoordinator {
         size: f64,
         purpose: TradePurpose,
         limit_price: Option<f64>,
+        expected_fill_price: Option<f64>,
     ) {
         if self.cfg.strategy.is_oracle_lag_sniping() && self.cfg.oracle_lag_sniping.lab_only {
             info!(
@@ -1496,12 +1497,15 @@ impl StrategyCoordinator {
         }
         if dryrun_execute {
             info!(
-                "🧪 dry_taker_execute | strategy={:?} side={:?} direction={:?} purpose={:?} limit_price={} size={:.2}",
+                "🧪 dry_taker_execute | strategy={:?} side={:?} direction={:?} purpose={:?} limit_price={} expected_fill_price={} size={:.2}",
                 self.cfg.strategy,
                 side,
                 direction,
                 purpose,
                 limit_price
+                    .map(|p| format!("{p:.4}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                expected_fill_price
                     .map(|p| format!("{p:.4}"))
                     .unwrap_or_else(|| "none".to_string()),
                 rounded,
@@ -1515,6 +1519,7 @@ impl StrategyCoordinator {
                 size: rounded,
                 purpose,
                 limit_price,
+                expected_fill_price,
             })
             .await;
     }
@@ -1541,6 +1546,7 @@ impl StrategyCoordinator {
                 sell_size,
                 TradePurpose::Exit,
                 None,
+                None,
             )
             .await;
         }
@@ -1560,6 +1566,7 @@ impl StrategyCoordinator {
                 TradeDirection::Buy,
                 shortfall,
                 TradePurpose::Exit,
+                None,
                 None,
             )
             .await;
@@ -1778,6 +1785,7 @@ impl StrategyCoordinator {
                                 size,
                                 TradePurpose::OracleLagSnipe,
                                 Some(ORACLE_LAG_NO_TAKER_ABOVE_PRICE),
+                                Some(winner_ask),
                             )
                             .await;
                             self.oracle_lag_fak_last_dispatch = Some(Instant::now());

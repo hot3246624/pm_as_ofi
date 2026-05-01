@@ -738,6 +738,7 @@ impl StrategyCoordinator {
                     hedge_size,
                     TradePurpose::Hedge,
                     Some(limit_price),
+                    Some(book_ask),
                 )
                 .await;
                 st.mark_hedge_dispatched(hedge_side);
@@ -1744,6 +1745,7 @@ impl StrategyCoordinator {
                     intent.size,
                     TradePurpose::Provide,
                     Some(limit_price),
+                    Some(intent.price),
                 )
                 .await;
             }
@@ -1767,6 +1769,7 @@ impl StrategyCoordinator {
                     intent.size,
                     TradePurpose::Hedge,
                     Some(limit_price),
+                    Some(intent.price),
                 )
                 .await;
             }
