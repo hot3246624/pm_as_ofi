@@ -58,6 +58,9 @@ const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
+const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.970;
+const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
+const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PgtShadowProfile {
@@ -308,7 +311,9 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             quotes.note_pgt_skip_tail_completion_only();
             return quotes;
         }
-        if coordinator.pgt_blocks_new_seed_after_rescue_close() {
+        if coordinator.pgt_blocks_new_seed_after_rescue_close()
+            && !pgt_allow_reopen_after_rescue_close(tuning, input, remaining_secs)
+        {
             quotes.note_pgt_skip_tail_completion_only();
             return quotes;
         }
@@ -1405,6 +1410,31 @@ fn pgt_recent_closed_pair_cost(pair_ledger: &PairLedgerSnapshot) -> Option<f64> 
     }
 }
 
+fn pgt_allow_reopen_after_rescue_close(
+    tuning: PgtTuning,
+    input: StrategyTickInput<'_>,
+    remaining_secs: u64,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return false;
+    }
+    if remaining_secs < XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS {
+        return false;
+    }
+    if input.inv.net_diff.abs() > PAIR_ARB_NET_EPS {
+        return false;
+    }
+    if input.pair_ledger.residual_qty.abs() > RESIDUAL_EPS {
+        return false;
+    }
+    if input.episode_metrics.round_buy_fill_count > XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS {
+        return false;
+    }
+    pgt_recent_closed_pair_cost(input.pair_ledger)
+        .map(|cost| cost <= XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST + 1e-9)
+        .unwrap_or(false)
+}
+
 fn pgt_seed_min_visible_breakeven_slack_ticks(
     tuning: PgtTuning,
     round_buy_fill_count: u64,
@@ -1488,6 +1518,9 @@ fn opposite_side(side: Side) -> Side {
 #[cfg(test)]
 mod profile_tests {
     use super::*;
+    use crate::polymarket::coordinator::{Book, StrategyInventoryMetrics};
+    use crate::polymarket::messages::{InventorySnapshot, InventoryState};
+    use crate::polymarket::pair_ledger::EpisodeMetrics;
 
     #[test]
     fn replay_focused_profile_matches_replay_search_candidate() {
@@ -1620,6 +1653,94 @@ mod profile_tests {
             pgt_seed_min_visible_breakeven_slack_ticks(tuning, 2, 1.0, Some(1.000)),
             XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
         );
+    }
+
+    #[test]
+    fn xuan_ladder_reopens_after_only_high_quality_rescue_close() {
+        let inv = InventoryState::default();
+        let book = Book::default();
+        let strat_metrics = StrategyInventoryMetrics {
+            paired_qty: 0.0,
+            pair_cost: 0.0,
+            paired_locked_pnl: 0.0,
+            total_spent: 0.0,
+            worst_case_outcome_pnl: 0.0,
+            dominant_side: None,
+            residual_qty: 0.0,
+            residual_inventory_value: 0.0,
+        };
+        let mut ledger = PairLedgerSnapshot::default();
+        ledger.recent_closed[0] = Some(PairTranche {
+            pairable_qty: 160.0,
+            pair_cost_tranche: 0.960,
+            ..PairTranche::default()
+        });
+        let metrics = EpisodeMetrics {
+            round_buy_fill_count: 2,
+            ..EpisodeMetrics::default()
+        };
+        let inventory = InventorySnapshot {
+            settled: inv,
+            working: inv,
+            pair_ledger: ledger,
+            episode_metrics: metrics,
+            ..InventorySnapshot::default()
+        };
+        let input = StrategyTickInput {
+            inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &inventory,
+            pair_ledger: &ledger,
+            episode_metrics: &metrics,
+            book: &book,
+            metrics: &strat_metrics,
+            ofi: None,
+            glft: None,
+        };
+        let tuning = PgtTuning::xuan_ladder_v1();
+
+        assert!(pgt_allow_reopen_after_rescue_close(tuning, input, 180));
+
+        let mut costly_ledger = ledger;
+        costly_ledger.recent_closed[0] = Some(PairTranche {
+            pairable_qty: 160.0,
+            pair_cost_tranche: 0.980,
+            ..PairTranche::default()
+        });
+        let costly_inventory = InventorySnapshot {
+            pair_ledger: costly_ledger,
+            episode_metrics: metrics,
+            ..inventory
+        };
+        let costly_input = StrategyTickInput {
+            pair_ledger: &costly_ledger,
+            inventory: &costly_inventory,
+            ..input
+        };
+        assert!(!pgt_allow_reopen_after_rescue_close(
+            tuning,
+            costly_input,
+            180
+        ));
+        assert!(!pgt_allow_reopen_after_rescue_close(tuning, input, 90));
+
+        let late_metrics = EpisodeMetrics {
+            round_buy_fill_count: 4,
+            ..metrics
+        };
+        let late_inventory = InventorySnapshot {
+            episode_metrics: late_metrics,
+            ..inventory
+        };
+        let late_input = StrategyTickInput {
+            inventory: &late_inventory,
+            episode_metrics: &late_metrics,
+            ..input
+        };
+        assert!(!pgt_allow_reopen_after_rescue_close(
+            tuning, late_input, 180
+        ));
     }
 }
 
