@@ -2651,8 +2651,13 @@ fn rotation_wait_duration(now_unix: u64, end_ts: u64) -> Duration {
 
 type ResolvedMarket = (String, String, String, Option<u64>);
 
-fn inferred_end_ts_from_slug(slug: &str) -> Option<u64> {
+fn inferred_start_ts_from_slug(slug: &str) -> Option<u64> {
     slug.rsplit('-').next()?.parse().ok()
+}
+
+fn inferred_end_ts_from_slug(slug: &str) -> Option<u64> {
+    let start_ts = inferred_start_ts_from_slug(slug)?;
+    Some(start_ts.saturating_add(detect_interval(slug)))
 }
 
 fn resolve_timeout_ms() -> u64 {
@@ -16527,8 +16532,12 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             let (s, ts, e_ts) = compute_current_slug(&raw_slug);
             (s, ts, e_ts)
         } else {
-            // P2 FIX: Cap secs_remaining to avoid Instant + Duration overflow panics
-            (raw_slug.clone(), u64::MAX, u64::MAX) // Fixed mode: no expiry
+            let inferred_start = inferred_start_ts_from_slug(&raw_slug).unwrap_or(u64::MAX);
+            let inferred_end = inferred_end_ts_from_slug(&raw_slug).unwrap_or(u64::MAX);
+            // Exact up/down slugs encode market start, not close. Keep fixed
+            // mode on the same time axis as prefix mode; Gamma endDate can
+            // still override this below when available.
+            (raw_slug.clone(), inferred_start, inferred_end)
         };
 
         // Entry gate: if startup is too late in the current interval, skip it.
@@ -17784,6 +17793,22 @@ mod tests {
         assert_eq!(detect_interval("btc-updown-4h"), 14_400);
         assert_eq!(detect_interval("sol-updown-1d"), 86_400);
         assert_eq!(detect_interval("eth-updown-d"), 86_400);
+    }
+
+    #[test]
+    fn test_inferred_market_times_from_exact_updown_slug() {
+        assert_eq!(
+            inferred_start_ts_from_slug("btc-updown-5m-1777608600"),
+            Some(1_777_608_600)
+        );
+        assert_eq!(
+            inferred_end_ts_from_slug("btc-updown-5m-1777608600"),
+            Some(1_777_608_900)
+        );
+        assert_eq!(
+            inferred_end_ts_from_slug("btc-updown-15m-1777608600"),
+            Some(1_777_609_500)
+        );
     }
 
     #[test]
