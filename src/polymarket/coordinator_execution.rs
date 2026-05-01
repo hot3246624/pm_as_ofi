@@ -232,8 +232,31 @@ impl StrategyCoordinator {
         if !freeze_active && remaining_secs > PGT_TAIL_NO_NEW_OPEN_SECS {
             return;
         }
-        let active_tranche_exists = self.inv_rx.borrow().pair_ledger.active_tranche.is_some();
-        if active_tranche_exists && !freeze_active {
+        let active_first_side = self
+            .inv_rx
+            .borrow()
+            .pair_ledger
+            .active_tranche
+            .and_then(|active| active.first_side);
+        if let Some(first_side) = active_first_side {
+            let first_slot = OrderSlot::new(first_side, TradeDirection::Buy);
+            if matches!(
+                self.slot_target(first_slot),
+                Some(target) if target.reason == BidReason::Provide
+            ) {
+                self.stats.pgt_dispatch_clear = self.stats.pgt_dispatch_clear.saturating_add(1);
+                self.force_clear_slot_target(
+                    first_slot,
+                    CancelReason::EndgameRiskGate,
+                    SlotResetScope::Full,
+                    if freeze_active {
+                        "pgt_freeze_clear_same_side_seed"
+                    } else {
+                        "pgt_tail_clear_same_side_seed"
+                    },
+                )
+                .await;
+            }
             return;
         }
 

@@ -8871,6 +8871,64 @@ async fn test_pair_gated_tranche_tail_force_clears_orphan_seed_orders() {
     );
 }
 
+#[tokio::test]
+async fn test_pair_gated_tranche_tail_force_keeps_active_completion_hedge() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 2,
+    );
+    let (_o, inv_tx, _m, _k, mut er, mut coord) = make(config);
+    let inv = InventoryState {
+        yes_qty: 0.0,
+        no_qty: 160.0,
+        yes_avg_cost: 0.0,
+        no_avg_cost: 0.59,
+        net_diff: -160.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::No, 160.0, 0.59)], PathKind::MakerShadow);
+    assert!(
+        ledger.snapshot.active_tranche.is_some(),
+        "test setup requires an active residual tranche"
+    );
+    inv_tx
+        .0
+        .send(test_inventory_snapshot_with_ledger(
+            inv,
+            ledger.snapshot,
+            ledger.episode_metrics,
+        ))
+        .unwrap();
+
+    let hedge = DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.42,
+        size: 160.0,
+        reason: BidReason::Hedge,
+    };
+    coord.slot_targets[OrderSlot::YES_BUY.index()] = Some(hedge.clone());
+    coord.yes_target = Some(hedge);
+    let quotes = StrategyQuotes::default();
+    let mut st = coord.init_execution_state(&inv, quotes);
+
+    coord.maybe_pgt_force_clear_tail_seed_orders(&mut st).await;
+
+    assert!(
+        timeout(Duration::from_millis(30), er.recv()).await.is_err(),
+        "tail force-clear must not cancel an active residual completion hedge"
+    );
+    assert!(
+        coord.slot_target_active(OrderSlot::YES_BUY),
+        "completion hedge target should remain live through endgame freeze"
+    );
+}
+
 #[test]
 fn test_pair_gated_tranche_global_book_stale_holds_existing_buy_target() {
     let mut config = cfg();

@@ -48,10 +48,11 @@ const XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.010;
+const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.020;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
-const XUAN_LADDER_TAKER_CLOSE_PAIR_CAP: f64 = 1.010;
+const XUAN_LADDER_TAIL_RESCUE_MIN_AGE_SECS: f64 = 120.0;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
@@ -179,8 +180,8 @@ impl PgtTuning {
             price_aware_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
             open_pair_band_cap: Some(XUAN_LADDER_OPEN_PAIR_CAP),
             completion_early_pair_cap: XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP,
-            completion_late_pair_cap: XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP,
-            taker_close_pair_cap: XUAN_LADDER_TAKER_CLOSE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_LADDER_TAIL_RESCUE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_LADDER_TAIL_RESCUE_PAIR_CAP,
             fixed_clip_qty: None,
             clip_profile: PgtClipProfile::XuanLadderV1,
             preserve_seed_clip_qty: true,
@@ -1363,13 +1364,16 @@ fn pgt_effective_completion_pair_caps(
         XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
     };
 
-    let tail_cap = if remaining_secs <= 45 {
-        XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
-    } else if remaining_secs <= 90 {
-        age_pair_cap.max(XUAN_LADDER_COMPLETION_STALE_PAIR_CAP)
-    } else {
-        age_pair_cap
-    };
+    let tail_cap =
+        if remaining_secs <= 45 && completion_age_secs >= XUAN_LADDER_TAIL_RESCUE_MIN_AGE_SECS {
+            XUAN_LADDER_TAIL_RESCUE_PAIR_CAP
+        } else if remaining_secs <= 45 {
+            XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
+        } else if remaining_secs <= 90 {
+            age_pair_cap.max(XUAN_LADDER_COMPLETION_STALE_PAIR_CAP)
+        } else {
+            age_pair_cap
+        };
     let early = age_pair_cap.min(default_early).clamp(0.0, 1.20);
     let late = tail_cap.max(early).min(default_late).clamp(0.0, 1.20);
     let taker =
@@ -1530,11 +1534,11 @@ mod profile_tests {
         );
         assert_eq!(
             tuning.completion_late_pair_cap,
-            XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
+            XUAN_LADDER_TAIL_RESCUE_PAIR_CAP
         );
         assert_eq!(
             tuning.taker_close_pair_cap,
-            XUAN_LADDER_TAKER_CLOSE_PAIR_CAP
+            XUAN_LADDER_TAIL_RESCUE_PAIR_CAP
         );
         assert_eq!(tuning.fixed_clip_qty, None);
         assert_eq!(tuning.clip_profile, PgtClipProfile::XuanLadderV1);
@@ -1582,6 +1586,14 @@ mod profile_tests {
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 8.0),
             (1.000, 1.010, 1.010)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 40, 119.0),
+            (1.010, 1.010, 1.010)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 40, 120.0),
+            (1.010, 1.020, 1.020)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
