@@ -8314,7 +8314,7 @@ fn test_pair_gated_tranche_rescue_close_blocks_new_flat_seed() {
     cfg.dry_run = true;
     cfg.max_net_diff = 500.0;
     cfg.open_pair_band = 1.0;
-    cfg.market_end_ts = Some(now_secs + 80);
+    cfg.market_end_ts = Some(now_secs + 220);
     let (_o, _i, _m, _k, _e, mut coord) = make(cfg);
     coord.pgt_taker_close_rescue_fired = true;
 
@@ -8339,7 +8339,8 @@ fn test_pair_gated_tranche_rescue_close_blocks_new_flat_seed() {
 
     assert!(quotes.yes_buy.is_none(), "got {:?}", quotes);
     assert!(quotes.no_buy.is_none(), "got {:?}", quotes);
-    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 1);
+    assert_eq!(quotes.diagnostics.pgt_skip_tail_completion_only, 0);
+    assert_eq!(quotes.diagnostics.pgt_skip_after_rescue_close, 1);
 }
 
 #[test]

@@ -314,7 +314,7 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         if coordinator.pgt_blocks_new_seed_after_rescue_close()
             && !pgt_allow_reopen_after_rescue_close(tuning, input, remaining_secs)
         {
-            quotes.note_pgt_skip_tail_completion_only();
+            quotes.note_pgt_skip_after_rescue_close();
             return quotes;
         }
         if input.pair_ledger.residual_qty.abs() > RESIDUAL_EPS {

@@ -298,6 +298,7 @@ impl StrategyCoordinator {
             entry_pressure_extra_ticks: self.stats.pgt_entry_pressure_extra_ticks,
             skip_harvest: self.stats.pgt_skip_harvest,
             skip_tail_completion_only: self.stats.pgt_skip_tail_completion_only,
+            skip_after_rescue_close: self.stats.pgt_skip_after_rescue_close,
             skip_residual_guard: self.stats.pgt_skip_residual_guard,
             skip_capital_guard: self.stats.pgt_skip_capital_guard,
             skip_invalid_book: self.stats.pgt_skip_invalid_book,
@@ -407,6 +408,9 @@ impl StrategyCoordinator {
         let skip_tail_delta = cur
             .skip_tail_completion_only
             .saturating_sub(prev.skip_tail_completion_only);
+        let skip_after_rescue_delta = cur
+            .skip_after_rescue_close
+            .saturating_sub(prev.skip_after_rescue_close);
         let skip_residual_delta = cur
             .skip_residual_guard
             .saturating_sub(prev.skip_residual_guard);
@@ -435,7 +439,7 @@ impl StrategyCoordinator {
             .saturating_sub(prev.stale_target_dropped);
 
         info!(
-            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/residual/capital/invalid/no_seed/geometry/no_visible_be)={}/{}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/after_rescue/residual/capital/invalid/no_seed/geometry/no_visible_be)={}/{}/{}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
             seed_delta,
             completion_delta,
             post_flow_delta,
@@ -451,6 +455,7 @@ impl StrategyCoordinator {
             stale_target_dropped_delta,
             skip_harvest_delta,
             skip_tail_delta,
+            skip_after_rescue_delta,
             skip_residual_delta,
             skip_capital_delta,
             skip_invalid_book_delta,
