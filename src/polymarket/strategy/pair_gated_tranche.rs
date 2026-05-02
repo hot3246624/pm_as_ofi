@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::polymarket::coordinator::{StrategyCoordinator, PAIR_ARB_NET_EPS};
+use crate::polymarket::coordinator::{PAIR_ARB_NET_EPS, StrategyCoordinator};
 use crate::polymarket::messages::{BidReason, TradeDirection};
-use crate::polymarket::pair_ledger::{urgency_budget_shadow_5m, PairLedgerSnapshot, PairTranche};
+use crate::polymarket::pair_ledger::{PairLedgerSnapshot, PairTranche, urgency_budget_shadow_5m};
 use crate::polymarket::types::Side;
 
 use super::pair_arb::PairArbStrategy;
@@ -61,6 +61,8 @@ const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.970;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.965;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PgtShadowProfile {
@@ -315,6 +317,10 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             && !pgt_allow_reopen_after_rescue_close(tuning, input, remaining_secs)
         {
             quotes.note_pgt_skip_after_rescue_close();
+            return quotes;
+        }
+        if pgt_blocks_reopen_after_closed_pair(tuning, input) {
+            quotes.note_pgt_skip_after_closed_pair();
             return quotes;
         }
         if input.pair_ledger.residual_qty.abs() > RESIDUAL_EPS {
@@ -939,11 +945,7 @@ impl PairGatedTrancheStrategy {
             best_bid
         };
         let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
-        if price > 0.0 {
-            Some(price)
-        } else {
-            None
-        }
+        if price > 0.0 { Some(price) } else { None }
     }
 
     fn adaptive_clip_qty(
@@ -1038,11 +1040,7 @@ impl PairGatedTrancheStrategy {
                 0.0
             }
         } else if remaining_secs <= 180 {
-            if spread_ticks >= 4.0 {
-                1.0
-            } else {
-                0.0
-            }
+            if spread_ticks >= 4.0 { 1.0 } else { 0.0 }
         } else if spread_ticks >= 5.0 {
             1.0
         } else {
@@ -1087,11 +1085,7 @@ impl PairGatedTrancheStrategy {
                     0.0
                 }
             } else if completion_age_secs >= 8.0 {
-                if spread_ticks >= 3.0 - 1e-9 {
-                    1.0
-                } else {
-                    0.0
-                }
+                if spread_ticks >= 3.0 - 1e-9 { 1.0 } else { 0.0 }
             } else {
                 0.0
             }
@@ -1105,11 +1099,7 @@ impl PairGatedTrancheStrategy {
             .min(max_passive_ticks);
         let passive_anchor = best_bid + improve_ticks * tick;
         let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
-        if price > 0.0 {
-            Some(price)
-        } else {
-            None
-        }
+        if price > 0.0 { Some(price) } else { None }
     }
 }
 
@@ -1138,11 +1128,7 @@ pub(crate) fn pgt_open_leg_ceiling_from_opposite_bid(
         return None;
     }
     let ceiling = (open_pair_band - opposite_bid).clamp(0.0, 1.0);
-    if ceiling > 0.0 {
-        Some(ceiling)
-    } else {
-        None
-    }
+    if ceiling > 0.0 { Some(ceiling) } else { None }
 }
 
 pub(crate) fn pgt_seed_future_completion_reserve_ticks(
@@ -1241,11 +1227,7 @@ fn pgt_shadow_entry_pressure_extra_ticks(
 }
 
 fn pgt_completion_urgency_mult(first_vwap: f64) -> f64 {
-    if first_vwap >= 0.50 {
-        0.40
-    } else {
-        1.0
-    }
+    if first_vwap >= 0.50 { 0.40 } else { 1.0 }
 }
 
 fn pgt_active_tranche_age_secs(active: PairTranche) -> f64 {
@@ -1433,6 +1415,24 @@ fn pgt_allow_reopen_after_rescue_close(
         .unwrap_or(false)
 }
 
+fn pgt_blocks_reopen_after_closed_pair(tuning: PgtTuning, input: StrategyTickInput<'_>) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return false;
+    }
+    if input.episode_metrics.round_buy_fill_count < XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS {
+        return false;
+    }
+    if input.inv.net_diff.abs() > PAIR_ARB_NET_EPS {
+        return false;
+    }
+    if input.pair_ledger.residual_qty.abs() > RESIDUAL_EPS {
+        return false;
+    }
+    pgt_recent_closed_pair_cost(input.pair_ledger)
+        .map(|cost| cost > XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST + 1e-9)
+        .unwrap_or(false)
+}
+
 fn pgt_seed_min_visible_breakeven_slack_ticks(
     tuning: PgtTuning,
     round_buy_fill_count: u64,
@@ -1499,11 +1499,7 @@ fn session_clip_mult_utc() -> f64 {
 
 fn quantize_tenth(qty: f64) -> f64 {
     let rounded = (qty * 10.0).floor() / 10.0;
-    if rounded >= 0.1 {
-        rounded
-    } else {
-        0.0
-    }
+    if rounded >= 0.1 { rounded } else { 0.0 }
 }
 
 fn opposite_side(side: Side) -> Side {
@@ -1716,7 +1712,11 @@ mod profile_tests {
             inventory: &costly_inventory,
             ..input
         };
-        assert!(!pgt_allow_reopen_after_rescue_close(tuning, costly_input, 180));
+        assert!(!pgt_allow_reopen_after_rescue_close(
+            tuning,
+            costly_input,
+            180
+        ));
         assert!(!pgt_allow_reopen_after_rescue_close(tuning, input, 90));
 
         let late_metrics = EpisodeMetrics {
@@ -1735,6 +1735,90 @@ mod profile_tests {
         assert!(!pgt_allow_reopen_after_rescue_close(
             tuning, late_input, 180
         ));
+    }
+
+    #[test]
+    fn xuan_ladder_blocks_low_quality_reopen_after_closed_pair() {
+        let inv = InventoryState::default();
+        let book = Book::default();
+        let strat_metrics = StrategyInventoryMetrics {
+            paired_qty: 0.0,
+            pair_cost: 0.0,
+            paired_locked_pnl: 0.0,
+            total_spent: 0.0,
+            worst_case_outcome_pnl: 0.0,
+            dominant_side: None,
+            residual_qty: 0.0,
+            residual_inventory_value: 0.0,
+        };
+        let mut ledger = PairLedgerSnapshot::default();
+        ledger.recent_closed[0] = Some(PairTranche {
+            pairable_qty: 160.0,
+            pair_cost_tranche: 0.970,
+            ..PairTranche::default()
+        });
+        let metrics = EpisodeMetrics {
+            round_buy_fill_count: 2,
+            ..EpisodeMetrics::default()
+        };
+        let inventory = InventorySnapshot {
+            settled: inv,
+            working: inv,
+            pair_ledger: ledger,
+            episode_metrics: metrics,
+            ..InventorySnapshot::default()
+        };
+        let input = StrategyTickInput {
+            inv: &inv,
+            settled_inv: &inv,
+            working_inv: &inv,
+            inventory: &inventory,
+            pair_ledger: &ledger,
+            episode_metrics: &metrics,
+            book: &book,
+            metrics: &strat_metrics,
+            ofi: None,
+            glft: None,
+        };
+        let tuning = PgtTuning::xuan_ladder_v1();
+
+        assert!(pgt_blocks_reopen_after_closed_pair(tuning, input));
+
+        let mut high_quality_ledger = ledger;
+        high_quality_ledger.recent_closed[0] = Some(PairTranche {
+            pairable_qty: 160.0,
+            pair_cost_tranche: 0.960,
+            ..PairTranche::default()
+        });
+        let high_quality_inventory = InventorySnapshot {
+            pair_ledger: high_quality_ledger,
+            episode_metrics: metrics,
+            ..inventory
+        };
+        let high_quality_input = StrategyTickInput {
+            pair_ledger: &high_quality_ledger,
+            inventory: &high_quality_inventory,
+            ..input
+        };
+        assert!(!pgt_blocks_reopen_after_closed_pair(
+            tuning,
+            high_quality_input
+        ));
+
+        let early_metrics = EpisodeMetrics {
+            round_buy_fill_count: 1,
+            ..metrics
+        };
+        let early_inventory = InventorySnapshot {
+            episode_metrics: early_metrics,
+            ..inventory
+        };
+        let early_input = StrategyTickInput {
+            inventory: &early_inventory,
+            episode_metrics: &early_metrics,
+            ..input
+        };
+        assert!(!pgt_blocks_reopen_after_closed_pair(tuning, early_input));
     }
 }
 

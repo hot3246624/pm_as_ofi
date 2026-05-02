@@ -66,6 +66,7 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pgt_skip_harvest: u8,
     pub(crate) pgt_skip_tail_completion_only: u8,
     pub(crate) pgt_skip_after_rescue_close: u8,
+    pub(crate) pgt_skip_after_closed_pair: u8,
     pub(crate) pgt_skip_residual_guard: u8,
     pub(crate) pgt_skip_capital_guard: u8,
     pub(crate) pgt_skip_invalid_book: u8,
@@ -186,6 +187,13 @@ impl StrategyQuotes {
         self.diagnostics.pgt_skip_after_rescue_close = self
             .diagnostics
             .pgt_skip_after_rescue_close
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_after_closed_pair(&mut self) {
+        self.diagnostics.pgt_skip_after_closed_pair = self
+            .diagnostics
+            .pgt_skip_after_closed_pair
             .saturating_add(1);
     }
 
