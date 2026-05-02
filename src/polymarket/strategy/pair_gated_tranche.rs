@@ -54,7 +54,8 @@ const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
 const XUAN_LADDER_TAIL_RESCUE_MIN_AGE_SECS: f64 = 120.0;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
-const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
+const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = 1.0;
+const XUAN_LADDER_EXPENSIVE_SEED_DOMINANCE_TICKS: f64 = 2.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
@@ -387,6 +388,7 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         match self.select_flat_seed_plans(
             yes_seed.as_ref(),
             no_seed.as_ref(),
+            tuning.profile,
             coordinator.cfg().dry_run,
             latched_side,
             latch_exhausted,
@@ -654,6 +656,7 @@ impl PairGatedTrancheStrategy {
         &self,
         yes_seed: Option<&SeedPlan>,
         no_seed: Option<&SeedPlan>,
+        profile: PgtShadowProfile,
         dry_run: bool,
         latched_side: Option<Side>,
         latch_exhausted: bool,
@@ -670,6 +673,14 @@ impl PairGatedTrancheStrategy {
                     (false, true) => return FlatSeedSelection::YesOnly,
                     (true, false) => return FlatSeedSelection::NoOnly,
                     (false, false) => {}
+                }
+                if profile == PgtShadowProfile::XuanLadderV1 {
+                    if Self::xuan_expensive_seed_dominated_by_cheap_seed(yes, no) {
+                        return FlatSeedSelection::NoOnly;
+                    }
+                    if Self::xuan_expensive_seed_dominated_by_cheap_seed(no, yes) {
+                        return FlatSeedSelection::YesOnly;
+                    }
                 }
                 if dry_run {
                     match latched_side {
@@ -763,6 +774,21 @@ impl PairGatedTrancheStrategy {
                 }
             }
         }
+    }
+
+    fn xuan_expensive_seed_dominated_by_cheap_seed(
+        expensive: &SeedPlan,
+        cheap: &SeedPlan,
+    ) -> bool {
+        if expensive.intent.price <= EXPENSIVE_SEED_PRICE + 1e-9 {
+            return false;
+        }
+        if cheap.intent.price > EXPENSIVE_SEED_PRICE + 1e-9 {
+            return false;
+        }
+        expensive.visible_completion_slack_ticks
+            < cheap.visible_completion_slack_ticks + XUAN_LADDER_EXPENSIVE_SEED_DOMINANCE_TICKS
+                - 1e-9
     }
 
     fn seed_geometry_reject(seed: &SeedPlan) -> bool {
@@ -1865,11 +1891,20 @@ mod tests {
     use super::*;
 
     fn seed_plan(side: Side, price: f64, entry_pressure_extra_ticks: u8) -> SeedPlan {
+        seed_plan_with_slack(side, price, entry_pressure_extra_ticks, 1.0)
+    }
+
+    fn seed_plan_with_slack(
+        side: Side,
+        price: f64,
+        entry_pressure_extra_ticks: u8,
+        visible_completion_slack_ticks: f64,
+    ) -> SeedPlan {
         SeedPlan {
             size: 72.0,
             taker_shadow_would_open: false,
             entry_pressure_extra_ticks,
-            visible_completion_slack_ticks: 1.0,
+            visible_completion_slack_ticks,
             fill_distance_ticks: 2.0,
             preference_score: 0.0,
             intent: StrategyIntent {
@@ -1888,8 +1923,14 @@ mod tests {
         let yes = seed_plan(Side::Yes, 0.47, 1);
         let no = seed_plan(Side::No, 0.50, 1);
 
-        let selection =
-            strategy.select_flat_seed_plans(Some(&yes), Some(&no), true, Some(Side::No), false);
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::XuanLadderV1,
+            true,
+            Some(Side::No),
+            false,
+        );
 
         assert_eq!(selection, FlatSeedSelection::NoOnly);
     }
@@ -1900,8 +1941,51 @@ mod tests {
         let yes = seed_plan(Side::Yes, 0.47, 0);
         let no = seed_plan(Side::No, 0.50, 0);
 
-        let selection = strategy.select_flat_seed_plans(Some(&yes), Some(&no), true, None, true);
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::XuanLadderV1,
+            true,
+            None,
+            true,
+        );
 
         assert_eq!(selection, FlatSeedSelection::Dual);
+    }
+
+    #[test]
+    fn xuan_ladder_selection_avoids_dominated_expensive_seed() {
+        let strategy = PairGatedTrancheStrategy;
+        let expensive_yes = seed_plan_with_slack(Side::Yes, 0.55, 0, 0.0);
+        let cheaper_no = seed_plan_with_slack(Side::No, 0.43, 0, 2.0);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&expensive_yes),
+            Some(&cheaper_no),
+            PgtShadowProfile::XuanLadderV1,
+            true,
+            Some(Side::Yes),
+            false,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::NoOnly);
+    }
+
+    #[test]
+    fn xuan_ladder_selection_allows_expensive_seed_with_dominant_completion_slack() {
+        let strategy = PairGatedTrancheStrategy;
+        let expensive_yes = seed_plan_with_slack(Side::Yes, 0.55, 0, 3.0);
+        let cheaper_no = seed_plan_with_slack(Side::No, 0.43, 0, 0.5);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&expensive_yes),
+            Some(&cheaper_no),
+            PgtShadowProfile::XuanLadderV1,
+            true,
+            None,
+            false,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::YesOnly);
     }
 }
