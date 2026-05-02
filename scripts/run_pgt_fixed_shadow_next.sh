@@ -65,7 +65,7 @@ else
   prefetch_pid=""
 fi
 
-if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/scripts" -type f -newer "$BINARY" | grep -q .; then
+if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" -type f -newer "$BINARY" 2>/dev/null | grep -q .; then
   cargo build --bin polymarket_v2
 fi
 
