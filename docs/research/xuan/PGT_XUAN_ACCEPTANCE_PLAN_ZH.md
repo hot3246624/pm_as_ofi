@@ -1,6 +1,6 @@
 # PGT/xuan Shadow 验收计划
 
-更新时间：2026-04-30 09:45 CST
+更新时间：2026-05-02 21:00 CST
 
 目标：在不影响 `oracle_lag_sniping` / `pair_arb` / `glft_mm` 的前提下，将 `pair_gated_tranche_arb` 的 BTC 5m shadow 行为收敛到接近 xuanxuan008 的 completion-first 特征，并确认是否具备进入更长期 shadow soak 的条件。
 
@@ -16,8 +16,8 @@
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
-| A8 | taker-close 成本边界 | 75s 只 breakeven；90s 只允许半 tick repair；150s 才允许 1c repair；极端老 episode 才允许 1.015 | 旧口径过夜样本 `pair_cost_p90=1.0191`，`max=1.0291`，有 2 轮 `>1.02`；新 cap 首轮仍因 t-45 时间兜底打到 `1.0100`，已继续移除该兜底 | 未通过 | 用新 cap 继续验证 clean close / pair cost 权衡 |
-| A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.01 | 过夜 paired 样本中位 `1.0100`；60 轮 paired 中 53 轮 `>1.00`、12 轮 `>1.01` | 未通过 | 优先降低负 EV completion，不再用宽 tail 换 clean close |
+| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.010` | 最新 15 轮样本仍出现 `pair_cost=1.03/1.04` 的无资金来源 tail close，已移除 time-only `1.04` tail cap | 未通过 | 复跑验证 `pair_cost > 1.01` 是否消失，以及 clean close 是否可接受 |
+| A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.01 | 最新 15 轮 paired 样本中位 `0.98`，但仍有 2 轮 `>1.01`，说明 tail repair 仍需硬约束 | 未通过 | 优先降低负 EV completion，不再用宽 tail 换 clean close |
 | A10 | merge/redeem 生命周期 | merge 主要在 t-25 到 t-18；redeem 在 +35/+50；无 residual 积压 | 近期报告显示 merge/redeem 窗口符合 | 通过 | 长样本确认 |
 | A11 | replay/report 可观测性 | 报告包含 seed/cover delay、dispatch_taker_close、pair_cost、same-side 指标 | 已新增 `first_completion_delay_s` / p90 | 通过 | 每轮重建 gap report |
 | A12 | 回归测试 | PGT Rust 单测、replay/report Python 单测全过 | `cargo test -q pair_gated_tranche --lib` 77 passed；Python 3.12 replay/report 11 passed | 通过 | 每次策略改动后必跑 |
@@ -25,7 +25,7 @@
 ## 当前硬阻塞
 
 1. `completion` maker 阶段实际订单生命周期已稳定；`PGTGate.dispatch_place` 误报问题已修复，下一轮需确认新口径下 `place` 接近真实 `placed`。
-2. `taker-close` 已能闭环，但过夜样本证明旧 repair band 偏宽：中位成本贴 `1.01`，尾部到 `1.0291`。
+2. `taker-close` 已能闭环，但最新 fixed shadow 仍证明旧 time-only repair band 偏宽：尾部可到 `1.04`。
 3. 报表旧 gate 偏松：只看 median `episode_close_delay_p90`，没有拦截 `p90_first_completion_delay_s` 与 pair-cost tail。
 
 ## 最新聚合：过夜样本 `btc-updown-5m-1777484100` 到 `btc-updown-5m-1777506900`
@@ -52,7 +52,7 @@
 - 旧 shadow repair band 过宽，已经从“可闭合验证”进入“负 EV 控制”阶段。
 - 报表已补 `p90_first_completion_delay_s`、`summary_pair_cost_p90`、`summary_pair_cost_tail` gate。
 - pair-cost 统计现在忽略 `summary_paired_qty=0` 的伪 active 行，避免 `pair_cost=0` 污染验收。
-- 策略已收紧：90s 只允许半 tick repair，150s 才允许 1c repair，极端老 episode 才允许 `1.015`；不再允许 t-45 纯时间兜底触发 1c repair。
+- 策略已收紧：无真实 surplus budget 时 completion/taker-close 只允许到 breakeven；surplus-funded repair 每股最多贡献 `0.010`，避免 time-only tail close 产生系统性负 EV。
 - 新 cap 复测轮 `1777514400` 没有触发 taker-close，验证修复生效；但 `NO@0.51` first-leg 无法闭合，最终留下 `79.5` residual，因此继续补 expensive seed guard，而不是回滚到宽 repair。
 
 ## 样本明细：`btc-updown-5m-1777468200`

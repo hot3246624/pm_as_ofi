@@ -1,9 +1,9 @@
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::polymarket::coordinator::{PAIR_ARB_NET_EPS, StrategyCoordinator};
+use crate::polymarket::coordinator::{StrategyCoordinator, PAIR_ARB_NET_EPS};
 use crate::polymarket::messages::{BidReason, TradeDirection};
-use crate::polymarket::pair_ledger::{PairLedgerSnapshot, PairTranche, urgency_budget_shadow_5m};
+use crate::polymarket::pair_ledger::{urgency_budget_shadow_5m, PairLedgerSnapshot, PairTranche};
 use crate::polymarket::types::Side;
 
 use super::pair_arb::PairArbStrategy;
@@ -48,7 +48,8 @@ const XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.040;
+const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -776,10 +777,7 @@ impl PairGatedTrancheStrategy {
         }
     }
 
-    fn xuan_expensive_seed_dominated_by_cheap_seed(
-        expensive: &SeedPlan,
-        cheap: &SeedPlan,
-    ) -> bool {
+    fn xuan_expensive_seed_dominated_by_cheap_seed(expensive: &SeedPlan, cheap: &SeedPlan) -> bool {
         if expensive.intent.price <= EXPENSIVE_SEED_PRICE + 1e-9 {
             return false;
         }
@@ -816,12 +814,15 @@ impl PairGatedTrancheStrategy {
         }
 
         let completion_age_secs = pgt_active_tranche_age_secs(active);
-        let repair_budget_per_share =
-            input.pair_ledger.repair_budget_available / active.residual_qty.max(1.0);
+        let tuning = pgt_tuning();
+        let repair_budget_per_share = pgt_effective_repair_budget_per_share(
+            tuning,
+            input.pair_ledger.repair_budget_available,
+            active.residual_qty,
+        );
         let urgency_shadow = urgency_budget_shadow_5m(remaining_secs, true)
             * pgt_completion_urgency_mult(active.first_vwap)
             + pgt_completion_urgency_bonus(active.first_vwap, remaining_secs, completion_age_secs);
-        let tuning = pgt_tuning();
         let (early_pair_cap, late_pair_cap, taker_close_pair_cap) =
             pgt_effective_completion_pair_caps(tuning, remaining_secs, completion_age_secs);
         let positive_edge_ceiling = early_pair_cap - active.first_vwap + repair_budget_per_share;
@@ -980,7 +981,11 @@ impl PairGatedTrancheStrategy {
             best_bid
         };
         let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
-        if price > 0.0 { Some(price) } else { None }
+        if price > 0.0 {
+            Some(price)
+        } else {
+            None
+        }
     }
 
     fn adaptive_clip_qty(
@@ -1075,7 +1080,11 @@ impl PairGatedTrancheStrategy {
                 0.0
             }
         } else if remaining_secs <= 180 {
-            if spread_ticks >= 4.0 { 1.0 } else { 0.0 }
+            if spread_ticks >= 4.0 {
+                1.0
+            } else {
+                0.0
+            }
         } else if spread_ticks >= 5.0 {
             1.0
         } else {
@@ -1120,7 +1129,11 @@ impl PairGatedTrancheStrategy {
                     0.0
                 }
             } else if completion_age_secs >= 8.0 {
-                if spread_ticks >= 3.0 - 1e-9 { 1.0 } else { 0.0 }
+                if spread_ticks >= 3.0 - 1e-9 {
+                    1.0
+                } else {
+                    0.0
+                }
             } else {
                 0.0
             }
@@ -1134,7 +1147,11 @@ impl PairGatedTrancheStrategy {
             .min(max_passive_ticks);
         let passive_anchor = best_bid + improve_ticks * tick;
         let price = coordinator.safe_price(passive_anchor.min(maker_cap).min(ceiling));
-        if price > 0.0 { Some(price) } else { None }
+        if price > 0.0 {
+            Some(price)
+        } else {
+            None
+        }
     }
 }
 
@@ -1163,7 +1180,11 @@ pub(crate) fn pgt_open_leg_ceiling_from_opposite_bid(
         return None;
     }
     let ceiling = (open_pair_band - opposite_bid).clamp(0.0, 1.0);
-    if ceiling > 0.0 { Some(ceiling) } else { None }
+    if ceiling > 0.0 {
+        Some(ceiling)
+    } else {
+        None
+    }
 }
 
 pub(crate) fn pgt_seed_future_completion_reserve_ticks(
@@ -1262,7 +1283,11 @@ fn pgt_shadow_entry_pressure_extra_ticks(
 }
 
 fn pgt_completion_urgency_mult(first_vwap: f64) -> f64 {
-    if first_vwap >= 0.50 { 0.40 } else { 1.0 }
+    if first_vwap >= 0.50 {
+        0.40
+    } else {
+        1.0
+    }
 }
 
 fn pgt_active_tranche_age_secs(active: PairTranche) -> f64 {
@@ -1406,6 +1431,22 @@ fn pgt_effective_completion_pair_caps(
     (early, late, taker)
 }
 
+fn pgt_effective_repair_budget_per_share(
+    tuning: PgtTuning,
+    repair_budget_available: f64,
+    residual_qty: f64,
+) -> f64 {
+    if repair_budget_available <= 0.0 || residual_qty <= 0.0 {
+        return 0.0;
+    }
+    let per_share = repair_budget_available / residual_qty.max(1.0);
+    if tuning.profile == PgtShadowProfile::XuanLadderV1 {
+        per_share.min((XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP - 1.0).max(0.0))
+    } else {
+        per_share
+    }
+}
+
 fn pgt_recent_closed_pair_cost(pair_ledger: &PairLedgerSnapshot) -> Option<f64> {
     let (notional, qty) = pair_ledger
         .recent_closed
@@ -1545,7 +1586,11 @@ fn session_clip_mult_utc() -> f64 {
 
 fn quantize_tenth(qty: f64) -> f64 {
     let rounded = (qty * 10.0).floor() / 10.0;
-    if rounded >= 0.1 { rounded } else { 0.0 }
+    if rounded >= 0.1 {
+        rounded
+    } else {
+        0.0
+    }
 }
 
 fn opposite_side(side: Side) -> Side {
@@ -1654,7 +1699,7 @@ mod profile_tests {
     }
 
     #[test]
-    fn xuan_ladder_completion_caps_allow_bounded_tail_taker_repair() {
+    fn xuan_ladder_completion_caps_do_not_unlock_unfunded_tail_repair() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 8.0),
@@ -1666,11 +1711,25 @@ mod profile_tests {
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 120.0),
-            (1.000, 1.040, 1.040)
+            (1.000, 1.000, 1.000)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
             (0.990, 0.990, 0.990)
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_repair_budget_per_share_is_surplus_capped() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_effective_repair_budget_per_share(tuning, 0.0, 120.0),
+            0.0
+        );
+        assert!((pgt_effective_repair_budget_per_share(tuning, 0.6, 120.0) - 0.005).abs() < 1e-9);
+        assert!(
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0) - 0.010).abs() < 1e-9,
+            "xuan ladder repair must never spend more than one cent per residual share"
         );
     }
 
