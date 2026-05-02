@@ -3310,6 +3310,10 @@ const PGT_SHADOW_REDEEM_FIRST_SECS: u64 = 35;
 const PGT_SHADOW_REDEEM_RETRY_SECS: u64 = 50;
 const PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS: u64 = 2_000;
 
+fn pgt_shadow_redeem_lifecycle_enabled() -> bool {
+    env_bool("PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED", true)
+}
+
 fn pgt_shadow_harvest_attempt(
     first_sent: bool,
     retry_sent: bool,
@@ -14011,7 +14015,14 @@ enum MarketEnd {
 
 // Hard guard against "zombie rounds": even if WS loop gets stuck, the outer runner
 // must force-rotate shortly after the market end timestamp.
-const MARKET_WS_HARD_CUTOFF_GRACE_SECS: u64 = 45;
+const MARKET_WS_HARD_CUTOFF_GRACE_SECS_DEFAULT: u64 = 45;
+fn market_ws_hard_cutoff_grace_secs() -> u64 {
+    env::var("PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map(|v| v.min(300))
+        .unwrap_or(MARKET_WS_HARD_CUTOFF_GRACE_SECS_DEFAULT)
+}
 // If we keep receiving raw payloads but never reconstruct a full 4-price book,
 // reconnect proactively because strategy cannot trade without complete book.
 const MARKET_WS_NO_FULL_BOOK_RECONNECT_SECS: u64 = 12;
@@ -14045,7 +14056,8 @@ async fn run_market_ws_remote_with_wall_guard(
         .duration_since(UNIX_EPOCH)
         .unwrap_or_else(|_| Duration::from_secs(0))
         .as_secs();
-    let hard_cutoff_ts = end_ts.saturating_add(MARKET_WS_HARD_CUTOFF_GRACE_SECS);
+    let hard_cutoff_grace_secs = market_ws_hard_cutoff_grace_secs();
+    let hard_cutoff_ts = end_ts.saturating_add(hard_cutoff_grace_secs);
     let socket_path = shared_ingress_root().join("market.sock");
     let mut reconnect_backoff = Duration::from_millis(200);
     loop {
@@ -14229,7 +14241,8 @@ async fn run_market_ws_with_wall_guard(
     recorder: Option<RecorderHandle>,
     recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
-    let hard_cutoff_ts = end_ts.saturating_add(MARKET_WS_HARD_CUTOFF_GRACE_SECS);
+    let hard_cutoff_grace_secs = market_ws_hard_cutoff_grace_secs();
+    let hard_cutoff_ts = end_ts.saturating_add(hard_cutoff_grace_secs);
     let mut ws_task = tokio::spawn(run_market_ws(
         settings,
         ofi_tx,
@@ -14265,7 +14278,7 @@ async fn run_market_ws_with_wall_guard(
                         "🛑 Hard wall-clock cutoff reached (now={} >= end_ts+grace={}+{}) — aborting market WS and rotating",
                         now_unix,
                         end_ts,
-                        MARKET_WS_HARD_CUTOFF_GRACE_SECS
+                        hard_cutoff_grace_secs
                     );
                     ws_task.abort();
                     let _ = ws_task.await;
@@ -17545,7 +17558,11 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             );
         }
 
-        if market_settled && coord_cfg.strategy.is_pair_gated_tranche_arb() && recorder.enabled() {
+        if market_settled
+            && coord_cfg.strategy.is_pair_gated_tranche_arb()
+            && recorder.enabled()
+            && pgt_shadow_redeem_lifecycle_enabled()
+        {
             let redeem_recorder = recorder.clone();
             let redeem_meta = recorder_meta.clone();
             let final_snapshot = *inv_watch_rx_postclose.borrow();
