@@ -187,6 +187,8 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_PGT_SHADOW_LOOP_BACKOFF_SEC` | `1` | 正常轮转退出后的重启间隔 |
 | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `2` | fixed shadow round 收盘后快速退出，避免下一轮迟到 |
 | `PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED` | shadow loop 默认 `false` | PGT shadow 轮转默认不跑 post-close redeem lifecycle，redeem 行为单独验证 |
+| `PM_CLAIM_MONITOR` | fixed shadow 默认 `false` | PGT shadow 热启动不跑 claim monitor，避免非交易 HTTP 阻塞下一轮开盘 |
+| `PM_MIN_ORDER_SIZE` | fixed shadow 默认 `5` | PGT shadow 固定最低下单量，避免每轮启动同步探测 `/books` 拖慢开盘 |
 
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 
