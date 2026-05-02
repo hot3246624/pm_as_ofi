@@ -1161,6 +1161,7 @@ pub struct StrategyCoordinator {
     pgt_flat_seed_latch_exhausted: bool,
     pgt_tail_seed_force_clear_sent: bool,
     pgt_taker_close_rescue_fired: bool,
+    pgt_post_close_reopen_attempted_fill_count: Option<u64>,
     pgt_shadow_taker_open_fired_epoch: Option<u64>,
     pgt_shadow_taker_close_fired_epoch: [Option<u64>; 2],
     pair_arb_slot_blocked_for_ms: [u64; 4],
@@ -1541,6 +1542,7 @@ impl StrategyCoordinator {
             pgt_flat_seed_latch_exhausted: false,
             pgt_tail_seed_force_clear_sent: false,
             pgt_taker_close_rescue_fired: false,
+            pgt_post_close_reopen_attempted_fill_count: None,
             pgt_shadow_taker_open_fired_epoch: None,
             pgt_shadow_taker_close_fired_epoch: [None, None],
             pair_arb_slot_blocked_for_ms: [0; 4],
@@ -2271,6 +2273,14 @@ impl StrategyCoordinator {
 
     pub(crate) fn pgt_blocks_new_seed_after_rescue_close(&self) -> bool {
         self.cfg.strategy.is_pair_gated_tranche_arb() && self.pgt_taker_close_rescue_fired
+    }
+
+    pub(crate) fn pgt_post_close_reopen_attempted_for_fill_count(
+        &self,
+        round_buy_fill_count: u64,
+    ) -> bool {
+        self.cfg.strategy.is_pair_gated_tranche_arb()
+            && self.pgt_post_close_reopen_attempted_fill_count == Some(round_buy_fill_count)
     }
 
     fn update_pgt_flat_seed_latch(&mut self, quotes: &StrategyQuotes, has_active_tranche: bool) {

@@ -58,10 +58,10 @@ const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
-const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.970;
+const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.965;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,13 +313,22 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             quotes.note_pgt_skip_tail_completion_only();
             return quotes;
         }
+        let post_close_reopen_attempted = coordinator
+            .pgt_post_close_reopen_attempted_for_fill_count(
+                input.episode_metrics.round_buy_fill_count,
+            );
         if coordinator.pgt_blocks_new_seed_after_rescue_close()
-            && !pgt_allow_reopen_after_rescue_close(tuning, input, remaining_secs)
+            && !pgt_allow_reopen_after_rescue_close(
+                tuning,
+                input,
+                remaining_secs,
+                post_close_reopen_attempted,
+            )
         {
             quotes.note_pgt_skip_after_rescue_close();
             return quotes;
         }
-        if pgt_blocks_reopen_after_closed_pair(tuning, input) {
+        if pgt_blocks_reopen_after_closed_pair(tuning, input, post_close_reopen_attempted) {
             quotes.note_pgt_skip_after_closed_pair();
             return quotes;
         }
@@ -1394,8 +1403,12 @@ fn pgt_allow_reopen_after_rescue_close(
     tuning: PgtTuning,
     input: StrategyTickInput<'_>,
     remaining_secs: u64,
+    reopen_attempted_for_fill_count: bool,
 ) -> bool {
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return false;
+    }
+    if reopen_attempted_for_fill_count {
         return false;
     }
     if remaining_secs < XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS {
@@ -1415,9 +1428,16 @@ fn pgt_allow_reopen_after_rescue_close(
         .unwrap_or(false)
 }
 
-fn pgt_blocks_reopen_after_closed_pair(tuning: PgtTuning, input: StrategyTickInput<'_>) -> bool {
+fn pgt_blocks_reopen_after_closed_pair(
+    tuning: PgtTuning,
+    input: StrategyTickInput<'_>,
+    reopen_attempted_for_fill_count: bool,
+) -> bool {
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
         return false;
+    }
+    if reopen_attempted_for_fill_count {
+        return true;
     }
     if input.episode_metrics.round_buy_fill_count < XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS {
         return false;
@@ -1666,7 +1686,7 @@ mod profile_tests {
         let mut ledger = PairLedgerSnapshot::default();
         ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.960,
+            pair_cost_tranche: 0.880,
             ..PairTranche::default()
         });
         let metrics = EpisodeMetrics {
@@ -1694,12 +1714,17 @@ mod profile_tests {
         };
         let tuning = PgtTuning::xuan_ladder_v1();
 
-        assert!(pgt_allow_reopen_after_rescue_close(tuning, input, 180));
+        assert!(pgt_allow_reopen_after_rescue_close(
+            tuning, input, 180, false
+        ));
+        assert!(!pgt_allow_reopen_after_rescue_close(
+            tuning, input, 180, true
+        ));
 
         let mut costly_ledger = ledger;
         costly_ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.980,
+            pair_cost_tranche: 0.940,
             ..PairTranche::default()
         });
         let costly_inventory = InventorySnapshot {
@@ -1715,9 +1740,12 @@ mod profile_tests {
         assert!(!pgt_allow_reopen_after_rescue_close(
             tuning,
             costly_input,
-            180
+            180,
+            false
         ));
-        assert!(!pgt_allow_reopen_after_rescue_close(tuning, input, 90));
+        assert!(!pgt_allow_reopen_after_rescue_close(
+            tuning, input, 90, false
+        ));
 
         let late_metrics = EpisodeMetrics {
             round_buy_fill_count: 4,
@@ -1733,7 +1761,7 @@ mod profile_tests {
             ..input
         };
         assert!(!pgt_allow_reopen_after_rescue_close(
-            tuning, late_input, 180
+            tuning, late_input, 180, false
         ));
     }
 
@@ -1754,7 +1782,7 @@ mod profile_tests {
         let mut ledger = PairLedgerSnapshot::default();
         ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.970,
+            pair_cost_tranche: 0.930,
             ..PairTranche::default()
         });
         let metrics = EpisodeMetrics {
@@ -1782,12 +1810,12 @@ mod profile_tests {
         };
         let tuning = PgtTuning::xuan_ladder_v1();
 
-        assert!(pgt_blocks_reopen_after_closed_pair(tuning, input));
+        assert!(pgt_blocks_reopen_after_closed_pair(tuning, input, false));
 
         let mut high_quality_ledger = ledger;
         high_quality_ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.960,
+            pair_cost_tranche: 0.880,
             ..PairTranche::default()
         });
         let high_quality_inventory = InventorySnapshot {
@@ -1802,7 +1830,13 @@ mod profile_tests {
         };
         assert!(!pgt_blocks_reopen_after_closed_pair(
             tuning,
-            high_quality_input
+            high_quality_input,
+            false
+        ));
+        assert!(pgt_blocks_reopen_after_closed_pair(
+            tuning,
+            high_quality_input,
+            true
         ));
 
         let early_metrics = EpisodeMetrics {
@@ -1818,7 +1852,11 @@ mod profile_tests {
             episode_metrics: &early_metrics,
             ..input
         };
-        assert!(!pgt_blocks_reopen_after_closed_pair(tuning, early_input));
+        assert!(!pgt_blocks_reopen_after_closed_pair(
+            tuning,
+            early_input,
+            false
+        ));
     }
 }
 

@@ -20,6 +20,40 @@ impl StrategyCoordinator {
         !(self.cfg.strategy.is_oracle_lag_sniping() && reason == BidReason::OracleLagProvide)
     }
 
+    fn maybe_note_pgt_post_close_reopen_attempt(&mut self, slot: OrderSlot, reason: BidReason) {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb()
+            || slot.direction != TradeDirection::Buy
+            || reason != BidReason::Provide
+        {
+            return;
+        }
+        let snapshot = self.current_inventory_snapshot();
+        let has_recent_closed_pair = snapshot
+            .pair_ledger
+            .recent_closed
+            .iter()
+            .flatten()
+            .any(|tranche| tranche.pairable_qty > f64::EPSILON);
+        if snapshot.pair_ledger.active_tranche.is_some()
+            || !has_recent_closed_pair
+            || snapshot.pair_ledger.residual_qty.abs() > 10.0
+            || snapshot.working.net_diff.abs() > PAIR_ARB_NET_EPS
+            || snapshot.episode_metrics.round_buy_fill_count < 2
+        {
+            return;
+        }
+        let fill_count = snapshot.episode_metrics.round_buy_fill_count;
+        if self.pgt_post_close_reopen_attempted_fill_count != Some(fill_count) {
+            info!(
+                "🧭 pgt_post_close_reopen_attempt_latched | slot={} side={:?} fill_count={} price_basis=seed",
+                slot.as_str(),
+                slot.side,
+                fill_count
+            );
+        }
+        self.pgt_post_close_reopen_attempted_fill_count = Some(fill_count);
+    }
+
     fn oracle_lag_dryrun_execute_enabled(&self, purpose: TradePurpose) -> bool {
         if !self.cfg.dry_run || !self.cfg.strategy.is_oracle_lag_sniping() {
             return false;
@@ -1945,6 +1979,7 @@ impl StrategyCoordinator {
         } else {
             self.slot_pgt_target_epochs[slot.index()] = None;
         }
+        self.maybe_note_pgt_post_close_reopen_attempt(slot, reason);
         self.sync_buy_side_wrapper(slot);
 
         self.stats.placed += 1;
