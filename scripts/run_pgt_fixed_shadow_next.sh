@@ -69,12 +69,26 @@ if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/scripts" -type f -newer "$BIN
   cargo build --bin polymarket_v2
 fi
 
+FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-3}"
+TARGET_START_TS="${POLYMARKET_MARKET_SLUG##*-}"
+prestart_sleep_secs=0
+if [[ "$TARGET_START_TS" =~ ^[0-9]+$ ]] && [[ "$FIXED_PRESTART_SECS" =~ ^[0-9]+$ ]]; then
+  now="$(date +%s)"
+  launch_at="$(( TARGET_START_TS - FIXED_PRESTART_SECS ))"
+  if (( launch_at > now )); then
+    prestart_sleep_secs="$(( launch_at - now ))"
+    sleep "$prestart_sleep_secs"
+  fi
+fi
+
 echo "slug=$POLYMARKET_MARKET_SLUG"
 echo "market_id=$POLYMARKET_MARKET_ID"
 echo "yes_asset_id=$POLYMARKET_YES_ASSET_ID"
 echo "no_asset_id=$POLYMARKET_NO_ASSET_ID"
 echo "round_offset=$ROUND_OFFSET"
 echo "min_remaining_secs=$MIN_REMAINING_SECS"
+echo "prestart_sleep_secs=$prestart_sleep_secs"
+echo "prestart_secs=$FIXED_PRESTART_SECS"
 echo "instance_id=$INSTANCE_ID"
 echo "shared_ingress_role=$SHARED_INGRESS_ROLE"
 echo "shared_ingress_root=$SHARED_INGRESS_ROOT"
