@@ -48,7 +48,7 @@ const XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.020;
+const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.040;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -1620,7 +1620,7 @@ mod profile_tests {
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 120.0),
-            (1.000, 1.020, 1.020)
+            (1.000, 1.040, 1.040)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
