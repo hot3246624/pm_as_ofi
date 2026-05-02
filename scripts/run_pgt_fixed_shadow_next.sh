@@ -43,9 +43,27 @@ SHARED_INGRESS_ROOT="${PM_SHARED_INGRESS_ROOT:-$ROOT/run/shared-ingress-main}"
 PGT_SHADOW_PROFILE="${PM_PGT_SHADOW_PROFILE:-replay_focused_v1}"
 PGT_PAIR_TARGET="${PM_PAIR_TARGET:-0.975}"
 PGT_OPEN_PAIR_BAND="${PM_OPEN_PAIR_BAND:-0.98}"
+MARKET_RESOLVE_PREFETCH_ROUNDS="${PM_MARKET_RESOLVE_PREFETCH_ROUNDS:-3}"
 BINARY="$ROOT/target/debug/polymarket_v2"
 
 mkdir -p "$LOG_ROOT" "$RECORDER_ROOT" "$SHARED_INGRESS_ROOT"
+
+if [[ "$MARKET_RESOLVE_PREFETCH_ROUNDS" =~ ^[0-9]+$ ]] && (( MARKET_RESOLVE_PREFETCH_ROUNDS > 0 )); then
+  prefetch_offset="$(( ROUND_OFFSET + 1 ))"
+  (
+    PM_MARKET_RESOLVE_RETRIES="${PM_MARKET_RESOLVE_PREFETCH_RETRIES:-2}" \
+    PM_MARKET_RESOLVE_TIMEOUT_SEC="${PM_MARKET_RESOLVE_PREFETCH_TIMEOUT_SEC:-2}" \
+    PM_MARKET_RESOLVE_BACKOFF_MS="${PM_MARKET_RESOLVE_PREFETCH_BACKOFF_MS:-100}" \
+      /usr/bin/python3 "$ROOT/scripts/resolve_market_ids.py" \
+        --prefix "$PREFIX" \
+        --round-offset "$prefetch_offset" \
+        --prefetch-only \
+        --prefetch-rounds "$MARKET_RESOLVE_PREFETCH_ROUNDS"
+  ) >> "$LOG_ROOT/market_resolver_prefetch.log" 2>&1 &
+  prefetch_pid=$!
+else
+  prefetch_pid=""
+fi
 
 if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/scripts" -type f -newer "$BINARY" | grep -q .; then
   cargo build --bin polymarket_v2
@@ -63,6 +81,10 @@ echo "shared_ingress_root=$SHARED_INGRESS_ROOT"
 echo "pgt_shadow_profile=$PGT_SHADOW_PROFILE"
 echo "pair_target=$PGT_PAIR_TARGET"
 echo "open_pair_band=$PGT_OPEN_PAIR_BAND"
+if [[ -n "$prefetch_pid" ]]; then
+  echo "market_resolver_prefetch_pid=$prefetch_pid"
+  echo "market_resolver_prefetch_rounds=$MARKET_RESOLVE_PREFETCH_ROUNDS"
+fi
 
 exec env \
   -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
