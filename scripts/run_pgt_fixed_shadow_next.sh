@@ -80,16 +80,20 @@ case "$FIXED_AUTO_BUILD" in
     ;;
 esac
 
-FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-3}"
+FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-10}"
 TARGET_START_TS="${POLYMARKET_MARKET_SLUG##*-}"
 prestart_sleep_secs=0
+prestart_launch_at=""
+prestart_wake_at=""
 if [[ "$TARGET_START_TS" =~ ^[0-9]+$ ]] && [[ "$FIXED_PRESTART_SECS" =~ ^[0-9]+$ ]]; then
   now="$(date +%s)"
   launch_at="$(( TARGET_START_TS - FIXED_PRESTART_SECS ))"
+  prestart_launch_at="$launch_at"
   if (( launch_at > now )); then
     prestart_sleep_secs="$(( launch_at - now ))"
     sleep "$prestart_sleep_secs"
   fi
+  prestart_wake_at="$(date +%s)"
 fi
 
 echo "slug=$POLYMARKET_MARKET_SLUG"
@@ -100,6 +104,8 @@ echo "round_offset=$ROUND_OFFSET"
 echo "min_remaining_secs=$MIN_REMAINING_SECS"
 echo "prestart_sleep_secs=$prestart_sleep_secs"
 echo "prestart_secs=$FIXED_PRESTART_SECS"
+echo "prestart_launch_at=$prestart_launch_at"
+echo "prestart_wake_at=$prestart_wake_at"
 echo "instance_id=$INSTANCE_ID"
 echo "shared_ingress_role=$SHARED_INGRESS_ROLE"
 echo "shared_ingress_root=$SHARED_INGRESS_ROOT"
