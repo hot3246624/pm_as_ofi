@@ -184,6 +184,8 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_PGT_SHADOW_BUILD_ONCE` | `true` | `run_pgt_shadow_loop.sh` 启动时最多 build 一次，后续轮次不在热路径重复 build |
 | `PM_PGT_FIXED_AUTO_BUILD` | fixed 单轮默认 `true`；shadow loop 默认 `false` | 单轮 `run_pgt_fixed_shadow_next.sh` 仍会按需 build；连续 loop 内禁用每轮 build，避免外部源码 mtime 变化导致错过开盘 |
 | `PM_PGT_FIXED_PRESTART_SECS` | `10` | fixed worker 在目标 round start 前约 10 秒启动；覆盖 Rust 进程启动、shared-ingress client 握手与 feed attach 的热路径开销 |
+| `PM_PGT_SHADOW_LOOP_OVERLAP` | `true` | shadow loop 使用 overlapping scheduler，每轮提前调度下一个 fixed worker，避免当前 worker 到 end+grace 后才串行启动下一轮 |
+| `PM_PGT_FIXED_INSTANCE_PER_ROUND` | overlap loop 默认 `true` | overlapping worker 按 round timestamp 拆分 `PM_INSTANCE_ID`、log root 与 recorder root，避免前后轮短暂重叠时互相覆盖 |
 | `PM_PGT_SHADOW_LOOP_BACKOFF_SEC` | `1` | 正常轮转退出后的重启间隔 |
 | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `2` | fixed shadow round 收盘后快速退出，避免下一轮迟到 |
 | `PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED` | shadow loop 默认 `false` | PGT shadow 轮转默认不跑 post-close redeem lifecycle，redeem 行为单独验证 |

@@ -17,13 +17,22 @@ MAX_ROUNDS="${PM_PGT_SHADOW_LOOP_MAX_ROUNDS:-0}"
 LOOP_LOG="${PM_PGT_SHADOW_LOOP_LOG:-$LOG_ROOT/pgt_shadow_loop.log}"
 INTERVAL_SECS="${PM_PGT_SHADOW_LOOP_INTERVAL_SECS:-300}"
 MIN_REMAINING_SECS="${PM_PGT_SHADOW_LOOP_MIN_REMAINING_SECS:-180}"
+FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-10}"
+OVERLAP_LOOP="${PM_PGT_SHADOW_LOOP_OVERLAP:-true}"
 BINARY="$ROOT/target/debug/polymarket_v2"
 BUILD_ONCE="${PM_PGT_SHADOW_BUILD_ONCE:-true}"
 FIXED_AUTO_BUILD="${PM_PGT_FIXED_AUTO_BUILD:-false}"
 
 mkdir -p "$LOG_ROOT" "$RECORDER_ROOT" "$SHARED_INGRESS_ROOT"
 
-trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S")] pgt shadow loop interrupted; exiting" >> "$LOOP_LOG"; exit 130' INT TERM
+trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S")] pgt shadow loop interrupted; stopping children and exiting" >> "$LOOP_LOG"; pids="$(jobs -pr)"; if [[ -n "$pids" ]]; then kill $pids 2>/dev/null || true; fi; exit 130' INT TERM
+
+is_truthy() {
+  case "${1:-}" in
+    1|true|True|TRUE|yes|Yes|YES|on|On|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 case "$BUILD_ONCE" in
   0|false|False|FALSE|no|No|NO|off|Off|OFF)
@@ -66,16 +75,39 @@ choose_round_offset() {
   fi
 }
 
-round=0
-while true; do
-  round=$((round + 1))
-  started_at="$(date '+%Y-%m-%d %H:%M:%S')"
-  fixed_round_offset="$(choose_round_offset)"
-  {
-    echo "[$started_at] pgt shadow loop round=$round prefix=$PREFIX instance_id=$INSTANCE_ID"
-    echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset min_remaining_secs=$MIN_REMAINING_SECS"
-  } >> "$LOOP_LOG"
+choose_prelaunch_round_offset() {
+  local now_input="${1:-}"
+  if [[ -n "${PM_PGT_SHADOW_LOOP_ROUND_OFFSET:-}" ]]; then
+    echo "$PM_PGT_SHADOW_LOOP_ROUND_OFFSET"
+    return
+  fi
+  if [[ ! "$INTERVAL_SECS" =~ ^[0-9]+$ ]] || [[ ! "$FIXED_PRESTART_SECS" =~ ^[0-9]+$ ]] || (( INTERVAL_SECS <= 0 )); then
+    echo "1"
+    return
+  fi
 
+  local now current_start current_launch
+  now="${now_input:-$(date +%s)}"
+  current_start="$(( (now / INTERVAL_SECS) * INTERVAL_SECS ))"
+  current_launch="$(( current_start - FIXED_PRESTART_SECS ))"
+  if (( now <= current_launch )); then
+    echo "0"
+  else
+    echo "1"
+  fi
+}
+
+target_start_for_offset() {
+  local offset="${1:-1}"
+  local now_input="${2:-}"
+  local now current_start
+  now="${now_input:-$(date +%s)}"
+  current_start="$(( (now / INTERVAL_SECS) * INTERVAL_SECS ))"
+  echo "$(( current_start + (INTERVAL_SECS * offset) ))"
+}
+
+run_fixed_child() {
+  local fixed_round_offset="$1"
   PM_INSTANCE_ID="$INSTANCE_ID" \
   PM_LOG_ROOT="$LOG_ROOT" \
   PM_RECORDER_ROOT="$RECORDER_ROOT" \
@@ -88,7 +120,61 @@ while true; do
   PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS="${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}" \
   PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED="${PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED:-false}" \
   PM_PGT_FIXED_AUTO_BUILD="$FIXED_AUTO_BUILD" \
-    bash "$ROOT/scripts/run_strategy_instance.sh" "$PREFIX" >> "$LOOP_LOG" 2>&1
+  PM_PGT_FIXED_PRESTART_SECS="$FIXED_PRESTART_SECS" \
+  PM_PGT_FIXED_INSTANCE_PER_ROUND="${PM_PGT_FIXED_INSTANCE_PER_ROUND:-false}" \
+    bash "$ROOT/scripts/run_strategy_instance.sh" "$PREFIX"
+}
+
+round=0
+if is_truthy "$OVERLAP_LOOP"; then
+  while true; do
+    round=$((round + 1))
+    started_at="$(date '+%Y-%m-%d %H:%M:%S')"
+    schedule_now="$(date +%s)"
+    fixed_round_offset="$(choose_prelaunch_round_offset "$schedule_now")"
+    target_start="$(target_start_for_offset "$fixed_round_offset" "$schedule_now")"
+    {
+      echo "[$started_at] pgt shadow overlap schedule=$round prefix=$PREFIX instance_id=$INSTANCE_ID"
+      echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset target_start=$target_start prestart_secs=$FIXED_PRESTART_SECS"
+    } >> "$LOOP_LOG"
+
+    (
+      child_started_at="$(date '+%Y-%m-%d %H:%M:%S')"
+      echo "[$child_started_at] pgt shadow overlap child start schedule=$round target_start=$target_start offset=$fixed_round_offset" >> "$LOOP_LOG"
+      PM_PGT_FIXED_INSTANCE_PER_ROUND="${PM_PGT_FIXED_INSTANCE_PER_ROUND:-true}" run_fixed_child "$fixed_round_offset" >> "$LOOP_LOG" 2>&1
+      exit_code=$?
+      child_ended_at="$(date '+%Y-%m-%d %H:%M:%S')"
+      echo "[$child_ended_at] pgt shadow overlap child schedule=$round target_start=$target_start exited code=$exit_code" >> "$LOOP_LOG"
+    ) &
+    child_pid=$!
+    echo "[$started_at] pgt shadow overlap child pid=$child_pid schedule=$round target_start=$target_start" >> "$LOOP_LOG"
+
+    if [[ "$MAX_ROUNDS" =~ ^[0-9]+$ ]] && (( MAX_ROUNDS > 0 && round >= MAX_ROUNDS )); then
+      echo "[$started_at] pgt shadow loop reached max schedules=$MAX_ROUNDS; exiting without killing children" >> "$LOOP_LOG"
+      exit 0
+    fi
+
+    now="$(date +%s)"
+    next_schedule_at="$(( target_start + 1 ))"
+    sleep_secs="$BACKOFF_SEC"
+    if (( next_schedule_at > now )); then
+      sleep_secs="$(( next_schedule_at - now ))"
+    fi
+    echo "[$started_at] pgt shadow overlap next schedule in ${sleep_secs}s" >> "$LOOP_LOG"
+    sleep "$sleep_secs"
+  done
+fi
+
+while true; do
+  round=$((round + 1))
+  started_at="$(date '+%Y-%m-%d %H:%M:%S')"
+  fixed_round_offset="$(choose_round_offset)"
+  {
+    echo "[$started_at] pgt shadow loop round=$round prefix=$PREFIX instance_id=$INSTANCE_ID"
+    echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset min_remaining_secs=$MIN_REMAINING_SECS"
+  } >> "$LOOP_LOG"
+
+  run_fixed_child "$fixed_round_offset" >> "$LOOP_LOG" 2>&1
   exit_code=$?
 
   ended_at="$(date '+%Y-%m-%d %H:%M:%S')"
