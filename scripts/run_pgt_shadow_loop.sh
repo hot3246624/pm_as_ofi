@@ -17,10 +17,29 @@ MAX_ROUNDS="${PM_PGT_SHADOW_LOOP_MAX_ROUNDS:-0}"
 LOOP_LOG="${PM_PGT_SHADOW_LOOP_LOG:-$LOG_ROOT/pgt_shadow_loop.log}"
 INTERVAL_SECS="${PM_PGT_SHADOW_LOOP_INTERVAL_SECS:-300}"
 MIN_REMAINING_SECS="${PM_PGT_SHADOW_LOOP_MIN_REMAINING_SECS:-180}"
+BINARY="$ROOT/target/debug/polymarket_v2"
+BUILD_ONCE="${PM_PGT_SHADOW_BUILD_ONCE:-true}"
+FIXED_AUTO_BUILD="${PM_PGT_FIXED_AUTO_BUILD:-false}"
 
 mkdir -p "$LOG_ROOT" "$RECORDER_ROOT" "$SHARED_INGRESS_ROOT"
 
 trap 'echo "[$(date "+%Y-%m-%d %H:%M:%S")] pgt shadow loop interrupted; exiting" >> "$LOOP_LOG"; exit 130' INT TERM
+
+case "$BUILD_ONCE" in
+  0|false|False|FALSE|no|No|NO|off|Off|OFF)
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] pgt shadow loop build_once=disabled binary=$BINARY fixed_auto_build=$FIXED_AUTO_BUILD" >> "$LOOP_LOG"
+    ;;
+  *)
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] pgt shadow loop build_once=start binary=$BINARY fixed_auto_build=$FIXED_AUTO_BUILD" >> "$LOOP_LOG"
+    if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" -type f -newer "$BINARY" 2>/dev/null | grep -q .; then
+      if ! cargo build --bin polymarket_v2 >> "$LOOP_LOG" 2>&1; then
+        echo "[$(date '+%Y-%m-%d %H:%M:%S')] pgt shadow loop build_once=failed" >> "$LOOP_LOG"
+        exit 75
+      fi
+    fi
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] pgt shadow loop build_once=done binary=$BINARY fixed_auto_build=$FIXED_AUTO_BUILD" >> "$LOOP_LOG"
+    ;;
+esac
 
 choose_round_offset() {
   if [[ -n "${PM_PGT_SHADOW_LOOP_ROUND_OFFSET:-}" ]]; then
@@ -68,6 +87,7 @@ while true; do
   PM_FIXED_MIN_REMAINING_SECS="${PM_FIXED_MIN_REMAINING_SECS:-disabled}" \
   PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS="${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}" \
   PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED="${PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED:-false}" \
+  PM_PGT_FIXED_AUTO_BUILD="$FIXED_AUTO_BUILD" \
     bash "$ROOT/scripts/run_strategy_instance.sh" "$PREFIX" >> "$LOOP_LOG" 2>&1
   exit_code=$?
 

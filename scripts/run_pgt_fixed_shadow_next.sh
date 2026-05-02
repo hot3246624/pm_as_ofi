@@ -45,6 +45,7 @@ PGT_PAIR_TARGET="${PM_PAIR_TARGET:-0.975}"
 PGT_OPEN_PAIR_BAND="${PM_OPEN_PAIR_BAND:-0.98}"
 MARKET_RESOLVE_PREFETCH_ROUNDS="${PM_MARKET_RESOLVE_PREFETCH_ROUNDS:-3}"
 BINARY="$ROOT/target/debug/polymarket_v2"
+FIXED_AUTO_BUILD="${PM_PGT_FIXED_AUTO_BUILD:-true}"
 
 mkdir -p "$LOG_ROOT" "$RECORDER_ROOT" "$SHARED_INGRESS_ROOT"
 
@@ -65,9 +66,19 @@ else
   prefetch_pid=""
 fi
 
-if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" -type f -newer "$BINARY" 2>/dev/null | grep -q .; then
-  cargo build --bin polymarket_v2
-fi
+case "$FIXED_AUTO_BUILD" in
+  0|false|False|FALSE|no|No|NO|off|Off|OFF)
+    if [[ ! -x "$BINARY" ]]; then
+      echo "pgt_fixed_auto_build_disabled_missing_binary binary=$BINARY" >&2
+      exit 75
+    fi
+    ;;
+  *)
+    if [[ ! -x "$BINARY" ]] || find "$ROOT/src" "$ROOT/Cargo.toml" "$ROOT/Cargo.lock" -type f -newer "$BINARY" 2>/dev/null | grep -q .; then
+      cargo build --bin polymarket_v2
+    fi
+    ;;
+esac
 
 FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-3}"
 TARGET_START_TS="${POLYMARKET_MARKET_SLUG##*-}"
@@ -95,6 +106,7 @@ echo "shared_ingress_root=$SHARED_INGRESS_ROOT"
 echo "pgt_shadow_profile=$PGT_SHADOW_PROFILE"
 echo "pair_target=$PGT_PAIR_TARGET"
 echo "open_pair_band=$PGT_OPEN_PAIR_BAND"
+echo "fixed_auto_build=$FIXED_AUTO_BUILD"
 if [[ -n "$prefetch_pid" ]]; then
   echo "market_resolver_prefetch_pid=$prefetch_pid"
   echo "market_resolver_prefetch_rounds=$MARKET_RESOLVE_PREFETCH_ROUNDS"
