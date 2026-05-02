@@ -58,7 +58,7 @@ const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
-const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.985;
+const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.970;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 
@@ -1702,31 +1702,10 @@ mod profile_tests {
 
         assert!(pgt_allow_reopen_after_rescue_close(tuning, input, 180));
 
-        let mut profitable_ledger = ledger;
-        profitable_ledger.recent_closed[0] = Some(PairTranche {
-            pairable_qty: 160.0,
-            pair_cost_tranche: 0.980,
-            ..PairTranche::default()
-        });
-        let profitable_inventory = InventorySnapshot {
-            pair_ledger: profitable_ledger,
-            episode_metrics: metrics,
-            ..inventory
-        };
-        let profitable_input = StrategyTickInput {
-            pair_ledger: &profitable_ledger,
-            inventory: &profitable_inventory,
-            ..input
-        };
-        assert!(pgt_allow_reopen_after_rescue_close(
-            tuning,
-            profitable_input,
-            180
-        ));
         let mut costly_ledger = ledger;
         costly_ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.990,
+            pair_cost_tranche: 0.980,
             ..PairTranche::default()
         });
         let costly_inventory = InventorySnapshot {

@@ -12,6 +12,7 @@ SHARED_INGRESS_ROOT="${PM_SHARED_INGRESS_ROOT:-$ROOT/run/shared-ingress-main}"
 SHARED_INGRESS_ROLE="${PM_SHARED_INGRESS_ROLE:-auto}"
 PGT_SHADOW_PROFILE="${PM_PGT_SHADOW_PROFILE:-xuan_ladder_v1}"
 BACKOFF_SEC="${PM_PGT_SHADOW_LOOP_BACKOFF_SEC:-5}"
+ERROR_BACKOFF_SEC="${PM_PGT_SHADOW_LOOP_ERROR_BACKOFF_SEC:-60}"
 MAX_ROUNDS="${PM_PGT_SHADOW_LOOP_MAX_ROUNDS:-0}"
 LOOP_LOG="${PM_PGT_SHADOW_LOOP_LOG:-$LOG_ROOT/pgt_shadow_loop.log}"
 INTERVAL_SECS="${PM_PGT_SHADOW_LOOP_INTERVAL_SECS:-300}"
@@ -81,6 +82,10 @@ while true; do
     exit "$exit_code"
   fi
 
-  echo "[$ended_at] pgt shadow loop restart in ${BACKOFF_SEC}s" >> "$LOOP_LOG"
-  sleep "$BACKOFF_SEC"
+  restart_delay="$BACKOFF_SEC"
+  if (( exit_code != 0 )); then
+    restart_delay="$ERROR_BACKOFF_SEC"
+  fi
+  echo "[$ended_at] pgt shadow loop restart in ${restart_delay}s" >> "$LOOP_LOG"
+  sleep "$restart_delay"
 done

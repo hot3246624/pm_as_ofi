@@ -18,7 +18,22 @@ if [[ "$ROUND_OFFSET" =~ ^[0-9]+$ ]] && [[ "$MIN_REMAINING_SECS" =~ ^[0-9]+$ ]];
   fi
 fi
 
-eval "$(/usr/bin/python3 "$ROOT/scripts/resolve_market_ids.py" --prefix "$PREFIX" --round-offset "$ROUND_OFFSET" --format env)"
+resolve_env=""
+if ! resolve_env="$(/usr/bin/python3 "$ROOT/scripts/resolve_market_ids.py" --prefix "$PREFIX" --round-offset "$ROUND_OFFSET" --format env)"; then
+  echo "market_resolve_failed prefix=$PREFIX round_offset=$ROUND_OFFSET" >&2
+  exit 75
+fi
+if [[ -z "$resolve_env" ]]; then
+  echo "market_resolve_failed_empty prefix=$PREFIX round_offset=$ROUND_OFFSET" >&2
+  exit 75
+fi
+eval "$resolve_env"
+for required_var in POLYMARKET_MARKET_SLUG POLYMARKET_MARKET_ID POLYMARKET_YES_ASSET_ID POLYMARKET_NO_ASSET_ID; do
+  if [[ -z "${!required_var:-}" ]]; then
+    echo "market_resolve_missing_${required_var} prefix=$PREFIX round_offset=$ROUND_OFFSET" >&2
+    exit 75
+  fi
+done
 
 INSTANCE_ID="${PM_INSTANCE_ID:-pgt-fixed-${POLYMARKET_MARKET_SLUG}}"
 LOG_ROOT="${PM_LOG_ROOT:-$ROOT/logs/$INSTANCE_ID}"
