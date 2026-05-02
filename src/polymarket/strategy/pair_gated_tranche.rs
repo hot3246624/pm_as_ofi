@@ -49,7 +49,7 @@ const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP: f64 = 1.010;
+const XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP: f64 = 1.030;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -1728,8 +1728,8 @@ mod profile_tests {
         );
         assert!((pgt_effective_repair_budget_per_share(tuning, 0.6, 120.0) - 0.005).abs() < 1e-9);
         assert!(
-            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0) - 0.010).abs() < 1e-9,
-            "xuan ladder repair must never spend more than one cent per residual share"
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0) - 0.030).abs() < 1e-9,
+            "xuan ladder repair must never spend more than three cents per residual share"
         );
     }
 

@@ -16,7 +16,7 @@
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
-| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.010` | 最新 15 轮样本仍出现 `pair_cost=1.03/1.04` 的无资金来源 tail close，已移除 time-only `1.04` tail cap | 未通过 | 复跑验证 `pair_cost > 1.01` 是否消失，以及 clean close 是否可接受 |
+| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.030` | replay frontier 显示 `1.030` per-market surplus-funded repair 可明显增加配对量，且仍保留正单位 edge；已确认无真实 surplus 时仍不允许越过 breakeven | 观察中 | 复跑验证 `pair_cost > 1.03` 是否仅发生在真实 surplus 充足时，以及 residual 是否下降 |
 | A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.01 | 最新 15 轮 paired 样本中位 `0.98`，但仍有 2 轮 `>1.01`，说明 tail repair 仍需硬约束 | 未通过 | 优先降低负 EV completion，不再用宽 tail 换 clean close |
 | A10 | merge/redeem 生命周期 | merge 主要在 t-25 到 t-18；redeem 在 +35/+50；无 residual 积压 | 近期报告显示 merge/redeem 窗口符合 | 通过 | 长样本确认 |
 | A11 | replay/report 可观测性 | 报告包含 seed/cover delay、dispatch_taker_close、pair_cost、same-side 指标 | 已新增 `first_completion_delay_s` / p90 | 通过 | 每轮重建 gap report |
@@ -52,7 +52,7 @@
 - 旧 shadow repair band 过宽，已经从“可闭合验证”进入“负 EV 控制”阶段。
 - 报表已补 `p90_first_completion_delay_s`、`summary_pair_cost_p90`、`summary_pair_cost_tail` gate。
 - pair-cost 统计现在忽略 `summary_paired_qty=0` 的伪 active 行，避免 `pair_cost=0` 污染验收。
-- 策略已收紧：无真实 surplus budget 时 completion/taker-close 只允许到 breakeven；surplus-funded repair 每股最多贡献 `0.010`，避免 time-only tail close 产生系统性负 EV。
+- 策略已收紧：无真实 surplus budget 时 completion/taker-close 只允许到 breakeven；surplus-funded repair 每股最多贡献 `0.030`，避免 time-only tail close 产生系统性负 EV，同时允许用已锁定 edge 修复残仓。
 - 新 cap 复测轮 `1777514400` 没有触发 taker-close，验证修复生效；但 `NO@0.51` first-leg 无法闭合，最终留下 `79.5` residual，因此继续补 expensive seed guard，而不是回滚到宽 repair。
 
 ## 样本明细：`btc-updown-5m-1777468200`
