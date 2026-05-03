@@ -848,7 +848,8 @@ impl PairGatedTrancheStrategy {
         } else {
             positive_edge_ceiling.min(funded_loss_ceiling)
         };
-        let passive_ceiling = ceiling.max(tail_insurance_ceiling.unwrap_or(0.0));
+        let passive_ceiling =
+            pgt_effective_completion_passive_ceiling(ceiling, tail_insurance_ceiling);
         if passive_ceiling <= 0.0 {
             return None;
         }
@@ -865,7 +866,7 @@ impl PairGatedTrancheStrategy {
         ) else {
             return None;
         };
-        if price <= 0.0 || price > ceiling + 1e-9 {
+        if !pgt_completion_price_allowed(price, ceiling, tail_insurance_ceiling) {
             return None;
         }
 
@@ -1469,6 +1470,24 @@ fn pgt_tail_insurance_completion_ceiling(
     }
 }
 
+fn pgt_effective_completion_passive_ceiling(
+    base_ceiling: f64,
+    tail_insurance_ceiling: Option<f64>,
+) -> f64 {
+    base_ceiling.max(tail_insurance_ceiling.unwrap_or(0.0))
+}
+
+fn pgt_completion_price_allowed(
+    price: f64,
+    base_ceiling: f64,
+    tail_insurance_ceiling: Option<f64>,
+) -> bool {
+    price > 0.0
+        && price
+            <= pgt_effective_completion_passive_ceiling(base_ceiling, tail_insurance_ceiling)
+                + 1e-9
+}
+
 fn pgt_effective_repair_budget_per_share(
     tuning: PgtTuning,
     repair_budget_available: f64,
@@ -1789,6 +1808,22 @@ mod profile_tests {
         assert_eq!(
             pgt_tail_insurance_completion_ceiling(PgtTuning::legacy(), 0.43, 20),
             None
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_tail_insurance_extends_completion_price_validation() {
+        assert!(
+            pgt_completion_price_allowed(0.55, 0.52, Some(0.55)),
+            "tail insurance must allow a completion price above the normal completion ceiling"
+        );
+        assert!(
+            !pgt_completion_price_allowed(0.56, 0.52, Some(0.55)),
+            "tail insurance remains bounded by its pair-cost cap"
+        );
+        assert!(
+            !pgt_completion_price_allowed(0.53, 0.52, None),
+            "without tail insurance, normal completion ceiling still applies"
         );
     }
 
