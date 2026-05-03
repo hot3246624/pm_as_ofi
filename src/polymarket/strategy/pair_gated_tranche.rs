@@ -52,6 +52,8 @@ const XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP: f64 = 1.030;
 const XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP: f64 = 1.030;
 const XUAN_LADDER_TAIL_INSURANCE_REMAINING_SECS: u64 = 45;
+const XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP: f64 = 1.050;
+const XUAN_LADDER_LAST_CHANCE_INSURANCE_REMAINING_SECS: u64 = 15;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -1462,7 +1464,12 @@ fn pgt_tail_insurance_completion_ceiling(
     if first_vwap <= 0.0 {
         return None;
     }
-    let ceiling = (XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP - first_vwap).clamp(0.0, 1.0);
+    let pair_cap = if remaining_secs <= XUAN_LADDER_LAST_CHANCE_INSURANCE_REMAINING_SECS {
+        XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP
+    } else {
+        XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP
+    };
+    let ceiling = (pair_cap - first_vwap).clamp(0.0, 1.0);
     if ceiling > 0.0 {
         Some(ceiling)
     } else {
@@ -1804,6 +1811,16 @@ mod profile_tests {
         assert!(
             (pgt_tail_insurance_completion_ceiling(tuning, 0.53, 20).unwrap() - 0.50).abs()
                 < 1e-9
+        );
+        assert!(
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.47, 16).unwrap() - 0.56).abs()
+                < 1e-9,
+            "before last-chance mode, tail insurance stays capped at pair_cost 1.030"
+        );
+        assert!(
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.47, 15).unwrap() - 0.58).abs()
+                < 1e-9,
+            "last-chance mode can spend up to pair_cost 1.050 to avoid a full residual leg"
         );
         assert_eq!(
             pgt_tail_insurance_completion_ceiling(PgtTuning::legacy(), 0.43, 20),
