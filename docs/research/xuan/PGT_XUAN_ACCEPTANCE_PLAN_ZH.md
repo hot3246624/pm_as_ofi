@@ -116,6 +116,34 @@ post-cutoff frontier：
 
 判断：状态机和成本边界健康；但这是 dry-run synthetic fill，不能直接外推真实成交率。下一步至少累计 20-30 轮新二进制样本，再决定 `1.030` 是否保留或回调到 `1.020`。
 
+补充校正：09:23 CST 首批样本只能作为 cap 改动的早期 smoke。`target/debug/polymarket_v2` 于 2026-05-03 10:49:45 CST 重新构建后，下面这组样本才是 stale completion insurance + 收紧成本带后的主要验收窗口。
+
+### PGT 收紧后 live-shadow 聚合（2026-05-03 10:49:45 binary 后）
+
+覆盖 fixed BTC shadow：`btc-updown-5m-1777776600` 到 `btc-updown-5m-1777781700`。
+
+| 指标 | 数值 |
+| --- | ---: |
+| completed reports | `14` |
+| active episodes | `13` |
+| no-trade reports | `1` |
+| missing rounds | `4` |
+| residual rounds | `0` |
+| pair_cost avg / p50 / p90 / max | `0.9285 / 0.9700 / 0.9880 / 0.9900` |
+| pair_cost > 1.00 / > 1.03 | `0 / 0` |
+| first_completion_delay p50 / p90 / max | `37.532s / 271.820s / 289.443s` |
+| first_seed_to_first_fill p50 / p90 / max | `3.824s / 18.861s / 23.363s` |
+| dry-run locked PnL | `+111.60` |
+
+样本说明：
+
+- `1777777500` 是 stale 启动后的 `ticks=0` 无交易样本，不计为策略机会失败。
+- `1777777800`、`1777778100`、`1777778400`、`1777778700` 缺失，根因是当时 DNS/Gamma resolve 失败或本机调度断档。
+- `1777782000` 子进程在脚本切换期间启动，触发 shell 读取半截脚本的 `unexpected EOF`，属于运维切换污染样本；后续已通过 stale fixed round guard 和 loop 重启收敛。
+- `1777779900`、`1777781400`、`1777781700` 都靠尾部 taker-close 闭合，证明残仓保险有效，但也说明 completion delay tail 仍是下一阶段优化重点。
+
+判断：成本边界和残仓风险已经明显收敛，当前主要风险不再是 residual，而是 dry-run synthetic fill 无法证明真实 maker 成交率，以及部分轮次的 completion 等待过长。下一阶段应继续降低配对等待尾部，同时不能回到早期 `pair_cost > 1.00` 的系统性修复。
+
 ## 最新聚合：过夜样本 `btc-updown-5m-1777484100` 到 `btc-updown-5m-1777506900`
 
 样本数：77 行，其中 63 个 active episode，60 个有实际 paired cost 的 episode
