@@ -144,6 +144,28 @@ post-cutoff frontier：
 
 判断：成本边界和残仓风险已经明显收敛，当前主要风险不再是 residual，而是 dry-run synthetic fill 无法证明真实 maker 成交率，以及部分轮次的 completion 等待过长。下一阶段应继续降低配对等待尾部，同时不能回到早期 `pair_cost > 1.00` 的系统性修复。
 
+## 上线验收时间表（2026-05-03 BJT）
+
+当前状态（12:25 CST 后）：`xuan_ladder_v1_brake_full` 已重启到单 loop overlap 模式，`1777782300` 正常启动并在开盘后约 34s 完成配对，`pair_cost=0.9400`，`residual=0`。这说明重启后的 fixed-mode/shared-ingress 链路恢复正常。
+
+上线分三层，不把 shadow 通过直接等同于可大额实盘：
+
+| 阶段 | 最早时间 | 样本要求 | 通过标准 | 结论 |
+| --- | --- | --- | --- | --- |
+| Shadow-ready gate | 2026-05-03 15:10 CST | 重启后至少 30 个 fixed BTC 5m round | `residual_rounds=0`；`pair_cost_p90<=1.00`；`pair_cost>1.03=0`；无 duplicate loop / stale launch / shared-ingress 空流 | 通过后说明策略状态机和基础设施可以进入 canary 准备 |
+| Canary-ready gate | 2026-05-03 19:00-21:00 CST | 重启后 60-80 个 fixed BTC 5m round | Shadow-ready 全部满足；`LIVE_OBS` 无连续 WARN；`replace_per_min/reprice_ratio` 在 OK；completion tail outlier 可解释且不靠 `pair_cost>1.00` 系统性修复 | 通过后可以开最小实盘仓位/单实例 canary |
+| Production gate | 2026-05-04 12:00 CST 以后 | 至少一整晚 shadow 或小额 canary | 无错误方向、无卡单、无资金/allowance 异常、无未清 residual；小额实盘真实成交/撤单链路可审计 | 通过后再考虑放大 clip/资金 |
+
+硬性不通过条件：
+
+- 任何一轮出现 `residual_qty>0` 且不是主动停机/断网导致。
+- 任意 active round 的 `pair_cost>1.03`。
+- `pair_cost>1.00` 成为常态，而不是少数 surplus-funded tail repair。
+- 出现 shared-ingress fixed market 空流、duplicate loop 同轮双跑、stale round 被当作正常样本。
+- 出现方向映射不确定、winner/redeem 语义不确定、OMS 卡单或重复挂撤风暴。
+
+当前预估：如果 15:10 前连续 30 轮通过，策略可认为达到 `shadow-ready`；如果 19:00-21:00 前 60-80 轮继续通过，可以进入小额 canary。全量或明显放大资金不应早于 2026-05-04 中午，因为 dry-run synthetic fill 不能证明真实 maker queue 成交率。
+
 ## 最新聚合：过夜样本 `btc-updown-5m-1777484100` 到 `btc-updown-5m-1777506900`
 
 样本数：77 行，其中 63 个 active episode，60 个有实际 paired cost 的 episode
