@@ -1,6 +1,6 @@
 # PGT/xuan Shadow 验收计划
 
-更新时间：2026-05-03 10:26 CST
+更新时间：2026-05-03 15:45 CST
 
 目标：在不影响 `oracle_lag_sniping` / `pair_arb` / `glft_mm` 的前提下，将 `pair_gated_tranche_arb` 的 BTC 5m shadow 行为收敛到接近 xuanxuan008 的 completion-first 特征，并确认是否具备进入更长期 shadow soak 的条件。
 
@@ -147,6 +147,37 @@ post-cutoff frontier：
 ## 上线验收时间表（2026-05-03 BJT）
 
 当前状态（12:25 CST 后）：`xuan_ladder_v1_brake_full` 已重启到单 loop overlap 模式，`1777782300` 正常启动并在开盘后约 34s 完成配对，`pair_cost=0.9400`，`residual=0`。这说明重启后的 fixed-mode/shared-ingress 链路恢复正常。
+
+### 15:10 gate 复核结论
+
+12:25-15:30 CST 完成 38 个 fixed BTC 5m round，其中 37 个完成配对，1 个真残仓：
+
+| 指标 | 数值 |
+| --- | ---: |
+| completed rounds | `38` |
+| paired rounds | `37` |
+| residual rounds | `1` |
+| paired qty | `4440.00` |
+| dry-run locked PnL | `+284.40` |
+| weighted pair cost | `0.935946` |
+| pair_cost p50 / p90 / max | `0.9800 / 0.9900 / 1.0000` |
+
+残仓轮：
+
+- `btc-updown-5m-1777791000`
+- first leg：`NO 120@0.4300`
+- completion maker：`YES 120@0.5600 -> 0.5700 -> 0.5800`
+- `pgt_taker_shadow_would_close=0`
+- `pgt_dispatch_taker_close=0`
+- final：`residual_qty=120.00`，`worst_case_outcome_pnl=-51.6000`
+
+判断：15:10 shadow-ready gate 未通过。收益和 pair cost 很强，但残仓硬门槛失败，不能上线。
+
+修复：
+
+- `xuan_ladder_v1` 新增最后 `45s` 的 tail residual insurance，允许用最多 `pair_cost<=1.030` 的 completion/taker-close 换掉残仓。
+- 修正 PGT dry-run taker-close 计价：旧路径把 synthetic fill 记在 maker intent 价，而不是 taker limit/ask，导致 taker-close 样本系统性高估约 1 tick。新二进制后，dry-run taker-close 成本按 limit/ask 计。
+- 新验收窗口从 2026-05-03 15:45 CST 后第一轮新二进制样本重新计算；15:40 轮仍由旧二进制启动，不能用于验证本修复。
 
 上线分三层，不把 shadow 通过直接等同于可大额实盘：
 

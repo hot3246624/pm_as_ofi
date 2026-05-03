@@ -1813,7 +1813,7 @@ impl StrategyCoordinator {
                     intent.size,
                     TradePurpose::Provide,
                     Some(limit_price),
-                    Some(intent.price),
+                    Some(limit_price),
                 )
                 .await;
             }
@@ -1838,7 +1838,7 @@ impl StrategyCoordinator {
                     intent.size,
                     TradePurpose::Hedge,
                     Some(limit_price),
-                    Some(intent.price),
+                    Some(limit_price),
                 )
                 .await;
             }

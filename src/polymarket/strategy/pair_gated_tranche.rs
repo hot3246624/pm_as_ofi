@@ -50,6 +50,8 @@ const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP: f64 = 1.030;
+const XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP: f64 = 1.030;
+const XUAN_LADDER_TAIL_INSURANCE_REMAINING_SECS: u64 = 45;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -833,8 +835,12 @@ impl PairGatedTrancheStrategy {
         // Urgency can spend remaining edge, but only realized repair budget may
         // cross the profile's late pair-cost cap.
         let funded_loss_ceiling = late_pair_cap - active.first_vwap + repair_budget_per_share;
-        let taker_close_ceiling =
+        let base_taker_close_ceiling =
             taker_close_pair_cap - active.first_vwap + repair_budget_per_share;
+        let tail_insurance_ceiling =
+            pgt_tail_insurance_completion_ceiling(tuning, active.first_vwap, remaining_secs);
+        let taker_close_ceiling =
+            base_taker_close_ceiling.max(tail_insurance_ceiling.unwrap_or(0.0));
         let breakeven_unlocked = completion_age_secs >= PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS
             || remaining_secs <= PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS;
         let ceiling = if breakeven_unlocked {
@@ -842,14 +848,15 @@ impl PairGatedTrancheStrategy {
         } else {
             positive_edge_ceiling.min(funded_loss_ceiling)
         };
-        if ceiling <= 0.0 {
+        let passive_ceiling = ceiling.max(tail_insurance_ceiling.unwrap_or(0.0));
+        if passive_ceiling <= 0.0 {
             return None;
         }
 
         let Some(price) = self.passive_completion_price(
             coordinator,
             hedge_side,
-            ceiling,
+            passive_ceiling,
             best_bid,
             best_ask,
             remaining_secs,
@@ -878,9 +885,14 @@ impl PairGatedTrancheStrategy {
             best_ask <= positive_edge_ceiling.min(taker_close_ceiling) + 1e-9;
         let breakeven_taker_would_close =
             breakeven_unlocked && best_ask <= funded_loss_ceiling.min(taker_close_ceiling) + 1e-9;
+        let tail_insurance_taker_would_close = tail_insurance_ceiling
+            .map(|ceiling| best_ask <= ceiling + 1e-9)
+            .unwrap_or(false);
         let taker_shadow_would_close = coordinator.cfg().dry_run
             && remaining_secs > coordinator.cfg().endgame_freeze_secs
-            && (profit_taker_would_close || breakeven_taker_would_close);
+            && (profit_taker_would_close
+                || breakeven_taker_would_close
+                || tail_insurance_taker_would_close);
         let taker_close_limit = if taker_shadow_would_close {
             Some(coordinator.safe_price(best_ask))
         } else {
@@ -1435,6 +1447,28 @@ fn pgt_effective_completion_pair_caps(
     (early, late, taker)
 }
 
+fn pgt_tail_insurance_completion_ceiling(
+    tuning: PgtTuning,
+    first_vwap: f64,
+    remaining_secs: u64,
+) -> Option<f64> {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return None;
+    }
+    if remaining_secs == u64::MAX || remaining_secs > XUAN_LADDER_TAIL_INSURANCE_REMAINING_SECS {
+        return None;
+    }
+    if first_vwap <= 0.0 {
+        return None;
+    }
+    let ceiling = (XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP - first_vwap).clamp(0.0, 1.0);
+    if ceiling > 0.0 {
+        Some(ceiling)
+    } else {
+        None
+    }
+}
+
 fn pgt_effective_repair_budget_per_share(
     tuning: PgtTuning,
     repair_budget_available: f64,
@@ -1734,6 +1768,27 @@ mod profile_tests {
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
             (0.990, 0.990, 0.990)
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_tail_insurance_allows_bounded_residual_close_only_near_end() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_tail_insurance_completion_ceiling(tuning, 0.43, 46),
+            None
+        );
+        assert!(
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.43, 45).unwrap() - 0.60).abs()
+                < 1e-9
+        );
+        assert!(
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.53, 20).unwrap() - 0.50).abs()
+                < 1e-9
+        );
+        assert_eq!(
+            pgt_tail_insurance_completion_ceiling(PgtTuning::legacy(), 0.43, 20),
+            None
         );
     }
 
