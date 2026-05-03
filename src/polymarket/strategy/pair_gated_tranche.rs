@@ -72,7 +72,8 @@ const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP: f64 = 0.995;
+const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
+const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
 const XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS: u64 = 5;
 
@@ -657,6 +658,7 @@ impl PairGatedTrancheStrategy {
             input.episode_metrics.round_buy_fill_count,
             price,
             opp_ask,
+            tick,
         ) {
             pgt_maybe_log_seed_admission_diag(
                 coordinator.cfg().dry_run,
@@ -1667,6 +1669,7 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     round_buy_fill_count: u64,
     seed_price: f64,
     opposite_ask: f64,
+    tick: f64,
 ) -> bool {
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
         return false;
@@ -1674,10 +1677,17 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     if round_buy_fill_count > 0 {
         return false;
     }
-    if seed_price <= 0.0 || opposite_ask <= 0.0 {
+    if seed_price <= 0.0 || opposite_ask <= 0.0 || tick <= 0.0 {
         return true;
     }
-    seed_price + opposite_ask > XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP + 1e-9
+    let taker_pair_cost = seed_price + opposite_ask;
+    if taker_pair_cost <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9 {
+        return false;
+    }
+    let maker_completion_ref = (opposite_ask - tick).max(0.0);
+    let maker_pair_cost = seed_price + maker_completion_ref;
+    seed_price > EXPENSIVE_SEED_PRICE + 1e-9
+        || maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1723,9 +1733,9 @@ fn pgt_maybe_log_seed_admission_diag(
     let maker_completion_ref = (opposite_ask - tick.max(0.0)).max(0.0);
     let visible_maker_pair_cost = price + maker_completion_ref;
     let guard_pair_cost_gap =
-        (visible_ask_pair_cost - XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP).max(0.0);
+        (visible_ask_pair_cost - XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP).max(0.0);
     info!(
-        "🧭 PGT seed admission diag | decision={} side={:?} price={:.4} size={:.1} remaining_secs={} best_bid={:.4} best_ask={:.4} opposite_ask={:.4} visible_ask_pair_cost={:.4} visible_maker_pair_cost={:.4} open_pair_band={:.4} visible_completion_slack_ticks={:.2} visible_breakeven_slack_ticks={:.2} min_breakeven_slack_ticks={:.2} fill_distance_ticks={:.2} taker_shadow_would_open={} entry_pressure_extra_ticks={} xuan_visible_pair_cap={:.4} guard_pair_cost_gap={:.4}",
+        "🧭 PGT seed admission diag | decision={} side={:?} price={:.4} size={:.1} remaining_secs={} best_bid={:.4} best_ask={:.4} opposite_ask={:.4} visible_ask_pair_cost={:.4} visible_maker_pair_cost={:.4} open_pair_band={:.4} visible_completion_slack_ticks={:.2} visible_breakeven_slack_ticks={:.2} min_breakeven_slack_ticks={:.2} fill_distance_ticks={:.2} taker_shadow_would_open={} entry_pressure_extra_ticks={} xuan_taker_pair_cap={:.4} xuan_maker_pair_cap={:.4} guard_pair_cost_gap={:.4}",
         decision,
         side,
         price,
@@ -1743,7 +1753,8 @@ fn pgt_maybe_log_seed_admission_diag(
         fill_distance_ticks,
         taker_shadow_would_open,
         entry_pressure_extra_ticks,
-        XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP,
+        XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP,
+        XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP,
         guard_pair_cost_gap,
     );
 }
@@ -2306,23 +2317,23 @@ mod profile_tests {
     }
 
     #[test]
-    fn xuan_ladder_blocks_first_seed_without_visible_ask_completion() {
+    fn xuan_ladder_first_seed_accepts_cheap_visible_maker_completion() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53),
-            "0.47 first leg with 0.53 opposite ask is only maker-queue breakeven, not safe completion"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
+            "cheap first leg remains allowed when opposite maker completion is already visible at 0.99"
         );
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.66, 0.34),
-            "0.66 first leg with 0.34 opposite ask is also maker-queue-only and carries large one-sided risk"
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.54, 0.01),
+            "cheap first leg is blocked when even opposite maker completion is above the pair-cost cap"
         );
         assert!(
-            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.52),
-            "cheap first leg remains allowed when current opposite ask keeps ask pair cost under the guard cap"
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.66, 0.34, 0.01),
+            "expensive first leg still requires an immediate taker-safe completion path"
         );
         assert!(
-            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.63, 0.36),
-            "first leg remains allowed when current opposite ask offers a visible positive-edge completion path"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.63, 0.36, 0.01),
+            "expensive first leg remains allowed when current opposite ask offers a visible positive-edge completion path"
         );
     }
 
@@ -2330,11 +2341,11 @@ mod profile_tests {
     fn xuan_ladder_seed_visible_completion_guard_is_first_leg_only() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.50, 0.53),
-            "first seed admission is now symmetric across cheap and expensive legs"
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.50, 0.53, 0.01),
+            "first seed admission still blocks when neither taker nor maker completion has enough edge"
         );
         assert!(
-            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 1, 0.47, 0.53),
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 1, 0.47, 0.54, 0.01),
             "after the first buy fill, completion and reopen guards own the risk path"
         );
         assert!(
@@ -2342,7 +2353,8 @@ mod profile_tests {
                 PgtTuning::legacy(),
                 0,
                 0.47,
-                0.53
+                0.54,
+                0.01
             ),
             "legacy/replay profiles are not changed by the xuan-specific guard"
         );
