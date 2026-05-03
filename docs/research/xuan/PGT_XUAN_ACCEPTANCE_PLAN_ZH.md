@@ -1,6 +1,6 @@
 # PGT/xuan Shadow 验收计划
 
-更新时间：2026-05-03 09:30 CST
+更新时间：2026-05-03 10:20 CST
 
 目标：在不影响 `oracle_lag_sniping` / `pair_arb` / `glft_mm` 的前提下，将 `pair_gated_tranche_arb` 的 BTC 5m shadow 行为收敛到接近 xuanxuan008 的 completion-first 特征，并确认是否具备进入更长期 shadow soak 的条件。
 
@@ -16,8 +16,8 @@
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
-| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.030` | 新 replay truth 已改用 `outcome_side` / `winner_side`；activity 真实成本口径下，`1.030` funded repair 仍为正 edge，但边际收益低于旧 display-price 口径 | 观察中 | 用新 binary 继续 shadow，验证 `pair_cost > 1.03` 是否仅发生在真实 surplus 充足时，以及 residual 是否下降 |
-| A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.03 | xuan activity 真实口径 market pair_cost p50 `0.9984`、p90 `1.0534`；xuan 自身不是低成本单笔，而是低残仓 + surplus 修复 | 观察中 | PGT 不能简单追随 xuan 的高成本 tail，需要用 surplus-funded cap 控制 |
+| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.030` | replay truth 已改用 `outcome_side` / `winner_side` 与 `price*size` 成本；`1.030` funded repair 仍为正 edge，但必须由已锁 surplus 支付 | 观察中 | 用新 binary 继续 shadow，验证 `pair_cost > 1.03` 是否仅发生在真实 surplus 充足时，以及 residual 是否下降 |
+| A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.98；不得系统性 >1.03 | xuan price-cost 口径 market pair_cost p50 `0.9755`、p90 `1.0287`；其优势是低残仓 + 整体 pair cost < 1 | 观察中 | PGT 要保持低残仓，同时把 p90 压在约 `1.03` 内 |
 | A10 | merge/redeem 生命周期 | merge 主要在 t-25 到 t-18；redeem 在 +35/+50；无 residual 积压 | 近期报告显示 merge/redeem 窗口符合 | 通过 | 长样本确认 |
 | A11 | replay/report 可观测性 | 报告包含 seed/cover delay、dispatch_taker_close、pair_cost、same-side 指标 | 已新增 `first_completion_delay_s` / p90 | 通过 | 每轮重建 gap report |
 | A12 | 回归测试 | PGT Rust 单测、replay/report Python 单测全过 | `cargo test -q pair_gated_tranche --lib` 77 passed；Python 3.12 replay/report 11 passed | 通过 | 每次策略改动后必跑 |
@@ -35,27 +35,27 @@
 口径修正：
 
 - 方向使用 `xuan_activity.outcome_side` 与 `settlement_records.winner_side`，不再做 `Up/Down -> YES/NO` 映射。
-- 成本使用 `xuan_activity.usdc_size / size`；`xuan_trades.price` / activity display `price` 会系统性低估成交成本，中位约 `3.10%`，p90 约 `5.69%`。
+- 成本使用 `xuan_activity.price * size` / `xuan_trades.price * size`。`xuan_activity.usdc_size` 在当前 replay 中相对 `price*size` 系统性偏高，中位约 `3.10%`、p90 约 `5.69%`；同时 `xuan_trades.price` 按 `tx_hash` 与 public `md_trades.price` 匹配，误差仅为 public trade 四舍五入级别，因此 `usdc_size` 不再作为交易成本。
 - 官方结果覆盖：有效 BTC 5m 市场 `1340` 个，settled `1339` 个；xuan 有交易市场 `947` 个。
 
 核心结论：
 
 - xuan residual 控制极强：market residual p50 `0`，p90 约 `0`，p95 `0.10` shares；总 residual `2965.94` shares。
 - residual 方向大致对半：winner residual `1476.23`，loser residual `1489.71`；`residual > 1` 的市场里 residual side 命中 winner 比例约 `0.60`。
-- market-level true pair cost：p50 `0.9984`，p90 `1.0534`。
-- FIFO episode true pair cost：p50 `1.0158`，p90 `1.1147`；completion delay p50 `10s`，p90 `44s`。
-- 官方胜负经济结果：buy cost `709,926.36`，final value `708,562.50`，PnL `-1,363.86`，ROI `-0.192%`。
-- activity cashflow PnL `-6,066.51`，比官方经济结果低 `-4,702.64`，说明 activity 的 merge/redeem 捕获仍有缺口，策略收益判断应优先用 `winner_side` 经济口径。
+- market-level price-cost pair cost：p50 `0.9755`，p90 `1.0287`。
+- FIFO episode price-cost pair cost：p50 `0.9954`，p90 `1.0866`；completion delay p50 `10s`，p90 `44s`。
+- 官方胜负经济结果：buy cost `694,082.03`，final value `708,562.50`，PnL `+14,480.47`，ROI `+2.086%`。
+- `usdc_size` 诊断口径会把同一批交易改写为偏负收益，已判定不适合作为成交成本。
 
 逐日经济结果：
 
 | UTC 日期 | markets | economic PnL | economic ROI | pair_cost p50 | pair_cost p90 | residual sum | loser residual |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 2026-04-27 | 174 | `+4259.95` | `+3.144%` | `0.9676` | `1.0174` | `366.82` | `134.35` |
-| 2026-04-28 | 162 | `-918.75` | `-0.672%` | `1.0071` | `1.0577` | `163.58` | `59.81` |
-| 2026-04-29 | 154 | `-1020.79` | `-1.107%` | `1.0037` | `1.0635` | `139.33` | `139.11` |
-| 2026-04-30 | 198 | `-1417.52` | `-0.797%` | `1.0061` | `1.0566` | `376.26` | `1.13` |
-| 2026-05-01 | 259 | `-2266.76` | `-1.352%` | `1.0038` | `1.0678` | `1919.95` | `1155.31` |
+| 2026-04-28 | 162 | `+2254.76` | `+1.689%` | `0.9845` | `1.0316` | `163.58` | `59.81` |
+| 2026-04-29 | 154 | `+1639.96` | `+1.831%` | `0.9762` | `1.0315` | `139.33` | `139.11` |
+| 2026-04-30 | 198 | `+3824.27` | `+2.215%` | `0.9762` | `1.0241` | `376.26` | `1.13` |
+| 2026-05-01 | 259 | `+2501.53` | `+1.536%` | `0.9743` | `1.0356` | `1919.95` | `1155.31` |
 
 对 PGT 的含义：
 
@@ -71,23 +71,23 @@
 
 | 窗口 | markets | economic PnL | economic ROI | pair_cost p50 | pair_cost p90 | residual sum | loser residual |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| cutoff 前 | 513 | `+2095.89` | `+0.540%` | `0.9935` | `1.0463` | `669.76` | `333.27` |
-| cutoff 后 | 434 | `-3459.75` | `-1.075%` | `1.0042` | `1.0625` | `2296.18` | `1156.44` |
+| cutoff 前 | 513 | `+8619.53` | `+2.259%` | `0.9767` | `1.0268` | `669.76` | `333.27` |
+| cutoff 后 | 434 | `+5860.93` | `+1.876%` | `0.9744` | `1.0309` | `2296.18` | `1156.44` |
 
 post-cutoff frontier：
 
 | cap / rule | paired qty ratio | proxy PnL | pnl/share | negative spend |
 | --- | ---: | ---: | ---: | ---: |
-| hard `pair_cost <= 1.000` | `0.3892` | `11677.08` | `0.09462` | `0.00` |
-| hard `pair_cost <= 1.030` | `0.5271` | `11007.60` | `0.06586` | `669.48` |
-| per-market funded cap `1.030` | `0.4563` | `11371.72` | `0.07859` | `305.36` |
-| per-market funded cap `1.050` | `0.4931` | `10907.12` | `0.06975` | `769.96` |
+| hard `pair_cost <= 1.000` | `0.5200` | `15584.27` | `0.09451` | `0.00` |
+| hard `pair_cost <= 1.030` | `0.7005` | `14658.86` | `0.06609` | `925.41` |
+| per-market funded cap `1.030` | `0.6256` | `15120.70` | `0.07622` | `463.57` |
+| per-market funded cap `1.050` | `0.6561` | `14735.07` | `0.07083` | `849.20` |
 
 判断：
 
-- post-cutoff 并未证明 xuan 新策略更赚钱；相反，高成本 completion/tail 侵蚀更明显。
-- xuan 的可学习点仍是 `completion delay p50=10s/p90=48s` 和极低 p90 residual，而不是高价追 completion。
-- 我们要超越 xuan 的方向是：保持低残仓，但把 post-cutoff xuan 的 `pair_cost p90≈1.0625` 明确压到 `<=1.03`，并用真实 surplus budget 才能越过 breakeven。
+- post-cutoff 在 price-cost 口径下仍是正收益；本地 replay 只覆盖到 2026-05-01，不能覆盖用户同事的 2026-05-02/05-03 完整窗口。
+- xuan 的可学习点是 `completion delay p50=10s/p90=48s`、极低 p90 residual、以及整体 pair cost 维持在 1 以下；不是无约束高价追 completion。
+- 我们要超越 xuan 的方向是：保持低残仓，同时把 post-cutoff xuan 的 `pair_cost p90≈1.031` 继续压低，并让 `pair_cost > 1.00` 的修复只由真实 surplus budget 支付。
 
 ### PGT 新 cap 首批 live-shadow 样本
 

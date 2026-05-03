@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Read-only xuan BTC 5m replay truth analyzer.
 
-This script intentionally uses xuan_activity.usdc_size / size as execution cost.
-The public xuan_trades.price field is a display price and systematically
-understates realized cost in the current replay dataset.
+This script intentionally uses activity/trade price * size as execution cost.
+The activity.usdc_size field is retained only as a diagnostic because it is
+systematically inflated versus price * size in the current replay dataset, while
+xuan_trades.price matches public md_trades prices by tx_hash within rounding.
 
 Direction semantics are taken from replay-side normalized fields:
 xuan_activity.outcome_side and settlement_records.winner_side. The analyzer does
@@ -40,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--max-start-ms", type=int, help="Optional market start_ms upper bound.")
     p.add_argument("--outage-start-ms", type=int, default=DEFAULT_OUTAGE_START_MS)
     p.add_argument("--outage-end-ms", type=int, default=DEFAULT_OUTAGE_END_MS)
+    p.add_argument(
+        "--cost-source",
+        choices=("price", "usdc_size"),
+        default="price",
+        help="Execution cost source. Default price uses price*size; usdc_size is diagnostic only.",
+    )
     p.add_argument("--output-json", help="Optional output path; stdout is always written.")
     return p.parse_args()
 
@@ -197,33 +204,44 @@ def load_deduped_activity(args: argparse.Namespace, markets: dict[str, dict[str,
     return list(rows_by_key.values())
 
 
-def trade_value(row: dict[str, Any]) -> float:
+def price_size_value(row: dict[str, Any]) -> float:
+    size = float(row.get("size") or 0.0)
+    price = float(row.get("price") or 0.0)
+    return size * price
+
+
+def cash_value(row: dict[str, Any]) -> float:
     size = float(row.get("size") or 0.0)
     usdc = float(row.get("usdc_size") or 0.0)
-    price = float(row.get("price") or 0.0)
-    return usdc if usdc > 0.0 else size * price
+    value = price_size_value(row)
+    return usdc if usdc > 0.0 else value
 
 
-def exec_price(row: dict[str, Any]) -> float:
+def trade_value(row: dict[str, Any], cost_source: str) -> float:
+    if cost_source == "usdc_size":
+        return cash_value(row)
+    return price_size_value(row)
+
+
+def exec_price(row: dict[str, Any], cost_source: str) -> float:
     size = float(row.get("size") or 0.0)
-    usdc = float(row.get("usdc_size") or 0.0)
-    price = float(row.get("price") or 0.0)
-    if size > 0.0 and usdc > 0.0:
-        return usdc / size
-    return price
+    if size <= 0.0:
+        return 0.0
+    return trade_value(row, cost_source) / size
 
 
-def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any]]) -> dict[str, Any]:
+def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any]], cost_source: str) -> dict[str, Any]:
     trades: list[dict[str, Any]] = []
     cash = collections.defaultdict(lambda: {"buy": 0.0, "sell": 0.0, "merge": 0.0, "redeem": 0.0})
-    price_gap: list[float] = []
+    usdc_size_over_price_size_gap: list[float] = []
     missing_outcome_side = 0
 
     for row in activity:
         cid = row["condition_id"]
         typ = str(row.get("activity_type") or "").upper()
         side = str(row.get("side") or "").upper()
-        value = trade_value(row)
+        value = trade_value(row, cost_source)
+        raw_cash_value = cash_value(row)
         size = float(row.get("size") or 0.0)
 
         if typ == "TRADE" and side == "BUY":
@@ -233,18 +251,19 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
                 continue
             rec = dict(row)
             rec["outcome_side"] = outcome_side
-            rec["exec_price"] = exec_price(row)
+            rec["exec_price"] = exec_price(row, cost_source)
             trades.append(rec)
             cash[cid]["buy"] += value
             display_price = float(row.get("price") or 0.0)
-            if display_price > 0.0 and size > 0.0:
-                price_gap.append(rec["exec_price"] / display_price - 1.0)
+            usdc = float(row.get("usdc_size") or 0.0)
+            if display_price > 0.0 and size > 0.0 and usdc > 0.0:
+                usdc_size_over_price_size_gap.append(usdc / (display_price * size) - 1.0)
         elif typ == "TRADE" and side == "SELL":
             cash[cid]["sell"] += value
         elif typ == "MERGE":
-            cash[cid]["merge"] += value if value > 0.0 else size
+            cash[cid]["merge"] += raw_cash_value if raw_cash_value > 0.0 else size
         elif typ == "REDEEM":
-            cash[cid]["redeem"] += value if value > 0.0 else size
+            cash[cid]["redeem"] += raw_cash_value if raw_cash_value > 0.0 else size
 
     by_market: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
     for row in trades:
@@ -269,7 +288,7 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
                 continue
             qty = float(row.get("size") or 0.0)
             price = float(row["exec_price"])
-            value = trade_value(row)
+            value = trade_value(row, cost_source)
             ts = int(row.get("activity_ts_ms") or 0)
             totals[outcome_side]["qty"] += qty
             totals[outcome_side]["cost"] += value
@@ -390,7 +409,8 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
             "xuan_trade_rows": len(trades),
             "xuan_buy_rows_missing_outcome_side": missing_outcome_side,
         },
-        "price_gap_exec_over_display": summary(price_gap),
+        "cost_source": cost_source,
+        "usdc_size_over_price_size_gap": summary(usdc_size_over_price_size_gap),
         "market": {
             "pair_cost": summary([row["pair_cost"] for row in market_rows]),
             "residual_qty": summary([row["residual_qty"] for row in market_rows]),
@@ -570,8 +590,9 @@ def main() -> None:
             "min_start_ms": args.min_start_ms,
             "max_start_ms": args.max_start_ms,
             "excluded_outage_ms": [args.outage_start_ms, args.outage_end_ms],
+            "cost_source": args.cost_source,
         },
-        **build_truth(markets, activity),
+        **build_truth(markets, activity, args.cost_source),
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     if args.output_json:
