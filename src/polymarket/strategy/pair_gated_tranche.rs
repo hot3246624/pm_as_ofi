@@ -54,6 +54,8 @@ const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
 const XUAN_LADDER_TAIL_RESCUE_MIN_AGE_SECS: f64 = 120.0;
+const XUAN_LADDER_REPAIR_BUDGET_MIN_AGE_SECS: f64 = XUAN_LADDER_COMPLETION_WARM_AGE_SECS;
+const XUAN_LADDER_REPAIR_BUDGET_MAX_REMAINING_SECS: u64 = 45;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
 const XUAN_LADDER_EXPENSIVE_SEED_MIN_SLACK_TICKS: f64 = 1.0;
 const XUAN_LADDER_EXPENSIVE_SEED_DOMINANCE_TICKS: f64 = 2.0;
@@ -819,6 +821,8 @@ impl PairGatedTrancheStrategy {
             tuning,
             input.pair_ledger.repair_budget_available,
             active.residual_qty,
+            remaining_secs,
+            completion_age_secs,
         );
         let urgency_shadow = urgency_budget_shadow_5m(remaining_secs, true)
             * pgt_completion_urgency_mult(active.first_vwap)
@@ -1435,12 +1439,20 @@ fn pgt_effective_repair_budget_per_share(
     tuning: PgtTuning,
     repair_budget_available: f64,
     residual_qty: f64,
+    remaining_secs: u64,
+    completion_age_secs: f64,
 ) -> f64 {
     if repair_budget_available <= 0.0 || residual_qty <= 0.0 {
         return 0.0;
     }
     let per_share = repair_budget_available / residual_qty.max(1.0);
     if tuning.profile == PgtShadowProfile::XuanLadderV1 {
+        let repair_budget_unlocked =
+            completion_age_secs >= XUAN_LADDER_REPAIR_BUDGET_MIN_AGE_SECS
+                || remaining_secs <= XUAN_LADDER_REPAIR_BUDGET_MAX_REMAINING_SECS;
+        if !repair_budget_unlocked {
+            return 0.0;
+        }
         per_share.min((XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP - 1.0).max(0.0))
     } else {
         per_share
@@ -1723,13 +1735,35 @@ mod profile_tests {
     fn xuan_ladder_repair_budget_per_share_is_surplus_capped() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert_eq!(
-            pgt_effective_repair_budget_per_share(tuning, 0.0, 120.0),
+            pgt_effective_repair_budget_per_share(tuning, 0.0, 120.0, 180, 60.0),
             0.0
         );
-        assert!((pgt_effective_repair_budget_per_share(tuning, 0.6, 120.0) - 0.005).abs() < 1e-9);
         assert!(
-            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0) - 0.030).abs() < 1e-9,
+            (pgt_effective_repair_budget_per_share(tuning, 0.6, 120.0, 180, 60.0) - 0.005)
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 60.0) - 0.030)
+                .abs()
+                < 1e-9,
             "xuan ladder repair must never spend more than three cents per residual share"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_repair_budget_stays_locked_for_fresh_completion() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 10.0),
+            0.0,
+            "fresh residuals should wait for true positive-edge completion instead of spending surplus"
+        );
+        assert!(
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 44, 10.0) - 0.030)
+                .abs()
+                < 1e-9,
+            "tail safety can spend capped repair budget even for a fresh residual"
         );
     }
 

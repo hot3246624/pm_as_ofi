@@ -80,6 +80,8 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertAlmostEqual(out["pgt_distributions"]["summary_pair_cost_p90"], 0.99)
         self.assertAlmostEqual(out["pgt_distributions"]["summary_pair_cost_max"], 0.99)
         self.assertEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_02_rounds"], 0)
+        self.assertEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_03_rounds"], 0)
+        self.assertAlmostEqual(out["gap_vs_xuan"]["summary_pair_cost_median"], 0.99 - 0.9755)
         self.assertAlmostEqual(out["pgt_medians"]["single_seed_flip_count"], 0.5)
         self.assertAlmostEqual(out["pgt_medians"]["first_seed_accept_rel_s"], -355.0)
         self.assertAlmostEqual(out["pgt_medians"]["dual_seed_accept_rel_s"], -265.0)
@@ -185,9 +187,31 @@ class ExportXuanPgtGapReportTests(unittest.TestCase):
         self.assertEqual(out["pgt_distributions"]["summary_pair_cost_rounds"], 2)
         self.assertAlmostEqual(out["pgt_medians"]["summary_pair_cost"], 1.0095)
         self.assertEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_02_rounds"], 1)
+        self.assertEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_03_rounds"], 0)
         self.assertFalse(out["passes_pgt_shadow_gate"]["summary_pair_cost_median"])
-        self.assertFalse(out["passes_pgt_shadow_gate"]["summary_pair_cost_tail"])
+        self.assertTrue(out["passes_pgt_shadow_gate"]["summary_pair_cost_tail"])
         self.assertFalse(out["passes_pgt_shadow_gate"]["p90_first_completion_delay_s"])
+
+    def test_pair_cost_tail_gate_tracks_xuan_price_cost_p90(self):
+        payload = {
+            "rows": [
+                {
+                    "slug": f"btc-updown-5m-{100 + idx}",
+                    "has_active_episode": 1.0,
+                    "summary_paired_qty": 10.0,
+                    "summary_pair_cost": cost,
+                }
+                for idx, cost in enumerate([0.97, 0.98, 0.99, 1.00, 1.01, 1.02, 1.025, 1.029, 1.031, 1.04])
+            ]
+        }
+        out = gap_mod.build_gap(payload)
+        self.assertAlmostEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_03_ratio"], 0.2)
+        self.assertFalse(out["passes_pgt_shadow_gate"]["summary_pair_cost_tail"])
+
+        payload["rows"][-1]["summary_pair_cost"] = 1.029
+        out = gap_mod.build_gap(payload)
+        self.assertAlmostEqual(out["pgt_distributions"]["summary_pair_cost_gt_1_03_ratio"], 0.1)
+        self.assertTrue(out["passes_pgt_shadow_gate"]["summary_pair_cost_tail"])
 
 
 if __name__ == "__main__":

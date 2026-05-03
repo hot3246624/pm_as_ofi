@@ -16,6 +16,8 @@ DEFAULT_REPORT_DIR = REPO_ROOT / "data" / "replay_reports"
 XUAN_TARGETS = {
     "clean_closed_episode_ratio": 0.913,
     "same_side_add_qty_ratio": 0.105,
+    "summary_pair_cost_median": 0.9755,
+    "summary_pair_cost_p90": 1.03,
     "merge_window_rel_s_low": -25.0,
     "merge_window_rel_s_high": -18.0,
     "redeem_window_rel_s_low": 35.0,
@@ -28,8 +30,8 @@ PGT_SHADOW_GATES = {
     "episode_close_delay_p90_max": 100.0,
     "p90_first_completion_delay_s_max": 100.0,
     "summary_pair_cost_median_max": 1.00,
-    "summary_pair_cost_p90_max": 1.02,
-    "summary_pair_cost_gt_1_02_ratio_max": 0.0,
+    "summary_pair_cost_p90_max": 1.03,
+    "summary_pair_cost_gt_1_03_ratio_max": 0.10,
 }
 
 
@@ -174,8 +176,12 @@ def build_gap(
     pair_cost_gt_1_00_rounds = sum(1 for value in pair_costs if value > 1.00 + 1e-9)
     pair_cost_gt_1_01_rounds = sum(1 for value in pair_costs if value > 1.01 + 1e-9)
     pair_cost_gt_1_02_rounds = sum(1 for value in pair_costs if value > 1.02 + 1e-9)
+    pair_cost_gt_1_03_rounds = sum(1 for value in pair_costs if value > 1.03 + 1e-9)
     pair_cost_gt_1_02_ratio = (
         pair_cost_gt_1_02_rounds / len(pair_costs) if pair_costs else None
+    )
+    pair_cost_gt_1_03_ratio = (
+        pair_cost_gt_1_03_rounds / len(pair_costs) if pair_costs else None
     )
     median_single_seed_flip_count = median(collect("single_seed_flip_count"))
     median_dual_seed_quotes = median(collect("dual_seed_quotes"))
@@ -280,13 +286,17 @@ def build_gap(
             "summary_pair_cost_gt_1_00_rounds": pair_cost_gt_1_00_rounds,
             "summary_pair_cost_gt_1_01_rounds": pair_cost_gt_1_01_rounds,
             "summary_pair_cost_gt_1_02_rounds": pair_cost_gt_1_02_rounds,
+            "summary_pair_cost_gt_1_03_rounds": pair_cost_gt_1_03_rounds,
             "summary_pair_cost_gt_1_02_ratio": pair_cost_gt_1_02_ratio,
+            "summary_pair_cost_gt_1_03_ratio": pair_cost_gt_1_03_ratio,
         },
         "xuan_targets": XUAN_TARGETS,
         "pgt_shadow_gates": PGT_SHADOW_GATES,
         "gap_vs_xuan": {
             "clean_closed_episode_ratio": None if median_clean is None else median_clean - XUAN_TARGETS["clean_closed_episode_ratio"],
             "same_side_add_qty_ratio": None if median_same_side is None else median_same_side - XUAN_TARGETS["same_side_add_qty_ratio"],
+            "summary_pair_cost_median": None if median_pair_cost is None else median_pair_cost - XUAN_TARGETS["summary_pair_cost_median"],
+            "summary_pair_cost_p90": None if p90_pair_cost is None else p90_pair_cost - XUAN_TARGETS["summary_pair_cost_p90"],
             "merge_requested_first_rel_s": None if median_merge_first is None else median_merge_first + 22.0,
             "redeem_requested_first_rel_s": None if median_redeem_first is None else median_redeem_first - 38.0,
         },
@@ -323,8 +333,8 @@ def build_gap(
                 and p90_pair_cost <= PGT_SHADOW_GATES["summary_pair_cost_p90_max"]
             ),
             "summary_pair_cost_tail": (
-                pair_cost_gt_1_02_ratio is not None
-                and pair_cost_gt_1_02_ratio <= PGT_SHADOW_GATES["summary_pair_cost_gt_1_02_ratio_max"]
+                pair_cost_gt_1_03_ratio is not None
+                and pair_cost_gt_1_03_ratio <= PGT_SHADOW_GATES["summary_pair_cost_gt_1_03_ratio_max"]
             ),
         },
         "counterfactual_readout": {
