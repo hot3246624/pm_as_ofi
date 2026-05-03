@@ -2244,18 +2244,21 @@ impl StrategyCoordinator {
         if !self.cfg.strategy.is_pair_gated_tranche_arb() {
             return None;
         }
-        if self.pgt_flat_seed_latch_exhausted {
-            return None;
-        }
         let now = Instant::now();
-        if let (Some(side), Some(until)) = (
-            self.pgt_flat_seed_latched_side,
-            self.pgt_flat_seed_latched_until,
-        ) {
-            if now < until {
-                return Some(side);
+        if !self.pgt_flat_seed_latch_exhausted {
+            if let (Some(side), Some(until)) = (
+                self.pgt_flat_seed_latched_side,
+                self.pgt_flat_seed_latched_until,
+            ) {
+                if now < until {
+                    return Some(side);
+                }
             }
         }
+        // Even after the time latch exhausts, keep an already-live flat seed on
+        // its side. Releasing side selection while a maker order is live burns
+        // queue priority and recreates the reprice/cancel churn this latch is
+        // meant to prevent.
         let yes_active = self.slot_target_active(OrderSlot::YES_BUY)
             && matches!(self.side_target_reason(Side::Yes), Some(BidReason::Provide));
         let no_active = self.slot_target_active(OrderSlot::NO_BUY)

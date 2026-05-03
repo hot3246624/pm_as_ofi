@@ -6593,6 +6593,32 @@ fn test_pair_gated_tranche_flat_seed_latch_exhausts_after_max_age_without_fill()
 }
 
 #[test]
+fn test_pair_gated_tranche_flat_seed_latch_exhaustion_keeps_live_seed_side() {
+    let mut cfg = cfg();
+    cfg.strategy = StrategyKind::PairGatedTrancheArb;
+    cfg.dry_run = true;
+    let (_o, _i, _m, _k, _e, mut coord) = make(cfg);
+    let slot = OrderSlot::YES_BUY;
+    coord.slot_targets[slot.index()] = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.42,
+        size: 135.0,
+        reason: BidReason::Provide,
+    });
+    coord.pgt_flat_seed_latched_side = Some(Side::Yes);
+    coord.pgt_flat_seed_latched_since = Some(std::time::Instant::now() - Duration::from_secs(31));
+    coord.pgt_flat_seed_latched_until = Some(std::time::Instant::now() - Duration::from_secs(1));
+    coord.pgt_flat_seed_latch_exhausted = true;
+
+    assert_eq!(
+        coord.pgt_flat_seed_latched_side(),
+        Some(Side::Yes),
+        "live first-leg maker queue must keep side selection even after latch timeout"
+    );
+}
+
+#[test]
 fn test_pair_gated_tranche_flat_seed_latch_does_not_rearm_after_timeout_once_max_age_hit() {
     let mut cfg = cfg();
     cfg.strategy = StrategyKind::PairGatedTrancheArb;
