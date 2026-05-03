@@ -18,6 +18,7 @@ LOOP_LOG="${PM_PGT_SHADOW_LOOP_LOG:-$LOG_ROOT/pgt_shadow_loop.log}"
 INTERVAL_SECS="${PM_PGT_SHADOW_LOOP_INTERVAL_SECS:-300}"
 MIN_REMAINING_SECS="${PM_PGT_SHADOW_LOOP_MIN_REMAINING_SECS:-180}"
 FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-10}"
+FIXED_STALE_SKIP_GRACE_SECS="${PM_PGT_FIXED_STALE_SKIP_GRACE_SECS:-${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}}"
 OVERLAP_LOOP="${PM_PGT_SHADOW_LOOP_OVERLAP:-true}"
 BINARY="$ROOT/target/debug/polymarket_v2"
 BUILD_ONCE="${PM_PGT_SHADOW_BUILD_ONCE:-true}"
@@ -106,6 +107,15 @@ target_start_for_offset() {
   echo "$(( current_start + (INTERVAL_SECS * offset) ))"
 }
 
+target_stale_at() {
+  local target_start="$1"
+  local grace="${FIXED_STALE_SKIP_GRACE_SECS:-2}"
+  if [[ ! "$INTERVAL_SECS" =~ ^[0-9]+$ ]] || [[ ! "$grace" =~ ^[0-9]+$ ]]; then
+    grace=2
+  fi
+  echo "$(( target_start + INTERVAL_SECS + grace ))"
+}
+
 run_fixed_child() {
   local fixed_round_offset="$1"
   PM_INSTANCE_ID="$INSTANCE_ID" \
@@ -118,6 +128,8 @@ run_fixed_child() {
   PM_FIXED_ROUND_OFFSET="$fixed_round_offset" \
   PM_FIXED_MIN_REMAINING_SECS="${PM_FIXED_MIN_REMAINING_SECS:-disabled}" \
   PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS="${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}" \
+  PM_PGT_FIXED_INTERVAL_SECS="$INTERVAL_SECS" \
+  PM_PGT_FIXED_STALE_SKIP_GRACE_SECS="$FIXED_STALE_SKIP_GRACE_SECS" \
   PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED="${PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED:-false}" \
   PM_PGT_FIXED_AUTO_BUILD="$FIXED_AUTO_BUILD" \
   PM_PGT_FIXED_PRESTART_SECS="$FIXED_PRESTART_SECS" \
@@ -133,9 +145,15 @@ if is_truthy "$OVERLAP_LOOP"; then
     schedule_now="$(date +%s)"
     fixed_round_offset="$(choose_prelaunch_round_offset "$schedule_now")"
     target_start="$(target_start_for_offset "$fixed_round_offset" "$schedule_now")"
+    stale_at="$(target_stale_at "$target_start")"
+    if (( schedule_now >= stale_at )); then
+      echo "[$started_at] pgt shadow overlap stale schedule skipped prefix=$PREFIX instance_id=$INSTANCE_ID target_start=$target_start now=$schedule_now stale_at=$stale_at" >> "$LOOP_LOG"
+      sleep "$BACKOFF_SEC"
+      continue
+    fi
     {
       echo "[$started_at] pgt shadow overlap schedule=$round prefix=$PREFIX instance_id=$INSTANCE_ID"
-      echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset target_start=$target_start prestart_secs=$FIXED_PRESTART_SECS"
+      echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset target_start=$target_start prestart_secs=$FIXED_PRESTART_SECS stale_at=$stale_at"
     } >> "$LOOP_LOG"
 
     (

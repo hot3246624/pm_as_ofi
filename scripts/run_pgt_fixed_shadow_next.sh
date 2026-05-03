@@ -92,6 +92,8 @@ case "$FIXED_AUTO_BUILD" in
 esac
 
 FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-10}"
+FIXED_INTERVAL_SECS="${PM_PGT_FIXED_INTERVAL_SECS:-300}"
+FIXED_STALE_SKIP_GRACE_SECS="${PM_PGT_FIXED_STALE_SKIP_GRACE_SECS:-${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}}"
 TARGET_START_TS="${POLYMARKET_MARKET_SLUG##*-}"
 prestart_sleep_secs=0
 prestart_launch_at=""
@@ -107,6 +109,17 @@ if [[ "$TARGET_START_TS" =~ ^[0-9]+$ ]] && [[ "$FIXED_PRESTART_SECS" =~ ^[0-9]+$
   prestart_wake_at="$(date +%s)"
 fi
 
+if [[ "$TARGET_START_TS" =~ ^[0-9]+$ ]] \
+  && [[ "$FIXED_INTERVAL_SECS" =~ ^[0-9]+$ ]] \
+  && [[ "$FIXED_STALE_SKIP_GRACE_SECS" =~ ^[0-9]+$ ]]; then
+  now="$(date +%s)"
+  stale_at="$(( TARGET_START_TS + FIXED_INTERVAL_SECS + FIXED_STALE_SKIP_GRACE_SECS ))"
+  if (( now >= stale_at )); then
+    echo "stale_target_skipped slug=$POLYMARKET_MARKET_SLUG now=$now target_start=$TARGET_START_TS interval_secs=$FIXED_INTERVAL_SECS grace_secs=$FIXED_STALE_SKIP_GRACE_SECS stale_at=$stale_at" >&2
+    exit 76
+  fi
+fi
+
 echo "slug=$POLYMARKET_MARKET_SLUG"
 echo "market_id=$POLYMARKET_MARKET_ID"
 echo "yes_asset_id=$POLYMARKET_YES_ASSET_ID"
@@ -115,6 +128,8 @@ echo "round_offset=$ROUND_OFFSET"
 echo "min_remaining_secs=$MIN_REMAINING_SECS"
 echo "prestart_sleep_secs=$prestart_sleep_secs"
 echo "prestart_secs=$FIXED_PRESTART_SECS"
+echo "interval_secs=$FIXED_INTERVAL_SECS"
+echo "stale_skip_grace_secs=$FIXED_STALE_SKIP_GRACE_SECS"
 echo "prestart_launch_at=$prestart_launch_at"
 echo "prestart_wake_at=$prestart_wake_at"
 echo "instance_id=$INSTANCE_ID"
