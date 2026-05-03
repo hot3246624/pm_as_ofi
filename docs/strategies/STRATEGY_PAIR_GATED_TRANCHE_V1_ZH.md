@@ -219,8 +219,8 @@ PM_OPEN_PAIR_BAND=0.98
 - 开盘后 `4s` 开始允许 first leg；
 - 收盘前 `25s` 停止新 first leg，保留 completion/harvest；
 - seed pair cap 内部提升到 `1.040`，不受 launcher 默认 `PM_OPEN_PAIR_BAND=0.98` 压制；
-- completion pair cap 改为 profit-guard 口径：fresh residual 先守正 edge，age >= `45s` 或 remaining <= `45s` 后才允许动用真实 surplus-funded repair，pair cost 最高 `1.030`；
-- taker-close pair cap 单独限制为 `1.000`；只有上述 age/tail gate 解锁且有真实 repair budget 时，才允许跨过 breakeven 修残仓；
+- completion pair cap 改为 profit-guard 口径：fresh residual 先守正 edge，age >= `90s` 后允许 `1.010` stale exposure insurance，降低 200s+ 残仓暴露；
+- surplus-funded repair 在 age >= `45s` 或 remaining <= `45s` 后才解锁，且无论 stale insurance 是否启用，pair cost 最高仍封顶 `1.030`；
 - 若本轮已闭合过配对且最近 pair cost 没有正盈余、repair budget 为空，则后续新 first leg 必须有可见 breakeven completion path，避免亏损 tranche 后继续用宽入口叠加负成本；
 - clip 由轮内时间决定：`t+4-44s => 120`，`t+45-119s => 160`，`t+120-209s => 210`，`t+210-259s => 135`，尾部 `80` shares；
 - 仍为 shadow-only，不应直接 enforce。当前 OMS 仍是一侧一个 maker slot，不能完整表达 xuan 一轮内多 tranche 同时 ladder，只能先验证时间窗口、报价位置和 completion 压力。

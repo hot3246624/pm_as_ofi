@@ -16,7 +16,7 @@
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
-| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.030` | replay truth 已改用 `outcome_side` / `winner_side` 与 `price*size` 成本；已新增 age/tail gate：fresh residual 不花 repair budget，age >= `45s` 或 remaining <= `45s` 才能花已锁 surplus | 观察中 | 用新 binary 继续 shadow，验证早期 `0.50+0.51` 闭合显著减少，且尾部 residual 不反弹 |
+| A8 | taker-close 成本边界 | fresh residual 不花 repair budget；age >= `90s` 无预算最多到 `1.010`；surplus-funded repair 总 pair cost 最多 `1.030` | replay truth 已改用 `outcome_side` / `winner_side` 与 `price*size` 成本；`1777775100/1777775400` 新 gate 首两轮成本改善到 `0.99/0.97`，但第二轮 completion delay `285.9s`，因此补 stale exposure insurance | 观察中 | 用新 binary 继续 shadow，验证 p90 delay 是否下降，且 median pair cost 不回到 `1.01` |
 | A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.98；不得系统性 >1.03 | xuan price-cost 口径 market pair_cost p50 `0.9755`、p90 `1.0287`；当前 PGT 聚合 median `1.0100`，主要问题是 early funded repair 过早消耗 | 观察中 | 新 gate 后 PGT 要保持低残仓，同时把 median 拉回 `<=1.00`，p90 保持约 `1.03` 内 |
 | A10 | merge/redeem 生命周期 | merge 主要在 t-25 到 t-18；redeem 在 +35/+50；无 residual 积压 | 近期报告显示 merge/redeem 窗口符合 | 通过 | 长样本确认 |
 | A11 | replay/report 可观测性 | 报告包含 seed/cover delay、dispatch_taker_close、pair_cost、same-side 指标 | 已新增 `first_completion_delay_s` / p90 | 通过 | 每轮重建 gap report |
@@ -25,7 +25,7 @@
 ## 当前硬阻塞
 
 1. `completion` maker 阶段实际订单生命周期已稳定；`PGTGate.dispatch_place` 误报问题已修复，下一轮需确认新口径下 `place` 接近真实 `placed`。
-2. `taker-close` 已能闭环，但最新 fixed shadow 证明 early repair budget 偏早：很多轮快速闭合在 `1.01` 附近，拖高 median pair cost。
+2. `taker-close` 已能闭环。early repair budget 偏早会拖高 median pair cost；但过严会产生 200s+ residual exposure，因此新增 age >= `90s` 的 `1.010` stale exposure insurance。
 3. 报表旧 gate 已修正为 price-cost/xuan 口径：关注 `summary_pair_cost_median`、`summary_pair_cost_p90`、`summary_pair_cost_gt_1.03_ratio` 与 `p90_first_completion_delay_s`。
 
 ## 最新 replay truth：2026-04-27 到 2026-05-01
@@ -60,7 +60,7 @@
 对 PGT 的含义：
 
 - 复刻 xuan 的“低残仓”方向是对的，但不能无条件复刻其高成本 completion/tail。
-- `XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP=1.030` 暂时保留：它只允许花真实 covered surplus，不是无资金来源追价；并且 fresh residual 阶段不解锁，避免早期 1.01 附近系统性闭合。
+- `XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP=1.030` 暂时保留：它只允许花真实 covered surplus，不是无资金来源追价；fresh residual 阶段不解锁，避免早期 1.01 附近系统性闭合；age >= `90s` 的无预算 stale insurance 仅到 `1.010`。
 - 若新 cap shadow 出现持续 `summary_pair_cost_p90 > 1.03` 或 residual 没有明显改善，应回调到 `1.020`。
 
 ### 疑似 xuan 新策略窗口：2026-04-30 15:30 CST 之后
@@ -102,7 +102,7 @@ post-cutoff frontier：
 | `45-60s` | `0.0408` | `0.9191` | `0.2570` | `+2333.72` |
 | `60-90s` | `0.0418` | `0.8860` | `0.1778` | `+3368.88` |
 
-结论：PGT 不应该为了降低 completion delay 而在 fresh residual 阶段立刻花 repair budget。更合理的形态是早期只接受 `pair_cost <= 0.99` 附近的真实正 edge；若 45s 左右仍未闭合，再进入 breakeven/真实 surplus-funded repair，用低残仓换有限成本。
+结论：PGT 不应该为了降低 completion delay 而在 fresh residual 阶段立刻花 repair budget。更合理的形态是早期只接受 `pair_cost <= 0.99` 附近的真实正 edge；若 45s 左右仍未闭合，进入 breakeven/真实 surplus-funded repair；若 age >= `90s` 仍未闭合，允许 `1.010` 的 stale exposure insurance，用很小成本换掉 200s+ 残仓暴露。
 
 ### PGT 新 cap 首批 live-shadow 样本
 
@@ -140,7 +140,7 @@ post-cutoff frontier：
 - 旧 shadow repair band 过宽，已经从“可闭合验证”进入“负 EV 控制”阶段。
 - 报表已补 `p90_first_completion_delay_s`、`summary_pair_cost_p90`、`summary_pair_cost_tail` gate。
 - pair-cost 统计现在忽略 `summary_paired_qty=0` 的伪 active 行，避免 `pair_cost=0` 污染验收。
-- 策略已收紧：无真实 surplus budget 时 completion/taker-close 只允许到 breakeven；surplus-funded repair 每股最多贡献 `0.030`，且仅在 residual age >= `45s` 或 remaining <= `45s` 时解锁，避免早期 1.01 附近系统性闭合，同时保留尾部修残仓能力。
+- 策略已收紧：fresh residual 不使用 repair budget；age >= `90s` 无预算最多到 `1.010`；surplus-funded repair 每股最多贡献到总 pair cost `1.030`，且仅在 residual age >= `45s` 或 remaining <= `45s` 时解锁，避免早期 1.01 附近系统性闭合，同时保留尾部修残仓能力。
 - 新 cap 复测轮 `1777514400` 没有触发 taker-close，验证修复生效；但 `NO@0.51` first-leg 无法闭合，最终留下 `79.5` residual，因此继续补 expensive seed guard，而不是回滚到宽 repair。
 
 ## 样本明细：`btc-updown-5m-1777468200`

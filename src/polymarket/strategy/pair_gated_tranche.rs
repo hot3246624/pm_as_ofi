@@ -48,12 +48,11 @@ const XUAN_LADDER_COMPLETION_FRESH_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_COMPLETION_WARM_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_COMPLETION_STALE_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_TAIL_RESCUE_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP: f64 = 1.030;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
-const XUAN_LADDER_TAIL_RESCUE_MIN_AGE_SECS: f64 = 120.0;
 const XUAN_LADDER_REPAIR_BUDGET_MIN_AGE_SECS: f64 = XUAN_LADDER_COMPLETION_WARM_AGE_SECS;
 const XUAN_LADDER_REPAIR_BUDGET_MAX_REMAINING_SECS: u64 = 45;
 const XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS: f64 = -4.0;
@@ -189,8 +188,8 @@ impl PgtTuning {
             price_aware_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
             open_pair_band_cap: Some(XUAN_LADDER_OPEN_PAIR_CAP),
             completion_early_pair_cap: XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP,
-            completion_late_pair_cap: XUAN_LADDER_TAIL_RESCUE_PAIR_CAP,
-            taker_close_pair_cap: XUAN_LADDER_TAIL_RESCUE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP,
             fixed_clip_qty: None,
             clip_profile: PgtClipProfile::XuanLadderV1,
             preserve_seed_clip_qty: true,
@@ -1412,17 +1411,18 @@ fn pgt_effective_completion_pair_caps(
     } else if completion_age_secs < XUAN_LADDER_COMPLETION_STALE_AGE_SECS {
         XUAN_LADDER_COMPLETION_STALE_PAIR_CAP
     } else {
-        XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
+        XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
     };
 
-    let tail_cap =
-        if remaining_secs <= 45 && completion_age_secs >= XUAN_LADDER_TAIL_RESCUE_MIN_AGE_SECS {
-            XUAN_LADDER_TAIL_RESCUE_PAIR_CAP
-        } else if remaining_secs <= 45 {
+    let tail_cap = if remaining_secs <= 45
+        && completion_age_secs >= XUAN_LADDER_COMPLETION_STALE_AGE_SECS
+    {
+        XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
+    } else if remaining_secs <= 45 {
             XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
-        } else {
-            age_pair_cap
-        };
+    } else {
+        age_pair_cap
+    };
     let early = age_pair_cap.min(default_early).clamp(0.0, 1.20);
     let late = tail_cap.max(early).min(default_late).clamp(0.0, 1.20);
     let taker =
@@ -1453,7 +1453,13 @@ fn pgt_effective_repair_budget_per_share(
         if !repair_budget_unlocked {
             return 0.0;
         }
-        per_share.min((XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP - 1.0).max(0.0))
+        let base_pair_cap = if completion_age_secs >= XUAN_LADDER_COMPLETION_STALE_AGE_SECS {
+            XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
+        } else {
+            XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
+        };
+        let max_extra = (XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP - base_pair_cap).max(0.0);
+        per_share.min(max_extra)
     } else {
         per_share
     }
@@ -1664,11 +1670,11 @@ mod profile_tests {
         );
         assert_eq!(
             tuning.completion_late_pair_cap,
-            XUAN_LADDER_TAIL_RESCUE_PAIR_CAP
+            XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
         );
         assert_eq!(
             tuning.taker_close_pair_cap,
-            XUAN_LADDER_TAIL_RESCUE_PAIR_CAP
+            XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
         );
         assert_eq!(tuning.fixed_clip_qty, None);
         assert_eq!(tuning.clip_profile, PgtClipProfile::XuanLadderV1);
@@ -1706,7 +1712,7 @@ mod profile_tests {
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 120, 95.0),
-            (1.000, 1.000, 1.000)
+            (1.000, 1.010, 1.010)
         );
     }
 
@@ -1719,11 +1725,11 @@ mod profile_tests {
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 119.0),
-            (1.000, 1.000, 1.000)
+            (1.000, 1.010, 1.010)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 40, 120.0),
-            (1.000, 1.000, 1.000)
+            (1.000, 1.010, 1.010)
         );
         assert_eq!(
             pgt_effective_completion_pair_caps(tuning, 80, 8.0),
@@ -1748,6 +1754,12 @@ mod profile_tests {
                 .abs()
                 < 1e-9,
             "xuan ladder repair must never spend more than three cents per residual share"
+        );
+        assert!(
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 95.0) - 0.020)
+                .abs()
+                < 1e-9,
+            "stale no-budget rescue already spends one cent, so funded repair still caps total pair cost at 1.030"
         );
     }
 

@@ -160,7 +160,7 @@ profile 说明：
 | `legacy` | 原始 PGT 行为 | 不改硬编码参数 |
 | `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed seed clip `57.6` |
 | `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed seed clip `30.0` |
-| `xuan_ladder_v1` | 最新 xuan public 行为 shadow 近似 + profit guard | 开盘后 4s 开始；收盘前 25s 停新 first leg；seed pair cap `1.040`；completion cap 按 residual age 分层；fresh residual 不花 repair budget；age >= 45s 或 remaining <= 45s 才允许真实 surplus repair budget 最多放宽到 `1.030`；亏损闭合后新 first leg 启用 breakeven-path brake；taker-close cap `1.000`；clip 随轮内时间梯度变化 |
+| `xuan_ladder_v1` | 最新 xuan public 行为 shadow 近似 + profit guard | 开盘后 4s 开始；收盘前 25s 停新 first leg；seed pair cap `1.040`；completion cap 按 residual age 分层；fresh residual 不花 repair budget；age >= 90s 可用 `1.010` stale exposure insurance；age >= 45s 或 remaining <= 45s 才允许真实 surplus repair budget，且总 pair cost 仍封顶 `1.030`；亏损闭合后新 first leg 启用 breakeven-path brake；clip 随轮内时间梯度变化 |
 
 Replay profile 下的 `fixed seed clip` 是 replay 搜索里的实际 seed clip；`xuan_ladder_v1` 使用内置时间梯度 clip。它们都会绕过 legacy seed 缩量逻辑，例如 “no immediate completion 时乘 `0.60`” 和 thin-slack clip haircut；否则 shadow 样本会变成不同策略，不能直接验证 replay/xuan 候选。
 
