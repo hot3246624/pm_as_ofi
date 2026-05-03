@@ -89,6 +89,21 @@ post-cutoff frontier：
 - xuan 的可学习点是 `completion delay p50=10s/p90=48s`、极低 p90 residual、以及整体 pair cost 维持在 1 以下；不是无约束高价追 completion。
 - 我们要超越 xuan 的方向是：保持低残仓，同时把 post-cutoff xuan 的 `pair_cost p90≈1.031` 继续压低，并让 `pair_cost > 1.00` 的修复只由真实 surplus budget 支付。
 
+### Completion delay 桶分析
+
+基于 2026-04-27 到 2026-05-01 的 xuan FIFO episode proxy，`越快 completion 越好` 这个旧判断需要修正：
+
+| delay bucket | qty ratio | weighted pair cost | gt1 qty ratio | proxy PnL |
+| --- | ---: | ---: | ---: | ---: |
+| `0-5s` | `0.2867` | `1.0203` | `0.6802` | `-4115.44` |
+| `5-15s` | `0.2924` | `0.9975` | `0.5092` | `+507.93` |
+| `15-30s` | `0.2014` | `0.9659` | `0.3918` | `+4860.18` |
+| `30-45s` | `0.1180` | `0.9396` | `0.2776` | `+5035.80` |
+| `45-60s` | `0.0408` | `0.9191` | `0.2570` | `+2333.72` |
+| `60-90s` | `0.0418` | `0.8860` | `0.1778` | `+3368.88` |
+
+结论：PGT 不应该为了降低 completion delay 而在 fresh residual 阶段立刻花 repair budget。更合理的形态是早期只接受 `pair_cost <= 0.99` 附近的真实正 edge；若 45s 左右仍未闭合，再进入 breakeven/真实 surplus-funded repair，用低残仓换有限成本。
+
 ### PGT 新 cap 首批 live-shadow 样本
 
 `target/debug/polymarket_v2` 已于 2026-05-03 09:23 CST 重建。新二进制后完成的首批 fixed BTC shadow：
