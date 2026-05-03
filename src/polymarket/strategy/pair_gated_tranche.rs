@@ -72,9 +72,13 @@ const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
+const XUAN_LADDER_CHEAP_SEED_RISK_PRICE: f64 = 0.49;
+const XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
 const XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS: u64 = 5;
 
+static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
+static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_TAIL_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -575,10 +579,9 @@ impl PairGatedTrancheStrategy {
         }
 
         let tick = coordinator.cfg().tick_size.max(1e-9);
-        let open_pair_band = pgt_effective_open_pair_band_value(
-            coordinator.cfg().open_pair_band,
-            coordinator.seconds_to_market_end().unwrap_or(u64::MAX),
-        );
+        let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
+        let open_pair_band =
+            pgt_effective_open_pair_band_value(coordinator.cfg().open_pair_band, remaining_secs);
         let mut price = self.passive_seed_price(coordinator, side, ceiling, best_bid, best_ask)?;
         if price <= 0.0 {
             return None;
@@ -590,7 +593,7 @@ impl PairGatedTrancheStrategy {
         let mut preference_score = visible_completion_slack_ticks - 0.60 * fill_distance_ticks;
         let entry_pressure_extra_ticks = pgt_shadow_entry_pressure_extra_ticks(
             coordinator.cfg().dry_run,
-            coordinator.seconds_to_market_end().unwrap_or(u64::MAX),
+            remaining_secs,
             taker_shadow_would_open,
             visible_completion_slack_ticks,
             fill_distance_ticks,
@@ -627,9 +630,78 @@ impl PairGatedTrancheStrategy {
             recent_pair_cost,
         );
         if visible_breakeven_completion_slack_ticks < min_visible_breakeven_slack_ticks - 1e-9 {
+            pgt_maybe_log_seed_admission_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                side,
+                remaining_secs,
+                "no_visible_breakeven_path",
+                price,
+                size,
+                best_bid,
+                best_ask,
+                opp_ask,
+                open_pair_band,
+                tick,
+                taker_shadow_would_open,
+                entry_pressure_extra_ticks,
+                visible_completion_slack_ticks,
+                visible_breakeven_completion_slack_ticks,
+                fill_distance_ticks,
+                min_visible_breakeven_slack_ticks,
+            );
             quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
+        if pgt_xuan_ladder_seed_visible_completion_guard_blocks(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            price,
+            opp_ask,
+        ) {
+            pgt_maybe_log_seed_admission_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                side,
+                remaining_secs,
+                "blocked_visible_completion_pair_cost",
+                price,
+                size,
+                best_bid,
+                best_ask,
+                opp_ask,
+                open_pair_band,
+                tick,
+                taker_shadow_would_open,
+                entry_pressure_extra_ticks,
+                visible_completion_slack_ticks,
+                visible_breakeven_completion_slack_ticks,
+                fill_distance_ticks,
+                min_visible_breakeven_slack_ticks,
+            );
+            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
+            return None;
+        }
+        pgt_maybe_log_seed_admission_diag(
+            coordinator.cfg().dry_run,
+            tuning,
+            side,
+            remaining_secs,
+            "accepted",
+            price,
+            size,
+            best_bid,
+            best_ask,
+            opp_ask,
+            open_pair_band,
+            tick,
+            taker_shadow_would_open,
+            entry_pressure_extra_ticks,
+            visible_completion_slack_ticks,
+            visible_breakeven_completion_slack_ticks,
+            fill_distance_ticks,
+            min_visible_breakeven_slack_ticks,
+        );
         let preserve_seed_clip_qty = tuning.preserve_seed_clip_qty;
         let open_path_mult = if taker_shadow_would_open || preserve_seed_clip_qty {
             1.0
@@ -821,6 +893,23 @@ impl PairGatedTrancheStrategy {
             Side::No => (input.book.no_bid, input.book.no_ask),
         };
         if best_ask <= 0.0 || active.first_vwap <= 0.0 || active.residual_qty <= f64::EPSILON {
+            pgt_maybe_log_completion_none_diag(
+                coordinator.cfg().dry_run,
+                pgt_tuning(),
+                first_side,
+                hedge_side,
+                "invalid_active_or_book",
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                pgt_active_tranche_age_secs(active),
+                best_bid,
+                best_ask,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+            );
             return None;
         }
 
@@ -859,6 +948,23 @@ impl PairGatedTrancheStrategy {
         let passive_ceiling =
             pgt_effective_completion_passive_ceiling(ceiling, tail_insurance_ceiling);
         if passive_ceiling <= 0.0 {
+            pgt_maybe_log_completion_none_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                first_side,
+                hedge_side,
+                "passive_ceiling_non_positive",
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                completion_age_secs,
+                best_bid,
+                best_ask,
+                positive_edge_ceiling,
+                funded_loss_ceiling,
+                taker_close_ceiling,
+                passive_ceiling,
+            );
             return None;
         }
 
@@ -872,9 +978,43 @@ impl PairGatedTrancheStrategy {
             active.first_vwap,
             completion_age_secs,
         ) else {
+            pgt_maybe_log_completion_none_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                first_side,
+                hedge_side,
+                "no_passive_price",
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                completion_age_secs,
+                best_bid,
+                best_ask,
+                positive_edge_ceiling,
+                funded_loss_ceiling,
+                taker_close_ceiling,
+                passive_ceiling,
+            );
             return None;
         };
         if !pgt_completion_price_allowed(price, ceiling, tail_insurance_ceiling) {
+            pgt_maybe_log_completion_none_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                first_side,
+                hedge_side,
+                "completion_price_not_allowed",
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                completion_age_secs,
+                best_bid,
+                best_ask,
+                positive_edge_ceiling,
+                funded_loss_ceiling,
+                taker_close_ceiling,
+                passive_ceiling,
+            );
             return None;
         }
 
@@ -887,6 +1027,23 @@ impl PairGatedTrancheStrategy {
         let size = raw_size.min(active.residual_qty.max(0.0));
         let size = quantize_tenth(size);
         if size <= 0.0 {
+            pgt_maybe_log_completion_none_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                first_side,
+                hedge_side,
+                "completion_size_non_positive",
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                completion_age_secs,
+                best_bid,
+                best_ask,
+                positive_edge_ceiling,
+                funded_loss_ceiling,
+                taker_close_ceiling,
+                passive_ceiling,
+            );
             return None;
         }
 
@@ -1506,6 +1663,156 @@ fn pgt_tail_insurance_completion_ceiling(
     }
 }
 
+fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    seed_price: f64,
+    opposite_ask: f64,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return false;
+    }
+    if round_buy_fill_count > 0 {
+        return false;
+    }
+    if seed_price <= 0.0 || opposite_ask <= 0.0 {
+        return true;
+    }
+    if seed_price > XUAN_LADDER_CHEAP_SEED_RISK_PRICE + 1e-9 {
+        return false;
+    }
+    seed_price + opposite_ask > XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP + 1e-9
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pgt_maybe_log_seed_admission_diag(
+    dry_run: bool,
+    tuning: PgtTuning,
+    side: Side,
+    remaining_secs: u64,
+    decision: &'static str,
+    price: f64,
+    size: f64,
+    best_bid: f64,
+    best_ask: f64,
+    opposite_ask: f64,
+    open_pair_band: f64,
+    tick: f64,
+    taker_shadow_would_open: bool,
+    entry_pressure_extra_ticks: u8,
+    visible_completion_slack_ticks: f64,
+    visible_breakeven_completion_slack_ticks: f64,
+    fill_distance_ticks: f64,
+    min_visible_breakeven_slack_ticks: f64,
+) {
+    if !dry_run || tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return;
+    }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = PGT_LAST_SEED_DIAG_UNIX_SECS.load(Ordering::Relaxed);
+    if now_secs.saturating_sub(last) < XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS {
+        return;
+    }
+    if PGT_LAST_SEED_DIAG_UNIX_SECS
+        .compare_exchange(last, now_secs, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let visible_ask_pair_cost = price + opposite_ask;
+    let maker_completion_ref = (opposite_ask - tick.max(0.0)).max(0.0);
+    let visible_maker_pair_cost = price + maker_completion_ref;
+    let guard_pair_cost_gap =
+        (visible_ask_pair_cost - XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP).max(0.0);
+    info!(
+        "🧭 PGT seed admission diag | decision={} side={:?} price={:.4} size={:.1} remaining_secs={} best_bid={:.4} best_ask={:.4} opposite_ask={:.4} visible_ask_pair_cost={:.4} visible_maker_pair_cost={:.4} open_pair_band={:.4} visible_completion_slack_ticks={:.2} visible_breakeven_slack_ticks={:.2} min_breakeven_slack_ticks={:.2} fill_distance_ticks={:.2} taker_shadow_would_open={} entry_pressure_extra_ticks={} xuan_visible_pair_cap={:.4} guard_pair_cost_gap={:.4}",
+        decision,
+        side,
+        price,
+        size,
+        remaining_secs,
+        best_bid,
+        best_ask,
+        opposite_ask,
+        visible_ask_pair_cost,
+        visible_maker_pair_cost,
+        open_pair_band,
+        visible_completion_slack_ticks,
+        visible_breakeven_completion_slack_ticks,
+        min_visible_breakeven_slack_ticks,
+        fill_distance_ticks,
+        taker_shadow_would_open,
+        entry_pressure_extra_ticks,
+        XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP,
+        guard_pair_cost_gap,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pgt_maybe_log_completion_none_diag(
+    dry_run: bool,
+    tuning: PgtTuning,
+    first_side: Side,
+    hedge_side: Side,
+    reason: &'static str,
+    first_vwap: f64,
+    residual_qty: f64,
+    remaining_secs: u64,
+    completion_age_secs: f64,
+    best_bid: f64,
+    best_ask: f64,
+    positive_edge_ceiling: f64,
+    funded_loss_ceiling: f64,
+    taker_close_ceiling: f64,
+    passive_ceiling: f64,
+) {
+    if !dry_run || tuning.profile != PgtShadowProfile::XuanLadderV1 || residual_qty <= f64::EPSILON
+    {
+        return;
+    }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS.load(Ordering::Relaxed);
+    if now_secs.saturating_sub(last) < XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS {
+        return;
+    }
+    if PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS
+        .compare_exchange(last, now_secs, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let ask_pair_cost = if first_vwap > 0.0 && best_ask > 0.0 {
+        first_vwap + best_ask
+    } else {
+        0.0
+    };
+    info!(
+        "🧭 PGT completion none diag | reason={} first_side={:?} hedge_side={:?} first_vwap={:.4} residual={:.2} remaining_secs={} completion_age_secs={:.1} best_bid={:.4} best_ask={:.4} ask_pair_cost={:.4} positive_ceiling={:.4} funded_ceiling={:.4} taker_ceiling={:.4} passive_ceiling={:.4}",
+        reason,
+        first_side,
+        hedge_side,
+        first_vwap,
+        residual_qty,
+        remaining_secs,
+        completion_age_secs,
+        best_bid,
+        best_ask,
+        ask_pair_cost,
+        positive_edge_ceiling,
+        funded_loss_ceiling,
+        taker_close_ceiling,
+        passive_ceiling,
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pgt_maybe_log_tail_completion_diag(
     dry_run: bool,
@@ -1999,6 +2306,41 @@ mod profile_tests {
         assert_eq!(
             pgt_seed_min_visible_breakeven_slack_ticks(tuning, 2, 1.0, Some(1.000)),
             XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_blocks_cheap_seed_without_visible_ask_completion() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53),
+            "0.47 first leg with 0.53 opposite ask is only maker-queue breakeven, not safe completion"
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.52),
+            "cheap first leg remains allowed when current opposite ask keeps ask pair cost under the guard cap"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_seed_visible_completion_guard_is_first_leg_cheap_seed_only() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.50, 0.53),
+            "expensive seed selection is controlled by existing slack/dominance rules"
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 1, 0.47, 0.53),
+            "after the first buy fill, completion and reopen guards own the risk path"
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(
+                PgtTuning::legacy(),
+                0,
+                0.47,
+                0.53
+            ),
+            "legacy/replay profiles are not changed by the xuan-specific guard"
         );
     }
 
