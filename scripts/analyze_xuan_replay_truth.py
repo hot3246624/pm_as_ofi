@@ -36,6 +36,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--replay-root", default=str(DEFAULT_REPLAY_ROOT))
     p.add_argument("--days", nargs="+", default=list(DEFAULT_DAYS))
     p.add_argument("--trusted-start-ms", type=int, default=DEFAULT_TRUSTED_START_MS)
+    p.add_argument("--min-start-ms", type=int, help="Optional market start_ms lower bound.")
+    p.add_argument("--max-start-ms", type=int, help="Optional market start_ms upper bound.")
     p.add_argument("--outage-start-ms", type=int, default=DEFAULT_OUTAGE_START_MS)
     p.add_argument("--outage-end-ms", type=int, default=DEFAULT_OUTAGE_END_MS)
     p.add_argument("--output-json", help="Optional output path; stdout is always written.")
@@ -117,6 +119,10 @@ def load_markets(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
                 (args.trusted_start_ms,),
             ):
                 if row["start_ms"] < args.outage_end_ms and row["end_ms"] > args.outage_start_ms:
+                    continue
+                if args.min_start_ms is not None and row["start_ms"] < args.min_start_ms:
+                    continue
+                if args.max_start_ms is not None and row["start_ms"] > args.max_start_ms:
                     continue
                 markets.setdefault(row["condition_id"], dict(row))
         finally:
@@ -561,6 +567,8 @@ def main() -> None:
             "replay_root": str(Path(args.replay_root)),
             "days": args.days,
             "trusted_start_ms": args.trusted_start_ms,
+            "min_start_ms": args.min_start_ms,
+            "max_start_ms": args.max_start_ms,
             "excluded_outage_ms": [args.outage_start_ms, args.outage_end_ms],
         },
         **build_truth(markets, activity),

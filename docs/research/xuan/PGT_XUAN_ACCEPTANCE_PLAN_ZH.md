@@ -63,6 +63,44 @@
 - `XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP=1.030` 暂时保留：它只允许花真实 covered surplus，不是无资金来源追价。
 - 若新 cap shadow 出现持续 `summary_pair_cost_p90 > 1.03` 或 residual 没有明显改善，应回调到 `1.020`。
 
+### 疑似 xuan 新策略窗口：2026-04-30 15:30 CST 之后
+
+用户观察到 xuan 可能从北京时间 2026-04-30 15:30 左右使用新策略。对应 cutoff：`2026-04-30T07:30:00Z`，`start_ms >= 1777534200000`。
+
+按官方 `winner_side` 经济口径重新切分：
+
+| 窗口 | markets | economic PnL | economic ROI | pair_cost p50 | pair_cost p90 | residual sum | loser residual |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| cutoff 前 | 513 | `+2095.89` | `+0.540%` | `0.9935` | `1.0463` | `669.76` | `333.27` |
+| cutoff 后 | 434 | `-3459.75` | `-1.075%` | `1.0042` | `1.0625` | `2296.18` | `1156.44` |
+
+post-cutoff frontier：
+
+| cap / rule | paired qty ratio | proxy PnL | pnl/share | negative spend |
+| --- | ---: | ---: | ---: | ---: |
+| hard `pair_cost <= 1.000` | `0.3892` | `11677.08` | `0.09462` | `0.00` |
+| hard `pair_cost <= 1.030` | `0.5271` | `11007.60` | `0.06586` | `669.48` |
+| per-market funded cap `1.030` | `0.4563` | `11371.72` | `0.07859` | `305.36` |
+| per-market funded cap `1.050` | `0.4931` | `10907.12` | `0.06975` | `769.96` |
+
+判断：
+
+- post-cutoff 并未证明 xuan 新策略更赚钱；相反，高成本 completion/tail 侵蚀更明显。
+- xuan 的可学习点仍是 `completion delay p50=10s/p90=48s` 和极低 p90 residual，而不是高价追 completion。
+- 我们要超越 xuan 的方向是：保持低残仓，但把 post-cutoff xuan 的 `pair_cost p90≈1.0625` 明确压到 `<=1.03`，并用真实 surplus budget 才能越过 breakeven。
+
+### PGT 新 cap 首批 live-shadow 样本
+
+`target/debug/polymarket_v2` 已于 2026-05-03 09:23 CST 重建。新二进制后完成的首批 fixed BTC shadow：
+
+| slug | pair_qty | pair_cost | locked PnL | residual | 订单形态 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `btc-updown-5m-1777771500` | `120` | `0.9200` | `+9.60` | `0` | maker first leg + taker close |
+| `btc-updown-5m-1777771800` | `120` | `0.7600` | `+28.80` | `0` | maker first leg + taker close |
+| `btc-updown-5m-1777772100` | `120` | `0.9800` | `+2.40` | `0` | maker first leg + taker close |
+
+判断：状态机和成本边界健康；但这是 dry-run synthetic fill，不能直接外推真实成交率。下一步至少累计 20-30 轮新二进制样本，再决定 `1.030` 是否保留或回调到 `1.020`。
+
 ## 最新聚合：过夜样本 `btc-updown-5m-1777484100` 到 `btc-updown-5m-1777506900`
 
 样本数：77 行，其中 63 个 active episode，60 个有实际 paired cost 的 episode
