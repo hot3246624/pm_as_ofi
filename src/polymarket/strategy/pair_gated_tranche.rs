@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -5,6 +6,7 @@ use crate::polymarket::coordinator::{StrategyCoordinator, PAIR_ARB_NET_EPS};
 use crate::polymarket::messages::{BidReason, TradeDirection};
 use crate::polymarket::pair_ledger::{urgency_budget_shadow_5m, PairLedgerSnapshot, PairTranche};
 use crate::polymarket::types::Side;
+use tracing::info;
 
 use super::pair_arb::PairArbStrategy;
 use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput};
@@ -70,6 +72,10 @@ const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
+const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
+const XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS: u64 = 5;
+
+static PGT_LAST_TAIL_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PgtShadowProfile {
@@ -901,6 +907,30 @@ impl PairGatedTrancheStrategy {
         } else {
             None
         };
+        if !taker_shadow_would_close {
+            pgt_maybe_log_tail_completion_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                first_side,
+                hedge_side,
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                completion_age_secs,
+                best_bid,
+                best_ask,
+                price,
+                positive_edge_ceiling,
+                funded_loss_ceiling,
+                base_taker_close_ceiling,
+                tail_insurance_ceiling,
+                taker_close_ceiling,
+                passive_ceiling,
+                profit_taker_would_close,
+                breakeven_taker_would_close,
+                tail_insurance_taker_would_close,
+            );
+        }
 
         Some(CompletionPlan {
             taker_shadow_would_close,
@@ -1429,15 +1459,14 @@ fn pgt_effective_completion_pair_caps(
         XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
     };
 
-    let tail_cap = if remaining_secs <= 45
-        && completion_age_secs >= XUAN_LADDER_COMPLETION_STALE_AGE_SECS
-    {
-        XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
-    } else if remaining_secs <= 45 {
+    let tail_cap =
+        if remaining_secs <= 45 && completion_age_secs >= XUAN_LADDER_COMPLETION_STALE_AGE_SECS {
+            XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP
+        } else if remaining_secs <= 45 {
             XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP
-    } else {
-        age_pair_cap
-    };
+        } else {
+            age_pair_cap
+        };
     let early = age_pair_cap.min(default_early).clamp(0.0, 1.20);
     let late = tail_cap.max(early).min(default_late).clamp(0.0, 1.20);
     let taker =
@@ -1477,6 +1506,81 @@ fn pgt_tail_insurance_completion_ceiling(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn pgt_maybe_log_tail_completion_diag(
+    dry_run: bool,
+    tuning: PgtTuning,
+    first_side: Side,
+    hedge_side: Side,
+    first_vwap: f64,
+    residual_qty: f64,
+    remaining_secs: u64,
+    completion_age_secs: f64,
+    best_bid: f64,
+    best_ask: f64,
+    passive_price: f64,
+    positive_edge_ceiling: f64,
+    funded_loss_ceiling: f64,
+    base_taker_close_ceiling: f64,
+    tail_insurance_ceiling: Option<f64>,
+    taker_close_ceiling: f64,
+    passive_ceiling: f64,
+    profit_taker_would_close: bool,
+    breakeven_taker_would_close: bool,
+    tail_insurance_taker_would_close: bool,
+) {
+    if !dry_run
+        || tuning.profile != PgtShadowProfile::XuanLadderV1
+        || remaining_secs > XUAN_LADDER_TAIL_DIAG_REMAINING_SECS
+        || best_ask <= 0.0
+    {
+        return;
+    }
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let last = PGT_LAST_TAIL_DIAG_UNIX_SECS.load(Ordering::Relaxed);
+    if now_secs.saturating_sub(last) < XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS {
+        return;
+    }
+    if PGT_LAST_TAIL_DIAG_UNIX_SECS
+        .compare_exchange(last, now_secs, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return;
+    }
+
+    let tail_ceiling = tail_insurance_ceiling.unwrap_or(0.0);
+    let ask_gap_to_taker = (best_ask - taker_close_ceiling).max(0.0);
+    let passive_pair_cost = first_vwap + passive_price;
+    let ask_pair_cost = first_vwap + best_ask;
+    info!(
+        "🧭 PGT tail no-taker diag | first_side={:?} hedge_side={:?} first_vwap={:.4} residual={:.2} remaining_secs={} completion_age_secs={:.1} best_bid={:.4} best_ask={:.4} passive_price={:.4} passive_pair_cost={:.4} ask_pair_cost={:.4} positive_ceiling={:.4} funded_ceiling={:.4} base_taker_ceiling={:.4} tail_ceiling={:.4} taker_ceiling={:.4} passive_ceiling={:.4} ask_gap_to_taker={:.4} close_flags(profit/breakeven/tail)={}/{}/{}",
+        first_side,
+        hedge_side,
+        first_vwap,
+        residual_qty,
+        remaining_secs,
+        completion_age_secs,
+        best_bid,
+        best_ask,
+        passive_price,
+        passive_pair_cost,
+        ask_pair_cost,
+        positive_edge_ceiling,
+        funded_loss_ceiling,
+        base_taker_close_ceiling,
+        tail_ceiling,
+        taker_close_ceiling,
+        passive_ceiling,
+        ask_gap_to_taker,
+        profit_taker_would_close,
+        breakeven_taker_would_close,
+        tail_insurance_taker_would_close,
+    );
+}
+
 fn pgt_effective_completion_passive_ceiling(
     base_ceiling: f64,
     tail_insurance_ceiling: Option<f64>,
@@ -1491,8 +1595,7 @@ fn pgt_completion_price_allowed(
 ) -> bool {
     price > 0.0
         && price
-            <= pgt_effective_completion_passive_ceiling(base_ceiling, tail_insurance_ceiling)
-                + 1e-9
+            <= pgt_effective_completion_passive_ceiling(base_ceiling, tail_insurance_ceiling) + 1e-9
 }
 
 fn pgt_effective_repair_budget_per_share(
@@ -1507,9 +1610,8 @@ fn pgt_effective_repair_budget_per_share(
     }
     let per_share = repair_budget_available / residual_qty.max(1.0);
     if tuning.profile == PgtShadowProfile::XuanLadderV1 {
-        let repair_budget_unlocked =
-            completion_age_secs >= XUAN_LADDER_REPAIR_BUDGET_MIN_AGE_SECS
-                || remaining_secs <= XUAN_LADDER_REPAIR_BUDGET_MAX_REMAINING_SECS;
+        let repair_budget_unlocked = completion_age_secs >= XUAN_LADDER_REPAIR_BUDGET_MIN_AGE_SECS
+            || remaining_secs <= XUAN_LADDER_REPAIR_BUDGET_MAX_REMAINING_SECS;
         if !repair_budget_unlocked {
             return 0.0;
         }
@@ -1805,21 +1907,17 @@ mod profile_tests {
             None
         );
         assert!(
-            (pgt_tail_insurance_completion_ceiling(tuning, 0.43, 45).unwrap() - 0.60).abs()
-                < 1e-9
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.43, 45).unwrap() - 0.60).abs() < 1e-9
         );
         assert!(
-            (pgt_tail_insurance_completion_ceiling(tuning, 0.53, 20).unwrap() - 0.50).abs()
-                < 1e-9
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.53, 20).unwrap() - 0.50).abs() < 1e-9
         );
         assert!(
-            (pgt_tail_insurance_completion_ceiling(tuning, 0.47, 16).unwrap() - 0.56).abs()
-                < 1e-9,
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.47, 16).unwrap() - 0.56).abs() < 1e-9,
             "before last-chance mode, tail insurance stays capped at pair_cost 1.030"
         );
         assert!(
-            (pgt_tail_insurance_completion_ceiling(tuning, 0.47, 15).unwrap() - 0.58).abs()
-                < 1e-9,
+            (pgt_tail_insurance_completion_ceiling(tuning, 0.47, 15).unwrap() - 0.58).abs() < 1e-9,
             "last-chance mode can spend up to pair_cost 1.050 to avoid a full residual leg"
         );
         assert_eq!(
@@ -1852,13 +1950,11 @@ mod profile_tests {
             0.0
         );
         assert!(
-            (pgt_effective_repair_budget_per_share(tuning, 0.6, 120.0, 180, 60.0) - 0.005)
-                .abs()
+            (pgt_effective_repair_budget_per_share(tuning, 0.6, 120.0, 180, 60.0) - 0.005).abs()
                 < 1e-9
         );
         assert!(
-            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 60.0) - 0.030)
-                .abs()
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 60.0) - 0.030).abs()
                 < 1e-9,
             "xuan ladder repair must never spend more than three cents per residual share"
         );
@@ -1879,8 +1975,7 @@ mod profile_tests {
             "fresh residuals should wait for true positive-edge completion instead of spending surplus"
         );
         assert!(
-            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 44, 10.0) - 0.030)
-                .abs()
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 44, 10.0) - 0.030).abs()
                 < 1e-9,
             "tail safety can spend capped repair budget even for a fresh residual"
         );
