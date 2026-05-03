@@ -72,7 +72,6 @@ const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_CHEAP_SEED_RISK_PRICE: f64 = 0.49;
 const XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
 const XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS: u64 = 5;
@@ -1678,9 +1677,6 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     if seed_price <= 0.0 || opposite_ask <= 0.0 {
         return true;
     }
-    if seed_price > XUAN_LADDER_CHEAP_SEED_RISK_PRICE + 1e-9 {
-        return false;
-    }
     seed_price + opposite_ask > XUAN_LADDER_SEED_VISIBLE_COMPLETION_PAIR_CAP + 1e-9
 }
 
@@ -2310,24 +2306,32 @@ mod profile_tests {
     }
 
     #[test]
-    fn xuan_ladder_blocks_cheap_seed_without_visible_ask_completion() {
+    fn xuan_ladder_blocks_first_seed_without_visible_ask_completion() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53),
             "0.47 first leg with 0.53 opposite ask is only maker-queue breakeven, not safe completion"
         );
         assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.66, 0.34),
+            "0.66 first leg with 0.34 opposite ask is also maker-queue-only and carries large one-sided risk"
+        );
+        assert!(
             !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.52),
             "cheap first leg remains allowed when current opposite ask keeps ask pair cost under the guard cap"
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.63, 0.36),
+            "first leg remains allowed when current opposite ask offers a visible positive-edge completion path"
         );
     }
 
     #[test]
-    fn xuan_ladder_seed_visible_completion_guard_is_first_leg_cheap_seed_only() {
+    fn xuan_ladder_seed_visible_completion_guard_is_first_leg_only() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.50, 0.53),
-            "expensive seed selection is controlled by existing slack/dominance rules"
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.50, 0.53),
+            "first seed admission is now symmetric across cheap and expensive legs"
         );
         assert!(
             !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 1, 0.47, 0.53),
