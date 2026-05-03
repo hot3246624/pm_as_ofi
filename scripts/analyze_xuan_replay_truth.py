@@ -4,12 +4,17 @@
 This script intentionally uses xuan_activity.usdc_size / size as execution cost.
 The public xuan_trades.price field is a display price and systematically
 understates realized cost in the current replay dataset.
+
+Direction semantics are taken from replay-side normalized fields:
+xuan_activity.outcome_side and settlement_records.winner_side. The analyzer does
+not map Up/Down text labels to YES/NO.
 """
 
 from __future__ import annotations
 
 import argparse
 import collections
+import datetime
 import json
 import math
 import sqlite3
@@ -23,6 +28,7 @@ DEFAULT_TRUSTED_START_MS = 1_777_274_700_000
 DEFAULT_OUTAGE_START_MS = 1_777_374_000_000
 DEFAULT_OUTAGE_END_MS = 1_777_377_600_000
 DEFAULT_CAPS = (0.99, 1.0, 1.005, 1.01, 1.02, 1.03, 1.04, 1.05, 1.08, 1.10, 1.15)
+SIDES = ("YES", "NO")
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +86,21 @@ def summary(values: list[float | None]) -> dict[str, float | int | None]:
     }
 
 
+def normalized_side(value: Any) -> str | None:
+    side = str(value or "").upper()
+    if side in SIDES:
+        return side
+    return None
+
+
+def opposite_side(side: str) -> str:
+    return "NO" if side == "YES" else "YES"
+
+
+def utc_day(ms: int) -> str:
+    return datetime.datetime.utcfromtimestamp(ms / 1000.0).date().isoformat()
+
+
 def load_markets(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
     markets: dict[str, dict[str, Any]] = {}
     root = Path(args.replay_root)
@@ -103,6 +124,32 @@ def load_markets(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
     return markets
 
 
+def load_settlements(args: argparse.Namespace, markets: dict[str, dict[str, Any]]) -> None:
+    root = Path(args.replay_root)
+    for day in args.days:
+        db = root / day / "crypto_5m.sqlite"
+        conn = open_ro(db)
+        try:
+            for row in conn.execute(
+                """
+                select condition_id, winner_side, winner_token_id, resolution_source, settle_ms
+                from settlement_records
+                """
+            ):
+                market = markets.get(row["condition_id"])
+                if market is None:
+                    continue
+                winner_side = normalized_side(row["winner_side"])
+                if winner_side is None:
+                    continue
+                market["winner_side"] = winner_side
+                market["winner_token_id"] = row["winner_token_id"]
+                market["resolution_source"] = row["resolution_source"]
+                market["settle_ms"] = row["settle_ms"]
+        finally:
+            conn.close()
+
+
 def load_deduped_activity(args: argparse.Namespace, markets: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     rows_by_key: dict[tuple[Any, ...], dict[str, Any]] = {}
     root = Path(args.replay_root)
@@ -112,8 +159,9 @@ def load_deduped_activity(args: argparse.Namespace, markets: dict[str, dict[str,
         try:
             for row in conn.execute(
                 """
-                select condition_id, slug, activity_ts_ms, activity_type, outcome, side,
-                       price, size, usdc_size, asset, tx_hash, poll_ts_ms
+                select condition_id, slug, activity_ts_ms, activity_type, outcome,
+                       outcome_side, side, price, size, usdc_size, asset, tx_hash,
+                       poll_ts_ms
                 from xuan_activity
                 where condition_id is not null and slug like 'btc-updown-5m%'
                 """
@@ -126,6 +174,7 @@ def load_deduped_activity(args: argparse.Namespace, markets: dict[str, dict[str,
                     row["activity_ts_ms"],
                     row["activity_type"] or "",
                     row["outcome"] or "",
+                    row["outcome_side"] or "",
                     row["side"] or "",
                     q(row["price"]),
                     q(row["size"]),
@@ -162,6 +211,7 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
     trades: list[dict[str, Any]] = []
     cash = collections.defaultdict(lambda: {"buy": 0.0, "sell": 0.0, "merge": 0.0, "redeem": 0.0})
     price_gap: list[float] = []
+    missing_outcome_side = 0
 
     for row in activity:
         cid = row["condition_id"]
@@ -171,7 +221,12 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
         size = float(row.get("size") or 0.0)
 
         if typ == "TRADE" and side == "BUY":
+            outcome_side = normalized_side(row.get("outcome_side"))
+            if outcome_side is None:
+                missing_outcome_side += 1
+                continue
             rec = dict(row)
+            rec["outcome_side"] = outcome_side
             rec["exec_price"] = exec_price(row)
             trades.append(rec)
             cash[cid]["buy"] += value
@@ -189,7 +244,7 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
     for row in trades:
         by_market[row["condition_id"]].append(row)
     for rows in by_market.values():
-        rows.sort(key=lambda r: (r.get("activity_ts_ms") or 0, r.get("tx_hash") or "", r.get("outcome") or ""))
+        rows.sort(key=lambda r: (r.get("activity_ts_ms") or 0, r.get("tx_hash") or "", r.get("outcome_side") or ""))
 
     market_rows: list[dict[str, Any]] = []
     episodes: list[dict[str, Any]] = []
@@ -198,26 +253,26 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
 
     for cid, rows in by_market.items():
         market = markets[cid]
-        totals = {outcome: {"qty": 0.0, "cost": 0.0} for outcome in ("Up", "Down")}
-        open_legs = {"Up": [], "Down": []}
+        totals = {side: {"qty": 0.0, "cost": 0.0} for side in SIDES}
+        open_legs = {side: [] for side in SIDES}
         buy_idx = 0
 
         for row in rows:
-            outcome = row.get("outcome") or ""
-            if outcome not in totals:
+            outcome_side = normalized_side(row.get("outcome_side"))
+            if outcome_side is None:
                 continue
             qty = float(row.get("size") or 0.0)
             price = float(row["exec_price"])
             value = trade_value(row)
             ts = int(row.get("activity_ts_ms") or 0)
-            totals[outcome]["qty"] += qty
-            totals[outcome]["cost"] += value
+            totals[outcome_side]["qty"] += qty
+            totals[outcome_side]["cost"] += value
             buy_idx += 1
             if buy_idx <= 15:
                 clips[buy_idx].append(qty)
                 clip_prices[buy_idx].append(price)
 
-            opposite = "Down" if outcome == "Up" else "Up"
+            opposite = opposite_side(outcome_side)
             remaining = qty
             while remaining > 1e-9 and open_legs[opposite]:
                 leg = open_legs[opposite][0]
@@ -240,25 +295,55 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
                 if leg["qty"] <= 1e-9:
                     open_legs[opposite].pop(0)
             if remaining > 1e-9:
-                open_legs[outcome].append({"qty": remaining, "price": price, "ts": ts})
+                open_legs[outcome_side].append({"qty": remaining, "price": price, "ts": ts})
 
-        pair_qty = min(totals["Up"]["qty"], totals["Down"]["qty"])
-        residual_qty = abs(totals["Up"]["qty"] - totals["Down"]["qty"])
+        yes_qty = totals["YES"]["qty"]
+        no_qty = totals["NO"]["qty"]
+        pair_qty = min(yes_qty, no_qty)
+        residual_qty = abs(yes_qty - no_qty)
+        residual_side = None
+        if yes_qty > no_qty + 1e-9:
+            residual_side = "YES"
+        elif no_qty > yes_qty + 1e-9:
+            residual_side = "NO"
+
         pair_cost = None
         locked_pnl = None
-        if pair_qty > 1e-9 and totals["Up"]["qty"] > 0.0 and totals["Down"]["qty"] > 0.0:
-            pair_cost = totals["Up"]["cost"] / totals["Up"]["qty"] + totals["Down"]["cost"] / totals["Down"]["qty"]
+        if pair_qty > 1e-9 and yes_qty > 0.0 and no_qty > 0.0:
+            pair_cost = totals["YES"]["cost"] / yes_qty + totals["NO"]["cost"] / no_qty
             locked_pnl = (1.0 - pair_cost) * pair_qty
+
+        buy_cost = totals["YES"]["cost"] + totals["NO"]["cost"]
+        winner_side = normalized_side(market.get("winner_side"))
+        residual_winner_qty = residual_qty if residual_side is not None and residual_side == winner_side else 0.0
+        residual_loser_qty = (
+            residual_qty if residual_side is not None and winner_side is not None and residual_side != winner_side else 0.0
+        )
+        economic_final_value = pair_qty + residual_winner_qty if winner_side is not None else None
+        economic_final_pnl = economic_final_value - buy_cost if economic_final_value is not None else None
         cf = cash[cid]
         cash_pnl = cf["sell"] + cf["merge"] + cf["redeem"] - cf["buy"]
         market_rows.append(
             {
                 "condition_id": cid,
                 "slug": market["slug"],
+                "start_ms": market["start_ms"],
+                "day": utc_day(int(market["start_ms"])),
+                "winner_side": winner_side,
+                "yes_qty": yes_qty,
+                "no_qty": no_qty,
+                "buy_cost": buy_cost,
                 "pair_qty": pair_qty,
                 "residual_qty": residual_qty,
+                "residual_side": residual_side,
+                "residual_winner_qty": residual_winner_qty,
+                "residual_loser_qty": residual_loser_qty,
                 "pair_cost": pair_cost,
                 "locked_pnl": locked_pnl,
+                "economic_final_value": economic_final_value,
+                "economic_final_pnl": economic_final_pnl,
+                "economic_final_roi": economic_final_pnl / buy_cost if economic_final_pnl is not None and buy_cost > 0.0 else None,
+                "cash_vs_economic_gap": cash_pnl - economic_final_pnl if economic_final_pnl is not None else None,
                 "cash_pnl": cash_pnl,
                 "cash_roi": cash_pnl / cf["buy"] if cf["buy"] > 0.0 else None,
             }
@@ -266,22 +351,64 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
 
     episodes.sort(key=lambda row: (row["second_ts"], row["slug"]))
     total_episode_qty = sum(row["qty"] for row in episodes)
+    settled_markets = [row for row in market_rows if row["winner_side"] is not None]
+    by_day: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+    for row in market_rows:
+        by_day[row["day"]].append(row)
+
+    def market_group_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
+        buy_cost = sum(row["buy_cost"] for row in rows if row["economic_final_pnl"] is not None)
+        economic_pnl = sum(row["economic_final_pnl"] or 0.0 for row in rows)
+        cash_buy = sum(cash[row["condition_id"]]["buy"] for row in rows)
+        cash_pnl = sum(row["cash_pnl"] for row in rows)
+        return {
+            "markets": len(rows),
+            "buy_cost": buy_cost,
+            "economic_final_pnl": economic_pnl,
+            "economic_final_roi": economic_pnl / buy_cost if buy_cost > 0.0 else None,
+            "cash_buy": cash_buy,
+            "cash_pnl": cash_pnl,
+            "cash_roi": cash_pnl / cash_buy if cash_buy > 0.0 else None,
+            "pair_cost": summary([row["pair_cost"] for row in rows]),
+            "residual_qty": summary([row["residual_qty"] for row in rows]),
+            "residual_winner_qty_sum": sum(row["residual_winner_qty"] for row in rows),
+            "residual_loser_qty_sum": sum(row["residual_loser_qty"] for row in rows),
+        }
 
     return {
         "universe": {
             "valid_btc_5m_markets": len(markets),
+            "settled_btc_5m_markets": sum(1 for market in markets.values() if normalized_side(market.get("winner_side")) is not None),
             "xuan_activity_rows_unique": len(activity),
             "xuan_trade_markets": len(by_market),
             "xuan_trade_rows": len(trades),
+            "xuan_buy_rows_missing_outcome_side": missing_outcome_side,
         },
         "price_gap_exec_over_display": summary(price_gap),
         "market": {
             "pair_cost": summary([row["pair_cost"] for row in market_rows]),
             "residual_qty": summary([row["residual_qty"] for row in market_rows]),
+            "residual_winner_qty": summary([row["residual_winner_qty"] for row in settled_markets]),
+            "residual_loser_qty": summary([row["residual_loser_qty"] for row in settled_markets]),
+            "residual_side_winner_ratio": (
+                sum(1 for row in settled_markets if row["residual_qty"] > 1.0 and row["residual_side"] == row["winner_side"])
+                / max(sum(1 for row in settled_markets if row["residual_qty"] > 1.0), 1)
+            ),
             "clean_ratio_residual_le_1": sum(1 for row in market_rows if row["residual_qty"] <= 1.0) / len(market_rows)
             if market_rows
             else None,
             "locked_pnl_sum_proxy": sum(row["locked_pnl"] or 0.0 for row in market_rows),
+            "economic_final": {
+                "value": sum(row["economic_final_value"] or 0.0 for row in market_rows),
+                "buy_cost": sum(row["buy_cost"] for row in settled_markets),
+                "pnl": sum(row["economic_final_pnl"] or 0.0 for row in settled_markets),
+                "roi": (
+                    sum(row["economic_final_pnl"] or 0.0 for row in settled_markets)
+                    / sum(row["buy_cost"] for row in settled_markets)
+                ),
+                "pnl_dist": summary([row["economic_final_pnl"] for row in settled_markets]),
+                "roi_dist": summary([row["economic_final_roi"] for row in settled_markets]),
+            },
             "cash": {
                 "buy": sum(cash[cid]["buy"] for cid in by_market),
                 "merge": sum(cash[cid]["merge"] for cid in by_market),
@@ -291,7 +418,9 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
             },
             "cash_pnl": summary([row["cash_pnl"] for row in market_rows]),
             "cash_roi": summary([row["cash_roi"] for row in market_rows]),
+            "cash_vs_economic_gap": summary([row["cash_vs_economic_gap"] for row in settled_markets]),
         },
+        "per_day": {day: market_group_summary(rows) for day, rows in sorted(by_day.items())},
         "episode": {
             "episodes": len(episodes),
             "qty": summary([row["qty"] for row in episodes]),
@@ -310,6 +439,52 @@ def build_truth(markets: dict[str, dict[str, Any]], activity: list[dict[str, Any
                 for idx in range(1, 16)
                 if clips[idx]
             },
+        },
+        "examples": {
+            "worst_economic_markets": sorted(
+                [
+                    {
+                        key: row[key]
+                        for key in (
+                            "slug",
+                            "day",
+                            "winner_side",
+                            "pair_cost",
+                            "pair_qty",
+                            "residual_qty",
+                            "residual_side",
+                            "residual_winner_qty",
+                            "residual_loser_qty",
+                            "economic_final_pnl",
+                            "cash_pnl",
+                        )
+                    }
+                    for row in settled_markets
+                ],
+                key=lambda row: row["economic_final_pnl"],
+            )[:12],
+            "largest_loser_residual_markets": sorted(
+                [
+                    {
+                        key: row[key]
+                        for key in (
+                            "slug",
+                            "day",
+                            "winner_side",
+                            "pair_cost",
+                            "pair_qty",
+                            "residual_qty",
+                            "residual_side",
+                            "residual_winner_qty",
+                            "residual_loser_qty",
+                            "economic_final_pnl",
+                        )
+                    }
+                    for row in settled_markets
+                ],
+                key=lambda row: row["residual_loser_qty"],
+                reverse=True,
+            )[:12],
         },
     }
 
@@ -379,6 +554,7 @@ def funded_frontier(episodes: list[dict[str, Any]], total_qty: float) -> list[di
 def main() -> None:
     args = parse_args()
     markets = load_markets(args)
+    load_settlements(args, markets)
     activity = load_deduped_activity(args, markets)
     payload = {
         "data": {

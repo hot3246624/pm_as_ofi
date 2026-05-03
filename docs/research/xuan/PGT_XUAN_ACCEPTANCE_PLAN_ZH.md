@@ -1,6 +1,6 @@
 # PGT/xuan Shadow 验收计划
 
-更新时间：2026-05-02 21:00 CST
+更新时间：2026-05-03 09:30 CST
 
 目标：在不影响 `oracle_lag_sniping` / `pair_arb` / `glft_mm` 的前提下，将 `pair_gated_tranche_arb` 的 BTC 5m shadow 行为收敛到接近 xuanxuan008 的 completion-first 特征，并确认是否具备进入更长期 shadow soak 的条件。
 
@@ -16,8 +16,8 @@
 | A5 | same-side add | `same_side_add_qty_ratio` 目标约 0.05-0.15，且 `MAX_SAME_SIDE_RUN=1` | 最新 5 个 active episode 中位 `0.0941`，接近 xuan 目标 `0.105`；gap gate 已统一为 `<=0.15` | 通过 | 防止多次 same-side add 回归 |
 | A6 | completion maker 稳定性 | completion 阶段不得出现数百次真实 maker reprice/cancel | `1777468800` 新口径复验通过：真实 `placed=3`、`cancel=2`、`replace=0`；PGTGate 全轮以 `retain` 为主 | 通过 | 继续累计样本 |
 | A7 | taker-close SLA | shadow-only；触发后 `dispatch_taker_close > 0`，first fill 到 cover p90 <= 100s | 过夜样本 `p90_first_completion_delay_s=103.233`，尾部最长 `209.550s` | 未通过 | 已把 p90 first-completion 加入硬 gate |
-| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.030` | replay frontier 显示 `1.030` per-market surplus-funded repair 可明显增加配对量，且仍保留正单位 edge；已确认无真实 surplus 时仍不允许越过 breakeven | 观察中 | 复跑验证 `pair_cost > 1.03` 是否仅发生在真实 surplus 充足时，以及 residual 是否下降 |
-| A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.01 | 最新 15 轮 paired 样本中位 `0.98`，但仍有 2 轮 `>1.01`，说明 tail repair 仍需硬约束 | 未通过 | 优先降低负 EV completion，不再用宽 tail 换 clean close |
+| A8 | taker-close 成本边界 | 无真实 surplus budget 时只允许 breakeven；surplus-funded repair 最多 `1.030` | 新 replay truth 已改用 `outcome_side` / `winner_side`；activity 真实成本口径下，`1.030` funded repair 仍为正 edge，但边际收益低于旧 display-price 口径 | 观察中 | 用新 binary 继续 shadow，验证 `pair_cost > 1.03` 是否仅发生在真实 surplus 充足时，以及 residual 是否下降 |
+| A9 | pair cost | 中位 `summary_pair_cost <= 1.00`，理想接近 0.99；不得系统性 >1.03 | xuan activity 真实口径 market pair_cost p50 `0.9984`、p90 `1.0534`；xuan 自身不是低成本单笔，而是低残仓 + surplus 修复 | 观察中 | PGT 不能简单追随 xuan 的高成本 tail，需要用 surplus-funded cap 控制 |
 | A10 | merge/redeem 生命周期 | merge 主要在 t-25 到 t-18；redeem 在 +35/+50；无 residual 积压 | 近期报告显示 merge/redeem 窗口符合 | 通过 | 长样本确认 |
 | A11 | replay/report 可观测性 | 报告包含 seed/cover delay、dispatch_taker_close、pair_cost、same-side 指标 | 已新增 `first_completion_delay_s` / p90 | 通过 | 每轮重建 gap report |
 | A12 | 回归测试 | PGT Rust 单测、replay/report Python 单测全过 | `cargo test -q pair_gated_tranche --lib` 77 passed；Python 3.12 replay/report 11 passed | 通过 | 每次策略改动后必跑 |
@@ -27,6 +27,41 @@
 1. `completion` maker 阶段实际订单生命周期已稳定；`PGTGate.dispatch_place` 误报问题已修复，下一轮需确认新口径下 `place` 接近真实 `placed`。
 2. `taker-close` 已能闭环，但最新 fixed shadow 仍证明旧 time-only repair band 偏宽：尾部可到 `1.04`。
 3. 报表旧 gate 偏松：只看 median `episode_close_delay_p90`，没有拦截 `p90_first_completion_delay_s` 与 pair-cost tail。
+
+## 最新 replay truth：2026-04-27 到 2026-05-01
+
+数据源：`/Users/hot/web3Scientist/poly_trans_research/data/replay`，只读 SQLite；排除 2026-04-28 11:00-12:00 UTC planned outage。
+
+口径修正：
+
+- 方向使用 `xuan_activity.outcome_side` 与 `settlement_records.winner_side`，不再做 `Up/Down -> YES/NO` 映射。
+- 成本使用 `xuan_activity.usdc_size / size`；`xuan_trades.price` / activity display `price` 会系统性低估成交成本，中位约 `3.10%`，p90 约 `5.69%`。
+- 官方结果覆盖：有效 BTC 5m 市场 `1340` 个，settled `1339` 个；xuan 有交易市场 `947` 个。
+
+核心结论：
+
+- xuan residual 控制极强：market residual p50 `0`，p90 约 `0`，p95 `0.10` shares；总 residual `2965.94` shares。
+- residual 方向大致对半：winner residual `1476.23`，loser residual `1489.71`；`residual > 1` 的市场里 residual side 命中 winner 比例约 `0.60`。
+- market-level true pair cost：p50 `0.9984`，p90 `1.0534`。
+- FIFO episode true pair cost：p50 `1.0158`，p90 `1.1147`；completion delay p50 `10s`，p90 `44s`。
+- 官方胜负经济结果：buy cost `709,926.36`，final value `708,562.50`，PnL `-1,363.86`，ROI `-0.192%`。
+- activity cashflow PnL `-6,066.51`，比官方经济结果低 `-4,702.64`，说明 activity 的 merge/redeem 捕获仍有缺口，策略收益判断应优先用 `winner_side` 经济口径。
+
+逐日经济结果：
+
+| UTC 日期 | markets | economic PnL | economic ROI | pair_cost p50 | pair_cost p90 | residual sum | loser residual |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2026-04-27 | 174 | `+4259.95` | `+3.144%` | `0.9676` | `1.0174` | `366.82` | `134.35` |
+| 2026-04-28 | 162 | `-918.75` | `-0.672%` | `1.0071` | `1.0577` | `163.58` | `59.81` |
+| 2026-04-29 | 154 | `-1020.79` | `-1.107%` | `1.0037` | `1.0635` | `139.33` | `139.11` |
+| 2026-04-30 | 198 | `-1417.52` | `-0.797%` | `1.0061` | `1.0566` | `376.26` | `1.13` |
+| 2026-05-01 | 259 | `-2266.76` | `-1.352%` | `1.0038` | `1.0678` | `1919.95` | `1155.31` |
+
+对 PGT 的含义：
+
+- 复刻 xuan 的“低残仓”方向是对的，但不能无条件复刻其高成本 completion/tail。
+- `XUAN_LADDER_FUNDED_REPAIR_PAIR_CAP=1.030` 暂时保留：它只允许花真实 covered surplus，不是无资金来源追价。
+- 若新 cap shadow 出现持续 `summary_pair_cost_p90 > 1.03` 或 residual 没有明显改善，应回调到 `1.020`。
 
 ## 最新聚合：过夜样本 `btc-updown-5m-1777484100` 到 `btc-updown-5m-1777506900`
 
