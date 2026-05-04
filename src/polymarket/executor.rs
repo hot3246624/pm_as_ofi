@@ -171,6 +171,7 @@ pub struct Executor {
     /// conservative shadows can require real trade prints into our resting bid.
     dry_run_market_touch_book_fills: bool,
     dry_run_market_touch_trade_fills: bool,
+    dry_run_market_touch_trade_partial_fills: bool,
     /// Short confirm delay for dry-run market-touch fills.
     dry_run_touch_confirm_delay: Duration,
     recorder: Option<RecorderHandle>,
@@ -192,6 +193,9 @@ struct DryRunLiveOrder {
 struct DryRunPendingTouchFill {
     side: Side,
     direction: TradeDirection,
+    /// Size to emit for this synthetic fill. For book-touch this remains the
+    /// full visible order remainder; for trade-touch partial mode it is capped
+    /// by public SELL trade size observed during the confirm window.
     size: f64,
     price: f64,
     source: &'static str,
@@ -314,6 +318,10 @@ impl Executor {
             dry_run_market_touch_trade_fills: Self::env_bool_or(
                 "PM_DRY_RUN_MARKET_TOUCH_TRADE_FILLS",
                 true,
+            ),
+            dry_run_market_touch_trade_partial_fills: Self::env_bool_or(
+                "PM_DRY_RUN_MARKET_TOUCH_TRADE_PARTIAL_FILLS",
+                false,
             ),
             dry_run_touch_confirm_delay: Duration::from_millis(DRY_RUN_TOUCH_CONFIRM_MS),
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
@@ -502,12 +510,18 @@ impl Executor {
                 market_side,
                 taker_side,
                 price,
+                size: trade_size,
                 ..
             } => {
                 if !self.dry_run_market_touch_trade_fills {
                     return;
                 }
-                if taker_side != TakerSide::Sell || !price.is_finite() || price <= 0.0 {
+                if taker_side != TakerSide::Sell
+                    || !price.is_finite()
+                    || price <= 0.0
+                    || !trade_size.is_finite()
+                    || trade_size <= 0.0
+                {
                     return;
                 }
                 for (order_id, meta) in self.dry_run_live_orders.iter() {
@@ -529,12 +543,27 @@ impl Executor {
                     if remaining <= 0.0 {
                         continue;
                     }
+                    let fill_size = if self.dry_run_market_touch_trade_partial_fills {
+                        remaining.min(trade_size)
+                    } else {
+                        remaining
+                    };
+                    if fill_size <= 0.0 {
+                        continue;
+                    }
                     self.dry_run_pending_touch_fills
                         .entry(order_id.clone())
+                        .and_modify(|pending| {
+                            if self.dry_run_market_touch_trade_partial_fills
+                                && pending.source == "trade_sell_touch"
+                            {
+                                pending.size = remaining.min(pending.size + fill_size);
+                            }
+                        })
                         .or_insert(DryRunPendingTouchFill {
                             side: meta.side,
                             direction: meta.direction,
-                            size: remaining,
+                            size: fill_size,
                             price: meta.price,
                             source: "trade_sell_touch",
                             detected_at: now,
@@ -575,7 +604,7 @@ impl Executor {
             })
             .collect();
 
-        for (order_id, side, direction, remaining, fill_price, source, confirm_age_ms) in ready {
+        for (order_id, side, direction, pending_size, fill_price, source, confirm_age_ms) in ready {
             self.dry_run_pending_touch_fills.remove(&order_id);
             let Some(live_meta) = self
                 .dry_run_live_orders
@@ -587,11 +616,22 @@ impl Executor {
             else {
                 continue;
             };
+            let current_remaining = self
+                .slot_orders(live_meta.slot)
+                .get(&order_id)
+                .copied()
+                .unwrap_or(live_meta.size)
+                .max(0.0);
+            let fill_size = pending_size.min(current_remaining);
+            if fill_size <= 0.0 {
+                continue;
+            }
+            let will_close = current_remaining <= fill_size + DUST_REMAINING_SHARES + 1e-9;
             if let Some(meta) = self.dry_run_live_orders.get_mut(&order_id) {
-                meta.fill_emitted = true;
+                meta.fill_emitted = will_close;
             }
             if !self
-                .try_emit_dry_run_fill(order_id.clone(), side, direction, remaining, fill_price)
+                .try_emit_dry_run_fill(order_id.clone(), side, direction, fill_size, fill_price)
                 .await
             {
                 warn!(
@@ -606,7 +646,7 @@ impl Executor {
                     DryRunPendingTouchFill {
                         side,
                         direction,
-                        size: remaining,
+                        size: fill_size,
                         price: fill_price,
                         source,
                         detected_at: now,
@@ -622,7 +662,9 @@ impl Executor {
                         "direction": format!("{:?}", direction),
                         "reason": format!("{:?}", live_meta.reason),
                         "price": fill_price,
-                        "size": remaining,
+                        "size": fill_size,
+                        "remaining_before": current_remaining,
+                        "partial": !will_close,
                         "source": source,
                         "confirm_age_ms": confirm_age_ms,
                     }),
@@ -633,12 +675,13 @@ impl Executor {
 
     pub async fn run(mut self) {
         info!(
-            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/trade)={}/{}",
+            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/trade/partial_trade)={}/{}/{}",
             self.cfg.dry_run,
             self.client.is_some(),
             self.dry_run_fill_probability,
             self.dry_run_market_touch_book_fills,
             self.dry_run_market_touch_trade_fills,
+            self.dry_run_market_touch_trade_partial_fills,
         );
         info!(
             "🧭 Reconcile mode: {} (startup CancelAll authoritative)",
@@ -3550,6 +3593,112 @@ mod tests {
         assert_eq!(fill.direction, TradeDirection::Buy);
         assert_eq!(fill.status, FillStatus::Confirmed);
         assert!((fill.filled_size - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_trade_partial_fill_keeps_slot_until_remainder_fills() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (_md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.55,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        });
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        exec.dry_run_market_touch_trade_partial_fills = true;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            5.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
+            asset_id: "1".to_string(),
+            trade_id: Some("trade-1".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Sell,
+            price: 0.50,
+            size: 2.0,
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        let first_fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("partial trade should emit partial simulated fill");
+        assert!((first_fill.filled_size - 2.0).abs() < 1e-9);
+        exec.handle_fill_notification(&first_fill).await;
+        assert!(exec
+            .slot_orders(OrderSlot::YES_BUY)
+            .values()
+            .any(|remaining| (*remaining - 3.0).abs() < 1e-9));
+        assert!(result_rx.try_recv().is_err());
+
+        exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
+            asset_id: "1".to_string(),
+            trade_id: Some("trade-2".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Sell,
+            price: 0.50,
+            size: 3.0,
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        let second_fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("second trade should close remainder");
+        assert!((second_fill.filled_size - 3.0).abs() < 1e-9);
+        exec.handle_fill_notification(&second_fill).await;
+        let done = result_rx.recv().await.expect("full fill should free slot");
+        assert!(matches!(done, OrderResult::OrderFilled { slot } if slot == OrderSlot::YES_BUY));
     }
 
     #[tokio::test]
