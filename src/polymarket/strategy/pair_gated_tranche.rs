@@ -72,8 +72,10 @@ const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.900;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.985;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
+const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
@@ -668,6 +670,37 @@ impl PairGatedTrancheStrategy {
                 side,
                 remaining_secs,
                 "blocked_visible_completion_pair_cost",
+                price,
+                size,
+                best_bid,
+                best_ask,
+                opp_ask,
+                open_pair_band,
+                tick,
+                taker_shadow_would_open,
+                entry_pressure_extra_ticks,
+                visible_completion_slack_ticks,
+                visible_breakeven_completion_slack_ticks,
+                fill_distance_ticks,
+                min_visible_breakeven_slack_ticks,
+            );
+            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
+            return None;
+        }
+        if pgt_xuan_ladder_reopen_seed_quality_blocks(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            recent_pair_cost,
+            price,
+            opp_ask,
+            tick,
+        ) {
+            pgt_maybe_log_seed_admission_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                side,
+                remaining_secs,
+                "blocked_reopen_pair_cost",
                 price,
                 size,
                 best_bid,
@@ -1729,6 +1762,41 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
         || maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
 }
 
+fn pgt_xuan_ladder_reopen_seed_quality_blocks(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    recent_pair_cost: Option<f64>,
+    seed_price: f64,
+    opposite_ask: f64,
+    tick: f64,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return false;
+    }
+    if round_buy_fill_count < XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS {
+        return false;
+    }
+    if round_buy_fill_count > XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS {
+        return true;
+    }
+    if !recent_pair_cost
+        .map(|cost| cost <= XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST + 1e-9)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    if seed_price <= 0.0 || opposite_ask <= 0.0 || tick <= 0.0 {
+        return true;
+    }
+    let taker_pair_cost = seed_price + opposite_ask;
+    if taker_pair_cost <= XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP + 1e-9 {
+        return false;
+    }
+    let maker_completion_ref = (opposite_ask - tick).max(0.0);
+    let maker_pair_cost = seed_price + maker_completion_ref;
+    maker_pair_cost > XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP + 1e-9
+}
+
 #[allow(clippy::too_many_arguments)]
 fn pgt_maybe_log_seed_admission_diag(
     dry_run: bool,
@@ -2046,6 +2114,9 @@ fn pgt_blocks_reopen_after_closed_pair(
     }
     if input.episode_metrics.round_buy_fill_count < XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS {
         return false;
+    }
+    if input.episode_metrics.round_buy_fill_count > XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS {
+        return true;
     }
     if input.inv.net_diff.abs() > PAIR_ARB_NET_EPS {
         return false;
@@ -2551,7 +2622,7 @@ mod profile_tests {
         let mut ledger = PairLedgerSnapshot::default();
         ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.930,
+            pair_cost_tranche: 0.990,
             ..PairTranche::default()
         });
         let metrics = EpisodeMetrics {
@@ -2626,6 +2697,67 @@ mod profile_tests {
             early_input,
             false
         ));
+
+        let late_metrics = EpisodeMetrics {
+            round_buy_fill_count: 4,
+            ..metrics
+        };
+        let late_inventory = InventorySnapshot {
+            episode_metrics: late_metrics,
+            ..inventory
+        };
+        let late_input = StrategyTickInput {
+            inventory: &late_inventory,
+            episode_metrics: &late_metrics,
+            ..high_quality_input
+        };
+        assert!(
+            pgt_blocks_reopen_after_closed_pair(tuning, late_input, false),
+            "after two filled pairs, the profile should stop opening more tranches"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_reopen_seed_requires_visible_low_cost_completion() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            !pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 0, None, 0.47, 0.54, 0.01),
+            "first seed quality remains owned by the first-leg guard"
+        );
+        assert!(
+            !pgt_xuan_ladder_reopen_seed_quality_blocks(
+                tuning,
+                2,
+                Some(0.980),
+                0.47,
+                0.53,
+                0.01
+            ),
+            "second tranche can open when the prior pair is cheap and visible maker completion is <= 0.990"
+        );
+        assert!(
+            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(0.980), 0.47, 0.54, 0.01),
+            "second tranche is blocked when projected maker pair cost is above the cap"
+        );
+        assert!(
+            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(0.990), 0.47, 0.52, 0.01),
+            "second tranche is blocked when the just-closed pair was not clearly profitable"
+        );
+        assert!(
+            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 4, Some(0.880), 0.47, 0.52, 0.01),
+            "after two filled pairs, no further reopen should be admitted"
+        );
+        assert!(
+            !pgt_xuan_ladder_reopen_seed_quality_blocks(
+                PgtTuning::legacy(),
+                2,
+                Some(0.990),
+                0.47,
+                0.54,
+                0.01
+            ),
+            "legacy/replay profiles are not changed by the xuan-specific reopen guard"
+        );
     }
 }
 
