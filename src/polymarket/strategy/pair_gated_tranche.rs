@@ -56,6 +56,8 @@ const XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP: f64 = 1.030;
 const XUAN_LADDER_TAIL_INSURANCE_REMAINING_SECS: u64 = 45;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP: f64 = 1.050;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_REMAINING_SECS: u64 = 15;
+const XUAN_LADDER_TAKER_INSURANCE_MIN_AGE_SECS: f64 = 45.0;
+const XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
 const XUAN_LADDER_COMPLETION_WARM_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_COMPLETION_STALE_AGE_SECS: f64 = 90.0;
@@ -937,8 +939,15 @@ impl PairGatedTrancheStrategy {
             taker_close_pair_cap - active.first_vwap + repair_budget_per_share;
         let tail_insurance_ceiling =
             pgt_tail_insurance_completion_ceiling(tuning, active.first_vwap, remaining_secs);
-        let taker_close_ceiling =
-            base_taker_close_ceiling.max(tail_insurance_ceiling.unwrap_or(0.0));
+        let taker_insurance_ceiling = pgt_xuan_ladder_taker_insurance_completion_ceiling(
+            tuning,
+            active.first_vwap,
+            remaining_secs,
+            completion_age_secs,
+        );
+        let taker_close_ceiling = base_taker_close_ceiling
+            .max(tail_insurance_ceiling.unwrap_or(0.0))
+            .max(taker_insurance_ceiling.unwrap_or(0.0));
         let breakeven_unlocked = completion_age_secs >= PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS
             || remaining_secs <= PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS;
         let ceiling = if breakeven_unlocked {
@@ -1055,11 +1064,15 @@ impl PairGatedTrancheStrategy {
         let tail_insurance_taker_would_close = tail_insurance_ceiling
             .map(|ceiling| best_ask <= ceiling + 1e-9)
             .unwrap_or(false);
+        let taker_insurance_would_close = taker_insurance_ceiling
+            .map(|ceiling| best_ask <= ceiling + 1e-9)
+            .unwrap_or(false);
         let taker_shadow_would_close = coordinator.cfg().dry_run
             && remaining_secs > coordinator.cfg().endgame_freeze_secs
             && (profit_taker_would_close
                 || breakeven_taker_would_close
-                || tail_insurance_taker_would_close);
+                || tail_insurance_taker_would_close
+                || taker_insurance_would_close);
         let taker_close_limit = if taker_shadow_would_close {
             Some(coordinator.safe_price(best_ask))
         } else {
@@ -1082,11 +1095,13 @@ impl PairGatedTrancheStrategy {
                 funded_loss_ceiling,
                 base_taker_close_ceiling,
                 tail_insurance_ceiling,
+                taker_insurance_ceiling,
                 taker_close_ceiling,
                 passive_ceiling,
                 profit_taker_would_close,
                 breakeven_taker_would_close,
                 tail_insurance_taker_would_close,
+                taker_insurance_would_close,
             );
         }
 
@@ -1664,6 +1679,30 @@ fn pgt_tail_insurance_completion_ceiling(
     }
 }
 
+fn pgt_xuan_ladder_taker_insurance_completion_ceiling(
+    tuning: PgtTuning,
+    first_vwap: f64,
+    remaining_secs: u64,
+    completion_age_secs: f64,
+) -> Option<f64> {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return None;
+    }
+    if remaining_secs == u64::MAX || completion_age_secs < XUAN_LADDER_TAKER_INSURANCE_MIN_AGE_SECS
+    {
+        return None;
+    }
+    if first_vwap <= 0.0 {
+        return None;
+    }
+    let ceiling = (XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP - first_vwap).clamp(0.0, 1.0);
+    if ceiling > 0.0 {
+        Some(ceiling)
+    } else {
+        None
+    }
+}
+
 fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     tuning: PgtTuning,
     round_buy_fill_count: u64,
@@ -1837,11 +1876,13 @@ fn pgt_maybe_log_tail_completion_diag(
     funded_loss_ceiling: f64,
     base_taker_close_ceiling: f64,
     tail_insurance_ceiling: Option<f64>,
+    taker_insurance_ceiling: Option<f64>,
     taker_close_ceiling: f64,
     passive_ceiling: f64,
     profit_taker_would_close: bool,
     breakeven_taker_would_close: bool,
     tail_insurance_taker_would_close: bool,
+    taker_insurance_would_close: bool,
 ) {
     if !dry_run
         || tuning.profile != PgtShadowProfile::XuanLadderV1
@@ -1866,11 +1907,12 @@ fn pgt_maybe_log_tail_completion_diag(
     }
 
     let tail_ceiling = tail_insurance_ceiling.unwrap_or(0.0);
+    let insurance_ceiling = taker_insurance_ceiling.unwrap_or(0.0);
     let ask_gap_to_taker = (best_ask - taker_close_ceiling).max(0.0);
     let passive_pair_cost = first_vwap + passive_price;
     let ask_pair_cost = first_vwap + best_ask;
     info!(
-        "🧭 PGT tail no-taker diag | first_side={:?} hedge_side={:?} first_vwap={:.4} residual={:.2} remaining_secs={} completion_age_secs={:.1} best_bid={:.4} best_ask={:.4} passive_price={:.4} passive_pair_cost={:.4} ask_pair_cost={:.4} positive_ceiling={:.4} funded_ceiling={:.4} base_taker_ceiling={:.4} tail_ceiling={:.4} taker_ceiling={:.4} passive_ceiling={:.4} ask_gap_to_taker={:.4} close_flags(profit/breakeven/tail)={}/{}/{}",
+        "🧭 PGT tail no-taker diag | first_side={:?} hedge_side={:?} first_vwap={:.4} residual={:.2} remaining_secs={} completion_age_secs={:.1} best_bid={:.4} best_ask={:.4} passive_price={:.4} passive_pair_cost={:.4} ask_pair_cost={:.4} positive_ceiling={:.4} funded_ceiling={:.4} base_taker_ceiling={:.4} tail_ceiling={:.4} insurance_ceiling={:.4} taker_ceiling={:.4} passive_ceiling={:.4} ask_gap_to_taker={:.4} close_flags(profit/breakeven/tail/insurance)={}/{}/{}/{}",
         first_side,
         hedge_side,
         first_vwap,
@@ -1886,12 +1928,14 @@ fn pgt_maybe_log_tail_completion_diag(
         funded_loss_ceiling,
         base_taker_close_ceiling,
         tail_ceiling,
+        insurance_ceiling,
         taker_close_ceiling,
         passive_ceiling,
         ask_gap_to_taker,
         profit_taker_would_close,
         breakeven_taker_would_close,
         tail_insurance_taker_would_close,
+        taker_insurance_would_close,
     );
 }
 
@@ -2237,6 +2281,40 @@ mod profile_tests {
         assert_eq!(
             pgt_tail_insurance_completion_ceiling(PgtTuning::legacy(), 0.43, 20),
             None
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_taker_insurance_unlocks_small_loss_after_maker_window() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_xuan_ladder_taker_insurance_completion_ceiling(tuning, 0.50, 240, 44.9),
+            None,
+            "completion maker should get the initial queue window before taker insurance"
+        );
+        assert!(
+            (pgt_xuan_ladder_taker_insurance_completion_ceiling(tuning, 0.50, 240, 45.0).unwrap()
+                - 0.51)
+                .abs()
+                < 1e-9,
+            "after the maker window, taker insurance may spend up to pair_cost 1.010"
+        );
+        assert!(
+            (pgt_xuan_ladder_taker_insurance_completion_ceiling(tuning, 0.27, 240, 45.0).unwrap()
+                - 0.74)
+                .abs()
+                < 1e-9,
+            "cheap first legs get enough ceiling to close a one-cent adverse completion"
+        );
+        assert_eq!(
+            pgt_xuan_ladder_taker_insurance_completion_ceiling(
+                PgtTuning::legacy(),
+                0.50,
+                240,
+                60.0
+            ),
+            None,
+            "insurance is scoped to the xuan ladder shadow profile"
         );
     }
 
