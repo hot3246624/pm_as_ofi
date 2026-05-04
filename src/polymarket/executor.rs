@@ -190,6 +190,7 @@ struct DryRunPendingTouchFill {
     direction: TradeDirection,
     size: f64,
     price: f64,
+    source: &'static str,
     detected_at: Instant,
 }
 
@@ -470,6 +471,7 @@ impl Executor {
                             direction: meta.direction,
                             size: remaining,
                             price: meta.price,
+                            source: "book_touch",
                             detected_at: now,
                         });
                 }
@@ -509,6 +511,7 @@ impl Executor {
                             direction: meta.direction,
                             size: remaining,
                             price: meta.price,
+                            source: "trade_sell_touch",
                             detected_at: now,
                         });
                 }
@@ -524,7 +527,7 @@ impl Executor {
             return;
         }
         let now = Instant::now();
-        let ready: Vec<(String, Side, TradeDirection, f64, f64)> = self
+        let ready: Vec<(String, Side, TradeDirection, f64, f64, &'static str, u128)> = self
             .dry_run_pending_touch_fills
             .iter()
             .filter_map(|(order_id, pending)| {
@@ -537,6 +540,9 @@ impl Executor {
                         pending.direction,
                         pending.size,
                         pending.price,
+                        pending.source,
+                        now.saturating_duration_since(pending.detected_at)
+                            .as_millis(),
                     ))
                 } else {
                     None
@@ -544,14 +550,18 @@ impl Executor {
             })
             .collect();
 
-        for (order_id, side, direction, remaining, fill_price) in ready {
+        for (order_id, side, direction, remaining, fill_price, source, confirm_age_ms) in ready {
             self.dry_run_pending_touch_fills.remove(&order_id);
-            let still_live = self.dry_run_live_orders.get(&order_id).is_some_and(|meta| {
-                !meta.fill_emitted && meta.direction == direction && meta.side == side
-            });
-            if !still_live {
+            let Some(live_meta) = self
+                .dry_run_live_orders
+                .get(&order_id)
+                .filter(|meta| {
+                    !meta.fill_emitted && meta.direction == direction && meta.side == side
+                })
+                .cloned()
+            else {
                 continue;
-            }
+            };
             if let Some(meta) = self.dry_run_live_orders.get_mut(&order_id) {
                 meta.fill_emitted = true;
             }
@@ -573,8 +583,24 @@ impl Executor {
                         direction,
                         size: remaining,
                         price: fill_price,
+                        source,
                         detected_at: now,
                     },
+                );
+            } else {
+                self.emit_order_event(
+                    "dry_run_touch_fill_confirmed",
+                    serde_json::json!({
+                        "order_id": order_id,
+                        "slot": live_meta.slot.as_str(),
+                        "side": format!("{:?}", side),
+                        "direction": format!("{:?}", direction),
+                        "reason": format!("{:?}", live_meta.reason),
+                        "price": fill_price,
+                        "size": remaining,
+                        "source": source,
+                        "confirm_age_ms": confirm_age_ms,
+                    }),
                 );
             }
         }
@@ -2209,7 +2235,9 @@ impl Executor {
         if failed_count > 0 {
             warn!(
                 "⚠️ CancelSide {:?}: {}/{} cancel(s) failed — emitting SlotBusy for still-tracked slots",
-                side, failed_count, order_ids.len(),
+                side,
+                failed_count,
+                order_ids.len(),
             );
         }
 

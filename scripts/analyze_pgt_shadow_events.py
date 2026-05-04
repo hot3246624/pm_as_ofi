@@ -43,6 +43,9 @@ class RoundRow:
     residual_cost_worst_case: float = 0.0
     worst_case_pnl: float = 0.0
     taker_repairs: int = 0
+    dry_run_touch_book: int = 0
+    dry_run_touch_trade: int = 0
+    dry_run_touch_other: int = 0
     cancel_sent: int = 0
     accepted_orders: int = 0
     merge_executed: int = 0
@@ -78,6 +81,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--root", default="data/recorder")
     p.add_argument("--last", type=int, default=24, help="last complete rounds window")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON")
+    p.add_argument("--details", action="store_true", help="print per-round rows for the last window")
     return p.parse_args()
 
 
@@ -125,6 +129,14 @@ def load_round(path: Path) -> RoundRow:
             out.no_avg_cost = float(data.get("no_avg_cost") or 0.0)
         elif event == "taker_repair_sent":
             out.taker_repairs += 1
+        elif event == "dry_run_touch_fill_confirmed":
+            source = str(data.get("source") or "")
+            if source == "book_touch":
+                out.dry_run_touch_book += 1
+            elif source == "trade_sell_touch":
+                out.dry_run_touch_trade += 1
+            else:
+                out.dry_run_touch_other += 1
         elif event == "cancel_sent":
             out.cancel_sent += 1
         elif event == "order_accepted":
@@ -186,6 +198,9 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "completion_delay_max_s": max(delays) if delays else None,
         "fills": sum(len(r.fills) for r in rows),
         "taker_repairs": sum(r.taker_repairs for r in rows),
+        "dry_run_touch_book": sum(r.dry_run_touch_book for r in rows),
+        "dry_run_touch_trade": sum(r.dry_run_touch_trade for r in rows),
+        "dry_run_touch_other": sum(r.dry_run_touch_other for r in rows),
         "cancel_sent": sum(r.cancel_sent for r in rows),
         "merge_executed": sum(r.merge_executed for r in rows),
         "residuals": [
@@ -221,6 +236,33 @@ def bucket_summary(rows: list[RoundRow]) -> list[dict[str, Any]]:
     return out
 
 
+def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
+    return [
+        {
+            "round_id": r.round_id,
+            "pair_cost": r.pair_cost,
+            "locked_pnl": r.locked_pnl,
+            "worst_case_pnl": r.worst_case_pnl,
+            "residual_qty": r.residual_qty,
+            "completion_delay_s": r.completion_delay_s,
+            "first_side": r.first_fill_side,
+            "first_price": r.first_fill_price,
+            "fills": [
+                {"side": f.side, "price": f.price, "size": f.size, "recv_ms": f.recv_ms}
+                for f in r.fills
+            ],
+            "taker_repairs": r.taker_repairs,
+            "dry_run_touch_book": r.dry_run_touch_book,
+            "dry_run_touch_trade": r.dry_run_touch_trade,
+            "dry_run_touch_other": r.dry_run_touch_other,
+            "cancel_sent": r.cancel_sent,
+            "accepted_orders": r.accepted_orders,
+            "merge_executed": r.merge_executed,
+        }
+        for r in rows
+    ]
+
+
 def collect_rows(root: Path, instance: str, date: str) -> list[RoundRow]:
     base = root / instance
     rows = []
@@ -233,6 +275,7 @@ def main() -> None:
     args = parse_args()
     rows = collect_rows(Path(args.root), args.instance, args.date)
     complete = [r for r in rows if r.complete]
+    last_complete = complete[-args.last :]
     incomplete = [r for r in rows if not r.complete]
     result = {
         "instance": args.instance,
@@ -248,9 +291,13 @@ def main() -> None:
             }
             for r in incomplete[-10:]
         ],
-        "last_complete": summarize(complete[-args.last :]),
+        "last_complete": summarize(last_complete),
         "all_complete": summarize(complete),
+        "last_first_price_buckets": bucket_summary(last_complete),
+        "all_first_price_buckets": bucket_summary(complete),
+        # Backward-compatible alias retained for older ad-hoc consumers.
         "first_price_buckets": bucket_summary(complete),
+        "last_round_details": round_details(last_complete),
     }
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -263,16 +310,40 @@ def main() -> None:
             f"{name}: rounds={s['rounds']} range={s['range']} paired={s['paired_rounds']} "
             f"residual={s['residual_rounds']} wpc={s['weighted_pair_cost']} "
             f"locked={s['locked_pnl']:.4f} residual_worst={s['residual_cost_worst_case']:.4f} "
-            f"worst={s['worst_case_pnl']:.4f} roi={s['worst_case_roi']}"
+            f"worst={s['worst_case_pnl']:.4f} roi={s['worst_case_roi']} "
+            f"touch(book/trade/other)="
+            f"{s['dry_run_touch_book']}/{s['dry_run_touch_trade']}/{s['dry_run_touch_other']}"
         )
     if result["incomplete"]:
         print(f"incomplete_tail={result['incomplete']}")
-    print("first_price_buckets:")
-    for b in result["first_price_buckets"]:
+    print("last_first_price_buckets:")
+    for b in result["last_first_price_buckets"]:
         print(
             f"  {b['first_price_bucket']} n={b['rounds']} residual={b['residual_rounds']} "
             f"locked={b['locked_pnl']:.4f} worst={b['worst_case_pnl']:.4f}"
         )
+    print("all_first_price_buckets:")
+    for b in result["all_first_price_buckets"]:
+        print(
+            f"  {b['first_price_bucket']} n={b['rounds']} residual={b['residual_rounds']} "
+            f"locked={b['locked_pnl']:.4f} worst={b['worst_case_pnl']:.4f}"
+        )
+    if args.details:
+        print("last_round_details:")
+        for r in result["last_round_details"]:
+            fills = " -> ".join(
+                f"{f['side']}@{f['price']:.2f}x{f['size']:.0f}" for f in r["fills"]
+            )
+            delay = r["completion_delay_s"]
+            delay_s = "none" if delay is None else f"{delay:.3f}s"
+            print(
+                f"  {r['round_id']} cost={r['pair_cost']:.3f} pnl={r['locked_pnl']:+.4f} "
+                f"worst={r['worst_case_pnl']:+.4f} residual={r['residual_qty']:.2f} "
+                f"delay={delay_s} taker={r['taker_repairs']} cancels={r['cancel_sent']} "
+                f"orders={r['accepted_orders']} touch(book/trade/other)="
+                f"{r['dry_run_touch_book']}/{r['dry_run_touch_trade']}/{r['dry_run_touch_other']} "
+                f"fills={fills}"
+            )
 
 
 if __name__ == "__main__":
