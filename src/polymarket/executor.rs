@@ -167,6 +167,10 @@ pub struct Executor {
     /// When enabled, dry-run fills are emitted only after market data touches
     /// the resting order instead of immediately after submit.
     dry_run_market_touch_fills: bool,
+    /// Dry-run market-touch source gates. Defaults keep legacy behavior, while
+    /// conservative shadows can require real trade prints into our resting bid.
+    dry_run_market_touch_book_fills: bool,
+    dry_run_market_touch_trade_fills: bool,
     /// Short confirm delay for dry-run market-touch fills.
     dry_run_touch_confirm_delay: Duration,
     recorder: Option<RecorderHandle>,
@@ -195,6 +199,13 @@ struct DryRunPendingTouchFill {
 }
 
 impl Executor {
+    fn env_bool_or(name: &str, default: bool) -> bool {
+        std::env::var(name)
+            .ok()
+            .map(|v| matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+            .unwrap_or(default)
+    }
+
     fn is_residual_dust(remaining: f64) -> bool {
         remaining <= DUST_REMAINING_SHARES + 1e-9
     }
@@ -296,6 +307,14 @@ impl Executor {
             }),
             dry_run_fill_probability,
             dry_run_market_touch_fills,
+            dry_run_market_touch_book_fills: Self::env_bool_or(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_FILLS",
+                true,
+            ),
+            dry_run_market_touch_trade_fills: Self::env_bool_or(
+                "PM_DRY_RUN_MARKET_TOUCH_TRADE_FILLS",
+                true,
+            ),
             dry_run_touch_confirm_delay: Duration::from_millis(DRY_RUN_TOUCH_CONFIRM_MS),
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
             marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
@@ -431,6 +450,9 @@ impl Executor {
             MarketDataMsg::BookTick {
                 yes_ask, no_ask, ..
             } => {
+                if !self.dry_run_market_touch_book_fills {
+                    return;
+                }
                 for (order_id, meta) in self.dry_run_live_orders.iter() {
                     if meta.fill_emitted || meta.direction != TradeDirection::Buy {
                         self.dry_run_pending_touch_fills.remove(order_id);
@@ -482,6 +504,9 @@ impl Executor {
                 price,
                 ..
             } => {
+                if !self.dry_run_market_touch_trade_fills {
+                    return;
+                }
                 if taker_side != TakerSide::Sell || !price.is_finite() || price <= 0.0 {
                     return;
                 }
@@ -608,10 +633,12 @@ impl Executor {
 
     pub async fn run(mut self) {
         info!(
-            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2}",
+            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/trade)={}/{}",
             self.cfg.dry_run,
             self.client.is_some(),
             self.dry_run_fill_probability,
+            self.dry_run_market_touch_book_fills,
+            self.dry_run_market_touch_trade_fills,
         );
         info!(
             "🧭 Reconcile mode: {} (startup CancelAll authoritative)",
