@@ -1753,17 +1753,17 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     if seed_price <= 0.0 || opposite_ask <= 0.0 || tick <= 0.0 {
         return true;
     }
+    if seed_price > XUAN_LADDER_LOW_PRICE_SEED_MAX + 1e-9
+        && seed_price <= EXPENSIVE_SEED_PRICE + 1e-9
+    {
+        return true;
+    }
     let taker_pair_cost = seed_price + opposite_ask;
     if taker_pair_cost <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9 {
         return false;
     }
     let maker_completion_ref = (opposite_ask - tick).max(0.0);
     let maker_pair_cost = seed_price + maker_completion_ref;
-    if seed_price > XUAN_LADDER_LOW_PRICE_SEED_MAX + 1e-9
-        && seed_price <= EXPENSIVE_SEED_PRICE + 1e-9
-    {
-        return true;
-    }
     seed_price > EXPENSIVE_SEED_PRICE + 1e-9
         || maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
 }
@@ -2481,6 +2481,10 @@ mod profile_tests {
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
             "ambiguous 0.45-0.50 first-leg band is blocked until a distinct high-quality branch exists"
+        );
+        assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.52, 0.01),
+            "ambiguous 0.45-0.50 first-leg band is blocked even when immediate taker completion looks safe"
         );
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.54, 0.01),
