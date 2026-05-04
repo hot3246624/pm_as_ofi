@@ -159,6 +159,25 @@ def payload_metric(payload_json: str | None, key: str) -> float | None:
         return None
 
 
+def residual_cost_worst_case(
+    yes_qty: float | None,
+    yes_avg_cost: float | None,
+    no_qty: float | None,
+    no_avg_cost: float | None,
+    paired_qty: float | None,
+) -> float | None:
+    paired = paired_qty or 0.0
+    yes_residual = max((yes_qty or 0.0) - paired, 0.0)
+    no_residual = max((no_qty or 0.0) - paired, 0.0)
+    if yes_residual <= 1e-9 and no_residual <= 1e-9:
+        return 0.0
+    if yes_residual > 1e-9 and yes_avg_cost is None:
+        return None
+    if no_residual > 1e-9 and no_avg_cost is None:
+        return None
+    return yes_residual * (yes_avg_cost or 0.0) + no_residual * (no_avg_cost or 0.0)
+
+
 def rel_secs(ms: int | None, end_ms: int | None) -> float | None:
     if ms is None or end_ms is None:
         return None
@@ -346,6 +365,35 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         summary_paired_qty = as_float(summary_payload.get("paired_qty"))
         summary_pair_cost = as_float(summary_payload.get("pair_cost"))
         summary_residual_qty = as_float(summary_payload.get("residual_qty"))
+        summary_yes_qty = as_float(summary_payload.get("yes_qty"))
+        summary_yes_avg_cost = as_float(summary_payload.get("yes_avg_cost"))
+        summary_no_qty = as_float(summary_payload.get("no_qty"))
+        summary_no_avg_cost = as_float(summary_payload.get("no_avg_cost"))
+        summary_locked_pnl = (
+            summary_paired_qty * (1.0 - summary_pair_cost)
+            if summary_paired_qty is not None and summary_pair_cost is not None
+            else None
+        )
+        summary_residual_cost_worst_case = residual_cost_worst_case(
+            summary_yes_qty,
+            summary_yes_avg_cost,
+            summary_no_qty,
+            summary_no_avg_cost,
+            summary_paired_qty,
+        )
+        summary_worst_case_pnl = (
+            summary_locked_pnl - summary_residual_cost_worst_case
+            if summary_locked_pnl is not None
+            and summary_residual_cost_worst_case is not None
+            else None
+        )
+        summary_turnover_cost = (
+            summary_paired_qty * summary_pair_cost + summary_residual_cost_worst_case
+            if summary_paired_qty is not None
+            and summary_pair_cost is not None
+            and summary_residual_cost_worst_case is not None
+            else None
+        )
         taker_shadow_would_close = as_float(
             summary_payload.get("pgt_taker_shadow_would_close")
         )
@@ -400,6 +448,14 @@ def build_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             "summary_paired_qty": summary_paired_qty,
             "summary_pair_cost": summary_pair_cost,
             "summary_residual_qty": summary_residual_qty,
+            "summary_yes_qty": summary_yes_qty,
+            "summary_yes_avg_cost": summary_yes_avg_cost,
+            "summary_no_qty": summary_no_qty,
+            "summary_no_avg_cost": summary_no_avg_cost,
+            "summary_locked_pnl": summary_locked_pnl,
+            "summary_residual_cost_worst_case": summary_residual_cost_worst_case,
+            "summary_worst_case_pnl": summary_worst_case_pnl,
+            "summary_turnover_cost": summary_turnover_cost,
             "has_active_episode": has_active_episode,
             "residual_round": residual_round,
             "single_seed_first_side": summary_payload.get("pgt_single_seed_first_side"),
@@ -519,6 +575,12 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
     )
     total_taker_shadow_would_close = sum(collect("taker_shadow_would_close"))
     total_dispatch_taker_close = sum(collect("dispatch_taker_close"))
+    total_summary_locked_pnl = sum(collect("summary_locked_pnl"))
+    total_summary_residual_cost_worst_case = sum(
+        collect("summary_residual_cost_worst_case")
+    )
+    total_summary_worst_case_pnl = sum(collect("summary_worst_case_pnl"))
+    total_summary_turnover_cost = sum(collect("summary_turnover_cost"))
 
     return {
         "markets": len(rows),
@@ -539,6 +601,20 @@ def build_summary(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "median_summary_pair_cost": median(collect_filled("summary_pair_cost")),
         "median_summary_paired_qty": median(collect_filled("summary_paired_qty")),
         "median_summary_residual_qty": median(collect("summary_residual_qty")),
+        "total_summary_locked_pnl": total_summary_locked_pnl,
+        "total_summary_residual_cost_worst_case": total_summary_residual_cost_worst_case,
+        "total_summary_worst_case_pnl": total_summary_worst_case_pnl,
+        "total_summary_turnover_cost": total_summary_turnover_cost,
+        "summary_locked_roi": (
+            total_summary_locked_pnl / total_summary_turnover_cost
+            if total_summary_turnover_cost > 1e-9
+            else None
+        ),
+        "summary_worst_case_roi": (
+            total_summary_worst_case_pnl / total_summary_turnover_cost
+            if total_summary_turnover_cost > 1e-9
+            else None
+        ),
         "median_single_seed_flip_count": median(collect("single_seed_flip_count")),
         "median_dual_seed_quotes": median(collect("dual_seed_quotes")),
         "total_single_seed_released_to_dual": int(
@@ -624,6 +700,14 @@ def main() -> None:
         "summary_paired_qty",
         "summary_pair_cost",
         "summary_residual_qty",
+        "summary_yes_qty",
+        "summary_yes_avg_cost",
+        "summary_no_qty",
+        "summary_no_avg_cost",
+        "summary_locked_pnl",
+        "summary_residual_cost_worst_case",
+        "summary_worst_case_pnl",
+        "summary_turnover_cost",
         "has_active_episode",
         "residual_round",
         "single_seed_first_side",

@@ -69,6 +69,7 @@ const XUAN_LADDER_EXPENSIVE_SEED_DOMINANCE_TICKS: f64 = 2.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
+const XUAN_LADDER_LOW_PRICE_SEED_MAX: f64 = 0.45;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
@@ -1758,6 +1759,11 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     }
     let maker_completion_ref = (opposite_ask - tick).max(0.0);
     let maker_pair_cost = seed_price + maker_completion_ref;
+    if seed_price > XUAN_LADDER_LOW_PRICE_SEED_MAX + 1e-9
+        && seed_price <= EXPENSIVE_SEED_PRICE + 1e-9
+    {
+        return true;
+    }
     seed_price > EXPENSIVE_SEED_PRICE + 1e-9
         || maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
 }
@@ -2469,8 +2475,12 @@ mod profile_tests {
     fn xuan_ladder_first_seed_accepts_cheap_visible_maker_completion() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
-            "cheap first leg remains allowed when opposite maker completion is already visible at 0.99"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.45, 0.55, 0.01),
+            "low-price first leg remains allowed when opposite maker completion is already visible at 0.99"
+        );
+        assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
+            "ambiguous 0.45-0.50 first-leg band is blocked until a distinct high-quality branch exists"
         );
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.54, 0.01),

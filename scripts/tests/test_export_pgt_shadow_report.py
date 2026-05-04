@@ -179,7 +179,7 @@ class ExportPgtShadowReportTests(unittest.TestCase):
                     end_ms + 45_000,
                     9,
                     "pgt_shadow_summary",
-                    '{"paired_qty":57.6,"pair_cost":0.99,"residual_qty":0.0}',
+                    '{"yes_qty":57.6,"yes_avg_cost":0.5,"no_qty":57.6,"no_avg_cost":0.49,"paired_qty":57.6,"pair_cost":0.99,"residual_qty":0.0}',
                 ),
             ]
             for recv_ms, seq, event, payload in inventory_rows:
@@ -210,9 +210,17 @@ class ExportPgtShadowReportTests(unittest.TestCase):
         self.assertEqual(row["same_side_add_accept_count_before_cover"], 1)
         self.assertAlmostEqual(row["same_side_add_accept_qty_before_cover"], 6.0)
         self.assertAlmostEqual(row["same_side_add_qty_ratio"], 6.0 / 57.6)
+        self.assertAlmostEqual(row["summary_locked_pnl"], 57.6 * 0.01)
+        self.assertAlmostEqual(row["summary_residual_cost_worst_case"], 0.0)
+        self.assertAlmostEqual(row["summary_worst_case_pnl"], 57.6 * 0.01)
+        self.assertAlmostEqual(row["summary_turnover_cost"], 57.6 * 0.99)
         self.assertEqual(summary["seed_exposed_rounds"], 1)
         self.assertEqual(summary["seed_exposed_fill_rounds"], 1)
         self.assertAlmostEqual(summary["seed_exposed_fill_ratio"], 1.0)
+        self.assertAlmostEqual(summary["total_summary_locked_pnl"], 57.6 * 0.01)
+        self.assertAlmostEqual(summary["total_summary_worst_case_pnl"], 57.6 * 0.01)
+        self.assertAlmostEqual(summary["summary_locked_roi"], (57.6 * 0.01) / (57.6 * 0.99))
+        self.assertAlmostEqual(summary["summary_worst_case_roi"], (57.6 * 0.01) / (57.6 * 0.99))
         self.assertAlmostEqual(
             summary["median_same_side_add_qty_ratio"], 6.0 / 57.6
         )
