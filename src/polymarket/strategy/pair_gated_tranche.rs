@@ -75,7 +75,7 @@ const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.985;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.990;
+const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
@@ -2729,11 +2729,11 @@ mod profile_tests {
                 tuning,
                 2,
                 Some(0.980),
-                0.47,
+                0.46,
                 0.53,
                 0.01
             ),
-            "second tranche can open when the prior pair is cheap and visible maker completion is <= 0.990"
+            "second tranche can open when the prior pair is cheap and visible maker completion is <= 0.980"
         );
         assert!(
             pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(0.980), 0.47, 0.54, 0.01),
