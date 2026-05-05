@@ -79,6 +79,11 @@ const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
+const XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE: f64 = 0.42;
+const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
+const XUAN_LADDER_LAST_CHANCE_CLOSE_REMAINING_SECS: u64 = 15;
+const XUAN_LADDER_LAST_CHANCE_CLOSE_MIN_AGE_SECS: f64 = 45.0;
+const XUAN_LADDER_LAST_CHANCE_CLOSE_MAX_ASK: f64 = 0.99;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
 const XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS: u64 = 5;
 
@@ -268,6 +273,7 @@ struct SeedPlan {
     intent: StrategyIntent,
     size: f64,
     taker_shadow_would_open: bool,
+    visible_taker_completion_ok: bool,
     entry_pressure_extra_ticks: u8,
     visible_completion_slack_ticks: f64,
     fill_distance_ticks: f64,
@@ -627,6 +633,8 @@ impl PairGatedTrancheStrategy {
             return None;
         }
         let visible_breakeven_completion_slack_ticks = ((1.0 - price - opp_ask) / tick).max(-10.0);
+        let visible_taker_completion_ok =
+            price + opp_ask <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9;
         let recent_pair_cost = pgt_recent_closed_pair_cost(input.pair_ledger);
         let min_visible_breakeven_slack_ticks = pgt_seed_min_visible_breakeven_slack_ticks(
             tuning,
@@ -671,6 +679,35 @@ impl PairGatedTrancheStrategy {
                 side,
                 remaining_secs,
                 "blocked_visible_completion_pair_cost",
+                price,
+                size,
+                best_bid,
+                best_ask,
+                opp_ask,
+                open_pair_band,
+                tick,
+                taker_shadow_would_open,
+                entry_pressure_extra_ticks,
+                visible_completion_slack_ticks,
+                visible_breakeven_completion_slack_ticks,
+                fill_distance_ticks,
+                min_visible_breakeven_slack_ticks,
+            );
+            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
+            return None;
+        }
+        if pgt_xuan_ladder_maker_only_seed_price_blocks(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            price,
+            visible_taker_completion_ok,
+        ) {
+            pgt_maybe_log_seed_admission_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                side,
+                remaining_secs,
+                "blocked_maker_only_seed_price",
                 price,
                 size,
                 best_bid,
@@ -739,7 +776,7 @@ impl PairGatedTrancheStrategy {
             fill_distance_ticks,
             min_visible_breakeven_slack_ticks,
         );
-        let preserve_seed_clip_qty = tuning.preserve_seed_clip_qty;
+        let preserve_seed_clip_qty = tuning.preserve_seed_clip_qty && visible_taker_completion_ok;
         let open_path_mult = if taker_shadow_would_open || preserve_seed_clip_qty {
             1.0
         } else {
@@ -750,7 +787,14 @@ impl PairGatedTrancheStrategy {
         } else {
             seed_visible_completion_clip_mult(open_pair_band, price, opp_ask, tick)
         };
-        let size = quantize_tenth(size * open_path_mult.min(visible_slack_mult));
+        let mut size = quantize_tenth(size * open_path_mult.min(visible_slack_mult));
+        if pgt_xuan_ladder_maker_only_seed_clip_caps(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            visible_taker_completion_ok,
+        ) {
+            size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
+        }
         if size <= 0.0 {
             return None;
         }
@@ -759,6 +803,7 @@ impl PairGatedTrancheStrategy {
         Some(SeedPlan {
             size,
             taker_shadow_would_open,
+            visible_taker_completion_ok,
             entry_pressure_extra_ticks,
             visible_completion_slack_ticks,
             fill_distance_ticks,
@@ -796,6 +841,20 @@ impl PairGatedTrancheStrategy {
                     (false, false) => {}
                 }
                 if profile == PgtShadowProfile::XuanLadderV1 {
+                    let yes_unsafe_dual = Self::xuan_unsafe_dual_first_leg(yes);
+                    let no_unsafe_dual = Self::xuan_unsafe_dual_first_leg(no);
+                    match (yes_unsafe_dual, no_unsafe_dual) {
+                        (true, false) => return FlatSeedSelection::NoOnly,
+                        (false, true) => return FlatSeedSelection::YesOnly,
+                        (true, true) => {
+                            return if yes.intent.price <= no.intent.price {
+                                FlatSeedSelection::YesOnly
+                            } else {
+                                FlatSeedSelection::NoOnly
+                            };
+                        }
+                        (false, false) => {}
+                    }
                     if Self::xuan_expensive_seed_dominated_by_cheap_seed(yes, no) {
                         return FlatSeedSelection::NoOnly;
                     }
@@ -907,6 +966,11 @@ impl PairGatedTrancheStrategy {
         expensive.visible_completion_slack_ticks
             < cheap.visible_completion_slack_ticks + XUAN_LADDER_EXPENSIVE_SEED_DOMINANCE_TICKS
                 - 1e-9
+    }
+
+    fn xuan_unsafe_dual_first_leg(seed: &SeedPlan) -> bool {
+        seed.intent.price > XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE + 1e-9
+            && !seed.visible_taker_completion_ok
     }
 
     fn seed_geometry_reject(seed: &SeedPlan) -> bool {
@@ -1101,12 +1165,19 @@ impl PairGatedTrancheStrategy {
         let taker_insurance_would_close = taker_insurance_ceiling
             .map(|ceiling| best_ask <= ceiling + 1e-9)
             .unwrap_or(false);
+        let last_chance_forced_taker_close = pgt_xuan_ladder_last_chance_taker_close(
+            tuning,
+            remaining_secs,
+            completion_age_secs,
+            best_ask,
+        );
         let taker_shadow_would_close = coordinator.cfg().dry_run
             && remaining_secs > coordinator.cfg().endgame_freeze_secs
             && (profit_taker_would_close
                 || breakeven_taker_would_close
                 || tail_insurance_taker_would_close
-                || taker_insurance_would_close);
+                || taker_insurance_would_close
+                || last_chance_forced_taker_close);
         let taker_close_limit = if taker_shadow_would_close {
             Some(coordinator.safe_price(best_ask))
         } else {
@@ -1768,6 +1839,28 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
         || maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
 }
 
+fn pgt_xuan_ladder_maker_only_seed_price_blocks(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    seed_price: f64,
+    visible_taker_completion_ok: bool,
+) -> bool {
+    tuning.profile == PgtShadowProfile::XuanLadderV1
+        && round_buy_fill_count == 0
+        && !visible_taker_completion_ok
+        && seed_price > XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE + 1e-9
+}
+
+fn pgt_xuan_ladder_maker_only_seed_clip_caps(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    visible_taker_completion_ok: bool,
+) -> bool {
+    tuning.profile == PgtShadowProfile::XuanLadderV1
+        && round_buy_fill_count == 0
+        && !visible_taker_completion_ok
+}
+
 fn pgt_xuan_ladder_reopen_seed_quality_blocks(
     tuning: PgtTuning,
     round_buy_fill_count: u64,
@@ -1801,6 +1894,19 @@ fn pgt_xuan_ladder_reopen_seed_quality_blocks(
     let maker_completion_ref = (opposite_ask - tick).max(0.0);
     let maker_pair_cost = seed_price + maker_completion_ref;
     maker_pair_cost > XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP + 1e-9
+}
+
+fn pgt_xuan_ladder_last_chance_taker_close(
+    tuning: PgtTuning,
+    remaining_secs: u64,
+    completion_age_secs: f64,
+    best_ask: f64,
+) -> bool {
+    tuning.profile == PgtShadowProfile::XuanLadderV1
+        && remaining_secs <= XUAN_LADDER_LAST_CHANCE_CLOSE_REMAINING_SECS
+        && completion_age_secs >= XUAN_LADDER_LAST_CHANCE_CLOSE_MIN_AGE_SECS
+        && best_ask > 0.0
+        && best_ask <= XUAN_LADDER_LAST_CHANCE_CLOSE_MAX_ASK + 1e-9
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2501,6 +2607,35 @@ mod profile_tests {
     }
 
     #[test]
+    fn xuan_ladder_maker_only_first_seed_is_capped_or_blocked() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            pgt_xuan_ladder_maker_only_seed_clip_caps(tuning, 0, false),
+            "first seed without an immediate taker completion path must not use the full ladder clip"
+        );
+        assert!(
+            !pgt_xuan_ladder_maker_only_seed_clip_caps(tuning, 0, true),
+            "visible taker completion keeps the normal ladder clip"
+        );
+        assert!(
+            !pgt_xuan_ladder_maker_only_seed_price_blocks(tuning, 0, 0.35, false),
+            "deep first-leg discounts can still be sampled, but with capped clip"
+        );
+        assert!(
+            pgt_xuan_ladder_maker_only_seed_price_blocks(tuning, 0, 0.45, false),
+            "high maker-only first legs caused large residual tails and are now blocked"
+        );
+        assert!(
+            !pgt_xuan_ladder_maker_only_seed_price_blocks(tuning, 1, 0.45, false),
+            "after the first fill, reopen-specific guards own the path"
+        );
+        assert!(
+            !pgt_xuan_ladder_maker_only_seed_price_blocks(PgtTuning::legacy(), 0, 0.45, false),
+            "legacy/replay profiles are unaffected"
+        );
+    }
+
+    #[test]
     fn xuan_ladder_seed_visible_completion_guard_is_first_leg_only() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
@@ -2520,6 +2655,31 @@ mod profile_tests {
                 0.01
             ),
             "legacy/replay profiles are not changed by the xuan-specific guard"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_last_chance_taker_close_removes_tail_residual() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            pgt_xuan_ladder_last_chance_taker_close(tuning, 15, 60.0, 0.99),
+            "last-chance tail mode should cross the spread to eliminate a mature residual"
+        );
+        assert!(
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 16, 60.0, 0.99),
+            "before the last-chance window, normal pair-cost caps still apply"
+        );
+        assert!(
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 15, 44.9, 0.99),
+            "fresh residuals still get the maker queue window"
+        );
+        assert!(
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 15, 60.0, 1.00),
+            "ask must remain strictly buyable below a full-dollar completion"
+        );
+        assert!(
+            !pgt_xuan_ladder_last_chance_taker_close(PgtTuning::legacy(), 15, 60.0, 0.99),
+            "last-chance crossing is scoped to the xuan ladder shadow profile"
         );
     }
 
@@ -2779,19 +2939,32 @@ mod profile_tests {
 mod tests {
     use super::*;
 
-    fn seed_plan(side: Side, price: f64, entry_pressure_extra_ticks: u8) -> SeedPlan {
-        seed_plan_with_slack(side, price, entry_pressure_extra_ticks, 1.0)
-    }
-
     fn seed_plan_with_slack(
         side: Side,
         price: f64,
         entry_pressure_extra_ticks: u8,
         visible_completion_slack_ticks: f64,
     ) -> SeedPlan {
+        seed_plan_with_slack_and_taker(
+            side,
+            price,
+            entry_pressure_extra_ticks,
+            visible_completion_slack_ticks,
+            false,
+        )
+    }
+
+    fn seed_plan_with_slack_and_taker(
+        side: Side,
+        price: f64,
+        entry_pressure_extra_ticks: u8,
+        visible_completion_slack_ticks: f64,
+        visible_taker_completion_ok: bool,
+    ) -> SeedPlan {
         SeedPlan {
             size: 72.0,
             taker_shadow_would_open: false,
+            visible_taker_completion_ok,
             entry_pressure_extra_ticks,
             visible_completion_slack_ticks,
             fill_distance_ticks: 2.0,
@@ -2809,8 +2982,8 @@ mod tests {
     #[test]
     fn select_flat_seed_plans_respects_latched_side_even_with_entry_pressure() {
         let strategy = PairGatedTrancheStrategy;
-        let yes = seed_plan(Side::Yes, 0.47, 1);
-        let no = seed_plan(Side::No, 0.50, 1);
+        let yes = seed_plan_with_slack_and_taker(Side::Yes, 0.47, 1, 1.0, true);
+        let no = seed_plan_with_slack_and_taker(Side::No, 0.50, 1, 1.0, true);
 
         let selection = strategy.select_flat_seed_plans(
             Some(&yes),
@@ -2827,8 +3000,8 @@ mod tests {
     #[test]
     fn select_flat_seed_plans_returns_dual_after_latch_exhaustion() {
         let strategy = PairGatedTrancheStrategy;
-        let yes = seed_plan(Side::Yes, 0.47, 0);
-        let no = seed_plan(Side::No, 0.50, 0);
+        let yes = seed_plan_with_slack_and_taker(Side::Yes, 0.47, 0, 1.0, true);
+        let no = seed_plan_with_slack_and_taker(Side::No, 0.50, 0, 1.0, true);
 
         let selection = strategy.select_flat_seed_plans(
             Some(&yes),
@@ -2863,7 +3036,7 @@ mod tests {
     #[test]
     fn xuan_ladder_selection_allows_expensive_seed_with_dominant_completion_slack() {
         let strategy = PairGatedTrancheStrategy;
-        let expensive_yes = seed_plan_with_slack(Side::Yes, 0.55, 0, 3.0);
+        let expensive_yes = seed_plan_with_slack_and_taker(Side::Yes, 0.55, 0, 3.0, true);
         let cheaper_no = seed_plan_with_slack(Side::No, 0.43, 0, 0.5);
 
         let selection = strategy.select_flat_seed_plans(
@@ -2873,6 +3046,24 @@ mod tests {
             true,
             None,
             false,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::YesOnly);
+    }
+
+    #[test]
+    fn xuan_ladder_selection_blocks_high_dual_seed_without_taker_completion() {
+        let strategy = PairGatedTrancheStrategy;
+        let cheap_yes = seed_plan_with_slack(Side::Yes, 0.27, 0, 4.0);
+        let high_no = seed_plan_with_slack(Side::No, 0.67, 0, 4.0);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&cheap_yes),
+            Some(&high_no),
+            PgtShadowProfile::XuanLadderV1,
+            true,
+            None,
+            true,
         );
 
         assert_eq!(selection, FlatSeedSelection::YesOnly);
