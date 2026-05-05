@@ -81,6 +81,7 @@ const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE: f64 = 0.42;
 const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
+const XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE: f64 = 0.05;
 const XUAN_LADDER_LAST_CHANCE_CLOSE_REMAINING_SECS: u64 = 15;
 const XUAN_LADDER_LAST_CHANCE_CLOSE_MIN_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_LAST_CHANCE_CLOSE_MAX_ASK: f64 = 0.99;
@@ -860,6 +861,21 @@ impl PairGatedTrancheStrategy {
                     }
                     if Self::xuan_expensive_seed_dominated_by_cheap_seed(no, yes) {
                         return FlatSeedSelection::YesOnly;
+                    }
+                    let size_mismatch =
+                        yes.size > no.size * (1.0 + XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE)
+                            || no.size
+                                > yes.size * (1.0 + XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE);
+                    if size_mismatch {
+                        return if yes.intent.price < no.intent.price - 1e-9 {
+                            FlatSeedSelection::YesOnly
+                        } else if no.intent.price < yes.intent.price - 1e-9 {
+                            FlatSeedSelection::NoOnly
+                        } else if yes.size <= no.size {
+                            FlatSeedSelection::YesOnly
+                        } else {
+                            FlatSeedSelection::NoOnly
+                        };
                     }
                 }
                 if dry_run {
@@ -3064,6 +3080,28 @@ mod tests {
             true,
             None,
             true,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::YesOnly);
+    }
+
+    #[test]
+    fn xuan_ladder_selection_avoids_dual_when_seed_sizes_differ() {
+        let strategy = PairGatedTrancheStrategy;
+        let mut cheap_yes = seed_plan_with_slack_and_taker(Side::Yes, 0.41, 0, 4.0, true);
+        cheap_yes.size = 45.0;
+        cheap_yes.intent.size = 45.0;
+        let mut high_no = seed_plan_with_slack_and_taker(Side::No, 0.55, 0, 4.0, true);
+        high_no.size = 120.0;
+        high_no.intent.size = 120.0;
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&cheap_yes),
+            Some(&high_no),
+            PgtShadowProfile::XuanLadderV1,
+            true,
+            None,
+            false,
         );
 
         assert_eq!(selection, FlatSeedSelection::YesOnly);
