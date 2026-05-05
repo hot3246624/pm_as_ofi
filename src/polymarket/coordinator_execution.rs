@@ -614,6 +614,19 @@ impl StrategyCoordinator {
         if current.reason != BidReason::Provide {
             return false;
         }
+        let opposite_slot = OrderSlot::new(
+            match slot.side {
+                Side::Yes => Side::No,
+                Side::No => Side::Yes,
+            },
+            TradeDirection::Buy,
+        );
+        if self
+            .slot_target(opposite_slot)
+            .is_some_and(|target| target.reason == BidReason::Provide)
+        {
+            return false;
+        }
         if self.seconds_to_market_end().unwrap_or(u64::MAX) <= PGT_TAIL_NO_NEW_OPEN_SECS {
             return false;
         }

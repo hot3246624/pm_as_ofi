@@ -1146,6 +1146,61 @@ async fn test_pair_gated_tranche_absent_intent_retain_does_not_clear_safe_seed()
 }
 
 #[tokio::test]
+async fn test_pair_gated_tranche_absent_intent_clears_on_seed_side_flip() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.market_end_ts = Some(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            + 120,
+    );
+    let (o, i, m, _, mut er, mut coord) = make(config);
+    let _ = o.send(OfiSnapshot::default());
+    let _ = i.send(InventoryState::default());
+    coord.no_target = Some(DesiredTarget {
+        side: Side::No,
+        direction: TradeDirection::Buy,
+        price: 0.40,
+        size: 45.0,
+        reason: BidReason::Provide,
+    });
+    coord.yes_target = Some(DesiredTarget {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.42,
+        size: 120.0,
+        reason: BidReason::Provide,
+    });
+
+    let ub = book(0.41, 0.43, 0.39, 0.41);
+    let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
+    coord
+        .apply_provide_side_action(
+            &InventoryState::default(),
+            &ub,
+            Side::No,
+            ProvideSideAction::Clear {
+                reason: CancelReason::Reprice,
+            },
+        )
+        .await;
+
+    match timeout(Duration::from_millis(50), er.recv()).await {
+        Ok(Some(OrderManagerCmd::ClearTarget { slot, reason })) => {
+            assert_eq!(slot, OrderSlot::NO_BUY);
+            assert_eq!(reason, CancelReason::Reprice);
+        }
+        other => panic!("expected side-flip ClearTarget for old PGT seed, got {:?}", other),
+    }
+    assert!(
+        coord.slot_target(OrderSlot::NO_BUY).is_none(),
+        "side flip must not keep an opposite stale seed live"
+    );
+}
+
+#[tokio::test]
 async fn test_reprice_when_existing_provide_no_longer_maker_safe() {
     let (o, i, m, _, mut er, mut coord) = make(cfg());
     let _ = o.send(OfiSnapshot::default());
