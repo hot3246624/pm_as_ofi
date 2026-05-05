@@ -1183,6 +1183,7 @@ impl PairGatedTrancheStrategy {
             .unwrap_or(false);
         let last_chance_forced_taker_close = pgt_xuan_ladder_last_chance_taker_close(
             tuning,
+            active.first_vwap,
             remaining_secs,
             completion_age_secs,
             best_ask,
@@ -1914,15 +1915,18 @@ fn pgt_xuan_ladder_reopen_seed_quality_blocks(
 
 fn pgt_xuan_ladder_last_chance_taker_close(
     tuning: PgtTuning,
+    first_vwap: f64,
     remaining_secs: u64,
     completion_age_secs: f64,
     best_ask: f64,
 ) -> bool {
     tuning.profile == PgtShadowProfile::XuanLadderV1
+        && first_vwap > 0.0
         && remaining_secs <= XUAN_LADDER_LAST_CHANCE_CLOSE_REMAINING_SECS
         && completion_age_secs >= XUAN_LADDER_LAST_CHANCE_CLOSE_MIN_AGE_SECS
         && best_ask > 0.0
         && best_ask <= XUAN_LADDER_LAST_CHANCE_CLOSE_MAX_ASK + 1e-9
+        && first_vwap + best_ask <= XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP + 1e-9
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2678,23 +2682,27 @@ mod profile_tests {
     fn xuan_ladder_last_chance_taker_close_removes_tail_residual() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            pgt_xuan_ladder_last_chance_taker_close(tuning, 15, 60.0, 0.99),
+            pgt_xuan_ladder_last_chance_taker_close(tuning, 0.05, 15, 60.0, 0.99),
             "last-chance tail mode should cross the spread to eliminate a mature residual"
         );
         assert!(
-            !pgt_xuan_ladder_last_chance_taker_close(tuning, 16, 60.0, 0.99),
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 0.05, 16, 60.0, 0.99),
             "before the last-chance window, normal pair-cost caps still apply"
         );
         assert!(
-            !pgt_xuan_ladder_last_chance_taker_close(tuning, 15, 44.9, 0.99),
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 0.05, 15, 44.9, 0.99),
             "fresh residuals still get the maker queue window"
         );
         assert!(
-            !pgt_xuan_ladder_last_chance_taker_close(tuning, 15, 60.0, 1.00),
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 0.05, 15, 60.0, 1.00),
             "ask must remain strictly buyable below a full-dollar completion"
         );
         assert!(
-            !pgt_xuan_ladder_last_chance_taker_close(PgtTuning::legacy(), 15, 60.0, 0.99),
+            !pgt_xuan_ladder_last_chance_taker_close(tuning, 0.42, 15, 60.0, 0.99),
+            "last-chance mode must not close residuals at catastrophic pair cost"
+        );
+        assert!(
+            !pgt_xuan_ladder_last_chance_taker_close(PgtTuning::legacy(), 0.05, 15, 60.0, 0.99),
             "last-chance crossing is scoped to the xuan ladder shadow profile"
         );
     }
