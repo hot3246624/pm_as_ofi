@@ -79,6 +79,8 @@ const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
+const XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE: f64 = 0.34;
+const XUAN_LADDER_FIRST_SEED_MAX_PRICE: f64 = 0.36;
 const XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE: f64 = 0.42;
 const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
 const XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE: f64 = 0.05;
@@ -697,6 +699,34 @@ impl PairGatedTrancheStrategy {
             quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
+        if pgt_xuan_ladder_first_seed_price_blocks(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            price,
+        ) {
+            pgt_maybe_log_seed_admission_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                side,
+                remaining_secs,
+                "blocked_first_seed_price_risk",
+                price,
+                size,
+                best_bid,
+                best_ask,
+                opp_ask,
+                open_pair_band,
+                tick,
+                taker_shadow_would_open,
+                entry_pressure_extra_ticks,
+                visible_completion_slack_ticks,
+                visible_breakeven_completion_slack_ticks,
+                fill_distance_ticks,
+                min_visible_breakeven_slack_ticks,
+            );
+            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
+            return None;
+        }
         if pgt_xuan_ladder_maker_only_seed_price_blocks(
             tuning,
             input.episode_metrics.round_buy_fill_count,
@@ -796,6 +826,13 @@ impl PairGatedTrancheStrategy {
         ) {
             size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
         }
+        if pgt_xuan_ladder_first_seed_risk_clip_caps(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            price,
+        ) {
+            size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
+        }
         if size <= 0.0 {
             return None;
         }
@@ -862,10 +899,9 @@ impl PairGatedTrancheStrategy {
                     if Self::xuan_expensive_seed_dominated_by_cheap_seed(no, yes) {
                         return FlatSeedSelection::YesOnly;
                     }
-                    let size_mismatch =
-                        yes.size > no.size * (1.0 + XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE)
-                            || no.size
-                                > yes.size * (1.0 + XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE);
+                    let size_mismatch = yes.size
+                        > no.size * (1.0 + XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE)
+                        || no.size > yes.size * (1.0 + XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE);
                     if size_mismatch {
                         return if yes.intent.price < no.intent.price - 1e-9 {
                             FlatSeedSelection::YesOnly
@@ -1868,6 +1904,16 @@ fn pgt_xuan_ladder_maker_only_seed_price_blocks(
         && seed_price > XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE + 1e-9
 }
 
+fn pgt_xuan_ladder_first_seed_price_blocks(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    seed_price: f64,
+) -> bool {
+    tuning.profile == PgtShadowProfile::XuanLadderV1
+        && round_buy_fill_count == 0
+        && seed_price > XUAN_LADDER_FIRST_SEED_MAX_PRICE + 1e-9
+}
+
 fn pgt_xuan_ladder_maker_only_seed_clip_caps(
     tuning: PgtTuning,
     round_buy_fill_count: u64,
@@ -1876,6 +1922,16 @@ fn pgt_xuan_ladder_maker_only_seed_clip_caps(
     tuning.profile == PgtShadowProfile::XuanLadderV1
         && round_buy_fill_count == 0
         && !visible_taker_completion_ok
+}
+
+fn pgt_xuan_ladder_first_seed_risk_clip_caps(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    seed_price: f64,
+) -> bool {
+    tuning.profile == PgtShadowProfile::XuanLadderV1
+        && round_buy_fill_count == 0
+        && seed_price > XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE + 1e-9
 }
 
 fn pgt_xuan_ladder_reopen_seed_quality_blocks(
@@ -2601,8 +2657,8 @@ mod profile_tests {
     fn xuan_ladder_first_seed_accepts_cheap_visible_maker_completion() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.45, 0.55, 0.01),
-            "low-price first leg remains allowed when opposite maker completion is already visible at 0.99"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.34, 0.65, 0.01),
+            "deep-discount first leg remains allowed when opposite maker completion is already visible at 0.98"
         );
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
@@ -2651,6 +2707,35 @@ mod profile_tests {
         );
         assert!(
             !pgt_xuan_ladder_maker_only_seed_price_blocks(PgtTuning::legacy(), 0, 0.45, false),
+            "legacy/replay profiles are unaffected"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_first_seed_price_risk_is_capped_or_blocked() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            !pgt_xuan_ladder_first_seed_price_blocks(tuning, 0, 0.36),
+            "post-fix shadow sample stayed worst-case positive through 0.36 first-leg price"
+        );
+        assert!(
+            pgt_xuan_ladder_first_seed_price_blocks(tuning, 0, 0.37),
+            "first-leg prices above 0.36 created persistent residual tail losses"
+        );
+        assert!(
+            !pgt_xuan_ladder_first_seed_price_blocks(tuning, 1, 0.44),
+            "after first fill, completion/reopen-specific guards own the path"
+        );
+        assert!(
+            pgt_xuan_ladder_first_seed_risk_clip_caps(tuning, 0, 0.35),
+            "marginal first-leg prices are allowed only at the minimum clip"
+        );
+        assert!(
+            !pgt_xuan_ladder_first_seed_risk_clip_caps(tuning, 0, 0.34),
+            "deep first-leg discounts can keep the ladder clip"
+        );
+        assert!(
+            !pgt_xuan_ladder_first_seed_price_blocks(PgtTuning::legacy(), 0, 0.44),
             "legacy/replay profiles are unaffected"
         );
     }
