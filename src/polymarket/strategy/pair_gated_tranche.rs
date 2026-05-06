@@ -62,7 +62,7 @@ const XUAN_LADDER_TIMEOUT_MID_FIRST_MAX_PRICE: f64 = 0.35;
 const XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE: f64 = 0.36;
 const XUAN_LADDER_TIMEOUT_CHEAP_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_TIMEOUT_MID_PAIR_CAP: f64 = 1.005;
-const XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP: f64 = 0.995;
+const XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_TAKER_INSURANCE_MIN_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
@@ -2655,10 +2655,10 @@ mod profile_tests {
         );
         assert!(
             (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.36, 240, 4.0).unwrap()
-                - 0.635)
+                - 0.64)
                 .abs()
                 < 1e-9,
-            "marginal 0.36 first legs only cross when completion keeps pair_cost <= 0.995"
+            "marginal 0.36 first legs may cross at breakeven to avoid tail residual"
         );
         assert_eq!(
             pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.37, 240, 4.0),
