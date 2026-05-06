@@ -21,7 +21,7 @@ main: 3c5aef26 docs: add local agg thread handoff runbook
 remote: origin/main
 ```
 
-远端分支已清理，目前 GitHub 只保留 `origin/main`。
+远端已合并旧分支已清理；本次交接新建 3 个活跃工作分支：`origin/codex/localagg-work`、`origin/codex/xuan-research`、`origin/codex/xuan-frontier`。
 
 本机已有 worktree：
 
@@ -51,6 +51,7 @@ fatal: 'main' is already used by worktree at '...'
 cd /Users/hot/web3Scientist/pm_as_ofi_main_merge
 git fetch origin --prune
 git worktree add ../pm_as_ofi-localagg -b codex/localagg-work origin/main
+git -C ../pm_as_ofi-localagg push -u origin codex/localagg-work
 ```
 
 Codex 打开：
@@ -67,6 +68,7 @@ Codex 打开：
 cd /Users/hot/web3Scientist/pm_as_ofi_main_merge
 git fetch origin --prune
 git worktree add ../pm_as_ofi-xuan-research -b codex/xuan-research origin/main
+git -C ../pm_as_ofi-xuan-research push -u origin codex/xuan-research
 ```
 
 Codex 打开：
@@ -89,6 +91,7 @@ Codex 打开：
 cd /Users/hot/web3Scientist/pm_as_ofi_main_merge
 git fetch origin --prune
 git worktree add ../pm_as_ofi-xuan-frontier -b codex/xuan-frontier origin/main
+git -C ../pm_as_ofi-xuan-frontier push -u origin codex/xuan-frontier
 ```
 
 Codex 打开：
