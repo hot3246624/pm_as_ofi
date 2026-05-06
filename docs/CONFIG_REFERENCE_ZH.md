@@ -92,6 +92,27 @@
 - 实盘前操作清单见：
   - [ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md)
 
+补充：`completion_first`（completion probability 试验策略）
+- 建议单独设置：
+  - `PM_STRATEGY=completion_first`
+  - `PM_BID_SIZE=2.0` 起步
+  - `PM_MAX_NET_DIFF=5.0`
+  - `PM_PAIR_TARGET=0.98`
+  - `PM_COMPLETION_SCORE_THRESHOLD=0.58`
+  - `PM_COMPLETION_TTL_SECS=30`
+  - `PM_COMPLETION_REENTRY_COOLDOWN_SECS=10`
+  - `PM_COMPLETION_TRADE_RECENCY_SECS=8`
+  - `PM_COMPLETION_SEED_SIZE_MULT=0.50`
+  - `PM_COMPLETION_REPAIR_SIZE_MULT=1.00`
+- 运行语义：
+  - flat 时只有在 completion score 过阈值后才双边 seed；
+  - 首腿成交后切到 `opposite-only repair`，不再继续同侧摊低成本；
+  - residual 超过 TTL 后升级为价格受限的 opposite-side `FAK` repair；
+  - `FAK` 上限价仍受动态 pair band 约束，不做无上限追单；
+  - 配对完成或 merge 后进入短 cooldown，避免瞬时连续 re-entry。
+- 详细设计与自检见：
+  - [STRATEGY_COMPLETION_FIRST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/STRATEGY_COMPLETION_FIRST_ZH.md)
+
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 
 | 参数 | 模板值 | 说明 |
