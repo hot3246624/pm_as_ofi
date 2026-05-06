@@ -63,6 +63,7 @@ const XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE: f64 = 0.36;
 const XUAN_LADDER_TIMEOUT_CHEAP_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_TIMEOUT_MID_PAIR_CAP: f64 = 1.005;
 const XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_RISKY_FIRST_SEED_TAKER_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_TAKER_INSURANCE_MIN_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
@@ -1937,6 +1938,11 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
         return true;
     }
     let taker_pair_cost = seed_price + opposite_ask;
+    if seed_price > XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE + 1e-9
+        && taker_pair_cost > XUAN_LADDER_RISKY_FIRST_SEED_TAKER_PAIR_CAP + 1e-9
+    {
+        return true;
+    }
     if taker_pair_cost <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9 {
         return false;
     }
@@ -2759,6 +2765,14 @@ mod profile_tests {
         assert!(
             !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.34, 0.65, 0.01),
             "deep-discount first leg remains allowed when opposite maker completion is already visible at 0.98"
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.36, 0.63, 0.01),
+            "risk-clipped 0.36 first leg remains allowed when visible taker completion has edge"
+        );
+        assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.36, 0.64, 0.01),
+            "risk-clipped 0.36 first leg needs more than a fragile breakeven taker path"
         );
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
