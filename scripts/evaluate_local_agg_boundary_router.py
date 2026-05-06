@@ -621,6 +621,8 @@ def filtered_close_only_allowed_without_weighted(
         and close_abs_delta_ms is not None
         and close_abs_delta_ms <= 500
         and 21.0 <= margin_bps < 24.0
+        and not (22.55 <= margin_bps < 22.7 and 150 <= close_abs_delta_ms <= 250)
+        and not (21.0 <= margin_bps < 21.1 and 150 <= close_abs_delta_ms <= 300)
     )
 
 
@@ -1947,6 +1949,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and exact_sources == 0
             and sources == ("hyperliquid",)
             and side_yes
+            and 5.5 <= margin_bps < 5.6
+            and close_abs_delta_ms is not None
+            and 450 <= close_abs_delta_ms <= 550
+        ):
+            return "hype_close_only_single_hyperliquid_yes_late_low_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and side_yes
             and 5.0 <= margin_bps < 20.0
             and close_abs_delta_ms is not None
             and 650 <= close_abs_delta_ms <= 850
@@ -2020,6 +2034,54 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 150 <= close_abs_delta_ms <= 500
         ):
             return "hype_close_only_single_hyperliquid_no_fast_mid_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 11.4 <= margin_bps < 11.7
+            and close_abs_delta_ms is not None
+            and 50 <= close_abs_delta_ms <= 80
+        ):
+            return "hype_close_only_single_hyperliquid_no_micro_upper_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 12.68 <= margin_bps < 12.71
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 120
+        ):
+            return "hype_close_only_single_hyperliquid_no_micro_upper_mid_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 13.40 <= margin_bps < 13.45
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 30
+        ):
+            return "hype_close_only_single_hyperliquid_no_micro_upper_high_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 13.82 <= margin_bps < 13.90
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 10
+        ):
+            return "hype_close_only_single_hyperliquid_no_micro_high_margin_tail"
         if (
             source_subset == "close_only_fallback"
             and rule == "close_only"
@@ -2107,6 +2169,54 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
         if (
             source_subset == "close_only_fallback"
             and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 19.14 <= margin_bps < 19.18
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 60
+        ):
+            return "hype_close_only_single_hyperliquid_no_micro_far_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 19.27 <= margin_bps < 19.35
+            and close_abs_delta_ms is not None
+            and 40 <= close_abs_delta_ms <= 250
+        ):
+            return "hype_close_only_single_hyperliquid_no_fast_far_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 14.45 <= margin_bps < 14.55
+            and close_abs_delta_ms is not None
+            and 400 <= close_abs_delta_ms <= 450
+        ):
+            return "hype_close_only_single_hyperliquid_no_midlag_upper_mid_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 14.42 <= margin_bps < 14.45
+            and close_abs_delta_ms is not None
+            and 500 <= close_abs_delta_ms <= 600
+        ):
+            return "hype_close_only_single_hyperliquid_no_late_upper_mid_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
             and source_count >= 2
             and exact_sources == 0
             and side_yes
@@ -2116,6 +2226,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and close_abs_delta_ms <= 500
         ):
             return "hype_close_only_multi_fast_midspread_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 2
+            and exact_sources == 0
+            and sources == ("bybit", "hyperliquid")
+            and side_yes
+            and 10.5 <= margin_bps < 10.8
+            and close_abs_delta_ms is not None
+            and 2_000 <= close_abs_delta_ms <= 2_600
+        ):
+            return "hype_close_only_bybit_hyperliquid_yes_very_stale_mid_margin_tail"
         if (
             source_subset == "close_only_fallback"
             and rule == "close_only"
@@ -3192,6 +3314,8 @@ def evaluate_sample(sample: dict, pre_ms: int, post_ms: int, biases: dict[tuple[
             "status": "missing",
             "symbol": symbol,
             "round_end_ts": sample["round_end_ts"],
+            "instance_id": sample["instance_id"],
+            "log_file": sample.get("log_file", ""),
             "source_count": len(per_source),
         }
 

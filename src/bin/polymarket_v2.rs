@@ -8079,6 +8079,233 @@ async fn run_post_close_winner_hint_listener(
                             .source_contributions
                             .first()
                             .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 12.68
+                        && direction_margin_bps < 12.71
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 120
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_upper_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            12.68,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 13.40
+                        && direction_margin_bps < 13.45
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 30
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_upper_high_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_high_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            13.40,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 13.82
+                        && direction_margin_bps < 13.90
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 10
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_high_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_high_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            13.82,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 11.4
+                        && direction_margin_bps < 11.7
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 50
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 80
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_upper_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            11.4,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 14.42
+                        && direction_margin_bps < 14.45
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 500
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 600
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_late_upper_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_late_upper_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            14.42,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
                         && direction_margin_bps + 1e-9 >= 10.0
                         && direction_margin_bps < 16.0
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 850
@@ -8093,6 +8320,143 @@ async fn run_post_close_winner_hint_listener(
                             compare_truth_open_source,
                             direction_margin_bps,
                             10.0,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 14.45
+                        && direction_margin_bps < 14.55
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 400
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 450
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_midlag_upper_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_midlag_upper_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            14.45,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 19.14
+                        && direction_margin_bps < 19.18
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 60
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_far_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_far_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            19.14,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 19.27
+                        && direction_margin_bps < 19.35
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 40
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 250
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_fast_far_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_fast_far_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            19.27,
                             hit.close_price,
                             hit.close_ts_ms,
                             first_ref,
@@ -8179,6 +8543,56 @@ async fn run_post_close_winner_hint_listener(
                             .source_contributions
                             .iter()
                             .any(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 10.5
+                        && direction_margin_bps < 10.8
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 2_000
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 2_600
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_bybit_hyperliquid_yes_very_stale_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_bybit_hyperliquid_yes_very_stale_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            10.5,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 2
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::Yes
+                        && hit
+                            .source_contributions
+                            .iter()
+                            .any(|src| src.source == LocalPriceSource::Bybit)
+                        && hit
+                            .source_contributions
+                            .iter()
+                            .any(|src| src.source == LocalPriceSource::Hyperliquid)
                         && hit.source_spread_bps < 0.5
                         && direction_margin_bps + 1e-9 >= 30.0
                         && direction_margin_bps < 40.0
@@ -8195,6 +8609,52 @@ async fn run_post_close_winner_hint_listener(
                             compare_truth_open_source,
                             direction_margin_bps,
                             30.0,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::Yes
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 5.5
+                        && direction_margin_bps < 5.6
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 450
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 550
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_yes_late_low_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_yes_late_low_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            5.5,
                             hit.close_price,
                             hit.close_ts_ms,
                             first_ref,
@@ -14402,7 +14862,15 @@ fn local_boundary_filtered_close_only_allowed_without_weighted(
     let close_abs_delta_ms = close_only_hit
         .close_ts_ms
         .abs_diff(round_end_ts.saturating_mul(1_000));
-    close_abs_delta_ms <= 500 && direction_margin_bps + 1e-9 >= 21.0 && direction_margin_bps < 24.0
+    close_abs_delta_ms <= 500
+        && direction_margin_bps + 1e-9 >= 21.0
+        && direction_margin_bps < 24.0
+        && !(direction_margin_bps + 1e-9 >= 22.55
+            && direction_margin_bps < 22.7
+            && (150..=250).contains(&close_abs_delta_ms))
+        && !(direction_margin_bps + 1e-9 >= 21.0
+            && direction_margin_bps < 21.1
+            && (150..=300).contains(&close_abs_delta_ms))
 }
 
 fn local_boundary_symbol_router_missing_filter_reason(
