@@ -1,6 +1,6 @@
 # 多线程 Worktree 与策略交接 - 2026-05-06
 
-更新时间：2026-05-06 13:18 CST
+更新时间：2026-05-06 14:28 CST
 
 ## 0. 目标
 
@@ -17,7 +17,7 @@
 主线：
 
 ```text
-main: 86727931 docs: record active local agg and xuan worktrees
+main: 以 /Users/hot/web3Scientist/pm_as_ofi_main_merge 当前 HEAD 为准
 remote: origin/main
 ```
 
@@ -195,7 +195,7 @@ logs/local-agg-boundary-challenger-lab/runs/20260506_004039/local_agg_lab_202605
 logs/local-agg-boundary-challenger-lab/monitor_reports/local_agg_uncertainty_gate_model.latest.json
 ```
 
-12:43 直接验收输出：
+12:43 手动验收输出：
 
 ```text
 /tmp/local_agg_boundary_dataset_handoff_20260506_124343.csv
@@ -203,7 +203,7 @@ logs/local-agg-boundary-challenger-lab/monitor_reports/local_agg_uncertainty_gat
 /tmp/local_agg_gate_handoff_20260506_124343.json
 ```
 
-结果：
+手动验收结果：
 
 ```text
 eval rows              956
@@ -221,6 +221,32 @@ worker late starts     0
 ```
 
 结论：dry-run gated path 当前 clean，但不是生产启用许可。
+
+14:24 自动化最新报告：
+
+```text
+generated_at           2026-05-06T14:24:11+08:00
+current_run_id         20260506_004039
+current eval rows      1074
+accepted               675
+accepted side errors   0
+accepted mean          0.848036 bps
+accepted max           4.49144 bps
+local p50              28 ms
+local p95              122 ms
+local max              304 ms
+action                 clean_keep_monitoring
+```
+
+但 all-runs test 仍未达标：
+
+```text
+all-runs ok            10098
+all-runs side          28
+all-runs max           12.922542 bps
+```
+
+这说明当前 run 已 clean，但全历史/滚动样本还不能视为生产收敛。
 
 注意：raw router 未 gate 前仍有 side errors，这是预期；验收看 accepted-after-gate。
 
@@ -247,6 +273,14 @@ cat /tmp/local_agg_gate_handoff_20260506_124343.json
 - accepted max 是否仍 < 5 bps。
 - local p95 是否仍 < 300ms。
 - local max 304ms 尾部是否需要专门压到 <=300ms。
+- all-runs test 的 `side` 和 `max_bps` 是否继续下降，而不是只看 current run。
+
+当前 tactical priority：
+
+1. 不要再围着 current run 打转，它已经连续 clean。
+2. 主线转为 all-runs / unseen 历史失败簇收敛。
+3. 优先聚类 `accepted && side_error=True` 的历史失败样本，按 symbol/source_subset/rule/sources/gate_key_level 分桶。
+4. 只允许做窄过滤、门槛同步和 evaluator/runtime 一致性修正；不要贸然改聚合家族。
 
 硬门槛：
 
