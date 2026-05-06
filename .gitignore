@@ -3,8 +3,20 @@ Cargo.lock
 .env
 .archive/
 
+# Runtime data and shared-ingress sockets/manifests.
+data/
+run/
+.disabled_launchagents/
+
+# Python/runtime caches.
+__pycache__/
+*.py[cod]
+
 # Log files (may contain sensitive credentials)
 logs/
 
 # Runtime pid files from start_markets.sh
 pids/
+
+# Accidental top-level market dumps.
+/btc-updown-5m

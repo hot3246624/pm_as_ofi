@@ -80,6 +80,26 @@ PM_SHARED_INGRESS_ROOT=/Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-mai
 
 ## 4. 启动顺序
 
+### AWS / 服务器推荐
+
+服务器上不要依赖某个研究实例“顺手拉起 broker”。推荐把 broker 做成 systemd 常驻服务，其他策略全部以 `client` 方式接入：
+
+```bash
+sudo cp deploy/systemd/shared-ingress.env.example /etc/pm_as_ofi/shared-ingress.env
+sudo cp deploy/systemd/pm-shared-ingress-broker.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now pm-shared-ingress-broker.service
+```
+
+策略 / shadow / challenger 使用：
+
+```bash
+PM_SHARED_INGRESS_ROLE=client
+PM_SHARED_INGRESS_ROOT=/srv/pm_as_ofi/shared-ingress-main
+```
+
+完整迁移步骤见 `docs/runbooks/AWS_RUNTIME_MIGRATION_RUNBOOK_ZH.md`。
+
 ### 方案 A：推荐，所有实例都用 `auto`
 
 这是现在的首选。

@@ -181,10 +181,7 @@ impl QuoteStrategy for PairArbStrategy {
             if effective_pair_cost_margin > 1e-9 && raw_yes < raw_yes_before - 1e-9 {
                 debug!(
                     "🧱 pair_cost_safety_margin_applied=true side=YES active=true margin={:.3} raw_before={:.4} raw_after={:.4} vwap_ceiling={:.4}",
-                    effective_pair_cost_margin,
-                    raw_yes_before,
-                    raw_yes,
-                    yes_ceiling,
+                    effective_pair_cost_margin, raw_yes_before, raw_yes, yes_ceiling,
                 );
             }
             if yes_ceiling <= cfg.tick_size + 1e-9 {
@@ -209,10 +206,7 @@ impl QuoteStrategy for PairArbStrategy {
             if effective_pair_cost_margin > 1e-9 && raw_no < raw_no_before - 1e-9 {
                 debug!(
                     "🧱 pair_cost_safety_margin_applied=true side=NO active=true margin={:.3} raw_before={:.4} raw_after={:.4} vwap_ceiling={:.4}",
-                    effective_pair_cost_margin,
-                    raw_no_before,
-                    raw_no,
-                    no_ceiling,
+                    effective_pair_cost_margin, raw_no_before, raw_no, no_ceiling,
                 );
             }
             if no_ceiling <= cfg.tick_size + 1e-9 {

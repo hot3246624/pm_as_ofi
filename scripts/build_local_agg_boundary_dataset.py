@@ -64,6 +64,15 @@ def to_float(raw: Optional[str]) -> Optional[float]:
     return v if math.isfinite(v) else None
 
 
+def to_int(raw: Optional[str]) -> Optional[int]:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except Exception:
+        return None
+
+
 @dataclass
 class TruthRow:
     instance_id: str
@@ -79,6 +88,9 @@ class TruthRow:
     local_open: Optional[float]
     local_close: Optional[float]
     side_match: Optional[bool]
+    local_started_ms: Optional[int]
+    local_ready_ms: Optional[int]
+    local_deadline_ms: Optional[int]
 
 
 def parse_truth_rows(instance_id: str, log_path: Path, mode: str) -> List[TruthRow]:
@@ -126,8 +138,51 @@ def parse_truth_rows(instance_id: str, log_path: Path, mode: str) -> List[TruthR
                     local_open=to_float(kv.get("local_open")),
                     local_close=to_float(kv.get("local_close")),
                     side_match=side_match,
+                    local_started_ms=to_int(kv.get("local_started_ms")),
+                    local_ready_ms=to_int(kv.get("local_ready_ms")),
+                    local_deadline_ms=to_int(kv.get("local_deadline_ms")),
                 )
             )
+    return out
+
+
+def parse_router_v1_timing(log_path: Path) -> Dict[Tuple[str, int], dict]:
+    tags = (
+        "local_price_agg_boundary_shadow_vs_rtds |",
+        "local_price_agg_boundary_shadow_filtered |",
+        "local_price_agg_boundary_shadow_unresolved |",
+    )
+    out: Dict[Tuple[str, int], dict] = {}
+    with log_path.open("r", encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            if not any(tag in line for tag in tags) or "policy=boundary_symbol_router_v1" not in line:
+                continue
+            kv = parse_key_values(line)
+            slug = kv.get("slug", "")
+            symbol = kv.get("symbol", "").lower()
+            if not slug or not symbol:
+                continue
+            round_end_ts = parse_slug_round_end(slug)
+            if round_end_ts is None:
+                continue
+            ready_ms = to_int(kv.get("local_ready_ms"))
+            current = out.get((symbol, round_end_ts))
+            # Prefer the earliest router-v1 decision timestamp: it is the data cut
+            # actually available to the runtime decision, unlike full-shadow rows
+            # that may wait until a later unresolved deadline.
+            if current is None or (
+                ready_ms is not None
+                and (
+                    current.get("local_ready_ms") is None
+                    or ready_ms < current["local_ready_ms"]
+                )
+            ):
+                out[(symbol, round_end_ts)] = {
+                    "local_started_ms": to_int(kv.get("local_started_ms")),
+                    "local_ready_ms": ready_ms,
+                    "local_deadline_ms": to_int(kv.get("local_deadline_ms")),
+                    "local_timing_source": "boundary_symbol_router_v1",
+                }
     return out
 
 
@@ -138,6 +193,13 @@ def discover_instance_logs(logs_root: Path, instance_glob: str) -> List[Tuple[st
             continue
         for log_path in sorted(inst_dir.glob("local_agg_lab_*.log")):
             out.append((inst_dir.name, log_path))
+        runs_dir = inst_dir / "runs"
+        if runs_dir.is_dir():
+            for run_dir in sorted(runs_dir.iterdir()):
+                if not run_dir.is_dir():
+                    continue
+                for log_path in sorted(run_dir.glob("local_agg_lab_*.log")):
+                    out.append((f"{inst_dir.name}/{run_dir.name}", log_path))
     return out
 
 
@@ -172,23 +234,49 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Build long-form boundary tape dataset for local price aggregator rule search.")
     ap.add_argument("--logs-root", default="/Users/hot/web3Scientist/pm_as_ofi/logs")
     ap.add_argument("--instance-glob", default="local-agg*lab*")
-    ap.add_argument("--mode", default="full", choices=["full", "close_only"])
+    ap.add_argument("--mode", default="close_only", choices=["full", "close_only"])
     ap.add_argument("--out-csv", default="/Users/hot/web3Scientist/pm_as_ofi/logs/local_agg_boundary_dataset.csv")
+    ap.add_argument(
+        "--cap-local-ready-lag-ms",
+        type=int,
+        default=0,
+        help=(
+            "Offline simulation only: cap local_ready_ms/local_deadline_ms at "
+            "round_end + this many ms so downstream ready-aware evaluation tests "
+            "a hard production decision window, e.g. 300."
+        ),
+    )
     args = ap.parse_args()
 
     logs_root = Path(args.logs_root)
     discovered = discover_instance_logs(logs_root, args.instance_glob)
     rows = []
     for instance_id, log_path in discovered:
+        if not log_path.exists():
+            # Old runs can be compacted while the long all-runs replay is starting.
+            # Skip stale discovery entries instead of aborting the whole monitor.
+            continue
         truth_rows = parse_truth_rows(instance_id, log_path, args.mode)
         if not truth_rows:
             continue
         boundary_map = parse_boundary_probe(log_path.parent / "local_price_agg_boundary_tape.jsonl", args.mode)
+        router_timing = parse_router_v1_timing(log_path)
         for row in truth_rows:
             tape = boundary_map.get((row.symbol, row.round_end_ts))
             if tape is None:
                 continue
             _, obj = tape
+            timing = router_timing.get((row.symbol, row.round_end_ts), {})
+            local_started_ms = timing.get("local_started_ms", row.local_started_ms)
+            local_ready_ms = timing.get("local_ready_ms", row.local_ready_ms)
+            local_deadline_ms = timing.get("local_deadline_ms", row.local_deadline_ms)
+            local_timing_source = timing.get("local_timing_source", "truth_row")
+            if args.cap_local_ready_lag_ms > 0:
+                cap_ready_ms = row.round_end_ts * 1000 + args.cap_local_ready_lag_ms
+                if local_ready_ms is None or local_ready_ms > cap_ready_ms:
+                    local_ready_ms = cap_ready_ms
+                    local_timing_source = f"{local_timing_source}+cap_{args.cap_local_ready_lag_ms}ms"
+                local_deadline_ms = cap_ready_ms
             for source_tape in obj.get("source_tapes") or []:
                 source = str(source_tape.get("source", "")).lower()
                 if source not in SOURCES:
@@ -222,6 +310,10 @@ def main() -> int:
                                 "local_open": row.local_open,
                                 "local_close": row.local_close,
                                 "side_match": row.side_match,
+                                "local_started_ms": local_started_ms,
+                                "local_ready_ms": local_ready_ms,
+                                "local_deadline_ms": local_deadline_ms,
+                                "local_timing_source": local_timing_source,
                                 "source": source,
                                 "phase": phase,
                                 "ts_ms": ts_ms,
@@ -251,6 +343,10 @@ def main() -> int:
                 "local_open",
                 "local_close",
                 "side_match",
+                "local_started_ms",
+                "local_ready_ms",
+                "local_deadline_ms",
+                "local_timing_source",
                 "source",
                 "phase",
                 "ts_ms",

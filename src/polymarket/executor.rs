@@ -16,7 +16,7 @@ use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use super::messages::*;
@@ -113,7 +113,7 @@ pub struct Executor {
     /// as User WS fills so inventory/ledger code paths stay identical.
     sim_fill_tx: Option<mpsc::Sender<FillEvent>>,
     /// Dry-run only: shared market-data feed for market-touch fill simulation.
-    dry_run_md_rx: Option<watch::Receiver<MarketDataMsg>>,
+    dry_run_md_rx: Option<broadcast::Receiver<MarketDataMsg>>,
     /// Side channel for capital-recycle trigger events.
     capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
     /// Side channel for Coordinator execution feedback (e.g. crossed-book reject adaptation).
@@ -265,7 +265,7 @@ impl Executor {
         result_tx: mpsc::Sender<OrderResult>,
         fill_rx: mpsc::Receiver<FillEvent>,
         sim_fill_tx: Option<mpsc::Sender<FillEvent>>,
-        dry_run_md_rx: Option<watch::Receiver<MarketDataMsg>>,
+        dry_run_md_rx: Option<broadcast::Receiver<MarketDataMsg>>,
         dry_run_market_touch_fills: bool,
         capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
         feedback_tx: Option<mpsc::Sender<ExecutionFeedback>>,
@@ -783,17 +783,27 @@ impl Executor {
                 _ = dry_run_touch_tick.tick(), if self.dry_run_market_touch_fills => {
                     self.flush_dry_run_pending_touch_fills().await;
                 }
-                changed = async {
+                msg = async {
                     if let Some(rx) = self.dry_run_md_rx.as_mut() {
-                        rx.changed().await.ok()
+                        loop {
+                            match rx.recv().await {
+                                Ok(msg) => break Some(msg),
+                                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                    warn!(
+                                        "🧪 DRY-RUN market-touch event receiver lagged; skipped={} events",
+                                        skipped
+                                    );
+                                    continue;
+                                }
+                                Err(broadcast::error::RecvError::Closed) => break None,
+                            }
+                        }
                     } else {
-                        std::future::pending::<Option<()>>().await
+                        std::future::pending::<Option<MarketDataMsg>>().await
                     }
                 }, if self.dry_run_market_touch_fills => {
-                    if changed.is_some() {
-                        if let Some(msg) = self.dry_run_md_rx.as_ref().map(|rx| rx.borrow().clone()) {
-                            self.handle_dry_run_market_data(msg).await;
-                        }
+                    if let Some(msg) = msg {
+                        self.handle_dry_run_market_data(msg).await;
                     }
                 }
                 _ = reconcile_tick.tick(), if reconcile_enabled => {
@@ -2933,7 +2943,7 @@ pub async fn init_clob_client(
 mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-    use tokio::sync::{mpsc, watch};
+    use tokio::sync::{broadcast, mpsc};
 
     use super::{ExecutionCmd, Executor, ExecutorConfig, OrderResult, ReconcileFetchMode};
     use crate::polymarket::messages::{
@@ -3177,13 +3187,7 @@ mod tests {
         let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
         let (_fill_tx, fill_rx) = mpsc::channel(4);
         let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
-        let (md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
-            yes_bid: 0.45,
-            yes_ask: 0.55,
-            no_bid: 0.45,
-            no_ask: 0.55,
-            ts: Instant::now(),
-        });
+        let (md_tx, md_rx) = broadcast::channel(4);
         let mut exec = Executor::new(
             ExecutorConfig {
                 rest_url: "https://example.invalid".to_string(),
@@ -3259,13 +3263,7 @@ mod tests {
         let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
         let (_fill_tx, fill_rx) = mpsc::channel(4);
         let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
-        let (md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
-            yes_bid: 0.45,
-            yes_ask: 0.55,
-            no_bid: 0.45,
-            no_ask: 0.55,
-            ts: Instant::now(),
-        });
+        let (md_tx, md_rx) = broadcast::channel(4);
         let market_end_ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -3341,13 +3339,7 @@ mod tests {
         let (result_tx, mut result_rx) = mpsc::channel(8);
         let (_fill_tx, fill_rx) = mpsc::channel(8);
         let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel(8);
-        let (md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
-            yes_bid: 0.48,
-            yes_ask: 0.55,
-            no_bid: 0.44,
-            no_ask: 0.56,
-            ts: Instant::now(),
-        });
+        let (md_tx, md_rx) = broadcast::channel(4);
 
         let mut exec = Executor::new(
             ExecutorConfig {
@@ -3423,13 +3415,7 @@ mod tests {
         let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
         let (_fill_tx, fill_rx) = mpsc::channel(4);
         let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
-        let (md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
-            yes_bid: 0.45,
-            yes_ask: 0.55,
-            no_bid: 0.45,
-            no_ask: 0.55,
-            ts: Instant::now(),
-        });
+        let (md_tx, md_rx) = broadcast::channel(4);
         let mut exec = Executor::new(
             ExecutorConfig {
                 rest_url: "https://example.invalid".to_string(),
@@ -3518,13 +3504,7 @@ mod tests {
         let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
         let (_fill_tx, fill_rx) = mpsc::channel(4);
         let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
-        let (_md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
-            yes_bid: 0.49,
-            yes_ask: 0.55,
-            no_bid: 0.45,
-            no_ask: 0.55,
-            ts: Instant::now(),
-        });
+        let (_md_tx, md_rx) = broadcast::channel(4);
         let mut exec = Executor::new(
             ExecutorConfig {
                 rest_url: "https://example.invalid".to_string(),
@@ -3601,13 +3581,7 @@ mod tests {
         let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
         let (_fill_tx, fill_rx) = mpsc::channel(4);
         let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
-        let (_md_tx, md_rx) = watch::channel(MarketDataMsg::BookTick {
-            yes_bid: 0.49,
-            yes_ask: 0.55,
-            no_bid: 0.45,
-            no_ask: 0.55,
-            ts: Instant::now(),
-        });
+        let (_md_tx, md_rx) = broadcast::channel(4);
         let mut exec = Executor::new(
             ExecutorConfig {
                 rest_url: "https://example.invalid".to_string(),

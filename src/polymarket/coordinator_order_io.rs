@@ -795,11 +795,7 @@ impl StrategyCoordinator {
                 if slot_reason != Some(reason) {
                     debug!(
                         "🔁 PGT mode-transition reprice {:?}: live_reason={:?} new_reason={:?} strategic_target={:.4} live={:.4}",
-                        slot,
-                        slot_reason,
-                        reason,
-                        price,
-                        slot_price,
+                        slot, slot_reason, reason, price, slot_price,
                     );
                 } else {
                     let tick = self.cfg.tick_size.max(1e-9);
@@ -813,15 +809,15 @@ impl StrategyCoordinator {
                         self.stats.pgt_dispatch_retain =
                             self.stats.pgt_dispatch_retain.saturating_add(1);
                         debug!(
-                        "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                        slot, retain_reason, price, slot_price, delta_ticks,
-                    );
+                            "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                            slot, retain_reason, price, slot_price, delta_ticks,
+                        );
                         return;
                     }
                     debug!(
-                    "🔁 PGT reprice {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                    slot, retain_reason, price, slot_price, delta_ticks,
-                );
+                        "🔁 PGT reprice {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                        slot, retain_reason, price, slot_price, delta_ticks,
+                    );
                 }
             }
             if !needs_reprice && pgt_buy_retain_candidate {
@@ -856,18 +852,18 @@ impl StrategyCoordinator {
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     debug!(
                         "🔒 PairArb retain {:?}: candidate_role={:?} retain_block_reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                        slot,
-                        pair_arb_risk_effect,
-                        retain_reason,
-                        price,
-                        slot_price,
-                        delta_ticks,
+                        slot, pair_arb_risk_effect, retain_reason, price, slot_price, delta_ticks,
                     );
                     return;
                 }
                 debug!(
                     "🔁 PairArb freshness reprice {:?}: candidate_role={:?} reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                    slot, pair_arb_risk_effect, pair_arb_freshness_reason, price, slot_price, delta_ticks,
+                    slot,
+                    pair_arb_risk_effect,
+                    pair_arb_freshness_reason,
+                    price,
+                    slot_price,
+                    delta_ticks,
                 );
             }
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
@@ -1492,12 +1488,7 @@ impl StrategyCoordinator {
                 if limit + 1e-9 < winner_ask {
                     info!(
                         "⏭️ oracle_lag_taker_submit_skip | side={:?} reason=limit_below_live_ask winner_bid={:.4} winner_ask={:.4} limit={:.4} quality_source={} purpose={:?}",
-                        side,
-                        winner_bid,
-                        winner_ask,
-                        limit,
-                        quality_source,
-                        purpose
+                        side, winner_bid, winner_ask, limit, quality_source, purpose
                     );
                     return;
                 }
@@ -1789,7 +1780,12 @@ impl StrategyCoordinator {
                     }
                     info!(
                         "🧭 oracle_lag_order_mode | mode=winner_hint_immediate slug={} hint_id={} side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
-                        slug, hint_id, side, source, winner_book_source, winner_distance_to_final_ms
+                        slug,
+                        hint_id,
+                        side,
+                        source,
+                        winner_book_source,
+                        winner_distance_to_final_ms
                     );
                     let (
                         winner_bid,

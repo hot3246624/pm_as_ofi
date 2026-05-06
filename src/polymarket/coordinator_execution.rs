@@ -718,10 +718,7 @@ impl StrategyCoordinator {
         let Some(mut hedge_size) = self.hedge_size_from_net(st.net_diff) else {
             debug!(
                 "🧩 Hedge skip {}: net_diff={:.2} below min thresholds (min_order_size={:.2}, min_hedge_size={:.2})",
-                side_label,
-                st.net_diff,
-                self.cfg.min_order_size,
-                self.cfg.min_hedge_size,
+                side_label, st.net_diff, self.cfg.min_order_size, self.cfg.min_hedge_size,
             );
             return;
         };
@@ -1419,7 +1416,7 @@ impl StrategyCoordinator {
                     phase,
                 );
                 debug!(
-                "🧭 pair_arb absent-intent recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} risk_open_cutoff_active={} state_change_republish={}",
+                    "🧭 pair_arb absent-intent recheck | slot={} state_key_changed={} fill_recheck_pending={} net_bucket={:?} dominant_side={:?} risk_open_cutoff_active={} state_change_republish={}",
                     slot.as_str(),
                     state_changed,
                     fill_recheck,
