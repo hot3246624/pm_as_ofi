@@ -59,8 +59,9 @@
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 | `PM_AS_SKEW_FACTOR` | `0.06` | 三段库存 skew 的基础强度（pair_arb） |
 | `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
-| `PM_PAIR_ARB_TIER_1_MULT` | `0.60` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
-| `PM_PAIR_ARB_TIER_2_MULT` | `0.20` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_MODE` | `discrete` | 分段库存模式：`disabled`（关闭 tier cap，并回退非分段库存曲线）、`discrete`（阶梯）或 `continuous`（平滑） |
+| `PM_PAIR_ARB_TIER_1_MULT` | `0.60` | 仅 risk-increasing：`|net_diff| >= 3.5` 的主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_2_MULT` | `0.20` | 仅 risk-increasing：`|net_diff| >= 8` 的主仓侧 avg-cost cap |
 
 验证时建议同时观察两组日志：
 - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形

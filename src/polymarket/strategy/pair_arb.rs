@@ -1,3 +1,4 @@
+use crate::polymarket::coordinator::PairArbTierMode;
 use crate::polymarket::coordinator::StrategyCoordinator;
 use crate::polymarket::coordinator::StrategyInventoryMetrics;
 use crate::polymarket::coordinator::PAIR_ARB_NET_EPS;
@@ -68,8 +69,12 @@ impl QuoteStrategy for PairArbStrategy {
         };
         let abs_net_diff = inv.net_diff.abs();
         let time_decay = coordinator.compute_time_decay_factor();
-        let effective_skew_factor =
-            Self::effective_skew_factor(cfg.as_skew_factor, abs_net_diff, time_decay);
+        let effective_skew_factor = Self::effective_skew_factor(
+            cfg.as_skew_factor,
+            abs_net_diff,
+            time_decay,
+            cfg.pair_arb.tier_mode,
+        );
         let skew_shift = skew * effective_skew_factor;
 
         let mut raw_yes = mid_yes - (excess / 2.0) - skew_shift;
@@ -89,11 +94,13 @@ impl QuoteStrategy for PairArbStrategy {
         // 1b) Tiered avg-cost cap for same-side risk-increasing candidate.
         // Tier for risk-increasing leg enters earlier (3.5/8) than the global
         // state bucket transitions (5/10). This is a pure tightening rule.
+        // When tier mode is disabled, this stage is bypassed.
         if let Some(yes_cap) = Self::tier_cap_price_for_candidate(
             inv,
             Side::Yes,
             yes_size,
             yes_risk_effect,
+            cfg.pair_arb.tier_mode,
             cfg.pair_arb.tier_1_mult,
             cfg.pair_arb.tier_2_mult,
         ) {
@@ -104,6 +111,7 @@ impl QuoteStrategy for PairArbStrategy {
             Side::No,
             no_size,
             no_risk_effect,
+            cfg.pair_arb.tier_mode,
             cfg.pair_arb.tier_1_mult,
             cfg.pair_arb.tier_2_mult,
         ) {
@@ -388,20 +396,45 @@ impl PairArbStrategy {
         side: Side,
         size: f64,
         risk_effect: PairArbRiskEffect,
+        tier_mode: PairArbTierMode,
         tier_1_mult: f64,
         tier_2_mult: f64,
     ) -> Option<f64> {
         if risk_effect != PairArbRiskEffect::RiskIncreasing {
             return None;
         }
+        if !tier_mode.tier_cap_enabled() {
+            return None;
+        }
         let _ = size;
         let current_abs = inv.net_diff.abs();
-        let mult = if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_2_NET_DIFF {
-            tier_2_mult
-        } else if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_1_NET_DIFF {
-            tier_1_mult
-        } else {
-            return None;
+        let mult = match tier_mode {
+            PairArbTierMode::Discrete => {
+                if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_2_NET_DIFF {
+                    tier_2_mult
+                } else if current_abs + PAIR_ARB_NET_EPS >= RISK_INCR_TIER_1_NET_DIFF {
+                    tier_1_mult
+                } else {
+                    return None;
+                }
+            }
+            PairArbTierMode::Continuous => {
+                if current_abs <= PAIR_ARB_NET_EPS {
+                    return None;
+                }
+                if current_abs <= RISK_INCR_TIER_1_NET_DIFF {
+                    let ratio = (current_abs / RISK_INCR_TIER_1_NET_DIFF).clamp(0.0, 1.0);
+                    1.0 + (tier_1_mult - 1.0) * ratio
+                } else if current_abs < RISK_INCR_TIER_2_NET_DIFF {
+                    let ratio = ((current_abs - RISK_INCR_TIER_1_NET_DIFF)
+                        / (RISK_INCR_TIER_2_NET_DIFF - RISK_INCR_TIER_1_NET_DIFF))
+                        .clamp(0.0, 1.0);
+                    tier_1_mult + (tier_2_mult - tier_1_mult) * ratio
+                } else {
+                    tier_2_mult
+                }
+            }
+            PairArbTierMode::Disabled => unreachable!("disabled mode is returned above"),
         };
         match side {
             Side::Yes if inv.yes_qty > f64::EPSILON && inv.yes_avg_cost > 0.0 => {
@@ -454,7 +487,17 @@ impl PairArbStrategy {
         }
     }
 
-    pub(crate) fn effective_skew_factor(base: f64, abs_net_diff: f64, time_decay: f64) -> f64 {
+    pub(crate) fn effective_skew_factor(
+        base: f64,
+        abs_net_diff: f64,
+        time_decay: f64,
+        tier_mode: PairArbTierMode,
+    ) -> f64 {
+        // Disabled mode emulates pre-tier behavior:
+        // no 5/10 segmented inventory curve; only linear inventory skew remains.
+        if !tier_mode.tiered_inventory_curve_enabled() {
+            return base * time_decay;
+        }
         if abs_net_diff < TIER_1_NET_DIFF {
             return base * EARLY_SKEW_MULT;
         }
@@ -538,16 +581,33 @@ mod tests {
         let base = 0.06;
         let td = 1.6;
 
-        let early = PairArbStrategy::effective_skew_factor(base, 3.0, td);
+        let early =
+            PairArbStrategy::effective_skew_factor(base, 3.0, td, PairArbTierMode::Discrete);
         assert!((early - (base * EARLY_SKEW_MULT)).abs() < 1e-9);
 
-        let mid = PairArbStrategy::effective_skew_factor(base, 7.5, td);
+        let mid = PairArbStrategy::effective_skew_factor(base, 7.5, td, PairArbTierMode::Discrete);
         let ramp = (7.5 - TIER_1_NET_DIFF) / (TIER_2_NET_DIFF - TIER_1_NET_DIFF);
         let expected_mid = base * (EARLY_SKEW_MULT + (1.0 - EARLY_SKEW_MULT) * ramp) * td;
         assert!((mid - expected_mid).abs() < 1e-9);
 
-        let late = PairArbStrategy::effective_skew_factor(base, 12.0, td);
+        let late =
+            PairArbStrategy::effective_skew_factor(base, 12.0, td, PairArbTierMode::Discrete);
         assert!((late - (base * td)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_effective_skew_factor_disabled_uses_linear_curve() {
+        let base = 0.06;
+        let td = 1.6;
+        let expected = base * td;
+        let early =
+            PairArbStrategy::effective_skew_factor(base, 2.0, td, PairArbTierMode::Disabled);
+        let mid = PairArbStrategy::effective_skew_factor(base, 7.0, td, PairArbTierMode::Disabled);
+        let late =
+            PairArbStrategy::effective_skew_factor(base, 12.0, td, PairArbTierMode::Disabled);
+        assert!((early - expected).abs() < 1e-9);
+        assert!((mid - expected).abs() < 1e-9);
+        assert!((late - expected).abs() < 1e-9);
     }
 
     #[test]
@@ -609,6 +669,7 @@ mod tests {
             Side::Yes,
             5.0,
             PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Discrete,
             0.80,
             0.60,
         )
@@ -700,6 +761,7 @@ mod tests {
             Side::No,
             5.0,
             PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Discrete,
             0.70,
             0.30,
         );
@@ -719,6 +781,7 @@ mod tests {
             Side::No,
             5.0,
             PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Discrete,
             0.70,
             0.30,
         );
@@ -739,6 +802,7 @@ mod tests {
             Side::No,
             5.0,
             PairArbRiskEffect::PairingOrReducing,
+            PairArbTierMode::Discrete,
             0.70,
             0.30,
         );
@@ -765,6 +829,7 @@ mod tests {
                 Side::No,
                 5.0,
                 PairArbRiskEffect::RiskIncreasing,
+                PairArbTierMode::Discrete,
                 0.70,
                 0.30,
             );
@@ -776,6 +841,70 @@ mod tests {
                 None => assert!(cap.is_none()),
             }
         }
+    }
+
+    #[test]
+    fn test_tier_cap_continuous_mode_scales_smoothly_from_flat() {
+        let inv = InventoryState {
+            no_qty: 10.0,
+            no_avg_cost: 0.40,
+            net_diff: -1.75, // 50% of first segment (0 -> 3.5)
+            ..Default::default()
+        };
+        let cap = PairArbStrategy::tier_cap_price_for_candidate(
+            &inv,
+            Side::No,
+            5.0,
+            PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Continuous,
+            0.70,
+            0.30,
+        );
+        // multiplier = 1 + (0.70 - 1.0) * 0.5 = 0.85
+        assert!(cap.is_some());
+        assert!((cap.unwrap_or_default() - 0.34).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_tier_cap_disabled_mode_never_applies_cap() {
+        let inv = InventoryState {
+            no_qty: 10.0,
+            no_avg_cost: 0.40,
+            net_diff: -12.0,
+            ..Default::default()
+        };
+        let cap = PairArbStrategy::tier_cap_price_for_candidate(
+            &inv,
+            Side::No,
+            5.0,
+            PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Disabled,
+            0.70,
+            0.30,
+        );
+        assert!(cap.is_none());
+    }
+
+    #[test]
+    fn test_tier_cap_continuous_mode_interpolates_between_tiers() {
+        let inv = InventoryState {
+            no_qty: 10.0,
+            no_avg_cost: 0.40,
+            net_diff: -5.75, // midpoint between 3.5 and 8.0
+            ..Default::default()
+        };
+        let cap = PairArbStrategy::tier_cap_price_for_candidate(
+            &inv,
+            Side::No,
+            5.0,
+            PairArbRiskEffect::RiskIncreasing,
+            PairArbTierMode::Continuous,
+            0.70,
+            0.30,
+        );
+        // midpoint multiplier = 0.50
+        assert!(cap.is_some());
+        assert!((cap.unwrap_or_default() - 0.20).abs() < 1e-9);
     }
 
     #[test]

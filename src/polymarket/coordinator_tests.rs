@@ -3004,6 +3004,56 @@ async fn test_pair_arb_stale_target_epoch_is_dropped_before_place() {
 }
 
 #[test]
+fn test_pair_arb_state_key_disabled_mode_collapses_mid_high_buckets() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairArb;
+    config.pair_arb.tier_mode = PairArbTierMode::Disabled;
+    let (_o, _i, _m, _k, _e, coord) = make(config);
+
+    let flat = InventoryState {
+        net_diff: 0.0,
+        ..Default::default()
+    };
+    let low = InventoryState {
+        net_diff: 2.0,
+        ..Default::default()
+    };
+    let mid = InventoryState {
+        net_diff: 7.0,
+        ..Default::default()
+    };
+    let high = InventoryState {
+        net_diff: 12.0,
+        ..Default::default()
+    };
+
+    assert_eq!(
+        coord
+            .pair_arb_state_key(&flat, EndgamePhase::Normal)
+            .net_bucket,
+        PairArbNetBucket::Flat
+    );
+    assert_eq!(
+        coord
+            .pair_arb_state_key(&low, EndgamePhase::Normal)
+            .net_bucket,
+        PairArbNetBucket::Low
+    );
+    assert_eq!(
+        coord
+            .pair_arb_state_key(&mid, EndgamePhase::Normal)
+            .net_bucket,
+        PairArbNetBucket::Low
+    );
+    assert_eq!(
+        coord
+            .pair_arb_state_key(&high, EndgamePhase::Normal)
+            .net_bucket,
+        PairArbNetBucket::Low
+    );
+}
+
+#[test]
 fn test_pair_arb_endgame_phase_change_marks_recheck_pending() {
     let mut config = cfg();
     config.strategy = StrategyKind::PairArb;

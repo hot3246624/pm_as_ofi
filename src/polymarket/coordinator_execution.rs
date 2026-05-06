@@ -58,6 +58,10 @@ impl StrategyCoordinator {
         let abs_net = inv.net_diff.abs();
         let net_bucket = if abs_net <= PAIR_ARB_NET_EPS {
             PairArbNetBucket::Flat
+        } else if !self.cfg.pair_arb.tier_mode.multi_bucket_state_enabled() {
+            // Disabled tier mode emulates pre-tier behavior:
+            // no 5/10 bucket transitions, only flat/non-flat state.
+            PairArbNetBucket::Low
         } else if abs_net < 5.0 {
             PairArbNetBucket::Low
         } else if abs_net < 10.0 {
@@ -224,6 +228,7 @@ impl StrategyCoordinator {
                 slot.side,
                 size,
                 risk_effect,
+                self.cfg.pair_arb.tier_mode,
                 self.cfg.pair_arb.tier_1_mult,
                 self.cfg.pair_arb.tier_2_mult,
             )

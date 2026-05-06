@@ -95,6 +95,10 @@ mod coordinator_pricing;
 
 #[derive(Debug, Clone)]
 pub struct PairArbStrategyConfig {
+    /// Tier cap mode:
+    /// - Discrete: use step thresholds (legacy behavior)
+    /// - Continuous: smooth multiplier by current abs net_diff
+    pub tier_mode: PairArbTierMode,
     /// PairArb dominant-side avg-cost cap multiplier when |net_diff| is in tier-1.
     pub tier_1_mult: f64,
     /// PairArb dominant-side avg-cost cap multiplier when |net_diff| is in tier-2.
@@ -104,6 +108,44 @@ pub struct PairArbStrategyConfig {
     /// PairArb risk-open cutoff window (seconds to market end).
     /// Remaining <= this threshold blocks new risk-increasing buys.
     pub risk_open_cutoff_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PairArbTierMode {
+    Disabled,
+    Discrete,
+    Continuous,
+}
+
+impl PairArbTierMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Discrete => "discrete",
+            Self::Continuous => "continuous",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "false" => Some(Self::Disabled),
+            "discrete" | "step" | "bucket" => Some(Self::Discrete),
+            "continuous" | "smooth" | "non_discrete" | "nondiscrete" => Some(Self::Continuous),
+            _ => None,
+        }
+    }
+
+    pub fn tier_cap_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub fn tiered_inventory_curve_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
+
+    pub fn multi_bucket_state_enabled(self) -> bool {
+        !matches!(self, Self::Disabled)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,6 +301,7 @@ impl Default for CoordinatorConfig {
             glft_min_half_spread_ticks: 5.0,
             as_time_decay_k: 2.0, // Up to 3× skew at expiry (1 + 2 * elapsed_frac)
             pair_arb: PairArbStrategyConfig {
+                tier_mode: PairArbTierMode::Discrete,
                 tier_1_mult: 0.80,
                 tier_2_mult: 0.60,
                 pair_cost_safety_margin: 0.02,
@@ -486,6 +529,17 @@ impl CoordinatorConfig {
                         f, self.pair_arb.tier_2_mult
                     );
                 }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_PAIR_ARB_TIER_MODE") {
+            if let Some(mode) = PairArbTierMode::parse(&v) {
+                self.pair_arb.tier_mode = mode;
+            } else {
+                warn!(
+                    "⚠️ Ignoring invalid PM_PAIR_ARB_TIER_MODE={} (supported: disabled|discrete|continuous), using {}",
+                    v,
+                    self.pair_arb.tier_mode.as_str()
+                );
             }
         }
         if let Ok(v) = std::env::var("PM_PAIR_ARB_PAIR_COST_SAFETY_MARGIN") {
@@ -1629,12 +1683,13 @@ impl StrategyCoordinator {
 
     pub async fn run(mut self) {
         info!(
-            "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s pair_arb_risk_open_cutoff={}s edge(keep/exit)={:.2}/{:.2} dry={}",
+            "🎯 Coordinator [OCCAM+LEADLAG] strategy={} pair={:.2} open_pair_band={:.2} bid={:.1} dip_cap={:.2} tick={:.3} net={:.0} reprice={:.3} debounce={}ms watchdog={}ms metrics_log={}s endgame(soft/hard/freeze/maker_repair_min)={}/{}/{}/{}s pair_arb(tier_mode={} risk_open_cutoff={}s) edge(keep/exit)={:.2}/{:.2} dry={}",
             self.cfg.strategy.as_str(),
             self.cfg.pair_target, self.cfg.open_pair_band, self.cfg.bid_size, self.cfg.dip_buy_max_entry_price, self.cfg.tick_size,
             self.cfg.max_net_diff, self.cfg.reprice_threshold, self.cfg.debounce_ms, self.cfg.watchdog_tick_ms,
             self.cfg.strategy_metrics_log_secs,
             self.cfg.endgame_soft_close_secs, self.cfg.endgame_hard_close_secs, self.cfg.endgame_freeze_secs, self.cfg.endgame_maker_repair_min_secs,
+            self.cfg.pair_arb.tier_mode.as_str(),
             self.cfg.pair_arb.risk_open_cutoff_secs,
             self.cfg.endgame_edge_keep_mult, self.cfg.endgame_edge_exit_mult,
             self.cfg.dry_run,

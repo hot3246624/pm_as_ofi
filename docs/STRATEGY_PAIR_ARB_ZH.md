@@ -43,6 +43,11 @@
 - 当前 `|net_diff| >= 8` 触发 `tier2`（提前于状态桶）
 - 全局 `net_bucket` 仍按 `5/10` 切换
 
+`tier` 支持三种模式（`PM_PAIR_ARB_TIER_MODE`）：
+- `disabled`：关闭 tier cap，并回退到非分段库存曲线；状态桶不再使用 `5/10` 多桶切换（仅 `Flat/Low`）
+- `discrete`：在 `3.5/8` 阈值处阶梯切换到 `tier1/tier2`
+- `continuous`：在 `0 -> 3.5 -> 8` 区间按线性插值平滑收紧
+
 因此非整数边界行为是连续且可解释的，例如：
 
 - 当前 `|net_diff|=3.4`：仍不进 `tier1`

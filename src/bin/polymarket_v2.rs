@@ -2932,16 +2932,39 @@ fn extract_all_chainlink_points(value: &Value, target_symbol: &str, out: &mut Ve
                 }
             }
 
-            for key in ["data", "payload", "message"] {
-                if let Some(child) = map.get(key) {
-                    extract_all_chainlink_points(child, target_symbol, out);
-                }
-            }
+            // Recurse into all child values exactly once (no duplicate key enumeration).
             for child in map.values() {
                 extract_all_chainlink_points(child, target_symbol, out);
             }
         }
         _ => {}
+    }
+}
+
+/// Parse the RTDS initial-batch format: {"payload":{"data":[{"timestamp":T,"value":V},...]}}.
+/// Items in the data array have no "symbol" field — they are bare price-points from our
+/// subscription, so any item with a valid price+timestamp is a valid tick for this symbol.
+fn extract_chainlink_bare_batch(value: &Value, out: &mut Vec<(f64, u64)>) {
+    let Some(data) = value
+        .get("payload")
+        .and_then(|p| p.get("data"))
+        .and_then(|d| d.as_array())
+    else {
+        return;
+    };
+    for item in data {
+        let Some(price) = ["value", "price", "p"]
+            .iter()
+            .find_map(|k| item.get(*k).and_then(parse_f64_value))
+            .filter(|v| *v > 0.0)
+        else {
+            continue;
+        };
+        let ts_ms = ["timestamp", "ts", "t", "time"]
+            .iter()
+            .find_map(|k| item.get(*k).and_then(parse_unix_ms_value))
+            .unwrap_or_else(unix_now_millis_u64);
+        out.push((price, ts_ms));
     }
 }
 
@@ -2951,6 +2974,10 @@ fn parse_chainlink_all_ticks(text: &str, target_symbol: &str) -> Vec<(f64, u64)>
     };
     let mut out = Vec::new();
     extract_all_chainlink_points(&value, target_symbol, &mut out);
+    if out.is_empty() {
+        // Fallback: RTDS initial batch — bare {timestamp, value} items with no symbol field.
+        extract_chainlink_bare_batch(&value, &mut out);
+    }
     out
 }
 
@@ -5489,6 +5516,8 @@ async fn run_chainlink_winner_hint(
     let mut close_point: Option<(f64, u64)> = None;
     let mut reconnect_backoff = Duration::from_millis(300);
     let mut open_missing_warned = false;
+    let mut connected_at: Option<std::time::Instant> = None;
+    let mut logged_raw = false; // log raw RTDS message only once
 
     let emit_alignment_probe = |note: &str,
                                 selected_rule: Option<&str>,
@@ -5565,10 +5594,16 @@ async fn run_chainlink_winner_hint(
         let connect = tokio::time::timeout(Duration::from_secs(3), connect_async(&ws_url)).await;
         let Ok(Ok((ws, _resp))) = connect else {
             sleep(reconnect_backoff).await;
-            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(2));
+            reconnect_backoff = (reconnect_backoff * 2).min(Duration::from_secs(4));
             continue;
         };
         reconnect_backoff = Duration::from_millis(300);
+        connected_at.get_or_insert_with(std::time::Instant::now);
+        let elapsed_since_start = unix_now_secs().saturating_sub(round_start_ts);
+        info!(
+            "📡 rtds_connected | symbol={} round_start_ts={} elapsed_since_start={}s",
+            target_symbol, round_start_ts, elapsed_since_start,
+        );
         let (mut write, mut read) = ws.split();
 
         let subscribe_msg = json!({
@@ -5597,14 +5632,17 @@ async fn run_chainlink_winner_hint(
                 Ok(Some(Ok(m))) => m,
                 Ok(Some(Err(_))) | Ok(None) => break,
                 Err(_) => {
-                    // Timeout: also check the 30s open_point guard on each idle cycle.
+                    // Timeout: abort only if we've been CONNECTED for >30s with no open_point.
+                    // This handles the case where the round_start tick is genuinely absent from
+                    // both the initial batch and live feed (e.g., RTDS gap at round boundary).
                     if open_point.is_none() {
                         let elapsed = unix_now_secs().saturating_sub(round_start_ts);
                         if elapsed > 30 && !open_missing_warned {
                             open_missing_warned = true;
+                            let connected_for_secs = connected_at.map(|t| t.elapsed().as_secs());
                             warn!(
-                                "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s — no exact round_start tick found yet; continue collecting for alignment",
-                                target_symbol, round_start_ts, elapsed,
+                                "⚠️ chainlink_open_missing | symbol={} round_start_ts={} elapsed={}s connected_for={:?}s — no exact round_start tick found yet; continue collecting for alignment",
+                                target_symbol, round_start_ts, elapsed, connected_for_secs,
                             );
                         }
                     }
@@ -5621,21 +5659,43 @@ async fn run_chainlink_winner_hint(
             };
 
             // Parse ALL ticks in this message (handles both single ticks and batch payloads).
+            // Log the first raw message once per connection for format verification.
+            if !logged_raw {
+                logged_raw = true;
+                let preview: String = text.chars().take(400).collect();
+                info!(
+                    "🔬 rtds_raw_msg | symbol={} round_start_ts={} preview={}",
+                    target_symbol, round_start_ts, preview,
+                );
+            }
             let ticks = parse_chainlink_all_ticks(&text, &target_symbol);
             if ticks.is_empty() {
                 continue;
             }
 
+            // Log first successful batch for diagnostics.
+            if open_point.is_none() && close_point.is_none() {
+                let ts_range: Vec<String> = ticks.iter()
+                    .take(5)
+                    .map(|(p, t)| format!("{:.4}@{}", p, t))
+                    .collect();
+                info!(
+                    "🔬 rtds_batch | symbol={} n={} samples=[{}]",
+                    target_symbol, ticks.len(), ts_range.join(", ")
+                );
+            }
+
             for (price, ts_ms) in &ticks {
                 let (price, ts_ms) = (*price, *ts_ms);
 
-                // open_ref: exact match ts_ms == round_start_ms (= priceToBeat).
-                // The RTDS sends one tick per second; round boundaries are always 1s-aligned.
-                if open_point.is_none() && ts_ms == start_ms {
+                // open_ref: tick closest to round_start_ms within +/-1000ms.
+                // RTDS sends 1 tick/sec but timestamps may not be exactly ms-aligned on boundaries.
+                if open_point.is_none() && ts_ms.abs_diff(start_ms) <= 1_000 {
                     open_point = Some((price, ts_ms));
+                    let delta_ms = (ts_ms as i64) - (start_ms as i64);
                     info!(
-                        "⏱️ chainlink_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} exact=true",
-                        unix_now_millis_u64(), target_symbol, round_start_ts, ts_ms, price,
+                        "⏱️ chainlink_open_captured | unix_ms={} symbol={} round_start_ts={} open_ts_ms={} open_price={:.6} delta_from_start_ms={}",
+                        unix_now_millis_u64(), target_symbol, round_start_ts, ts_ms, price, delta_ms,
                     );
                 }
                 if open_minus_1s.is_none() && ts_ms == start_ms.saturating_sub(1_000) {
@@ -5647,9 +5707,10 @@ async fn run_chainlink_winner_hint(
 
                 if close_point.is_none() && ts_ms == end_ms {
                     close_point = Some((price, ts_ms));
+                    let delta_ms = (ts_ms as i64) - (end_ms as i64);
                     info!(
-                        "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} exact=true",
-                        unix_now_millis_u64(), target_symbol, round_end_ts, ts_ms, price,
+                        "⏱️ chainlink_close_captured | unix_ms={} symbol={} round_end_ts={} close_ts_ms={} close_price={:.6} delta_from_end_ms={}",
+                        unix_now_millis_u64(), target_symbol, round_end_ts, ts_ms, price, delta_ms,
                     );
                 }
             }
