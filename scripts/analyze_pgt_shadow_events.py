@@ -265,10 +265,15 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
 
 def collect_rows(root: Path, instance: str, date: str) -> list[RoundRow]:
     base = root / instance
-    rows = []
-    for path in base.glob(f"[0-9]*/{date}/btc-updown-5m-*/events.jsonl"):
-        rows.append(load_round(path))
-    return sorted(rows, key=lambda r: r.round_id)
+    rows_by_path: dict[Path, RoundRow] = {}
+    patterns = (
+        f"[0-9]*/{date}/btc-updown-5m-*/events.jsonl",
+        f"{date}/btc-updown-5m-*/events.jsonl",
+    )
+    for pattern in patterns:
+        for path in base.glob(pattern):
+            rows_by_path[path] = load_round(path)
+    return sorted(rows_by_path.values(), key=lambda r: r.round_id)
 
 
 def main() -> None:
