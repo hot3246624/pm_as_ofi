@@ -371,6 +371,7 @@ PM_INSTANCE_ID=xuan-shadow
 PM_SHARED_INGRESS_ROLE=client
 PM_SHARED_INGRESS_ROOT=/srv/pm_as_ofi/shared-ingress-main
 PM_PGT_SHADOW_PROFILE=xuan_ladder_v1
+PM_PGT_SHADOW_LOOP_OVERLAP=true
 PM_DRY_RUN=true
 ```
 
@@ -397,7 +398,7 @@ Type=simple
 User=pmofi
 WorkingDirectory=/srv/pm_as_ofi/repo
 EnvironmentFile=-/etc/pm_as_ofi/xuan-shadow.env
-ExecStart=/usr/bin/env bash /srv/pm_as_ofi/repo/scripts/run_pgt_fixed_shadow_next.sh btc-updown-5m
+ExecStart=/usr/bin/env bash /srv/pm_as_ofi/repo/scripts/run_pgt_shadow_loop.sh btc-updown-5m
 Restart=always
 RestartSec=5
 KillSignal=SIGINT
@@ -426,14 +427,16 @@ sudo journalctl -u pm-xuan-shadow.service -f
 日志中应看到：
 
 - `shared_ingress_role=client`
-- fixed round worker 正常 attach
+- `pgt shadow overlap child start`
+- fixed round worker 正常 attach，且每轮 child 在目标 round start 前预启动
 - 无 connect/shutdown 风暴
 
 补充：
 
-- `run_pgt_fixed_shadow_next.sh` 默认使用 `target/debug/polymarket_v2`
-- 如果 debug 二进制不存在或过期，它会先执行一次 `cargo build --bin polymarket_v2`
+- `run_pgt_shadow_loop.sh` 默认使用 `target/debug/polymarket_v2`
+- 如果 debug 二进制不存在或过期，它会在 loop 启动时执行一次 `cargo build --bin polymarket_v2`
 - 因此第一次启动比 broker / oracle lag 更慢是正常现象
+- 不要把 systemd 直接指回 `run_pgt_fixed_shadow_next.sh`；单轮脚本会等盘后追踪退出后才由 systemd 重启，无法做到“上一轮盘后继续、下一轮按时启动”。连续运行应由 overlap loop 调度每轮 fixed worker。
 
 ## 8. 推荐的首批上线组合
 
