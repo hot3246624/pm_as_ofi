@@ -1,6 +1,6 @@
 # 多线程 Worktree 与策略交接 - 2026-05-06
 
-更新时间：2026-05-06 13:00 CST
+更新时间：2026-05-06 13:18 CST
 
 ## 0. 目标
 
@@ -17,7 +17,7 @@
 主线：
 
 ```text
-main: 3c5aef26 docs: add local agg thread handoff runbook
+main: 86727931 docs: record active local agg and xuan worktrees
 remote: origin/main
 ```
 
@@ -27,6 +27,9 @@ remote: origin/main
 
 ```text
 /Users/hot/web3Scientist/pm_as_ofi_main_merge  main，稳定主线参考目录
+/Users/hot/web3Scientist/pm_as_ofi-localagg     codex/localagg-work，Local Agg 专用
+/Users/hot/web3Scientist/pm_as_ofi-xuan-research codex/xuan-research，Xuan 研究版
+/Users/hot/web3Scientist/pm_as_ofi-xuan-frontier codex/xuan-frontier，Xuan 先行版
 /Users/hot/web3Scientist/pm_as_ofi             codex/self-built-price-aggregator，本地 dirty，不要直接动
 /Users/hot/.codex/worktrees/91a3/pm_as_ofi     detached HEAD，确认无人使用后再清理
 ```
