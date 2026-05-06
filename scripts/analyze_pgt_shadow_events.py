@@ -80,6 +80,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--date", default=datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     p.add_argument("--root", default="data/recorder")
     p.add_argument("--last", type=int, default=24, help="last complete rounds window")
+    p.add_argument("--from-round", type=int, help="only include rounds with id >= this value")
+    p.add_argument("--to-round", type=int, help="only include rounds with id <= this value")
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     p.add_argument("--details", action="store_true", help="print per-round rows for the last window")
     return p.parse_args()
@@ -276,15 +278,33 @@ def collect_rows(root: Path, instance: str, date: str) -> list[RoundRow]:
     return sorted(rows_by_path.values(), key=lambda r: r.round_id)
 
 
+def filter_rows(
+    rows: list[RoundRow],
+    from_round: int | None,
+    to_round: int | None,
+) -> list[RoundRow]:
+    if from_round is not None:
+        rows = [r for r in rows if r.round_id >= from_round]
+    if to_round is not None:
+        rows = [r for r in rows if r.round_id <= to_round]
+    return rows
+
+
 def main() -> None:
     args = parse_args()
-    rows = collect_rows(Path(args.root), args.instance, args.date)
+    rows = filter_rows(
+        collect_rows(Path(args.root), args.instance, args.date),
+        args.from_round,
+        args.to_round,
+    )
     complete = [r for r in rows if r.complete]
     last_complete = complete[-args.last :]
     incomplete = [r for r in rows if not r.complete]
     result = {
         "instance": args.instance,
         "date": args.date,
+        "from_round": args.from_round,
+        "to_round": args.to_round,
         "files": len(rows),
         "complete": len(complete),
         "incomplete": [
@@ -308,7 +328,13 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
-    print(f"instance={args.instance} date={args.date} files={len(rows)} complete={len(complete)}")
+    round_filter = ""
+    if args.from_round is not None or args.to_round is not None:
+        round_filter = f" from_round={args.from_round} to_round={args.to_round}"
+    print(
+        f"instance={args.instance} date={args.date}{round_filter} "
+        f"files={len(rows)} complete={len(complete)}"
+    )
     for name in ("last_complete", "all_complete"):
         s = result[name]
         print(
