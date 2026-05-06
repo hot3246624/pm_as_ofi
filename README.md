@@ -19,7 +19,6 @@ Polymarket crypto up/down 市场做市与库存管理引擎。
 | 策略 | 定位 | 状态 |
 | --- | --- | --- |
 | `pair_arb` | pair cost + A-S 风格双边买入策略 | 推荐（当前验证主线） |
-| `completion_first` | completion probability + timeout taker repair + cooldown | research / canary |
 | `glft_mm` | 真双边、slot-keyed、外锚驱动 | challenger |
 | `gabagool_grid` | buy-only utility 基线 | 可用 |
 | `gabagool_corridor` | `gabagool_grid` 的 corridor 变体 | research |
@@ -54,17 +53,101 @@ cargo test --bin polymarket_v2
 PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 ```
 
+## Live Truth Capture
+
+- 默认关闭：只有显式设置 `PM_RECORDER_ENABLED=true` 才会落盘。
+- 默认 market 口径是 `structured`，也就是写 `market_md.jsonl`，记录完整 `L1 book + trades`。
+- `user_ws.jsonl`、`events.jsonl`、`meta.jsonl` 会继续保留，用于回放真实 order/fill/inventory/tranche/capital 语义。
+- `market_ws.jsonl` 只在 `PM_RECORDER_MARKET_MODE=raw` 或 `hybrid` 时写入，作为 parser/debug 取证，不再是默认主路径。
+
+推荐 live 配置：
+
+```bash
+PM_DRY_RUN=false \
+PM_RECORDER_ENABLED=true \
+PM_RECORDER_MARKET_MODE=structured \
+cargo run --bin polymarket_v2 --release
+```
+
+推荐 dry-run 录制（用于链路冒烟，不发真实 REST 下单）：
+
+```bash
+PM_DRY_RUN=true \
+PM_RECORDER_ENABLED=true \
+PM_RECORDER_MARKET_MODE=structured \
+PM_DRY_RUN_FILL_PROBABILITY=1.0 \
+cargo run --bin polymarket_v2 --release
+```
+
+如果要在 `oracle_lag_sniping` 的 dry-run 中验证“下单 -> simulated fill -> inventory/tranche”全链路，还需额外开启：
+
+```bash
+PM_ORACLE_LAG_DRYRUN_EXECUTE=true
+```
+
+推荐直接使用单市场 BTC 5m dry-run 命令（低流量，适合链路验收）：
+
+```bash
+PM_DRY_RUN=true \
+PM_STRATEGY=oracle_lag_sniping \
+POLYMARKET_MARKET_SLUG=btc-updown-5m \
+PM_RECORDER_ENABLED=true \
+PM_RECORDER_MARKET_MODE=structured \
+PM_RECORDER_ROOT=data/recorder_oracle_lag_dryrun \
+PM_DRY_RUN_FILL_PROBABILITY=1.0 \
+PM_LOCAL_PRICE_AGG_DECISION_ENABLED=true \
+PM_ORACLE_LAG_DRYRUN_ALLOW_FALLBACK_OPEN=true \
+PM_ORACLE_LAG_DRYRUN_EXECUTE=true \
+cargo run --bin polymarket_v2 --release
+```
+
+若用多市场 dry-run（inproc），只跑 BTC 可设置：
+
+```bash
+PM_MULTI_MARKET_PREFIXES=btc-updown-5m
+```
+
+注意：`PM_ORACLE_LAG_DRYRUN_EXECUTE` 只用于 `PM_DRY_RUN=true` 的链路演练；live 时不要开启。
+
+排查 market parser 或 replay 偏差时再切到：
+
+```bash
+PM_RECORDER_MARKET_MODE=hybrid
+```
+
+会后离线构建 replay：
+
+```bash
+python3 scripts/build_replay_db.py --input-root data/recorder --output-root data/replay --date 2026-04-26
+```
+
+dry-run 录制后可做最小验收：
+
+```bash
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_budget_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_inventory_events;"
+```
+
+针对 `oracle_lag_sniping` dry-run 全链路，建议额外确认以下表非 0：
+
+```bash
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_order_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
+sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM capital_state_events;"
+```
+
 ## 推荐阅读顺序
 
-1. `docs/STRATEGY_V2_CORE_ZH.md`
-2. `docs/STRATEGY_PAIR_ARB_ZH.md`
-3. `docs/STRATEGY_COMPLETION_FIRST_ZH.md`
-4. `docs/STRATEGY_GLFT_MM_ZH.md`
-5. `docs/STRATEGY_GABAGOOL_GRID_ZH.md`
-6. `docs/CONFIG_REFERENCE_ZH.md`
-7. `docs/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
-8. `docs/TESTING.md`
-9. `docs/ADDING_STRATEGY_ZH.md`
+1. `docs/README.md`
+2. `docs/architecture/STRATEGY_V2_CORE_ZH.md`
+3. `docs/strategies/STRATEGY_PAIR_ARB_ZH.md`
+4. `docs/strategies/STRATEGY_GLFT_MM_ZH.md`
+5. `docs/strategies/STRATEGY_GABAGOOL_GRID_ZH.md`
+6. `docs/reference/CONFIG_REFERENCE_ZH.md`
+7. `docs/runbooks/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
+8. `docs/reference/TESTING.md`
+9. `docs/reference/ADDING_STRATEGY_ZH.md`
 
 ## 当前推荐验证参数基线（pair_arb）
 

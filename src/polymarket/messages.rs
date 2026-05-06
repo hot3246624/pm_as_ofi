@@ -27,6 +27,7 @@ pub enum MarketDataMsg {
     /// Individual trade tick (from `last_trade_price` WS event).
     TradeTick {
         asset_id: String,
+        trade_id: Option<String>,
         market_side: Side,
         taker_side: TakerSide,
         price: f64,
@@ -100,6 +101,7 @@ pub enum OracleLagTailMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WinnerHintSource {
     Chainlink,
+    LocalAgg,
     Gamma,
     BookInference,
 }
@@ -109,6 +111,15 @@ pub enum WinnerHintSource {
 pub enum TakerSide {
     Buy,
     Sell,
+}
+
+impl TakerSide {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
 }
 
 /// Trade direction for strategy intents and fill accounting.
@@ -215,6 +226,9 @@ pub struct TradeIntent {
     pub urgency: TradeUrgency,
     pub size: f64,
     pub price: Option<f64>,
+    /// Dry-run accounting hint. Limit price remains the executable cap; this is
+    /// the observed top-of-book price used to score simulated taker fills.
+    pub expected_fill_price: Option<f64>,
     pub purpose: TradePurpose,
     /// Local estimate of unresolved matched buy notional (USDC) used by executor
     /// affordability precheck. Non-pair_arb paths keep this as 0.0.
@@ -379,12 +393,15 @@ pub enum OrderManagerCmd {
     /// OMS will cancel same-side resting orders first, then submit the taker order.
     /// `limit_price=Some(p)` → IOC limit-FAK at p (SDK limit_order + FAK); sweeps only levels ≤ p on buy / ≥ p on sell.
     /// `limit_price=None` → legacy market-FAK path (SDK market_order + FAK); walks book depth to calculate cutoff.
+    /// `expected_fill_price` is dry-run only; it lets shadow scoring use the
+    /// observed executable price instead of pessimistically charging the cap.
     OneShotTakerHedge {
         side: Side,
         direction: TradeDirection,
         size: f64,
         purpose: TradePurpose,
         limit_price: Option<f64>,
+        expected_fill_price: Option<f64>,
     },
     /// Emergency cancel all targets & orders globally.
     CancelAll,
@@ -482,6 +499,9 @@ pub enum OrderResult {
     },
     /// Order placement failed — Coordinator should reset the slot.
     OrderFailed { slot: OrderSlot, cooldown_ms: u64 },
+    /// Order was intentionally suppressed by the executor. OMS must clear the
+    /// stale desired target instead of retrying it after a cooldown.
+    OrderSuppressed { slot: OrderSlot },
     /// Executor still sees tracked live orders on this slot.
     /// OMS should reconcile by canceling the stale live slot, not by treating this
     /// as a fresh place failure.
@@ -559,10 +579,11 @@ pub struct PlacementRejectEvent {
 }
 
 // ─────────────────────────────────────────────────────────
-// Fill Events (User WS → InventoryManager)
+// Fill Events
 //
-// CRITICAL: Only the authenticated User WebSocket may emit FillEvents.
-// The Executor MUST NEVER create FillEvents — it only sends orders.
+// Live mode: authenticated User WS is the single source of truth.
+// Dry-run mode: executor may emit simulated fills to exercise the same
+// downstream inventory/ledger paths.
 // ─────────────────────────────────────────────────────────
 
 /// Status of a fill as reported by the exchange.
@@ -576,9 +597,10 @@ pub enum FillStatus {
     Failed,
 }
 
-/// Real trade fill from the exchange (via authenticated User WS).
+/// Real trade fill from the exchange (via authenticated User WS), or
+/// a dry-run simulated fill when `PM_DRY_RUN=1`.
 ///
-/// This is the **single source of truth** for inventory changes.
+/// In live mode this is the single source of truth for inventory changes.
 /// `filled_size` is the size of THIS fill (supports partial fills).
 #[derive(Debug, Clone)]
 pub struct FillEvent {

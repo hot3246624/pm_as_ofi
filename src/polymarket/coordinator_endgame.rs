@@ -46,6 +46,10 @@ impl StrategyCoordinator {
             }
             return;
         }
+        if self.cfg.strategy.is_pair_gated_tranche_arb() {
+            self.edge_hold_state = None;
+            return;
+        }
         if self.cfg.strategy.is_oracle_lag_sniping() {
             // Post-close strategy runs strictly after market end for a short window.
             // It should not inherit normal pre-close endgame gates.

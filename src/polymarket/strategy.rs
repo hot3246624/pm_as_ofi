@@ -5,6 +5,7 @@ use super::glft::GlftSignalSnapshot;
 use super::messages::{
     BidReason, InventorySnapshot, InventoryState, OfiSnapshot, OrderSlot, TradeDirection,
 };
+use super::pair_ledger::{EpisodeMetrics, PairLedgerSnapshot};
 use super::types::Side;
 
 pub mod completion_first;
@@ -13,6 +14,7 @@ pub mod gabagool_corridor;
 pub mod gabagool_grid;
 pub mod glft_mm;
 pub mod pair_arb;
+pub mod pair_gated_tranche;
 pub mod phase_builder;
 pub mod post_close_hype;
 
@@ -32,6 +34,7 @@ pub enum StrategyKind {
     GlftMm,
     CompletionFirst,
     PairArb,
+    PairGatedTrancheArb,
     DipBuy,
     PhaseBuilder,
     OracleLagSniping,
@@ -60,6 +63,23 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_keep_candidates: u8,
     pub(crate) pair_arb_skip_inventory_gate: u8,
     pub(crate) pair_arb_skip_simulate_buy_none: u8,
+    pub(crate) pgt_seed_quotes: u8,
+    pub(crate) pgt_completion_quotes: u8,
+    pub(crate) pgt_skip_harvest: u8,
+    pub(crate) pgt_skip_tail_completion_only: u8,
+    pub(crate) pgt_skip_after_rescue_close: u8,
+    pub(crate) pgt_skip_after_closed_pair: u8,
+    pub(crate) pgt_skip_residual_guard: u8,
+    pub(crate) pgt_skip_capital_guard: u8,
+    pub(crate) pgt_skip_invalid_book: u8,
+    pub(crate) pgt_skip_no_seed: u8,
+    pub(crate) pgt_skip_geometry_guard: u8,
+    pub(crate) pgt_seed_reject_no_visible_breakeven_path: u8,
+    pub(crate) pgt_single_seed_bias: u8,
+    pub(crate) pgt_entry_pressure_sides: u8,
+    pub(crate) pgt_entry_pressure_extra_ticks: u8,
+    pub(crate) pgt_taker_shadow_would_open: u8,
+    pub(crate) pgt_taker_shadow_would_close: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -70,6 +90,7 @@ pub(crate) struct StrategyQuotes {
     pub(crate) no_sell: Option<StrategyIntent>,
     pub(crate) completion_first_open_yes: Option<completion_first::CompletionFirstOpenDecision>,
     pub(crate) completion_first_open_no: Option<completion_first::CompletionFirstOpenDecision>,
+    pub(crate) pgt_taker_close_limit: [Option<f64>; 2],
     pub(crate) diagnostics: StrategyQuoteDiagnostics,
 }
 
@@ -125,6 +146,14 @@ impl StrategyQuotes {
         }
     }
 
+    pub(crate) fn set_pgt_taker_close_limit(&mut self, side: Side, limit_price: f64) {
+        self.pgt_taker_close_limit[side.index()] = Some(limit_price);
+    }
+
+    pub(crate) fn pgt_taker_close_limit_for(&self, side: Side) -> Option<f64> {
+        self.pgt_taker_close_limit[side.index()]
+    }
+
     pub(crate) fn note_pair_arb_ofi_softened(&mut self) {
         self.diagnostics.pair_arb_ofi_softened_quotes = self
             .diagnostics
@@ -157,6 +186,99 @@ impl StrategyQuotes {
             .pair_arb_skip_simulate_buy_none
             .saturating_add(1);
     }
+
+    pub(crate) fn note_pgt_seed_quote(&mut self) {
+        self.diagnostics.pgt_seed_quotes = self.diagnostics.pgt_seed_quotes.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_completion_quote(&mut self) {
+        self.diagnostics.pgt_completion_quotes =
+            self.diagnostics.pgt_completion_quotes.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_harvest(&mut self) {
+        self.diagnostics.pgt_skip_harvest = self.diagnostics.pgt_skip_harvest.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_tail_completion_only(&mut self) {
+        self.diagnostics.pgt_skip_tail_completion_only = self
+            .diagnostics
+            .pgt_skip_tail_completion_only
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_after_rescue_close(&mut self) {
+        self.diagnostics.pgt_skip_after_rescue_close = self
+            .diagnostics
+            .pgt_skip_after_rescue_close
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_after_closed_pair(&mut self) {
+        self.diagnostics.pgt_skip_after_closed_pair = self
+            .diagnostics
+            .pgt_skip_after_closed_pair
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_residual_guard(&mut self) {
+        self.diagnostics.pgt_skip_residual_guard =
+            self.diagnostics.pgt_skip_residual_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_capital_guard(&mut self) {
+        self.diagnostics.pgt_skip_capital_guard =
+            self.diagnostics.pgt_skip_capital_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_invalid_book(&mut self) {
+        self.diagnostics.pgt_skip_invalid_book =
+            self.diagnostics.pgt_skip_invalid_book.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_no_seed(&mut self) {
+        self.diagnostics.pgt_skip_no_seed = self.diagnostics.pgt_skip_no_seed.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_skip_geometry_guard(&mut self) {
+        self.diagnostics.pgt_skip_geometry_guard =
+            self.diagnostics.pgt_skip_geometry_guard.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_seed_reject_no_visible_breakeven_path(&mut self) {
+        self.diagnostics.pgt_seed_reject_no_visible_breakeven_path = self
+            .diagnostics
+            .pgt_seed_reject_no_visible_breakeven_path
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_single_seed_bias(&mut self) {
+        self.diagnostics.pgt_single_seed_bias =
+            self.diagnostics.pgt_single_seed_bias.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_entry_pressure(&mut self, extra_ticks: u8) {
+        self.diagnostics.pgt_entry_pressure_sides =
+            self.diagnostics.pgt_entry_pressure_sides.saturating_add(1);
+        self.diagnostics.pgt_entry_pressure_extra_ticks = self
+            .diagnostics
+            .pgt_entry_pressure_extra_ticks
+            .saturating_add(extra_ticks);
+    }
+
+    pub(crate) fn note_pgt_taker_shadow_would_close(&mut self) {
+        self.diagnostics.pgt_taker_shadow_would_close = self
+            .diagnostics
+            .pgt_taker_shadow_would_close
+            .saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_taker_shadow_would_open(&mut self) {
+        self.diagnostics.pgt_taker_shadow_would_open = self
+            .diagnostics
+            .pgt_taker_shadow_would_open
+            .saturating_add(1);
+    }
 }
 
 impl StrategyKind {
@@ -172,6 +294,11 @@ impl StrategyKind {
             "completion_first" | "completion-first" | "completionfirst" | "xuan_clone"
             | "xuan-clone" | "xuanclone" => Some(Self::CompletionFirst),
             "pair_arb" | "pairarb" | "pair-arb" => Some(Self::PairArb),
+            "pair_gated_tranche_arb"
+            | "pair-gated-tranche-arb"
+            | "pairgatedtranchearb"
+            | "pgt_arb"
+            | "pgt-arb" => Some(Self::PairGatedTrancheArb),
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
             "oracle_lag_sniping" | "oraclelagsniping" | "oracle-lag-sniping"
@@ -193,6 +320,7 @@ impl StrategyKind {
             Self::GlftMm => "glft_mm",
             Self::CompletionFirst => "completion_first",
             Self::PairArb => "pair_arb",
+            Self::PairGatedTrancheArb => "pair_gated_tranche_arb",
             Self::DipBuy => "dip_buy",
             Self::PhaseBuilder => "phase_builder",
             Self::OracleLagSniping => "oracle_lag_sniping",
@@ -210,6 +338,11 @@ impl StrategyKind {
     }
 
     #[inline]
+    pub fn is_pair_gated_tranche_arb(self) -> bool {
+        matches!(self, Self::PairGatedTrancheArb)
+    }
+
+    #[inline]
     pub fn is_oracle_lag_sniping(self) -> bool {
         matches!(self, Self::OracleLagSniping)
     }
@@ -221,10 +354,11 @@ impl StrategyKind {
 
     pub(crate) fn execution_mode(self) -> StrategyExecutionMode {
         match self {
-            Self::GabagoolGrid | Self::GabagoolCorridor | Self::PairArb => {
-                StrategyExecutionMode::UnifiedBuys
-            }
-            Self::CompletionFirst => StrategyExecutionMode::UnifiedBuys,
+            Self::GabagoolGrid
+            | Self::GabagoolCorridor
+            | Self::CompletionFirst
+            | Self::PairArb
+            | Self::PairGatedTrancheArb => StrategyExecutionMode::UnifiedBuys,
             Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
             Self::DipBuy | Self::PhaseBuilder => StrategyExecutionMode::DirectionalHedgeOverlay,
@@ -276,6 +410,8 @@ pub(crate) struct StrategyTickInput<'a> {
     pub(crate) settled_inv: &'a InventoryState,
     pub(crate) working_inv: &'a InventoryState,
     pub(crate) inventory: &'a InventorySnapshot,
+    pub(crate) pair_ledger: &'a PairLedgerSnapshot,
+    pub(crate) episode_metrics: &'a EpisodeMetrics,
     pub(crate) book: &'a Book,
     pub(crate) metrics: &'a StrategyInventoryMetrics,
     pub(crate) ofi: Option<&'a OfiSnapshot>,
@@ -286,12 +422,13 @@ pub(crate) struct StrategyRegistry;
 
 impl StrategyRegistry {
     fn entries() -> &'static [&'static dyn QuoteStrategy] {
-        static ENTRIES: [&'static dyn QuoteStrategy; 8] = [
+        static ENTRIES: [&'static dyn QuoteStrategy; 9] = [
             &gabagool_grid::GABAGOOL_GRID_STRATEGY,
             &gabagool_corridor::GABAGOOL_CORRIDOR_STRATEGY,
             &glft_mm::GLFT_MM_STRATEGY,
             &completion_first::COMPLETION_FIRST_STRATEGY,
             &pair_arb::PAIR_ARB_STRATEGY,
+            &pair_gated_tranche::PAIR_GATED_TRANCHE_STRATEGY,
             &dip_buy::DIP_BUY_STRATEGY,
             &phase_builder::PHASE_BUILDER_STRATEGY,
             &post_close_hype::POST_CLOSE_HYPE_STRATEGY,
@@ -341,6 +478,10 @@ mod tests {
         );
         assert_eq!(StrategyKind::parse("pair_arb"), Some(StrategyKind::PairArb));
         assert_eq!(StrategyKind::parse("PAIR-ARB"), Some(StrategyKind::PairArb));
+        assert_eq!(
+            StrategyKind::parse("pair_gated_tranche_arb"),
+            Some(StrategyKind::PairGatedTrancheArb)
+        );
         assert_eq!(StrategyKind::parse("dipbuy"), Some(StrategyKind::DipBuy));
         assert_eq!(
             StrategyKind::parse("phase-builder"),
@@ -365,6 +506,7 @@ mod tests {
         assert!(names.contains(&"glft_mm"));
         assert!(names.contains(&"completion_first"));
         assert!(names.contains(&"pair_arb"));
+        assert!(names.contains(&"pair_gated_tranche_arb"));
         assert!(names.contains(&"dip_buy"));
         assert!(names.contains(&"phase_builder"));
         assert!(names.contains(&"oracle_lag_sniping"));

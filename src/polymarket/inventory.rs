@@ -13,6 +13,7 @@ use super::messages::{
 };
 use super::pair_ledger::{
     build_pair_ledger, PairLedgerBuildResult, PairLedgerEvent, PairLedgerEventKind, PathKind,
+    TrancheState,
 };
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
@@ -63,12 +64,7 @@ struct FillRecord {
     size: f64,
     price: f64,
     ts: Instant,
-}
-
-#[derive(Debug, Clone)]
-struct MergeRecord {
-    size: f64,
-    ts: Instant,
+    kind: PairLedgerEventKind,
 }
 
 #[derive(Debug, Clone)]
@@ -90,9 +86,7 @@ pub struct InventoryManager {
     fill_rx: mpsc::Receiver<InventoryEvent>,
     state_tx: watch::Sender<InventorySnapshot>,
     settled_ledger: Vec<FillRecord>,
-    pair_settled_fills: Vec<FillRecord>,
     pending_fills: Vec<PendingFillRecord>,
-    merge_history: Vec<MergeRecord>,
     matched_pending_events: u64,
     confirmed_promotions: u64,
     timeout_promotions: u64,
@@ -122,9 +116,7 @@ impl InventoryManager {
             fill_rx,
             state_tx,
             settled_ledger: Vec::new(),
-            pair_settled_fills: Vec::new(),
             pending_fills: Vec::new(),
-            merge_history: Vec::new(),
             matched_pending_events: 0,
             confirmed_promotions: 0,
             timeout_promotions: 0,
@@ -172,8 +164,12 @@ impl InventoryManager {
                                 }),
                             );
                         }
-                        InventoryEvent::Merge { full_set_size, merge_id, .. } => {
-                            self.apply_merge(full_set_size, &merge_id);
+                        InventoryEvent::Merge {
+                            full_set_size,
+                            merge_id,
+                            ts,
+                        } => {
+                            self.apply_merge(full_set_size, &merge_id, ts);
                             let _ = self.state_tx.send(self.snapshot);
                             info!(
                                 "📦 Merge sync: full_set={:.2} id={} → settled net={:.1} cost={:.4} || working net={:.1} cost={:.4} pending_yes={:.2} pending_no={:.2} fragile={}",
@@ -286,13 +282,7 @@ impl InventoryManager {
                         size: signed_size,
                         price: fill.price,
                         ts: fill.ts,
-                    });
-                    self.pair_settled_fills.push(FillRecord {
-                        side: fill.side,
-                        direction: fill.direction,
-                        size: signed_size,
-                        price: fill.price,
-                        ts: fill.ts,
+                        kind: PairLedgerEventKind::Fill,
                     });
                 }
             }
@@ -318,7 +308,7 @@ impl InventoryManager {
         self.recompute_snapshot();
     }
 
-    fn apply_merge(&mut self, full_set_size: f64, _merge_id: &str) {
+    fn apply_merge(&mut self, full_set_size: f64, _merge_id: &str, merge_ts: Instant) {
         let requested = full_set_size.max(0.0);
         if requested <= f64::EPSILON {
             return;
@@ -340,18 +330,16 @@ impl InventoryManager {
             direction: TradeDirection::Sell,
             size: -amount,
             price: current.yes_avg_cost.max(0.0),
-            ts: Instant::now(),
+            ts: merge_ts,
+            kind: PairLedgerEventKind::Merge,
         });
         self.settled_ledger.push(FillRecord {
             side: Side::No,
             direction: TradeDirection::Sell,
             size: -amount,
             price: current.no_avg_cost.max(0.0),
-            ts: Instant::now(),
-        });
-        self.merge_history.push(MergeRecord {
-            size: amount,
-            ts: Instant::now(),
+            ts: merge_ts,
+            kind: PairLedgerEventKind::Merge,
         });
 
         self.recompute_snapshot();
@@ -375,13 +363,7 @@ impl InventoryManager {
                 size: pending.size,
                 price: pending.price,
                 ts: pending.matched_at,
-            });
-            self.pair_settled_fills.push(FillRecord {
-                side: pending.side,
-                direction: pending.direction,
-                size: pending.size,
-                price: pending.price,
-                ts: pending.matched_at,
+                kind: PairLedgerEventKind::Fill,
             });
         }
 
@@ -402,6 +384,7 @@ impl InventoryManager {
             size: pending.size,
             price: pending.price,
             ts: pending.matched_at,
+            kind: PairLedgerEventKind::Fill,
         }));
         self.snapshot.working = Self::recompute_state_from_records(&working_records);
         self.snapshot.pending_yes_qty =
@@ -410,10 +393,10 @@ impl InventoryManager {
             (self.snapshot.working.no_qty - self.snapshot.settled.no_qty).max(0.0);
         self.snapshot.fragile =
             self.snapshot.pending_yes_qty > 1e-9 || self.snapshot.pending_no_qty > 1e-9;
-        let pair_result = self.recompute_pair_ledger();
-        self.snapshot.pair_ledger = pair_result.snapshot;
-        self.snapshot.episode_metrics = pair_result.episode_metrics;
-        self.emit_pair_ledger_events(prev, self.snapshot);
+        let ledger = self.build_pair_ledger_snapshot(&working_records);
+        self.snapshot.pair_ledger = ledger.snapshot;
+        self.snapshot.episode_metrics = ledger.episode_metrics;
+        self.emit_pair_ledger_events(prev);
     }
 
     fn recompute_state_from_records(records: &[FillRecord]) -> InventoryState {
@@ -538,13 +521,7 @@ impl InventoryManager {
                 size: pending.size,
                 price: price_override.unwrap_or(pending.price),
                 ts: pending.matched_at,
-            });
-            self.pair_settled_fills.push(FillRecord {
-                side: pending.side,
-                direction: pending.direction,
-                size: pending.size,
-                price: price_override.unwrap_or(pending.price),
-                ts: pending.matched_at,
+                kind: PairLedgerEventKind::Fill,
             });
             self.confirmed_promotions = self.confirmed_promotions.saturating_add(1);
             info!(
@@ -577,13 +554,7 @@ impl InventoryManager {
                     size: pending.size,
                     price: pending.price,
                     ts: pending.matched_at,
-                });
-                self.pair_settled_fills.push(FillRecord {
-                    side: pending.side,
-                    direction: pending.direction,
-                    size: pending.size,
-                    price: pending.price,
-                    ts: pending.matched_at,
+                    kind: PairLedgerEventKind::Fill,
                 });
                 self.timeout_promotions = self.timeout_promotions.saturating_add(1);
                 changed = true;
@@ -598,119 +569,178 @@ impl InventoryManager {
         changed
     }
 
-    fn recompute_pair_ledger(&self) -> PairLedgerBuildResult {
-        let mut events = Vec::with_capacity(
-            self.pair_settled_fills.len() + self.pending_fills.len() + self.merge_history.len(),
-        );
-        events.extend(self.pair_settled_fills.iter().map(|fill| PairLedgerEvent {
-            side: fill.side,
-            direction: fill.direction,
-            size: fill.size.abs(),
-            price: fill.price,
-            ts: fill.ts,
-            kind: PairLedgerEventKind::Fill,
-        }));
-        events.extend(self.pending_fills.iter().map(|pending| PairLedgerEvent {
-            side: pending.side,
-            direction: pending.direction,
-            size: pending.size.abs(),
-            price: pending.price,
-            ts: pending.matched_at,
-            kind: PairLedgerEventKind::Fill,
-        }));
-        events.extend(self.merge_history.iter().map(|merge| PairLedgerEvent {
-            side: Side::Yes,
-            direction: TradeDirection::Sell,
-            size: merge.size,
-            price: 0.0,
-            ts: merge.ts,
-            kind: PairLedgerEventKind::Merge,
-        }));
+    fn build_pair_ledger_snapshot(&self, working_records: &[FillRecord]) -> PairLedgerBuildResult {
+        let mut events = working_records
+            .iter()
+            .map(|record| PairLedgerEvent {
+                side: record.side,
+                direction: record.direction,
+                size: record.size.abs(),
+                price: record.price,
+                ts: record.ts,
+                kind: record.kind,
+            })
+            .collect::<Vec<_>>();
         events.sort_by_key(|event| event.ts);
         build_pair_ledger(&events, PathKind::MakerShadow)
     }
 
-    fn emit_pair_ledger_events(&self, prev: InventorySnapshot, next: InventorySnapshot) {
+    fn emit_pair_ledger_events(&self, prev: InventorySnapshot) {
+        let curr = self.snapshot;
         let prev_active = prev.pair_ledger.active_tranche;
-        let next_active = next.pair_ledger.active_tranche;
-        if prev_active.map(|t| {
-            (
-                t.id,
-                t.state,
-                t.residual_qty,
-                t.pairable_qty,
-                t.same_side_add_count,
-            )
-        }) != next_active.map(|t| {
-            (
-                t.id,
-                t.state,
-                t.residual_qty,
-                t.pairable_qty,
-                t.same_side_add_count,
-            )
-        }) {
+        let curr_active = curr.pair_ledger.active_tranche;
+        let prev_closed = prev.pair_ledger.recent_closed[0];
+        let curr_closed = curr.pair_ledger.recent_closed[0];
+
+        if prev_active.is_none() && curr_active.is_some() {
+            if let Some(active) = curr_active {
+                self.emit_inventory_event(
+                    "tranche_opened",
+                    serde_json::json!({
+                        "tranche_id": active.id,
+                        "first_side": active.first_side.map(|side| side.as_str()),
+                        "first_qty": active.first_qty,
+                        "first_vwap": active.first_vwap,
+                        "same_side_add_count": active.same_side_add_count,
+                        "state": format!("{:?}", active.state),
+                        "path_kind": format!("{:?}", active.path_kind),
+                    }),
+                );
+            }
+        }
+
+        if prev_active.map(|tranche| tranche.state) != curr_active.map(|tranche| tranche.state) {
+            if let Some(active) =
+                curr_active.filter(|active| active.state == TrancheState::CompletionOnly)
+            {
+                self.emit_inventory_event(
+                    "tranche_entered_completion_only",
+                    serde_json::json!({
+                        "tranche_id": active.id,
+                        "residual_qty": active.residual_qty,
+                        "pairable_qty": active.pairable_qty,
+                        "same_side_add_count": active.same_side_add_count,
+                        "pair_cost_tranche": active.pair_cost_tranche,
+                        "pair_cost_fifo_ref": active.pair_cost_fifo_ref,
+                    }),
+                );
+            }
+        }
+
+        if prev_closed.map(|tranche| tranche.id) != curr_closed.map(|tranche| tranche.id) {
+            if let Some(closed) = curr_closed {
+                self.emit_inventory_event(
+                    "tranche_pair_covered",
+                    serde_json::json!({
+                        "tranche_id": closed.id,
+                        "pairable_qty": closed.pairable_qty,
+                        "pair_cost_tranche": closed.pair_cost_tranche,
+                        "pair_cost_fifo_ref": closed.pair_cost_fifo_ref,
+                        "gross_surplus": closed.gross_surplus,
+                        "spendable_surplus": closed.spendable_surplus,
+                    }),
+                );
+            }
+        }
+
+        if let (Some(prev_active), Some(curr_active)) = (prev_active, curr_active) {
+            if prev_active.id == curr_active.id
+                && curr_active.first_qty > prev_active.first_qty + 1e-9
+                && curr_active.hedge_qty <= prev_active.hedge_qty + 1e-9
+            {
+                self.emit_inventory_event(
+                    "same_side_add_before_covered",
+                    serde_json::json!({
+                        "tranche_id": curr_active.id,
+                        "prev_first_qty": prev_active.first_qty,
+                        "curr_first_qty": curr_active.first_qty,
+                        "same_side_add_count": curr_active.same_side_add_count,
+                        "same_side_add_qty_ratio": curr.episode_metrics.same_side_add_qty_ratio,
+                    }),
+                );
+            }
+        }
+
+        if prev_active.map(|tranche| tranche.id) != curr_active.map(|tranche| tranche.id)
+            && prev_closed.map(|tranche| tranche.id) != curr_closed.map(|tranche| tranche.id)
+            && curr_active.is_some()
+        {
+            if let Some(active) = curr_active {
+                self.emit_inventory_event(
+                    "tranche_overshoot_rolled",
+                    serde_json::json!({
+                        "new_tranche_id": active.id,
+                        "first_side": active.first_side.map(|side| side.as_str()),
+                        "first_qty": active.first_qty,
+                    }),
+                );
+            }
+        }
+
+        if (curr.pair_ledger.surplus_bank - prev.pair_ledger.surplus_bank).abs() > 1e-9 {
             self.emit_inventory_event(
-                "pair_tranche_events",
+                "surplus_bank_updated",
                 serde_json::json!({
-                    "active_tranche_id": next_active.map(|t| t.id),
-                    "active_state": next_active.map(|t| format!("{:?}", t.state)),
-                    "first_side": next_active.and_then(|t| t.first_side).map(|s| s.as_str()),
-                    "residual_qty": next_active.map(|t| t.residual_qty).unwrap_or(0.0),
-                    "pairable_qty": next_active.map(|t| t.pairable_qty).unwrap_or(0.0),
-                    "same_side_add_count": next_active.map(|t| t.same_side_add_count).unwrap_or(0),
-                    "buy_fill_count": next.pair_ledger.buy_fill_count,
-                    "clean_closed_episode_ratio": next.episode_metrics.clean_closed_episode_ratio,
-                    "same_side_add_qty_ratio": next.episode_metrics.same_side_add_qty_ratio,
-                    "episode_close_delay_p50": next.episode_metrics.episode_close_delay_p50,
-                    "episode_close_delay_p90": next.episode_metrics.episode_close_delay_p90,
+                    "surplus_bank": curr.pair_ledger.surplus_bank,
+                    "repair_budget_available": curr.pair_ledger.repair_budget_available,
                 }),
             );
         }
 
-        if (prev.pair_ledger.surplus_bank - next.pair_ledger.surplus_bank).abs() > 1e-9
-            || (prev.pair_ledger.repair_budget_available - next.pair_ledger.repair_budget_available)
-                .abs()
-                > 1e-9
+        if curr.pair_ledger.repair_budget_available + 1e-9
+            < prev.pair_ledger.repair_budget_available
         {
             self.emit_inventory_event(
-                "pair_budget_events",
+                "repair_budget_spent",
                 serde_json::json!({
-                    "surplus_bank": next.pair_ledger.surplus_bank,
-                    "repair_budget_available": next.pair_ledger.repair_budget_available,
+                    "before": prev.pair_ledger.repair_budget_available,
+                    "after": curr.pair_ledger.repair_budget_available,
                 }),
             );
         }
 
-        let prev_cap = prev.pair_ledger.capital_state;
-        let next_cap = next.pair_ledger.capital_state;
-        if (prev_cap.working_capital - next_cap.working_capital).abs() > 1e-9
-            || (prev_cap.mergeable_full_sets - next_cap.mergeable_full_sets).abs() > 1e-9
-            || prev_cap.would_block_new_open_due_to_capital
-                != next_cap.would_block_new_open_due_to_capital
-            || prev_cap.would_trigger_merge_due_to_capital
-                != next_cap.would_trigger_merge_due_to_capital
-        {
+        if curr.pair_ledger.total_pairable_qty() + 1e-9 < prev.pair_ledger.total_pairable_qty() {
             self.emit_inventory_event(
-                "capital_state_events",
+                "merge_pairable_reduced",
                 serde_json::json!({
-                    "working_capital": next_cap.working_capital,
-                    "locked_in_active_tranches": next_cap.locked_in_active_tranches,
-                    "locked_in_pair_covered": next_cap.locked_in_pair_covered,
-                    "mergeable_full_sets": next_cap.mergeable_full_sets,
-                    "locked_capital_ratio": next_cap.locked_capital_ratio,
-                    "would_block_new_open_due_to_capital": next_cap.would_block_new_open_due_to_capital,
-                    "would_trigger_merge_due_to_capital": next_cap.would_trigger_merge_due_to_capital,
-                    "capital_pressure_merge_batch_shadow": next_cap.capital_pressure_merge_batch_shadow,
+                    "before": prev.pair_ledger.total_pairable_qty(),
+                    "after": curr.pair_ledger.total_pairable_qty(),
                 }),
             );
         }
+
+        self.emit_inventory_event(
+            "capital_state_snapshot",
+            serde_json::json!({
+                "working_capital": curr.pair_ledger.capital_state.working_capital,
+                "locked_in_active_tranches": curr.pair_ledger.capital_state.locked_in_active_tranches,
+                "locked_in_pair_covered": curr.pair_ledger.capital_state.locked_in_pair_covered,
+                "mergeable_full_sets": curr.pair_ledger.capital_state.mergeable_full_sets,
+                "locked_capital_ratio": curr.pair_ledger.capital_state.locked_capital_ratio,
+                "would_block_new_open_due_to_capital": curr.pair_ledger.capital_state.would_block_new_open_due_to_capital,
+                "would_trigger_merge_due_to_capital": curr.pair_ledger.capital_state.would_trigger_merge_due_to_capital,
+                "capital_pressure_merge_batch_shadow": curr.pair_ledger.capital_state.capital_pressure_merge_batch_shadow,
+                "clean_closed_episode_ratio": curr.episode_metrics.clean_closed_episode_ratio,
+                "same_side_add_qty_ratio": curr.episode_metrics.same_side_add_qty_ratio,
+                "residual_before_new_open_p90": curr.episode_metrics.residual_before_new_open_p90,
+                "episode_close_delay_p50": curr.episode_metrics.episode_close_delay_p50,
+                "episode_close_delay_p90": curr.episode_metrics.episode_close_delay_p90,
+                "round_buy_fill_count": curr.episode_metrics.round_buy_fill_count,
+                "conditional_second_same_side_would_allow": curr.episode_metrics.conditional_second_same_side_would_allow,
+            }),
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polymarket::recorder::{
+        RecorderConfig, RecorderHandle, RecorderMarketMode, RecorderSessionMeta,
+    };
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn make_fill(side: Side, size: f64, price: f64) -> FillEvent {
         FillEvent {
@@ -728,6 +758,14 @@ mod tests {
         let (state_tx, _state_rx) = watch::channel(InventorySnapshot::default());
         let (_fill_tx, fill_rx) = mpsc::channel(16);
         InventoryManager::new(InventoryConfig::default(), fill_rx, state_tx, None, None)
+    }
+
+    fn temp_root(prefix: &str) -> PathBuf {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        std::env::temp_dir().join(format!("pm_as_ofi_{}_{}", prefix, ts))
     }
 
     #[test]
@@ -803,7 +841,7 @@ mod tests {
         };
         im.apply_fill(&yes);
         im.apply_fill(&no);
-        im.apply_merge(4.0, "m1");
+        im.apply_merge(4.0, "m1", Instant::now());
         assert!((im.snapshot.settled.yes_qty - 6.0).abs() < 1e-9);
         assert!((im.snapshot.settled.no_qty - 6.0).abs() < 1e-9);
         assert!((im.snapshot.settled.yes_avg_cost - 0.40).abs() < 1e-9);
@@ -848,45 +886,12 @@ mod tests {
         assert!((im.snapshot.pending_no_qty - 5.0).abs() < 1e-9);
         assert!(im.snapshot.fragile);
 
-        im.apply_merge(15.0, "m2");
+        im.apply_merge(15.0, "m2", Instant::now());
         assert!(im.snapshot.working.net_diff.abs() < 1e-9);
         assert!(im.snapshot.settled.net_diff.abs() < 1e-9);
         assert!(im.snapshot.pending_no_qty.abs() < 1e-9);
         assert!(im.snapshot.pending_yes_qty.abs() < 1e-9);
         assert!(!im.snapshot.fragile);
-    }
-
-    #[test]
-    fn pair_ledger_snapshot_tracks_active_completion_state() {
-        let mut im = make_manager();
-        let yes = FillEvent {
-            order_id: "yes-1".to_string(),
-            side: Side::Yes,
-            direction: TradeDirection::Buy,
-            filled_size: 10.0,
-            price: 0.42,
-            status: FillStatus::Confirmed,
-            ts: Instant::now(),
-        };
-        let no = FillEvent {
-            order_id: "no-1".to_string(),
-            side: Side::No,
-            direction: TradeDirection::Buy,
-            filled_size: 6.0,
-            price: 0.53,
-            status: FillStatus::Confirmed,
-            ts: Instant::now(),
-        };
-        im.apply_fill(&yes);
-        im.apply_fill(&no);
-        let active = im
-            .snapshot
-            .pair_ledger
-            .active_tranche
-            .expect("active tranche");
-        assert_eq!(active.first_side, Some(Side::Yes));
-        assert!((active.residual_qty - 4.0).abs() < 1e-9);
-        assert!((im.snapshot.pair_ledger.repair_budget_available).abs() < 1e-9);
     }
 
     #[test]
@@ -902,5 +907,65 @@ mod tests {
         });
         assert!((im.snapshot.settled.no_qty - 5.0).abs() < 1e-9);
         assert!((im.snapshot.working.no_qty - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn run_loop_fill_emits_tranche_events_to_recorder() {
+        let root = temp_root("inventory_recorder");
+        let recorder = RecorderHandle::from_config(&RecorderConfig {
+            enabled: true,
+            root: root.clone(),
+            md_queue_cap: 32,
+            ops_queue_cap: 32,
+            flush_every: Duration::from_millis(5),
+            market_mode: RecorderMarketMode::Structured,
+        });
+        let meta = RecorderSessionMeta {
+            slug: "btc-updown-5m-test".to_string(),
+            condition_id: "0xcond".to_string(),
+            market_id: "0xmarket".to_string(),
+            strategy: "pair_gated_tranche_arb".to_string(),
+            dry_run: true,
+        };
+
+        let (event_tx, event_rx) = mpsc::channel(8);
+        let (state_tx, _state_rx) = watch::channel(InventorySnapshot::default());
+        let manager = InventoryManager::new(
+            InventoryConfig::default(),
+            event_rx,
+            state_tx,
+            Some(recorder),
+            Some(meta),
+        );
+        let handle = tokio::spawn(manager.run());
+        let _ = event_tx
+            .send(InventoryEvent::Fill(FillEvent {
+                order_id: "dry-fill-1".to_string(),
+                side: Side::Yes,
+                direction: TradeDirection::Buy,
+                filled_size: 5.0,
+                price: 0.48,
+                status: FillStatus::Confirmed,
+                ts: Instant::now(),
+            }))
+            .await;
+        drop(event_tx);
+        let _ = handle.await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+
+        let date_dir = fs::read_dir(&root)
+            .expect("date dir should exist")
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| p.is_dir())
+            .expect("one date dir");
+        let events_path = date_dir.join("btc-updown-5m-test").join("events.jsonl");
+        let text = fs::read_to_string(&events_path).expect("events.jsonl should exist");
+        assert!(
+            text.contains("\"event\":\"tranche_opened\""),
+            "expected tranche_opened in events stream, got: {}",
+            text
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

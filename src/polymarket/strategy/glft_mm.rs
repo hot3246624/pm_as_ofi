@@ -337,6 +337,17 @@ mod tests {
         }
     }
 
+    fn test_inventory_snapshot(inv: InventoryState) -> InventorySnapshot {
+        InventorySnapshot {
+            settled: inv,
+            working: inv,
+            pending_yes_qty: 0.0,
+            pending_no_qty: 0.0,
+            fragile: false,
+            ..InventorySnapshot::default()
+        }
+    }
+
     #[test]
     fn glft_requires_live_signal() {
         let mut cfg = crate::polymarket::coordinator::CoordinatorConfig::default();
@@ -356,21 +367,16 @@ mod tests {
         };
         let metrics = coord.derive_inventory_metrics(&inv);
         let snapshot = GlftSignalSnapshot::default();
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -402,21 +408,16 @@ mod tests {
         };
         let metrics = coord.derive_inventory_metrics(&inv);
         let snapshot = live_snapshot();
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -449,21 +450,16 @@ mod tests {
         snapshot.modeled_mid = 0.99;
         snapshot.synthetic_mid_yes = 0.48;
         snapshot.trusted_mid = 0.52;
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -500,21 +496,16 @@ mod tests {
         snapshot.basis_drift_ticks = 11.0;
         snapshot.quote_regime = QuoteRegime::Guarded;
         snapshot.drift_mode = DriftMode::Frozen;
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -550,21 +541,16 @@ mod tests {
         };
         let metrics = coord.derive_inventory_metrics(&inv);
         let snapshot = live_snapshot();
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -610,21 +596,16 @@ mod tests {
         snapshot.synthetic_mid_yes = 0.35;
         snapshot.quote_regime = QuoteRegime::Guarded;
         snapshot.drift_mode = DriftMode::Frozen;
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -658,21 +639,16 @@ mod tests {
         snapshot.synthetic_mid_yes = 0.65;
         snapshot.quote_regime = QuoteRegime::Guarded;
         snapshot.drift_mode = DriftMode::Frozen;
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -706,21 +682,16 @@ mod tests {
         snapshot.synthetic_mid_yes = 0.25;
         snapshot.quote_regime = QuoteRegime::Tracking;
         snapshot.drift_mode = DriftMode::Damped;
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,
@@ -758,21 +729,16 @@ mod tests {
         snapshot.synthetic_mid_yes = 0.12;
         snapshot.quote_regime = QuoteRegime::Aligned;
         snapshot.drift_mode = DriftMode::Normal;
+        let inventory = test_inventory_snapshot(inv);
         let quotes = StrategyKind::GlftMm.compute_quotes(
             &coord,
             StrategyTickInput {
                 inv: &inv,
                 settled_inv: &inv,
                 working_inv: &inv,
-                inventory: &crate::polymarket::messages::InventorySnapshot {
-                    settled: inv,
-                    working: inv,
-                    pending_yes_qty: 0.0,
-                    pending_no_qty: 0.0,
-                    fragile: false,
-                    pair_ledger: Default::default(),
-                    episode_metrics: Default::default(),
-                },
+                inventory: &inventory,
+                pair_ledger: &inventory.pair_ledger,
+                episode_metrics: &inventory.episode_metrics,
                 book: &book,
                 metrics: &metrics,
                 ofi: None,

@@ -10,6 +10,77 @@ use crate::polymarket::glft::{
 use super::*;
 
 impl StrategyCoordinator {
+    fn dry_run_execute_enabled_for_maker(&self, reason: BidReason) -> bool {
+        if !self.cfg.dry_run {
+            return true;
+        }
+        // oracle_lag keeps its dedicated preview/execute split; all other strategies
+        // should flow through OMS/executor in dry-run so recorder/inventory shadow
+        // signals are actually produced.
+        !(self.cfg.strategy.is_oracle_lag_sniping() && reason == BidReason::OracleLagProvide)
+    }
+
+    fn maybe_note_pgt_post_close_reopen_attempt(&mut self, slot: OrderSlot, reason: BidReason) {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb()
+            || slot.direction != TradeDirection::Buy
+            || reason != BidReason::Provide
+        {
+            return;
+        }
+        let snapshot = self.current_inventory_snapshot();
+        let has_recent_closed_pair = snapshot
+            .pair_ledger
+            .recent_closed
+            .iter()
+            .flatten()
+            .any(|tranche| tranche.pairable_qty > f64::EPSILON);
+        if snapshot.pair_ledger.active_tranche.is_some()
+            || !has_recent_closed_pair
+            || snapshot.pair_ledger.residual_qty.abs() > 10.0
+            || snapshot.working.net_diff.abs() > PAIR_ARB_NET_EPS
+            || snapshot.episode_metrics.round_buy_fill_count < 2
+        {
+            return;
+        }
+        let fill_count = snapshot.episode_metrics.round_buy_fill_count;
+        if self.pgt_post_close_reopen_attempted_fill_count != Some(fill_count) {
+            info!(
+                "🧭 pgt_post_close_reopen_attempt_latched | slot={} side={:?} fill_count={} price_basis=seed",
+                slot.as_str(),
+                slot.side,
+                fill_count
+            );
+        }
+        self.pgt_post_close_reopen_attempted_fill_count = Some(fill_count);
+    }
+
+    fn oracle_lag_dryrun_execute_enabled(&self, purpose: TradePurpose) -> bool {
+        if !self.cfg.dry_run || !self.cfg.strategy.is_oracle_lag_sniping() {
+            return false;
+        }
+        if !matches!(purpose, TradePurpose::OracleLagSnipe) {
+            return false;
+        }
+        std::env::var("PM_ORACLE_LAG_DRYRUN_EXECUTE")
+            .ok()
+            .map(|v| {
+                let v = v.trim().to_ascii_lowercase();
+                v == "1" || v == "true" || v == "yes" || v == "on"
+            })
+            .unwrap_or(false)
+    }
+
+    fn pgt_shadow_taker_dryrun_execute_enabled(
+        &self,
+        direction: TradeDirection,
+        purpose: TradePurpose,
+    ) -> bool {
+        self.cfg.dry_run
+            && self.cfg.strategy.is_pair_gated_tranche_arb()
+            && direction == TradeDirection::Buy
+            && matches!(purpose, TradePurpose::Provide | TradePurpose::Hedge)
+    }
+
     fn reset_oracle_lag_hint_book_cache(&mut self) {
         self.post_close_hint_winner_bid = 0.0;
         self.post_close_hint_winner_ask_raw = 0.0;
@@ -192,12 +263,86 @@ impl StrategyCoordinator {
         reason: BidReason,
         log_msg: Option<String>,
     ) {
+        let pgt_expected_epoch = if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+        {
+            self.slot_pgt_intent_epochs[slot.index()]
+        } else {
+            None
+        };
+        let pgt_current_epoch = if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+        {
+            Some(self.pgt_decision_epoch)
+        } else {
+            None
+        };
+        if let (Some(expected_epoch), Some(current_epoch)) = (pgt_expected_epoch, pgt_current_epoch)
+        {
+            if expected_epoch != current_epoch {
+                self.slot_pgt_intent_epochs[slot.index()] = None;
+                self.stats.pgt_stale_target_dropped =
+                    self.stats.pgt_stale_target_dropped.saturating_add(1);
+                info!(
+                    "🧭 pgt_stale_target_dropped | slot={} pgt_target_epoch={} pgt_current_epoch={} target_price={:.4} target_size={:.2} reason={:?}",
+                    slot.as_str(),
+                    expected_epoch,
+                    current_epoch,
+                    price,
+                    size,
+                    reason,
+                );
+                return;
+            }
+        }
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && slot.direction == TradeDirection::Buy {
+            self.slot_pgt_intent_epochs[slot.index()] = None;
+        }
+        if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+            && self.pgt_same_side_release_quarantine_until[slot.side.index()]
+                .is_some_and(|until| until > Instant::now())
+        {
+            debug!(
+                "🧭 PGT stale place/reprice suppressed | slot={} reason={:?}",
+                slot.as_str(),
+                reason
+            );
+            return;
+        }
+        if self.cfg.strategy.is_oracle_lag_sniping()
+            && self.cfg.oracle_lag_sniping.lab_only
+            && reason == BidReason::OracleLagProvide
+        {
+            info!(
+                "🧪 oracle_lag_lab_skip_maker | slot={} side={:?} direction={:?} price={:.4} size={:.4} reason={:?}",
+                slot.as_str(),
+                slot.side,
+                slot.direction,
+                price,
+                size,
+                reason
+            );
+            return;
+        }
         let current_target = self.slot_target(slot).cloned();
         let last_ts = self.slot_last_ts(slot);
         let active = current_target.is_some();
         let slot_price = current_target.as_ref().map(|t| t.price).unwrap_or(0.0);
         let slot_size = current_target.as_ref().map(|t| t.size).unwrap_or(0.0);
         let slot_direction = current_target.as_ref().map(|t| t.direction);
+        let slot_reason = current_target.as_ref().map(|t| t.reason);
+        if self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+            && active
+            && slot_reason == Some(BidReason::Provide)
+            && reason == BidReason::Hedge
+            && slot_price.is_finite()
+            && slot_price > 0.0
+            && price < slot_price - 1e-9
+        {
+            price = slot_price;
+        }
         let now = Instant::now();
         let reprice_eps = 1e-9;
         let raw_target_price = price;
@@ -591,11 +736,24 @@ impl StrategyCoordinator {
             } else {
                 price_gap >= (reprice_band - reprice_eps).max(0.0)
             };
+            let pgt_reason_changed = self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot.direction == TradeDirection::Buy
+                && active
+                && slot_reason != Some(reason);
+            let pgt_ignore_size_only_reprice = self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot.direction == TradeDirection::Buy
+                && active
+                && slot_direction == Some(slot.direction)
+                && slot_reason == Some(reason)
+                && price_gap <= reprice_eps;
+            let size_change_triggers_reprice =
+                (slot_size - size).abs() > 0.1 && !pgt_ignore_size_only_reprice;
             let mut needs_reprice = force_glft_drift_reprice
                 || cross_reprice_override
                 || slot_direction != Some(slot.direction)
                 || price_gap_triggers_reprice
-                || (slot_size - size).abs() > 0.1;
+                || size_change_triggers_reprice
+                || pgt_reason_changed;
             if pair_arb_cross_reject_reprice_pending {
                 needs_reprice = true;
             }
@@ -629,6 +787,44 @@ impl StrategyCoordinator {
             if pair_arb_force_freshness_republish {
                 needs_reprice = true;
             }
+            let pgt_buy_retain_candidate = self.cfg.strategy.is_pair_gated_tranche_arb()
+                && slot_direction == Some(slot.direction)
+                && slot.direction == TradeDirection::Buy
+                && (reason == BidReason::Provide || (slot_size - size).abs() <= 0.1);
+            if needs_reprice && pgt_buy_retain_candidate {
+                if slot_reason != Some(reason) {
+                    debug!(
+                        "🔁 PGT mode-transition reprice {:?}: live_reason={:?} new_reason={:?} strategic_target={:.4} live={:.4}",
+                        slot, slot_reason, reason, price, slot_price,
+                    );
+                } else {
+                    let tick = self.cfg.tick_size.max(1e-9);
+                    let delta_ticks = (price - slot_price) / tick;
+                    let slot_age = self.slot_last_ts(slot).elapsed();
+                    let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+                    let (retain, retain_reason) =
+                        self.pgt_buy_retain_decision(reason, delta_ticks, slot_age, remaining_secs);
+                    if retain {
+                        self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                        self.stats.pgt_dispatch_retain =
+                            self.stats.pgt_dispatch_retain.saturating_add(1);
+                        debug!(
+                            "🔒 PGT retain {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                            slot, retain_reason, price, slot_price, delta_ticks,
+                        );
+                        return;
+                    }
+                    debug!(
+                        "🔁 PGT reprice {:?}: reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
+                        slot, retain_reason, price, slot_price, delta_ticks,
+                    );
+                }
+            }
+            if !needs_reprice && pgt_buy_retain_candidate {
+                self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
+                self.stats.pgt_dispatch_retain = self.stats.pgt_dispatch_retain.saturating_add(1);
+                return;
+            }
             // PairArb is BUY-only and pair-cost-first:
             // both candidate roles are state/event-driven and hold between
             // discrete triggers (fill/failed/merge/phase/reset).
@@ -656,18 +852,18 @@ impl StrategyCoordinator {
                     self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                     debug!(
                         "🔒 PairArb retain {:?}: candidate_role={:?} retain_block_reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                        slot,
-                        pair_arb_risk_effect,
-                        retain_reason,
-                        price,
-                        slot_price,
-                        delta_ticks,
+                        slot, pair_arb_risk_effect, retain_reason, price, slot_price, delta_ticks,
                     );
                     return;
                 }
                 debug!(
                     "🔁 PairArb freshness reprice {:?}: candidate_role={:?} reason={} strategic_target={:.4} live={:.4} delta_ticks={:.2}",
-                    slot, pair_arb_risk_effect, pair_arb_freshness_reason, price, slot_price, delta_ticks,
+                    slot,
+                    pair_arb_risk_effect,
+                    pair_arb_freshness_reason,
+                    price,
+                    slot_price,
+                    delta_ticks,
                 );
             }
             if glft_shadow_mode && publish_reason.is_none() && needs_reprice {
@@ -1042,6 +1238,64 @@ impl StrategyCoordinator {
         self.clear_slot_target_with_scope(slot, reason, scope).await;
     }
 
+    pub(super) async fn force_clear_slot_target(
+        &mut self,
+        slot: OrderSlot,
+        reason: CancelReason,
+        scope: SlotResetScope,
+        context: &'static str,
+    ) {
+        if self.slot_target(slot).is_some() {
+            self.clear_slot_target_with_scope(slot, reason, scope).await;
+            return;
+        }
+
+        self.slot_shadow_targets[slot.index()] = None;
+        self.slot_shadow_since[slot.index()] = None;
+        self.slot_last_publish_reason[slot.index()] = None;
+        self.slot_pair_arb_state_keys[slot.index()] = None;
+        self.slot_pair_arb_intent_state_keys[slot.index()] = None;
+        self.slot_pair_arb_target_epochs[slot.index()] = None;
+        self.slot_pair_arb_intent_epochs[slot.index()] = None;
+        self.slot_pgt_target_epochs[slot.index()] = None;
+        self.slot_pgt_intent_epochs[slot.index()] = None;
+        self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
+        self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
+        self.slot_pair_arb_state_republish_latched[slot.index()] = false;
+        match scope {
+            SlotResetScope::Soft => self.soft_reset_slot_publish_state(slot),
+            SlotResetScope::Full => self.full_reset_slot_publish_state(slot),
+        }
+        match slot {
+            OrderSlot::YES_BUY => self.yes_target = None,
+            OrderSlot::NO_BUY => self.no_target = None,
+            _ => {}
+        }
+        self.sync_buy_side_wrapper(slot);
+
+        debug!(
+            "🗑️ ForceCancel {} ({:?}, {:?}) context={}",
+            slot.as_str(),
+            reason,
+            scope,
+            context
+        );
+        if self.cfg.dry_run {
+            info!(
+                "📝 DRY force cancel {} ({:?}, {:?}) context={}",
+                slot.as_str(),
+                reason,
+                scope,
+                context
+            );
+        }
+
+        let _ = self
+            .om_tx
+            .send(OrderManagerCmd::ClearTarget { slot, reason })
+            .await;
+    }
+
     pub(super) async fn clear_slot_target_with_scope(
         &mut self,
         slot: OrderSlot,
@@ -1055,6 +1309,16 @@ impl StrategyCoordinator {
         let was_oracle_lag_maker = self
             .slot_target(slot)
             .is_some_and(|t| t.reason == BidReason::OracleLagProvide);
+        let pgt_seed_reprice_clear = self.cfg.strategy.is_pair_gated_tranche_arb()
+            && slot.direction == TradeDirection::Buy
+            && reason == CancelReason::Reprice
+            && self
+                .slot_target(slot)
+                .is_some_and(|t| t.reason == BidReason::Provide);
+        if pgt_seed_reprice_clear {
+            self.pgt_same_side_release_quarantine_until[slot.side.index()] =
+                Some(Instant::now() + Duration::from_millis(PGT_SAME_SIDE_RELEASE_QUARANTINE_MS));
+        }
         self.note_cancel_reason(reason);
 
         self.slot_targets[slot.index()] = None;
@@ -1065,6 +1329,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_intent_state_keys[slot.index()] = None;
         self.slot_pair_arb_target_epochs[slot.index()] = None;
         self.slot_pair_arb_intent_epochs[slot.index()] = None;
+        self.slot_pgt_target_epochs[slot.index()] = None;
+        self.slot_pgt_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = false;
         self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
         self.slot_pair_arb_state_republish_latched[slot.index()] = false;
@@ -1093,7 +1359,6 @@ impl StrategyCoordinator {
                 reason,
                 scope
             );
-            return;
         }
 
         let _ = self
@@ -1116,6 +1381,8 @@ impl StrategyCoordinator {
         self.slot_pair_arb_intent_state_keys[slot.index()] = None;
         self.slot_pair_arb_target_epochs[slot.index()] = None;
         self.slot_pair_arb_intent_epochs[slot.index()] = None;
+        self.slot_pgt_target_epochs[slot.index()] = None;
+        self.slot_pgt_intent_epochs[slot.index()] = None;
         self.slot_pair_arb_fill_recheck_pending[slot.index()] = true;
         self.slot_pair_arb_cross_reject_reprice_pending[slot.index()] = false;
         self.slot_pair_arb_state_republish_latched[slot.index()] = false;
@@ -1144,7 +1411,21 @@ impl StrategyCoordinator {
         size: f64,
         purpose: TradePurpose,
         limit_price: Option<f64>,
+        expected_fill_price: Option<f64>,
     ) {
+        if self.cfg.strategy.is_oracle_lag_sniping() && self.cfg.oracle_lag_sniping.lab_only {
+            info!(
+                "🧪 oracle_lag_lab_skip_taker | side={:?} direction={:?} size={:.4} purpose={:?} limit_price={}",
+                side,
+                direction,
+                size,
+                purpose,
+                limit_price
+                    .map(|p| format!("{p:.4}"))
+                    .unwrap_or_else(|| "none".to_string())
+            );
+            return;
+        }
         let rounded = (size * 100.0).floor() / 100.0;
         if rounded < 0.01 {
             debug!(
@@ -1207,12 +1488,7 @@ impl StrategyCoordinator {
                 if limit + 1e-9 < winner_ask {
                     info!(
                         "⏭️ oracle_lag_taker_submit_skip | side={:?} reason=limit_below_live_ask winner_bid={:.4} winner_ask={:.4} limit={:.4} quality_source={} purpose={:?}",
-                        side,
-                        winner_bid,
-                        winner_ask,
-                        limit,
-                        quality_source,
-                        purpose
+                        side, winner_bid, winner_ask, limit, quality_source, purpose
                     );
                     return;
                 }
@@ -1227,7 +1503,9 @@ impl StrategyCoordinator {
                 self.clear_slot_target(slot, CancelReason::Reprice).await;
             }
         }
-        if self.cfg.dry_run {
+        let dryrun_execute = self.oracle_lag_dryrun_execute_enabled(purpose)
+            || self.pgt_shadow_taker_dryrun_execute_enabled(direction, purpose);
+        if self.cfg.dry_run && !dryrun_execute {
             let order_type = if limit_price.is_some() {
                 "FAK"
             } else {
@@ -1252,6 +1530,22 @@ impl StrategyCoordinator {
             );
             return;
         }
+        if dryrun_execute {
+            info!(
+                "🧪 dry_taker_execute | strategy={:?} side={:?} direction={:?} purpose={:?} limit_price={} expected_fill_price={} size={:.2}",
+                self.cfg.strategy,
+                side,
+                direction,
+                purpose,
+                limit_price
+                    .map(|p| format!("{p:.4}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                expected_fill_price
+                    .map(|p| format!("{p:.4}"))
+                    .unwrap_or_else(|| "none".to_string()),
+                rounded,
+            );
+        }
         let _ = self
             .om_tx
             .send(OrderManagerCmd::OneShotTakerHedge {
@@ -1260,6 +1554,7 @@ impl StrategyCoordinator {
                 size: rounded,
                 purpose,
                 limit_price,
+                expected_fill_price,
             })
             .await;
     }
@@ -1286,6 +1581,7 @@ impl StrategyCoordinator {
                 sell_size,
                 TradePurpose::Exit,
                 None,
+                None,
             )
             .await;
         }
@@ -1305,6 +1601,7 @@ impl StrategyCoordinator {
                 TradeDirection::Buy,
                 shortfall,
                 TradePurpose::Exit,
+                None,
                 None,
             )
             .await;
@@ -1416,6 +1713,11 @@ impl StrategyCoordinator {
                 self.post_close_hint_winner_ask_raw = hint_winner_ask_raw.max(0.0);
                 self.post_close_hint_book_source = winner_book_source;
                 self.post_close_hint_distance_to_final_ms = winner_distance_to_final_ms;
+                if let Some(shared) = &self.shared_post_close_winner_side {
+                    if let Ok(mut slot) = shared.lock() {
+                        *slot = Some(side);
+                    }
+                }
                 if changed {
                     info!(
                         "🏁 post_close winner hint | slug={} hint_id={} side={:?} source={:?} open_exact={} observed={:.4} ref={:.4} final_detect_unix_ms={} emit_unix_ms={} evidence_recv_ms={} evidence_to_final_ms={} new_hint_round={}",
@@ -1478,7 +1780,12 @@ impl StrategyCoordinator {
                     }
                     info!(
                         "🧭 oracle_lag_order_mode | mode=winner_hint_immediate slug={} hint_id={} side={:?} source={:?} hint_book_source={} hint_distance_to_final_ms={}",
-                        slug, hint_id, side, source, winner_book_source, winner_distance_to_final_ms
+                        slug,
+                        hint_id,
+                        side,
+                        source,
+                        winner_book_source,
+                        winner_distance_to_final_ms
                     );
                     let (
                         winner_bid,
@@ -1518,6 +1825,7 @@ impl StrategyCoordinator {
                                 size,
                                 TradePurpose::OracleLagSnipe,
                                 Some(ORACLE_LAG_NO_TAKER_ABOVE_PRICE),
+                                Some(winner_ask),
                             )
                             .await;
                             self.oracle_lag_fak_last_dispatch = Some(Instant::now());
@@ -1662,9 +1970,18 @@ impl StrategyCoordinator {
         } else {
             self.slot_pair_arb_target_epochs[slot.index()] = None;
         }
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && slot.direction == TradeDirection::Buy {
+            self.slot_pgt_target_epochs[slot.index()] = Some(self.pgt_decision_epoch);
+        } else {
+            self.slot_pgt_target_epochs[slot.index()] = None;
+        }
+        self.maybe_note_pgt_post_close_reopen_attempt(slot, reason);
         self.sync_buy_side_wrapper(slot);
 
         self.stats.placed += 1;
+        if self.cfg.strategy.is_pair_gated_tranche_arb() && slot.direction == TradeDirection::Buy {
+            self.stats.pgt_dispatch_place = self.stats.pgt_dispatch_place.saturating_add(1);
+        }
         if replacing {
             self.stats.replace_events = self.stats.replace_events.saturating_add(1);
         } else {
@@ -1672,7 +1989,8 @@ impl StrategyCoordinator {
         }
         self.log_oracle_lag_submit_latency(slot, price, size, reason, replacing);
 
-        if self.cfg.dry_run {
+        let dryrun_execute = self.dry_run_execute_enabled_for_maker(reason);
+        if self.cfg.dry_run && !dryrun_execute {
             let notional_usdc = price * size;
             info!(
                 "🧪 dry_order_preview | strategy={:?} slot={} side={:?} direction={:?} order_type=Limit reason={:?} price={:.4} size={:.2} notional_usdc={:.4} replacing={}",
@@ -1687,6 +2005,21 @@ impl StrategyCoordinator {
                 replacing,
             );
             return;
+        }
+        if self.cfg.dry_run && dryrun_execute {
+            let notional_usdc = price * size;
+            info!(
+                "🧪 dry_order_execute | strategy={:?} slot={} side={:?} direction={:?} order_type=Limit reason={:?} price={:.4} size={:.2} notional_usdc={:.4} replacing={}",
+                self.cfg.strategy,
+                slot.as_str(),
+                slot.side,
+                slot.direction,
+                reason,
+                price,
+                size,
+                notional_usdc,
+                replacing,
+            );
         }
 
         if self.cfg.strategy.is_pair_arb()

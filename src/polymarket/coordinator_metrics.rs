@@ -10,6 +10,17 @@ const PAIR_ARB_STALLED_SECS: u64 = 60;
 const FLOAT_INV_EPS: f64 = PAIR_ARB_NET_EPS;
 
 impl StrategyCoordinator {
+    pub(super) fn pgt_bump_decision_epoch(&mut self, reason: &'static str) {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb() {
+            return;
+        }
+        self.pgt_decision_epoch = self.pgt_decision_epoch.saturating_add(1);
+        debug!(
+            "🧭 pgt_decision_epoch={} reason={}",
+            self.pgt_decision_epoch, reason
+        );
+    }
+
     fn pair_arb_progress_min_paired_qty_delta(&self) -> f64 {
         (self.cfg.bid_size * PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_RATIO)
             .max(PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_FLOOR)
@@ -111,7 +122,9 @@ impl StrategyCoordinator {
     ) {
         let settled = snapshot.settled;
         let working = snapshot.working;
-        if self.cfg.strategy != StrategyKind::PairArb {
+        if self.cfg.strategy != StrategyKind::PairArb
+            && self.cfg.strategy != StrategyKind::PairGatedTrancheArb
+        {
             self.last_settled_inv_snapshot = settled;
             self.last_working_inv_snapshot = working;
             return;
@@ -131,6 +144,13 @@ impl StrategyCoordinator {
             || (prev_working.no_avg_cost - working.no_avg_cost).abs() > FLOAT_INV_EPS
             || snapshot.fragile != prev_fragile;
         if !settled_changed && !working_changed {
+            return;
+        }
+
+        if self.cfg.strategy.is_pair_gated_tranche_arb() {
+            self.pgt_bump_decision_epoch("inventory_transition");
+            self.last_settled_inv_snapshot = settled;
+            self.last_working_inv_snapshot = working;
             return;
         }
 
@@ -261,6 +281,44 @@ impl StrategyCoordinator {
         }
     }
 
+    fn pgt_gate_snapshot(&self) -> PgtGateLogSnapshot {
+        PgtGateLogSnapshot {
+            seed_quotes: self.stats.pgt_seed_quotes,
+            completion_quotes: self.stats.pgt_completion_quotes,
+            taker_shadow_would_open: self.stats.pgt_taker_shadow_would_open,
+            taker_shadow_would_close: self.stats.pgt_taker_shadow_would_close,
+            skip_geometry_guard: self.stats.pgt_skip_geometry_guard,
+            single_seed_bias: self.stats.pgt_single_seed_bias,
+            single_seed_first_side: self.stats.pgt_single_seed_first_side,
+            single_seed_last_side: self.stats.pgt_single_seed_last_side,
+            single_seed_flip_count: self.stats.pgt_single_seed_flip_count,
+            dual_seed_quotes: self.stats.pgt_dual_seed_quotes,
+            single_seed_released_to_dual: self.stats.pgt_single_seed_released_to_dual,
+            entry_pressure_sides: self.stats.pgt_entry_pressure_sides,
+            entry_pressure_extra_ticks: self.stats.pgt_entry_pressure_extra_ticks,
+            skip_harvest: self.stats.pgt_skip_harvest,
+            skip_tail_completion_only: self.stats.pgt_skip_tail_completion_only,
+            skip_after_rescue_close: self.stats.pgt_skip_after_rescue_close,
+            skip_after_closed_pair: self.stats.pgt_skip_after_closed_pair,
+            skip_residual_guard: self.stats.pgt_skip_residual_guard,
+            skip_capital_guard: self.stats.pgt_skip_capital_guard,
+            skip_invalid_book: self.stats.pgt_skip_invalid_book,
+            skip_no_seed: self.stats.pgt_skip_no_seed,
+            seed_reject_no_visible_breakeven_path: self
+                .stats
+                .pgt_seed_reject_no_visible_breakeven_path,
+            post_flow_quotes: self.stats.pgt_post_flow_quotes,
+            dispatch_intents: self.stats.pgt_dispatch_intents,
+            dispatch_blocked: self.stats.pgt_dispatch_blocked,
+            dispatch_place: self.stats.pgt_dispatch_place,
+            dispatch_taker_open: self.stats.pgt_dispatch_taker_open,
+            dispatch_taker_close: self.stats.pgt_dispatch_taker_close,
+            dispatch_retain: self.stats.pgt_dispatch_retain,
+            dispatch_clear: self.stats.pgt_dispatch_clear,
+            stale_target_dropped: self.stats.pgt_stale_target_dropped,
+        }
+    }
+
     fn maybe_log_pair_arb_gate_summary(&mut self) {
         if self.cfg.strategy != StrategyKind::PairArb {
             return;
@@ -307,6 +365,113 @@ impl StrategyCoordinator {
             skip_sim_delta,
             softened_delta,
             suppressed_delta,
+        );
+    }
+
+    fn maybe_log_pgt_gate_summary(&mut self) {
+        if self.cfg.strategy != StrategyKind::PairGatedTrancheArb {
+            return;
+        }
+        let now = Instant::now();
+        let interval = Duration::from_secs(PAIR_ARB_GATE_SUMMARY_SECS);
+        if now.duration_since(self.pgt_gate_last_log_ts) < interval {
+            return;
+        }
+        self.pgt_gate_last_log_ts = now;
+
+        let cur = self.pgt_gate_snapshot();
+        let prev = self.pgt_gate_last_snapshot;
+        self.pgt_gate_last_snapshot = cur;
+
+        let seed_delta = cur.seed_quotes.saturating_sub(prev.seed_quotes);
+        let completion_delta = cur.completion_quotes.saturating_sub(prev.completion_quotes);
+        let taker_shadow_would_open_delta = cur
+            .taker_shadow_would_open
+            .saturating_sub(prev.taker_shadow_would_open);
+        let taker_shadow_would_close_delta = cur
+            .taker_shadow_would_close
+            .saturating_sub(prev.taker_shadow_would_close);
+        let skip_geometry_guard_delta = cur
+            .skip_geometry_guard
+            .saturating_sub(prev.skip_geometry_guard);
+        let single_seed_bias_delta = cur.single_seed_bias.saturating_sub(prev.single_seed_bias);
+        let dual_seed_delta = cur.dual_seed_quotes.saturating_sub(prev.dual_seed_quotes);
+        let single_seed_released_delta = cur
+            .single_seed_released_to_dual
+            .saturating_sub(prev.single_seed_released_to_dual);
+        let entry_pressure_sides_delta = cur
+            .entry_pressure_sides
+            .saturating_sub(prev.entry_pressure_sides);
+        let entry_pressure_extra_ticks_delta = cur
+            .entry_pressure_extra_ticks
+            .saturating_sub(prev.entry_pressure_extra_ticks);
+        let skip_harvest_delta = cur.skip_harvest.saturating_sub(prev.skip_harvest);
+        let skip_tail_delta = cur
+            .skip_tail_completion_only
+            .saturating_sub(prev.skip_tail_completion_only);
+        let skip_after_rescue_delta = cur
+            .skip_after_rescue_close
+            .saturating_sub(prev.skip_after_rescue_close);
+        let skip_after_closed_delta = cur
+            .skip_after_closed_pair
+            .saturating_sub(prev.skip_after_closed_pair);
+        let skip_residual_delta = cur
+            .skip_residual_guard
+            .saturating_sub(prev.skip_residual_guard);
+        let skip_capital_delta = cur
+            .skip_capital_guard
+            .saturating_sub(prev.skip_capital_guard);
+        let skip_invalid_book_delta = cur.skip_invalid_book.saturating_sub(prev.skip_invalid_book);
+        let skip_no_seed_delta = cur.skip_no_seed.saturating_sub(prev.skip_no_seed);
+        let seed_reject_no_visible_breakeven_delta = cur
+            .seed_reject_no_visible_breakeven_path
+            .saturating_sub(prev.seed_reject_no_visible_breakeven_path);
+        let post_flow_delta = cur.post_flow_quotes.saturating_sub(prev.post_flow_quotes);
+        let dispatch_intents_delta = cur.dispatch_intents.saturating_sub(prev.dispatch_intents);
+        let dispatch_blocked_delta = cur.dispatch_blocked.saturating_sub(prev.dispatch_blocked);
+        let dispatch_place_delta = cur.dispatch_place.saturating_sub(prev.dispatch_place);
+        let dispatch_taker_open_delta = cur
+            .dispatch_taker_open
+            .saturating_sub(prev.dispatch_taker_open);
+        let dispatch_taker_close_delta = cur
+            .dispatch_taker_close
+            .saturating_sub(prev.dispatch_taker_close);
+        let dispatch_retain_delta = cur.dispatch_retain.saturating_sub(prev.dispatch_retain);
+        let dispatch_clear_delta = cur.dispatch_clear.saturating_sub(prev.dispatch_clear);
+        let stale_target_dropped_delta = cur
+            .stale_target_dropped
+            .saturating_sub(prev.stale_target_dropped);
+
+        info!(
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/after_rescue/after_close/residual/capital/invalid/no_seed/geometry/no_visible_be)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
+            seed_delta,
+            completion_delta,
+            post_flow_delta,
+            taker_shadow_would_open_delta,
+            taker_shadow_would_close_delta,
+            dispatch_intents_delta,
+            dispatch_blocked_delta,
+            dispatch_place_delta,
+            dispatch_taker_open_delta,
+            dispatch_taker_close_delta,
+            dispatch_retain_delta,
+            dispatch_clear_delta,
+            stale_target_dropped_delta,
+            skip_harvest_delta,
+            skip_tail_delta,
+            skip_after_rescue_delta,
+            skip_after_closed_delta,
+            skip_residual_delta,
+            skip_capital_delta,
+            skip_invalid_book_delta,
+            skip_no_seed_delta,
+            skip_geometry_guard_delta,
+            seed_reject_no_visible_breakeven_delta,
+            single_seed_bias_delta,
+            dual_seed_delta,
+            single_seed_released_delta,
+            entry_pressure_sides_delta,
+            entry_pressure_extra_ticks_delta,
         );
     }
 
@@ -428,7 +593,10 @@ impl StrategyCoordinator {
     ) -> bool {
         // OracleLagSniping has near-certain winner knowledge from Chainlink; the
         // pair-arb symmetric-risk floor assumes unknown outcome and does not apply.
-        if self.cfg.strategy == StrategyKind::OracleLagSniping {
+        if matches!(
+            self.cfg.strategy,
+            StrategyKind::OracleLagSniping | StrategyKind::PairGatedTrancheArb
+        ) {
             return true;
         }
         let floor = self.outcome_floor_pnl();
@@ -629,5 +797,6 @@ impl StrategyCoordinator {
             self.round_realized_pair_metrics.merged_cash_released,
         );
         self.maybe_log_pair_arb_gate_summary();
+        self.maybe_log_pgt_gate_summary();
     }
 }

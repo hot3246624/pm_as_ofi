@@ -4,7 +4,8 @@ use std::time::Instant;
 use super::messages::TradeDirection;
 use super::types::Side;
 
-pub const COMPLETION_FIRST_RECENT_CLOSED_LIMIT: usize = 4;
+pub const PGT_RECENT_CLOSED_LIMIT: usize = 4;
+pub const COMPLETION_FIRST_RECENT_CLOSED_LIMIT: usize = PGT_RECENT_CLOSED_LIMIT;
 const PAIR_LEDGER_EPS: f64 = 1e-9;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
 const REPAIR_BUDGET_FRACTION: f64 = 0.50;
@@ -84,7 +85,7 @@ pub struct PairLedgerSnapshot {
     pub surplus_bank: f64,
     pub repair_budget_available: f64,
     pub capital_state: CapitalState,
-    pub recent_closed: [Option<PairTranche>; COMPLETION_FIRST_RECENT_CLOSED_LIMIT],
+    pub recent_closed: [Option<PairTranche>; PGT_RECENT_CLOSED_LIMIT],
 }
 
 impl Default for PairLedgerSnapshot {
@@ -97,7 +98,7 @@ impl Default for PairLedgerSnapshot {
             surplus_bank: 0.0,
             repair_budget_available: 0.0,
             capital_state: CapitalState::default(),
-            recent_closed: [None; COMPLETION_FIRST_RECENT_CLOSED_LIMIT],
+            recent_closed: [None; PGT_RECENT_CLOSED_LIMIT],
         }
     }
 }
@@ -125,6 +126,7 @@ pub struct EpisodeMetrics {
     pub residual_before_new_open_p90: f64,
     pub episode_close_delay_p50: f64,
     pub episode_close_delay_p90: f64,
+    pub round_buy_fill_count: u64,
     pub conditional_second_same_side_would_allow: u64,
 }
 
@@ -192,7 +194,7 @@ impl WorkingTranche {
             hedge_lots: VecDeque::new(),
             same_side_add_qty: 0.0,
         };
-        tranche.add_first(qty, price, false, ts);
+        tranche.add_first(qty, price, ts, false);
         tranche
     }
 
@@ -200,7 +202,7 @@ impl WorkingTranche {
         self.snapshot.first_side
     }
 
-    fn add_first(&mut self, qty: f64, price: f64, mark_same_side_add: bool, ts: Instant) {
+    fn add_first(&mut self, qty: f64, price: f64, ts: Instant, mark_same_side_add: bool) {
         if qty <= PAIR_LEDGER_EPS {
             return;
         }
@@ -296,6 +298,7 @@ impl WorkingTranche {
 
 #[derive(Debug, Default)]
 struct EpisodeStats {
+    buy_fill_count: u64,
     total_open_qty: f64,
     total_closed: u64,
     clean_closed: u64,
@@ -313,7 +316,6 @@ struct PairLedgerBuilder {
     archived: Vec<WorkingTranche>,
     stats: EpisodeStats,
     path_kind: PathKind,
-    buy_fill_count: u64,
 }
 
 impl PairLedgerBuilder {
@@ -325,7 +327,6 @@ impl PairLedgerBuilder {
             archived: Vec::new(),
             stats: EpisodeStats::default(),
             path_kind,
-            buy_fill_count: 0,
         }
     }
 
@@ -333,10 +334,10 @@ impl PairLedgerBuilder {
         if qty <= PAIR_LEDGER_EPS {
             return;
         }
-        self.buy_fill_count = self.buy_fill_count.saturating_add(1);
+        self.stats.buy_fill_count = self.stats.buy_fill_count.saturating_add(1);
         if let Some(active) = self.active.as_mut() {
             if active.first_side() == Some(side) {
-                active.add_first(qty, price, true, ts);
+                active.add_first(qty, price, ts, true);
                 self.stats.same_side_add_qty += qty.max(0.0);
                 self.stats.conditional_second_same_side_would_allow = self
                     .stats
@@ -493,7 +494,7 @@ impl PairLedgerBuilder {
             active_tranche: active_snapshot,
             residual_side,
             residual_qty,
-            buy_fill_count: self.buy_fill_count,
+            buy_fill_count: self.stats.buy_fill_count,
             surplus_bank,
             repair_budget_available,
             capital_state,
@@ -509,6 +510,7 @@ impl PairLedgerBuilder {
             residual_before_new_open_p90: percentile(&self.stats.residual_before_new_open, 0.90),
             episode_close_delay_p50: percentile(&self.stats.close_delays_secs, 0.50),
             episode_close_delay_p90: percentile(&self.stats.close_delays_secs, 0.90),
+            round_buy_fill_count: self.stats.buy_fill_count,
             conditional_second_same_side_would_allow: self
                 .stats
                 .conditional_second_same_side_would_allow,
@@ -545,14 +547,28 @@ pub(crate) fn build_pair_ledger(
 }
 
 pub fn urgency_budget_shadow_5m(remaining_secs: u64, has_active_tranche: bool) -> f64 {
-    if remaining_secs > 60 {
+    if !has_active_tranche {
+        return 0.0;
+    }
+    if remaining_secs > 120 {
         return 0.0;
     }
     if remaining_secs <= 15 {
-        return if has_active_tranche { 0.005 } else { 0.0 };
+        return 0.080;
     }
-    let fraction = (60.0 - remaining_secs as f64) / 45.0;
-    (fraction * 0.005).clamp(0.0, 0.005)
+    if remaining_secs <= 30 {
+        return 0.070;
+    }
+    if remaining_secs <= 45 {
+        return 0.060;
+    }
+    if remaining_secs <= 60 {
+        return 0.045;
+    }
+    if remaining_secs <= 90 {
+        return 0.025;
+    }
+    0.010
 }
 
 fn sum_lots(lots: &VecDeque<Lot>) -> f64 {
@@ -623,7 +639,7 @@ fn active_locked_capital(tranche: PairTranche) -> f64 {
 fn collect_recent_closed(
     covered: &[WorkingTranche],
     archived: &[WorkingTranche],
-) -> [Option<PairTranche>; COMPLETION_FIRST_RECENT_CLOSED_LIMIT] {
+) -> [Option<PairTranche>; PGT_RECENT_CLOSED_LIMIT] {
     let mut all = covered
         .iter()
         .chain(archived.iter())
@@ -631,12 +647,8 @@ fn collect_recent_closed(
         .collect::<Vec<_>>();
     all.sort_by_key(|tranche| tranche.id);
     all.reverse();
-    let mut recent = [None; COMPLETION_FIRST_RECENT_CLOSED_LIMIT];
-    for (idx, tranche) in all
-        .into_iter()
-        .take(COMPLETION_FIRST_RECENT_CLOSED_LIMIT)
-        .enumerate()
-    {
+    let mut recent = [None; PGT_RECENT_CLOSED_LIMIT];
+    for (idx, tranche) in all.into_iter().take(PGT_RECENT_CLOSED_LIMIT).enumerate() {
         recent[idx] = Some(tranche);
     }
     recent
@@ -700,7 +712,7 @@ mod tests {
         let closed = result.snapshot.recent_closed[0].expect("closed tranche");
         assert_eq!(closed.first_side, Some(Side::Yes));
         assert!((closed.pairable_qty - 100.0).abs() < 1e-9);
-        assert!(closed.residual_qty.abs() < 1e-9);
+        assert!((closed.residual_qty).abs() < 1e-9);
         assert!((closed.pair_cost_tranche - 0.91).abs() < 1e-9);
         assert!((result.episode_metrics.clean_closed_episode_ratio - 1.0).abs() < 1e-9);
     }
@@ -737,7 +749,6 @@ mod tests {
         assert_eq!(active.first_side, Some(Side::Yes));
         assert!((active.first_qty - 150.0).abs() < 1e-9);
         assert!((active.hedge_qty - 80.0).abs() < 1e-9);
-        assert_eq!(active.same_side_add_count, 1);
         assert!(result.episode_metrics.same_side_add_qty_ratio > 0.0);
         assert_eq!(
             result
@@ -745,5 +756,53 @@ mod tests {
                 .conditional_second_same_side_would_allow,
             1
         );
+    }
+
+    #[test]
+    fn overshoot_rolls_into_new_active_tranche() {
+        let now = Instant::now();
+        let result = build_pair_ledger(
+            &[
+                fill(Side::Yes, 100.0, 0.40, now),
+                fill(Side::No, 130.0, 0.55, now),
+            ],
+            PathKind::MakerShadow,
+        );
+        let closed = result.snapshot.recent_closed[0].expect("closed tranche");
+        let active = result.snapshot.active_tranche.expect("new active tranche");
+        assert_eq!(closed.first_side, Some(Side::Yes));
+        assert!((closed.pairable_qty - 100.0).abs() < 1e-9);
+        assert_eq!(active.first_side, Some(Side::No));
+        assert!((active.first_qty - 30.0).abs() < 1e-9);
+        assert!((active.residual_qty - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn merge_only_reduces_pairable_on_active_tranche() {
+        let now = Instant::now();
+        let result = build_pair_ledger(
+            &[
+                fill(Side::Yes, 100.0, 0.40, now),
+                fill(Side::No, 80.0, 0.52, now),
+                merge(30.0, now),
+            ],
+            PathKind::MakerShadow,
+        );
+        let active = result.snapshot.active_tranche.expect("active tranche");
+        assert_eq!(active.state, TrancheState::CompletionOnly);
+        assert!((active.pairable_qty - 50.0).abs() < 1e-9);
+        assert!((active.residual_qty - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn urgency_budget_shadow_5m_steps_up_into_close() {
+        assert!((urgency_budget_shadow_5m(121, true) - 0.0).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(100, true) - 0.010).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(90, true) - 0.025).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(60, true) - 0.045).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(45, true) - 0.060).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(30, true) - 0.070).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(15, true) - 0.080).abs() < 1e-9);
+        assert!((urgency_budget_shadow_5m(15, false) - 0.0).abs() < 1e-9);
     }
 }

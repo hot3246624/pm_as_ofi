@@ -1,0 +1,20 @@
+[Unit]
+Description=pm_as_ofi shared ingress broker
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=pmofi
+WorkingDirectory=/srv/pm_as_ofi/repo
+EnvironmentFile=-/etc/pm_as_ofi/shared-ingress.env
+ExecStart=/usr/bin/env bash /srv/pm_as_ofi/repo/scripts/run_shared_ingress_broker.sh
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+LimitNOFILE=65535
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
