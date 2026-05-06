@@ -1,0 +1,681 @@
+{
+  "coverage_stats": {
+    "full_episode_count": 1196,
+    "full_overlap_episode_count": 208,
+    "recent_episode_count": 21,
+    "recent_overlap_episode_count": 17,
+    "holdout_gate_on_completion_rate": 0.35294117647058826,
+    "holdout_baseline_completion_rate": 0.35294117647058826,
+    "holdout_lift_pct": 0.0
+  },
+  "censor_stats": {
+    "censored_total": 988,
+    "censored_reason_counts": {
+      "no_l1_book": 979,
+      "stale_book": 9
+    },
+    "overlap_source_counts": {
+      "2026-04-25": 196,
+      "2026-04-26": 21,
+      "none": 979
+    }
+  },
+  "full_metrics": {
+    "episode_count": 208,
+    "completion_30s_hit_rate": 0.3125,
+    "gate_on_completion_rate": 0.31313131313131315,
+    "gate_on_lift_pct": 0.0006313131313131493,
+    "median_first_opposite_delay_s": 24.0,
+    "same_side_before_opposite_ratio": 0.15384615384615385,
+    "maker_proxy_ratio": 0.6490384615384616,
+    "score_bucket_distribution": {
+      "full_clip": 87,
+      "half_clip": 3,
+      "upclip": 118
+    },
+    "session_distribution": {
+      "0": 17,
+      "15": 1,
+      "17": 10,
+      "18": 29,
+      "19": 32,
+      "20": 20,
+      "21": 35,
+      "22": 38,
+      "23": 26
+    }
+  },
+  "recent_metrics": {
+    "episode_count": 17,
+    "completion_30s_hit_rate": 0.35294117647058826,
+    "gate_on_completion_rate": 0.35294117647058826,
+    "gate_on_lift_pct": 0.0,
+    "median_first_opposite_delay_s": 26.0,
+    "same_side_before_opposite_ratio": 0.29411764705882354,
+    "maker_proxy_ratio": 0.47058823529411764,
+    "score_bucket_distribution": {
+      "full_clip": 8,
+      "half_clip": 1,
+      "upclip": 8
+    },
+    "session_distribution": {
+      "0": 17
+    }
+  },
+  "holdout_metrics": {
+    "episode_count": 17,
+    "completion_30s_hit_rate": 0.35294117647058826,
+    "gate_on_completion_rate": 0.35294117647058826,
+    "gate_on_lift_pct": 0.0,
+    "median_first_opposite_delay_s": 26.0,
+    "same_side_before_opposite_ratio": 0.29411764705882354,
+    "maker_proxy_ratio": 0.47058823529411764,
+    "score_bucket_distribution": {
+      "full_clip": 8,
+      "half_clip": 1,
+      "upclip": 8
+    },
+    "session_distribution": {
+      "0": 17
+    }
+  },
+  "feature_identifiability": {
+    "prior_imbalance_bucket": {
+      "status": "not_identified",
+      "note": "No meaningful variation even in full overlap sample.",
+      "kind": "categorical",
+      "full_distinct_bucket_count": 1,
+      "recent_distinct_bucket_count": 1,
+      "full_dominant_bucket_share": 1.0,
+      "recent_dominant_bucket_share": 1.0,
+      "full_bucket_counts": {
+        "lt_0.02": 208
+      },
+      "recent_bucket_counts": {
+        "lt_0.02": 17
+      },
+      "quantile_cuts": null
+    },
+    "same_side_run_before_open": {
+      "status": "not_identified",
+      "note": "No meaningful variation even in full overlap sample.",
+      "kind": "categorical",
+      "full_distinct_bucket_count": 1,
+      "recent_distinct_bucket_count": 1,
+      "full_dominant_bucket_share": 1.0,
+      "recent_dominant_bucket_share": 1.0,
+      "full_bucket_counts": {
+        "0": 208
+      },
+      "recent_bucket_counts": {
+        "0": 17
+      },
+      "quantile_cuts": null
+    },
+    "maker_taker_proxy": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "categorical",
+      "full_distinct_bucket_count": 3,
+      "recent_distinct_bucket_count": 2,
+      "full_dominant_bucket_share": 0.6490384615384616,
+      "recent_dominant_bucket_share": 0.5294117647058824,
+      "full_bucket_counts": {
+        "balanced_proximity": 3,
+        "maker_proximity": 135,
+        "taker_proximity": 70
+      },
+      "recent_bucket_counts": {
+        "maker_proximity": 8,
+        "taker_proximity": 9
+      },
+      "quantile_cuts": null
+    },
+    "utc_hour_bucket": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "categorical",
+      "full_distinct_bucket_count": 9,
+      "recent_distinct_bucket_count": 1,
+      "full_dominant_bucket_share": 0.18269230769230768,
+      "recent_dominant_bucket_share": 1.0,
+      "full_bucket_counts": {
+        "0": 17,
+        "15": 1,
+        "17": 10,
+        "18": 29,
+        "19": 32,
+        "20": 20,
+        "21": 35,
+        "22": 38,
+        "23": 26
+      },
+      "recent_bucket_counts": {
+        "0": 17
+      },
+      "quantile_cuts": null
+    },
+    "l1_spread_ticks_first_side": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "plan",
+      "full_distinct_bucket_count": 3,
+      "recent_distinct_bucket_count": 2,
+      "full_dominant_bucket_share": 0.9519230769230769,
+      "recent_dominant_bucket_share": 0.9411764705882353,
+      "full_bucket_counts": {
+        "1.5_3": 7,
+        "gt_3": 3,
+        "le_1.5": 198
+      },
+      "recent_bucket_counts": {
+        "1.5_3": 1,
+        "le_1.5": 16
+      },
+      "quantile_cuts": null
+    },
+    "l1_spread_ticks_opposite_side": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "plan",
+      "full_distinct_bucket_count": 3,
+      "recent_distinct_bucket_count": 2,
+      "full_dominant_bucket_share": 0.9519230769230769,
+      "recent_dominant_bucket_share": 0.9411764705882353,
+      "full_bucket_counts": {
+        "1.5_3": 8,
+        "gt_3": 2,
+        "le_1.5": 198
+      },
+      "recent_bucket_counts": {
+        "1.5_3": 1,
+        "le_1.5": 16
+      },
+      "quantile_cuts": null
+    },
+    "first_leg_clip": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "quantile",
+      "full_distinct_bucket_count": 4,
+      "recent_distinct_bucket_count": 2,
+      "full_dominant_bucket_share": 0.2548076923076923,
+      "recent_dominant_bucket_share": 0.6470588235294118,
+      "full_bucket_counts": {
+        "gt_140.716": 52,
+        "le_108.070": 52,
+        "le_140.716": 51,
+        "le_22.291": 53
+      },
+      "recent_bucket_counts": {
+        "le_108.070": 11,
+        "le_22.291": 6
+      },
+      "quantile_cuts": [
+        22.291059999999998,
+        108.06957999999999,
+        140.7156
+      ]
+    },
+    "round_open_rel_s": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "quantile",
+      "full_distinct_bucket_count": 4,
+      "recent_distinct_bucket_count": 4,
+      "full_dominant_bucket_share": 0.28365384615384615,
+      "recent_dominant_bucket_share": 0.35294117647058826,
+      "full_bucket_counts": {
+        "gt_174.000": 51,
+        "le_16.000": 59,
+        "le_174.000": 52,
+        "le_66.000": 46
+      },
+      "recent_bucket_counts": {
+        "gt_174.000": 1,
+        "le_16.000": 6,
+        "le_174.000": 4,
+        "le_66.000": 6
+      },
+      "quantile_cuts": [
+        16.0,
+        66.0,
+        174.0
+      ]
+    },
+    "round_close_rel_s": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "quantile",
+      "full_distinct_bucket_count": 4,
+      "recent_distinct_bucket_count": 4,
+      "full_dominant_bucket_share": 0.2644230769230769,
+      "recent_dominant_bucket_share": 0.4117647058823529,
+      "full_bucket_counts": {
+        "gt_284.000": 51,
+        "le_126.000": 53,
+        "le_234.000": 55,
+        "le_284.000": 49
+      },
+      "recent_bucket_counts": {
+        "gt_284.000": 5,
+        "le_126.000": 1,
+        "le_234.000": 4,
+        "le_284.000": 7
+      },
+      "quantile_cuts": [
+        126.0,
+        234.0,
+        284.0
+      ]
+    },
+    "recent_opposite_trade_rate_5s": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "quantile",
+      "full_distinct_bucket_count": 4,
+      "recent_distinct_bucket_count": 4,
+      "full_dominant_bucket_share": 0.2644230769230769,
+      "recent_dominant_bucket_share": 0.29411764705882354,
+      "full_bucket_counts": {
+        "gt_8.200": 51,
+        "le_3.000": 53,
+        "le_5.400": 55,
+        "le_8.200": 49
+      },
+      "recent_bucket_counts": {
+        "gt_8.200": 3,
+        "le_3.000": 4,
+        "le_5.400": 5,
+        "le_8.200": 5
+      },
+      "quantile_cuts": [
+        3.0,
+        5.4,
+        8.2
+      ]
+    },
+    "recent_total_trade_rate_15s": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "quantile",
+      "full_distinct_bucket_count": 4,
+      "recent_distinct_bucket_count": 4,
+      "full_dominant_bucket_share": 0.2548076923076923,
+      "recent_dominant_bucket_share": 0.29411764705882354,
+      "full_bucket_counts": {
+        "gt_13.600": 52,
+        "le_10.000": 52,
+        "le_13.600": 51,
+        "le_5.600": 53
+      },
+      "recent_bucket_counts": {
+        "gt_13.600": 3,
+        "le_10.000": 5,
+        "le_13.600": 5,
+        "le_5.600": 4
+      },
+      "quantile_cuts": [
+        5.6,
+        10.0,
+        13.6
+      ]
+    },
+    "book_update_rate_5s": {
+      "status": "full_only",
+      "note": "Usable for weak full-window priors only; recent overlap is too thin.",
+      "kind": "quantile",
+      "full_distinct_bucket_count": 4,
+      "recent_distinct_bucket_count": 4,
+      "full_dominant_bucket_share": 0.25961538461538464,
+      "recent_dominant_bucket_share": 0.5294117647058824,
+      "full_bucket_counts": {
+        "gt_57.200": 51,
+        "le_22.000": 53,
+        "le_36.400": 54,
+        "le_57.200": 50
+      },
+      "recent_bucket_counts": {
+        "gt_57.200": 1,
+        "le_22.000": 4,
+        "le_36.400": 9,
+        "le_57.200": 3
+      },
+      "quantile_cuts": [
+        22.0,
+        36.4,
+        57.2
+      ]
+    }
+  },
+  "one_sided_guardrails": {
+    "same_side_run_before_open": {
+      "suggestion": "hard_guardrail_candidate",
+      "observed_only_bucket": "0",
+      "note": "No lift can be estimated, but observed overlap never violates this bucket."
+    },
+    "prior_imbalance_bucket": {
+      "suggestion": "hard_guardrail_candidate",
+      "observed_only_bucket": "lt_0.02",
+      "note": "No lift can be estimated, but observed overlap never violates this bucket."
+    },
+    "l1_spread_ticks_first_side": {
+      "suggestion": "hard_ceiling_candidate",
+      "dominant_bucket": "le_1.5",
+      "dominant_share": 0.9519230769230769,
+      "note": "Observed overlap overwhelmingly sits under one spread regime; use as ceiling, not ranked score."
+    },
+    "l1_spread_ticks_opposite_side": {
+      "suggestion": "hard_ceiling_candidate",
+      "dominant_bucket": "le_1.5",
+      "dominant_share": 0.9519230769230769,
+      "note": "Observed overlap overwhelmingly sits under one spread regime; use as ceiling, not ranked score."
+    }
+  },
+  "signal_priors": {
+    "first_leg_clip": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "le_140.716",
+        "count": 51,
+        "hit_rate": 0.43137254901960786,
+        "lift_vs_base": 0.11887254901960786,
+        "median_value": 121.24392999999999
+      },
+      "full_worst_bucket": {
+        "bucket": "le_22.291",
+        "count": 53,
+        "hit_rate": 0.1320754716981132,
+        "lift_vs_base": -0.1804245283018868,
+        "median_value": 1.470870000000005
+      },
+      "recent_best_bucket": {
+        "bucket": "le_108.070",
+        "count": 11,
+        "hit_rate": 0.36363636363636365,
+        "lift_vs_base": 0.010695187165775388,
+        "median_value": 56.69256
+      },
+      "recent_worst_bucket": {
+        "bucket": "le_22.291",
+        "count": 6,
+        "hit_rate": 0.3333333333333333,
+        "lift_vs_base": -0.019607843137254943,
+        "median_value": 1.0669000000000022
+      },
+      "quantile_cuts": [
+        22.291059999999998,
+        108.06957999999999,
+        140.7156
+      ]
+    },
+    "round_open_rel_s": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "le_174.000",
+        "count": 52,
+        "hit_rate": 0.40384615384615385,
+        "lift_vs_base": 0.09134615384615385,
+        "median_value": 128.0
+      },
+      "full_worst_bucket": {
+        "bucket": "le_66.000",
+        "count": 46,
+        "hit_rate": 0.21739130434782608,
+        "lift_vs_base": -0.09510869565217392,
+        "median_value": 35.0
+      },
+      "recent_best_bucket": {
+        "bucket": "le_16.000",
+        "count": 6,
+        "hit_rate": 0.5,
+        "lift_vs_base": 0.14705882352941174,
+        "median_value": 12.0
+      },
+      "recent_worst_bucket": {
+        "bucket": "le_174.000",
+        "count": 4,
+        "hit_rate": 0.25,
+        "lift_vs_base": -0.10294117647058826,
+        "median_value": 134.0
+      },
+      "quantile_cuts": [
+        16.0,
+        66.0,
+        174.0
+      ]
+    },
+    "round_close_rel_s": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "le_234.000",
+        "count": 55,
+        "hit_rate": 0.4,
+        "lift_vs_base": 0.08750000000000002,
+        "median_value": 176.0
+      },
+      "full_worst_bucket": {
+        "bucket": "le_284.000",
+        "count": 49,
+        "hit_rate": 0.22448979591836735,
+        "lift_vs_base": -0.08801020408163265,
+        "median_value": 272.0
+      },
+      "recent_best_bucket": {
+        "bucket": "le_284.000",
+        "count": 7,
+        "hit_rate": 0.42857142857142855,
+        "lift_vs_base": 0.07563025210084029,
+        "median_value": 278.0
+      },
+      "recent_worst_bucket": {
+        "bucket": "le_234.000",
+        "count": 4,
+        "hit_rate": 0.25,
+        "lift_vs_base": -0.10294117647058826,
+        "median_value": 166.0
+      },
+      "quantile_cuts": [
+        126.0,
+        234.0,
+        284.0
+      ]
+    },
+    "recent_opposite_trade_rate_5s": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "gt_8.200",
+        "count": 51,
+        "hit_rate": 0.43137254901960786,
+        "lift_vs_base": 0.11887254901960786,
+        "median_value": 11.4
+      },
+      "full_worst_bucket": {
+        "bucket": "le_5.400",
+        "count": 55,
+        "hit_rate": 0.21818181818181817,
+        "lift_vs_base": -0.09431818181818183,
+        "median_value": 4.2
+      },
+      "recent_best_bucket": {
+        "bucket": "le_5.400",
+        "count": 5,
+        "hit_rate": 0.6,
+        "lift_vs_base": 0.24705882352941172,
+        "median_value": 4.2
+      },
+      "recent_worst_bucket": {
+        "bucket": "le_3.000",
+        "count": 4,
+        "hit_rate": 0.0,
+        "lift_vs_base": -0.35294117647058826,
+        "median_value": 1.9
+      },
+      "quantile_cuts": [
+        3.0,
+        5.4,
+        8.2
+      ]
+    },
+    "recent_total_trade_rate_15s": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "le_13.600",
+        "count": 51,
+        "hit_rate": 0.37254901960784315,
+        "lift_vs_base": 0.060049019607843146,
+        "median_value": 12.066666666666666
+      },
+      "full_worst_bucket": {
+        "bucket": "le_10.000",
+        "count": 52,
+        "hit_rate": 0.21153846153846154,
+        "lift_vs_base": -0.10096153846153846,
+        "median_value": 7.933333333333334
+      },
+      "recent_best_bucket": {
+        "bucket": "gt_13.600",
+        "count": 3,
+        "hit_rate": 0.6666666666666666,
+        "lift_vs_base": 0.31372549019607837,
+        "median_value": 17.333333333333332
+      },
+      "recent_worst_bucket": {
+        "bucket": "le_5.600",
+        "count": 4,
+        "hit_rate": 0.0,
+        "lift_vs_base": -0.35294117647058826,
+        "median_value": 4.533333333333333
+      },
+      "quantile_cuts": [
+        5.6,
+        10.0,
+        13.6
+      ]
+    },
+    "book_update_rate_5s": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "gt_57.200",
+        "count": 51,
+        "hit_rate": 0.37254901960784315,
+        "lift_vs_base": 0.060049019607843146,
+        "median_value": 66.8
+      },
+      "full_worst_bucket": {
+        "bucket": "le_57.200",
+        "count": 50,
+        "hit_rate": 0.26,
+        "lift_vs_base": -0.05249999999999999,
+        "median_value": 48.8
+      },
+      "recent_best_bucket": {
+        "bucket": "le_36.400",
+        "count": 9,
+        "hit_rate": 0.4444444444444444,
+        "lift_vs_base": 0.09150326797385616,
+        "median_value": 32.8
+      },
+      "recent_worst_bucket": {
+        "bucket": "le_57.200",
+        "count": 3,
+        "hit_rate": 0.0,
+        "lift_vs_base": -0.35294117647058826,
+        "median_value": 43.6
+      },
+      "quantile_cuts": [
+        22.0,
+        36.4,
+        57.2
+      ]
+    },
+    "maker_taker_proxy": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "taker_proximity",
+        "count": 70,
+        "hit_rate": 0.4142857142857143,
+        "lift_vs_base": 0.10178571428571431,
+        "median_value": 0.0
+      },
+      "full_worst_bucket": {
+        "bucket": "maker_proximity",
+        "count": 135,
+        "hit_rate": 0.25925925925925924,
+        "lift_vs_base": -0.053240740740740755,
+        "median_value": 0.0
+      },
+      "recent_best_bucket": {
+        "bucket": "taker_proximity",
+        "count": 9,
+        "hit_rate": 0.4444444444444444,
+        "lift_vs_base": 0.09150326797385616,
+        "median_value": 0.0
+      },
+      "recent_worst_bucket": {
+        "bucket": "maker_proximity",
+        "count": 8,
+        "hit_rate": 0.25,
+        "lift_vs_base": -0.10294117647058826,
+        "median_value": 0.0
+      },
+      "quantile_cuts": null
+    },
+    "score_bucket": {
+      "full_base_rate": 0.3125,
+      "recent_base_rate": 0.35294117647058826,
+      "full_best_bucket": {
+        "bucket": "upclip",
+        "count": 118,
+        "hit_rate": 0.3389830508474576,
+        "lift_vs_base": 0.026483050847457612,
+        "median_value": 0.0
+      },
+      "full_worst_bucket": {
+        "bucket": "full_clip",
+        "count": 87,
+        "hit_rate": 0.28735632183908044,
+        "lift_vs_base": -0.025143678160919558,
+        "median_value": 0.0
+      },
+      "recent_best_bucket": {
+        "bucket": "full_clip",
+        "count": 8,
+        "hit_rate": 0.5,
+        "lift_vs_base": 0.14705882352941174,
+        "median_value": 0.0
+      },
+      "recent_worst_bucket": {
+        "bucket": "upclip",
+        "count": 8,
+        "hit_rate": 0.25,
+        "lift_vs_base": -0.10294117647058826,
+        "median_value": 0.0
+      },
+      "quantile_cuts": null
+    }
+  },
+  "xuan_targets": {
+    "xuan_30s_completion_hit_rate": 0.35294117647058826,
+    "xuan_median_first_opposite_delay_s": 26.0,
+    "xuan_score_bucket_distribution": {
+      "full_clip": 8,
+      "half_clip": 1,
+      "upclip": 8
+    },
+    "xuan_session_distribution": {
+      "0": 17
+    },
+    "xuan_maker_proxy_ratio": 0.47058823529411764
+  },
+  "defaults_path": "/Users/hot/web3Scientist/pm_as_ofi_completion_first_v2_shadow/configs/xuan_completion_gate_defaults.json",
+  "fallback_applied": true,
+  "provisional": true
+}

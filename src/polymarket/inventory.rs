@@ -11,6 +11,9 @@ use tracing::{info, warn};
 use super::messages::{
     FillEvent, FillStatus, InventoryEvent, InventorySnapshot, InventoryState, TradeDirection,
 };
+use super::pair_ledger::{
+    build_pair_ledger, PairLedgerBuildResult, PairLedgerEvent, PairLedgerEventKind, PathKind,
+};
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
 
@@ -59,6 +62,13 @@ struct FillRecord {
     direction: TradeDirection,
     size: f64,
     price: f64,
+    ts: Instant,
+}
+
+#[derive(Debug, Clone)]
+struct MergeRecord {
+    size: f64,
+    ts: Instant,
 }
 
 #[derive(Debug, Clone)]
@@ -80,7 +90,9 @@ pub struct InventoryManager {
     fill_rx: mpsc::Receiver<InventoryEvent>,
     state_tx: watch::Sender<InventorySnapshot>,
     settled_ledger: Vec<FillRecord>,
+    pair_settled_fills: Vec<FillRecord>,
     pending_fills: Vec<PendingFillRecord>,
+    merge_history: Vec<MergeRecord>,
     matched_pending_events: u64,
     confirmed_promotions: u64,
     timeout_promotions: u64,
@@ -110,7 +122,9 @@ impl InventoryManager {
             fill_rx,
             state_tx,
             settled_ledger: Vec::new(),
+            pair_settled_fills: Vec::new(),
             pending_fills: Vec::new(),
+            merge_history: Vec::new(),
             matched_pending_events: 0,
             confirmed_promotions: 0,
             timeout_promotions: 0,
@@ -271,6 +285,14 @@ impl InventoryManager {
                         direction: fill.direction,
                         size: signed_size,
                         price: fill.price,
+                        ts: fill.ts,
+                    });
+                    self.pair_settled_fills.push(FillRecord {
+                        side: fill.side,
+                        direction: fill.direction,
+                        size: signed_size,
+                        price: fill.price,
+                        ts: fill.ts,
                     });
                 }
             }
@@ -318,12 +340,18 @@ impl InventoryManager {
             direction: TradeDirection::Sell,
             size: -amount,
             price: current.yes_avg_cost.max(0.0),
+            ts: Instant::now(),
         });
         self.settled_ledger.push(FillRecord {
             side: Side::No,
             direction: TradeDirection::Sell,
             size: -amount,
             price: current.no_avg_cost.max(0.0),
+            ts: Instant::now(),
+        });
+        self.merge_history.push(MergeRecord {
+            size: amount,
+            ts: Instant::now(),
         });
 
         self.recompute_snapshot();
@@ -346,6 +374,14 @@ impl InventoryManager {
                 direction: pending.direction,
                 size: pending.size,
                 price: pending.price,
+                ts: pending.matched_at,
+            });
+            self.pair_settled_fills.push(FillRecord {
+                side: pending.side,
+                direction: pending.direction,
+                size: pending.size,
+                price: pending.price,
+                ts: pending.matched_at,
             });
         }
 
@@ -357,6 +393,7 @@ impl InventoryManager {
     }
 
     fn recompute_snapshot(&mut self) {
+        let prev = self.snapshot;
         self.snapshot.settled = Self::recompute_state_from_records(&self.settled_ledger);
         let mut working_records = self.settled_ledger.clone();
         working_records.extend(self.pending_fills.iter().map(|pending| FillRecord {
@@ -364,6 +401,7 @@ impl InventoryManager {
             direction: pending.direction,
             size: pending.size,
             price: pending.price,
+            ts: pending.matched_at,
         }));
         self.snapshot.working = Self::recompute_state_from_records(&working_records);
         self.snapshot.pending_yes_qty =
@@ -372,6 +410,10 @@ impl InventoryManager {
             (self.snapshot.working.no_qty - self.snapshot.settled.no_qty).max(0.0);
         self.snapshot.fragile =
             self.snapshot.pending_yes_qty > 1e-9 || self.snapshot.pending_no_qty > 1e-9;
+        let pair_result = self.recompute_pair_ledger();
+        self.snapshot.pair_ledger = pair_result.snapshot;
+        self.snapshot.episode_metrics = pair_result.episode_metrics;
+        self.emit_pair_ledger_events(prev, self.snapshot);
     }
 
     fn recompute_state_from_records(records: &[FillRecord]) -> InventoryState {
@@ -495,6 +537,14 @@ impl InventoryManager {
                 direction: pending.direction,
                 size: pending.size,
                 price: price_override.unwrap_or(pending.price),
+                ts: pending.matched_at,
+            });
+            self.pair_settled_fills.push(FillRecord {
+                side: pending.side,
+                direction: pending.direction,
+                size: pending.size,
+                price: price_override.unwrap_or(pending.price),
+                ts: pending.matched_at,
             });
             self.confirmed_promotions = self.confirmed_promotions.saturating_add(1);
             info!(
@@ -526,6 +576,14 @@ impl InventoryManager {
                     direction: pending.direction,
                     size: pending.size,
                     price: pending.price,
+                    ts: pending.matched_at,
+                });
+                self.pair_settled_fills.push(FillRecord {
+                    side: pending.side,
+                    direction: pending.direction,
+                    size: pending.size,
+                    price: pending.price,
+                    ts: pending.matched_at,
                 });
                 self.timeout_promotions = self.timeout_promotions.saturating_add(1);
                 changed = true;
@@ -538,6 +596,115 @@ impl InventoryManager {
             self.recompute_snapshot();
         }
         changed
+    }
+
+    fn recompute_pair_ledger(&self) -> PairLedgerBuildResult {
+        let mut events = Vec::with_capacity(
+            self.pair_settled_fills.len() + self.pending_fills.len() + self.merge_history.len(),
+        );
+        events.extend(self.pair_settled_fills.iter().map(|fill| PairLedgerEvent {
+            side: fill.side,
+            direction: fill.direction,
+            size: fill.size.abs(),
+            price: fill.price,
+            ts: fill.ts,
+            kind: PairLedgerEventKind::Fill,
+        }));
+        events.extend(self.pending_fills.iter().map(|pending| PairLedgerEvent {
+            side: pending.side,
+            direction: pending.direction,
+            size: pending.size.abs(),
+            price: pending.price,
+            ts: pending.matched_at,
+            kind: PairLedgerEventKind::Fill,
+        }));
+        events.extend(self.merge_history.iter().map(|merge| PairLedgerEvent {
+            side: Side::Yes,
+            direction: TradeDirection::Sell,
+            size: merge.size,
+            price: 0.0,
+            ts: merge.ts,
+            kind: PairLedgerEventKind::Merge,
+        }));
+        events.sort_by_key(|event| event.ts);
+        build_pair_ledger(&events, PathKind::MakerShadow)
+    }
+
+    fn emit_pair_ledger_events(&self, prev: InventorySnapshot, next: InventorySnapshot) {
+        let prev_active = prev.pair_ledger.active_tranche;
+        let next_active = next.pair_ledger.active_tranche;
+        if prev_active.map(|t| {
+            (
+                t.id,
+                t.state,
+                t.residual_qty,
+                t.pairable_qty,
+                t.same_side_add_count,
+            )
+        }) != next_active.map(|t| {
+            (
+                t.id,
+                t.state,
+                t.residual_qty,
+                t.pairable_qty,
+                t.same_side_add_count,
+            )
+        }) {
+            self.emit_inventory_event(
+                "pair_tranche_events",
+                serde_json::json!({
+                    "active_tranche_id": next_active.map(|t| t.id),
+                    "active_state": next_active.map(|t| format!("{:?}", t.state)),
+                    "first_side": next_active.and_then(|t| t.first_side).map(|s| s.as_str()),
+                    "residual_qty": next_active.map(|t| t.residual_qty).unwrap_or(0.0),
+                    "pairable_qty": next_active.map(|t| t.pairable_qty).unwrap_or(0.0),
+                    "same_side_add_count": next_active.map(|t| t.same_side_add_count).unwrap_or(0),
+                    "buy_fill_count": next.pair_ledger.buy_fill_count,
+                    "clean_closed_episode_ratio": next.episode_metrics.clean_closed_episode_ratio,
+                    "same_side_add_qty_ratio": next.episode_metrics.same_side_add_qty_ratio,
+                    "episode_close_delay_p50": next.episode_metrics.episode_close_delay_p50,
+                    "episode_close_delay_p90": next.episode_metrics.episode_close_delay_p90,
+                }),
+            );
+        }
+
+        if (prev.pair_ledger.surplus_bank - next.pair_ledger.surplus_bank).abs() > 1e-9
+            || (prev.pair_ledger.repair_budget_available - next.pair_ledger.repair_budget_available)
+                .abs()
+                > 1e-9
+        {
+            self.emit_inventory_event(
+                "pair_budget_events",
+                serde_json::json!({
+                    "surplus_bank": next.pair_ledger.surplus_bank,
+                    "repair_budget_available": next.pair_ledger.repair_budget_available,
+                }),
+            );
+        }
+
+        let prev_cap = prev.pair_ledger.capital_state;
+        let next_cap = next.pair_ledger.capital_state;
+        if (prev_cap.working_capital - next_cap.working_capital).abs() > 1e-9
+            || (prev_cap.mergeable_full_sets - next_cap.mergeable_full_sets).abs() > 1e-9
+            || prev_cap.would_block_new_open_due_to_capital
+                != next_cap.would_block_new_open_due_to_capital
+            || prev_cap.would_trigger_merge_due_to_capital
+                != next_cap.would_trigger_merge_due_to_capital
+        {
+            self.emit_inventory_event(
+                "capital_state_events",
+                serde_json::json!({
+                    "working_capital": next_cap.working_capital,
+                    "locked_in_active_tranches": next_cap.locked_in_active_tranches,
+                    "locked_in_pair_covered": next_cap.locked_in_pair_covered,
+                    "mergeable_full_sets": next_cap.mergeable_full_sets,
+                    "locked_capital_ratio": next_cap.locked_capital_ratio,
+                    "would_block_new_open_due_to_capital": next_cap.would_block_new_open_due_to_capital,
+                    "would_trigger_merge_due_to_capital": next_cap.would_trigger_merge_due_to_capital,
+                    "capital_pressure_merge_batch_shadow": next_cap.capital_pressure_merge_batch_shadow,
+                }),
+            );
+        }
     }
 }
 
@@ -687,6 +854,39 @@ mod tests {
         assert!(im.snapshot.pending_no_qty.abs() < 1e-9);
         assert!(im.snapshot.pending_yes_qty.abs() < 1e-9);
         assert!(!im.snapshot.fragile);
+    }
+
+    #[test]
+    fn pair_ledger_snapshot_tracks_active_completion_state() {
+        let mut im = make_manager();
+        let yes = FillEvent {
+            order_id: "yes-1".to_string(),
+            side: Side::Yes,
+            direction: TradeDirection::Buy,
+            filled_size: 10.0,
+            price: 0.42,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        };
+        let no = FillEvent {
+            order_id: "no-1".to_string(),
+            side: Side::No,
+            direction: TradeDirection::Buy,
+            filled_size: 6.0,
+            price: 0.53,
+            status: FillStatus::Confirmed,
+            ts: Instant::now(),
+        };
+        im.apply_fill(&yes);
+        im.apply_fill(&no);
+        let active = im
+            .snapshot
+            .pair_ledger
+            .active_tranche
+            .expect("active tranche");
+        assert_eq!(active.first_side, Some(Side::Yes));
+        assert!((active.residual_qty - 4.0).abs() < 1e-9);
+        assert!((im.snapshot.pair_ledger.repair_budget_available).abs() < 1e-9);
     }
 
     #[test]
