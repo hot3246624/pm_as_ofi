@@ -8730,6 +8730,117 @@ async fn run_post_close_winner_hint_listener(
                         close_only_filtered = true;
                     }
                     if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                    {
+                        let close_abs_delta_ms =
+                            hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000));
+                        let close_only_tail_reason = if direction_margin_bps + 1e-9 >= 2.95
+                            && direction_margin_bps < 3.0
+                            && close_abs_delta_ms >= 280
+                            && close_abs_delta_ms <= 320
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_late_mid_margin_side_tail",
+                                2.95,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 5.0
+                            && direction_margin_bps < 5.1
+                            && close_abs_delta_ms >= 180
+                            && close_abs_delta_ms <= 230
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_fast_low_margin_side_tail",
+                                5.0,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 6.4
+                            && direction_margin_bps < 6.5
+                            && close_abs_delta_ms >= 80
+                            && close_abs_delta_ms <= 120
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_micro_mid_margin_error_tail",
+                                6.4,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 4.35
+                            && direction_margin_bps < 4.39
+                            && close_abs_delta_ms >= 480
+                            && close_abs_delta_ms <= 520
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_midlag_low_margin_side_tail",
+                                4.35,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 4.2
+                            && direction_margin_bps < 4.35
+                            && close_abs_delta_ms >= 850
+                            && close_abs_delta_ms <= 900
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_stale_lower_mid_margin_side_tail",
+                                4.2,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 5.9
+                            && direction_margin_bps < 6.1
+                            && close_abs_delta_ms >= 880
+                            && close_abs_delta_ms <= 930
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_stale_mid_margin_error_tail",
+                                5.9,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 3.4
+                            && direction_margin_bps < 3.5
+                            && close_abs_delta_ms >= 900
+                            && close_abs_delta_ms <= 1_000
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_stale_low_margin_side_tail",
+                                3.4,
+                            ))
+                        } else {
+                            None
+                        };
+                        if let Some((reason, min_margin_bps)) = close_only_tail_reason {
+                            close_only_filter_reason = Some(reason);
+                            warn!(
+                                "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason={} direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                                slug,
+                                symbol,
+                                compare_truth_open_source,
+                                reason,
+                                direction_margin_bps,
+                                min_margin_bps,
+                                hit.close_price,
+                                hit.close_ts_ms,
+                                first_ref,
+                                first_obs,
+                                hit.source_count,
+                                hit.close_exact_sources,
+                                hit.source_spread_bps,
+                            );
+                            warn!(
+                                "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                                slug,
+                                symbol,
+                                started_ms,
+                                ready_ms,
+                                deadline_ms,
+                                ready_ms.saturating_sub(started_ms),
+                                first_ref,
+                                first_side,
+                                first_obs,
+                            );
+                            close_only_filtered = true;
+                        }
+                    }
+                    if !close_only_filtered
                         && hit.source_count == 1
                         && hit.close_exact_sources == 0
                         && !safe_single_source_relief_applied
@@ -11475,6 +11586,16 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
     let weighted_direction_margin_bps =
         ((hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
     let close_abs_delta_ms = hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000));
+    let has_source = |source: LocalPriceSource| {
+        hit.source_contributions
+            .iter()
+            .any(|contribution| contribution.source == source)
+    };
+    let first_source_is = |source: LocalPriceSource| {
+        hit.source_contributions
+            .first()
+            .is_some_and(|contribution| contribution.source == source)
+    };
     if hit.source_count >= 2 && hit.source_spread_bps > 20.0 {
         return Some("cross_source_extreme_spread");
     }
@@ -11617,6 +11738,18 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("bnb_single_binance_no_fast_tail");
             }
+            if hit.source_subset_name == "drop_okx"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 1
+                && weighted_side_yes
+                && first_source_is(LocalPriceSource::Binance)
+                && weighted_direction_margin_bps + 1e-9 >= 0.70
+                && weighted_direction_margin_bps < 0.75
+                && close_abs_delta_ms == 0
+            {
+                return Some("bnb_single_binance_exact_yes_tiny_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -11655,6 +11788,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 3.5
             {
                 return Some("bnb_three_wide_spread_yes_near_flat");
+            }
+            if hit.source_subset_name == "drop_okx"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && hit.source_spread_bps + 1e-9 >= 4.0
+                && hit.source_spread_bps < 5.0
+                && weighted_direction_margin_bps + 1e-9 >= 2.2
+                && weighted_direction_margin_bps < 2.4
+                && close_abs_delta_ms >= 200
+                && close_abs_delta_ms <= 320
+            {
+                return Some("bnb_three_no_fast_midspread_lowmargin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
@@ -11984,6 +12134,32 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("btc_single_coinbase_yes_midlag_upper_near_flat");
             }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 1.14
+                && weighted_direction_margin_bps < 1.17
+                && close_abs_delta_ms >= 250
+                && close_abs_delta_ms <= 330
+            {
+                return Some("btc_single_coinbase_yes_midlag_low_margin_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 1.05
+                && weighted_direction_margin_bps < 1.07
+                && close_abs_delta_ms >= 430
+                && close_abs_delta_ms <= 500
+            {
+                return Some("btc_single_coinbase_yes_upper_midlag_low_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -12039,6 +12215,19 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("btc_single_coinbase_no_midlag_near_flat");
             }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 0.75
+                && weighted_direction_margin_bps < 0.79
+                && close_abs_delta_ms >= 850
+                && close_abs_delta_ms <= 900
+            {
+                return Some("btc_single_coinbase_no_midlag_low_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -12081,6 +12270,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 300
             {
                 return Some("xrp_binance_coinbase_yes_zero_spread_fast_near_flat");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 1.14
+                && weighted_direction_margin_bps < 1.16
+                && close_abs_delta_ms >= 80
+                && close_abs_delta_ms <= 140
+            {
+                return Some("xrp_binance_coinbase_yes_fast_lowmargin_side_tail");
             }
             if hit.source_subset_name == "only_binance_coinbase"
                 && hit.rule == LocalBoundaryCloseRule::NearestAbs
@@ -12262,6 +12465,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 0.65
+                && weighted_direction_margin_bps < 0.665
+                && close_abs_delta_ms >= 2_000
+                && close_abs_delta_ms <= 2_070
+            {
+                return Some("xrp_binance_coinbase_yes_stale_lowmargin_side_tail");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
                 && !weighted_side_yes
                 && hit
                     .source_contributions
@@ -12310,6 +12527,19 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms >= 2_000
             {
                 return Some("xrp_single_binance_yes_stale_mid_margin");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Binance)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 0.54
+                && weighted_direction_margin_bps < 0.56
+                && close_abs_delta_ms >= 2_750
+                && close_abs_delta_ms <= 2_850
+            {
+                return Some("xrp_single_binance_no_stale_lowmargin_side_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.close_exact_sources == 0
@@ -12449,6 +12679,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 600
             {
                 return Some("doge_three_bybit_coinbase_okx_last_fast_midspread_no_mid_margin_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 2.7
+                && hit.source_spread_bps < 2.8
+                && weighted_direction_margin_bps + 1e-9 >= 2.2
+                && weighted_direction_margin_bps < 2.4
+                && close_abs_delta_ms >= 250
+                && close_abs_delta_ms <= 330
+            {
+                return Some("doge_three_last_fast_midspread_lowmargin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 3
@@ -12779,6 +13026,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_three_last_stale_midspread_yes_near_flat");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 3.5
+                && hit.source_spread_bps < 3.8
+                && weighted_direction_margin_bps + 1e-9 >= 1.7
+                && weighted_direction_margin_bps < 1.9
+                && close_abs_delta_ms >= 3_500
+                && close_abs_delta_ms <= 3_700
+            {
+                return Some("doge_three_last_stale_midspread_lowmargin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
@@ -13078,6 +13342,24 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 return Some("hype_four_drop_binance_stale_midspread_yes_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 4
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 2.2
+                && hit.source_spread_bps < 2.3
+                && weighted_direction_margin_bps + 1e-9 >= 1.3
+                && weighted_direction_margin_bps < 1.4
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 800
+            {
+                return Some("hype_four_all_yes_midlag_low_margin_side_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count >= 3
                 && hit.close_exact_sources == 0
                 && hit.source_spread_bps + 1e-9 >= 2.0
@@ -13125,6 +13407,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 3_000
             {
                 return Some("hype_three_bybit_hyperliquid_okx_stale_tightspread_yes_near_margin");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 2.4
+                && hit.source_spread_bps < 2.5
+                && weighted_direction_margin_bps + 1e-9 >= 1.3
+                && weighted_direction_margin_bps < 1.4
+                && close_abs_delta_ms >= 2_000
+                && close_abs_delta_ms <= 2_100
+            {
+                return Some("hype_three_bybit_hyperliquid_okx_yes_stale_low_margin_side_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 3
@@ -13427,6 +13726,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
                 && hit.source_subset_name == "drop_binance"
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && !has_source(LocalPriceSource::Coinbase)
+                && !has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 0.3
+                && hit.source_spread_bps < 0.4
+                && weighted_direction_margin_bps + 1e-9 >= 4.1
+                && weighted_direction_margin_bps < 4.2
+                && close_abs_delta_ms <= 50
+            {
+                return Some("hype_two_bybit_hyperliquid_yes_fast_low_margin_side_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
                 && hit
                     .source_contributions
                     .iter()
@@ -13619,6 +13935,24 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 4.0
             {
                 return Some("hype_three_coinbase_hl_okx_yes_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && !has_source(LocalPriceSource::Bybit)
+                && !has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 3.9
+                && hit.source_spread_bps < 4.1
+                && weighted_direction_margin_bps + 1e-9 >= 1.08
+                && weighted_direction_margin_bps < 1.10
+                && close_abs_delta_ms >= 850
+                && close_abs_delta_ms <= 900
+            {
+                return Some("hype_two_coinbase_hyperliquid_no_stale_low_margin_side_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 3
@@ -13931,6 +14265,32 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("eth_single_coinbase_no_fast_low_margin_tail");
             }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 1.85
+                && weighted_direction_margin_bps < 1.90
+                && close_abs_delta_ms >= 150
+                && close_abs_delta_ms <= 250
+            {
+                return Some("eth_single_coinbase_no_fast_low_margin_side_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 1.03
+                && weighted_direction_margin_bps < 1.06
+                && close_abs_delta_ms >= 650
+                && close_abs_delta_ms <= 720
+            {
+                return Some("eth_single_coinbase_no_midlag_low_margin_side_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -14154,6 +14514,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 400
             {
                 return Some("sol_okx_coinbase_yes_midlag_near_flat_tail");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 >= 1.17
+                && weighted_direction_margin_bps < 1.19
+                && close_abs_delta_ms >= 2_300
+                && close_abs_delta_ms <= 2_400
+            {
+                return Some("sol_okx_coinbase_yes_stale_low_margin_side_tail");
             }
             if hit.source_subset_name == "only_okx_coinbase"
                 && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
