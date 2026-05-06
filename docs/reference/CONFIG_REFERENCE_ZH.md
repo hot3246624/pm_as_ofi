@@ -185,11 +185,11 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_PGT_FIXED_AUTO_BUILD` | fixed 单轮默认 `true`；shadow loop 默认 `false` | 单轮 `run_pgt_fixed_shadow_next.sh` 仍会按需 build；连续 loop 内禁用每轮 build，避免外部源码 mtime 变化导致错过开盘 |
 | `PM_PGT_FIXED_PRESTART_SECS` | `10` | fixed worker 在目标 round start 前约 10 秒启动；覆盖 Rust 进程启动、shared-ingress client 握手与 feed attach 的热路径开销 |
 | `PM_PGT_FIXED_INTERVAL_SECS` | `300` | fixed BTC 5m round 的生命周期长度；用于迟到启动防护，不参与策略报价 |
-| `PM_PGT_FIXED_STALE_SKIP_GRACE_SECS` | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` 或 `2` | fixed worker 醒来后若已超过 `round_start + interval + grace`，直接 `stale_target_skipped` 并以 `76` 退出，避免机器睡眠/DNS 卡顿后记录零 tick 伪样本 |
+| `PM_PGT_FIXED_STALE_SKIP_GRACE_SECS` | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` 或 shadow loop 默认 `45` | fixed worker 醒来后若已超过 `round_start + interval + grace`，直接 `stale_target_skipped` 并以 `76` 退出，避免机器睡眠/DNS 卡顿后记录零 tick 伪样本 |
 | `PM_PGT_SHADOW_LOOP_OVERLAP` | `true` | shadow loop 使用 overlapping scheduler，每轮提前调度下一个 fixed worker，避免当前 worker 到 end+grace 后才串行启动下一轮 |
 | `PM_PGT_FIXED_INSTANCE_PER_ROUND` | overlap loop 默认 `true` | overlapping worker 按 round timestamp 拆分 `PM_INSTANCE_ID`、log root 与 recorder root，避免前后轮短暂重叠时互相覆盖 |
 | `PM_PGT_SHADOW_LOOP_BACKOFF_SEC` | `1` | 正常轮转退出后的重启间隔 |
-| `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `2` | fixed shadow round 收盘后快速退出，避免下一轮迟到 |
+| `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `45` | fixed shadow round 收盘后继续追踪 45 秒；下一轮由 overlap loop 独立预启动，不再依赖上一轮退出后 systemd 重启 |
 | `PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED` | shadow loop 默认 `false` | PGT shadow 轮转默认不跑 post-close redeem lifecycle，redeem 行为单独验证 |
 | `PM_CLAIM_MONITOR` | fixed shadow 默认 `false` | PGT shadow 热启动不跑 claim monitor，避免非交易 HTTP 阻塞下一轮开盘 |
 | `PM_MIN_ORDER_SIZE` | fixed shadow 默认 `5` | PGT shadow 固定最低下单量，避免每轮启动同步探测 `/books` 拖慢开盘 |

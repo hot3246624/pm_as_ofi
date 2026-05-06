@@ -372,6 +372,7 @@ PM_SHARED_INGRESS_ROLE=client
 PM_SHARED_INGRESS_ROOT=/srv/pm_as_ofi/shared-ingress-main
 PM_PGT_SHADOW_PROFILE=xuan_ladder_v1
 PM_PGT_SHADOW_LOOP_OVERLAP=true
+PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS=45
 PM_DRY_RUN=true
 ```
 
@@ -436,6 +437,7 @@ sudo journalctl -u pm-xuan-shadow.service -f
 - `run_pgt_shadow_loop.sh` 默认使用 `target/debug/polymarket_v2`
 - 如果 debug 二进制不存在或过期，它会在 loop 启动时执行一次 `cargo build --bin polymarket_v2`
 - 因此第一次启动比 broker / oracle lag 更慢是正常现象
+- `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS=45` 保留上一轮盘后 45 秒追踪；overlap loop 会同时预启动下一轮，所以不会再牺牲下一轮开盘前 45 秒。
 - 不要把 systemd 直接指回 `run_pgt_fixed_shadow_next.sh`；单轮脚本会等盘后追踪退出后才由 systemd 重启，无法做到“上一轮盘后继续、下一轮按时启动”。连续运行应由 overlap loop 调度每轮 fixed worker。
 
 ## 8. 推荐的首批上线组合

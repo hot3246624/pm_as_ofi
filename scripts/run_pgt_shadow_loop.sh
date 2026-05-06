@@ -18,7 +18,8 @@ LOOP_LOG="${PM_PGT_SHADOW_LOOP_LOG:-$LOG_ROOT/pgt_shadow_loop.log}"
 INTERVAL_SECS="${PM_PGT_SHADOW_LOOP_INTERVAL_SECS:-300}"
 MIN_REMAINING_SECS="${PM_PGT_SHADOW_LOOP_MIN_REMAINING_SECS:-180}"
 FIXED_PRESTART_SECS="${PM_PGT_FIXED_PRESTART_SECS:-10}"
-FIXED_STALE_SKIP_GRACE_SECS="${PM_PGT_FIXED_STALE_SKIP_GRACE_SECS:-${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}}"
+POST_CLOSE_GRACE_SECS="${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-45}"
+FIXED_STALE_SKIP_GRACE_SECS="${PM_PGT_FIXED_STALE_SKIP_GRACE_SECS:-$POST_CLOSE_GRACE_SECS}"
 OVERLAP_LOOP="${PM_PGT_SHADOW_LOOP_OVERLAP:-true}"
 BINARY="$ROOT/target/debug/polymarket_v2"
 BUILD_ONCE="${PM_PGT_SHADOW_BUILD_ONCE:-true}"
@@ -127,7 +128,7 @@ run_fixed_child() {
   PM_PGT_SHADOW_PROFILE="$PGT_SHADOW_PROFILE" \
   PM_FIXED_ROUND_OFFSET="$fixed_round_offset" \
   PM_FIXED_MIN_REMAINING_SECS="${PM_FIXED_MIN_REMAINING_SECS:-disabled}" \
-  PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS="${PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS:-2}" \
+  PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS="$POST_CLOSE_GRACE_SECS" \
   PM_PGT_FIXED_INTERVAL_SECS="$INTERVAL_SECS" \
   PM_PGT_FIXED_STALE_SKIP_GRACE_SECS="$FIXED_STALE_SKIP_GRACE_SECS" \
   PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED="${PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED:-false}" \
@@ -153,7 +154,7 @@ if is_truthy "$OVERLAP_LOOP"; then
     fi
     {
       echo "[$started_at] pgt shadow overlap schedule=$round prefix=$PREFIX instance_id=$INSTANCE_ID"
-      echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset target_start=$target_start prestart_secs=$FIXED_PRESTART_SECS stale_at=$stale_at"
+      echo "[$started_at] shared_ingress_role=$SHARED_INGRESS_ROLE shared_ingress_root=$SHARED_INGRESS_ROOT profile=$PGT_SHADOW_PROFILE fixed_round_offset=$fixed_round_offset target_start=$target_start prestart_secs=$FIXED_PRESTART_SECS post_close_grace_secs=$POST_CLOSE_GRACE_SECS stale_at=$stale_at"
     } >> "$LOOP_LOG"
 
     (
