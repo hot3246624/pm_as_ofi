@@ -57,6 +57,7 @@ const XUAN_LADDER_TAIL_INSURANCE_REMAINING_SECS: u64 = 45;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP: f64 = 1.050;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_REMAINING_SECS: u64 = 15;
 const XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS: f64 = 4.0;
+const XUAN_LADDER_TIMEOUT_MARGINAL_INSURANCE_MIN_AGE_SECS: f64 = 1.5;
 const XUAN_LADDER_TIMEOUT_CHEAP_FIRST_MAX_PRICE: f64 = 0.30;
 const XUAN_LADDER_TIMEOUT_MID_FIRST_MAX_PRICE: f64 = 0.35;
 const XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE: f64 = 0.36;
@@ -1890,9 +1891,8 @@ fn pgt_xuan_ladder_timeout_insurance_completion_ceiling(
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
         return None;
     }
-    if remaining_secs == u64::MAX
-        || completion_age_secs < XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS
-    {
+    let min_age_secs = pgt_xuan_ladder_timeout_insurance_min_age_secs(first_vwap);
+    if remaining_secs == u64::MAX || completion_age_secs < min_age_secs {
         return None;
     }
     if first_vwap <= 0.0 {
@@ -1913,6 +1913,16 @@ fn pgt_xuan_ladder_timeout_insurance_completion_ceiling(
         Some(ceiling)
     } else {
         None
+    }
+}
+
+fn pgt_xuan_ladder_timeout_insurance_min_age_secs(first_vwap: f64) -> f64 {
+    if first_vwap > XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE + 1e-9
+        && first_vwap <= XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE + 1e-9
+    {
+        XUAN_LADDER_TIMEOUT_MARGINAL_INSURANCE_MIN_AGE_SECS
+    } else {
+        XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS
     }
 }
 
@@ -2641,9 +2651,22 @@ mod profile_tests {
     fn xuan_ladder_timeout_insurance_caps_by_first_leg_price() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert_eq!(
-            pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.36, 240, 3.9),
+            pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.29, 240, 3.9),
             None,
-            "completion maker gets the short queue window before timeout insurance crosses"
+            "cheap first legs keep the full maker queue window before timeout insurance crosses"
+        );
+        assert_eq!(
+            pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.35, 240, 1.4),
+            None,
+            "marginal first legs still wait for the OMS warmup window"
+        );
+        assert!(
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.35, 240, 1.5)
+                .unwrap()
+                - 0.655)
+                .abs()
+                < 1e-9,
+            "marginal 0.35 first legs should cross sooner instead of drifting to tail insurance"
         );
         assert!(
             (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.29, 240, 4.0).unwrap()
