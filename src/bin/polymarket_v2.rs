@@ -19653,17 +19653,30 @@ struct SlugLock {
     port: u16,
 }
 
-fn slug_lock_port(slug: &str) -> u16 {
+fn slug_lock_class_name(lab_only: bool) -> &'static str {
+    if lab_only {
+        "lab"
+    } else {
+        "trade"
+    }
+}
+
+fn slug_lock_key(slug: &str, lab_only: bool) -> String {
+    format!("{}::{}", slug_lock_class_name(lab_only), slug)
+}
+
+fn slug_lock_port(slug: &str, lab_only: bool) -> u16 {
+    let lock_key = slug_lock_key(slug, lab_only);
     let mut h: u32 = 0x811c9dc5u32;
-    for b in slug.bytes() {
+    for b in lock_key.bytes() {
         h = h.wrapping_mul(0x01000193).wrapping_add(b as u32);
     }
     // Dynamic/private port range: 49152–59999 (10848 slots)
     49152 + (h % 10848) as u16
 }
 
-fn try_acquire_slug_lock(slug: &str) -> Option<SlugLock> {
-    let port = slug_lock_port(slug);
+fn try_acquire_slug_lock(slug: &str, lab_only: bool) -> Option<SlugLock> {
+    let port = slug_lock_port(slug, lab_only);
     match TcpListener::bind(format!("127.0.0.1:{}", port)) {
         Ok(listener) => Some(SlugLock {
             _listener: listener,
@@ -20488,24 +20501,28 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     let coord_cfg_base = CoordinatorConfig::from_env();
     // Slug lock: standalone mode only (ctx=None = single OS-process worker).
     // In inproc mode the supervisor IS the single process, so no cross-process
-    // conflict is possible and we skip the lock.
+    // conflict is possible and we skip the lock. Lab-only challenger workers
+    // use a separate lock class so they can shadow one tradable oracle-lag
+    // worker on the same slug without disabling duplicate protection entirely.
     let _slug_lock = if ctx.is_none()
         && prefix_mode
         && coord_cfg_base.strategy.is_oracle_lag_sniping()
     {
-        match try_acquire_slug_lock(&raw_slug) {
+        let slug_lock_lab_only = coord_cfg_base.oracle_lag_sniping.lab_only;
+        let slug_lock_class = slug_lock_class_name(slug_lock_lab_only);
+        match try_acquire_slug_lock(&raw_slug, slug_lock_lab_only) {
             Some(lock) => {
                 info!(
-                    "🔒 slug_lock acquired | slug={} port={}",
-                    raw_slug, lock.port
+                    "🔒 slug_lock acquired | slug={} class={} port={}",
+                    raw_slug, slug_lock_class, lock.port
                 );
                 Some(lock)
             }
             None => {
-                let port = slug_lock_port(&raw_slug);
+                let port = slug_lock_port(&raw_slug, slug_lock_lab_only);
                 anyhow::bail!(
-                    "🚨 slug_lock_conflict: another process is already running oracle_lag_sniping for slug='{}' (port {}). Exiting to prevent duplicate orders.",
-                    raw_slug, port
+                    "🚨 slug_lock_conflict: another process is already running oracle_lag_sniping class='{}' for slug='{}' (port {}). Exiting to prevent duplicate orders.",
+                    slug_lock_class, raw_slug, port
                 );
             }
         }
