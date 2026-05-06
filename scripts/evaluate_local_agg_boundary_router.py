@@ -1363,6 +1363,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
         ):
             return "xrp_binance_coinbase_no_fast_midspread_near_flat"
         if (
+            source_subset == "only_binance_coinbase"
+            and rule == "nearest_abs"
+            and source_count == 2
+            and exact_sources == 0
+            and not side_yes
+            and sources == ("binance", "coinbase")
+            and margin_bps < 0.09
+            and close_abs_delta_ms is not None
+            and 400 <= close_abs_delta_ms <= 700
+        ):
+            return "xrp_binance_coinbase_no_stale_extreme_near_flat"
+        if (
             rule == "nearest_abs"
             and source_count == 1
             and exact_sources == 0
@@ -1492,6 +1504,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
         ):
             return "doge_two_last_tightspread_fast_mid_margin_tail"
         if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 2
+            and exact_sources == 0
+            and side_yes
+            and sources == ("bybit", "okx")
+            and margin_bps < 4.0
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 100
+        ):
+            return "doge_two_bybit_okx_last_very_fast_mid_margin_tail"
+        if (
             rule == "last_before"
             and source_count == 2
             and exact_sources == 0
@@ -1528,6 +1552,32 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and close_only_margin_bps < 0.5
         ):
             return "doge_three_last_fast_midspread_low_signal_near_flat"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 3
+            and exact_sources == 0
+            and not side_yes
+            and sources == ("bybit", "coinbase", "okx")
+            and margin_bps < 0.6
+            and spread_bps < 1.0
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms >= 3_500
+        ):
+            return "doge_three_bybit_coinbase_okx_last_very_stale_tightspread_low_signal"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 2
+            and exact_sources == 0
+            and side_yes
+            and sources == ("coinbase", "okx")
+            and margin_bps < 1.0
+            and 0.89 <= spread_bps < 0.91
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms >= 3_000
+        ):
+            return "doge_two_coinbase_okx_last_very_stale_tightspread_near_flat"
         if (
             rule == "last_before"
             and source_count == 2
@@ -1764,6 +1814,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and close_abs_delta_ms <= 300
         ):
             return "doge_single_bybit_fast_high_margin_tail"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 1
+            and exact_sources == 0
+            and not side_yes
+            and sources == ("okx",)
+            and margin_bps < 1.6
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms >= 4_000
+        ):
+            return "doge_single_okx_last_very_stale_no_near_flat"
     elif symbol == "hype/usd":
         if (
             rule == "after_then_before"
@@ -1919,6 +1981,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and rule == "close_only"
             and source_count == 1
             and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and side_yes
+            and 2.0 <= margin_bps < 2.1
+            and close_abs_delta_ms is not None
+            and 150 <= close_abs_delta_ms <= 450
+        ):
+            return "hype_close_only_single_hyperliquid_yes_low_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
             and side_yes
             and 3.5 <= margin_bps < 5.5
         ):
@@ -1994,6 +2068,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 650 <= close_abs_delta_ms < 720
         ):
             return "hype_close_only_single_hyperliquid_no_stale_mid_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 2.9 <= margin_bps < 4.1
+            and close_abs_delta_ms is not None
+            and 700 <= close_abs_delta_ms <= 750
+        ):
+            return "hype_close_only_single_hyperliquid_no_late_near_margin_tail"
         if (
             source_subset == "close_only_fallback"
             and rule == "close_only"
@@ -2683,6 +2769,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
         ):
             return "eth_single_coinbase_no_very_stale_near_flat"
         if (
+            source_subset == "only_coinbase"
+            and rule == "last_before"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("coinbase",)
+            and not side_yes
+            and 0.63 <= margin_bps < 0.75
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 100
+        ):
+            return "eth_single_coinbase_no_fast_low_margin_tail"
+        if (
             rule == "last_before"
             and source_count == 1
             and exact_sources == 0
@@ -2829,6 +2927,19 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 100 < close_abs_delta_ms <= 500
         ):
             return "sol_okx_coinbase_mid_spread_yes_fastish_near_flat"
+        if (
+            source_subset == "only_okx_coinbase"
+            and rule == "after_then_before"
+            and source_count == 2
+            and exact_sources == 0
+            and side_yes
+            and sources == ("coinbase", "okx")
+            and 1.0 <= margin_bps < 1.8
+            and spread_bps <= 1.2
+            and close_abs_delta_ms is not None
+            and 300 <= close_abs_delta_ms <= 400
+        ):
+            return "sol_okx_coinbase_yes_midlag_near_flat_tail"
         if (
             source_subset == "only_okx_coinbase"
             and rule == "after_then_before"
