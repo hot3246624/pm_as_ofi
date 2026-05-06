@@ -56,6 +56,13 @@ const XUAN_LADDER_TAIL_INSURANCE_PAIR_CAP: f64 = 1.030;
 const XUAN_LADDER_TAIL_INSURANCE_REMAINING_SECS: u64 = 45;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP: f64 = 1.050;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_REMAINING_SECS: u64 = 15;
+const XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS: f64 = 4.0;
+const XUAN_LADDER_TIMEOUT_CHEAP_FIRST_MAX_PRICE: f64 = 0.30;
+const XUAN_LADDER_TIMEOUT_MID_FIRST_MAX_PRICE: f64 = 0.35;
+const XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE: f64 = 0.36;
+const XUAN_LADDER_TIMEOUT_CHEAP_PAIR_CAP: f64 = 1.010;
+const XUAN_LADDER_TIMEOUT_MID_PAIR_CAP: f64 = 1.005;
+const XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_TAKER_INSURANCE_MIN_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
@@ -1096,8 +1103,15 @@ impl PairGatedTrancheStrategy {
             remaining_secs,
             completion_age_secs,
         );
+        let timeout_insurance_ceiling = pgt_xuan_ladder_timeout_insurance_completion_ceiling(
+            tuning,
+            active.first_vwap,
+            remaining_secs,
+            completion_age_secs,
+        );
         let taker_close_ceiling = base_taker_close_ceiling
             .max(tail_insurance_ceiling.unwrap_or(0.0))
+            .max(timeout_insurance_ceiling.unwrap_or(0.0))
             .max(taker_insurance_ceiling.unwrap_or(0.0));
         let breakeven_unlocked = completion_age_secs >= PROFIT_FIRST_BREAKEVEN_UNLOCK_AGE_SECS
             || remaining_secs <= PROFIT_FIRST_BREAKEVEN_UNLOCK_REMAINING_SECS;
@@ -1215,6 +1229,9 @@ impl PairGatedTrancheStrategy {
         let tail_insurance_taker_would_close = tail_insurance_ceiling
             .map(|ceiling| best_ask <= ceiling + 1e-9)
             .unwrap_or(false);
+        let timeout_insurance_would_close = timeout_insurance_ceiling
+            .map(|ceiling| best_ask <= ceiling + 1e-9)
+            .unwrap_or(false);
         let taker_insurance_would_close = taker_insurance_ceiling
             .map(|ceiling| best_ask <= ceiling + 1e-9)
             .unwrap_or(false);
@@ -1230,6 +1247,7 @@ impl PairGatedTrancheStrategy {
             && (profit_taker_would_close
                 || breakeven_taker_would_close
                 || tail_insurance_taker_would_close
+                || timeout_insurance_would_close
                 || taker_insurance_would_close
                 || last_chance_forced_taker_close);
         let taker_close_limit = if taker_shadow_would_close {
@@ -1855,6 +1873,41 @@ fn pgt_xuan_ladder_taker_insurance_completion_ceiling(
         return None;
     }
     let ceiling = (XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP - first_vwap).clamp(0.0, 1.0);
+    if ceiling > 0.0 {
+        Some(ceiling)
+    } else {
+        None
+    }
+}
+
+fn pgt_xuan_ladder_timeout_insurance_completion_ceiling(
+    tuning: PgtTuning,
+    first_vwap: f64,
+    remaining_secs: u64,
+    completion_age_secs: f64,
+) -> Option<f64> {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
+        return None;
+    }
+    if remaining_secs == u64::MAX
+        || completion_age_secs < XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS
+    {
+        return None;
+    }
+    if first_vwap <= 0.0 {
+        return None;
+    }
+
+    let pair_cap = if first_vwap <= XUAN_LADDER_TIMEOUT_CHEAP_FIRST_MAX_PRICE + 1e-9 {
+        XUAN_LADDER_TIMEOUT_CHEAP_PAIR_CAP
+    } else if first_vwap <= XUAN_LADDER_TIMEOUT_MID_FIRST_MAX_PRICE + 1e-9 {
+        XUAN_LADDER_TIMEOUT_MID_PAIR_CAP
+    } else if first_vwap <= XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE + 1e-9 {
+        XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP
+    } else {
+        return None;
+    };
+    let ceiling = (pair_cap - first_vwap).clamp(0.0, 1.0);
     if ceiling > 0.0 {
         Some(ceiling)
     } else {
@@ -2575,6 +2628,52 @@ mod profile_tests {
             ),
             None,
             "insurance is scoped to the xuan ladder shadow profile"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_timeout_insurance_caps_by_first_leg_price() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.36, 240, 3.9),
+            None,
+            "completion maker gets the short queue window before timeout insurance crosses"
+        );
+        assert!(
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.29, 240, 4.0).unwrap()
+                - 0.72)
+                .abs()
+                < 1e-9,
+            "cheap first legs may spend up to pair_cost 1.010"
+        );
+        assert!(
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.33, 240, 4.0).unwrap()
+                - 0.675)
+                .abs()
+                < 1e-9,
+            "mid first legs may spend up to pair_cost 1.005"
+        );
+        assert!(
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.36, 240, 4.0).unwrap()
+                - 0.635)
+                .abs()
+                < 1e-9,
+            "marginal 0.36 first legs only cross when completion keeps pair_cost <= 0.995"
+        );
+        assert_eq!(
+            pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.37, 240, 4.0),
+            None,
+            "high first legs need the slower rescue logic rather than short-timeout loss taking"
+        );
+        assert_eq!(
+            pgt_xuan_ladder_timeout_insurance_completion_ceiling(
+                PgtTuning::legacy(),
+                0.36,
+                240,
+                4.0
+            ),
+            None,
+            "timeout insurance is scoped to the xuan ladder shadow profile"
         );
     }
 
