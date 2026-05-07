@@ -80,10 +80,11 @@ const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.985;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
+const XUAN_LADDER_REOPEN_AFTER_CLOSED_CLIP_QTY: f64 = 60.0;
+const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_LOW_FIRST_SEED_PRICE_HI: f64 = 0.60;
 const XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 1.000;
@@ -643,8 +644,8 @@ impl PairGatedTrancheStrategy {
             return None;
         }
         let visible_breakeven_completion_slack_ticks = ((1.0 - price - opp_ask) / tick).max(-10.0);
-        let visible_taker_completion_ok = price + opp_ask
-            <= pgt_xuan_ladder_seed_taker_completion_pair_cap(price) + 1e-9;
+        let visible_taker_completion_ok =
+            price + opp_ask <= pgt_xuan_ladder_seed_taker_completion_pair_cap(price) + 1e-9;
         let recent_pair_cost = pgt_recent_closed_pair_cost(input.pair_ledger);
         let min_visible_breakeven_slack_ticks = pgt_seed_min_visible_breakeven_slack_ticks(
             tuning,
@@ -775,6 +776,10 @@ impl PairGatedTrancheStrategy {
             visible_taker_completion_ok,
         ) {
             size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
+        }
+        if pgt_xuan_ladder_reopen_seed_clip_caps(tuning, input.episode_metrics.round_buy_fill_count)
+        {
+            size = size.min(XUAN_LADDER_REOPEN_AFTER_CLOSED_CLIP_QTY);
         }
         if size <= 0.0 {
             return None;
@@ -1898,6 +1903,12 @@ fn pgt_xuan_ladder_maker_only_seed_clip_caps(
         && !visible_taker_completion_ok
 }
 
+fn pgt_xuan_ladder_reopen_seed_clip_caps(tuning: PgtTuning, round_buy_fill_count: u64) -> bool {
+    tuning.profile == PgtShadowProfile::XuanLadderV1
+        && round_buy_fill_count >= XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS
+        && round_buy_fill_count <= XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS
+}
+
 fn pgt_xuan_ladder_reopen_seed_quality_blocks(
     tuning: PgtTuning,
     round_buy_fill_count: u64,
@@ -2555,8 +2566,7 @@ mod profile_tests {
             "marginal first legs still wait for the OMS warmup window"
         );
         assert!(
-            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.35, 240, 1.5)
-                .unwrap()
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.35, 240, 1.5).unwrap()
                 - 0.655)
                 .abs()
                 < 1e-9,
@@ -2584,16 +2594,14 @@ mod profile_tests {
             "marginal 0.36 first legs may cross at breakeven to avoid tail residual"
         );
         assert!(
-            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.37, 240, 1.5)
-                .unwrap()
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.37, 240, 1.5).unwrap()
                 - 0.63)
                 .abs()
                 < 1e-9,
             "higher first legs may also cross at breakeven once a safe completion is visible"
         );
         assert!(
-            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.80, 240, 1.5)
-                .unwrap()
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.80, 240, 1.5).unwrap()
                 - 0.20)
                 .abs()
                 < 1e-9,
@@ -2956,7 +2964,7 @@ mod profile_tests {
         let mut ledger = PairLedgerSnapshot::default();
         ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.990,
+            pair_cost_tranche: 1.010,
             ..PairTranche::default()
         });
         let metrics = EpisodeMetrics {
@@ -2989,7 +2997,7 @@ mod profile_tests {
         let mut high_quality_ledger = ledger;
         high_quality_ledger.recent_closed[0] = Some(PairTranche {
             pairable_qty: 160.0,
-            pair_cost_tranche: 0.880,
+            pair_cost_tranche: 1.000,
             ..PairTranche::default()
         });
         let high_quality_inventory = InventorySnapshot {
@@ -3062,20 +3070,20 @@ mod profile_tests {
             !pgt_xuan_ladder_reopen_seed_quality_blocks(
                 tuning,
                 2,
-                Some(0.980),
+                Some(1.000),
                 0.46,
                 0.53,
                 0.01
             ),
-            "second tranche can open when the prior pair is cheap and visible maker completion is <= 0.980"
+            "second tranche can open after a clean breakeven pair when visible completion is <= 1.000"
         );
         assert!(
-            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(0.980), 0.47, 0.54, 0.01),
+            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(1.000), 0.47, 0.55, 0.01),
             "second tranche is blocked when projected maker pair cost is above the cap"
         );
         assert!(
-            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(0.990), 0.47, 0.52, 0.01),
-            "second tranche is blocked when the just-closed pair was not clearly profitable"
+            pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(1.010), 0.47, 0.52, 0.01),
+            "second tranche is blocked when the just-closed pair was negative"
         );
         assert!(
             pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 4, Some(0.880), 0.47, 0.52, 0.01),
@@ -3092,6 +3100,19 @@ mod profile_tests {
             ),
             "legacy/replay profiles are not changed by the xuan-specific reopen guard"
         );
+    }
+
+    #[test]
+    fn xuan_ladder_reopen_seed_clip_is_capped() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(!pgt_xuan_ladder_reopen_seed_clip_caps(tuning, 0));
+        assert!(!pgt_xuan_ladder_reopen_seed_clip_caps(tuning, 1));
+        assert!(pgt_xuan_ladder_reopen_seed_clip_caps(tuning, 2));
+        assert!(!pgt_xuan_ladder_reopen_seed_clip_caps(tuning, 3));
+        assert!(!pgt_xuan_ladder_reopen_seed_clip_caps(
+            PgtTuning::legacy(),
+            2
+        ));
     }
 }
 
