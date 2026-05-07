@@ -85,6 +85,8 @@ const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
+const XUAN_LADDER_LOW_FIRST_SEED_PRICE_HI: f64 = 0.60;
+const XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
 const XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE: f64 = 0.05;
@@ -641,8 +643,8 @@ impl PairGatedTrancheStrategy {
             return None;
         }
         let visible_breakeven_completion_slack_ticks = ((1.0 - price - opp_ask) / tick).max(-10.0);
-        let visible_taker_completion_ok =
-            price + opp_ask <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9;
+        let visible_taker_completion_ok = price + opp_ask
+            <= pgt_xuan_ladder_seed_taker_completion_pair_cap(price) + 1e-9;
         let recent_pair_cost = pgt_recent_closed_pair_cost(input.pair_ledger);
         let min_visible_breakeven_slack_ticks = pgt_seed_min_visible_breakeven_slack_ticks(
             tuning,
@@ -1868,13 +1870,22 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     if seed_price <= 0.0 || opposite_ask <= 0.0 || tick <= 0.0 {
         return true;
     }
+    let taker_pair_cap = pgt_xuan_ladder_seed_taker_completion_pair_cap(seed_price);
     let taker_pair_cost = seed_price + opposite_ask;
-    if taker_pair_cost <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9 {
+    if taker_pair_cost <= taker_pair_cap + 1e-9 {
         return false;
     }
     let maker_completion_ref = (opposite_ask - tick).max(0.0);
     let maker_pair_cost = seed_price + maker_completion_ref;
     maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
+}
+
+fn pgt_xuan_ladder_seed_taker_completion_pair_cap(seed_price: f64) -> f64 {
+    if seed_price > 0.0 && seed_price < XUAN_LADDER_LOW_FIRST_SEED_PRICE_HI {
+        XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP
+    } else {
+        XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP
+    }
 }
 
 fn pgt_xuan_ladder_maker_only_seed_clip_caps(
@@ -1980,8 +1991,8 @@ fn pgt_maybe_log_seed_admission_diag(
     let visible_ask_pair_cost = price + opposite_ask;
     let maker_completion_ref = (opposite_ask - tick.max(0.0)).max(0.0);
     let visible_maker_pair_cost = price + maker_completion_ref;
-    let guard_pair_cost_gap =
-        (visible_ask_pair_cost - XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP).max(0.0);
+    let taker_pair_cap = pgt_xuan_ladder_seed_taker_completion_pair_cap(price);
+    let guard_pair_cost_gap = (visible_ask_pair_cost - taker_pair_cap).max(0.0);
     info!(
         "🧭 PGT seed admission diag | decision={} side={:?} price={:.4} size={:.1} remaining_secs={} best_bid={:.4} best_ask={:.4} opposite_ask={:.4} visible_ask_pair_cost={:.4} visible_maker_pair_cost={:.4} open_pair_band={:.4} visible_completion_slack_ticks={:.2} visible_breakeven_slack_ticks={:.2} min_breakeven_slack_ticks={:.2} fill_distance_ticks={:.2} taker_shadow_would_open={} entry_pressure_extra_ticks={} xuan_taker_pair_cap={:.4} xuan_maker_pair_cap={:.4} guard_pair_cost_gap={:.4}",
         decision,
@@ -2001,7 +2012,7 @@ fn pgt_maybe_log_seed_admission_diag(
         fill_distance_ticks,
         taker_shadow_would_open,
         entry_pressure_extra_ticks,
-        XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP,
+        taker_pair_cap,
         XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP,
         guard_pair_cost_gap,
     );
@@ -2752,6 +2763,31 @@ mod profile_tests {
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.80, 0.21, 0.01),
             "high first-leg prices are still blocked when completion quality is poor"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_low_first_seed_allows_breakeven_taker_completion() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(
+            pgt_xuan_ladder_seed_taker_completion_pair_cap(0.59),
+            XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP
+        );
+        assert_eq!(
+            pgt_xuan_ladder_seed_taker_completion_pair_cap(0.60),
+            XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.59, 0.41, 0.01),
+            "OOS-supported low first legs may seed when immediate completion is breakeven"
+        );
+        assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.59, 0.42, 0.01),
+            "low first legs still need at least a breakeven immediate path or maker edge"
+        );
+        assert!(
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.61, 0.395, 0.01),
+            "the breakeven taker relaxation is not inherited by higher first-leg prices"
         );
     }
 
