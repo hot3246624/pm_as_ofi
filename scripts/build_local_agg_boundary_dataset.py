@@ -190,10 +190,13 @@ def discover_instance_logs(logs_root: Path, instance_glob: str) -> List[Tuple[st
     out: List[Tuple[str, Path]] = []
 
     def append_dir_logs(base_instance_id: str, log_dir: Path) -> None:
-        for log_path in sorted(log_dir.glob("local_agg_lab_*.log")):
-            out.append((base_instance_id, log_path))
+        local_agg_logs = sorted(log_dir.glob("local_agg_lab_*.log"))
+        if local_agg_logs:
+            for log_path in local_agg_logs:
+                out.append((base_instance_id, log_path))
+            return
         for log_path in sorted(log_dir.glob("polymarket.*.log")):
-            out.append((f"{base_instance_id}/{log_path.name}", log_path))
+            out.append((base_instance_id, log_path))
         for log_path in sorted(log_dir.glob("polymarket.*.log.*")):
             out.append((f"{base_instance_id}/{log_path.name}", log_path))
 
