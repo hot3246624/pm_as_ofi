@@ -88,7 +88,7 @@ const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_LOW_FIRST_SEED_PRICE_HI: f64 = 0.60;
 const XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_LOW_FIRST_RELAXED_COMPLETION_CLIP_QTY: f64 = 60.0;
+const XUAN_LADDER_LOW_FIRST_RELAXED_COMPLETION_CLIP_QTY: f64 = 45.0;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
 const XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE: f64 = 0.05;
@@ -2787,6 +2787,7 @@ mod profile_tests {
     #[test]
     fn xuan_ladder_low_first_relaxed_completion_seed_is_capped() {
         let tuning = PgtTuning::xuan_ladder_v1();
+        assert_eq!(XUAN_LADDER_LOW_FIRST_RELAXED_COMPLETION_CLIP_QTY, 45.0);
         assert!(
             pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(tuning, 0, 0.47, 0.53),
             "low first legs that only qualify through the relaxed breakeven cap should not use full ladder clip"
