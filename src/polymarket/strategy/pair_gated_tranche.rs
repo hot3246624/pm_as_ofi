@@ -58,13 +58,12 @@ const XUAN_LADDER_LAST_CHANCE_INSURANCE_PAIR_CAP: f64 = 1.050;
 const XUAN_LADDER_LAST_CHANCE_INSURANCE_REMAINING_SECS: u64 = 15;
 const XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS: f64 = 4.0;
 const XUAN_LADDER_TIMEOUT_MARGINAL_INSURANCE_MIN_AGE_SECS: f64 = 1.5;
+const XUAN_LADDER_TIMEOUT_FAST_FIRST_MIN_PRICE: f64 = 0.34;
 const XUAN_LADDER_TIMEOUT_CHEAP_FIRST_MAX_PRICE: f64 = 0.30;
 const XUAN_LADDER_TIMEOUT_MID_FIRST_MAX_PRICE: f64 = 0.35;
-const XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE: f64 = 0.36;
 const XUAN_LADDER_TIMEOUT_CHEAP_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_TIMEOUT_MID_PAIR_CAP: f64 = 1.005;
 const XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP: f64 = 1.000;
-const XUAN_LADDER_RISKY_FIRST_SEED_TAKER_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_TAKER_INSURANCE_MIN_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_TAKER_INSURANCE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_COMPLETION_FRESH_AGE_SECS: f64 = 20.0;
@@ -78,7 +77,6 @@ const XUAN_LADDER_EXPENSIVE_SEED_DOMINANCE_TICKS: f64 = 2.0;
 const XUAN_LADDER_COST_BRAKE_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_COST_BRAKE_PAIR_COST: f64 = 1.000;
 const XUAN_LADDER_COST_BRAKE_MIN_SLACK_TICKS: f64 = 0.0;
-const XUAN_LADDER_LOW_PRICE_SEED_MAX: f64 = 0.45;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_PAIR_COST: f64 = 0.900;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MIN_REMAINING_SECS: u64 = 120;
 const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
@@ -88,9 +86,6 @@ const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
-const XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE: f64 = 0.34;
-const XUAN_LADDER_FIRST_SEED_MAX_PRICE: f64 = 0.36;
-const XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE: f64 = 0.42;
 const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
 const XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE: f64 = 0.05;
 const XUAN_LADDER_LAST_CHANCE_CLOSE_REMAINING_SECS: u64 = 15;
@@ -709,63 +704,6 @@ impl PairGatedTrancheStrategy {
             quotes.note_pgt_seed_reject_no_visible_breakeven_path();
             return None;
         }
-        if pgt_xuan_ladder_first_seed_price_blocks(
-            tuning,
-            input.episode_metrics.round_buy_fill_count,
-            price,
-        ) {
-            pgt_maybe_log_seed_admission_diag(
-                coordinator.cfg().dry_run,
-                tuning,
-                side,
-                remaining_secs,
-                "blocked_first_seed_price_risk",
-                price,
-                size,
-                best_bid,
-                best_ask,
-                opp_ask,
-                open_pair_band,
-                tick,
-                taker_shadow_would_open,
-                entry_pressure_extra_ticks,
-                visible_completion_slack_ticks,
-                visible_breakeven_completion_slack_ticks,
-                fill_distance_ticks,
-                min_visible_breakeven_slack_ticks,
-            );
-            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
-            return None;
-        }
-        if pgt_xuan_ladder_maker_only_seed_price_blocks(
-            tuning,
-            input.episode_metrics.round_buy_fill_count,
-            price,
-            visible_taker_completion_ok,
-        ) {
-            pgt_maybe_log_seed_admission_diag(
-                coordinator.cfg().dry_run,
-                tuning,
-                side,
-                remaining_secs,
-                "blocked_maker_only_seed_price",
-                price,
-                size,
-                best_bid,
-                best_ask,
-                opp_ask,
-                open_pair_band,
-                tick,
-                taker_shadow_would_open,
-                entry_pressure_extra_ticks,
-                visible_completion_slack_ticks,
-                visible_breakeven_completion_slack_ticks,
-                fill_distance_ticks,
-                min_visible_breakeven_slack_ticks,
-            );
-            quotes.note_pgt_seed_reject_no_visible_breakeven_path();
-            return None;
-        }
         if pgt_xuan_ladder_reopen_seed_quality_blocks(
             tuning,
             input.episode_metrics.round_buy_fill_count,
@@ -833,13 +771,6 @@ impl PairGatedTrancheStrategy {
             tuning,
             input.episode_metrics.round_buy_fill_count,
             visible_taker_completion_ok,
-        ) {
-            size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
-        }
-        if pgt_xuan_ladder_first_seed_risk_clip_caps(
-            tuning,
-            input.episode_metrics.round_buy_fill_count,
-            price,
         ) {
             size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
         }
@@ -1031,8 +962,7 @@ impl PairGatedTrancheStrategy {
     }
 
     fn xuan_unsafe_dual_first_leg(seed: &SeedPlan) -> bool {
-        seed.intent.price > XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE + 1e-9
-            && !seed.visible_taker_completion_ok
+        !seed.visible_taker_completion_ok
     }
 
     fn seed_geometry_reject(seed: &SeedPlan) -> bool {
@@ -1903,10 +1833,8 @@ fn pgt_xuan_ladder_timeout_insurance_completion_ceiling(
         XUAN_LADDER_TIMEOUT_CHEAP_PAIR_CAP
     } else if first_vwap <= XUAN_LADDER_TIMEOUT_MID_FIRST_MAX_PRICE + 1e-9 {
         XUAN_LADDER_TIMEOUT_MID_PAIR_CAP
-    } else if first_vwap <= XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE + 1e-9 {
-        XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP
     } else {
-        return None;
+        XUAN_LADDER_TIMEOUT_HIGH_PAIR_CAP
     };
     let ceiling = (pair_cap - first_vwap).clamp(0.0, 1.0);
     if ceiling > 0.0 {
@@ -1917,9 +1845,7 @@ fn pgt_xuan_ladder_timeout_insurance_completion_ceiling(
 }
 
 fn pgt_xuan_ladder_timeout_insurance_min_age_secs(first_vwap: f64) -> f64 {
-    if first_vwap > XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE + 1e-9
-        && first_vwap <= XUAN_LADDER_TIMEOUT_HIGH_FIRST_MAX_PRICE + 1e-9
-    {
+    if first_vwap > XUAN_LADDER_TIMEOUT_FAST_FIRST_MIN_PRICE + 1e-9 {
         XUAN_LADDER_TIMEOUT_MARGINAL_INSURANCE_MIN_AGE_SECS
     } else {
         XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS
@@ -1942,46 +1868,13 @@ fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
     if seed_price <= 0.0 || opposite_ask <= 0.0 || tick <= 0.0 {
         return true;
     }
-    if seed_price > XUAN_LADDER_LOW_PRICE_SEED_MAX + 1e-9
-        && seed_price <= EXPENSIVE_SEED_PRICE + 1e-9
-    {
-        return true;
-    }
     let taker_pair_cost = seed_price + opposite_ask;
-    if seed_price > XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE + 1e-9
-        && taker_pair_cost > XUAN_LADDER_RISKY_FIRST_SEED_TAKER_PAIR_CAP + 1e-9
-    {
-        return true;
-    }
     if taker_pair_cost <= XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9 {
         return false;
     }
     let maker_completion_ref = (opposite_ask - tick).max(0.0);
     let maker_pair_cost = seed_price + maker_completion_ref;
-    seed_price > EXPENSIVE_SEED_PRICE + 1e-9
-        || maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
-}
-
-fn pgt_xuan_ladder_maker_only_seed_price_blocks(
-    tuning: PgtTuning,
-    round_buy_fill_count: u64,
-    seed_price: f64,
-    visible_taker_completion_ok: bool,
-) -> bool {
-    tuning.profile == PgtShadowProfile::XuanLadderV1
-        && round_buy_fill_count == 0
-        && !visible_taker_completion_ok
-        && seed_price > XUAN_LADDER_MAKER_ONLY_SEED_MAX_PRICE + 1e-9
-}
-
-fn pgt_xuan_ladder_first_seed_price_blocks(
-    tuning: PgtTuning,
-    round_buy_fill_count: u64,
-    seed_price: f64,
-) -> bool {
-    tuning.profile == PgtShadowProfile::XuanLadderV1
-        && round_buy_fill_count == 0
-        && seed_price > XUAN_LADDER_FIRST_SEED_MAX_PRICE + 1e-9
+    maker_pair_cost > XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP + 1e-9
 }
 
 fn pgt_xuan_ladder_maker_only_seed_clip_caps(
@@ -1992,16 +1885,6 @@ fn pgt_xuan_ladder_maker_only_seed_clip_caps(
     tuning.profile == PgtShadowProfile::XuanLadderV1
         && round_buy_fill_count == 0
         && !visible_taker_completion_ok
-}
-
-fn pgt_xuan_ladder_first_seed_risk_clip_caps(
-    tuning: PgtTuning,
-    round_buy_fill_count: u64,
-    seed_price: f64,
-) -> bool {
-    tuning.profile == PgtShadowProfile::XuanLadderV1
-        && round_buy_fill_count == 0
-        && seed_price > XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE + 1e-9
 }
 
 fn pgt_xuan_ladder_reopen_seed_quality_blocks(
@@ -2689,10 +2572,21 @@ mod profile_tests {
                 < 1e-9,
             "marginal 0.36 first legs may cross at breakeven to avoid tail residual"
         );
-        assert_eq!(
-            pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.37, 240, 4.0),
-            None,
-            "high first legs need the slower rescue logic rather than short-timeout loss taking"
+        assert!(
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.37, 240, 1.5)
+                .unwrap()
+                - 0.63)
+                .abs()
+                < 1e-9,
+            "higher first legs may also cross at breakeven once a safe completion is visible"
+        );
+        assert!(
+            (pgt_xuan_ladder_timeout_insurance_completion_ceiling(tuning, 0.80, 240, 1.5)
+                .unwrap()
+                - 0.20)
+                .abs()
+                < 1e-9,
+            "timeout insurance is now price-cap free and bounded by breakeven pair cost"
         );
         assert_eq!(
             pgt_xuan_ladder_timeout_insurance_completion_ceiling(
@@ -2791,27 +2685,31 @@ mod profile_tests {
         );
         assert!(
             !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.36, 0.63, 0.01),
-            "risk-clipped 0.36 first leg remains allowed when visible taker completion has edge"
+            "0.36 first leg remains allowed when visible taker completion has edge"
         );
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.36, 0.64, 0.01),
-            "risk-clipped 0.36 first leg needs more than a fragile breakeven taker path"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.36, 0.64, 0.01),
+            "0.36 first leg is allowed when visible maker completion has edge"
         );
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
-            "ambiguous 0.45-0.50 first-leg band is blocked until a distinct high-quality branch exists"
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.36, 0.65, 0.01),
+            "first leg is blocked when taker and maker completion both exceed the pair-cost cap"
         );
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.52, 0.01),
-            "ambiguous 0.45-0.50 first-leg band is blocked even when immediate taker completion looks safe"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.53, 0.01),
+            "mid-price first legs are no longer hard-blocked when visible maker completion has edge"
+        );
+        assert!(
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.52, 0.01),
+            "mid-price first legs are no longer hard-blocked when immediate taker completion has edge"
         );
         assert!(
             pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.47, 0.54, 0.01),
-            "cheap first leg is blocked when even opposite maker completion is above the pair-cost cap"
+            "first leg is blocked when even opposite maker completion is above the pair-cost cap"
         );
         assert!(
-            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.66, 0.34, 0.01),
-            "expensive first leg still requires an immediate taker-safe completion path"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.66, 0.34, 0.01),
+            "expensive first legs are allowed when visible maker completion has edge"
         );
         assert!(
             !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.63, 0.36, 0.01),
@@ -2820,7 +2718,7 @@ mod profile_tests {
     }
 
     #[test]
-    fn xuan_ladder_maker_only_first_seed_is_capped_or_blocked() {
+    fn xuan_ladder_maker_only_first_seed_is_capped() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
             pgt_xuan_ladder_maker_only_seed_clip_caps(tuning, 0, false),
@@ -2831,49 +2729,29 @@ mod profile_tests {
             "visible taker completion keeps the normal ladder clip"
         );
         assert!(
-            !pgt_xuan_ladder_maker_only_seed_price_blocks(tuning, 0, 0.35, false),
-            "deep first-leg discounts can still be sampled, but with capped clip"
-        );
-        assert!(
-            pgt_xuan_ladder_maker_only_seed_price_blocks(tuning, 0, 0.45, false),
-            "high maker-only first legs caused large residual tails and are now blocked"
-        );
-        assert!(
-            !pgt_xuan_ladder_maker_only_seed_price_blocks(tuning, 1, 0.45, false),
+            !pgt_xuan_ladder_maker_only_seed_clip_caps(tuning, 1, false),
             "after the first fill, reopen-specific guards own the path"
         );
         assert!(
-            !pgt_xuan_ladder_maker_only_seed_price_blocks(PgtTuning::legacy(), 0, 0.45, false),
+            !pgt_xuan_ladder_maker_only_seed_clip_caps(PgtTuning::legacy(), 0, false),
             "legacy/replay profiles are unaffected"
         );
     }
 
     #[test]
-    fn xuan_ladder_first_seed_price_risk_is_capped_or_blocked() {
+    fn xuan_ladder_first_seed_has_no_hard_price_cap() {
         let tuning = PgtTuning::xuan_ladder_v1();
         assert!(
-            !pgt_xuan_ladder_first_seed_price_blocks(tuning, 0, 0.36),
-            "post-fix shadow sample stayed worst-case positive through 0.36 first-leg price"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.37, 0.62, 0.01),
+            "first-leg prices above 0.36 are allowed when visible completion quality is good"
         );
         assert!(
-            pgt_xuan_ladder_first_seed_price_blocks(tuning, 0, 0.37),
-            "first-leg prices above 0.36 created persistent residual tail losses"
+            !pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.80, 0.19, 0.01),
+            "high first-leg prices are allowed when taker completion has edge"
         );
         assert!(
-            !pgt_xuan_ladder_first_seed_price_blocks(tuning, 1, 0.44),
-            "after first fill, completion/reopen-specific guards own the path"
-        );
-        assert!(
-            pgt_xuan_ladder_first_seed_risk_clip_caps(tuning, 0, 0.35),
-            "marginal first-leg prices are allowed only at the minimum clip"
-        );
-        assert!(
-            !pgt_xuan_ladder_first_seed_risk_clip_caps(tuning, 0, 0.34),
-            "deep first-leg discounts can keep the ladder clip"
-        );
-        assert!(
-            !pgt_xuan_ladder_first_seed_price_blocks(PgtTuning::legacy(), 0, 0.44),
-            "legacy/replay profiles are unaffected"
+            pgt_xuan_ladder_seed_visible_completion_guard_blocks(tuning, 0, 0.80, 0.21, 0.01),
+            "high first-leg prices are still blocked when completion quality is poor"
         );
     }
 
@@ -3298,7 +3176,7 @@ mod tests {
     }
 
     #[test]
-    fn xuan_ladder_selection_blocks_high_dual_seed_without_taker_completion() {
+    fn xuan_ladder_selection_avoids_dual_seed_without_taker_completion() {
         let strategy = PairGatedTrancheStrategy;
         let cheap_yes = seed_plan_with_slack(Side::Yes, 0.27, 0, 4.0);
         let high_no = seed_plan_with_slack(Side::No, 0.67, 0, 4.0);
