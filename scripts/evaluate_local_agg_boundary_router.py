@@ -621,6 +621,7 @@ def filtered_close_only_allowed_without_weighted(
         and close_abs_delta_ms is not None
         and close_abs_delta_ms <= 500
         and 21.0 <= margin_bps < 24.0
+        and not (23.5 <= margin_bps < 23.7 and 100 <= close_abs_delta_ms <= 150)
         and not (22.55 <= margin_bps < 22.7 and 150 <= close_abs_delta_ms <= 250)
         and not (21.0 <= margin_bps < 21.1 and 150 <= close_abs_delta_ms <= 300)
     )
@@ -1574,6 +1575,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 1_200 <= close_abs_delta_ms <= 1_600
         ):
             return "doge_single_okx_last_midlag_mid_margin_tail"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("okx",)
+            and side_yes
+            and 3.0 <= margin_bps < 3.2
+            and close_abs_delta_ms is not None
+            and 450 <= close_abs_delta_ms <= 520
+        ):
+            return "doge_single_okx_last_fast_upper_mid_margin_side_tail"
         if (
             source_subset == "drop_binance"
             and rule == "last_before"

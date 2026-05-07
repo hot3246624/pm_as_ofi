@@ -12693,6 +12693,22 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             }
             if hit.source_subset_name == "drop_binance"
                 && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Okx)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 3.0
+                && weighted_direction_margin_bps < 3.2
+                && close_abs_delta_ms >= 450
+                && close_abs_delta_ms <= 520
+            {
+                return Some("doge_single_okx_last_fast_upper_mid_margin_side_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 3
                 && hit.close_exact_sources == 0
                 && !weighted_side_yes
@@ -15507,6 +15523,9 @@ fn local_boundary_filtered_close_only_allowed_without_weighted(
     close_abs_delta_ms <= 500
         && direction_margin_bps + 1e-9 >= 21.0
         && direction_margin_bps < 24.0
+        && !(direction_margin_bps + 1e-9 >= 23.5
+            && direction_margin_bps < 23.7
+            && (100..=150).contains(&close_abs_delta_ms))
         && !(direction_margin_bps + 1e-9 >= 22.55
             && direction_margin_bps < 22.7
             && (150..=250).contains(&close_abs_delta_ms))
