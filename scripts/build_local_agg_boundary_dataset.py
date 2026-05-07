@@ -188,18 +188,25 @@ def parse_router_v1_timing(log_path: Path) -> Dict[Tuple[str, int], dict]:
 
 def discover_instance_logs(logs_root: Path, instance_glob: str) -> List[Tuple[str, Path]]:
     out: List[Tuple[str, Path]] = []
+
+    def append_dir_logs(base_instance_id: str, log_dir: Path) -> None:
+        for log_path in sorted(log_dir.glob("local_agg_lab_*.log")):
+            out.append((base_instance_id, log_path))
+        for log_path in sorted(log_dir.glob("polymarket.*.log")):
+            out.append((f"{base_instance_id}/{log_path.name}", log_path))
+        for log_path in sorted(log_dir.glob("polymarket.*.log.*")):
+            out.append((f"{base_instance_id}/{log_path.name}", log_path))
+
     for inst_dir in sorted(logs_root.glob(instance_glob)):
         if not inst_dir.is_dir():
             continue
-        for log_path in sorted(inst_dir.glob("local_agg_lab_*.log")):
-            out.append((inst_dir.name, log_path))
+        append_dir_logs(inst_dir.name, inst_dir)
         runs_dir = inst_dir / "runs"
         if runs_dir.is_dir():
             for run_dir in sorted(runs_dir.iterdir()):
                 if not run_dir.is_dir():
                     continue
-                for log_path in sorted(run_dir.glob("local_agg_lab_*.log")):
-                    out.append((f"{inst_dir.name}/{run_dir.name}", log_path))
+                append_dir_logs(f"{inst_dir.name}/{run_dir.name}", run_dir)
     return out
 
 
