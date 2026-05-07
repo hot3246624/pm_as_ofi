@@ -1154,6 +1154,17 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and exact_sources == 0
             and side_yes
             and sources == ("coinbase",)
+            and 2.2 <= margin_bps < 2.5
+            and close_abs_delta_ms is not None
+            and 100 < close_abs_delta_ms <= 150
+        ):
+            return "btc_single_coinbase_yes_fast_upper_mid_margin_tail"
+        if (
+            rule == "after_then_before"
+            and source_count == 1
+            and exact_sources == 0
+            and side_yes
+            and sources == ("coinbase",)
             and 0.9 <= margin_bps < 1.2
             and close_abs_delta_ms is not None
             and 500 <= close_abs_delta_ms <= 550
@@ -1239,6 +1250,17 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
         ):
             return "btc_single_coinbase_no_midlag_near_flat"
         if (
+            rule == "after_then_before"
+            and source_count == 1
+            and exact_sources == 0
+            and not side_yes
+            and sources == ("coinbase",)
+            and margin_bps < 0.25
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms >= 1_800
+        ):
+            return "btc_single_coinbase_no_stale_near_flat"
+        if (
             source_subset == "only_coinbase"
             and rule == "after_then_before"
             and source_count == 1
@@ -1286,7 +1308,7 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and sources == ("binance", "coinbase")
             and 1.14 <= margin_bps < 1.16
             and close_abs_delta_ms is not None
-            and 80 <= close_abs_delta_ms <= 140
+            and 60 <= close_abs_delta_ms <= 140
         ):
             return "xrp_binance_coinbase_yes_fast_lowmargin_side_tail"
         if (
@@ -1515,6 +1537,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 8.0 <= margin_bps < 15.0
         ):
             return "doge_single_okx_late_fast_mid_margin_tail"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("okx",)
+            and side_yes
+            and 1.5 <= margin_bps < 2.0
+            and close_abs_delta_ms is not None
+            and 1_200 <= close_abs_delta_ms <= 1_600
+        ):
+            return "doge_single_okx_last_midlag_mid_margin_tail"
         if (
             source_subset == "drop_binance"
             and rule == "last_before"
@@ -2011,6 +2045,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and exact_sources == 0
             and sources == ("hyperliquid",)
             and side_yes
+            and 6.5 <= margin_bps < 7.0
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms <= 100
+        ):
+            return "hype_close_only_single_hyperliquid_yes_fast_upper_mid_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and side_yes
             and 15.0 <= margin_bps < 17.0
             and close_abs_delta_ms is not None
             and close_abs_delta_ms <= 200
@@ -2160,6 +2206,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 150 <= close_abs_delta_ms <= 450
         ):
             return "hype_close_only_single_hyperliquid_yes_low_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and side_yes
+            and 2.6 <= margin_bps < 3.0
+            and close_abs_delta_ms is not None
+            and 250 <= close_abs_delta_ms <= 450
+        ):
+            return "hype_close_only_single_hyperliquid_yes_midlag_near_margin_tail"
         if (
             source_subset == "close_only_fallback"
             and rule == "close_only"

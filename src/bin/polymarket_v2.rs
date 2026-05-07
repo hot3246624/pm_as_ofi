@@ -12112,6 +12112,21 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                     .source_contributions
                     .first()
                     .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 2.2
+                && weighted_direction_margin_bps < 2.5
+                && close_abs_delta_ms > 100
+                && close_abs_delta_ms <= 150
+            {
+                return Some("btc_single_coinbase_yes_fast_upper_mid_margin_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
                 && weighted_direction_margin_bps + 1e-9 >= 0.9
                 && weighted_direction_margin_bps < 1.2
                 && close_abs_delta_ms >= 500
@@ -12215,6 +12230,19 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("btc_single_coinbase_no_midlag_near_flat");
             }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 < 0.25
+                && close_abs_delta_ms >= 1_800
+            {
+                return Some("btc_single_coinbase_no_stale_near_flat");
+            }
             if hit.source_subset_name == "only_coinbase"
                 && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
@@ -12280,7 +12308,7 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && has_source(LocalPriceSource::Coinbase)
                 && weighted_direction_margin_bps + 1e-9 >= 1.14
                 && weighted_direction_margin_bps < 1.16
-                && close_abs_delta_ms >= 80
+                && close_abs_delta_ms >= 60
                 && close_abs_delta_ms <= 140
             {
                 return Some("xrp_binance_coinbase_yes_fast_lowmargin_side_tail");
@@ -12618,6 +12646,22 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 4_500
             {
                 return Some("doge_single_okx_last_very_stale_yes_mid_margin");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Okx)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps < 2.0
+                && close_abs_delta_ms >= 1_200
+                && close_abs_delta_ms <= 1_600
+            {
+                return Some("doge_single_okx_last_midlag_mid_margin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 3
@@ -14649,6 +14693,14 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
         }
         if close_only_single_hyperliquid
             && close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 6.5
+            && direction_margin_bps < 7.0
+            && close_abs_delta_ms <= 100
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && close_only_side_yes
             && direction_margin_bps + 1e-9 >= 5.5
             && direction_margin_bps < 6.0
             && close_abs_delta_ms <= 150
@@ -14708,6 +14760,14 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
             && direction_margin_bps + 1e-9 >= 2.0
             && direction_margin_bps < 2.1
             && (150..=450).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.6
+            && direction_margin_bps < 3.0
+            && (250..=450).contains(&close_abs_delta_ms)
         {
             return false;
         }
