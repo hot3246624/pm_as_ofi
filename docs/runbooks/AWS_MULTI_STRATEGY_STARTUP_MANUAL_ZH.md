@@ -89,9 +89,9 @@ PM_RECORDER_ENABLED=false
 PM_STRATEGY=oracle_lag_sniping
 PM_LOCAL_PRICE_AGG_ENABLED=true
 
-# 初期先 BTC-only；确认流量与稳定性后再加币种
-PM_MULTI_MARKET_PREFIXES=btc-updown-5m
-PM_ORACLE_LAG_SYMBOL_UNIVERSE=btc
+# broker 是共享数据面，必须覆盖当前全部 5m 市场
+PM_MULTI_MARKET_PREFIXES=hype-updown-5m,btc-updown-5m,eth-updown-5m,sol-updown-5m,bnb-updown-5m,doge-updown-5m,xrp-updown-5m
+PM_ORACLE_LAG_SYMBOL_UNIVERSE=hype,btc,eth,sol,bnb,doge,xrp
 ```
 
 ### 4.2 systemd unit
@@ -204,8 +204,8 @@ PM_RECORDER_ENABLED=true
 如果要扩到多币种，再逐步改为：
 
 ```bash
-PM_MULTI_MARKET_PREFIXES=btc-updown-5m,eth-updown-5m,sol-updown-5m
-PM_ORACLE_LAG_SYMBOL_UNIVERSE=btc,eth,sol
+PM_MULTI_MARKET_PREFIXES=hype-updown-5m,btc-updown-5m,eth-updown-5m,sol-updown-5m,bnb-updown-5m,doge-updown-5m,xrp-updown-5m
+PM_ORACLE_LAG_SYMBOL_UNIVERSE=hype,btc,eth,sol,bnb,doge,xrp
 ```
 
 如果未来要切 live，只改：
@@ -290,14 +290,15 @@ PM_SHARED_INGRESS_ROLE=client
 PM_DRY_RUN=true
 PM_RECORDER_ENABLED=false
 PM_STRATEGY=oracle_lag_sniping
+PM_INPROC_SUPERVISOR=1
 PM_LOCAL_PRICE_AGG_ENABLED=true
 PM_LOCAL_PRICE_AGG_DECISION_ENABLED=false
 PM_LOCAL_PRICE_AGG_DECISION_WAIT_MS=50
 PM_LOCAL_AGG_UNCERTAINTY_GATE_ENABLED=true
 PM_LOCAL_AGG_UNCERTAINTY_GATE_MODEL_PATH=/srv/pm_as_ofi/repo/logs/local-agg-challenger/monitor_reports/local_agg_uncertainty_gate_model.latest.json
 PM_LOCAL_AGG_UNCERTAINTY_GATE_FINALIZE_MS=2500
-PM_MULTI_MARKET_PREFIXES=btc-updown-5m
-PM_ORACLE_LAG_SYMBOL_UNIVERSE=btc
+PM_MULTI_MARKET_PREFIXES=hype-updown-5m,btc-updown-5m,eth-updown-5m,sol-updown-5m,bnb-updown-5m,doge-updown-5m,xrp-updown-5m
+PM_ORACLE_LAG_SYMBOL_UNIVERSE=hype,btc,eth,sol,bnb,doge,xrp
 ```
 
 ### 6.2 systemd unit

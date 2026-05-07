@@ -199,14 +199,14 @@ sudo chmod 600 /etc/pm_as_ofi/*.env
 
 ## 7. 流量控制
 
-迁移初期必须 BTC-only：
+共享 broker 与 local agg challenger 正常后，默认保持当前全部 5m 市场：
 
 ```bash
-PM_MULTI_MARKET_PREFIXES=btc-updown-5m
-PM_ORACLE_LAG_SYMBOL_UNIVERSE=btc
+PM_MULTI_MARKET_PREFIXES=hype-updown-5m,btc-updown-5m,eth-updown-5m,sol-updown-5m,bnb-updown-5m,doge-updown-5m,xrp-updown-5m
+PM_ORACLE_LAG_SYMBOL_UNIVERSE=hype,btc,eth,sol,bnb,doge,xrp
 ```
 
-确认带宽后再逐步加币种。每次新增币种后至少观察：
+只有在明确发生带宽或稳定性事故时，才临时回退到更窄 universe。上线后至少持续观察：
 
 - active WS 数
 - `ifstat` / cloudwatch network in
@@ -214,7 +214,7 @@ PM_ORACLE_LAG_SYMBOL_UNIVERSE=btc
 - side error
 - local ready latency
 
-如果 broker 流量重新接近本地 40GB/day 级别，先回退到 BTC-only，而不是增加实例。
+如果 broker 流量重新接近本地 40GB/day 级别，先临时回退 universe，再定位瓶颈；不要默默长期维持 BTC-only。
 
 ## 8. 生产启用门槛
 
