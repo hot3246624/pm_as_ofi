@@ -83,7 +83,6 @@ const XUAN_LADDER_REOPEN_AFTER_RESCUE_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.985;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
-const XUAN_LADDER_REOPEN_COOLDOWN_SECS: f64 = 10.0;
 const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
@@ -362,10 +361,6 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             )
         {
             quotes.note_pgt_skip_after_rescue_close();
-            return quotes;
-        }
-        if pgt_recent_closed_reopen_cooldown_active(tuning, input.pair_ledger) {
-            quotes.note_pgt_skip_after_closed_pair();
             return quotes;
         }
         if pgt_blocks_reopen_after_closed_pair(tuning, input, post_close_reopen_attempted) {
@@ -2247,22 +2242,6 @@ fn pgt_allow_reopen_after_rescue_close(
         .unwrap_or(false)
 }
 
-fn pgt_recent_closed_reopen_cooldown_active(
-    tuning: PgtTuning,
-    pair_ledger: &PairLedgerSnapshot,
-) -> bool {
-    if tuning.profile != PgtShadowProfile::XuanLadderV1 {
-        return false;
-    }
-    pair_ledger
-        .recent_closed
-        .iter()
-        .flatten()
-        .find_map(|tranche| tranche.closed_at)
-        .map(|closed_at| closed_at.elapsed().as_secs_f64() < XUAN_LADDER_REOPEN_COOLDOWN_SECS)
-        .unwrap_or(false)
-}
-
 fn pgt_blocks_reopen_after_closed_pair(
     tuning: PgtTuning,
     input: StrategyTickInput<'_>,
@@ -2377,7 +2356,6 @@ mod profile_tests {
     use crate::polymarket::coordinator::{Book, StrategyInventoryMetrics};
     use crate::polymarket::messages::{InventorySnapshot, InventoryState};
     use crate::polymarket::pair_ledger::EpisodeMetrics;
-    use std::time::Instant;
 
     #[test]
     fn replay_focused_profile_matches_replay_search_candidate() {
@@ -2923,34 +2901,6 @@ mod profile_tests {
         assert!(!pgt_allow_reopen_after_rescue_close(
             tuning, late_input, 180, false
         ));
-    }
-
-    #[test]
-    fn xuan_ladder_reopen_respects_recent_close_cooldown() {
-        let tuning = PgtTuning::xuan_ladder_v1();
-        let mut fresh_ledger = PairLedgerSnapshot::default();
-        fresh_ledger.recent_closed[0] = Some(PairTranche {
-            closed_at: Some(Instant::now()),
-            ..PairTranche::default()
-        });
-        assert!(
-            pgt_recent_closed_reopen_cooldown_active(tuning, &fresh_ledger),
-            "freshly closed pairs should pause new flat-state seeds for the finalist-style cooldown"
-        );
-
-        let mut cooled_ledger = PairLedgerSnapshot::default();
-        cooled_ledger.recent_closed[0] = Some(PairTranche {
-            closed_at: Some(Instant::now() - std::time::Duration::from_secs(11)),
-            ..PairTranche::default()
-        });
-        assert!(
-            !pgt_recent_closed_reopen_cooldown_active(tuning, &cooled_ledger),
-            "once the short cooldown expires, xuan ladder may consider a new seed again"
-        );
-        assert!(
-            !pgt_recent_closed_reopen_cooldown_active(PgtTuning::legacy(), &fresh_ledger),
-            "legacy/replay profiles do not inherit the xuan-specific reopen cooldown"
-        );
     }
 
     #[test]
