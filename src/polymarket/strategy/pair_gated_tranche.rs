@@ -88,6 +88,7 @@ const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 1.000;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_LOW_FIRST_SEED_PRICE_HI: f64 = 0.60;
 const XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 1.000;
+const XUAN_LADDER_LOW_FIRST_RELAXED_COMPLETION_CLIP_QTY: f64 = 60.0;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY: f64 = 45.0;
 const XUAN_LADDER_DUAL_SEED_SIZE_TOLERANCE: f64 = 0.05;
@@ -776,6 +777,14 @@ impl PairGatedTrancheStrategy {
             visible_taker_completion_ok,
         ) {
             size = size.min(XUAN_LADDER_MAKER_ONLY_SEED_CLIP_QTY);
+        }
+        if pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(
+            tuning,
+            input.episode_metrics.round_buy_fill_count,
+            price,
+            opp_ask,
+        ) {
+            size = size.min(XUAN_LADDER_LOW_FIRST_RELAXED_COMPLETION_CLIP_QTY);
         }
         if pgt_xuan_ladder_reopen_seed_clip_caps(tuning, input.episode_metrics.round_buy_fill_count)
         {
@@ -1903,6 +1912,24 @@ fn pgt_xuan_ladder_maker_only_seed_clip_caps(
         && !visible_taker_completion_ok
 }
 
+fn pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(
+    tuning: PgtTuning,
+    round_buy_fill_count: u64,
+    seed_price: f64,
+    opposite_ask: f64,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanLadderV1 || round_buy_fill_count > 0 {
+        return false;
+    }
+    if seed_price <= 0.0 || seed_price >= XUAN_LADDER_LOW_FIRST_SEED_PRICE_HI || opposite_ask <= 0.0
+    {
+        return false;
+    }
+    let pair_cost = seed_price + opposite_ask;
+    pair_cost > XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9
+        && pair_cost <= XUAN_LADDER_LOW_FIRST_SEED_TAKER_COMPLETION_PAIR_CAP + 1e-9
+}
+
 fn pgt_xuan_ladder_reopen_seed_clip_caps(tuning: PgtTuning, round_buy_fill_count: u64) -> bool {
     tuning.profile == PgtShadowProfile::XuanLadderV1
         && round_buy_fill_count >= XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS
@@ -2753,6 +2780,36 @@ mod profile_tests {
         );
         assert!(
             !pgt_xuan_ladder_maker_only_seed_clip_caps(PgtTuning::legacy(), 0, false),
+            "legacy/replay profiles are unaffected"
+        );
+    }
+
+    #[test]
+    fn xuan_ladder_low_first_relaxed_completion_seed_is_capped() {
+        let tuning = PgtTuning::xuan_ladder_v1();
+        assert!(
+            pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(tuning, 0, 0.47, 0.53),
+            "low first legs that only qualify through the relaxed breakeven cap should not use full ladder clip"
+        );
+        assert!(
+            !pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(tuning, 0, 0.47, 0.52),
+            "strictly profitable visible completion keeps the normal first-leg clip"
+        );
+        assert!(
+            !pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(tuning, 0, 0.60, 0.40),
+            "the relaxed low-first cap is scoped below the low-first boundary"
+        );
+        assert!(
+            !pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(tuning, 1, 0.47, 0.53),
+            "same-round reopen sizing is controlled by the reopen clip cap"
+        );
+        assert!(
+            !pgt_xuan_ladder_low_first_relaxed_completion_clip_caps(
+                PgtTuning::legacy(),
+                0,
+                0.47,
+                0.53
+            ),
             "legacy/replay profiles are unaffected"
         );
     }
