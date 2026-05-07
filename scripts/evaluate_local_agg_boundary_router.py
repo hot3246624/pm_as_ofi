@@ -2202,6 +2202,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and source_count == 1
             and exact_sources == 0
             and sources == ("hyperliquid",)
+            and not side_yes
+            and 2.60 <= margin_bps < 2.65
+            and close_abs_delta_ms is not None
+            and 600 <= close_abs_delta_ms <= 650
+        ):
+            return "hype_close_only_single_hyperliquid_no_late_low_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
             and side_yes
             and 7.5 <= margin_bps < 8.2
             and close_abs_delta_ms is not None
@@ -2492,6 +2504,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 720 <= close_abs_delta_ms < 850
         ):
             return "hype_close_only_single_hyperliquid_no_midlag_upper_margin_tail"
+        if (
+            source_subset == "close_only_fallback"
+            and rule == "close_only"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("hyperliquid",)
+            and not side_yes
+            and 10.0 <= margin_bps < 11.0
+            and close_abs_delta_ms is not None
+            and 500 <= close_abs_delta_ms <= 560
+        ):
+            return "hype_close_only_single_hyperliquid_no_late_upper_mid_margin_tail"
         if (
             source_subset == "close_only_fallback"
             and rule == "close_only"
@@ -3413,6 +3437,18 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 550 <= close_abs_delta_ms <= 590
         ):
             return "eth_single_coinbase_yes_midlag_high_margin_tail"
+        if (
+            source_subset == "only_coinbase"
+            and rule == "last_before"
+            and source_count == 1
+            and exact_sources == 0
+            and sources == ("coinbase",)
+            and side_yes
+            and 7.0 <= margin_bps < 7.5
+            and close_abs_delta_ms is not None
+            and 700 <= close_abs_delta_ms <= 780
+        ):
+            return "eth_single_coinbase_yes_late_high_margin_tail"
         if (
             rule == "last_before"
             and source_count == 1

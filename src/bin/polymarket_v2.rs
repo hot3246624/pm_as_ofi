@@ -14499,6 +14499,19 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("eth_single_coinbase_yes_midlag_high_margin_tail");
             }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 7.0
+                && weighted_direction_margin_bps < 7.5
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 780
+            {
+                return Some("eth_single_coinbase_yes_late_high_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -14976,6 +14989,14 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
         }
         if close_only_single_hyperliquid
             && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.60
+            && direction_margin_bps < 2.65
+            && (600..=650).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
             && direction_margin_bps + 1e-9 >= 4.0
             && direction_margin_bps < 10.0
             && (650..720).contains(&close_abs_delta_ms)
@@ -15003,6 +15024,14 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
             && direction_margin_bps + 1e-9 >= 10.0
             && direction_margin_bps < 16.0
             && (720..850).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 10.0
+            && direction_margin_bps < 11.0
+            && (500..=560).contains(&close_abs_delta_ms)
         {
             return false;
         }
