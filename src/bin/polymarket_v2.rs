@@ -640,6 +640,13 @@ async fn spawn_shared_ingress_broker_sidecar() -> anyhow::Result<()> {
 async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
     let root = shared_ingress_root();
     let required_caps = shared_ingress_required_capabilities_from_env();
+    if shared_ingress_role() == SharedIngressRole::Client {
+        return wait_for_shared_ingress_broker_healthy(
+            SHARED_INGRESS_BROKER_START_TIMEOUT_MS,
+            &required_caps,
+        )
+        .await;
+    }
     let market_only_wait_ms = shared_ingress_market_only_auto_wait_ms();
     fs::create_dir_all(shared_ingress_clients_dir())?;
     let deadline =
