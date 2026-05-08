@@ -1021,7 +1021,9 @@ impl StrategyCoordinator {
         if inv.net_diff.abs() > PAIR_ARB_NET_EPS {
             return None;
         }
-        if self.endgame_phase() != EndgamePhase::Normal {
+        // Tail-taker profiles are explicitly validated in the soft-close tail;
+        // keep aggressive opens out of hard-close/freeze only.
+        if self.endgame_phase() >= EndgamePhase::HardClose {
             return None;
         }
 
