@@ -3630,6 +3630,17 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and rule == "after_then_before"
             and source_count == 2
             and exact_sources == 0
+            and side_yes
+            and sources == ("coinbase", "okx")
+            and 5.0 <= spread_bps < 6.5
+            and 3.0 <= margin_bps < 4.5
+        ):
+            return "sol_okx_coinbase_yes_highspread_mid_margin_side_tail"
+        if (
+            source_subset == "only_okx_coinbase"
+            and rule == "after_then_before"
+            and source_count == 2
+            and exact_sources == 0
             and not side_yes
             and sources == ("coinbase", "okx")
             and spread_bps >= 3.0

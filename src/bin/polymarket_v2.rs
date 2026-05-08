@@ -14757,6 +14757,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 5.0
+                && hit.source_spread_bps < 6.5
+                && weighted_direction_margin_bps + 1e-9 >= 3.0
+                && weighted_direction_margin_bps < 4.5
+            {
+                return Some("sol_okx_coinbase_yes_highspread_mid_margin_side_tail");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
                 && !weighted_side_yes
                 && hit
                     .source_contributions
