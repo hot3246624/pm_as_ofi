@@ -97,6 +97,18 @@ const XUAN_LADDER_LAST_CHANCE_CLOSE_MIN_AGE_SECS: f64 = 45.0;
 const XUAN_LADDER_LAST_CHANCE_CLOSE_MAX_ASK: f64 = 0.99;
 const XUAN_LADDER_TAIL_DIAG_REMAINING_SECS: u64 = 60;
 const XUAN_LADDER_TAIL_DIAG_INTERVAL_SECS: u64 = 5;
+const XUAN_TAIL_TAKER_MIN_REMAINING_SECS: u64 = 35;
+const XUAN_TAIL_TAKER_MAX_REMAINING_SECS: u64 = 60;
+const XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS: u64 = 25;
+const XUAN_TAIL_TAKER_FIRST_MIN_ASK: f64 = 0.62;
+const XUAN_TAIL_TAKER_FIRST_MAX_ASK: f64 = 0.70;
+const XUAN_TAIL_TAKER_OPEN_PAIR_CAP: f64 = 1.030;
+const XUAN_TAIL_TAKER_CLIP_QTY: f64 = 75.0;
+const XUAN_TAIL_TAKER_COMPLETION_FRESH_PAIR_CAP: f64 = 0.900;
+const XUAN_TAIL_TAKER_COMPLETION_WARM_PAIR_CAP: f64 = 0.950;
+const XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP: f64 = 1.000;
+const XUAN_TAIL_TAKER_COMPLETION_FRESH_AGE_SECS: f64 = 30.0;
+const XUAN_TAIL_TAKER_COMPLETION_WARM_AGE_SECS: f64 = 50.0;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -108,6 +120,7 @@ enum PgtShadowProfile {
     ReplayFocusedV1,
     ReplayLowerClipV1,
     XuanLadderV1,
+    XuanTailTakerV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,6 +249,28 @@ impl PgtTuning {
         }
     }
 
+    fn xuan_tail_taker_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanTailTakerV1,
+            seed_open_max_remaining_secs: Some(XUAN_TAIL_TAKER_MAX_REMAINING_SECS),
+            seed_open_min_remaining_secs: Some(XUAN_TAIL_TAKER_MIN_REMAINING_SECS),
+            hard_no_new_open_secs: XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS,
+            price_aware_no_new_open_secs: XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS,
+            open_pair_band_cap: Some(XUAN_TAIL_TAKER_OPEN_PAIR_CAP),
+            completion_early_pair_cap: XUAN_TAIL_TAKER_COMPLETION_FRESH_PAIR_CAP,
+            completion_late_pair_cap: XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP,
+            fixed_clip_qty: Some(XUAN_TAIL_TAKER_CLIP_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS,
+            seed_min_visible_breakeven_slack_ticks: XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS,
+            base_clip_qty: XUAN_TAIL_TAKER_CLIP_QTY,
+            min_clip_qty: XUAN_TAIL_TAKER_CLIP_QTY,
+            max_clip_qty: XUAN_TAIL_TAKER_CLIP_QTY,
+        }
+    }
+
     fn from_env() -> Self {
         let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
             .unwrap_or_default()
@@ -246,6 +281,7 @@ impl PgtTuning {
             "replay_focused_v1" | "focused" | "focused_v1" => Self::replay_focused_v1(),
             "replay_lower_clip_v1" | "lower_clip" | "lower_clip_v1" => Self::replay_lower_clip_v1(),
             "xuan_ladder_v1" | "xuan_ladder" | "xuan_latest" | "xuan" => Self::xuan_ladder_v1(),
+            "xuan_tail_taker_v1" | "xuan_tail_taker" | "xuan_tail" => Self::xuan_tail_taker_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -258,7 +294,10 @@ impl PgtTuning {
 
     fn open_pair_band(self, base: f64) -> f64 {
         if let Some(cap) = self.open_pair_band_cap {
-            if self.profile == PgtShadowProfile::XuanLadderV1 {
+            if matches!(
+                self.profile,
+                PgtShadowProfile::XuanLadderV1 | PgtShadowProfile::XuanTailTakerV1
+            ) {
                 base.max(cap)
             } else {
                 base.min(cap)
@@ -272,6 +311,10 @@ impl PgtTuning {
 fn pgt_tuning() -> PgtTuning {
     static TUNING: OnceLock<PgtTuning> = OnceLock::new();
     *TUNING.get_or_init(PgtTuning::from_env)
+}
+
+pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
+    pgt_tuning().profile == PgtShadowProfile::XuanTailTakerV1
 }
 
 struct CompletionPlan {
@@ -569,6 +612,10 @@ impl PairGatedTrancheStrategy {
         if best_bid <= 0.0 || best_ask <= 0.0 || opp_ask <= 0.0 {
             return None;
         }
+        let tuning = pgt_tuning();
+        if pgt_tail_taker_seed_price_blocks(tuning, best_ask) {
+            return None;
+        }
 
         let risk_effect = PairArbStrategy::candidate_risk_effect(input.inv, side, size);
         let mut ceiling = raw_price;
@@ -638,7 +685,6 @@ impl PairGatedTrancheStrategy {
             fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
             preference_score = visible_completion_slack_ticks - 0.60 * fill_distance_ticks;
         }
-        let tuning = pgt_tuning();
         if price > EXPENSIVE_SEED_PRICE + 1e-9
             && visible_completion_slack_ticks < tuning.expensive_seed_min_visible_slack_ticks
         {
@@ -1743,6 +1789,18 @@ fn pgt_effective_completion_pair_caps(
         .min(default_late)
         .clamp(0.0, 1.20);
 
+    if tuning.profile == PgtShadowProfile::XuanTailTakerV1 {
+        let cap = if completion_age_secs < XUAN_TAIL_TAKER_COMPLETION_FRESH_AGE_SECS {
+            XUAN_TAIL_TAKER_COMPLETION_FRESH_PAIR_CAP
+        } else if completion_age_secs < XUAN_TAIL_TAKER_COMPLETION_WARM_AGE_SECS {
+            XUAN_TAIL_TAKER_COMPLETION_WARM_PAIR_CAP
+        } else {
+            XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP
+        };
+        let cap = cap.clamp(0.0, 1.20);
+        return (cap, cap, cap);
+    }
+
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
         return (default_early, default_late, default_taker);
     }
@@ -1866,6 +1924,12 @@ fn pgt_xuan_ladder_timeout_insurance_min_age_secs(first_vwap: f64) -> f64 {
     } else {
         XUAN_LADDER_TIMEOUT_INSURANCE_MIN_AGE_SECS
     }
+}
+
+fn pgt_tail_taker_seed_price_blocks(tuning: PgtTuning, best_ask: f64) -> bool {
+    tuning.profile == PgtShadowProfile::XuanTailTakerV1
+        && (best_ask < XUAN_TAIL_TAKER_FIRST_MIN_ASK - 1e-9
+            || best_ask > XUAN_TAIL_TAKER_FIRST_MAX_ASK + 1e-9)
 }
 
 fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
@@ -2296,6 +2360,9 @@ fn pgt_blocks_reopen_after_closed_pair(
     input: StrategyTickInput<'_>,
     reopen_attempted_for_fill_count: bool,
 ) -> bool {
+    if tuning.profile == PgtShadowProfile::XuanTailTakerV1 {
+        return reopen_attempted_for_fill_count || input.episode_metrics.round_buy_fill_count >= 2;
+    }
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
         return false;
     }
@@ -2463,6 +2530,66 @@ mod profile_tests {
         assert_eq!(
             tuning.seed_min_visible_breakeven_slack_ticks,
             XUAN_LADDER_MIN_VISIBLE_BREAKEVEN_SLACK_TICKS
+        );
+    }
+
+    #[test]
+    fn xuan_tail_taker_profile_matches_dense_l2_candidate() {
+        let tuning = PgtTuning::xuan_tail_taker_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanTailTakerV1);
+        assert_eq!(
+            tuning.seed_open_max_remaining_secs,
+            Some(XUAN_TAIL_TAKER_MAX_REMAINING_SECS)
+        );
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(XUAN_TAIL_TAKER_MIN_REMAINING_SECS)
+        );
+        assert_eq!(
+            tuning.hard_no_new_open_secs,
+            XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS
+        );
+        assert_eq!(
+            tuning.price_aware_no_new_open_secs,
+            XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS
+        );
+        assert_eq!(tuning.open_pair_band(0.98), XUAN_TAIL_TAKER_OPEN_PAIR_CAP);
+        assert_eq!(tuning.fixed_clip_qty, Some(XUAN_TAIL_TAKER_CLIP_QTY));
+        assert_eq!(tuning.min_clip_qty, XUAN_TAIL_TAKER_CLIP_QTY);
+        assert_eq!(tuning.max_clip_qty, XUAN_TAIL_TAKER_CLIP_QTY);
+        assert!(tuning.preserve_seed_clip_qty);
+    }
+
+    #[test]
+    fn xuan_tail_taker_seed_price_gate_matches_oos_band() {
+        let tuning = PgtTuning::xuan_tail_taker_v1();
+        assert!(pgt_tail_taker_seed_price_blocks(tuning, 0.615));
+        assert!(!pgt_tail_taker_seed_price_blocks(
+            tuning,
+            XUAN_TAIL_TAKER_FIRST_MIN_ASK
+        ));
+        assert!(!pgt_tail_taker_seed_price_blocks(tuning, 0.66));
+        assert!(!pgt_tail_taker_seed_price_blocks(
+            tuning,
+            XUAN_TAIL_TAKER_FIRST_MAX_ASK
+        ));
+        assert!(pgt_tail_taker_seed_price_blocks(tuning, 0.705));
+    }
+
+    #[test]
+    fn xuan_tail_taker_completion_caps_match_dense_l2_schedule() {
+        let tuning = PgtTuning::xuan_tail_taker_v1();
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 55, 10.0),
+            (0.900, 0.900, 0.900)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 45, 30.0),
+            (0.950, 0.950, 0.950)
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 35, 50.0),
+            (1.000, 1.000, 1.000)
         );
     }
 
@@ -2679,8 +2806,7 @@ mod profile_tests {
             "xuan ladder repair must never spend more than three cents per residual share"
         );
         assert!(
-            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 95.0) - 0.020)
-                .abs()
+            (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 180, 95.0) - 0.020).abs()
                 < 1e-9,
             "stale no-budget rescue already spends one cent, so funded repair still caps total pair cost at 1.030"
         );
@@ -3125,14 +3251,7 @@ mod profile_tests {
             "first seed quality remains owned by the first-leg guard"
         );
         assert!(
-            !pgt_xuan_ladder_reopen_seed_quality_blocks(
-                tuning,
-                2,
-                Some(1.000),
-                0.46,
-                0.53,
-                0.01
-            ),
+            !pgt_xuan_ladder_reopen_seed_quality_blocks(tuning, 2, Some(1.000), 0.46, 0.53, 0.01),
             "second tranche can open after a clean breakeven pair when visible completion is <= 1.000"
         );
         assert!(

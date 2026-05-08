@@ -3,6 +3,7 @@ use tracing::{debug, info};
 use super::*;
 use crate::polymarket::strategy::pair_gated_tranche::{
     pgt_effective_open_pair_band_value, pgt_open_leg_ceiling_from_opposite_bid,
+    pgt_shadow_taker_open_exec_enabled,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -15,7 +16,6 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
-const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
 const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = true;
 
 impl StrategyCoordinator {
@@ -1012,11 +1012,10 @@ impl StrategyCoordinator {
         if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
             return None;
         }
-        if !PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED {
+        if !pgt_shadow_taker_open_exec_enabled() {
             // Keep taker-open as a strategy counterfactual only. Executing the
-            // first leg aggressively can strand an expensive residual that later
-            // needs lossy repair, which is the opposite of PGT's maker-first
-            // replication target.
+            // first leg aggressively is only enabled for profiles whose replay
+            // validation was explicitly built around a taker seed.
             return None;
         }
         if inv.net_diff.abs() > PAIR_ARB_NET_EPS {
