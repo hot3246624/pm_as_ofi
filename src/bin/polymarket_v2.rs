@@ -640,6 +640,13 @@ async fn spawn_shared_ingress_broker_sidecar() -> anyhow::Result<()> {
 async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
     let root = shared_ingress_root();
     let required_caps = shared_ingress_required_capabilities_from_env();
+    if shared_ingress_role() == SharedIngressRole::Client {
+        return wait_for_shared_ingress_broker_healthy(
+            SHARED_INGRESS_BROKER_START_TIMEOUT_MS,
+            &required_caps,
+        )
+        .await;
+    }
     let market_only_wait_ms = shared_ingress_market_only_auto_wait_ms();
     fs::create_dir_all(shared_ingress_clients_dir())?;
     let deadline =
@@ -12646,6 +12653,36 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_single_bybit_fast_high_margin_tail");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Bybit)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 2.5
+                && weighted_direction_margin_bps < 15.5
+                && close_abs_delta_ms >= 2_000
+                && close_abs_delta_ms <= 4_600
+            {
+                return Some("doge_single_bybit_last_stale_yes_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 1.5
+                && hit.source_spread_bps < 2.2
+                && weighted_direction_margin_bps + 1e-9 >= 10.0
+                && close_abs_delta_ms >= 1_500
+            {
+                return Some("doge_two_bybit_okx_last_stale_midspread_high_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -14752,6 +14789,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 2_400
             {
                 return Some("sol_okx_coinbase_yes_stale_low_margin_side_tail");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 5.0
+                && hit.source_spread_bps < 6.5
+                && weighted_direction_margin_bps + 1e-9 >= 3.0
+                && weighted_direction_margin_bps < 4.5
+            {
+                return Some("sol_okx_coinbase_yes_highspread_mid_margin_side_tail");
             }
             if hit.source_subset_name == "only_okx_coinbase"
                 && hit.rule == LocalBoundaryCloseRule::AfterThenBefore

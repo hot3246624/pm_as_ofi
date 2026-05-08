@@ -2028,6 +2028,31 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and rule == "last_before"
             and source_count == 1
             and exact_sources == 0
+            and side_yes
+            and sources == ("bybit",)
+            and 2.5 <= margin_bps < 15.5
+            and close_abs_delta_ms is not None
+            and 2_000 <= close_abs_delta_ms <= 4_600
+        ):
+            return "doge_single_bybit_last_stale_yes_tail"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 2
+            and exact_sources == 0
+            and side_yes
+            and sources == ("bybit", "okx")
+            and 1.5 <= spread_bps < 2.2
+            and margin_bps >= 10.0
+            and close_abs_delta_ms is not None
+            and close_abs_delta_ms >= 1_500
+        ):
+            return "doge_two_bybit_okx_last_stale_midspread_high_margin_tail"
+        if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 1
+            and exact_sources == 0
             and not side_yes
             and sources == ("okx",)
             and margin_bps < 1.6
@@ -3625,6 +3650,17 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
             and 2_300 <= close_abs_delta_ms <= 2_400
         ):
             return "sol_okx_coinbase_yes_stale_low_margin_side_tail"
+        if (
+            source_subset == "only_okx_coinbase"
+            and rule == "after_then_before"
+            and source_count == 2
+            and exact_sources == 0
+            and side_yes
+            and sources == ("coinbase", "okx")
+            and 5.0 <= spread_bps < 6.5
+            and 3.0 <= margin_bps < 4.5
+        ):
+            return "sol_okx_coinbase_yes_highspread_mid_margin_side_tail"
         if (
             source_subset == "only_okx_coinbase"
             and rule == "after_then_before"
