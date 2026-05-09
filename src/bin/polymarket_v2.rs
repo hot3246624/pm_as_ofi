@@ -16030,6 +16030,8 @@ struct LocalAggUncertaintyGateConfig {
     min_samples: usize,
     min_margin_bps: f64,
     max_train_quantile_bps: f64,
+    #[serde(default)]
+    max_train_max_bps: f64,
     safety_bps: f64,
     max_side_rate: f64,
     max_source_spread_bps: f64,
@@ -16180,13 +16182,14 @@ impl LocalAggUncertaintyGateModel {
             })
             .collect::<HashMap<_, _>>();
         info!(
-            "🧪 local_price_agg_uncertainty_gate_model_loaded | path={} buckets={} rescue_buckets={} min_samples={} min_margin_bps={:.6} max_train_quantile_bps={:.6} safety_bps={:.6} max_side_rate={:.6} max_round_max_margin_bps={:.6} rescue_min_samples={} rescue_max_train_max_bps={:.6}",
+            "🧪 local_price_agg_uncertainty_gate_model_loaded | path={} buckets={} rescue_buckets={} min_samples={} min_margin_bps={:.6} max_train_quantile_bps={:.6} max_train_max_bps={:.6} safety_bps={:.6} max_side_rate={:.6} max_round_max_margin_bps={:.6} rescue_min_samples={} rescue_max_train_max_bps={:.6}",
             path.display(),
             buckets.len(),
             rescue_buckets.len(),
             file.config.min_samples,
             file.config.min_margin_bps,
             file.config.max_train_quantile_bps,
+            file.config.max_train_max_bps,
             file.config.safety_bps,
             file.config.max_side_rate,
             file.config.max_round_max_margin_bps,
@@ -16262,6 +16265,11 @@ impl LocalAggUncertaintyGateModel {
         }
         if stats.q_bps > self.config.max_train_quantile_bps + 1e-12 {
             return LocalAggUncertaintyGateDecision::from_stats(false, "train_quantile_too_wide", level, stats, self.config.safety_bps);
+        }
+        if self.config.max_train_max_bps > 0.0
+            && stats.max_bps > self.config.max_train_max_bps + 1e-12
+        {
+            return LocalAggUncertaintyGateDecision::from_stats(false, "train_max_too_wide", level, stats, self.config.safety_bps);
         }
         let required_margin_bps = stats.q_bps + self.config.safety_bps;
         if candidate.direction_margin_bps + 1e-12 < required_margin_bps {
@@ -16497,37 +16505,74 @@ fn local_agg_uncertainty_gate_key_levels(
             ],
         ),
         (
-            "source_margin",
+            "symbol_rule_quality_full",
             vec![
                 symbol.clone(),
-                subset.clone(),
                 rule.clone(),
-                sources.clone(),
                 side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                delta.clone(),
+                spread.clone(),
                 margin.clone(),
             ],
         ),
         (
-            "source",
+            "symbol_rule_quality_no_delta",
             vec![
                 symbol.clone(),
-                subset.clone(),
                 rule.clone(),
-                sources.clone(),
                 side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                spread.clone(),
+                margin.clone(),
             ],
         ),
         (
-            "policy_margin",
-            vec![symbol.clone(), subset.clone(), rule.clone(), side.clone(), margin.clone()],
+            "symbol_rule_quality_no_spread",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                delta.clone(),
+                margin.clone(),
+            ],
         ),
         (
-            "policy",
-            vec![symbol.clone(), subset.clone(), rule.clone(), side.clone()],
+            "symbol_rule_quality_margin",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                margin.clone(),
+            ],
         ),
-        ("symbol_margin", vec![symbol.clone(), side.clone(), margin]),
-        ("symbol", vec![symbol, side.clone()]),
-        ("all", vec!["ALL".to_string(), side]),
+        (
+            "symbol_rule_quality",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+            ],
+        ),
+        (
+            "symbol_quality_margin",
+            vec![
+                symbol.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                margin,
+            ],
+        ),
+        ("symbol_quality", vec![symbol, side, source_count, exact]),
     ]
 }
 

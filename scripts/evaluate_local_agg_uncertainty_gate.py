@@ -28,6 +28,7 @@ class GateConfig:
     min_margin_bps: float
     quantile: float
     max_train_quantile_bps: float
+    max_train_max_bps: float
     safety_bps: float
     max_side_rate: float
     max_source_spread_bps: float
@@ -45,7 +46,8 @@ class GateConfig:
         )
         return (
             f"n{self.min_samples}_m{self.min_margin_bps:g}_q{self.quantile:g}"
-            f"_maxq{self.max_train_quantile_bps:g}_safe{self.safety_bps:g}"
+            f"_maxq{self.max_train_quantile_bps:g}_max{self.max_train_max_bps:g}"
+            f"_safe{self.safety_bps:g}"
             f"_side{self.max_side_rate:g}_spr{spread}_rmaxm{round_margin}"
             f"_rescue{rescue}"
         )
@@ -197,13 +199,13 @@ def key_levels(row: dict) -> list[tuple[str, tuple[str, ...]]]:
         ("no_spread", (symbol, subset, rule, sources, side, sc, ex, d, m)),
         ("shape_margin", (symbol, subset, rule, sources, side, sc, ex, m)),
         ("shape", (symbol, subset, rule, sources, side, sc, ex)),
-        ("source_margin", (symbol, subset, rule, sources, side, m)),
-        ("source", (symbol, subset, rule, sources, side)),
-        ("policy_margin", (symbol, subset, rule, side, m)),
-        ("policy", (symbol, subset, rule, side)),
-        ("symbol_margin", (symbol, side, m)),
-        ("symbol", (symbol, side)),
-        ("all", ("ALL", side)),
+        ("symbol_rule_quality_full", (symbol, rule, side, sc, ex, d, s, m)),
+        ("symbol_rule_quality_no_delta", (symbol, rule, side, sc, ex, s, m)),
+        ("symbol_rule_quality_no_spread", (symbol, rule, side, sc, ex, d, m)),
+        ("symbol_rule_quality_margin", (symbol, rule, side, sc, ex, m)),
+        ("symbol_rule_quality", (symbol, rule, side, sc, ex)),
+        ("symbol_quality_margin", (symbol, side, sc, ex, m)),
+        ("symbol_quality", (symbol, side, sc, ex)),
     ]
 
 
@@ -375,6 +377,19 @@ def gate_row(
             "gate_train_mean_bps": stats.mean_bps,
             "gate_train_max_bps": stats.max_bps,
         }
+    if cfg.max_train_max_bps > 0 and stats.max_bps > cfg.max_train_max_bps + 1e-12:
+        return False, {
+            "gate_status": "gated",
+            "gate_reason": "train_max_too_wide",
+            "gate_key_level": level,
+            "gate_train_n": stats.n,
+            "gate_train_side_errors": stats.side_errors,
+            "gate_train_q_bps": stats.q,
+            "gate_train_q95_bps": stats.q95,
+            "gate_train_q99_bps": stats.q99,
+            "gate_train_mean_bps": stats.mean_bps,
+            "gate_train_max_bps": stats.max_bps,
+        }
     required_margin = stats.q + cfg.safety_bps
     if margin + 1e-12 < required_margin:
         rescue_level, rescue_stats = choose_rescue_stats(row, rescue_index, cfg)
@@ -505,6 +520,7 @@ def evaluate_config(rows: list[dict], cfg: GateConfig, min_train_rounds: int, te
             "min_margin_bps": cfg.min_margin_bps,
             "quantile": cfg.quantile,
             "max_train_quantile_bps": cfg.max_train_quantile_bps,
+            "max_train_max_bps": cfg.max_train_max_bps,
             "safety_bps": cfg.safety_bps,
             "max_side_rate": cfg.max_side_rate,
             "max_source_spread_bps": cfg.max_source_spread_bps,
@@ -541,6 +557,7 @@ def grid_configs(args: argparse.Namespace) -> list[GateConfig]:
                                             margin,
                                             q,
                                             max_q,
+                                            args.max_train_max_bps,
                                             safety,
                                             side_rate,
                                             spread,
@@ -662,6 +679,7 @@ def export_model(path: Path, rows: list[dict], cfg: GateConfig) -> None:
             "min_margin_bps": cfg.min_margin_bps,
             "quantile": cfg.quantile,
             "max_train_quantile_bps": cfg.max_train_quantile_bps,
+            "max_train_max_bps": cfg.max_train_max_bps,
             "safety_bps": cfg.safety_bps,
             "max_side_rate": cfg.max_side_rate,
             "max_source_spread_bps": cfg.max_source_spread_bps,
@@ -684,6 +702,20 @@ def export_model(path: Path, rows: list[dict], cfg: GateConfig) -> None:
             "delta_bucket",
             "spread_bucket",
             "margin_bucket",
+        ],
+        "supported_bucket_levels": [
+            "full",
+            "no_delta",
+            "no_spread",
+            "shape_margin",
+            "shape",
+            "symbol_rule_quality_full",
+            "symbol_rule_quality_no_delta",
+            "symbol_rule_quality_no_spread",
+            "symbol_rule_quality_margin",
+            "symbol_rule_quality",
+            "symbol_quality_margin",
+            "symbol_quality",
         ],
         "rescue_bucket_key_order": [
             "symbol",
@@ -714,6 +746,7 @@ def main() -> int:
     ap.add_argument("--min-margin-bps", type=float, default=1.0)
     ap.add_argument("--quantile", type=float, default=0.95)
     ap.add_argument("--max-train-quantile-bps", type=float, default=5.0)
+    ap.add_argument("--max-train-max-bps", type=float, default=0.0, help="0 disables the historical bucket max-error gate")
     ap.add_argument("--safety-bps", type=float, default=0.5)
     ap.add_argument("--max-side-rate", type=float, default=0.0)
     ap.add_argument("--max-source-spread-bps", type=float, default=0.0, help="0 disables this global spread gate")
@@ -762,6 +795,7 @@ def main() -> int:
             min_margin_bps=float(best_summary["min_margin_bps"]),
             quantile=float(best_summary["quantile"]),
             max_train_quantile_bps=float(best_summary["max_train_quantile_bps"]),
+            max_train_max_bps=float(best_summary["max_train_max_bps"]),
             safety_bps=float(best_summary["safety_bps"]),
             max_side_rate=float(best_summary["max_side_rate"]),
             max_source_spread_bps=float(best_summary["max_source_spread_bps"]),
@@ -775,6 +809,7 @@ def main() -> int:
             min_margin_bps=args.min_margin_bps,
             quantile=args.quantile,
             max_train_quantile_bps=args.max_train_quantile_bps,
+            max_train_max_bps=args.max_train_max_bps,
             safety_bps=args.safety_bps,
             max_side_rate=args.max_side_rate,
             max_source_spread_bps=args.max_source_spread_bps,
