@@ -13026,6 +13026,28 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_two_bybit_coinbase_last_stale_widespread_mid_margin");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Bybit)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && hit.source_spread_bps + 1e-9 >= 4.0
+                && hit.source_spread_bps < 5.5
+                && weighted_direction_margin_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps < 2.2
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 5_000
+            {
+                return Some("doge_two_bybit_coinbase_last_stale_widespread_lowmargin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0

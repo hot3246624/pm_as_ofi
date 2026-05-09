@@ -1787,6 +1787,19 @@ def router_filter_reason(symbol: str, source_subset: str, rule: str, source_coun
         ):
             return "doge_two_bybit_coinbase_last_stale_widespread_mid_margin"
         if (
+            source_subset == "drop_binance"
+            and rule == "last_before"
+            and source_count == 2
+            and exact_sources == 0
+            and side_yes
+            and sources == ("bybit", "coinbase")
+            and 4.0 <= spread_bps < 5.5
+            and 1.5 <= margin_bps < 2.2
+            and close_abs_delta_ms is not None
+            and 700 <= close_abs_delta_ms <= 5_000
+        ):
+            return "doge_two_bybit_coinbase_last_stale_widespread_lowmargin_tail"
+        if (
             rule == "last_before"
             and source_count >= 2
             and exact_sources == 0
