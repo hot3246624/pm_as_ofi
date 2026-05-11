@@ -312,6 +312,32 @@ def choose_rescue_stats(
     return level, stats
 
 
+def level_keeps_delta(level: str | None) -> bool:
+    return level in {
+        "full",
+        "no_spread",
+        "symbol_rule_quality_full",
+        "symbol_rule_quality_no_spread",
+    }
+
+
+def stale_pair_requires_delta_history(row: dict, level: str | None) -> bool:
+    if level_keeps_delta(level):
+        return False
+    if str(row.get("symbol", "")) != "hype/usd":
+        return False
+    if str(row.get("source_subset", "")) != "drop_binance":
+        return False
+    if str(row.get("rule", "")) != "after_then_before":
+        return False
+    if str(row.get("sources", "")) != "bybit;hyperliquid":
+        return False
+    if source_count_bucket(row) != "n2" or exact_bucket(row) != "no_exact":
+        return False
+    delta_ms = to_float(row.get("close_abs_delta_ms"))
+    return delta_ms is not None and delta_ms >= 2_500.0
+
+
 def gate_row(
     row: dict,
     index: dict[tuple[str, tuple[str, ...]], BucketStats],
@@ -349,6 +375,20 @@ def gate_row(
     level, stats = choose_stats(row, index, cfg)
     if stats is None:
         return False, {"gate_status": "gated", "gate_reason": "insufficient_history"}
+    if stale_pair_requires_delta_history(row, level):
+        return False, {
+            "gate_status": "gated",
+            "gate_reason": "stale_pair_requires_delta_history",
+            "gate_key_level": level,
+            "gate_train_n": stats.n,
+            "gate_train_side_errors": stats.side_errors,
+            "gate_train_q_bps": stats.q,
+            "gate_train_q95_bps": stats.q95,
+            "gate_train_q99_bps": stats.q99,
+            "gate_train_mean_bps": stats.mean_bps,
+            "gate_train_max_bps": stats.max_bps,
+            "gate_required_margin_bps": stats.q + cfg.safety_bps,
+        }
 
     side_rate = stats.side_errors / stats.n if stats.n else 1.0
     if side_rate > cfg.max_side_rate + 1e-12:

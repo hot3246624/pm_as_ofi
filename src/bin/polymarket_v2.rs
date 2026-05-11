@@ -16260,6 +16260,15 @@ impl LocalAggUncertaintyGateModel {
         let Some((level, stats)) = self.choose_stats(candidate) else {
             return LocalAggUncertaintyGateDecision::gated("insufficient_history");
         };
+        if local_agg_uncertainty_gate_stale_pair_requires_delta_history(candidate, level) {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "stale_pair_requires_delta_history",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
         if stats.side_rate > self.config.max_side_rate + 1e-12 {
             return LocalAggUncertaintyGateDecision::from_stats(false, "train_side_rate", level, stats, self.config.safety_bps);
         }
@@ -16412,6 +16421,27 @@ fn local_agg_uncertainty_gate_source_count_bucket(n: usize) -> &'static str {
         3 => "n3",
         _ => "n4p",
     }
+}
+
+fn local_agg_uncertainty_gate_level_keeps_delta(level: &str) -> bool {
+    matches!(
+        level,
+        "full" | "no_spread" | "symbol_rule_quality_full" | "symbol_rule_quality_no_spread"
+    )
+}
+
+fn local_agg_uncertainty_gate_stale_pair_requires_delta_history(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    level: &str,
+) -> bool {
+    !local_agg_uncertainty_gate_level_keeps_delta(level)
+        && candidate.symbol == "hype/usd"
+        && candidate.source_subset == "drop_binance"
+        && candidate.rule == "after_then_before"
+        && candidate.sources == "bybit;hyperliquid"
+        && candidate.source_count == 2
+        && candidate.exact_sources == 0
+        && candidate.close_abs_delta_ms >= 2_500
 }
 
 fn local_agg_uncertainty_gate_key_levels(
