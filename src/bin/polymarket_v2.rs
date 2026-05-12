@@ -13026,6 +13026,28 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_two_bybit_coinbase_last_stale_widespread_mid_margin");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Bybit)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && hit.source_spread_bps + 1e-9 >= 4.0
+                && hit.source_spread_bps < 5.5
+                && weighted_direction_margin_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps < 2.2
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 5_000
+            {
+                return Some("doge_two_bybit_coinbase_last_stale_widespread_lowmargin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
@@ -16008,6 +16030,8 @@ struct LocalAggUncertaintyGateConfig {
     min_samples: usize,
     min_margin_bps: f64,
     max_train_quantile_bps: f64,
+    #[serde(default)]
+    max_train_max_bps: f64,
     safety_bps: f64,
     max_side_rate: f64,
     max_source_spread_bps: f64,
@@ -16158,13 +16182,14 @@ impl LocalAggUncertaintyGateModel {
             })
             .collect::<HashMap<_, _>>();
         info!(
-            "🧪 local_price_agg_uncertainty_gate_model_loaded | path={} buckets={} rescue_buckets={} min_samples={} min_margin_bps={:.6} max_train_quantile_bps={:.6} safety_bps={:.6} max_side_rate={:.6} max_round_max_margin_bps={:.6} rescue_min_samples={} rescue_max_train_max_bps={:.6}",
+            "🧪 local_price_agg_uncertainty_gate_model_loaded | path={} buckets={} rescue_buckets={} min_samples={} min_margin_bps={:.6} max_train_quantile_bps={:.6} max_train_max_bps={:.6} safety_bps={:.6} max_side_rate={:.6} max_round_max_margin_bps={:.6} rescue_min_samples={} rescue_max_train_max_bps={:.6}",
             path.display(),
             buckets.len(),
             rescue_buckets.len(),
             file.config.min_samples,
             file.config.min_margin_bps,
             file.config.max_train_quantile_bps,
+            file.config.max_train_max_bps,
             file.config.safety_bps,
             file.config.max_side_rate,
             file.config.max_round_max_margin_bps,
@@ -16235,11 +16260,34 @@ impl LocalAggUncertaintyGateModel {
         let Some((level, stats)) = self.choose_stats(candidate) else {
             return LocalAggUncertaintyGateDecision::gated("insufficient_history");
         };
+        if local_agg_uncertainty_gate_stale_pair_requires_delta_history(candidate, level) {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "stale_pair_requires_delta_history",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
+        if local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(candidate, level) {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "bnb_low_source_requires_delta_history",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
         if stats.side_rate > self.config.max_side_rate + 1e-12 {
             return LocalAggUncertaintyGateDecision::from_stats(false, "train_side_rate", level, stats, self.config.safety_bps);
         }
         if stats.q_bps > self.config.max_train_quantile_bps + 1e-12 {
             return LocalAggUncertaintyGateDecision::from_stats(false, "train_quantile_too_wide", level, stats, self.config.safety_bps);
+        }
+        if self.config.max_train_max_bps > 0.0
+            && stats.max_bps > self.config.max_train_max_bps + 1e-12
+        {
+            return LocalAggUncertaintyGateDecision::from_stats(false, "train_max_too_wide", level, stats, self.config.safety_bps);
         }
         let required_margin_bps = stats.q_bps + self.config.safety_bps;
         if candidate.direction_margin_bps + 1e-12 < required_margin_bps {
@@ -16384,6 +16432,47 @@ fn local_agg_uncertainty_gate_source_count_bucket(n: usize) -> &'static str {
     }
 }
 
+fn local_agg_uncertainty_gate_level_keeps_delta(level: &str) -> bool {
+    matches!(
+        level,
+        "full" | "no_spread" | "symbol_rule_quality_full" | "symbol_rule_quality_no_spread"
+    )
+}
+
+fn local_agg_uncertainty_gate_stale_pair_requires_delta_history(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    level: &str,
+) -> bool {
+    !local_agg_uncertainty_gate_level_keeps_delta(level)
+        && candidate.symbol == "hype/usd"
+        && candidate.source_subset == "drop_binance"
+        && candidate.rule == "after_then_before"
+        && candidate.sources == "bybit;hyperliquid"
+        && candidate.source_count == 2
+        && candidate.exact_sources == 0
+        && candidate.close_abs_delta_ms >= 2_500
+}
+
+fn local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    level: &str,
+) -> bool {
+    if local_agg_uncertainty_gate_level_keeps_delta(level)
+        || candidate.symbol != "bnb/usd"
+        || candidate.source_subset != "drop_okx"
+        || candidate.rule != "after_then_before"
+        || candidate.exact_sources != 0
+    {
+        return false;
+    }
+    if candidate.source_count == 1 && candidate.sources == "binance" {
+        return true;
+    }
+    candidate.source_count == 2
+        && candidate.sources == "binance;bybit"
+        && candidate.close_abs_delta_ms >= 1_000
+}
+
 fn local_agg_uncertainty_gate_key_levels(
     candidate: &LocalAggUncertaintyGateCandidate,
 ) -> Vec<(&'static str, Vec<String>)> {
@@ -16475,37 +16564,74 @@ fn local_agg_uncertainty_gate_key_levels(
             ],
         ),
         (
-            "source_margin",
+            "symbol_rule_quality_full",
             vec![
                 symbol.clone(),
-                subset.clone(),
                 rule.clone(),
-                sources.clone(),
                 side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                delta.clone(),
+                spread.clone(),
                 margin.clone(),
             ],
         ),
         (
-            "source",
+            "symbol_rule_quality_no_delta",
             vec![
                 symbol.clone(),
-                subset.clone(),
                 rule.clone(),
-                sources.clone(),
                 side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                spread.clone(),
+                margin.clone(),
             ],
         ),
         (
-            "policy_margin",
-            vec![symbol.clone(), subset.clone(), rule.clone(), side.clone(), margin.clone()],
+            "symbol_rule_quality_no_spread",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                delta.clone(),
+                margin.clone(),
+            ],
         ),
         (
-            "policy",
-            vec![symbol.clone(), subset.clone(), rule.clone(), side.clone()],
+            "symbol_rule_quality_margin",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                margin.clone(),
+            ],
         ),
-        ("symbol_margin", vec![symbol.clone(), side.clone(), margin]),
-        ("symbol", vec![symbol, side.clone()]),
-        ("all", vec!["ALL".to_string(), side]),
+        (
+            "symbol_rule_quality",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+            ],
+        ),
+        (
+            "symbol_quality_margin",
+            vec![
+                symbol.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                margin,
+            ],
+        ),
+        ("symbol_quality", vec![symbol, side, source_count, exact]),
     ]
 }
 
