@@ -1620,9 +1620,25 @@ impl StrategyCoordinator {
                 self.update_book(yes_bid, yes_ask, no_bid, no_ask);
                 self.stats.ticks += 1;
             }
-            MarketDataMsg::TradeTick { .. } => {
-                // Trades are primarily for OFI actor; Coordinator mostly skips
-                // but we could track last trade prices here if needed.
+            MarketDataMsg::TradeTick {
+                market_side,
+                taker_side,
+                price,
+                size,
+                ts,
+                ..
+            } => {
+                if taker_side == TakerSide::Sell {
+                    self.last_public_trade = Some(PublicTradeSnapshot {
+                        market_side,
+                        taker_side,
+                        price,
+                        size,
+                        ts,
+                    });
+                }
+                // Trades are primarily for OFI actor; PGT m0001 consumes the
+                // latest public SELL tick as a maker-shadow trigger.
             }
             MarketDataMsg::OracleLagSelection {
                 round_end_ts,

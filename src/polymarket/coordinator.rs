@@ -831,6 +831,15 @@ impl Default for Book {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PublicTradeSnapshot {
+    pub(crate) market_side: Side,
+    pub(crate) taker_side: TakerSide,
+    pub(crate) price: f64,
+    pub(crate) size: f64,
+    pub(crate) ts: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EndgamePhase {
     Normal,
@@ -1233,6 +1242,7 @@ pub struct StrategyCoordinator {
     book: Book,
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
+    last_public_trade: Option<PublicTradeSnapshot>,
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
     /// P5 FIX: Per-side timestamps to catch single-side staleness.
     last_valid_ts_yes: Instant,
@@ -1624,6 +1634,7 @@ impl StrategyCoordinator {
             cfg,
             book: Book::default(),
             last_valid_book: Book::default(),
+            last_public_trade: None,
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
             yes_stale_since: None,
@@ -2353,6 +2364,20 @@ impl StrategyCoordinator {
             self.last_valid_ts_no = Instant::now();
             self.no_stale_since = None;
         }
+    }
+
+    pub(crate) fn recent_public_trade(&self, max_age: Duration) -> Option<PublicTradeSnapshot> {
+        let trade = self.last_public_trade?;
+        if Instant::now().saturating_duration_since(trade.ts) <= max_age {
+            Some(trade)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn pgt_buy_slot_age(&self, side: Side) -> Duration {
+        self.slot_last_ts(OrderSlot::new(side, TradeDirection::Buy))
+            .elapsed()
     }
 
     /// P5 FIX: Check if either side's book data is stale (>30s without fresh data).

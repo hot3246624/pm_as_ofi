@@ -145,6 +145,43 @@ fn bt(yb: f64, ya: f64, nb: f64, na: f64) -> MarketDataMsg {
     }
 }
 
+#[tokio::test]
+async fn public_trade_snapshot_retains_latest_sell_after_buy_tick() {
+    let (_, _, _, _, _, mut coord) = make(cfg());
+    let sell_ts = Instant::now();
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "yes".to_string(),
+            trade_id: Some("sell-1".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Sell,
+            price: 0.522,
+            size: 40.0,
+            ts: sell_ts,
+        })
+        .await;
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "yes".to_string(),
+            trade_id: Some("buy-1".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Buy,
+            price: 0.530,
+            size: 10.0,
+            ts: Instant::now(),
+        })
+        .await;
+
+    let trade = coord
+        .recent_public_trade(Duration::from_secs(5))
+        .expect("recent sell trade should remain available");
+    assert_eq!(trade.taker_side, TakerSide::Sell);
+    assert_eq!(trade.market_side, Side::Yes);
+    assert!((trade.price - 0.522).abs() < 1e-9);
+    assert!((trade.size - 40.0).abs() < 1e-9);
+    assert_eq!(trade.ts, sell_ts);
+}
+
 fn book(yb: f64, ya: f64, nb: f64, na: f64) -> Book {
     Book {
         yes_bid: yb,
@@ -1192,7 +1229,10 @@ async fn test_pair_gated_tranche_absent_intent_clears_on_seed_side_flip() {
             assert_eq!(slot, OrderSlot::NO_BUY);
             assert_eq!(reason, CancelReason::Reprice);
         }
-        other => panic!("expected side-flip ClearTarget for old PGT seed, got {:?}", other),
+        other => panic!(
+            "expected side-flip ClearTarget for old PGT seed, got {:?}",
+            other
+        ),
     }
     assert!(
         coord.slot_target(OrderSlot::NO_BUY).is_none(),

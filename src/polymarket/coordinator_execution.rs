@@ -2,8 +2,8 @@ use tracing::{debug, info};
 
 use super::*;
 use crate::polymarket::strategy::pair_gated_tranche::{
-    pgt_effective_open_pair_band_value, pgt_open_leg_ceiling_from_opposite_bid,
-    pgt_shadow_taker_open_exec_enabled,
+    pgt_absent_seed_retain_allowed, pgt_effective_open_pair_band_value,
+    pgt_open_leg_ceiling_from_opposite_bid, pgt_shadow_taker_open_exec_enabled,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -632,7 +632,11 @@ impl StrategyCoordinator {
         {
             return false;
         }
-        if self.seconds_to_market_end().unwrap_or(u64::MAX) <= PGT_TAIL_NO_NEW_OPEN_SECS {
+        let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+        if remaining_secs <= PGT_TAIL_NO_NEW_OPEN_SECS {
+            return false;
+        }
+        if !pgt_absent_seed_retain_allowed(remaining_secs, self.slot_last_ts(slot).elapsed()) {
             return false;
         }
         let snapshot = self.inv_rx.borrow();
