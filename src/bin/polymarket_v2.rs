@@ -16269,6 +16269,15 @@ impl LocalAggUncertaintyGateModel {
                 self.config.safety_bps,
             );
         }
+        if local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(candidate, level) {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "bnb_low_source_requires_delta_history",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
         if stats.side_rate > self.config.max_side_rate + 1e-12 {
             return LocalAggUncertaintyGateDecision::from_stats(false, "train_side_rate", level, stats, self.config.safety_bps);
         }
@@ -16442,6 +16451,26 @@ fn local_agg_uncertainty_gate_stale_pair_requires_delta_history(
         && candidate.source_count == 2
         && candidate.exact_sources == 0
         && candidate.close_abs_delta_ms >= 2_500
+}
+
+fn local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    level: &str,
+) -> bool {
+    if local_agg_uncertainty_gate_level_keeps_delta(level)
+        || candidate.symbol != "bnb/usd"
+        || candidate.source_subset != "drop_okx"
+        || candidate.rule != "after_then_before"
+        || candidate.exact_sources != 0
+    {
+        return false;
+    }
+    if candidate.source_count == 1 && candidate.sources == "binance" {
+        return true;
+    }
+    candidate.source_count == 2
+        && candidate.sources == "binance;bybit"
+        && candidate.close_abs_delta_ms >= 1_000
 }
 
 fn local_agg_uncertainty_gate_key_levels(
