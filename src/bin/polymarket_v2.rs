@@ -3901,6 +3901,14 @@ fn local_price_agg_boundary_window_ms() -> u64 {
         .unwrap_or(5_000)
 }
 
+fn local_price_agg_boundary_diag_window_ms() -> u64 {
+    env::var("PM_LOCAL_PRICE_AGG_BOUNDARY_DIAG_WINDOW_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(0, 60_000))
+        .unwrap_or(30_000)
+}
+
 fn local_price_agg_uncertainty_gate_enabled() -> bool {
     env_bool("PM_LOCAL_AGG_UNCERTAINTY_GATE_ENABLED", false)
 }
@@ -17167,9 +17175,13 @@ async fn run_local_price_close_aggregator(
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
     let boundary_window_ms = local_price_agg_boundary_window_ms();
+    let boundary_diag_window_ms = local_price_agg_boundary_diag_window_ms();
+    let boundary_diag_enabled =
+        boundary_diag_window_ms > 0 && boundary_diag_window_ms != boundary_window_ms;
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
     let mut tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
+    let mut diag_tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
     for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
         local_price_agg_collect_boundary_tape_tick(
@@ -17181,6 +17193,17 @@ async fn run_local_price_close_aggregator(
             end_ms,
             boundary_window_ms,
         );
+        if boundary_diag_enabled {
+            local_price_agg_collect_boundary_tape_tick(
+                &mut diag_tapes,
+                source,
+                price,
+                ts_ms,
+                start_ms,
+                end_ms,
+                boundary_diag_window_ms,
+            );
+        }
     }
 
     let close_ready_sources = |states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>| {
@@ -17214,6 +17237,17 @@ async fn run_local_price_close_aggregator(
                             end_ms,
                             boundary_window_ms,
                         );
+                        if boundary_diag_enabled {
+                            local_price_agg_collect_boundary_tape_tick(
+                                &mut diag_tapes,
+                                source,
+                                price,
+                                ts_ms,
+                                start_ms,
+                                end_ms,
+                                boundary_diag_window_ms,
+                            );
+                        }
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
@@ -17293,6 +17327,22 @@ async fn run_local_price_close_aggregator(
         boundary_window_ms,
         source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
     });
+    if boundary_diag_enabled {
+        append_local_price_agg_boundary_probe(&LocalPriceAggBoundaryProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            mode: "close_only_diag".to_string(),
+            status: status.to_string(),
+            boundary_window_ms: boundary_diag_window_ms,
+            source_tapes: build_local_price_agg_boundary_source_probes(
+                &diag_tapes,
+                start_ms,
+                end_ms,
+            ),
+        });
+    }
 
     let mut boundary_shadow_outcomes = vec![run_local_boundary_shadow_policy(
         &target_symbol,
@@ -17386,6 +17436,9 @@ async fn run_local_price_aggregator(
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
     let boundary_window_ms = local_price_agg_boundary_window_ms();
+    let boundary_diag_window_ms = local_price_agg_boundary_diag_window_ms();
+    let boundary_diag_enabled =
+        boundary_diag_window_ms > 0 && boundary_diag_window_ms != boundary_window_ms;
     let single_source_min_direction_margin_bps =
         local_price_agg_single_source_min_direction_margin_bps();
     let relief_min_confidence = LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE_DEFAULT;
@@ -17394,6 +17447,7 @@ async fn run_local_price_aggregator(
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
     let mut tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
+    let mut diag_tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
     let mut observed_ticks: u64 = 0;
     let mut observed_snapshot_ticks: u64 = 0;
     let mut observed_live_ticks: u64 = 0;
@@ -17412,6 +17466,17 @@ async fn run_local_price_aggregator(
             end_ms,
             boundary_window_ms,
         );
+        if boundary_diag_enabled {
+            local_price_agg_collect_boundary_tape_tick(
+                &mut diag_tapes,
+                source,
+                price,
+                ts_ms,
+                start_ms,
+                end_ms,
+                boundary_diag_window_ms,
+            );
+        }
     }
     apply_local_prewarmed_open_seed(&mut states, &target_symbol, start_ms);
 
@@ -17447,6 +17512,17 @@ async fn run_local_price_aggregator(
                             end_ms,
                             boundary_window_ms,
                         );
+                        if boundary_diag_enabled {
+                            local_price_agg_collect_boundary_tape_tick(
+                                &mut diag_tapes,
+                                source,
+                                price,
+                                ts_ms,
+                                start_ms,
+                                end_ms,
+                                boundary_diag_window_ms,
+                            );
+                        }
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
                         lagged_ticks = lagged_ticks.saturating_add(n);
@@ -17564,6 +17640,22 @@ async fn run_local_price_aggregator(
             boundary_window_ms,
             source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
         });
+        if boundary_diag_enabled {
+            append_local_price_agg_boundary_probe(&LocalPriceAggBoundaryProbe {
+                unix_ms: unix_now_millis_u64(),
+                symbol: target_symbol.clone(),
+                round_start_ts,
+                round_end_ts,
+                mode: "full_diag".to_string(),
+                status: status.to_string(),
+                boundary_window_ms: boundary_diag_window_ms,
+                source_tapes: build_local_price_agg_boundary_source_probes(
+                    &diag_tapes,
+                    start_ms,
+                    end_ms,
+                ),
+            });
+        }
     };
 
     let boundary_debug = || {
