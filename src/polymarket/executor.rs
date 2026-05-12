@@ -173,6 +173,7 @@ pub struct Executor {
     dry_run_market_touch_trade_fills: bool,
     dry_run_market_touch_trade_partial_fills: bool,
     dry_run_market_touch_trade_fill_fraction: f64,
+    dry_run_touch_diag: DryRunTouchDiag,
     /// Short confirm delay for dry-run market-touch fills.
     dry_run_touch_confirm_delay: Duration,
     recorder: Option<RecorderHandle>,
@@ -201,6 +202,19 @@ struct DryRunPendingTouchFill {
     price: f64,
     source: &'static str,
     detected_at: Instant,
+}
+
+#[derive(Debug, Default, Clone)]
+struct DryRunTouchDiag {
+    trade_ticks: u64,
+    sell_ticks: u64,
+    sell_ticks_with_live_buy_same_side: u64,
+    trade_touch_candidates: u64,
+    trade_touch_price_miss_orders: u64,
+    best_trade_miss_gap: Option<f64>,
+    best_trade_miss_side: Option<Side>,
+    best_trade_miss_bid: Option<f64>,
+    best_trade_miss_price: Option<f64>,
 }
 
 impl Executor {
@@ -331,6 +345,7 @@ impl Executor {
             .and_then(|v| v.parse::<f64>().ok())
             .map(|v| v.clamp(0.0, 1.0))
             .unwrap_or(1.0),
+            dry_run_touch_diag: DryRunTouchDiag::default(),
             dry_run_touch_confirm_delay: Duration::from_millis(DRY_RUN_TOUCH_CONFIRM_MS),
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
             marketable_buy_min_notional_floor: std::env::var("PM_MIN_MARKETABLE_NOTIONAL_FLOOR")
@@ -523,6 +538,8 @@ impl Executor {
                 size: trade_size,
                 ..
             } => {
+                self.dry_run_touch_diag.trade_ticks =
+                    self.dry_run_touch_diag.trade_ticks.saturating_add(1);
                 if !self.dry_run_market_touch_trade_fills {
                     return;
                 }
@@ -534,6 +551,9 @@ impl Executor {
                 {
                     return;
                 }
+                self.dry_run_touch_diag.sell_ticks =
+                    self.dry_run_touch_diag.sell_ticks.saturating_add(1);
+                let mut had_live_same_side_buy = false;
                 for (order_id, meta) in self.dry_run_live_orders.iter() {
                     if meta.fill_emitted
                         || meta.direction != TradeDirection::Buy
@@ -541,7 +561,24 @@ impl Executor {
                     {
                         continue;
                     }
+                    had_live_same_side_buy = true;
                     if price > meta.price + 1e-9 {
+                        self.dry_run_touch_diag.trade_touch_price_miss_orders =
+                            self.dry_run_touch_diag
+                                .trade_touch_price_miss_orders
+                                .saturating_add(1);
+                        let gap = price - meta.price;
+                        if self
+                            .dry_run_touch_diag
+                            .best_trade_miss_gap
+                            .map(|best| gap < best)
+                            .unwrap_or(true)
+                        {
+                            self.dry_run_touch_diag.best_trade_miss_gap = Some(gap);
+                            self.dry_run_touch_diag.best_trade_miss_side = Some(market_side);
+                            self.dry_run_touch_diag.best_trade_miss_bid = Some(meta.price);
+                            self.dry_run_touch_diag.best_trade_miss_price = Some(price);
+                        }
                         continue;
                     }
                     let remaining = self
@@ -561,6 +598,8 @@ impl Executor {
                     if fill_size <= 0.0 {
                         continue;
                     }
+                    self.dry_run_touch_diag.trade_touch_candidates =
+                        self.dry_run_touch_diag.trade_touch_candidates.saturating_add(1);
                     self.dry_run_pending_touch_fills
                         .entry(order_id.clone())
                         .and_modify(|pending| {
@@ -578,6 +617,12 @@ impl Executor {
                             source: "trade_sell_touch",
                             detected_at: now,
                         });
+                }
+                if had_live_same_side_buy {
+                    self.dry_run_touch_diag.sell_ticks_with_live_buy_same_side = self
+                        .dry_run_touch_diag
+                        .sell_ticks_with_live_buy_same_side
+                        .saturating_add(1);
                 }
             }
             _ => return,
@@ -836,6 +881,20 @@ impl Executor {
             }
         }
 
+        info!(
+            "🧪 DryRunTouchDiag | trade_ticks={} sell_ticks={} sell_live_same_side={} trade_touch_candidates={} trade_price_miss_orders={} best_miss_gap={:?} best_miss_side={:?} best_miss_bid={:?} best_miss_trade_price={:?} pending_touch_fills={} live_orders={}",
+            self.dry_run_touch_diag.trade_ticks,
+            self.dry_run_touch_diag.sell_ticks,
+            self.dry_run_touch_diag.sell_ticks_with_live_buy_same_side,
+            self.dry_run_touch_diag.trade_touch_candidates,
+            self.dry_run_touch_diag.trade_touch_price_miss_orders,
+            self.dry_run_touch_diag.best_trade_miss_gap,
+            self.dry_run_touch_diag.best_trade_miss_side,
+            self.dry_run_touch_diag.best_trade_miss_bid,
+            self.dry_run_touch_diag.best_trade_miss_price,
+            self.dry_run_pending_touch_fills.len(),
+            self.dry_run_live_orders.len(),
+        );
         info!("⚡ Executor shutting down");
     }
 
