@@ -24,7 +24,8 @@ use super::messages::*;
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::strategy::{
     completion_first::{CompletionFirstGateDefaults, CompletionFirstPhase},
-    StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput,
+    PgtXuanM0001NoSeedReason, StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes,
+    StrategyTickInput, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
 };
 use super::types::Side;
 
@@ -954,6 +955,9 @@ struct Stats {
     pgt_entry_pressure_extra_ticks: u64,
     pgt_taker_shadow_would_open: u64,
     pgt_taker_shadow_would_close: u64,
+    pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    market_trade_ticks: u64,
+    market_sell_trade_ticks: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -998,6 +1002,7 @@ struct PgtGateLogSnapshot {
     dispatch_retain: u64,
     dispatch_clear: u64,
     stale_target_dropped: u64,
+    xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1487,6 +1492,9 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_dispatch_retain: u64,
     pub pgt_dispatch_clear: u64,
     pub pgt_stale_target_dropped: u64,
+    pub pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    pub market_trade_ticks: u64,
+    pub market_sell_trade_ticks: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2178,6 +2186,9 @@ impl StrategyCoordinator {
             pgt_dispatch_retain: self.stats.pgt_dispatch_retain,
             pgt_dispatch_clear: self.stats.pgt_dispatch_clear,
             pgt_stale_target_dropped: self.stats.pgt_stale_target_dropped,
+            pgt_xuan_m0001_no_seed: self.stats.pgt_xuan_m0001_no_seed,
+            market_trade_ticks: self.stats.market_trade_ticks,
+            market_sell_trade_ticks: self.stats.market_sell_trade_ticks,
         };
         let _ = obs_tx.send(snapshot);
     }
@@ -2253,6 +2264,14 @@ impl StrategyCoordinator {
             .stats
             .pgt_skip_no_seed
             .saturating_add(quotes.diagnostics.pgt_skip_no_seed as u64);
+        for (dst, src) in self
+            .stats
+            .pgt_xuan_m0001_no_seed
+            .iter_mut()
+            .zip(quotes.diagnostics.pgt_xuan_m0001_no_seed)
+        {
+            *dst = dst.saturating_add(src as u64);
+        }
         self.stats.pgt_skip_geometry_guard = self
             .stats
             .pgt_skip_geometry_guard

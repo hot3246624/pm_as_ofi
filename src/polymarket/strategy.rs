@@ -56,6 +56,62 @@ pub(crate) struct StrategyIntent {
     pub(crate) reason: BidReason,
 }
 
+pub const PGT_XUAN_M0001_NO_SEED_REASON_COUNT: usize = 12;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgtXuanM0001NoSeedReason {
+    NoRecentSellTrade = 0,
+    BadTrade = 1,
+    InvalidBook = 2,
+    NotHighSide = 3,
+    PriceBand = 4,
+    NotMakerPrice = 5,
+    PairCap = 6,
+    Cooldown = 7,
+    OppositeInventory = 8,
+    SmallSize = 9,
+    VwapCap = 10,
+    SimulateBuyBlocked = 11,
+}
+
+impl PgtXuanM0001NoSeedReason {
+    pub const ALL: [Self; PGT_XUAN_M0001_NO_SEED_REASON_COUNT] = [
+        Self::NoRecentSellTrade,
+        Self::BadTrade,
+        Self::InvalidBook,
+        Self::NotHighSide,
+        Self::PriceBand,
+        Self::NotMakerPrice,
+        Self::PairCap,
+        Self::Cooldown,
+        Self::OppositeInventory,
+        Self::SmallSize,
+        Self::VwapCap,
+        Self::SimulateBuyBlocked,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoRecentSellTrade => "no_recent_sell_trade",
+            Self::BadTrade => "bad_trade",
+            Self::InvalidBook => "invalid_book",
+            Self::NotHighSide => "not_high_side",
+            Self::PriceBand => "price_band",
+            Self::NotMakerPrice => "not_maker_price",
+            Self::PairCap => "pair_cap",
+            Self::Cooldown => "cooldown",
+            Self::OppositeInventory => "opposite_inventory",
+            Self::SmallSize => "small_size",
+            Self::VwapCap => "vwap_cap",
+            Self::SimulateBuyBlocked => "simulate_buy_blocked",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_ofi_softened_quotes: u8,
@@ -80,6 +136,7 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pgt_entry_pressure_extra_ticks: u8,
     pub(crate) pgt_taker_shadow_would_open: u8,
     pub(crate) pgt_taker_shadow_would_close: u8,
+    pub(crate) pgt_xuan_m0001_no_seed: [u8; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -238,6 +295,11 @@ impl StrategyQuotes {
 
     pub(crate) fn note_pgt_skip_no_seed(&mut self) {
         self.diagnostics.pgt_skip_no_seed = self.diagnostics.pgt_skip_no_seed.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_xuan_m0001_no_seed(&mut self, reason: PgtXuanM0001NoSeedReason) {
+        let slot = &mut self.diagnostics.pgt_xuan_m0001_no_seed[reason.index()];
+        *slot = slot.saturating_add(1);
     }
 
     pub(crate) fn note_pgt_skip_geometry_guard(&mut self) {

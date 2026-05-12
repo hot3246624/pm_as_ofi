@@ -47,7 +47,9 @@ use pm_as_ofi::polymarket::order_manager::OrderManager;
 use pm_as_ofi::polymarket::recorder::{
     RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
 };
-use pm_as_ofi::polymarket::strategy::StrategyKind;
+use pm_as_ofi::polymarket::strategy::{
+    PgtXuanM0001NoSeedReason, StrategyKind, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
+};
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -153,6 +155,16 @@ fn shared_ingress_role() -> SharedIngressRole {
 
 fn set_shared_ingress_role_override(role: SharedIngressRole) {
     let _ = SHARED_INGRESS_ROLE_OVERRIDE.set(role);
+}
+
+fn pgt_xuan_m0001_no_seed_counts_json(
+    counts: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for reason in PgtXuanM0001NoSeedReason::ALL {
+        out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
+    }
+    Value::Object(out)
 }
 
 fn shared_ingress_root() -> PathBuf {
@@ -23351,6 +23363,11 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "pgt_dispatch_place": coord_obs.pgt_dispatch_place,
                     "pgt_dispatch_retain": coord_obs.pgt_dispatch_retain,
                     "pgt_dispatch_clear": coord_obs.pgt_dispatch_clear,
+                    "market_trade_ticks": coord_obs.market_trade_ticks,
+                    "market_sell_trade_ticks": coord_obs.market_sell_trade_ticks,
+                    "pgt_xuan_m0001_no_seed": pgt_xuan_m0001_no_seed_counts_json(
+                        coord_obs.pgt_xuan_m0001_no_seed,
+                    ),
                     "pgt_single_seed_first_side": coord_obs
                         .pgt_single_seed_first_side
                         .map(|s| s.as_str().to_string()),

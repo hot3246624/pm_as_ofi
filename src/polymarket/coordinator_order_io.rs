@@ -1628,7 +1628,10 @@ impl StrategyCoordinator {
                 ts,
                 ..
             } => {
+                self.stats.market_trade_ticks = self.stats.market_trade_ticks.saturating_add(1);
                 if taker_side == TakerSide::Sell {
+                    self.stats.market_sell_trade_ticks =
+                        self.stats.market_sell_trade_ticks.saturating_add(1);
                     self.last_public_trade = Some(PublicTradeSnapshot {
                         market_side,
                         taker_side,

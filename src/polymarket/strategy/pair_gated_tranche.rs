@@ -9,7 +9,10 @@ use crate::polymarket::types::Side;
 use tracing::info;
 
 use super::pair_arb::PairArbStrategy;
-use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput};
+use super::{
+    PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes,
+    StrategyTickInput,
+};
 
 const RESIDUAL_EPS: f64 = 10.0;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
@@ -544,7 +547,7 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                     remaining_secs,
                 )
             {
-                if let Some(seed) =
+                if let Ok(seed) =
                     self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs)
                 {
                     quotes.note_pgt_seed_quote();
@@ -609,13 +612,15 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         }
 
         if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
-            if let Some(seed) =
-                self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs)
-            {
-                quotes.note_pgt_seed_quote();
-                quotes.set(seed.intent);
-            } else {
-                quotes.note_pgt_skip_no_seed();
+            match self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs) {
+                Ok(seed) => {
+                    quotes.note_pgt_seed_quote();
+                    quotes.set(seed.intent);
+                }
+                Err(reason) => {
+                    quotes.note_pgt_skip_no_seed();
+                    quotes.note_pgt_xuan_m0001_no_seed(reason);
+                }
             }
             return quotes;
         }
@@ -741,16 +746,17 @@ impl PairGatedTrancheStrategy {
         coordinator: &StrategyCoordinator,
         input: StrategyTickInput<'_>,
         remaining_secs: u64,
-    ) -> Option<SeedPlan> {
-        let trade =
-            coordinator.recent_public_trade(Duration::from_millis(XUAN_M0001_TRADE_FRESH_MS))?;
+    ) -> Result<SeedPlan, PgtXuanM0001NoSeedReason> {
+        let trade = coordinator
+            .recent_public_trade(Duration::from_millis(XUAN_M0001_TRADE_FRESH_MS))
+            .ok_or(PgtXuanM0001NoSeedReason::NoRecentSellTrade)?;
         if trade.taker_side != TakerSide::Sell
             || !trade.price.is_finite()
             || !trade.size.is_finite()
             || trade.price <= 0.0
             || trade.size <= 0.0
         {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::BadTrade);
         }
         let side = trade.market_side;
         let (best_bid, best_ask, opp_bid, opp_ask, same_qty, same_avg, opp_qty) = match side {
@@ -774,26 +780,26 @@ impl PairGatedTrancheStrategy {
             ),
         };
         if best_bid <= 0.0 || best_ask <= 0.0 || opp_bid <= 0.0 || opp_ask <= 0.0 {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::InvalidBook);
         }
         if best_bid + 1e-9 < opp_bid {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::NotHighSide);
         }
         if trade.price < 0.05 - 1e-9 || trade.price > 0.90 + 1e-9 {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::PriceBand);
         }
         let price = coordinator.safe_price((trade.price - XUAN_M0001_EDGE).max(0.01));
         if price <= 0.0 || price >= best_ask {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::NotMakerPrice);
         }
         if !pgt_xuan_m0001_public_trade_pair_supported(trade.price, opp_ask) {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::PairCap);
         }
         if coordinator.pgt_buy_slot_age(side) < Duration::from_millis(XUAN_M0001_SEED_COOLDOWN_MS) {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::Cooldown);
         }
         if opp_qty.max(0.0) > coordinator.cfg().min_order_size.max(1.0) + 1e-9 {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::OppositeInventory);
         }
         let target = if pgt_round_elapsed_secs(remaining_secs)
             .map(|elapsed| elapsed >= XUAN_M0001_LATE_TARGET_OFFSET_SECS)
@@ -820,20 +826,22 @@ impl PairGatedTrancheStrategy {
                 size.max(0.0),
             );
             if price > vwap_ceiling + 1e-9 {
-                return None;
+                return Err(PgtXuanM0001NoSeedReason::VwapCap);
             }
         }
         size = quantize_tenth(size);
         if size < coordinator.cfg().min_order_size {
-            return None;
+            return Err(PgtXuanM0001NoSeedReason::SmallSize);
         }
-        coordinator.simulate_buy(input.inv, side, size, price)?;
+        coordinator
+            .simulate_buy(input.inv, side, size, price)
+            .ok_or(PgtXuanM0001NoSeedReason::SimulateBuyBlocked)?;
 
         let tick = coordinator.cfg().tick_size.max(1e-9);
         let visible_completion_slack_ticks =
             ((XUAN_M0001_OPEN_PAIR_CAP - price - opp_ask) / tick).max(-10.0);
         let fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
-        Some(SeedPlan {
+        Ok(SeedPlan {
             size,
             taker_shadow_would_open: false,
             visible_taker_completion_ok: price + opp_ask <= XUAN_M0001_BASE_PAIR_CAP + 1e-9,

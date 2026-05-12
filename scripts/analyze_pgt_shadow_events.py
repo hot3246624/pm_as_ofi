@@ -50,6 +50,9 @@ class RoundRow:
     cancel_sent: int = 0
     accepted_orders: int = 0
     merge_executed: int = 0
+    market_trade_ticks: int = 0
+    market_sell_trade_ticks: int = 0
+    xuan_m0001_no_seed: dict[str, int] = field(default_factory=dict)
     last_recv_ms: int = 0
 
     @property
@@ -131,6 +134,13 @@ def load_round(path: Path) -> RoundRow:
             out.yes_avg_cost = float(data.get("yes_avg_cost") or 0.0)
             out.no_qty = float(data.get("no_qty") or 0.0)
             out.no_avg_cost = float(data.get("no_avg_cost") or 0.0)
+            out.market_trade_ticks = int(data.get("market_trade_ticks") or 0)
+            out.market_sell_trade_ticks = int(data.get("market_sell_trade_ticks") or 0)
+            raw_reasons = data.get("pgt_xuan_m0001_no_seed")
+            if isinstance(raw_reasons, dict):
+                out.xuan_m0001_no_seed = {
+                    str(k): int(v or 0) for k, v in raw_reasons.items()
+                }
         elif event == "taker_repair_sent":
             out.taker_repairs += 1
         elif event == "dry_run_touch_fill_confirmed":
@@ -179,10 +189,13 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
     pair_costs = [r.pair_cost for r in paired_rows]
     delays = [r.completion_delay_s for r in rows if r.completion_delay_s is not None]
     fill_sources: dict[str, int] = {}
+    xuan_m0001_no_seed: dict[str, int] = {}
     for r in rows:
         for f in r.fills:
             key = f.source or "unknown"
             fill_sources[key] = fill_sources.get(key, 0) + 1
+        for key, value in r.xuan_m0001_no_seed.items():
+            xuan_m0001_no_seed[key] = xuan_m0001_no_seed.get(key, 0) + value
     return {
         "rounds": len(rows),
         "range": [rows[0].round_id, rows[-1].round_id] if rows else None,
@@ -213,6 +226,9 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "fill_sources": dict(sorted(fill_sources.items())),
         "cancel_sent": sum(r.cancel_sent for r in rows),
         "merge_executed": sum(r.merge_executed for r in rows),
+        "market_trade_ticks": sum(r.market_trade_ticks for r in rows),
+        "market_sell_trade_ticks": sum(r.market_sell_trade_ticks for r in rows),
+        "xuan_m0001_no_seed": dict(sorted(xuan_m0001_no_seed.items())),
         "residuals": [
             {
                 "round_id": r.round_id,
@@ -280,6 +296,9 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
             "cancel_sent": r.cancel_sent,
             "accepted_orders": r.accepted_orders,
             "merge_executed": r.merge_executed,
+            "market_trade_ticks": r.market_trade_ticks,
+            "market_sell_trade_ticks": r.market_sell_trade_ticks,
+            "xuan_m0001_no_seed": r.xuan_m0001_no_seed,
         }
         for r in rows
     ]
@@ -364,7 +383,8 @@ def main() -> None:
             f"worst={s['worst_case_pnl']:.4f} roi={s['worst_case_roi']} "
             f"touch(book/trade/other)="
             f"{s['dry_run_touch_book']}/{s['dry_run_touch_trade']}/{s['dry_run_touch_other']}"
-            f" fill_sources={s['fill_sources']}"
+            f" fill_sources={s['fill_sources']} market_trades={s['market_trade_ticks']}"
+            f"/{s['market_sell_trade_ticks']} xuan_m0001_no_seed={s['xuan_m0001_no_seed']}"
         )
     if result["incomplete"]:
         print(f"incomplete_tail={result['incomplete']}")
@@ -396,6 +416,8 @@ def main() -> None:
                 f"delay={delay_s} taker={r['taker_repairs']} cancels={r['cancel_sent']} "
                 f"orders={r['accepted_orders']} touch(book/trade/other)="
                 f"{r['dry_run_touch_book']}/{r['dry_run_touch_trade']}/{r['dry_run_touch_other']} "
+                f"market_trades={r['market_trade_ticks']}/{r['market_sell_trade_ticks']} "
+                f"xuan_m0001_no_seed={r['xuan_m0001_no_seed']} "
                 f"fills={fills}"
             )
 
