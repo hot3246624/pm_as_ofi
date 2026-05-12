@@ -20070,6 +20070,7 @@ async fn run_market_ws_remote_with_wall_guard(
                                     ts: Instant::now(),
                                 };
                                 try_broadcast_dry_run_touch_md(&dry_run_touch_md_tx, &md_msg);
+                                let _ = coord_tx.send(md_msg.clone());
                                 try_forward_md(&ofi_tx, md_msg.clone(), &mut tx_drop_count);
                                 try_forward_md(&glft_tx, md_msg, &mut tx_drop_count);
                             }
@@ -20711,6 +20712,7 @@ async fn run_market_ws(
                                                         &dry_run_touch_md_tx,
                                                         &md_msg,
                                                     );
+                                                    let _ = coord_tx.send(md_msg.clone());
                                                     try_forward_md(
                                                         &ofi_tx,
                                                         md_msg.clone(),
@@ -20877,6 +20879,7 @@ async fn run_market_ws(
                                                                 &dry_run_touch_md_tx,
                                                                 &md_msg,
                                                             );
+                                                            let _ = coord_tx.send(md_msg.clone());
                                                             try_forward_md(
                                                                 &ofi_tx,
                                                                 md_msg.clone(),
