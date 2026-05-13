@@ -1,17 +1,17 @@
 # Local Agg Combined Source-Regime 候选决策包
 
-更新时间：2026-05-13 19:46Z
+更新时间：2026-05-13 20:16Z
 生产 dry-run：`pm-local-agg-challenger.service`，run `20260513_045906`，server HEAD `08f6dc6`
 
 ## 当前状态
 
 服务仍是 dry-run，未开启 live trading。最新安全检查：
 
-- accepted=226，gated=289
+- accepted=233，gated=299
 - accepted_side_errors=0
 - accepted_max_bps=6.893443
-- accepted_p95_bps=3.453884
-- latency_p95_ms=50.75，latency_max_ms=279.0
+- accepted_p95_bps=3.747909
+- latency_p95_ms=50.40，latency_max_ms=279.0
 
 硬失败仍来自旧 DOGE accepted tail：`round_end_ts=1778670300`，`drop_binance`，`last_before`，`bybit;coinbase;okx`，误差 6.893443bps，方向正确。
 
@@ -31,7 +31,7 @@
 
 ## 候选方案
 
-候选名：`combined_hype_doge_sol_bnb_source_regimes`
+候选名：`combined_hype_midspread_doge_sol_bnb_doge_okx_source_regimes`
 
 它不是新 gate，而是源/时间窗口 regime selection：
 
@@ -173,6 +173,36 @@ Selected evidence:
 
 结论：新 combined candidate 再次把 fixed replay 的 all-run 和 current-run max 推回 `<5bps`，且没有 side/BTC regression。它可以作为新的 Decision Needed runtime proposal，但不能 unattended deploy。
 
+## 20:16Z complexity-adjusted replay
+
+实现审查发现：SOL/BNB replay 使用的是历史 source-lag selector + signed-error debias。它不是纯规则；要在 runtime 等价实现，需要额外的 selector history/model 文件、在线/离线统计一致性和更复杂的状态管理。
+
+因此额外跑了一个更保守的 deterministic HYPE+DOGE-only 候选：
+
+- HYPE deployed selector + HYPE mid-spread addendum
+- DOGE shallow-window selector
+- DOGE okx-only deeper-window addendum
+- SOL/BNB 先不改变 runtime selection
+
+固定三段 accepted rows n=985：
+
+- global base max/p95/p99 = 6.893443 / 3.091145 / 4.224368
+- deterministic candidate max/p95/p99 = 4.984909 / 3.029067 / 4.111681
+- side_errors = 0
+- BTC unchanged：p95/max = 1.140092 / 3.033207
+
+当前 run `20260513_045906`：
+
+- base max/p95/p99 = 6.893443 / 3.747908 / 5.087797
+- deterministic candidate max/p95/p99 = 4.531900 / 3.413421 / 4.269339
+- side_errors = 0
+
+解释：
+
+- deterministic HYPE+DOGE-only 与 full combined 的 all-run max 都受 BNB historical 4.984909 限制。
+- full combined 的 p95 更好，但 runtime 风险显著更高。
+- 按 autoresearch 的 complexity-adjusted rule，推荐先实现 deterministic HYPE+DOGE-only 作为下一 dry-run checkpoint；SOL/BNB 保持 shadow/research，等有可部署的 selector-history 机制后再考虑。
+
 Remaining limiter：
 
 - BNB historical max 4.984909 from `20260511_083910` remains unrepaired.
@@ -234,13 +264,24 @@ Option A: keep research only.
 - Next work focuses on schema enrichment and XRP/BNB refinement.
 - Lowest operational risk, but current service remains hard-failed on cumulative DOGE max.
 
-Option B: implement combined selector in dry-run.
+Option B1: implement deterministic HYPE+DOGE selector in dry-run.
+
+- Change runtime source-window/model selection only for HYPE and DOGE.
+- Include HYPE mid-spread addendum and both DOGE selectors.
+- Do not implement SOL/BNB debiased selector in the first runtime checkpoint.
+- Build/restart only `pm-local-agg-challenger.service`.
+- Start a new dry-run checkpoint.
+- 20:16Z evidence shows all-run candidate max 4.984909 and current-run candidate max 4.531900, side_errors=0, BTC unchanged.
+- This is now the recommended next dry-run checkpoint if the user approves a challenger restart.
+
+Option B2: implement full combined selector in dry-run.
 
 - Change runtime source-window/model selection for HYPE, DOGE, SOL, and BNB, including DOGE okx-only deeper-window addendum.
+- Requires a runtime source-lag selector/history model for SOL/BNB to match offline debiased semantics.
 - Build/restart only `pm-local-agg-challenger.service`.
 - Start a new dry-run checkpoint.
 - 19:46Z evidence now shows all-run candidate max 4.984909 and current-run candidate max 4.531900, side_errors=0, BTC unchanged.
-- This is the recommended next dry-run checkpoint if the user approves a challenger restart.
+- This improves p95 more than B1 but has higher implementation risk; do not make it the first runtime checkpoint without an explicit selector-history design.
 
 Option C: implement diagnostics/schema enrichment first.
 
@@ -250,6 +291,6 @@ Option C: implement diagnostics/schema enrichment first.
 
 ## Recommendation
 
-Decision Needed: recommend Option B as the next dry-run checkpoint, provided the user explicitly approves a challenger restart. The updated combined candidate now dominates the deployed HYPE-only state on the fixed replay and restores the hard max gate in replay without side/BTC regression.
+Decision Needed: recommend Option B1 as the next dry-run checkpoint, provided the user explicitly approves a challenger restart. The deterministic HYPE+DOGE candidate restores the hard max gate in replay without side/BTC regression and avoids the SOL/BNB runtime model complexity.
 
-Do not implement/restart unattended. The DOGE okx-only addendum is current-only evidence, and BNB historical max 4.984909 remains unrepaired, so Option C schema enrichment should run next in parallel after any dry-run checkpoint reset.
+Do not implement/restart unattended. The DOGE okx-only addendum is current-only evidence, and BNB historical max 4.984909 remains unrepaired, so Option C schema enrichment and SOL/BNB selector-history design should run next in parallel after any dry-run checkpoint reset.
