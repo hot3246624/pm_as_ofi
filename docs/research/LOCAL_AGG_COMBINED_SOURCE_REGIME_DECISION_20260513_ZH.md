@@ -1,21 +1,33 @@
 # Local Agg Combined Source-Regime 候选决策包
 
-更新时间：2026-05-13 18:46Z
+更新时间：2026-05-13 19:16Z
 生产 dry-run：`pm-local-agg-challenger.service`，run `20260513_045906`，server HEAD `08f6dc6`
 
 ## 当前状态
 
 服务仍是 dry-run，未开启 live trading。最新安全检查：
 
-- accepted=208，gated=272
+- accepted=217，gated=281
 - accepted_side_errors=0
 - accepted_max_bps=6.893443
-- accepted_p95_bps=3.359955
+- accepted_p95_bps=3.438512
 - latency_p95_ms=51.0，latency_max_ms=279.0
 
 硬失败仍来自旧 DOGE accepted tail：`round_end_ts=1778670300`，`drop_binance`，`last_before`，`bybit;coinbase;okx`，误差 6.893443bps，方向正确。
 
 新增重要状态：HYPE 在 `round_end_ts=1778697900` 出现一条 accepted 5.349395bps。该行方向正确但突破 max gate；这是已部署 HYPE selector 的未覆盖 regime，不是已知 DOGE 累计 max 的重复。
+
+19:16Z replay 后新增重要状态：HYPE addendum 可以修复该 HYPE tail，但当前 run 又出现了另一条 DOGE accepted tail：
+
+- `round_end_ts=1778699100`
+- `source_subset=drop_binance`
+- `rule=last_before`
+- `local_sources=okx`
+- `local_close=0.11298`
+- `RTDS close=0.11291938`
+- `close_diff_bps=5.368432`
+
+因此，18:46Z 的 Option B 候选已经不再足以作为下一 dry-run checkpoint；即使加入 HYPE addendum，combined replay 的当前 run candidate max 仍为 5.368432bps。
 
 ## 候选方案
 
@@ -92,7 +104,41 @@ Per-symbol summary before the HYPE addendum：
 - BNB p95 improves 4.257723 -> 4.111051；<=1bps share improves 11.3% -> 39.6%。
 - BTC p95/max remains 1.122772 / 3.033207。
 
-HYPE addendum 不改变 BTC，且会把当前 HYPE max 从 5.349395 降到约 1.2-3.0bps，取决于选择 Hyperliquid closest/deepest 或 Coinbase slow candidate。推荐先用 Hyperliquid deepest pre-boundary candidate，因为它同源、same-side、offset -2863ms，且比 runtime local close 显著浅。
+HYPE addendum 不改变 BTC，且会把当前 HYPE max 从 5.349395 降到约 1.2-3.0bps，取决于选择 Hyperliquid closest/deepest 或 Coinbase slow candidate。推荐先用 Hyperliquid deepest pre-boundary candidate，因为它同源、same-side、offset -2863ms，且更接近 RTDS close。
+
+## 19:16Z replay after HYPE addendum
+
+将 HYPE `hyperliquid;okx` mid-spread addendum 合入 combined replay 后，固定三段 accepted rows n=969：
+
+全局：
+
+- base max/p95/p99 = 6.893443 / 3.053380 / 4.217880
+- candidate max/p95/p99 = 5.368432 / 2.754067 / 4.089483
+- side_errors = 0
+- BTC unchanged
+
+当前 run `20260513_045906`：
+
+- base max/p95/p99 = 6.893443 / 3.438512 / 5.218596
+- candidate max/p95/p99 = 5.368432 / 2.753316 / 4.198069
+- side_errors = 0
+
+关键解释：
+
+- 旧 DOGE 6.893443 tail 会被 DOGE shallow-window selector 降到 3.665444bps。
+- HYPE 5.349395 tail 会被 HYPE mid-spread addendum 降到 1.215238bps。
+- 新 DOGE `local_sources=okx` tail 仍为 5.368432bps，成为新的 candidate max。
+
+因此当前 combined candidate 的决策应保持 `keep_research_only`，不能按 18:46Z 的 Option B 直接实现并重启。
+
+## DOGE okx-only tail preliminary diagnosis
+
+新 DOGE tail 的 visible boundary tape 里有更好的 same-side deeper pre-boundary prices：
+
+- best visible price around 0.11292，error≈0.054906bps，但大多在 boundary 前 10-28s，不能直接作为 deployable oracle-best。
+- 一个因果窄触发原型：`local_sources=okx`、local margin >=30bps、same-side deeper pre-window candidate、pre_ms=30000、min_deeper=2bps，历史三段 accepted DOGE rows 上只触发当前这一行，side_errors=0，误差 5.368432 -> 2.711669。
+
+该原型是 current-only evidence，只能作为下一步 formalize/replay 的研究方向，不能直接部署。
 
 Remaining limiter：
 
@@ -160,7 +206,8 @@ Option B: implement combined selector in dry-run.
 - Change runtime source-window/model selection for HYPE, DOGE, SOL, and BNB.
 - Build/restart only `pm-local-agg-challenger.service`.
 - Start a new dry-run checkpoint.
-- Expected to bring current-run max below 5bps in matched replay while keeping side_errors=0 and BTC unchanged.
+- Previous 18:46Z evidence expected current-run max below 5bps, but 19:16Z replay invalidated that expectation because a new DOGE okx-only accepted tail remains 5.368432bps.
+- Do not use this option until the DOGE okx-only tail is formalized into the fixed replay and still passes side/BTC/max evidence.
 
 Option C: implement diagnostics/schema enrichment first.
 
@@ -170,4 +217,6 @@ Option C: implement diagnostics/schema enrichment first.
 
 ## Recommendation
 
-Recommend Option B as the next dry-run checkpoint, provided the user approves a challenger restart and accepts that this is still dry-run only. The offline evidence now dominates the deployed HYPE-only state on max/p95 without side/BTC regression, and the new HYPE tail shows the current deployed selector is still incomplete. Option C should run in parallel afterward because BNB remains the limiting residual.
+Do not implement/restart the 18:46Z combined candidate as-is.
+
+Current recommendation is Option A plus focused research: keep the service running as dry-run, preserve the HYPE+DOGE+SOL+BNB combined candidate as `keep_research_only`, and next formalize the DOGE okx-only deeper-window trigger in the same fixed replay harness. Only after the combined candidate brings all-run and current-run max below 5bps without side/BTC regression should it return as a Decision Needed runtime proposal. Option C remains necessary because BNB historical max 4.984909 still has no better visible close candidate.

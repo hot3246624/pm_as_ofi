@@ -7,6 +7,7 @@ gate decisions, source sets, or production posture.
 Current combined candidate stack:
 
 - HYPE deployed source-lag regime selector, used as a normalized baseline.
+- HYPE hyperliquid/OKX mid-spread addendum for the uncovered accepted tail.
 - DOGE same-side shallow pre-boundary source-window selector.
 - SOL walk-forward debiased selector, restricted to same_shallower Coinbase
   selections to avoid observed row-level regressions.
@@ -38,7 +39,11 @@ from research_local_agg_boundary_lag import (
     signed_bps,
 )
 from research_local_agg_doge_shallow_window import parse_sources, select_doge_shallow_candidate
-from research_local_agg_hype_source_lag_regime import select_hype_source_lag_regime
+from research_local_agg_hype_source_lag_regime import (
+    deepest_pre,
+    margin_bps,
+    select_hype_source_lag_regime,
+)
 from research_local_agg_lag_selector_models import (
     SelectedRow,
     evaluate as evaluate_lag_selector,
@@ -107,6 +112,25 @@ def hype_normalized_price(
         if candidate is not None:
             return f"hype:{reason}", candidate.price, candidate
     return "runtime", row.local_close, None
+
+
+def select_hype_midspread_addendum(
+    row: GateRow,
+    contexts: dict[tuple[str, int], BoundaryContext],
+) -> tuple[str, Candidate] | tuple[None, None]:
+    if row.symbol != "hype/usd" or row.local_close is None:
+        return None, None
+    sources = set(filter(None, row.local_sources.split(";")))
+    spread = row.local_close_spread_bps or 0.0
+    margin = margin_bps(row.local_close, row.rtds_open)
+    if sources != {"hyperliquid", "okx"}:
+        return None, None
+    if not (2.0 <= spread <= 3.0 and margin >= 5.0):
+        return None, None
+    candidate = deepest_pre(row, contexts, "hyperliquid", 5_000)
+    if candidate is None:
+        return None, None
+    return "hype_source_lag_hl_okx_midspread", candidate
 
 
 def sol_depth(selected: SelectedRow) -> str:
@@ -303,6 +327,22 @@ def evaluate_combined(
                             "selected_price": hype_candidate.price,
                             "selected_signed_bps": signed_bps(hype_candidate.price, row.rtds_close),
                         }
+                    else:
+                        hype_addendum_reason, hype_addendum_candidate = (
+                            select_hype_midspread_addendum(row, item.contexts)
+                        )
+                        if hype_addendum_candidate is not None:
+                            final_reason = hype_addendum_reason or "hype_midspread_addendum"
+                            final_price = hype_addendum_candidate.price
+                            extra = {
+                                "selected_source": hype_addendum_candidate.source,
+                                "selected_kind": hype_addendum_candidate.kind,
+                                "selected_offset_ms": hype_addendum_candidate.offset_ms,
+                                "selected_price": hype_addendum_candidate.price,
+                                "selected_signed_bps": signed_bps(
+                                    hype_addendum_candidate.price, row.rtds_close
+                                ),
+                            }
 
             base_error = bps_diff(base_price, row.rtds_close)
             candidate_error = bps_diff(final_price, row.rtds_close)
@@ -483,15 +523,15 @@ def main() -> int:
         tail_n=args.tail_n,
     )
     output = {
-        "candidate_id": "combined_hype_doge_sol_bnb_source_regimes",
+        "candidate_id": "combined_hype_midspread_doge_sol_bnb_source_regimes",
         "hypothesis": (
             "A common source-regime framework with validated per-symbol triggers "
             "can reduce accepted close tails without side/BTC regression."
         ),
         "complexity_note": (
-            "offline-only combination of deployed HYPE normalization, DOGE shallow-window "
-            "research champion, SOL same_shallower Coinbase debiased trigger, and BNB "
-            "has-Bybit debiased trigger"
+            "offline-only combination of deployed HYPE normalization, HYPE mid-spread "
+            "addendum, DOGE shallow-window research champion, SOL same_shallower Coinbase "
+            "debiased trigger, and BNB has-Bybit debiased trigger"
         ),
         "config": {
             "run_dirs": args.run_dir,
