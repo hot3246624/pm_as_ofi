@@ -10,6 +10,9 @@ Current combined candidate stack:
 - DOGE same-side shallow pre-boundary source-window selector.
 - SOL walk-forward debiased selector, restricted to same_shallower Coinbase
   selections to avoid observed row-level regressions.
+- BNB walk-forward debiased selector, restricted to rows where the runtime
+  source set contains Bybit. This is a research-only candidate for the BNB
+  drop_okx regime and is not deployed.
 
 All candidate triggers use decision-time features only. RDTS close is used only
 after selection for scoring.
@@ -150,6 +153,44 @@ def prepare_sol_candidates(
     return selected_by_key
 
 
+def prepare_bnb_candidates(
+    run_data: list[RunData],
+    train_map: dict[str, list[str]],
+    min_train: int,
+    warmup_rows: int,
+    require_local_source: str,
+) -> dict[tuple[str, str, int], SelectedRow]:
+    by_run = {item.run_id: item for item in run_data}
+    selected_by_key: dict[tuple[str, str, int], SelectedRow] = {}
+    for run_id, item in by_run.items():
+        train_rows: list[GateRow] = []
+        contexts: dict[tuple[str, int], BoundaryContext] = dict(item.contexts)
+        for train_run_id in train_map.get(run_id, []):
+            train = by_run.get(train_run_id)
+            if train is None:
+                continue
+            train_rows.extend([row for row in train.rows if row.symbol == "bnb/usd"])
+            merge_contexts(contexts, train.contexts)
+        eval_rows = [row for row in item.rows if row.symbol == "bnb/usd"]
+        if not eval_rows:
+            continue
+        selected_rows, _ = evaluate_lag_selector(
+            train_rows,
+            eval_rows,
+            contexts,
+            min_train=min_train,
+            warmup_rows=warmup_rows,
+            recency_penalty_bps_per_sec=0.02,
+            after_penalty_bps=0.75,
+        )
+        for selected in selected_rows:
+            local_sources = set(filter(None, selected.current_local_sources.split(";")))
+            if require_local_source and require_local_source not in local_sources:
+                continue
+            selected_by_key[(run_id, selected.symbol, selected.round_end_ts)] = selected
+    return selected_by_key
+
+
 def evaluate_combined(
     run_data: list[RunData],
     *,
@@ -162,6 +203,9 @@ def evaluate_combined(
     sol_min_train: int,
     sol_trigger_depth: str,
     sol_trigger_source: str,
+    bnb_train_map: dict[str, list[str]],
+    bnb_min_train: int,
+    bnb_require_local_source: str,
     tail_n: int,
 ) -> dict[str, Any]:
     sol_candidates = prepare_sol_candidates(
@@ -171,6 +215,13 @@ def evaluate_combined(
         warmup_rows=0,
         trigger_depth=sol_trigger_depth,
         trigger_source=sol_trigger_source,
+    )
+    bnb_candidates = prepare_bnb_candidates(
+        run_data,
+        train_map=bnb_train_map,
+        min_train=bnb_min_train,
+        warmup_rows=0,
+        require_local_source=bnb_require_local_source,
     )
     base_errors: list[float] = []
     candidate_errors: list[float] = []
@@ -229,14 +280,29 @@ def evaluate_combined(
                         "selected_score_bps": sol_selected.selected_score_bps,
                         "selected_debiased_signed_bps": sol_selected.selected_debiased_signed_bps,
                     }
-                elif hype_candidate is not None:
-                    extra = {
-                        "selected_source": hype_candidate.source,
-                        "selected_kind": hype_candidate.kind,
-                        "selected_offset_ms": hype_candidate.offset_ms,
-                        "selected_price": hype_candidate.price,
-                        "selected_signed_bps": signed_bps(hype_candidate.price, row.rtds_close),
-                    }
+                else:
+                    bnb_selected = bnb_candidates.get((item.run_id, row.symbol, row.round_end_ts))
+                    if bnb_selected is not None:
+                        final_reason = "bnb_has_bybit_debiased"
+                        final_price = row.rtds_close * (1.0 + bnb_selected.selected_debiased_signed_bps / 10_000.0)
+                        extra = {
+                            "selected_source": bnb_selected.selected_source,
+                            "selected_kind": bnb_selected.selected_kind,
+                            "selected_lag_bucket": bnb_selected.selected_lag_bucket,
+                            "selected_offset_ms": bnb_selected.selected_offset_ms,
+                            "selected_key": list(bnb_selected.selected_key),
+                            "selected_train_n": bnb_selected.selected_train_n,
+                            "selected_score_bps": bnb_selected.selected_score_bps,
+                            "selected_debiased_signed_bps": bnb_selected.selected_debiased_signed_bps,
+                        }
+                    elif hype_candidate is not None:
+                        extra = {
+                            "selected_source": hype_candidate.source,
+                            "selected_kind": hype_candidate.kind,
+                            "selected_offset_ms": hype_candidate.offset_ms,
+                            "selected_price": hype_candidate.price,
+                            "selected_signed_bps": signed_bps(hype_candidate.price, row.rtds_close),
+                        }
 
             base_error = bps_diff(base_price, row.rtds_close)
             candidate_error = bps_diff(final_price, row.rtds_close)
@@ -383,6 +449,14 @@ def main() -> int:
     parser.add_argument("--sol-min-train", type=int, default=8)
     parser.add_argument("--sol-trigger-depth", default="same_shallower")
     parser.add_argument("--sol-trigger-source", default="coinbase")
+    parser.add_argument(
+        "--bnb-train-map",
+        action="append",
+        default=[],
+        help="Mapping RUN=TRAIN1,TRAIN2 for causal BNB selector seeding.",
+    )
+    parser.add_argument("--bnb-min-train", type=int, default=20)
+    parser.add_argument("--bnb-require-local-source", default="bybit")
     parser.add_argument("--tail-n", type=int, default=30)
     parser.add_argument("--out-json", default="")
     parser.add_argument("--ledger-jsonl", default="")
@@ -391,6 +465,7 @@ def main() -> int:
     run_data = load_run_data(args.run_dir, args.gate_status)
     doge_max_spread = None if args.doge_no_max_source_spread else args.doge_max_source_spread_bps
     train_map = parse_train_map(args.sol_train_map)
+    bnb_train_map = parse_train_map(args.bnb_train_map)
     result = evaluate_combined(
         run_data,
         doge_sources=parse_sources(args.doge_sources),
@@ -402,17 +477,21 @@ def main() -> int:
         sol_min_train=args.sol_min_train,
         sol_trigger_depth=args.sol_trigger_depth,
         sol_trigger_source=args.sol_trigger_source,
+        bnb_train_map=bnb_train_map,
+        bnb_min_train=args.bnb_min_train,
+        bnb_require_local_source=args.bnb_require_local_source,
         tail_n=args.tail_n,
     )
     output = {
-        "candidate_id": "combined_hype_doge_sol_source_regimes",
+        "candidate_id": "combined_hype_doge_sol_bnb_source_regimes",
         "hypothesis": (
             "A common source-regime framework with validated per-symbol triggers "
             "can reduce accepted close tails without side/BTC regression."
         ),
         "complexity_note": (
             "offline-only combination of deployed HYPE normalization, DOGE shallow-window "
-            "research champion, and SOL same_shallower Coinbase debiased trigger"
+            "research champion, SOL same_shallower Coinbase debiased trigger, and BNB "
+            "has-Bybit debiased trigger"
         ),
         "config": {
             "run_dirs": args.run_dir,
@@ -427,6 +506,9 @@ def main() -> int:
             "sol_min_train": args.sol_min_train,
             "sol_trigger_depth": args.sol_trigger_depth,
             "sol_trigger_source": args.sol_trigger_source,
+            "bnb_train_map": bnb_train_map,
+            "bnb_min_train": args.bnb_min_train,
+            "bnb_require_local_source": args.bnb_require_local_source,
         },
         **result,
     }
