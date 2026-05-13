@@ -7879,11 +7879,32 @@ async fn run_post_close_winner_hint_listener(
                         );
                     }
                 }
-                let weighted_shadow_hit = compare_hit
+                let weighted_shadow_hit_owned = compare_hit
                     .boundary_shadow_outcomes
                     .iter()
                     .find(|outcome| outcome.policy_name == "boundary_weighted")
-                    .and_then(|outcome| outcome.hit.as_ref());
+                    .and_then(|outcome| outcome.hit.clone());
+                let hype_source_lag_regime_hit =
+                    weighted_shadow_hit_owned.as_ref().and_then(|hit| {
+                        local_boundary_select_hype_source_lag_regime(
+                            &symbol,
+                            hit,
+                            &compare_hit.source_lag_candidates,
+                            first_ref,
+                        )
+                    });
+                if let Some(hit) = hype_source_lag_regime_hit.as_ref() {
+                    compare_hit
+                        .boundary_shadow_outcomes
+                        .push(LocalBoundaryShadowOutcome {
+                            policy_name: hit.policy_name,
+                            source_subset_name: hit.source_subset_name,
+                            rule: hit.rule,
+                            min_sources: hit.min_sources,
+                            hit: Some(hit.clone()),
+                        });
+                }
+                let weighted_shadow_hit = weighted_shadow_hit_owned.as_ref();
                 let mut close_only_filtered = false;
                 let mut close_only_filter_reason: Option<&'static str> = None;
                 let mut close_only_direction_margin_bps: Option<f64> = None;
@@ -9064,15 +9085,17 @@ async fn run_post_close_winner_hint_listener(
                         hit,
                     )
                 });
-                let weighted_shadow_candidate = weighted_shadow_hit.filter(|hit| {
-                    local_boundary_weighted_candidate_allowed_for_policy(
-                        &symbol,
-                        close_only_filter_reason,
-                        close_only_direction_margin_bps,
-                        round_end_ts,
-                        first_ref,
-                        hit,
-                    )
+                let weighted_shadow_candidate = hype_source_lag_regime_hit.as_ref().or_else(|| {
+                    weighted_shadow_hit.filter(|hit| {
+                        local_boundary_weighted_candidate_allowed_for_policy(
+                            &symbol,
+                            close_only_filter_reason,
+                            close_only_direction_margin_bps,
+                            round_end_ts,
+                            first_ref,
+                            hit,
+                        )
+                    })
                 });
                 for outcome in &compare_hit.boundary_shadow_outcomes {
                     match outcome.hit.as_ref() {
@@ -11003,6 +11026,18 @@ struct LocalSourceBoundaryTapeState {
     close_window_ticks: Vec<(u64, f64)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LocalSourceLagCloseCandidate {
+    source: LocalPriceSource,
+    raw_price: f64,
+    price: f64,
+    ts_ms: u64,
+    exact: bool,
+    abs_delta_ms: u64,
+    offset_ms: i64,
+    kind: &'static str,
+}
+
 const LOCAL_PRICE_AGG_BOUNDARY_TAPE_MAX_TICKS_PER_SIDE: usize = 512;
 
 fn format_local_source_boundary_state(
@@ -11107,6 +11142,103 @@ fn build_local_price_agg_boundary_source_probes(
         .collect::<Vec<_>>();
     items.sort_by(|a, b| a.source.cmp(&b.source));
     items
+}
+
+fn push_local_source_lag_candidate(
+    candidates: &mut Vec<LocalSourceLagCloseCandidate>,
+    source: LocalPriceSource,
+    raw_price: f64,
+    ts_ms: u64,
+    end_ms: u64,
+    exact: bool,
+    kind: &'static str,
+) {
+    if !raw_price.is_finite() || raw_price <= 0.0 {
+        return;
+    }
+    let offset_ms = (ts_ms as i64) - (end_ms as i64);
+    candidates.push(LocalSourceLagCloseCandidate {
+        source,
+        raw_price,
+        price: raw_price,
+        ts_ms,
+        exact,
+        abs_delta_ms: offset_ms.unsigned_abs(),
+        offset_ms,
+        kind,
+    });
+}
+
+fn collect_local_source_lag_candidates(
+    states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>,
+    tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    diag_tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    end_ms: u64,
+) -> Vec<LocalSourceLagCloseCandidate> {
+    let mut candidates = Vec::new();
+    for (source, state) in states {
+        if let Some(point) = state.close_exact {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                point.price,
+                point.ts_ms,
+                end_ms,
+                true,
+                "state_close_exact",
+            );
+        }
+        if let Some((_delta, ts_ms, raw_price)) = state.nearest_end {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                raw_price,
+                ts_ms,
+                end_ms,
+                ts_ms == end_ms,
+                "state_nearest_end",
+            );
+        }
+        if let Some((_delta, ts_ms, raw_price)) = state.first_after_end {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                raw_price,
+                ts_ms,
+                end_ms,
+                ts_ms == end_ms,
+                "state_first_after_end",
+            );
+        }
+    }
+
+    for (source, tape) in tapes {
+        for (ts_ms, raw_price) in &tape.close_window_ticks {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                *raw_price,
+                *ts_ms,
+                end_ms,
+                *ts_ms == end_ms,
+                "tape_close",
+            );
+        }
+    }
+    for (source, tape) in diag_tapes {
+        for (ts_ms, raw_price) in &tape.close_window_ticks {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                *raw_price,
+                *ts_ms,
+                end_ms,
+                *ts_ms == end_ms,
+                "diag_tape_close",
+            );
+        }
+    }
+    candidates
 }
 
 fn pick_local_source_points(
@@ -15721,6 +15853,265 @@ fn run_local_boundary_shadow_policy(
     }
 }
 
+fn local_boundary_direction_margin_bps(price: f64, open_price: f64) -> f64 {
+    ((price - open_price).abs() / open_price.abs().max(1e-12)) * 10_000.0
+}
+
+fn local_boundary_source_set_eq(
+    hit: &LocalBoundaryShadowHit,
+    sources: &[LocalPriceSource],
+) -> bool {
+    if hit.source_contributions.len() != sources.len() {
+        return false;
+    }
+    sources.iter().all(|source| {
+        hit.source_contributions
+            .iter()
+            .any(|contribution| contribution.source == *source)
+    })
+}
+
+fn local_boundary_has_source(hit: &LocalBoundaryShadowHit, source: LocalPriceSource) -> bool {
+    hit.source_contributions
+        .iter()
+        .any(|contribution| contribution.source == source)
+}
+
+fn local_hype_source_lag_candidates_for_source<'a>(
+    candidates: &'a [LocalSourceLagCloseCandidate],
+    source: LocalPriceSource,
+    max_age_ms: u64,
+    min_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+) -> impl Iterator<Item = &'a LocalSourceLagCloseCandidate> {
+    candidates.iter().filter(move |candidate| {
+        candidate.source == source
+            && candidate.offset_ms <= 0
+            && candidate.abs_delta_ms <= max_age_ms
+            && candidate.abs_delta_ms >= min_age_ms
+            && (candidate.price >= rtds_open) == current_side_yes
+    })
+}
+
+fn local_hype_pick_deepest_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    source: LocalPriceSource,
+    max_age_ms: u64,
+    min_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+) -> Option<LocalSourceLagCloseCandidate> {
+    local_hype_source_lag_candidates_for_source(
+        candidates,
+        source,
+        max_age_ms,
+        min_age_ms,
+        rtds_open,
+        current_side_yes,
+    )
+    .max_by(|a, b| {
+        let a_margin = local_boundary_direction_margin_bps(a.price, rtds_open);
+        let b_margin = local_boundary_direction_margin_bps(b.price, rtds_open);
+        a_margin
+            .total_cmp(&b_margin)
+            .then_with(|| b.abs_delta_ms.cmp(&a.abs_delta_ms))
+            .then_with(|| a.kind.cmp(b.kind))
+    })
+    .copied()
+}
+
+fn local_hype_pick_closest_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    source: LocalPriceSource,
+    max_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+) -> Option<LocalSourceLagCloseCandidate> {
+    local_hype_source_lag_candidates_for_source(
+        candidates,
+        source,
+        max_age_ms,
+        0,
+        rtds_open,
+        current_side_yes,
+    )
+    .min_by(|a, b| {
+        a.abs_delta_ms
+            .cmp(&b.abs_delta_ms)
+            .then_with(|| a.kind.cmp(b.kind))
+    })
+    .copied()
+}
+
+fn local_hype_source_lag_hit_from_candidate(
+    source_subset_name: &'static str,
+    candidate: LocalSourceLagCloseCandidate,
+) -> LocalBoundaryShadowHit {
+    LocalBoundaryShadowHit {
+        policy_name: "boundary_source_lag_regime",
+        source_subset_name,
+        rule: LocalBoundaryCloseRule::LastBefore,
+        min_sources: 1,
+        close_price: candidate.price,
+        close_ts_ms: candidate.ts_ms,
+        source_count: 1,
+        source_spread_bps: 0.0,
+        close_exact_sources: usize::from(candidate.exact),
+        source_contributions: vec![LocalCloseSourceContribution {
+            source: candidate.source,
+            raw_close_price: candidate.raw_price,
+            adjusted_close_price: candidate.price,
+            close_ts_ms: candidate.ts_ms,
+            close_exact: candidate.exact,
+        }],
+    }
+}
+
+fn local_boundary_select_hype_source_lag_regime(
+    symbol: &str,
+    current_hit: &LocalBoundaryShadowHit,
+    source_lag_candidates: &[LocalSourceLagCloseCandidate],
+    rtds_open: f64,
+) -> Option<LocalBoundaryShadowHit> {
+    if symbol != "hype/usd" || !rtds_open.is_finite() || rtds_open <= 0.0 {
+        return None;
+    }
+    let current_side_yes = current_hit.close_price >= rtds_open;
+    let current_margin_bps =
+        local_boundary_direction_margin_bps(current_hit.close_price, rtds_open);
+    let spread_bps = current_hit.source_spread_bps;
+    let has_coinbase = local_boundary_has_source(current_hit, LocalPriceSource::Coinbase);
+    let bybit_hl_okx = local_boundary_source_set_eq(
+        current_hit,
+        &[
+            LocalPriceSource::Bybit,
+            LocalPriceSource::Hyperliquid,
+            LocalPriceSource::Okx,
+        ],
+    );
+    let hyperliquid_okx = local_boundary_source_set_eq(
+        current_hit,
+        &[LocalPriceSource::Hyperliquid, LocalPriceSource::Okx],
+    );
+    let bybit_hyperliquid = local_boundary_source_set_eq(
+        current_hit,
+        &[LocalPriceSource::Bybit, LocalPriceSource::Hyperliquid],
+    );
+
+    if has_coinbase && spread_bps >= 3.5 {
+        if let Some(candidate) = local_hype_pick_deepest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Coinbase,
+            5_000,
+            0,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_coinbase_spread",
+                candidate,
+            ));
+        }
+    }
+
+    if hyperliquid_okx && spread_bps >= 4.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_okx_highspread",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hl_okx && spread_bps <= 2.0 && current_margin_bps >= 10.0 {
+        if let Some(candidate) = local_hype_pick_deepest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Coinbase,
+            30_000,
+            20_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_coinbase_slow_cluster",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hl_okx && spread_bps >= 3.0 && current_margin_bps >= 7.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_tri_spread",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hl_okx && spread_bps <= 1.0 && current_margin_bps >= 10.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_tri_tight",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hyperliquid && spread_bps <= 1.0 && current_margin_bps >= 10.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_bybit_tight",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hyperliquid
+        && (2.8..=3.0).contains(&spread_bps)
+        && (9.0..=10.0).contains(&current_margin_bps)
+    {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_bybit_midspread",
+                candidate,
+            ));
+        }
+    }
+
+    None
+}
+
 fn local_boundary_shadow_candidate_ready(
     symbol: &str,
     tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
@@ -16986,6 +17377,7 @@ fn local_agg_uncertainty_gate_observe_candidate(candidate: LocalAggUncertaintyGa
 struct LocalCloseAggCompareResult {
     base_hit: Option<LocalCloseOnlyAggHit>,
     boundary_shadow_outcomes: Vec<LocalBoundaryShadowOutcome>,
+    source_lag_candidates: Vec<LocalSourceLagCloseCandidate>,
 }
 
 fn local_boundary_maybe_equalize_xrp_binance_coinbase_fast_no(
@@ -17159,6 +17551,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes: Vec::new(),
+            source_lag_candidates: Vec::new(),
         };
     };
     let target_symbol = normalize_chainlink_symbol(symbol);
@@ -17166,6 +17559,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes: Vec::new(),
+            source_lag_candidates: Vec::new(),
         };
     }
 
@@ -17343,6 +17737,8 @@ async fn run_local_price_close_aggregator(
             ),
         });
     }
+    let source_lag_candidates =
+        collect_local_source_lag_candidates(&states, &tapes, &diag_tapes, end_ms);
 
     let mut boundary_shadow_outcomes = vec![run_local_boundary_shadow_policy(
         &target_symbol,
@@ -17363,6 +17759,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes,
+            source_lag_candidates,
         };
     }
 
@@ -17379,6 +17776,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes,
+            source_lag_candidates,
         };
     };
     let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
@@ -17397,6 +17795,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes,
+            source_lag_candidates,
         };
     }
 
@@ -17410,6 +17809,7 @@ async fn run_local_price_close_aggregator(
             source_contributions,
         }),
         boundary_shadow_outcomes,
+        source_lag_candidates,
     }
 }
 
