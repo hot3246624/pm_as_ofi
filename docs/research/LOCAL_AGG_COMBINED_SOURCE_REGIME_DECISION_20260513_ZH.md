@@ -1,17 +1,17 @@
 # Local Agg Combined Source-Regime 候选决策包
 
-更新时间：2026-05-13 19:16Z
+更新时间：2026-05-13 19:46Z
 生产 dry-run：`pm-local-agg-challenger.service`，run `20260513_045906`，server HEAD `08f6dc6`
 
 ## 当前状态
 
 服务仍是 dry-run，未开启 live trading。最新安全检查：
 
-- accepted=217，gated=281
+- accepted=226，gated=289
 - accepted_side_errors=0
 - accepted_max_bps=6.893443
-- accepted_p95_bps=3.438512
-- latency_p95_ms=51.0，latency_max_ms=279.0
+- accepted_p95_bps=3.453884
+- latency_p95_ms=50.75，latency_max_ms=279.0
 
 硬失败仍来自旧 DOGE accepted tail：`round_end_ts=1778670300`，`drop_binance`，`last_before`，`bybit;coinbase;okx`，误差 6.893443bps，方向正确。
 
@@ -27,7 +27,7 @@
 - `RTDS close=0.11291938`
 - `close_diff_bps=5.368432`
 
-因此，18:46Z 的 Option B 候选已经不再足以作为下一 dry-run checkpoint；即使加入 HYPE addendum，combined replay 的当前 run candidate max 仍为 5.368432bps。
+因此，18:46Z 的 Option B 候选已经不再足以作为下一 dry-run checkpoint；必须加入 DOGE okx-only deeper-window addendum。
 
 ## 候选方案
 
@@ -38,6 +38,7 @@
 - HYPE：沿用已部署的 source-lag regime selector。
 - HYPE addendum：新增 `hyperliquid;okx` mid-spread regime，覆盖 spread 约 2.0-3.0bps、margin >=5bps 的 same-side pre-boundary Hyperliquid/slow-source选择。
 - DOGE：same-side shallow pre-boundary source-window selector。
+- DOGE addendum：新增 okx-only same-side deeper pre-boundary selector，覆盖 `local_sources=okx`、高 local margin 的单源 DOGE tail。
 - SOL：只允许 `selected_depth=same_shallower` 且 `selected_source=coinbase` 的 causal debiased selector。
 - BNB：只在 runtime local source set 包含 Bybit 时启用 min_train=20 的 causal debiased selector。
 
@@ -129,7 +130,7 @@ HYPE addendum 不改变 BTC，且会把当前 HYPE max 从 5.349395 降到约 1.
 - HYPE 5.349395 tail 会被 HYPE mid-spread addendum 降到 1.215238bps。
 - 新 DOGE `local_sources=okx` tail 仍为 5.368432bps，成为新的 candidate max。
 
-因此当前 combined candidate 的决策应保持 `keep_research_only`，不能按 18:46Z 的 Option B 直接实现并重启。
+因此 18:46Z combined candidate 的决策应保持 `keep_research_only`，不能按原样实现并重启。
 
 ## DOGE okx-only tail preliminary diagnosis
 
@@ -138,7 +139,39 @@ HYPE addendum 不改变 BTC，且会把当前 HYPE max 从 5.349395 降到约 1.
 - best visible price around 0.11292，error≈0.054906bps，但大多在 boundary 前 10-28s，不能直接作为 deployable oracle-best。
 - 一个因果窄触发原型：`local_sources=okx`、local margin >=30bps、same-side deeper pre-window candidate、pre_ms=30000、min_deeper=2bps，历史三段 accepted DOGE rows 上只触发当前这一行，side_errors=0，误差 5.368432 -> 2.711669。
 
-该原型是 current-only evidence，只能作为下一步 formalize/replay 的研究方向，不能直接部署。
+该原型已在 19:46Z 被 formalized 到 combined replay harness。它仍是 current-only evidence，运行时必须窄触发并继续 dry-run 观察。
+
+## 19:46Z replay after DOGE okx-only addendum
+
+将 DOGE okx-only deeper-window addendum 合入 combined replay 后，固定三段 accepted rows n=978：
+
+全局：
+
+- base max/p95/p99 = 6.893443 / 3.069745 / 4.217712
+- candidate max/p95/p99 = 4.984909 / 2.753222 / 4.057799
+- side_errors = 0
+- BTC unchanged：p95/max = 1.142648 / 3.033207
+
+当前 run `20260513_045906`：
+
+- base max/p95/p99 = 6.893443 / 3.453884 / 5.145021
+- candidate max/p95/p99 = 4.531900 / 2.742623 / 3.981908
+- side_errors = 0
+
+Per-symbol candidate：
+
+- DOGE max/p95 = 4.531900 / 3.833147，side_errors=0。
+- HYPE max/p95 = 3.848062 / 3.488484，side_errors=0。
+- SOL max/p95 = 4.093919 / 2.436279，side_errors=0。
+- BNB max/p95 = 4.984909 / 4.109270，side_errors=0。
+
+Selected evidence:
+
+- DOGE 6.893443 -> 3.665444 via Binance pre-boundary shallow window.
+- DOGE okx-only 5.368432 -> 2.711669 via OKX same-side deeper window at offset -4523ms.
+- HYPE 5.349395 -> 1.215238 via Hyperliquid mid-spread pre-boundary window.
+
+结论：新 combined candidate 再次把 fixed replay 的 all-run 和 current-run max 推回 `<5bps`，且没有 side/BTC regression。它可以作为新的 Decision Needed runtime proposal，但不能 unattended deploy。
 
 Remaining limiter：
 
@@ -203,11 +236,11 @@ Option A: keep research only.
 
 Option B: implement combined selector in dry-run.
 
-- Change runtime source-window/model selection for HYPE, DOGE, SOL, and BNB.
+- Change runtime source-window/model selection for HYPE, DOGE, SOL, and BNB, including DOGE okx-only deeper-window addendum.
 - Build/restart only `pm-local-agg-challenger.service`.
 - Start a new dry-run checkpoint.
-- Previous 18:46Z evidence expected current-run max below 5bps, but 19:16Z replay invalidated that expectation because a new DOGE okx-only accepted tail remains 5.368432bps.
-- Do not use this option until the DOGE okx-only tail is formalized into the fixed replay and still passes side/BTC/max evidence.
+- 19:46Z evidence now shows all-run candidate max 4.984909 and current-run candidate max 4.531900, side_errors=0, BTC unchanged.
+- This is the recommended next dry-run checkpoint if the user approves a challenger restart.
 
 Option C: implement diagnostics/schema enrichment first.
 
@@ -217,6 +250,6 @@ Option C: implement diagnostics/schema enrichment first.
 
 ## Recommendation
 
-Do not implement/restart the 18:46Z combined candidate as-is.
+Decision Needed: recommend Option B as the next dry-run checkpoint, provided the user explicitly approves a challenger restart. The updated combined candidate now dominates the deployed HYPE-only state on the fixed replay and restores the hard max gate in replay without side/BTC regression.
 
-Current recommendation is Option A plus focused research: keep the service running as dry-run, preserve the HYPE+DOGE+SOL+BNB combined candidate as `keep_research_only`, and next formalize the DOGE okx-only deeper-window trigger in the same fixed replay harness. Only after the combined candidate brings all-run and current-run max below 5bps without side/BTC regression should it return as a Decision Needed runtime proposal. Option C remains necessary because BNB historical max 4.984909 still has no better visible close candidate.
+Do not implement/restart unattended. The DOGE okx-only addendum is current-only evidence, and BNB historical max 4.984909 remains unrepaired, so Option C schema enrichment should run next in parallel after any dry-run checkpoint reset.

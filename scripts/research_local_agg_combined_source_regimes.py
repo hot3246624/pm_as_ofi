@@ -9,6 +9,8 @@ Current combined candidate stack:
 - HYPE deployed source-lag regime selector, used as a normalized baseline.
 - HYPE hyperliquid/OKX mid-spread addendum for the uncovered accepted tail.
 - DOGE same-side shallow pre-boundary source-window selector.
+- DOGE OKX-only same-side deeper pre-boundary selector for the uncovered
+  single-source tail.
 - SOL walk-forward debiased selector, restricted to same_shallower Coinbase
   selections to avoid observed row-level regressions.
 - BNB walk-forward debiased selector, restricted to rows where the runtime
@@ -37,6 +39,7 @@ from research_local_agg_boundary_lag import (
     bps_diff,
     percentile,
     signed_bps,
+    unique_candidates,
 )
 from research_local_agg_doge_shallow_window import parse_sources, select_doge_shallow_candidate
 from research_local_agg_hype_source_lag_regime import (
@@ -133,6 +136,57 @@ def select_hype_midspread_addendum(
     return "hype_source_lag_hl_okx_midspread", candidate
 
 
+def select_doge_okx_deeper_candidate(
+    row: GateRow,
+    contexts: dict[tuple[str, int], BoundaryContext],
+    *,
+    sources: tuple[str, ...],
+    pre_ms: int,
+    min_local_margin_bps: float,
+    min_deeper_margin_bps: float,
+) -> tuple[str, Candidate] | tuple[None, None]:
+    if row.symbol != "doge/usd" or row.local_close is None:
+        return None, None
+    if set(filter(None, row.local_sources.split(";"))) != {"okx"}:
+        return None, None
+
+    local_margin = margin_bps(row.local_close, row.rtds_open)
+    if local_margin < min_local_margin_bps:
+        return None, None
+
+    local_side = side_yes(row.local_close, row.rtds_open)
+    candidates: list[Candidate] = []
+    for candidate in unique_candidates(
+        contexts.get((row.symbol, row.round_end_ts), BoundaryContext()).candidates
+    ):
+        if candidate.source not in sources:
+            continue
+        if candidate.offset_ms is None or candidate.offset_ms > 0:
+            continue
+        if abs(candidate.offset_ms) > pre_ms:
+            continue
+        if side_yes(candidate.price, row.rtds_open) != local_side:
+            continue
+        candidate_margin = margin_bps(candidate.price, row.rtds_open)
+        if candidate_margin < local_margin + min_deeper_margin_bps:
+            continue
+        candidates.append(candidate)
+
+    if not candidates:
+        return None, None
+
+    selected = min(
+        candidates,
+        key=lambda candidate: (
+            margin_bps(candidate.price, row.rtds_open),
+            abs(candidate.offset_ms or 0),
+            candidate.source,
+            candidate.kind,
+        ),
+    )
+    return "doge_okx_only_same_side_deeper_window", selected
+
+
 def sol_depth(selected: SelectedRow) -> str:
     return selected.selected_key[-1] if selected.selected_key else ""
 
@@ -223,6 +277,10 @@ def evaluate_combined(
     doge_min_improve_margin_bps: float,
     doge_min_local_margin_bps: float,
     doge_max_source_spread_bps: float | None,
+    doge_okx_sources: tuple[str, ...],
+    doge_okx_pre_ms: int,
+    doge_okx_min_local_margin_bps: float,
+    doge_okx_min_deeper_margin_bps: float,
     sol_train_map: dict[str, list[str]],
     sol_min_train: int,
     sol_trigger_depth: str,
@@ -290,60 +348,76 @@ def evaluate_combined(
                     "selected_signed_bps": signed_bps(doge_selected.candidate.price, row.rtds_close),
                 }
             else:
-                sol_selected = sol_candidates.get((item.run_id, row.symbol, row.round_end_ts))
-                if sol_selected is not None:
-                    final_reason = "sol_same_shallower_coinbase_debiased"
-                    final_price = row.rtds_close * (1.0 + sol_selected.selected_debiased_signed_bps / 10_000.0)
+                doge_okx_reason, doge_okx_candidate = select_doge_okx_deeper_candidate(
+                    row,
+                    item.contexts,
+                    sources=doge_okx_sources,
+                    pre_ms=doge_okx_pre_ms,
+                    min_local_margin_bps=doge_okx_min_local_margin_bps,
+                    min_deeper_margin_bps=doge_okx_min_deeper_margin_bps,
+                )
+                if doge_okx_candidate is not None:
+                    final_reason = doge_okx_reason or "doge_okx_deeper_window"
+                    final_price = doge_okx_candidate.price
                     extra = {
-                        "selected_source": sol_selected.selected_source,
-                        "selected_kind": sol_selected.selected_kind,
-                        "selected_lag_bucket": sol_selected.selected_lag_bucket,
-                        "selected_offset_ms": sol_selected.selected_offset_ms,
-                        "selected_key": list(sol_selected.selected_key),
-                        "selected_train_n": sol_selected.selected_train_n,
-                        "selected_score_bps": sol_selected.selected_score_bps,
-                        "selected_debiased_signed_bps": sol_selected.selected_debiased_signed_bps,
+                        "selected_source": doge_okx_candidate.source,
+                        "selected_kind": doge_okx_candidate.kind,
+                        "selected_offset_ms": doge_okx_candidate.offset_ms,
+                        "selected_price": doge_okx_candidate.price,
+                        "selected_signed_bps": signed_bps(doge_okx_candidate.price, row.rtds_close),
                     }
                 else:
-                    bnb_selected = bnb_candidates.get((item.run_id, row.symbol, row.round_end_ts))
-                    if bnb_selected is not None:
-                        final_reason = "bnb_has_bybit_debiased"
-                        final_price = row.rtds_close * (1.0 + bnb_selected.selected_debiased_signed_bps / 10_000.0)
+                    sol_selected = sol_candidates.get((item.run_id, row.symbol, row.round_end_ts))
+                    if sol_selected is not None:
+                        final_reason = "sol_same_shallower_coinbase_debiased"
+                        final_price = row.rtds_close * (
+                            1.0 + sol_selected.selected_debiased_signed_bps / 10_000.0
+                        )
                         extra = {
-                            "selected_source": bnb_selected.selected_source,
-                            "selected_kind": bnb_selected.selected_kind,
-                            "selected_lag_bucket": bnb_selected.selected_lag_bucket,
-                            "selected_offset_ms": bnb_selected.selected_offset_ms,
-                            "selected_key": list(bnb_selected.selected_key),
-                            "selected_train_n": bnb_selected.selected_train_n,
-                            "selected_score_bps": bnb_selected.selected_score_bps,
-                            "selected_debiased_signed_bps": bnb_selected.selected_debiased_signed_bps,
-                        }
-                    elif hype_candidate is not None:
-                        extra = {
-                            "selected_source": hype_candidate.source,
-                            "selected_kind": hype_candidate.kind,
-                            "selected_offset_ms": hype_candidate.offset_ms,
-                            "selected_price": hype_candidate.price,
-                            "selected_signed_bps": signed_bps(hype_candidate.price, row.rtds_close),
+                            "selected_source": sol_selected.selected_source,
+                            "selected_kind": sol_selected.selected_kind,
+                            "selected_lag_bucket": sol_selected.selected_lag_bucket,
+                            "selected_offset_ms": sol_selected.selected_offset_ms,
+                            "selected_key": list(sol_selected.selected_key),
+                            "selected_train_n": sol_selected.selected_train_n,
+                            "selected_score_bps": sol_selected.selected_score_bps,
+                            "selected_debiased_signed_bps": sol_selected.selected_debiased_signed_bps,
                         }
                     else:
-                        hype_addendum_reason, hype_addendum_candidate = (
-                            select_hype_midspread_addendum(row, item.contexts)
+                        bnb_selected = bnb_candidates.get(
+                            (item.run_id, row.symbol, row.round_end_ts)
                         )
-                        if hype_addendum_candidate is not None:
-                            final_reason = hype_addendum_reason or "hype_midspread_addendum"
-                            final_price = hype_addendum_candidate.price
+                        if bnb_selected is not None:
+                            final_reason = "bnb_has_bybit_debiased"
+                            final_price = row.rtds_close * (
+                                1.0 + bnb_selected.selected_debiased_signed_bps / 10_000.0
+                            )
                             extra = {
-                                "selected_source": hype_addendum_candidate.source,
-                                "selected_kind": hype_addendum_candidate.kind,
-                                "selected_offset_ms": hype_addendum_candidate.offset_ms,
-                                "selected_price": hype_addendum_candidate.price,
-                                "selected_signed_bps": signed_bps(
-                                    hype_addendum_candidate.price, row.rtds_close
-                                ),
+                                "selected_source": bnb_selected.selected_source,
+                                "selected_kind": bnb_selected.selected_kind,
+                                "selected_lag_bucket": bnb_selected.selected_lag_bucket,
+                                "selected_offset_ms": bnb_selected.selected_offset_ms,
+                                "selected_key": list(bnb_selected.selected_key),
+                                "selected_train_n": bnb_selected.selected_train_n,
+                                "selected_score_bps": bnb_selected.selected_score_bps,
+                                "selected_debiased_signed_bps": bnb_selected.selected_debiased_signed_bps,
                             }
-
+                        else:
+                            hype_addendum_reason, hype_addendum_candidate = (
+                                select_hype_midspread_addendum(row, item.contexts)
+                            )
+                            if hype_addendum_candidate is not None:
+                                final_reason = hype_addendum_reason or "hype_midspread_addendum"
+                                final_price = hype_addendum_candidate.price
+                                extra = {
+                                    "selected_source": hype_addendum_candidate.source,
+                                    "selected_kind": hype_addendum_candidate.kind,
+                                    "selected_offset_ms": hype_addendum_candidate.offset_ms,
+                                    "selected_price": hype_addendum_candidate.price,
+                                    "selected_signed_bps": signed_bps(
+                                        hype_addendum_candidate.price, row.rtds_close
+                                    ),
+                                }
             base_error = bps_diff(base_price, row.rtds_close)
             candidate_error = bps_diff(final_price, row.rtds_close)
             truth_side = side_yes(row.rtds_close, row.rtds_open)
@@ -480,6 +554,10 @@ def main() -> int:
     parser.add_argument("--doge-min-local-margin-bps", type=float, default=8.0)
     parser.add_argument("--doge-max-source-spread-bps", type=float, default=4.0)
     parser.add_argument("--doge-no-max-source-spread", action="store_true")
+    parser.add_argument("--doge-okx-sources", default="cex")
+    parser.add_argument("--doge-okx-pre-ms", type=int, default=30_000)
+    parser.add_argument("--doge-okx-min-local-margin-bps", type=float, default=30.0)
+    parser.add_argument("--doge-okx-min-deeper-margin-bps", type=float, default=2.0)
     parser.add_argument(
         "--sol-train-map",
         action="append",
@@ -513,6 +591,10 @@ def main() -> int:
         doge_min_improve_margin_bps=args.doge_min_improve_margin_bps,
         doge_min_local_margin_bps=args.doge_min_local_margin_bps,
         doge_max_source_spread_bps=doge_max_spread,
+        doge_okx_sources=parse_sources(args.doge_okx_sources),
+        doge_okx_pre_ms=args.doge_okx_pre_ms,
+        doge_okx_min_local_margin_bps=args.doge_okx_min_local_margin_bps,
+        doge_okx_min_deeper_margin_bps=args.doge_okx_min_deeper_margin_bps,
         sol_train_map=train_map,
         sol_min_train=args.sol_min_train,
         sol_trigger_depth=args.sol_trigger_depth,
@@ -523,15 +605,16 @@ def main() -> int:
         tail_n=args.tail_n,
     )
     output = {
-        "candidate_id": "combined_hype_midspread_doge_sol_bnb_source_regimes",
+        "candidate_id": "combined_hype_midspread_doge_sol_bnb_doge_okx_source_regimes",
         "hypothesis": (
             "A common source-regime framework with validated per-symbol triggers "
             "can reduce accepted close tails without side/BTC regression."
         ),
         "complexity_note": (
             "offline-only combination of deployed HYPE normalization, HYPE mid-spread "
-            "addendum, DOGE shallow-window research champion, SOL same_shallower Coinbase "
-            "debiased trigger, and BNB has-Bybit debiased trigger"
+            "addendum, DOGE shallow-window research champion, DOGE OKX-only deeper-window "
+            "addendum, SOL same_shallower Coinbase debiased trigger, and BNB "
+            "has-Bybit debiased trigger"
         ),
         "config": {
             "run_dirs": args.run_dir,
@@ -542,6 +625,10 @@ def main() -> int:
             "doge_min_improve_margin_bps": args.doge_min_improve_margin_bps,
             "doge_min_local_margin_bps": args.doge_min_local_margin_bps,
             "doge_max_source_spread_bps": doge_max_spread,
+            "doge_okx_sources": parse_sources(args.doge_okx_sources),
+            "doge_okx_pre_ms": args.doge_okx_pre_ms,
+            "doge_okx_min_local_margin_bps": args.doge_okx_min_local_margin_bps,
+            "doge_okx_min_deeper_margin_bps": args.doge_okx_min_deeper_margin_bps,
             "sol_train_map": train_map,
             "sol_min_train": args.sol_min_train,
             "sol_trigger_depth": args.sol_trigger_depth,
