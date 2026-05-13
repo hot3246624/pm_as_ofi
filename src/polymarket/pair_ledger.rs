@@ -82,6 +82,7 @@ pub struct PairLedgerSnapshot {
     pub residual_side: Option<Side>,
     pub residual_qty: f64,
     pub buy_fill_count: u64,
+    pub completed_pair_count: u64,
     pub surplus_bank: f64,
     pub repair_budget_available: f64,
     pub capital_state: CapitalState,
@@ -95,6 +96,7 @@ impl Default for PairLedgerSnapshot {
             residual_side: None,
             residual_qty: 0.0,
             buy_fill_count: 0,
+            completed_pair_count: 0,
             surplus_bank: 0.0,
             repair_budget_available: 0.0,
             capital_state: CapitalState::default(),
@@ -127,6 +129,7 @@ pub struct EpisodeMetrics {
     pub episode_close_delay_p50: f64,
     pub episode_close_delay_p90: f64,
     pub round_buy_fill_count: u64,
+    pub completed_pair_count: u64,
     pub conditional_second_same_side_would_allow: u64,
 }
 
@@ -495,6 +498,7 @@ impl PairLedgerBuilder {
             residual_side,
             residual_qty,
             buy_fill_count: self.stats.buy_fill_count,
+            completed_pair_count: self.stats.total_closed,
             surplus_bank,
             repair_budget_available,
             capital_state,
@@ -511,6 +515,7 @@ impl PairLedgerBuilder {
             episode_close_delay_p50: percentile(&self.stats.close_delays_secs, 0.50),
             episode_close_delay_p90: percentile(&self.stats.close_delays_secs, 0.90),
             round_buy_fill_count: self.stats.buy_fill_count,
+            completed_pair_count: self.stats.total_closed,
             conditional_second_same_side_would_allow: self
                 .stats
                 .conditional_second_same_side_would_allow,
@@ -775,6 +780,32 @@ mod tests {
         assert_eq!(active.first_side, Some(Side::No));
         assert!((active.first_qty - 30.0).abs() < 1e-9);
         assert!((active.residual_qty - 30.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn exposes_completed_pair_count_beyond_recent_closed_limit() {
+        let now = Instant::now();
+        let mut events = Vec::new();
+        for _ in 0..(PGT_RECENT_CLOSED_LIMIT + 2) {
+            events.push(fill(Side::Yes, 10.0, 0.40, now));
+            events.push(fill(Side::No, 10.0, 0.58, now));
+        }
+
+        let result = build_pair_ledger(&events, PathKind::MakerShadow);
+
+        assert_eq!(
+            result.snapshot.completed_pair_count,
+            (PGT_RECENT_CLOSED_LIMIT + 2) as u64
+        );
+        assert_eq!(
+            result.episode_metrics.completed_pair_count,
+            (PGT_RECENT_CLOSED_LIMIT + 2) as u64
+        );
+        assert_eq!(
+            result.snapshot.recent_closed.iter().flatten().count(),
+            PGT_RECENT_CLOSED_LIMIT
+        );
+        assert!(result.snapshot.active_tranche.is_none());
     }
 
     #[test]

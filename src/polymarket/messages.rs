@@ -597,6 +597,30 @@ pub enum FillStatus {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FillSource {
+    #[default]
+    Unknown,
+    UserWs,
+    DryRunImmediate,
+    DryRunBookTouch,
+    DryRunTradeSellTouch,
+    DryRunTaker,
+}
+
+impl FillSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::UserWs => "user_ws",
+            Self::DryRunImmediate => "dry_run_immediate",
+            Self::DryRunBookTouch => "dry_run_book_touch",
+            Self::DryRunTradeSellTouch => "dry_run_trade_sell_touch",
+            Self::DryRunTaker => "dry_run_taker",
+        }
+    }
+}
+
 /// Real trade fill from the exchange (via authenticated User WS), or
 /// a dry-run simulated fill when `PM_DRY_RUN=1`.
 ///
@@ -616,6 +640,7 @@ pub struct FillEvent {
     pub price: f64,
     /// Fill status from the exchange.
     pub status: FillStatus,
+    pub source: FillSource,
     pub ts: Instant,
 }
 

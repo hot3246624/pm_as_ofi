@@ -24,7 +24,8 @@ use super::messages::*;
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::strategy::{
     completion_first::{CompletionFirstGateDefaults, CompletionFirstPhase},
-    StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput,
+    PgtXuanM0001NoSeedReason, StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes,
+    StrategyTickInput, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
 };
 use super::types::Side;
 
@@ -831,6 +832,15 @@ impl Default for Book {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PublicTradeSnapshot {
+    pub(crate) market_side: Side,
+    pub(crate) taker_side: TakerSide,
+    pub(crate) price: f64,
+    pub(crate) size: f64,
+    pub(crate) ts: Instant,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EndgamePhase {
     Normal,
@@ -945,6 +955,9 @@ struct Stats {
     pgt_entry_pressure_extra_ticks: u64,
     pgt_taker_shadow_would_open: u64,
     pgt_taker_shadow_would_close: u64,
+    pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    market_trade_ticks: u64,
+    market_sell_trade_ticks: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -989,6 +1002,7 @@ struct PgtGateLogSnapshot {
     dispatch_retain: u64,
     dispatch_clear: u64,
     stale_target_dropped: u64,
+    xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1233,6 +1247,7 @@ pub struct StrategyCoordinator {
     book: Book,
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
+    last_public_trade: Option<PublicTradeSnapshot>,
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
     /// P5 FIX: Per-side timestamps to catch single-side staleness.
     last_valid_ts_yes: Instant,
@@ -1477,6 +1492,9 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_dispatch_retain: u64,
     pub pgt_dispatch_clear: u64,
     pub pgt_stale_target_dropped: u64,
+    pub pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    pub market_trade_ticks: u64,
+    pub market_sell_trade_ticks: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1624,6 +1642,7 @@ impl StrategyCoordinator {
             cfg,
             book: Book::default(),
             last_valid_book: Book::default(),
+            last_public_trade: None,
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
             yes_stale_since: None,
@@ -2167,6 +2186,9 @@ impl StrategyCoordinator {
             pgt_dispatch_retain: self.stats.pgt_dispatch_retain,
             pgt_dispatch_clear: self.stats.pgt_dispatch_clear,
             pgt_stale_target_dropped: self.stats.pgt_stale_target_dropped,
+            pgt_xuan_m0001_no_seed: self.stats.pgt_xuan_m0001_no_seed,
+            market_trade_ticks: self.stats.market_trade_ticks,
+            market_sell_trade_ticks: self.stats.market_sell_trade_ticks,
         };
         let _ = obs_tx.send(snapshot);
     }
@@ -2242,6 +2264,14 @@ impl StrategyCoordinator {
             .stats
             .pgt_skip_no_seed
             .saturating_add(quotes.diagnostics.pgt_skip_no_seed as u64);
+        for (dst, src) in self
+            .stats
+            .pgt_xuan_m0001_no_seed
+            .iter_mut()
+            .zip(quotes.diagnostics.pgt_xuan_m0001_no_seed)
+        {
+            *dst = dst.saturating_add(src as u64);
+        }
         self.stats.pgt_skip_geometry_guard = self
             .stats
             .pgt_skip_geometry_guard
@@ -2353,6 +2383,20 @@ impl StrategyCoordinator {
             self.last_valid_ts_no = Instant::now();
             self.no_stale_since = None;
         }
+    }
+
+    pub(crate) fn recent_public_trade(&self, max_age: Duration) -> Option<PublicTradeSnapshot> {
+        let trade = self.last_public_trade?;
+        if Instant::now().saturating_duration_since(trade.ts) <= max_age {
+            Some(trade)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn pgt_buy_slot_age(&self, side: Side) -> Duration {
+        self.slot_last_ts(OrderSlot::new(side, TradeDirection::Buy))
+            .elapsed()
     }
 
     /// P5 FIX: Check if either side's book data is stale (>30s without fresh data).

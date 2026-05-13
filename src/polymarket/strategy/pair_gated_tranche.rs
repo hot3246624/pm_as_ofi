@@ -1,15 +1,18 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::polymarket::coordinator::{StrategyCoordinator, PAIR_ARB_NET_EPS};
-use crate::polymarket::messages::{BidReason, TradeDirection};
+use crate::polymarket::messages::{BidReason, InventoryState, TakerSide, TradeDirection};
 use crate::polymarket::pair_ledger::{urgency_budget_shadow_5m, PairLedgerSnapshot, PairTranche};
 use crate::polymarket::types::Side;
 use tracing::info;
 
 use super::pair_arb::PairArbStrategy;
-use super::{QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput};
+use super::{
+    PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes,
+    StrategyTickInput,
+};
 
 const RESIDUAL_EPS: f64 = 10.0;
 const MIN_EDGE_PER_PAIR: f64 = 0.005;
@@ -109,6 +112,48 @@ const XUAN_TAIL_TAKER_COMPLETION_WARM_PAIR_CAP: f64 = 0.950;
 const XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP: f64 = 1.000;
 const XUAN_TAIL_TAKER_COMPLETION_FRESH_AGE_SECS: f64 = 30.0;
 const XUAN_TAIL_TAKER_COMPLETION_WARM_AGE_SECS: f64 = 50.0;
+const XUAN_CYCLE_MERGE_START_OFFSET_SECS: u64 = 4;
+const XUAN_CYCLE_MERGE_STOP_BEFORE_END_SECS: u64 = 25;
+const XUAN_CYCLE_MERGE_SEED_MAX_PRICE: f64 = 0.06;
+const XUAN_CYCLE_MERGE_PAIR_CAP: f64 = 1.000;
+const XUAN_CYCLE_MERGE_CLIP_QTY: f64 = 15.0;
+const XUAN_CYCLE_MERGE_MIN_FILL_QTY: f64 = 10.0;
+const XUAN_CYCLE_MERGE_MAX_INVENTORY_COST: f64 = 50.0;
+const XUAN_CYCLE_CAPPED_START_OFFSET_SECS: u64 = 4;
+const XUAN_CYCLE_CAPPED_STOP_BEFORE_END_SECS: u64 = 25;
+const XUAN_CYCLE_CAPPED_SEED_MAX_PRICE: f64 = 0.06;
+const XUAN_CYCLE_CAPPED_BASE_PAIR_CAP: f64 = 0.990;
+const XUAN_CYCLE_CAPPED_LATE_PAIR_CAP: f64 = 0.995;
+const XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP: f64 = 1.010;
+const XUAN_CYCLE_CAPPED_LATE_REMAINING_SECS: u64 = 60;
+const XUAN_CYCLE_CAPPED_FINAL_REMAINING_SECS: u64 = 30;
+const XUAN_CYCLE_CAPPED_TARGET_QTY: f64 = 115.0;
+const XUAN_CYCLE_CAPPED_MAX_SEED_QTY: f64 = 60.0;
+const XUAN_CYCLE_CAPPED_MIN_FILL_QTY: f64 = 10.0;
+const XUAN_CYCLE_CAPPED_MAX_INVENTORY_COST: f64 = 250.0;
+const XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP: u64 = 6;
+const XUAN_M0001_START_OFFSET_SECS: u64 = 4;
+const XUAN_M0001_STOP_BEFORE_END_SECS: u64 = 60;
+const XUAN_M0001_EDGE: f64 = 0.022;
+const XUAN_M0001_OPEN_PAIR_CAP: f64 = 1.020;
+const XUAN_M0001_BASE_PAIR_CAP: f64 = 0.990;
+const XUAN_M0001_LATE_PAIR_CAP: f64 = 0.995;
+const XUAN_M0001_FINAL_PAIR_CAP: f64 = 1.010;
+const XUAN_M0001_LATE_REMAINING_SECS: u64 = 60;
+const XUAN_M0001_FINAL_REMAINING_SECS: u64 = 30;
+const XUAN_M0001_TARGET_QTY: f64 = 115.0;
+const XUAN_M0001_LATE_TARGET_QTY: f64 = 57.5;
+const XUAN_M0001_LATE_TARGET_OFFSET_SECS: u64 = 180;
+const XUAN_M0001_MAX_SEED_QTY: f64 = 60.0;
+const XUAN_M0001_FILL_HAIRCUT: f64 = 0.25;
+const XUAN_M0001_MAX_OPEN_COST: f64 = 250.0;
+const XUAN_M0001_MATERIAL_RESIDUAL_QTY: f64 = 6.0;
+const XUAN_M0001_MATERIAL_RESIDUAL_COST: f64 = 6.0;
+const XUAN_M0001_TRADE_FRESH_MS: u64 = 1_500;
+const XUAN_M0001_SEED_COOLDOWN_MS: u64 = 5_000;
+const XUAN_M0001_BLOCKED_SKIP_AGE_SECS: f64 = 120.0;
+const XUAN_M0001_AGED_UNWIND_PAIR_CAP: f64 = 1.000;
+const XUAN_M0001_BLOCKED_SKIP_MARGIN: f64 = 0.001;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -121,6 +166,9 @@ enum PgtShadowProfile {
     ReplayLowerClipV1,
     XuanLadderV1,
     XuanTailTakerV1,
+    XuanCycleMergeV1,
+    XuanCycleCappedV1,
+    XuanM0001MakerLikeV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,6 +185,7 @@ struct PgtTuning {
     hard_no_new_open_secs: u64,
     price_aware_no_new_open_secs: u64,
     open_pair_band_cap: Option<f64>,
+    completed_cycle_cap: Option<u64>,
     completion_early_pair_cap: f64,
     completion_late_pair_cap: f64,
     taker_close_pair_cap: f64,
@@ -159,6 +208,7 @@ impl PgtTuning {
             hard_no_new_open_secs: HARD_NO_NEW_OPEN_SECS,
             price_aware_no_new_open_secs: PRICE_AWARE_NO_NEW_OPEN_SECS,
             open_pair_band_cap: None,
+            completed_cycle_cap: None,
             completion_early_pair_cap: 1.0 - MIN_EDGE_PER_PAIR,
             completion_late_pair_cap: 1.0,
             taker_close_pair_cap: 1.0,
@@ -183,6 +233,7 @@ impl PgtTuning {
             hard_no_new_open_secs: HARD_NO_NEW_OPEN_SECS,
             price_aware_no_new_open_secs: PRICE_AWARE_NO_NEW_OPEN_SECS,
             open_pair_band_cap: Some(0.980),
+            completed_cycle_cap: None,
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 0.995,
             taker_close_pair_cap: 0.995,
@@ -207,6 +258,7 @@ impl PgtTuning {
             hard_no_new_open_secs: HARD_NO_NEW_OPEN_SECS,
             price_aware_no_new_open_secs: PRICE_AWARE_NO_NEW_OPEN_SECS,
             open_pair_band_cap: Some(0.970),
+            completed_cycle_cap: None,
             completion_early_pair_cap: 0.975,
             completion_late_pair_cap: 1.000,
             taker_close_pair_cap: 1.000,
@@ -235,6 +287,7 @@ impl PgtTuning {
             hard_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
             price_aware_no_new_open_secs: XUAN_LADDER_STOP_BEFORE_END_SECS,
             open_pair_band_cap: Some(XUAN_LADDER_OPEN_PAIR_CAP),
+            completed_cycle_cap: None,
             completion_early_pair_cap: XUAN_LADDER_COMPLETION_MATURE_PAIR_CAP,
             completion_late_pair_cap: XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP,
             taker_close_pair_cap: XUAN_LADDER_COMPLETION_RESCUE_PAIR_CAP,
@@ -257,6 +310,7 @@ impl PgtTuning {
             hard_no_new_open_secs: XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS,
             price_aware_no_new_open_secs: XUAN_TAIL_TAKER_HARD_NO_NEW_OPEN_SECS,
             open_pair_band_cap: Some(XUAN_TAIL_TAKER_OPEN_PAIR_CAP),
+            completed_cycle_cap: None,
             completion_early_pair_cap: XUAN_TAIL_TAKER_COMPLETION_FRESH_PAIR_CAP,
             completion_late_pair_cap: XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP,
             taker_close_pair_cap: XUAN_TAIL_TAKER_COMPLETION_RESCUE_PAIR_CAP,
@@ -271,6 +325,81 @@ impl PgtTuning {
         }
     }
 
+    fn xuan_cycle_merge_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanCycleMergeV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_CYCLE_MERGE_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_CYCLE_MERGE_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_CYCLE_MERGE_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_CYCLE_MERGE_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_CYCLE_MERGE_PAIR_CAP),
+            completed_cycle_cap: None,
+            completion_early_pair_cap: XUAN_CYCLE_MERGE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_CYCLE_MERGE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_CYCLE_MERGE_PAIR_CAP,
+            fixed_clip_qty: Some(XUAN_CYCLE_MERGE_CLIP_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: XUAN_CYCLE_MERGE_CLIP_QTY,
+            min_clip_qty: XUAN_CYCLE_MERGE_CLIP_QTY,
+            max_clip_qty: XUAN_CYCLE_MERGE_CLIP_QTY,
+        }
+    }
+
+    fn xuan_cycle_capped_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanCycleCappedV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_CYCLE_CAPPED_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_CYCLE_CAPPED_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_CYCLE_CAPPED_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_CYCLE_CAPPED_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_CYCLE_CAPPED_BASE_PAIR_CAP),
+            completed_cycle_cap: Some(XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP),
+            completion_early_pair_cap: XUAN_CYCLE_CAPPED_BASE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_CYCLE_CAPPED_LATE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP,
+            fixed_clip_qty: Some(XUAN_CYCLE_CAPPED_MAX_SEED_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: XUAN_CYCLE_CAPPED_MAX_SEED_QTY,
+            min_clip_qty: XUAN_CYCLE_CAPPED_MAX_SEED_QTY,
+            max_clip_qty: XUAN_CYCLE_CAPPED_MAX_SEED_QTY,
+        }
+    }
+
+    fn xuan_m0001_maker_like_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanM0001MakerLikeV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_M0001_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_M0001_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_M0001_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_M0001_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_M0001_OPEN_PAIR_CAP),
+            completed_cycle_cap: Some(XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP),
+            completion_early_pair_cap: XUAN_M0001_BASE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_M0001_LATE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_M0001_FINAL_PAIR_CAP,
+            fixed_clip_qty: None,
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: XUAN_M0001_MAX_SEED_QTY,
+            min_clip_qty: 0.0,
+            max_clip_qty: XUAN_M0001_MAX_SEED_QTY,
+        }
+    }
+
     fn from_env() -> Self {
         let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
             .unwrap_or_default()
@@ -282,6 +411,16 @@ impl PgtTuning {
             "replay_lower_clip_v1" | "lower_clip" | "lower_clip_v1" => Self::replay_lower_clip_v1(),
             "xuan_ladder_v1" | "xuan_ladder" | "xuan_latest" | "xuan" => Self::xuan_ladder_v1(),
             "xuan_tail_taker_v1" | "xuan_tail_taker" | "xuan_tail" => Self::xuan_tail_taker_v1(),
+            "xuan_cycle_merge_v1" | "xuan_cycle_merge" | "xuan_cycle" => {
+                Self::xuan_cycle_merge_v1()
+            }
+            "xuan_cycle_capped_v1" | "xuan_cycle_capped" | "xuan_cycle_frontier" => {
+                Self::xuan_cycle_capped_v1()
+            }
+            "xuan_m0001_maker_like_v1"
+            | "xuan_m0001_maker_like"
+            | "xuan_m0001"
+            | "xuan_frontier_m0001" => Self::xuan_m0001_maker_like_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -296,7 +435,11 @@ impl PgtTuning {
         if let Some(cap) = self.open_pair_band_cap {
             if matches!(
                 self.profile,
-                PgtShadowProfile::XuanLadderV1 | PgtShadowProfile::XuanTailTakerV1
+                PgtShadowProfile::XuanLadderV1
+                    | PgtShadowProfile::XuanTailTakerV1
+                    | PgtShadowProfile::XuanCycleMergeV1
+                    | PgtShadowProfile::XuanCycleCappedV1
+                    | PgtShadowProfile::XuanM0001MakerLikeV1
             ) {
                 base.max(cap)
             } else {
@@ -315,6 +458,10 @@ fn pgt_tuning() -> PgtTuning {
 
 pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
     pgt_tuning().profile == PgtShadowProfile::XuanTailTakerV1
+}
+
+fn pgt_profile_quotes_allowed(tuning: PgtTuning, dry_run: bool) -> bool {
+    tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 || dry_run
 }
 
 struct CompletionPlan {
@@ -358,6 +505,9 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
     ) -> StrategyQuotes {
         let mut quotes = StrategyQuotes::default();
         let tuning = pgt_tuning();
+        if !pgt_profile_quotes_allowed(tuning, coordinator.cfg().dry_run) {
+            return quotes;
+        }
         let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
         let hard_no_new_open = remaining_secs <= tuning.hard_no_new_open_secs;
         let harvest_window_active = self.should_shadow_harvest(input, remaining_secs);
@@ -367,8 +517,11 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             .active_tranche
             .filter(|tranche| tranche.first_side.is_some() && tranche.residual_qty > f64::EPSILON)
         {
-            let same_side_add =
-                self.same_side_add_intent(coordinator, input, active, remaining_secs);
+            let same_side_add = if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
+                None
+            } else {
+                self.same_side_add_intent(coordinator, input, active, remaining_secs)
+            };
             if let Some(plan) = self.completion_intent(coordinator, input, active, remaining_secs) {
                 quotes.note_pgt_completion_quote();
                 if plan.taker_shadow_would_close {
@@ -383,6 +536,23 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             }
             if let Some(intent) = same_side_add {
                 quotes.set(intent);
+            }
+            if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
+                && quotes.yes_buy.is_none()
+                && quotes.no_buy.is_none()
+                && pgt_xuan_m0001_allows_blocked_residual_probe(
+                    tuning,
+                    input.pair_ledger,
+                    active,
+                    remaining_secs,
+                )
+            {
+                if let Ok(seed) =
+                    self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs)
+                {
+                    quotes.note_pgt_seed_quote();
+                    quotes.set(seed.intent);
+                }
             }
             return quotes;
         }
@@ -414,7 +584,17 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             quotes.note_pgt_skip_after_closed_pair();
             return quotes;
         }
-        if input.pair_ledger.residual_qty.abs() > RESIDUAL_EPS {
+        if pgt_blocks_completed_cycle_cap(
+            tuning,
+            input.episode_metrics.completed_pair_count,
+            input.pair_ledger.residual_qty,
+            input.pair_ledger.active_tranche.is_some(),
+            pgt_residual_guard_eps(tuning),
+        ) {
+            quotes.note_pgt_skip_after_closed_pair();
+            return quotes;
+        }
+        if pgt_material_residual_blocks_new_seed(tuning, input.pair_ledger) {
             quotes.note_pgt_skip_residual_guard();
             return quotes;
         }
@@ -431,15 +611,35 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             return quotes;
         }
 
+        if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
+            match self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs) {
+                Ok(seed) => {
+                    quotes.note_pgt_seed_quote();
+                    quotes.set(seed.intent);
+                }
+                Err(reason) => {
+                    quotes.note_pgt_skip_no_seed();
+                    quotes.note_pgt_xuan_m0001_no_seed(reason);
+                }
+            }
+            return quotes;
+        }
+
         let Some((raw_yes, raw_no)) = self.flat_seed_raw_prices(coordinator, input, remaining_secs)
         else {
             quotes.note_pgt_skip_invalid_book();
             return quotes;
         };
 
-        let size = self.adaptive_clip_qty(coordinator, input, None, remaining_secs);
+        let size = self
+            .adaptive_clip_qty(coordinator, input, None, remaining_secs)
+            .min(pgt_xuan_cycle_available_buy_qty(
+                tuning,
+                input.inv,
+                pgt_xuan_cycle_seed_max_price(tuning),
+            ));
         let size = quantize_tenth(size);
-        if size <= 0.0 {
+        if size < pgt_profile_min_seed_qty(tuning).max(coordinator.cfg().min_order_size) {
             quotes.note_pgt_skip_no_seed();
             return quotes;
         }
@@ -541,6 +741,124 @@ impl PairGatedTrancheStrategy {
             && input.pair_ledger.total_pairable_qty() >= HARVEST_MIN_PAIRABLE_QTY - 1e-9
     }
 
+    fn xuan_m0001_public_trade_seed_intent(
+        &self,
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+        remaining_secs: u64,
+    ) -> Result<SeedPlan, PgtXuanM0001NoSeedReason> {
+        let trade = coordinator
+            .recent_public_trade(Duration::from_millis(XUAN_M0001_TRADE_FRESH_MS))
+            .ok_or(PgtXuanM0001NoSeedReason::NoRecentSellTrade)?;
+        if trade.taker_side != TakerSide::Sell
+            || !trade.price.is_finite()
+            || !trade.size.is_finite()
+            || trade.price <= 0.0
+            || trade.size <= 0.0
+        {
+            return Err(PgtXuanM0001NoSeedReason::BadTrade);
+        }
+        let side = trade.market_side;
+        let (best_bid, best_ask, opp_bid, opp_ask, same_qty, same_avg, opp_qty) = match side {
+            Side::Yes => (
+                input.book.yes_bid,
+                input.book.yes_ask,
+                input.book.no_bid,
+                input.book.no_ask,
+                input.inv.yes_qty,
+                input.inv.yes_avg_cost,
+                input.inv.no_qty,
+            ),
+            Side::No => (
+                input.book.no_bid,
+                input.book.no_ask,
+                input.book.yes_bid,
+                input.book.yes_ask,
+                input.inv.no_qty,
+                input.inv.no_avg_cost,
+                input.inv.yes_qty,
+            ),
+        };
+        if best_bid <= 0.0 || best_ask <= 0.0 || opp_bid <= 0.0 || opp_ask <= 0.0 {
+            return Err(PgtXuanM0001NoSeedReason::InvalidBook);
+        }
+        if best_bid + 1e-9 < opp_bid {
+            return Err(PgtXuanM0001NoSeedReason::NotHighSide);
+        }
+        if trade.price < 0.05 - 1e-9 || trade.price > 0.90 + 1e-9 {
+            return Err(PgtXuanM0001NoSeedReason::PriceBand);
+        }
+        let price = coordinator.safe_price((trade.price - XUAN_M0001_EDGE).max(0.01));
+        if price <= 0.0 || price >= best_ask {
+            return Err(PgtXuanM0001NoSeedReason::NotMakerPrice);
+        }
+        if !pgt_xuan_m0001_public_trade_pair_supported(trade.price, opp_ask) {
+            return Err(PgtXuanM0001NoSeedReason::PairCap);
+        }
+        if coordinator.pgt_buy_slot_age(side) < Duration::from_millis(XUAN_M0001_SEED_COOLDOWN_MS) {
+            return Err(PgtXuanM0001NoSeedReason::Cooldown);
+        }
+        if opp_qty.max(0.0) > coordinator.cfg().min_order_size.max(1.0) + 1e-9 {
+            return Err(PgtXuanM0001NoSeedReason::OppositeInventory);
+        }
+        let target = if pgt_round_elapsed_secs(remaining_secs)
+            .map(|elapsed| elapsed >= XUAN_M0001_LATE_TARGET_OFFSET_SECS)
+            .unwrap_or(false)
+        {
+            XUAN_M0001_LATE_TARGET_QTY
+        } else {
+            XUAN_M0001_TARGET_QTY
+        };
+        let target_remaining = (target - same_qty.max(0.0)).max(0.0);
+        let remaining_open_cost =
+            (XUAN_M0001_MAX_OPEN_COST - pgt_xuan_cycle_inventory_cost(input.inv)).max(0.0);
+        let mut size = XUAN_M0001_MAX_SEED_QTY
+            .min(trade.size * XUAN_M0001_FILL_HAIRCUT)
+            .min(target_remaining)
+            .min(remaining_open_cost / price);
+        if same_avg > 0.0 {
+            let vwap_ceiling = PairArbStrategy::vwap_ceiling(
+                XUAN_M0001_OPEN_PAIR_CAP,
+                0.0,
+                opp_ask,
+                same_qty,
+                same_avg,
+                size.max(0.0),
+            );
+            if price > vwap_ceiling + 1e-9 {
+                return Err(PgtXuanM0001NoSeedReason::VwapCap);
+            }
+        }
+        size = quantize_tenth(size);
+        if size < coordinator.cfg().min_order_size {
+            return Err(PgtXuanM0001NoSeedReason::SmallSize);
+        }
+        coordinator
+            .simulate_buy(input.inv, side, size, price)
+            .ok_or(PgtXuanM0001NoSeedReason::SimulateBuyBlocked)?;
+
+        let tick = coordinator.cfg().tick_size.max(1e-9);
+        let visible_completion_slack_ticks =
+            ((XUAN_M0001_OPEN_PAIR_CAP - price - opp_ask) / tick).max(-10.0);
+        let fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
+        Ok(SeedPlan {
+            size,
+            taker_shadow_would_open: false,
+            visible_taker_completion_ok: price + opp_ask <= XUAN_M0001_BASE_PAIR_CAP + 1e-9,
+            entry_pressure_extra_ticks: 0,
+            visible_completion_slack_ticks,
+            fill_distance_ticks,
+            preference_score: visible_completion_slack_ticks - 0.60 * fill_distance_ticks,
+            intent: StrategyIntent {
+                side,
+                direction: TradeDirection::Buy,
+                price,
+                size,
+                reason: BidReason::Provide,
+            },
+        })
+    }
+
     fn flat_seed_raw_prices(
         &self,
         coordinator: &StrategyCoordinator,
@@ -550,6 +868,10 @@ impl PairGatedTrancheStrategy {
         let ub = input.book;
         if ub.yes_bid <= 0.0 || ub.yes_ask <= 0.0 || ub.no_bid <= 0.0 || ub.no_ask <= 0.0 {
             return None;
+        }
+        if pgt_is_xuan_cycle_merge_profile(pgt_tuning()) {
+            let seed_max = pgt_xuan_cycle_seed_max_price(pgt_tuning());
+            return Some((seed_max, seed_max));
         }
         // Opening-leg seed is anchored by the broad open_pair_band ceiling.
         // But we also reserve room for the opposite leg to complete at
@@ -805,7 +1127,9 @@ impl PairGatedTrancheStrategy {
             fill_distance_ticks,
             min_visible_breakeven_slack_ticks,
         );
-        let preserve_seed_clip_qty = tuning.preserve_seed_clip_qty && visible_taker_completion_ok;
+        let cycle_merge_seed = pgt_is_xuan_cycle_merge_profile(tuning);
+        let preserve_seed_clip_qty =
+            cycle_merge_seed || (tuning.preserve_seed_clip_qty && visible_taker_completion_ok);
         let open_path_mult = if taker_shadow_would_open || preserve_seed_clip_qty {
             1.0
         } else {
@@ -817,6 +1141,9 @@ impl PairGatedTrancheStrategy {
             seed_visible_completion_clip_mult(open_pair_band, price, opp_ask, tick)
         };
         let mut size = quantize_tenth(size * open_path_mult.min(visible_slack_mult));
+        if cycle_merge_seed {
+            size = size.min(pgt_xuan_cycle_available_buy_qty(tuning, input.inv, price));
+        }
         if pgt_xuan_ladder_maker_only_seed_clip_caps(
             tuning,
             input.episode_metrics.round_buy_fill_count,
@@ -836,7 +1163,7 @@ impl PairGatedTrancheStrategy {
         {
             size = size.min(XUAN_LADDER_REOPEN_AFTER_CLOSED_CLIP_QTY);
         }
-        if size <= 0.0 {
+        if size < pgt_profile_min_seed_qty(tuning).max(coordinator.cfg().min_order_size) {
             return None;
         }
         coordinator.simulate_buy(input.inv, side, size, price)?;
@@ -873,6 +1200,9 @@ impl PairGatedTrancheStrategy {
             (Some(_), None) => FlatSeedSelection::YesOnly,
             (None, Some(_)) => FlatSeedSelection::NoOnly,
             (Some(yes), Some(no)) => {
+                if profile == PgtShadowProfile::XuanCycleMergeV1 {
+                    return FlatSeedSelection::Dual;
+                }
                 let yes_reject = Self::seed_geometry_reject(yes);
                 let no_reject = Self::seed_geometry_reject(no);
                 match (yes_reject, no_reject) {
@@ -1166,6 +1496,31 @@ impl PairGatedTrancheStrategy {
             );
             return None;
         };
+        if pgt_xuan_m0001_blocks_aged_completion(
+            tuning,
+            completion_age_secs,
+            active.first_vwap,
+            price,
+        ) {
+            pgt_maybe_log_completion_none_diag(
+                coordinator.cfg().dry_run,
+                tuning,
+                first_side,
+                hedge_side,
+                "xuan_m0001_blocked_lot_skip",
+                active.first_vwap,
+                active.residual_qty,
+                remaining_secs,
+                completion_age_secs,
+                best_bid,
+                best_ask,
+                positive_edge_ceiling,
+                funded_loss_ceiling,
+                taker_close_ceiling,
+                passive_ceiling,
+            );
+            return None;
+        }
         if !pgt_completion_price_allowed(price, ceiling, tail_insurance_ceiling) {
             pgt_maybe_log_completion_none_diag(
                 coordinator.cfg().dry_run,
@@ -1187,15 +1542,18 @@ impl PairGatedTrancheStrategy {
             return None;
         }
 
-        let raw_size = if remaining_secs <= COMPLETION_FULL_RESIDUAL_REMAINING_SECS {
+        let mut raw_size = if remaining_secs <= COMPLETION_FULL_RESIDUAL_REMAINING_SECS {
             active.residual_qty.max(0.0)
         } else {
             self.adaptive_clip_qty(coordinator, input, Some(active), remaining_secs)
                 .min(active.residual_qty.max(0.0))
         };
+        if pgt_is_xuan_cycle_merge_profile(tuning) {
+            raw_size = raw_size.min(pgt_xuan_cycle_available_buy_qty(tuning, input.inv, price));
+        }
         let size = raw_size.min(active.residual_qty.max(0.0));
         let size = quantize_tenth(size);
-        if size <= 0.0 {
+        if size < pgt_profile_min_seed_qty(tuning).max(coordinator.cfg().min_order_size) {
             pgt_maybe_log_completion_none_diag(
                 coordinator.cfg().dry_run,
                 tuning,
@@ -1296,6 +1654,14 @@ impl PairGatedTrancheStrategy {
         active: PairTranche,
         remaining_secs: u64,
     ) -> Option<StrategyIntent> {
+        if pgt_is_xuan_cycle_merge_profile(pgt_tuning()) {
+            return self.xuan_cycle_same_side_add_intent(
+                coordinator,
+                input,
+                active,
+                remaining_secs,
+            );
+        }
         if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
             return None;
         }
@@ -1328,6 +1694,52 @@ impl PairGatedTrancheStrategy {
 
         let price = self.passive_seed_price(coordinator, side, ceiling, best_bid, best_ask)?;
         if price <= 0.0 || price > ceiling + 1e-9 {
+            return None;
+        }
+        coordinator.simulate_buy(input.inv, side, size, price)?;
+
+        Some(StrategyIntent {
+            side,
+            direction: TradeDirection::Buy,
+            price,
+            size,
+            reason: BidReason::Provide,
+        })
+    }
+
+    fn xuan_cycle_same_side_add_intent(
+        &self,
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+        active: PairTranche,
+        remaining_secs: u64,
+    ) -> Option<StrategyIntent> {
+        let tuning = pgt_tuning();
+        if remaining_secs <= tuning.hard_no_new_open_secs {
+            return None;
+        }
+        let side = active.first_side?;
+        let (best_bid, best_ask) = match side {
+            Side::Yes => (input.book.yes_bid, input.book.yes_ask),
+            Side::No => (input.book.no_bid, input.book.no_ask),
+        };
+        if best_bid <= 0.0 || best_ask <= 0.0 {
+            return None;
+        }
+        let seed_max = pgt_xuan_cycle_seed_max_price(tuning);
+        let price = self.passive_seed_price(coordinator, side, seed_max, best_bid, best_ask)?;
+        if price <= 0.0 || price > seed_max + 1e-9 {
+            return None;
+        }
+        let min_qty = pgt_xuan_cycle_min_fill_qty(tuning).max(coordinator.cfg().min_order_size);
+        let mut size = self
+            .adaptive_clip_qty(coordinator, input, Some(active), remaining_secs)
+            .min(pgt_xuan_cycle_available_buy_qty(tuning, input.inv, price));
+        if let Some(target_remaining) = pgt_xuan_cycle_same_side_target_remaining(tuning, active) {
+            size = size.min(target_remaining);
+        }
+        let size = quantize_tenth(size);
+        if size + 1e-9 < min_qty {
             return None;
         }
         coordinator.simulate_buy(input.inv, side, size, price)?;
@@ -1603,6 +2015,10 @@ pub(crate) fn pgt_seed_future_completion_reserve_ticks(
 
 fn pgt_profile_seed_open_remaining_allowed(remaining_secs: u64) -> bool {
     let tuning = pgt_tuning();
+    pgt_tuning_seed_open_remaining_allowed(tuning, remaining_secs)
+}
+
+fn pgt_tuning_seed_open_remaining_allowed(tuning: PgtTuning, remaining_secs: u64) -> bool {
     if let Some(max_remaining) = tuning.seed_open_max_remaining_secs {
         if remaining_secs == u64::MAX || remaining_secs > max_remaining {
             return false;
@@ -1614,6 +2030,45 @@ fn pgt_profile_seed_open_remaining_allowed(remaining_secs: u64) -> bool {
         }
     }
     true
+}
+
+pub(crate) fn pgt_absent_seed_retain_allowed(remaining_secs: u64, slot_age: Duration) -> bool {
+    pgt_profile_absent_seed_retain_allowed(pgt_tuning(), remaining_secs, slot_age)
+}
+
+fn pgt_profile_absent_seed_retain_allowed(
+    tuning: PgtTuning,
+    remaining_secs: u64,
+    slot_age: Duration,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 {
+        return true;
+    }
+    remaining_secs > XUAN_M0001_STOP_BEFORE_END_SECS && slot_age <= Duration::from_secs(120)
+}
+
+fn pgt_xuan_m0001_public_trade_pair_supported(public_trade_px: f64, opposite_ask: f64) -> bool {
+    public_trade_px.is_finite()
+        && opposite_ask.is_finite()
+        && public_trade_px > 0.0
+        && opposite_ask > 0.0
+        && public_trade_px + opposite_ask <= XUAN_M0001_OPEN_PAIR_CAP + 1e-9
+}
+
+fn pgt_xuan_m0001_blocks_aged_completion(
+    tuning: PgtTuning,
+    completion_age_secs: f64,
+    first_vwap: f64,
+    completion_px: f64,
+) -> bool {
+    tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
+        && completion_age_secs >= XUAN_M0001_BLOCKED_SKIP_AGE_SECS
+        && first_vwap.is_finite()
+        && completion_px.is_finite()
+        && first_vwap > 0.0
+        && completion_px > 0.0
+        && first_vwap + completion_px
+            > XUAN_M0001_AGED_UNWIND_PAIR_CAP + XUAN_M0001_BLOCKED_SKIP_MARGIN + 1e-9
 }
 
 fn pgt_seed_open_window_allowed(seed: &SeedPlan, remaining_secs: u64) -> bool {
@@ -1801,6 +2256,38 @@ fn pgt_effective_completion_pair_caps(
         return (cap, cap, cap);
     }
 
+    if tuning.profile == PgtShadowProfile::XuanCycleCappedV1
+        || tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
+    {
+        let (base, late, final_cap, late_secs, final_secs) =
+            if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
+                (
+                    XUAN_M0001_BASE_PAIR_CAP,
+                    XUAN_M0001_LATE_PAIR_CAP,
+                    XUAN_M0001_FINAL_PAIR_CAP,
+                    XUAN_M0001_LATE_REMAINING_SECS,
+                    XUAN_M0001_FINAL_REMAINING_SECS,
+                )
+            } else {
+                (
+                    XUAN_CYCLE_CAPPED_BASE_PAIR_CAP,
+                    XUAN_CYCLE_CAPPED_LATE_PAIR_CAP,
+                    XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP,
+                    XUAN_CYCLE_CAPPED_LATE_REMAINING_SECS,
+                    XUAN_CYCLE_CAPPED_FINAL_REMAINING_SECS,
+                )
+            };
+        let cap = if remaining_secs <= final_secs {
+            final_cap
+        } else if remaining_secs <= late_secs {
+            late
+        } else {
+            base
+        };
+        let cap = cap.clamp(0.0, 1.20);
+        return (cap, cap, cap);
+    }
+
     if tuning.profile != PgtShadowProfile::XuanLadderV1 {
         return (default_early, default_late, default_taker);
     }
@@ -1930,6 +2417,140 @@ fn pgt_tail_taker_seed_price_blocks(tuning: PgtTuning, best_ask: f64) -> bool {
     tuning.profile == PgtShadowProfile::XuanTailTakerV1
         && (best_ask < XUAN_TAIL_TAKER_FIRST_MIN_ASK - 1e-9
             || best_ask > XUAN_TAIL_TAKER_FIRST_MAX_ASK + 1e-9)
+}
+
+fn pgt_is_xuan_cycle_merge_profile(tuning: PgtTuning) -> bool {
+    matches!(
+        tuning.profile,
+        PgtShadowProfile::XuanCycleMergeV1 | PgtShadowProfile::XuanCycleCappedV1
+    )
+}
+
+fn pgt_xuan_cycle_seed_max_price(tuning: PgtTuning) -> f64 {
+    if tuning.profile == PgtShadowProfile::XuanCycleCappedV1 {
+        XUAN_CYCLE_CAPPED_SEED_MAX_PRICE
+    } else {
+        XUAN_CYCLE_MERGE_SEED_MAX_PRICE
+    }
+}
+
+fn pgt_xuan_cycle_min_fill_qty(tuning: PgtTuning) -> f64 {
+    if tuning.profile == PgtShadowProfile::XuanCycleCappedV1 {
+        XUAN_CYCLE_CAPPED_MIN_FILL_QTY
+    } else {
+        XUAN_CYCLE_MERGE_MIN_FILL_QTY
+    }
+}
+
+fn pgt_xuan_cycle_max_inventory_cost(tuning: PgtTuning) -> f64 {
+    if tuning.profile == PgtShadowProfile::XuanCycleCappedV1 {
+        XUAN_CYCLE_CAPPED_MAX_INVENTORY_COST
+    } else {
+        XUAN_CYCLE_MERGE_MAX_INVENTORY_COST
+    }
+}
+
+fn pgt_xuan_cycle_same_side_target_remaining(
+    tuning: PgtTuning,
+    active: PairTranche,
+) -> Option<f64> {
+    if tuning.profile != PgtShadowProfile::XuanCycleCappedV1 {
+        return None;
+    }
+    Some((XUAN_CYCLE_CAPPED_TARGET_QTY - active.first_qty.max(0.0)).max(0.0))
+}
+
+fn pgt_profile_min_seed_qty(tuning: PgtTuning) -> f64 {
+    if pgt_is_xuan_cycle_merge_profile(tuning) {
+        pgt_xuan_cycle_min_fill_qty(tuning)
+    } else {
+        0.0
+    }
+}
+
+fn pgt_blocks_completed_cycle_cap(
+    tuning: PgtTuning,
+    completed_pair_count: u64,
+    residual_qty: f64,
+    has_active_tranche: bool,
+    residual_guard_eps: f64,
+) -> bool {
+    let Some(cap) = tuning.completed_cycle_cap else {
+        return false;
+    };
+    !has_active_tranche && residual_qty.abs() <= residual_guard_eps && completed_pair_count >= cap
+}
+
+fn pgt_residual_guard_eps(tuning: PgtTuning) -> f64 {
+    if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
+        XUAN_M0001_MATERIAL_RESIDUAL_QTY
+    } else {
+        RESIDUAL_EPS
+    }
+}
+
+fn pgt_material_residual_blocks_new_seed(
+    tuning: PgtTuning,
+    pair_ledger: &PairLedgerSnapshot,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 {
+        return pair_ledger.residual_qty.abs() > RESIDUAL_EPS;
+    }
+    if pair_ledger.residual_qty.abs() > XUAN_M0001_MATERIAL_RESIDUAL_QTY {
+        return true;
+    }
+    pair_ledger
+        .active_tranche
+        .map(|active| active.residual_qty.max(0.0) * active.first_vwap.max(0.0))
+        .unwrap_or(0.0)
+        > XUAN_M0001_MATERIAL_RESIDUAL_COST
+}
+
+fn pgt_xuan_m0001_allows_blocked_residual_probe(
+    tuning: PgtTuning,
+    pair_ledger: &PairLedgerSnapshot,
+    active: PairTranche,
+    remaining_secs: u64,
+) -> bool {
+    if tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 {
+        return false;
+    }
+    if !pgt_tuning_seed_open_remaining_allowed(tuning, remaining_secs) {
+        return false;
+    }
+    if pgt_active_tranche_age_secs(active) < XUAN_M0001_BLOCKED_SKIP_AGE_SECS {
+        return false;
+    }
+    if active.residual_qty.max(0.0) > XUAN_M0001_MATERIAL_RESIDUAL_QTY {
+        return false;
+    }
+    if active.residual_qty.max(0.0) * active.first_vwap.max(0.0) > XUAN_M0001_MATERIAL_RESIDUAL_COST
+    {
+        return false;
+    }
+    if let Some(cap) = tuning.completed_cycle_cap {
+        if pair_ledger.completed_pair_count >= cap {
+            return false;
+        }
+    }
+    true
+}
+
+fn pgt_xuan_cycle_inventory_cost(inv: &InventoryState) -> f64 {
+    inv.yes_qty.max(0.0) * inv.yes_avg_cost.max(0.0)
+        + inv.no_qty.max(0.0) * inv.no_avg_cost.max(0.0)
+}
+
+fn pgt_xuan_cycle_available_buy_qty(tuning: PgtTuning, inv: &InventoryState, price: f64) -> f64 {
+    if !pgt_is_xuan_cycle_merge_profile(tuning) {
+        return f64::INFINITY;
+    }
+    if price <= 0.0 {
+        return 0.0;
+    }
+    let remaining_budget =
+        (pgt_xuan_cycle_max_inventory_cost(tuning) - pgt_xuan_cycle_inventory_cost(inv)).max(0.0);
+    remaining_budget / price
 }
 
 fn pgt_xuan_ladder_seed_visible_completion_guard_blocks(
@@ -2558,6 +3179,422 @@ mod profile_tests {
         assert_eq!(tuning.min_clip_qty, XUAN_TAIL_TAKER_CLIP_QTY);
         assert_eq!(tuning.max_clip_qty, XUAN_TAIL_TAKER_CLIP_QTY);
         assert!(tuning.preserve_seed_clip_qty);
+    }
+
+    #[test]
+    fn xuan_cycle_merge_profile_matches_maker_cycle_oos_candidate() {
+        let tuning = PgtTuning::xuan_cycle_merge_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanCycleMergeV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(296));
+        assert_eq!(tuning.seed_open_min_remaining_secs, Some(25));
+        assert_eq!(tuning.hard_no_new_open_secs, 25);
+        assert_eq!(tuning.price_aware_no_new_open_secs, 25);
+        assert_eq!(tuning.open_pair_band(0.98), XUAN_CYCLE_MERGE_PAIR_CAP);
+        assert_eq!(tuning.completion_early_pair_cap, XUAN_CYCLE_MERGE_PAIR_CAP);
+        assert_eq!(tuning.completion_late_pair_cap, XUAN_CYCLE_MERGE_PAIR_CAP);
+        assert_eq!(tuning.taker_close_pair_cap, XUAN_CYCLE_MERGE_PAIR_CAP);
+        assert_eq!(tuning.fixed_clip_qty, Some(XUAN_CYCLE_MERGE_CLIP_QTY));
+        assert_eq!(tuning.min_clip_qty, XUAN_CYCLE_MERGE_CLIP_QTY);
+        assert_eq!(tuning.max_clip_qty, XUAN_CYCLE_MERGE_CLIP_QTY);
+        assert!(tuning.preserve_seed_clip_qty);
+        assert!(tuning.seed_min_visible_breakeven_slack_ticks < -50.0);
+    }
+
+    #[test]
+    fn xuan_cycle_merge_inventory_budget_caps_seed_size() {
+        let tuning = PgtTuning::xuan_cycle_merge_v1();
+        let light = InventoryState {
+            yes_qty: 100.0,
+            yes_avg_cost: 0.49,
+            ..InventoryState::default()
+        };
+        assert!(
+            pgt_xuan_cycle_available_buy_qty(tuning, &light, XUAN_CYCLE_MERGE_SEED_MAX_PRICE)
+                >= XUAN_CYCLE_MERGE_CLIP_QTY
+        );
+
+        let nearly_full = InventoryState {
+            yes_qty: 100.0,
+            yes_avg_cost: 0.495,
+            ..InventoryState::default()
+        };
+        assert!(
+            pgt_xuan_cycle_available_buy_qty(tuning, &nearly_full, XUAN_CYCLE_MERGE_SEED_MAX_PRICE)
+                < XUAN_CYCLE_MERGE_MIN_FILL_QTY
+        );
+    }
+
+    #[test]
+    fn xuan_cycle_capped_profile_matches_event_store_candidate() {
+        let tuning = PgtTuning::xuan_cycle_capped_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanCycleCappedV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(296));
+        assert_eq!(tuning.seed_open_min_remaining_secs, Some(25));
+        assert_eq!(tuning.hard_no_new_open_secs, 25);
+        assert_eq!(tuning.price_aware_no_new_open_secs, 25);
+        assert_eq!(tuning.open_pair_band(0.98), XUAN_CYCLE_CAPPED_BASE_PAIR_CAP);
+        assert_eq!(
+            tuning.completed_cycle_cap,
+            Some(XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP)
+        );
+        assert_eq!(
+            tuning.completion_early_pair_cap,
+            XUAN_CYCLE_CAPPED_BASE_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.completion_late_pair_cap,
+            XUAN_CYCLE_CAPPED_LATE_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.taker_close_pair_cap,
+            XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP
+        );
+        assert_eq!(tuning.fixed_clip_qty, Some(XUAN_CYCLE_CAPPED_MAX_SEED_QTY));
+        assert_eq!(tuning.min_clip_qty, XUAN_CYCLE_CAPPED_MAX_SEED_QTY);
+        assert_eq!(tuning.max_clip_qty, XUAN_CYCLE_CAPPED_MAX_SEED_QTY);
+        assert!(tuning.preserve_seed_clip_qty);
+        assert!(tuning.seed_min_visible_breakeven_slack_ticks < -50.0);
+    }
+
+    #[test]
+    fn xuan_cycle_capped_completion_caps_stage_by_round_tail() {
+        let tuning = PgtTuning::xuan_cycle_capped_v1();
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 120, 1.0),
+            (
+                XUAN_CYCLE_CAPPED_BASE_PAIR_CAP,
+                XUAN_CYCLE_CAPPED_BASE_PAIR_CAP,
+                XUAN_CYCLE_CAPPED_BASE_PAIR_CAP
+            )
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, XUAN_CYCLE_CAPPED_LATE_REMAINING_SECS, 1.0),
+            (
+                XUAN_CYCLE_CAPPED_LATE_PAIR_CAP,
+                XUAN_CYCLE_CAPPED_LATE_PAIR_CAP,
+                XUAN_CYCLE_CAPPED_LATE_PAIR_CAP
+            )
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, XUAN_CYCLE_CAPPED_FINAL_REMAINING_SECS, 1.0),
+            (
+                XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP,
+                XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP,
+                XUAN_CYCLE_CAPPED_FINAL_PAIR_CAP
+            )
+        );
+    }
+
+    #[test]
+    fn xuan_m0001_profile_matches_event_store_candidate() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanM0001MakerLikeV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(296));
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(XUAN_M0001_STOP_BEFORE_END_SECS)
+        );
+        assert_eq!(tuning.open_pair_band(0.98), XUAN_M0001_OPEN_PAIR_CAP);
+        assert_eq!(
+            tuning.completed_cycle_cap,
+            Some(XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP)
+        );
+        assert_eq!(tuning.completion_early_pair_cap, XUAN_M0001_BASE_PAIR_CAP);
+        assert_eq!(tuning.completion_late_pair_cap, XUAN_M0001_LATE_PAIR_CAP);
+        assert_eq!(tuning.taker_close_pair_cap, XUAN_M0001_FINAL_PAIR_CAP);
+        assert_eq!(tuning.fixed_clip_qty, None);
+        assert_eq!(
+            pgt_residual_guard_eps(tuning),
+            XUAN_M0001_MATERIAL_RESIDUAL_QTY
+        );
+        assert!(!pgt_profile_quotes_allowed(tuning, false));
+        assert!(pgt_profile_quotes_allowed(tuning, true));
+        assert!(pgt_profile_quotes_allowed(
+            PgtTuning::xuan_ladder_v1(),
+            false
+        ));
+    }
+
+    #[test]
+    fn xuan_m0001_completion_caps_stage_by_round_tail() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 120, 1.0),
+            (
+                XUAN_M0001_BASE_PAIR_CAP,
+                XUAN_M0001_BASE_PAIR_CAP,
+                XUAN_M0001_BASE_PAIR_CAP
+            )
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, XUAN_M0001_LATE_REMAINING_SECS, 1.0),
+            (
+                XUAN_M0001_LATE_PAIR_CAP,
+                XUAN_M0001_LATE_PAIR_CAP,
+                XUAN_M0001_LATE_PAIR_CAP
+            )
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, XUAN_M0001_FINAL_REMAINING_SECS, 1.0),
+            (
+                XUAN_M0001_FINAL_PAIR_CAP,
+                XUAN_M0001_FINAL_PAIR_CAP,
+                XUAN_M0001_FINAL_PAIR_CAP
+            )
+        );
+    }
+
+    #[test]
+    fn xuan_m0001_absent_seed_retain_uses_runner_ttl() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        assert!(pgt_profile_absent_seed_retain_allowed(
+            tuning,
+            120,
+            Duration::from_secs(119)
+        ));
+        assert!(!pgt_profile_absent_seed_retain_allowed(
+            tuning,
+            120,
+            Duration::from_secs(121)
+        ));
+        assert!(!pgt_profile_absent_seed_retain_allowed(
+            tuning,
+            XUAN_M0001_STOP_BEFORE_END_SECS,
+            Duration::from_secs(10)
+        ));
+        assert!(pgt_profile_absent_seed_retain_allowed(
+            PgtTuning::xuan_ladder_v1(),
+            XUAN_M0001_STOP_BEFORE_END_SECS,
+            Duration::from_secs(121)
+        ));
+    }
+
+    #[test]
+    fn xuan_m0001_public_trade_pair_gate_uses_unimproved_trade_price() {
+        assert!(pgt_xuan_m0001_public_trade_pair_supported(0.522, 0.498));
+        assert!(!pgt_xuan_m0001_public_trade_pair_supported(0.522, 0.4995));
+        assert!(
+            !pgt_xuan_m0001_public_trade_pair_supported(0.522 - XUAN_M0001_EDGE, 0.521),
+            "the gate is intentionally based on the public trade price, not the improved seed quote"
+        );
+    }
+
+    #[test]
+    fn xuan_m0001_blocks_only_over_margin_aged_completion() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        assert!(!pgt_xuan_m0001_blocks_aged_completion(
+            tuning,
+            XUAN_M0001_BLOCKED_SKIP_AGE_SECS - 1.0,
+            0.500,
+            0.503
+        ));
+        assert!(!pgt_xuan_m0001_blocks_aged_completion(
+            tuning,
+            XUAN_M0001_BLOCKED_SKIP_AGE_SECS,
+            0.500,
+            XUAN_M0001_AGED_UNWIND_PAIR_CAP + XUAN_M0001_BLOCKED_SKIP_MARGIN - 0.500
+        ));
+        assert!(pgt_xuan_m0001_blocks_aged_completion(
+            tuning,
+            XUAN_M0001_BLOCKED_SKIP_AGE_SECS,
+            0.500,
+            0.503
+        ));
+        assert!(!pgt_xuan_m0001_blocks_aged_completion(
+            PgtTuning::xuan_ladder_v1(),
+            XUAN_M0001_BLOCKED_SKIP_AGE_SECS,
+            0.500,
+            0.503
+        ));
+    }
+
+    #[test]
+    fn xuan_m0001_material_residual_guard_uses_qty_or_cost() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        let qty_residual = PairLedgerSnapshot {
+            residual_qty: XUAN_M0001_MATERIAL_RESIDUAL_QTY + 0.1,
+            ..PairLedgerSnapshot::default()
+        };
+        assert!(pgt_material_residual_blocks_new_seed(tuning, &qty_residual));
+
+        let cost_residual = PairLedgerSnapshot {
+            residual_qty: 5.0,
+            active_tranche: Some(PairTranche {
+                residual_qty: 5.0,
+                first_vwap: 1.21,
+                ..PairTranche::default()
+            }),
+            ..PairLedgerSnapshot::default()
+        };
+        assert!(pgt_material_residual_blocks_new_seed(
+            tuning,
+            &cost_residual
+        ));
+
+        let dust_residual = PairLedgerSnapshot {
+            residual_qty: 5.0,
+            active_tranche: Some(PairTranche {
+                residual_qty: 5.0,
+                first_vwap: 0.50,
+                ..PairTranche::default()
+            }),
+            ..PairLedgerSnapshot::default()
+        };
+        assert!(!pgt_material_residual_blocks_new_seed(
+            tuning,
+            &dust_residual
+        ));
+    }
+
+    #[test]
+    fn xuan_m0001_blocked_residual_probe_allows_only_old_dust_before_cycle_cap() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        let old_dust = PairTranche {
+            first_side: Some(Side::Yes),
+            residual_qty: 5.0,
+            first_vwap: 0.50,
+            last_transition_at: Some(
+                std::time::Instant::now()
+                    - Duration::from_secs(XUAN_M0001_BLOCKED_SKIP_AGE_SECS as u64 + 1),
+            ),
+            ..PairTranche::default()
+        };
+        let ledger = PairLedgerSnapshot {
+            active_tranche: Some(old_dust),
+            residual_qty: old_dust.residual_qty,
+            completed_pair_count: XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP - 1,
+            ..PairLedgerSnapshot::default()
+        };
+        assert!(pgt_xuan_m0001_allows_blocked_residual_probe(
+            tuning, &ledger, old_dust, 120
+        ));
+
+        let fresh_dust = PairTranche {
+            last_transition_at: Some(std::time::Instant::now() - Duration::from_secs(30)),
+            ..old_dust
+        };
+        assert!(!pgt_xuan_m0001_allows_blocked_residual_probe(
+            tuning, &ledger, fresh_dust, 120
+        ));
+
+        let costly_dust = PairTranche {
+            first_vwap: 1.21,
+            ..old_dust
+        };
+        assert!(!pgt_xuan_m0001_allows_blocked_residual_probe(
+            tuning,
+            &ledger,
+            costly_dust,
+            120
+        ));
+
+        let capped_ledger = PairLedgerSnapshot {
+            completed_pair_count: XUAN_CYCLE_CAPPED_COMPLETED_CYCLE_CAP,
+            ..ledger
+        };
+        assert!(!pgt_xuan_m0001_allows_blocked_residual_probe(
+            tuning,
+            &capped_ledger,
+            old_dust,
+            120
+        ));
+
+        assert!(!pgt_xuan_m0001_allows_blocked_residual_probe(
+            tuning, &ledger, old_dust, 59
+        ));
+    }
+
+    #[test]
+    fn xuan_cycle_capped_blocks_only_new_seed_after_cycle_cap() {
+        let tuning = PgtTuning::xuan_cycle_capped_v1();
+        assert!(!pgt_blocks_completed_cycle_cap(
+            tuning,
+            5,
+            0.0,
+            false,
+            pgt_residual_guard_eps(tuning)
+        ));
+        assert!(pgt_blocks_completed_cycle_cap(
+            tuning,
+            6,
+            0.0,
+            false,
+            pgt_residual_guard_eps(tuning)
+        ));
+        assert!(!pgt_blocks_completed_cycle_cap(
+            tuning,
+            6,
+            RESIDUAL_EPS + 1.0,
+            false,
+            pgt_residual_guard_eps(tuning)
+        ));
+        assert!(!pgt_blocks_completed_cycle_cap(
+            tuning,
+            6,
+            0.0,
+            true,
+            pgt_residual_guard_eps(tuning)
+        ));
+        assert!(!pgt_blocks_completed_cycle_cap(
+            PgtTuning::xuan_cycle_merge_v1(),
+            99,
+            0.0,
+            false,
+            pgt_residual_guard_eps(PgtTuning::xuan_cycle_merge_v1())
+        ));
+    }
+
+    #[test]
+    fn xuan_cycle_capped_inventory_budget_allows_candidate_clip() {
+        let tuning = PgtTuning::xuan_cycle_capped_v1();
+        let light = InventoryState {
+            yes_qty: 100.0,
+            yes_avg_cost: 0.49,
+            ..InventoryState::default()
+        };
+        assert!(
+            pgt_xuan_cycle_available_buy_qty(tuning, &light, XUAN_CYCLE_CAPPED_SEED_MAX_PRICE)
+                >= XUAN_CYCLE_CAPPED_MAX_SEED_QTY
+        );
+
+        let nearly_full = InventoryState {
+            yes_qty: 500.0,
+            yes_avg_cost: 0.499,
+            ..InventoryState::default()
+        };
+        assert!(
+            pgt_xuan_cycle_available_buy_qty(
+                tuning,
+                &nearly_full,
+                XUAN_CYCLE_CAPPED_SEED_MAX_PRICE
+            ) < XUAN_CYCLE_CAPPED_MIN_FILL_QTY
+        );
+    }
+
+    #[test]
+    fn xuan_cycle_capped_same_side_add_respects_target_qty() {
+        let tuning = PgtTuning::xuan_cycle_capped_v1();
+        let active = PairTranche {
+            first_qty: 60.0,
+            ..PairTranche::default()
+        };
+        assert_eq!(
+            pgt_xuan_cycle_same_side_target_remaining(tuning, active),
+            Some(55.0)
+        );
+
+        let full = PairTranche {
+            first_qty: XUAN_CYCLE_CAPPED_TARGET_QTY,
+            ..PairTranche::default()
+        };
+        assert_eq!(
+            pgt_xuan_cycle_same_side_target_remaining(tuning, full),
+            Some(0.0)
+        );
+        assert_eq!(
+            pgt_xuan_cycle_same_side_target_remaining(PgtTuning::xuan_cycle_merge_v1(), active),
+            None
+        );
     }
 
     #[test]
@@ -3368,6 +4405,24 @@ mod tests {
             true,
             None,
             true,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::Dual);
+    }
+
+    #[test]
+    fn xuan_cycle_merge_keeps_dual_low_seed_quotes_despite_latch() {
+        let strategy = PairGatedTrancheStrategy;
+        let yes = seed_plan_with_slack(Side::Yes, 0.06, 0, -10.0);
+        let no = seed_plan_with_slack(Side::No, 0.06, 0, -10.0);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::XuanCycleMergeV1,
+            true,
+            Some(Side::Yes),
+            false,
         );
 
         assert_eq!(selection, FlatSeedSelection::Dual);

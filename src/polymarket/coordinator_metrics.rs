@@ -9,6 +9,21 @@ const PAIR_ARB_PROGRESS_MIN_PAIRED_QTY_DELTA_FLOOR: f64 = 0.25;
 const PAIR_ARB_STALLED_SECS: u64 = 60;
 const FLOAT_INV_EPS: f64 = PAIR_ARB_NET_EPS;
 
+fn format_xuan_m0001_no_seed_counts(counts: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT]) -> String {
+    let mut parts = Vec::new();
+    for reason in PgtXuanM0001NoSeedReason::ALL {
+        let n = counts[reason.index()];
+        if n > 0 {
+            parts.push(format!("{}={}", reason.as_str(), n));
+        }
+    }
+    if parts.is_empty() {
+        "none".to_string()
+    } else {
+        parts.join(",")
+    }
+}
+
 impl StrategyCoordinator {
     pub(super) fn pgt_bump_decision_epoch(&mut self, reason: &'static str) {
         if !self.cfg.strategy.is_pair_gated_tranche_arb() {
@@ -316,6 +331,7 @@ impl StrategyCoordinator {
             dispatch_retain: self.stats.pgt_dispatch_retain,
             dispatch_clear: self.stats.pgt_dispatch_clear,
             stale_target_dropped: self.stats.pgt_stale_target_dropped,
+            xuan_m0001_no_seed: self.stats.pgt_xuan_m0001_no_seed,
         }
     }
 
@@ -441,9 +457,17 @@ impl StrategyCoordinator {
         let stale_target_dropped_delta = cur
             .stale_target_dropped
             .saturating_sub(prev.stale_target_dropped);
+        let mut xuan_m0001_no_seed_delta = [0_u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT];
+        for ((out, cur), prev) in xuan_m0001_no_seed_delta
+            .iter_mut()
+            .zip(cur.xuan_m0001_no_seed)
+            .zip(prev.xuan_m0001_no_seed)
+        {
+            *out = cur.saturating_sub(prev);
+        }
 
         info!(
-            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/after_rescue/after_close/residual/capital/invalid/no_seed/geometry/no_visible_be)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={})",
+            "🧭 PGTGate(30s) | quotes(seed/completion/post_flow/taker_open/taker_close)={}/{}/{}/{}/{} dispatch(intent/blocked/place/taker_open/taker_close/retain/clear/stale_drop)={}/{}/{}/{}/{}/{}/{}/{} skip(harvest/tail/after_rescue/after_close/residual/capital/invalid/no_seed/geometry/no_visible_be)={}/{}/{}/{}/{}/{}/{}/{}/{}/{} shape(single_seed_bias={} dual_seed={} single_seed_released_to_dual={} entry_pressure_sides={} entry_pressure_extra_ticks={}) xuan_m0001_no_seed={}",
             seed_delta,
             completion_delta,
             post_flow_delta,
@@ -472,6 +496,7 @@ impl StrategyCoordinator {
             single_seed_released_delta,
             entry_pressure_sides_delta,
             entry_pressure_extra_ticks_delta,
+            format_xuan_m0001_no_seed_counts(xuan_m0001_no_seed_delta),
         );
     }
 
