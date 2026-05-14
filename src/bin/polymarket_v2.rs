@@ -11663,19 +11663,21 @@ fn local_boundary_symbol_router_fallback_policy_specs(
                 min_sources: 1,
                 allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE,
             },
-            LocalBoundaryShadowPolicySpec {
-                policy_name: "boundary_symbol_router_fallback",
-                source_subset_name: "sol_binance_fallback",
-                rule: LocalBoundaryCloseRule::AfterThenBefore,
-                min_sources: 1,
-                allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE,
-            },
+            // OKX-before-Binance is a narrow SOL fallback preference: fixed replay
+            // shows lower accepted tails when both single-source fallbacks are visible.
             LocalBoundaryShadowPolicySpec {
                 policy_name: "boundary_symbol_router_fallback",
                 source_subset_name: "sol_okx_missing_fallback",
                 rule: LocalBoundaryCloseRule::AfterThenBefore,
                 min_sources: 1,
                 allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_OKX,
+            },
+            LocalBoundaryShadowPolicySpec {
+                policy_name: "boundary_symbol_router_fallback",
+                source_subset_name: "sol_binance_fallback",
+                rule: LocalBoundaryCloseRule::AfterThenBefore,
+                min_sources: 1,
+                allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE,
             },
         ],
         _ => Vec::new(),
