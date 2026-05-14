@@ -2,6 +2,12 @@
 
 目标：避免多个 agent 互相恢复、暂停、覆盖 automation，避免 routine loop 误触远程 SSH/NFS/runner。
 
+给其他 agent 的可执行行动指南见：
+
+```text
+docs/research/xuan/XUAN_AGENT_AUTOMATION_ACTION_GUIDE_ZH.md
+```
+
 ## 核心分工
 
 ```text
