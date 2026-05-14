@@ -11,6 +11,8 @@ Run the xuan/B27/RWO BTC 5m frontier autoresearch loop in strict quiet-archive m
 
 Automation boundary is strict: do not SSH, do not rsync, do not use remote NFS, do not run remote EC2 jobs, do not use GitHub/gh/network push, do not commit/push, do not create/update/delete other automations, do not create sibling xuan heartbeats/crons, and do not spawn long-running subagents from this automation. The interactive Codex thread or an explicitly authorized server-side runner owns remote read/search/verifier execution.
 
+When calling legacy scripts that contain remote fallback paths, explicitly force local-only mode with REMOTE_INSPECT=0 and REMOTE_DISCOVERY=0. Other agents must not modify this automation or any xuan-frontier-* automation; owner rules live in docs/research/xuan/XUAN_AUTOMATION_OWNER_RULES_ZH.md.
+
 Hard safety: do not modify collector/raw/replay/rebuild/publish/broker/shared ingress/env/systemd/live trading/oracle/local agg. Do not scan /mnt/poly-replay, replay_published, raw, or raw/replay SQLite. Do not start services or second shadows.
 
 Allowed work: inspect local repo files, local artifacts/ledger, local automation memory, local scripts/docs, and prepare concise next-step plans or local patch proposals. Before any local-only analysis, auto-discover local inputs with /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier/scripts/discover_poly_backtest_inputs.py when available. If required data only exists remotely, record a local ledger note and archive quietly; do not report SSH denial as a blocker.
@@ -25,4 +27,3 @@ Highest-value next steps for this local-only loop: prepare or refine a local dry
 
 STRICT FINAL OUTPUT RULE: If this hourly run has no new local patch proposal, no decision request, no data-source request, and no material strategy finding from already-local artifacts, the final response must be exactly this single line and nothing else: ::archive{reason="routine xuan frontier checkpoint"}. Do not include summaries, bullets, or status text in routine runs. Leave the thread unarchived only for material local strategy findings, decision requests, data-source blockers, failed local runs, or a candidate that should move to Rust patch; in those cases keep the visible final under 6 lines and include exact artifact paths. Do not ask whether to continue; keep/discard/refine and proceed unless blocked.
 ```
-

@@ -182,6 +182,71 @@ async fn public_trade_snapshot_retains_latest_sell_after_buy_tick() {
     assert_eq!(trade.ts, sell_ts);
 }
 
+#[tokio::test]
+async fn public_trade_snapshot_tracks_latest_sell_per_side() {
+    let (_, _, _, _, _, mut coord) = make(cfg());
+    let yes_ts = Instant::now();
+    let no_ts = yes_ts + Duration::from_millis(10);
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "yes".to_string(),
+            trade_id: Some("yes-sell-1".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Sell,
+            price: 0.522,
+            size: 40.0,
+            ts: yes_ts,
+        })
+        .await;
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "no".to_string(),
+            trade_id: Some("no-sell-1".to_string()),
+            market_side: Side::No,
+            taker_side: TakerSide::Sell,
+            price: 0.478,
+            size: 25.0,
+            ts: no_ts,
+        })
+        .await;
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "no".to_string(),
+            trade_id: Some("no-buy-1".to_string()),
+            market_side: Side::No,
+            taker_side: TakerSide::Buy,
+            price: 0.480,
+            size: 10.0,
+            ts: Instant::now(),
+        })
+        .await;
+
+    let latest = coord
+        .recent_public_trade(Duration::from_secs(5))
+        .expect("latest public sell trade should remain available");
+    assert_eq!(latest.market_side, Side::No);
+    assert_eq!(latest.taker_side, TakerSide::Sell);
+    assert!((latest.price - 0.478).abs() < 1e-9);
+
+    let yes = coord
+        .recent_public_trade_for(Side::Yes, Duration::from_secs(5))
+        .expect("YES public sell trade should remain available");
+    assert_eq!(yes.market_side, Side::Yes);
+    assert_eq!(yes.taker_side, TakerSide::Sell);
+    assert!((yes.price - 0.522).abs() < 1e-9);
+    assert!((yes.size - 40.0).abs() < 1e-9);
+    assert_eq!(yes.ts, yes_ts);
+
+    let no = coord
+        .recent_public_trade_for(Side::No, Duration::from_secs(5))
+        .expect("NO public sell trade should remain available");
+    assert_eq!(no.market_side, Side::No);
+    assert_eq!(no.taker_side, TakerSide::Sell);
+    assert!((no.price - 0.478).abs() < 1e-9);
+    assert!((no.size - 25.0).abs() < 1e-9);
+    assert_eq!(no.ts, no_ts);
+}
+
 fn book(yb: f64, ya: f64, nb: f64, na: f64) -> Book {
     Book {
         yes_bid: yb,

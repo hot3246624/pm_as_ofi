@@ -82,3 +82,13 @@ python3 /home/ubuntu/xuan_frontier_runs/xuan_research_job_runner.py \
 3. source-of-truth verifier 仍然单独排队；search/cache/store 结果不能直接部署。
 4. 主线程只读取标准指标：PnL/stress、residual、cycles、pair cost、fill realism、verifier status。
 5. D+ 当前优先级：`verifier_spec_d_plus_minorder_fillhaircut_20260514_0310` -> Rust dry-run-only profile -> local tests -> shadow。
+
+## Automation owner 规则
+
+自动化任务的 owner/namespace 规则见：
+
+```text
+docs/research/xuan/XUAN_AUTOMATION_OWNER_RULES_ZH.md
+```
+
+简要原则：`xuan frontier` 只拥有 `xuan-frontier-*`；其他 agent 不修改这个 namespace；`xuan-frontier-research-loop` 是本地 quiet archive loop，不执行 SSH/rsync/远程 NFS/远程 job。调用带远程 fallback 的旧脚本时必须显式设置 `REMOTE_INSPECT=0 REMOTE_DISCOVERY=0`。

@@ -1632,13 +1632,15 @@ impl StrategyCoordinator {
                 if taker_side == TakerSide::Sell {
                     self.stats.market_sell_trade_ticks =
                         self.stats.market_sell_trade_ticks.saturating_add(1);
-                    self.last_public_trade = Some(PublicTradeSnapshot {
+                    let snapshot = PublicTradeSnapshot {
                         market_side,
                         taker_side,
                         price,
                         size,
                         ts,
-                    });
+                    };
+                    self.last_public_trade = Some(snapshot);
+                    self.last_public_trade_by_side[market_side.index()] = Some(snapshot);
                 }
                 // Trades are primarily for OFI actor; PGT m0001 consumes the
                 // latest public SELL tick as a maker-shadow trigger.

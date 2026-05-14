@@ -1248,6 +1248,7 @@ pub struct StrategyCoordinator {
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
     last_public_trade: Option<PublicTradeSnapshot>,
+    last_public_trade_by_side: [Option<PublicTradeSnapshot>; 2],
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
     /// P5 FIX: Per-side timestamps to catch single-side staleness.
     last_valid_ts_yes: Instant,
@@ -1643,6 +1644,7 @@ impl StrategyCoordinator {
             book: Book::default(),
             last_valid_book: Book::default(),
             last_public_trade: None,
+            last_public_trade_by_side: [None; 2],
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
             yes_stale_since: None,
@@ -2387,6 +2389,19 @@ impl StrategyCoordinator {
 
     pub(crate) fn recent_public_trade(&self, max_age: Duration) -> Option<PublicTradeSnapshot> {
         let trade = self.last_public_trade?;
+        if Instant::now().saturating_duration_since(trade.ts) <= max_age {
+            Some(trade)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn recent_public_trade_for(
+        &self,
+        side: Side,
+        max_age: Duration,
+    ) -> Option<PublicTradeSnapshot> {
+        let trade = self.last_public_trade_by_side[side.index()]?;
         if Instant::now().saturating_duration_since(trade.ts) <= max_age {
             Some(trade)
         } else {
