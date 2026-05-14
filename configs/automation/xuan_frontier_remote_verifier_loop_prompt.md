@@ -25,7 +25,7 @@ ssh -i ~/.ssh/polymarket-Ireland.pem -o IdentitiesOnly=yes -o BatchMode=yes -o C
 
 SSH preflight is mandatory before any remote work. If preflight fails, archive quietly with UNKNOWN verdict; do not retry with rsync/scp/tunnel, do not use ssh-agent assumptions, and do not treat SSH failure as a strategy failure.
 
-Before starting a remote verification, check for existing similar xuan-frontier verifier processes with pgrep/ps and avoid overlap. If one is already running, report quiet progress or archive with UNKNOWN.
+Before starting a remote verification, check for existing similar xuan-frontier verifier processes with pgrep/ps and avoid overlap. If one is already running, write memory/manifest if needed and archive with UNKNOWN.
 
 Do not rsync. Do not scp. Do not use remote NFS from the local machine. Do not run raw/replay SQLite scans from this automation. Do not modify collector/raw/replay/rebuild/publish/broker/shared ingress/env/systemd/live trading/oracle/local agg. Do not start/stop/restart services. Do not deploy. Do not git commit/push, gh, or open PRs.
 
@@ -47,7 +47,7 @@ Primary job:
 
 Every non-archive remote run must write a manifest JSON in its output directory. The manifest must include: automation id, UTC start/end, host, exact SSH command class, remote command, input paths, output path, script sha256, git/repo commit if available, process-overlap check, metric summary, and verdict. Verdict must be exactly KEEP, DISCARD, or UNKNOWN. Do not use vague language like “looks good” without a verdict.
 
-Automation does not make final production decisions. If verdict is KEEP, produce a concise patch/verifier/shadow recommendation for the main thread. If DISCARD, record why and the next bounded search axis. If UNKNOWN, state the missing input or failed preflight.
+Automation does not make final production decisions. If verdict is KEEP, produce a concise patch/verifier/shadow recommendation for the main thread. If DISCARD, record why and the next bounded search axis. UNKNOWN is normally non-material: write memory/manifest if appropriate, then archive. Surface UNKNOWN only when it is a repeated verifier infrastructure failure or requires main-thread action.
 
-STRICT FINAL OUTPUT RULE: If no new day, no new verifier result, no failed preflight, and no material decision request exists, final output exactly: ::archive{reason="routine xuan frontier remote verifier checkpoint"}. For material findings, keep final under 8 lines with exact remote artifact paths and the KEEP/DISCARD/UNKNOWN verdict.
+STRICT AUTO-ARCHIVE RULE: If there is no new KEEP/DISCARD verifier result, no repeated infrastructure failure, and no material decision request, final output exactly and only: ::archive{reason="routine xuan frontier remote verifier checkpoint"}. This includes no-new-day runs, successful preflight with no work, ordinary SSH preflight failure, overlap/no-op, and ordinary UNKNOWN. Do not output summaries, bullets, status text, "quiet progress", or "no new day" for routine runs. For material findings, keep final under 8 lines with exact remote artifact paths and the KEEP/DISCARD/UNKNOWN verdict.
 ```

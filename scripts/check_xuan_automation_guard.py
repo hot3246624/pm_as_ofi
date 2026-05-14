@@ -32,6 +32,7 @@ REQUIRED_LOCAL_PROMPT_MARKERS = [
     "create/update/delete other automations",
     "create sibling xuan heartbeats/crons",
     "xuan frontier owns xuan-frontier-* only",
+    "strict auto-archive rule",
     "::archive{reason=\"routine xuan frontier checkpoint\"}",
 ]
 REQUIRED_REMOTE_PROMPT_MARKERS = [
@@ -43,6 +44,8 @@ REQUIRED_REMOTE_PROMPT_MARKERS = [
     "do not scp",
     "manifest",
     "keep/discard/unknown",
+    "strict auto-archive rule",
+    "::archive{reason=\"routine xuan frontier remote verifier checkpoint\"}",
     "do not modify collector/raw/replay",
 ]
 

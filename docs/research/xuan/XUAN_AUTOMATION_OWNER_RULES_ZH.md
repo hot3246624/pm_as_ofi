@@ -68,7 +68,7 @@ Automation 负责：
 
 ## Automation 类型
 
-`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。推荐频率：每 6 小时一次，避免 routine archive 刷线程。
+`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。推荐频率：每 6 小时一次；真正的降噪机制是 routine run 必须自动归档，而不是输出“无变化”摘要。
 
 禁止：
 
@@ -83,9 +83,15 @@ Automation 负责：
 - 读本地 repo、docs、scripts、artifacts、ledger。
 - 运行本地 lightweight discovery/guard/test。
 - 生成本地 patch proposal、data-source request、verifier request spec。
-- 无 material 发现时 quiet archive。
+- 无 material 发现时最终输出必须只有 archive directive：
 
-`xuan-frontier-remote-verifier-loop` 是受限远端验证 loop，用来推进 P2/source-of-truth/verifier 队列，但仍不是生产执行器。推荐频率：每 2 小时一次；新数据通常不会小时级发布，低于 2 小时容易制造噪音。
+```text
+::archive{reason="routine xuan frontier checkpoint"}
+```
+
+- routine run 禁止输出摘要、bullet、status、`quiet archive` 字样或“no changes”。
+
+`xuan-frontier-remote-verifier-loop` 是受限远端验证 loop，用来推进 P2/source-of-truth/verifier 队列，但仍不是生产执行器。推荐频率：每 2 小时一次；真正的降噪机制是 no-new-day / ordinary UNKNOWN 自动归档。
 
 允许：
 
@@ -113,6 +119,16 @@ ssh -i ~/.ssh/polymarket-Ireland.pem -o IdentitiesOnly=yes -o BatchMode=yes -o C
 - 修改 collector/raw/replay/rebuild/publish。
 - 启停服务、部署、修改 broker/shared ingress/env/root/protocol/market universe、live 交易。
 - 做最终生产判断。`KEEP` 只能表示“建议主线程考虑 patch/verifier/shadow”，不是上线授权。
+
+可见输出规则：
+
+- `KEEP` / `DISCARD` 新 verifier 结果：允许浮出，附 artifact 和 verdict。
+- 重复 verifier 基础设施失败、需要主线程处理：允许浮出。
+- no-new-day、preflight 成功但无工作、普通 SSH preflight 失败、overlap/no-op、普通 `UNKNOWN`：必须自动归档：
+
+```text
+::archive{reason="routine xuan frontier remote verifier checkpoint"}
+```
 
 Automation prompt 必须自包含，不能依赖当前聊天里的隐含上下文。prompt 里必须写明：
 
