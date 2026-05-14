@@ -6,6 +6,8 @@ Automation id: `xuan-frontier-research-loop`
 
 Recommended model: `gpt-5.5`
 
+Recommended reasoning effort: `xhigh`
+
 Purpose: local-only xuan/B27/RWO frontier planning, artifact review, and quiet archival. It is not a remote executor.
 
 ```text
