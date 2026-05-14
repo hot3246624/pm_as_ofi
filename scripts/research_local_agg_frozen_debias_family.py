@@ -65,6 +65,7 @@ class DebiasSpec:
     train_map: dict[str, list[str]]
     min_train: int
     trigger: Callable[[SelectedRow], bool]
+    max_move_bps: float | None = None
 
 
 def side_yes(price: float, open_price: float) -> bool:
@@ -105,6 +106,10 @@ def candidate_price_from_selected(row: GateRow, selected: SelectedRow) -> float:
     # SelectedRow stores signed bps relative to RDTS close, not the candidate
     # price. This reconstruction is equivalent for offline replay metrics.
     return row.rtds_close * (1.0 + selected.selected_debiased_signed_bps / 10_000.0)
+
+
+def move_bps(price: float, reference_price: float) -> float:
+    return bps_diff(price, reference_price)
 
 
 def prepare_debias_candidates(
@@ -374,18 +379,25 @@ def evaluate_family(
             selected_debias = debias_by_key.get((item.run_id, row.symbol, row.round_end_ts))
             if selected_debias is not None and deterministic_reason == base_reason:
                 debias_name, selected = selected_debias
-                final_reason = debias_name
-                final_price = candidate_price_from_selected(row, selected)
-                extra = {
-                    "selected_source": selected.selected_source,
-                    "selected_kind": selected.selected_kind,
-                    "selected_lag_bucket": selected.selected_lag_bucket,
-                    "selected_offset_ms": selected.selected_offset_ms,
-                    "selected_key": list(selected.selected_key),
-                    "selected_train_n": selected.selected_train_n,
-                    "selected_score_bps": selected.selected_score_bps,
-                    "selected_debiased_signed_bps": selected.selected_debiased_signed_bps,
-                }
+                spec_by_name = {spec.name: spec for spec in specs}
+                selected_price = candidate_price_from_selected(row, selected)
+                debias_move_bps = move_bps(selected_price, deterministic_price)
+                spec = spec_by_name[debias_name]
+                if spec.max_move_bps is None or debias_move_bps <= spec.max_move_bps:
+                    final_reason = debias_name
+                    final_price = selected_price
+                    extra = {
+                        "selected_source": selected.selected_source,
+                        "selected_kind": selected.selected_kind,
+                        "selected_lag_bucket": selected.selected_lag_bucket,
+                        "selected_offset_ms": selected.selected_offset_ms,
+                        "selected_key": list(selected.selected_key),
+                        "selected_train_n": selected.selected_train_n,
+                        "selected_score_bps": selected.selected_score_bps,
+                        "selected_debiased_signed_bps": selected.selected_debiased_signed_bps,
+                        "debias_move_bps": debias_move_bps,
+                        "max_move_bps": spec.max_move_bps,
+                    }
 
             base_error = bps_diff(base_price, row.rtds_close)
             deterministic_error = bps_diff(deterministic_price, row.rtds_close)
@@ -548,10 +560,16 @@ def main() -> int:
     parser.add_argument("--doge-okx-min-deeper-margin-bps", type=float, default=2.0)
     parser.add_argument("--sol-train-map", action="append", default=[])
     parser.add_argument("--sol-min-train", type=int, default=8)
+    parser.add_argument("--sol-max-move-bps", type=float, default=0.0)
+    parser.add_argument("--disable-sol-debias", action="store_true")
     parser.add_argument("--bnb-train-map", action="append", default=[])
     parser.add_argument("--bnb-min-train", type=int, default=20)
+    parser.add_argument("--bnb-max-move-bps", type=float, default=0.0)
+    parser.add_argument("--disable-bnb-debias", action="store_true")
     parser.add_argument("--xrp-train-map", action="append", default=[])
     parser.add_argument("--xrp-min-train", type=int, default=20)
+    parser.add_argument("--xrp-max-move-bps", type=float, default=0.0)
+    parser.add_argument("--disable-xrp-debias", action="store_true")
     parser.add_argument("--regression-threshold-bps", type=float, default=0.5)
     parser.add_argument("--tail-n", type=int, default=30)
     parser.add_argument("--out-json", default="")
@@ -561,29 +579,42 @@ def main() -> int:
     run_data = load_run_data(args.run_dir, args.gate_status)
     doge_max_spread = None if args.doge_no_max_source_spread else args.doge_max_source_spread_bps
     specs = [
-        DebiasSpec(
-            name="sol_same_shallower_coinbase_frozen_debias",
-            symbol="sol/usd",
-            train_map=parse_train_map(args.sol_train_map),
-            min_train=args.sol_min_train,
-            trigger=lambda selected: selected.selected_source == "coinbase"
-            and depth_label(selected) == "same_shallower",
-        ),
-        DebiasSpec(
-            name="bnb_has_bybit_frozen_debias",
-            symbol="bnb/usd",
-            train_map=parse_train_map(args.bnb_train_map),
-            min_train=args.bnb_min_train,
-            trigger=lambda selected: "bybit"
-            in set(filter(None, selected.current_local_sources.split(";"))),
-        ),
-        DebiasSpec(
-            name="xrp_same_near_frozen_debias",
-            symbol="xrp/usd",
-            train_map=parse_train_map(args.xrp_train_map),
-            min_train=args.xrp_min_train,
-            trigger=lambda selected: depth_label(selected) == "same_near",
-        ),
+        spec
+        for spec in [
+            None
+            if args.disable_sol_debias
+            else DebiasSpec(
+                name="sol_same_shallower_coinbase_frozen_debias",
+                symbol="sol/usd",
+                train_map=parse_train_map(args.sol_train_map),
+                min_train=args.sol_min_train,
+                trigger=lambda selected: selected.selected_source == "coinbase"
+                and depth_label(selected) == "same_shallower",
+                max_move_bps=args.sol_max_move_bps or None,
+            ),
+            None
+            if args.disable_bnb_debias
+            else DebiasSpec(
+                name="bnb_has_bybit_frozen_debias",
+                symbol="bnb/usd",
+                train_map=parse_train_map(args.bnb_train_map),
+                min_train=args.bnb_min_train,
+                trigger=lambda selected: "bybit"
+                in set(filter(None, selected.current_local_sources.split(";"))),
+                max_move_bps=args.bnb_max_move_bps or None,
+            ),
+            None
+            if args.disable_xrp_debias
+            else DebiasSpec(
+                name="xrp_same_near_frozen_debias",
+                symbol="xrp/usd",
+                train_map=parse_train_map(args.xrp_train_map),
+                min_train=args.xrp_min_train,
+                trigger=lambda selected: depth_label(selected) == "same_near",
+                max_move_bps=args.xrp_max_move_bps or None,
+            ),
+        ]
+        if spec is not None
     ]
     result = evaluate_family(
         run_data,
@@ -616,10 +647,16 @@ def main() -> int:
             "gate_status": args.gate_status,
             "sol_train_map": parse_train_map(args.sol_train_map),
             "sol_min_train": args.sol_min_train,
+            "sol_max_move_bps": args.sol_max_move_bps or None,
+            "disable_sol_debias": args.disable_sol_debias,
             "bnb_train_map": parse_train_map(args.bnb_train_map),
             "bnb_min_train": args.bnb_min_train,
+            "bnb_max_move_bps": args.bnb_max_move_bps or None,
+            "disable_bnb_debias": args.disable_bnb_debias,
             "xrp_train_map": parse_train_map(args.xrp_train_map),
             "xrp_min_train": args.xrp_min_train,
+            "xrp_max_move_bps": args.xrp_max_move_bps or None,
+            "disable_xrp_debias": args.disable_xrp_debias,
             "regression_threshold_bps": args.regression_threshold_bps,
         },
         **result,

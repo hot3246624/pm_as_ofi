@@ -119,6 +119,51 @@ Runtime recommendation remains unchanged:
 - Option B1 deterministic HYPE+DOGE-only remains the only low-complexity runtime candidate pending explicit user approval.
 - SOL/BNB/XRP frozen debias requires a separate artifact, stricter row-regression guard, and a separate Decision Needed.
 
+## 00:16Z Guard Sweep Addendum
+
+新增到 replay harness 的 guard：
+
+- `--sol-max-move-bps`
+- `--bnb-max-move-bps`
+- `--xrp-max-move-bps`
+- `--disable-sol-debias`
+- `--disable-bnb-debias`
+- `--disable-xrp-debias`
+
+这里的 `move_bps` 是 debiased price 相对 deterministic/base price 的距离；它是 decision-time 可见字段，不使用 RDTS close。
+
+### All-family move guard
+
+| max move | selected | row regressions >0.5bps | global max | global p95 | BNB p95 |
+|---:|---:|---:|---:|---:|---:|
+| none | 127 | 26 | 4.984909 | 2.854649 | 4.356750 |
+| 1.0bps | 44 | 5 | 4.984909 | 3.044974 | 4.356750 |
+| 1.5bps | 66 | 10 | 4.984909 | 2.994790 | 4.356750 |
+| 2.0bps | 96 | 20 | 4.984909 | 2.972717 | 4.356750 |
+
+Interpretation:
+
+- Move guard does reduce row regressions materially.
+- BNB p95 remains worse under all tested move thresholds, so BNB needs to stay disabled or be conditioned separately.
+- SOL still contributes regressions even at 1.0bps move cap.
+
+### XRP-only clean guard
+
+禁用 SOL/BNB，只保留 XRP `same_near` frozen debias，并设置 `xrp_max_move_bps=1.0`：
+
+- selected_count：15
+- row_regression_count：0
+- global max：4.984909（unchanged versus deterministic）
+- global p95：3.092537（unchanged versus deterministic）
+- XRP max：3.774017（unchanged）
+- XRP p95：2.612629 -> 2.494177
+- side_errors：0
+- BTC unchanged
+
+Decision：`keep_research_only`。
+
+This is clean but marginal. It is useful evidence that a decision-time move guard can prevent row damage, but it is not strong enough to justify runtime complexity or a separate Decision Needed yet.
+
 ## Next Research Step
 
 Tighten the frozen debias family before any runtime discussion:
