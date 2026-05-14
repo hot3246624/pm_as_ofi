@@ -177,3 +177,25 @@ Tighten the frozen debias family before any runtime discussion:
    - row_regression_count materially reduced
    - BNB p95 not worse
    - global p95/p99 no worse than deterministic-only
+
+## 01:16Z Current-Data Guard Sweep
+
+用最新同步的 run `20260513_045906` accepted rows 重跑 guard sweep。固定 replay n=1055；deterministic HYPE/DOGE-only baseline 为 max/p95/p99 = 4.984909 / 3.093833 / 4.234153，side_errors=0。
+
+| Config | selected | row regressions >0.5bps | max | global p95 | p99 | BNB p95 | SOL p95 | XRP p95 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| all-family move<=0.5bps | 14 | 0 | 4.984909 | 3.092572 | 4.234153 | 4.222999 | 2.673806 | 2.612629 |
+| all-family move<=0.75bps | 27 | 2 | 4.984909 | 3.092572 | 4.309482 | 4.356559 | 2.673806 | 2.494177 |
+| all-family move<=1.0bps | 45 | 5 | 4.984909 | 3.092572 | 4.309482 | 4.356559 | 2.673806 | 2.494177 |
+| no-BNB move<=0.75bps | 17 | 0 | 4.984909 | 3.093833 | 4.234153 | 4.223761 | 2.673806 | 2.494177 |
+| XRP-only move<=1.0bps | 16 | 0 | 4.984909 | 3.093833 | 4.234153 | 4.223761 | 2.673806 | 2.494177 |
+| SOL-only move<=1.0bps | 22 | 2 | 4.984909 | 3.093833 | 4.234153 | 4.223761 | 2.673806 | 2.612629 |
+
+Interpretation:
+
+- `all-family move<=0.5bps` is clean but its global p95 gain over deterministic is only 0.001261bps, not enough to justify frozen debias runtime complexity.
+- `all-family move>=0.75bps` reintroduces row regressions and BNB p95 regression.
+- `no-BNB` / `XRP-only` guards can improve XRP p95 without row regressions, but do not move global p95/max.
+- SOL remains too weak under this guard: useful selected rows are not enough to change SOL p95, while looser movement allows row regressions.
+
+Decision remains `keep_research_only`; Option B1 deterministic HYPE/DOGE-only remains the only runtime candidate pending explicit approval.
