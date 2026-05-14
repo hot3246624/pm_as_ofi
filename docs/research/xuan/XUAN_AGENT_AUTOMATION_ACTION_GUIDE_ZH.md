@@ -160,7 +160,7 @@ Automation 是时间维度工具，不是并行开发 worker。
 - 只读本地 repo、docs、artifacts、ledger。
 - 不 SSH、不 rsync、不 scp、不 gh、不 git push、不部署。
 - 无 material 发现时最终输出必须只有 archive directive，不要输出摘要、bullet、status 或“no changes”。
-- 建议频率：每 6 小时一次；不要用 hourly routine archive 刷线程。
+- 建议频率：每小时一次；不要靠降频降噪，routine run 必须自动 archive。
 
 `*-remote-verifier-loop` / 远端验证类 loop：
 
@@ -172,7 +172,7 @@ Automation 是时间维度工具，不是并行开发 worker。
 - 每次非 archive 运行必须产出 manifest：命令、时间、host、输入路径、脚本 hash、verdict。
 - verdict 只能是 `KEEP` / `DISCARD` / `UNKNOWN`。
 - 不做最终生产判断，不启停服务，不碰 broker/shared ingress/env/live。
-- 建议频率：每 2 小时一次；除非数据源明确小时级更新，否则不要更高频。
+- 建议频率：每小时一次；新数据检测和 verifier 推进不应被降频拖慢。
 - no-new-day、普通 preflight failure、overlap/no-op、普通 `UNKNOWN` 必须 archive；只有新 `KEEP` / `DISCARD` 或需要主线程处理的重复失败才浮出。
 
 Heartbeat 适合：
