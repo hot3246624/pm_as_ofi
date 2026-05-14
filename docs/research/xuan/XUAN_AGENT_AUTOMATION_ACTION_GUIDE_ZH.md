@@ -41,9 +41,9 @@ pm_as_ofi-localagg
 
 每个 agent 可以在自己的 worktree/namespace 下开 automation 和 subagent。禁止的是跨 namespace 修改别人拥有的 automation。
 
-如果发现其他 namespace 异常，只报告 automation id、状态、cwd、风险，不直接修复。
+如果发现其他 namespace 异常，只报告 automation id、状态、cwd、风险，不进入对方 worktree，不运行对方 guard，不直接修复。
 
-检查命令：
+`xuan frontier` owner 自查命令：
 
 ```bash
 cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
@@ -54,10 +54,10 @@ python3 scripts/check_xuan_automation_guard.py
 
 ```text
 ok = true
-active_xuan_ids = ["xuan-frontier-research-loop"]
+active_xuan_frontier_ids = ["xuan-frontier-research-loop"]
 ```
 
-这个 guard 只确认 `xuan-frontier-*` 没被误改，不限制 `xuan-research-*` 或 `local-agg-*` 的 owner 自治。
+这个 guard 只给 `xuan frontier` owner 或主线程使用，用来确认 `xuan-frontier-*` 没被误改。`xuan-research` 和 `localagg` 不需要运行这个 guard，也不需要关心 `xuan-frontier-*` 的日常状态。
 
 ## 主线程职责
 
@@ -266,27 +266,21 @@ stress100_worst=+2242.28
 ## 其他 agent 的标准操作顺序
 
 1. 先读本指南和 owner rules。
-2. 运行 guard：
-
-```bash
-python3 scripts/check_xuan_automation_guard.py
-```
-
-3. 明确自己角色：
+2. 明确自己角色：
 
 ```text
 主线程 / explorer / worker / verifier / automation
 ```
 
-4. 如果不是主线程，不运行权限命令：
+3. 如果不是主线程，不运行权限命令：
 
 ```text
 ssh / gh / git fetch / git push / rsync / deploy
 ```
 
-5. 如果要写文件，先声明写入范围。
-6. 如果要创建或修改 automation，先确认 namespace owner；只改自己 namespace，不是 owner 就报告，不修改。
-7. 输出必须可验收：文件路径、命令、结果、剩余风险。
+4. 如果要写文件，先声明写入范围。
+5. 如果要创建或修改 automation，先确认 namespace owner；只改自己 namespace，不是 owner 就报告，不修改。
+6. 输出必须可验收：文件路径、命令、结果、剩余风险。
 
 ## 交接给 xuan-research 的短版
 
@@ -302,9 +296,7 @@ ssh / gh / git fetch / git push / rsync / deploy
 不要运行 ssh、gh、git fetch、git push、rsync、远程 NFS、部署或服务控制。
 如果你的任务确实需要远程/权限/部署，把需求交给主线程，不要在 automation/subagent 里做。
 
-如需检查 xuan-frontier namespace 是否被误改，只读运行：
-cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
-python3 scripts/check_xuan_automation_guard.py
+如果看到 xuan-frontier 或 localagg 的 automation 异常，只报告 automation id、状态、cwd、风险，不进入对方 worktree，不运行对方 guard，不直接修复。
 
 若调用旧脚本，必须禁远程 fallback：
 REMOTE_INSPECT=0 REMOTE_DISCOVERY=0 <command>
@@ -328,9 +320,7 @@ REMOTE_INSPECT=0 REMOTE_DISCOVERY=0 <command>
 
 如果你的 automation 需要远程/权限/部署，必须在 prompt 里写清边界和安全 gate；涉及跨策略线的修改只报告，不直接执行。
 
-如需检查 xuan-frontier namespace 是否被误改，只读运行：
-cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
-python3 scripts/check_xuan_automation_guard.py
+如果看到 xuan-frontier 或 xuan-research 的 automation 异常，只报告 automation id、状态、cwd、风险，不进入对方 worktree，不运行对方 guard，不直接修复。
 
 只使用自己 worktree 的本地文件和依赖。缺数据就说明缺少什么，不要跨 worktree 写文件。
 ```

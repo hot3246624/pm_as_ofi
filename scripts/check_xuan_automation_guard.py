@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Check xuan automation ownership and drift.
+"""Check xuan-frontier automation ownership and drift.
 
 This is intentionally read-only. It helps catch accidental sibling loops or
-prompt drift in the shared Codex automation directory.
+prompt drift in the shared Codex automation directory without policing other
+worktree owners.
 """
 
 from __future__ import annotations
@@ -22,17 +23,27 @@ except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback unavaila
 
 AUTOMATION_ROOT = Path(os.environ.get("CODEX_AUTOMATIONS_DIR", "~/.codex/automations")).expanduser()
 OWNER_ID = "xuan-frontier-research-loop"
-ALLOWED_ACTIVE_XUAN = {OWNER_ID}
+FRONTIER_PREFIX = "xuan-frontier-"
+ALLOWED_ACTIVE_FRONTIER = {OWNER_ID}
 REQUIRED_PROMPT_MARKERS = [
-    "LOCAL-ONLY",
-    "do not SSH",
-    "do not create/update/delete other automations",
-    "do not create sibling xuan heartbeats/crons",
+    "local-only",
+    "do not ssh",
+    "create/update/delete other automations",
+    "create sibling xuan heartbeats/crons",
+    "xuan frontier owns xuan-frontier-* only",
     "::archive{reason=\"routine xuan frontier checkpoint\"}",
 ]
 
 
-def is_xuanish(item: dict[str, object]) -> bool:
+def is_frontier_owned(item: dict[str, object]) -> bool:
+    automation_id = str(item.get("id", ""))
+    return automation_id == OWNER_ID or automation_id.startswith(FRONTIER_PREFIX)
+
+
+def is_related_non_frontier(item: dict[str, object]) -> bool:
+    automation_id = str(item.get("id", ""))
+    if is_frontier_owned(item):
+        return False
     text = " ".join(
         str(item.get(key, ""))
         for key in ("id", "name", "prompt", "cwds")
@@ -71,35 +82,39 @@ def load_automation(path: Path) -> dict[str, object]:
 
 def main() -> int:
     issues: list[str] = []
-    automations: list[dict[str, object]] = []
+    frontier_automations: list[dict[str, object]] = []
+    related_non_frontier: list[dict[str, object]] = []
     for path in sorted(AUTOMATION_ROOT.glob("*/automation.toml")):
         try:
             item = load_automation(path)
         except Exception as exc:  # noqa: BLE001 - report all parse issues.
             issues.append(f"cannot parse {path}: {exc}")
             continue
-        if is_xuanish(item):
-            automations.append(item)
+        if is_frontier_owned(item):
+            frontier_automations.append(item)
+        elif is_related_non_frontier(item):
+            related_non_frontier.append(item)
 
     active = [
         str(item.get("id"))
-        for item in automations
+        for item in frontier_automations
         if str(item.get("status", "")).upper() == "ACTIVE"
         and str(item.get("id")) != "auto-reply-pm-as-ofi-issues"
     ]
-    unexpected = sorted(set(active) - ALLOWED_ACTIVE_XUAN)
+    unexpected = sorted(set(active) - ALLOWED_ACTIVE_FRONTIER)
     if unexpected:
-        issues.append(f"unexpected active xuan automations: {unexpected}")
+        issues.append(f"unexpected active xuan-frontier automations: {unexpected}")
 
-    owner = next((item for item in automations if item.get("id") == OWNER_ID), None)
+    owner = next((item for item in frontier_automations if item.get("id") == OWNER_ID), None)
     if owner is None:
         issues.append(f"missing owner automation: {OWNER_ID}")
     else:
         if str(owner.get("status", "")).upper() != "ACTIVE":
             issues.append(f"{OWNER_ID} is not ACTIVE")
         prompt = str(owner.get("prompt", ""))
+        prompt_lower = prompt.lower()
         for marker in REQUIRED_PROMPT_MARKERS:
-            if marker not in prompt:
+            if marker.lower() not in prompt_lower:
                 issues.append(f"{OWNER_ID} missing prompt marker: {marker}")
         cwd_text = json.dumps(owner.get("cwds", []), ensure_ascii=True)
         if "pm_as_ofi-xuan-frontier" not in cwd_text:
@@ -107,8 +122,13 @@ def main() -> int:
 
     report = {
         "automation_root": str(AUTOMATION_ROOT),
-        "active_xuan_ids": active,
-        "xuan_automation_ids": [str(item.get("id")) for item in automations],
+        "active_xuan_frontier_ids": active,
+        "related_non_frontier_ids": [
+            str(item.get("id")) for item in related_non_frontier
+        ],
+        "xuan_frontier_automation_ids": [
+            str(item.get("id")) for item in frontier_automations
+        ],
         "issues": issues,
         "ok": not issues,
     }

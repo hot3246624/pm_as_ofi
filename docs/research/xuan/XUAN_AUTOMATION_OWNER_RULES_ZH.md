@@ -63,7 +63,7 @@ Automation 负责：
 - `xuan frontier` 只拥有 `xuan-frontier-*`，不拥有 `xuan-research-*` 或 `local-agg-*`。
 - `xuan research` 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*`，但可以维护自己的 `xuan-research-*`。
 - `localagg` 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*`，但可以维护自己的 `local-agg-*`。
-- 如果发现其他 namespace 状态异常，只报告给对应 owner、主线程或用户，不直接修。
+- 如果发现其他 namespace 状态异常，只报告给对应 owner、主线程或用户，不进入对方 worktree，不运行对方 guard，不直接修。
 - 旧的非规范 id 例如 `codex-owned-xuan-d-verifier-loop` 如果要恢复，建议由 `xuan research` owner 迁移/重建为 `xuan-research-*` 命名，而不是让 xuan frontier 代改。
 
 ## Automation 运行边界
@@ -136,7 +136,7 @@ REMOTE_INSPECT=0 REMOTE_DISCOVERY=0 <command>
 
 ## 修改前检查
 
-任何 agent 在触碰 xuan automation 前必须先运行：
+`xuan frontier` owner 或主线程在触碰 `xuan-frontier-*` automation 前必须先运行：
 
 ```bash
 python3 scripts/check_xuan_automation_guard.py
@@ -145,8 +145,8 @@ python3 scripts/check_xuan_automation_guard.py
 预期只有：
 
 ```text
-active_xuan_ids = ["xuan-frontier-research-loop"]
+active_xuan_frontier_ids = ["xuan-frontier-research-loop"]
 ok = true
 ```
 
-如果 guard 失败，非 owner agent 只报告，不修复。注意：这个 guard 只检查 `xuan-frontier-*` owner 状态，不代表禁止 `xuan-research` 或 `localagg` 在自己的 namespace 下运行 automation。
+如果 guard 失败，非 owner agent 只报告，不修复。注意：这个 guard 只检查 `xuan-frontier-*` owner 状态，不代表禁止 `xuan-research` 或 `localagg` 在自己的 namespace 下运行 automation；它们也不需要主动运行这个 guard。
