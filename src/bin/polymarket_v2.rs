@@ -7896,16 +7896,23 @@ async fn run_post_close_winner_hint_listener(
                     .iter()
                     .find(|outcome| outcome.policy_name == "boundary_weighted")
                     .and_then(|outcome| outcome.hit.clone());
-                let hype_source_lag_regime_hit =
-                    weighted_shadow_hit_owned.as_ref().and_then(|hit| {
-                        local_boundary_select_hype_source_lag_regime(
+                let source_lag_regime_hit = weighted_shadow_hit_owned.as_ref().and_then(|hit| {
+                    local_boundary_select_hype_source_lag_regime(
+                        &symbol,
+                        hit,
+                        &compare_hit.source_lag_candidates,
+                        first_ref,
+                    )
+                    .or_else(|| {
+                        local_boundary_select_doge_source_lag_regime(
                             &symbol,
                             hit,
                             &compare_hit.source_lag_candidates,
                             first_ref,
                         )
-                    });
-                if let Some(hit) = hype_source_lag_regime_hit.as_ref() {
+                    })
+                });
+                if let Some(hit) = source_lag_regime_hit.as_ref() {
                     compare_hit
                         .boundary_shadow_outcomes
                         .push(LocalBoundaryShadowOutcome {
@@ -9097,7 +9104,7 @@ async fn run_post_close_winner_hint_listener(
                         hit,
                     )
                 });
-                let weighted_shadow_candidate = hype_source_lag_regime_hit.as_ref().or_else(|| {
+                let weighted_shadow_candidate = source_lag_regime_hit.as_ref().or_else(|| {
                     weighted_shadow_hit.filter(|hit| {
                         local_boundary_weighted_candidate_allowed_for_policy(
                             &symbol,
@@ -15956,7 +15963,7 @@ fn local_hype_pick_closest_pre_candidate(
     .copied()
 }
 
-fn local_hype_source_lag_hit_from_candidate(
+fn local_source_lag_hit_from_candidate(
     source_subset_name: &'static str,
     candidate: LocalSourceLagCloseCandidate,
 ) -> LocalBoundaryShadowHit {
@@ -15978,6 +15985,13 @@ fn local_hype_source_lag_hit_from_candidate(
             close_exact: candidate.exact,
         }],
     }
+}
+
+fn local_hype_source_lag_hit_from_candidate(
+    source_subset_name: &'static str,
+    candidate: LocalSourceLagCloseCandidate,
+) -> LocalBoundaryShadowHit {
+    local_source_lag_hit_from_candidate(source_subset_name, candidate)
 }
 
 fn local_boundary_select_hype_source_lag_regime(
@@ -16037,6 +16051,22 @@ fn local_boundary_select_hype_source_lag_regime(
         ) {
             return Some(local_hype_source_lag_hit_from_candidate(
                 "hype_source_lag_hl_okx_highspread",
+                candidate,
+            ));
+        }
+    }
+
+    if hyperliquid_okx && (2.0..=3.0).contains(&spread_bps) && current_margin_bps >= 5.0 {
+        if let Some(candidate) = local_hype_pick_deepest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            0,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_okx_midspread",
                 candidate,
             ));
         }
@@ -16116,6 +16146,127 @@ fn local_boundary_select_hype_source_lag_regime(
         ) {
             return Some(local_hype_source_lag_hit_from_candidate(
                 "hype_source_lag_hl_bybit_midspread",
+                candidate,
+            ));
+        }
+    }
+
+    None
+}
+
+fn local_doge_pick_same_side_shallow_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    sources: &[LocalPriceSource],
+    max_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+    current_margin_bps: f64,
+    min_shallower_bps: f64,
+) -> Option<LocalSourceLagCloseCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            sources.contains(&candidate.source)
+                && candidate.offset_ms <= 0
+                && candidate.abs_delta_ms <= max_age_ms
+                && (candidate.price >= rtds_open) == current_side_yes
+        })
+        .filter(|candidate| {
+            let candidate_margin_bps =
+                local_boundary_direction_margin_bps(candidate.price, rtds_open);
+            candidate_margin_bps <= current_margin_bps - min_shallower_bps
+        })
+        .min_by(|a, b| {
+            let a_margin = local_boundary_direction_margin_bps(a.price, rtds_open);
+            let b_margin = local_boundary_direction_margin_bps(b.price, rtds_open);
+            a_margin
+                .total_cmp(&b_margin)
+                .then_with(|| a.abs_delta_ms.cmp(&b.abs_delta_ms))
+                .then_with(|| a.source.as_str().cmp(b.source.as_str()))
+                .then_with(|| a.kind.cmp(b.kind))
+        })
+        .copied()
+}
+
+fn local_doge_pick_same_side_deeper_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    sources: &[LocalPriceSource],
+    max_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+    current_margin_bps: f64,
+    min_deeper_bps: f64,
+) -> Option<LocalSourceLagCloseCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            sources.contains(&candidate.source)
+                && candidate.offset_ms <= 0
+                && candidate.abs_delta_ms <= max_age_ms
+                && (candidate.price >= rtds_open) == current_side_yes
+        })
+        .filter(|candidate| {
+            let candidate_margin_bps =
+                local_boundary_direction_margin_bps(candidate.price, rtds_open);
+            candidate_margin_bps >= current_margin_bps + min_deeper_bps
+        })
+        .min_by(|a, b| {
+            let a_margin = local_boundary_direction_margin_bps(a.price, rtds_open);
+            let b_margin = local_boundary_direction_margin_bps(b.price, rtds_open);
+            a_margin
+                .total_cmp(&b_margin)
+                .then_with(|| a.abs_delta_ms.cmp(&b.abs_delta_ms))
+                .then_with(|| a.source.as_str().cmp(b.source.as_str()))
+                .then_with(|| a.kind.cmp(b.kind))
+        })
+        .copied()
+}
+
+fn local_boundary_select_doge_source_lag_regime(
+    symbol: &str,
+    current_hit: &LocalBoundaryShadowHit,
+    source_lag_candidates: &[LocalSourceLagCloseCandidate],
+    rtds_open: f64,
+) -> Option<LocalBoundaryShadowHit> {
+    if symbol != "doge/usd" || !rtds_open.is_finite() || rtds_open <= 0.0 {
+        return None;
+    }
+    let current_side_yes = current_hit.close_price >= rtds_open;
+    let current_margin_bps =
+        local_boundary_direction_margin_bps(current_hit.close_price, rtds_open);
+    let spread_bps = current_hit.source_spread_bps;
+
+    if spread_bps.is_finite() && spread_bps <= 4.0 && current_margin_bps >= 8.0 {
+        if let Some(candidate) = local_doge_pick_same_side_shallow_pre_candidate(
+            source_lag_candidates,
+            LOCAL_BOUNDARY_SOURCES_FULL,
+            1_000,
+            rtds_open,
+            current_side_yes,
+            current_margin_bps,
+            6.0,
+        ) {
+            return Some(local_source_lag_hit_from_candidate(
+                "doge_same_side_shallowest_pre_window",
+                candidate,
+            ));
+        }
+    }
+
+    if local_boundary_source_set_eq(current_hit, LOCAL_BOUNDARY_SOURCES_ONLY_OKX)
+        && current_margin_bps >= 30.0
+    {
+        if let Some(candidate) = local_doge_pick_same_side_deeper_pre_candidate(
+            source_lag_candidates,
+            LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID,
+            30_000,
+            rtds_open,
+            current_side_yes,
+            current_margin_bps,
+            2.0,
+        ) {
+            return Some(local_source_lag_hit_from_candidate(
+                "doge_okx_only_same_side_deeper_window",
                 candidate,
             ));
         }
