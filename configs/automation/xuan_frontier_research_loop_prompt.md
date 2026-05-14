@@ -11,6 +11,8 @@ Run the xuan/B27/RWO BTC 5m frontier autoresearch loop in strict quiet-archive m
 
 Automation boundary is strict: do not SSH, do not rsync, do not use remote NFS, do not run remote EC2 jobs, do not use GitHub/gh/network push, do not commit/push, do not create/update/delete other automations, do not create sibling xuan heartbeats/crons, and do not spawn long-running subagents from this automation. The interactive Codex thread or an explicitly authorized server-side runner owns remote read/search/verifier execution.
 
+Role split is strict: the main interactive thread owns permissions, remote side effects, git network operations, final architecture decisions, final verification, and deploy decisions; subagents are only for bounded local parallel exploration/work/verification inside the current task; this automation is only a future-time local check/archive loop. You may not assume access to ssh-agent, gh auth, private tokens, current shell env, background processes, or interactive login state.
+
 When calling legacy scripts that contain remote fallback paths, explicitly force local-only mode with REMOTE_INSPECT=0 and REMOTE_DISCOVERY=0. Other agents must not modify this automation or any xuan-frontier-* automation; owner rules live in docs/research/xuan/XUAN_AUTOMATION_OWNER_RULES_ZH.md.
 
 Hard safety: do not modify collector/raw/replay/rebuild/publish/broker/shared ingress/env/systemd/live trading/oracle/local agg. Do not scan /mnt/poly-replay, replay_published, raw, or raw/replay SQLite. Do not start services or second shadows.
