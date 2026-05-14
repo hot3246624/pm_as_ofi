@@ -1,6 +1,6 @@
 # Xuan Frontier Agent Automation Action Guide
 
-这份文档给参与 `xuan frontier` 的其他 agent 使用。目标是让 subagent、automation、主线程分工稳定，避免权限环境混乱、automation 互相覆盖、routine loop 刷屏和误触远程。
+这份文档给三个 worktree 的 agent 使用。目标是让 `pm_as_ofi-xuan-frontier`、`pm_as_ofi-xuan-research`、`pm_as_ofi-localagg` 的 subagent/automation 分工稳定，避免权限环境混乱、automation 互相覆盖、routine loop 刷屏和误触远程。
 
 完整 owner 规则见：
 
@@ -19,12 +19,29 @@ docs/research/xuan/XUAN_AUTOMATION_OWNER_RULES_ZH.md
 
 不要把 subagent 或 automation 当成主线程副本。它们不应依赖 `ssh-agent`、`gh auth`、私有 token、后台服务、当前 shell env 或交互登录状态。
 
-## 当前 xuan Automation 状态
+## 当前 Worktree / Namespace 分工
 
-- `xuan frontier` 拥有 `xuan-frontier-*` namespace。
-- 当前唯一应 active 的 xuan automation 是 `xuan-frontier-research-loop`。
-- 其他 agent 不要创建、恢复、暂停、删除或修改 `xuan-frontier-*` automation。
-- 发现异常时只报告给主线程或用户，不直接修复。
+```text
+pm_as_ofi-xuan-frontier
+  cwd: /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
+  owner: xuan frontier
+  automation namespace: xuan-frontier-*
+  current active: xuan-frontier-research-loop
+
+pm_as_ofi-xuan-research
+  cwd: /Users/hot/web3Scientist/pm_as_ofi-xuan-research
+  owner: xuan research
+  automation namespace: xuan-research-* 或该 agent 明确声明的 xuan-research 前缀
+
+pm_as_ofi-localagg
+  cwd: /Users/hot/web3Scientist/pm_as_ofi-localagg
+  owner: localagg
+  automation namespace: local-agg-*
+```
+
+每个 agent 可以在自己的 worktree/namespace 下开 automation 和 subagent。禁止的是跨 namespace 修改别人拥有的 automation。
+
+如果发现其他 namespace 异常，只报告 automation id、状态、cwd、风险，不直接修复。
 
 检查命令：
 
@@ -33,12 +50,14 @@ cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
 python3 scripts/check_xuan_automation_guard.py
 ```
 
-预期：
+对 xuan frontier 的预期：
 
 ```text
 ok = true
 active_xuan_ids = ["xuan-frontier-research-loop"]
 ```
+
+这个 guard 只确认 `xuan-frontier-*` 没被误改，不限制 `xuan-research-*` 或 `local-agg-*` 的 owner 自治。
 
 ## 主线程职责
 
@@ -149,7 +168,7 @@ Automation 禁止：
 - `gh`、git network、commit/push/merge/PR。
 - 启停服务、部署、重启 shadow、启动 broker。
 - 扫 `/mnt/poly-replay`、`replay_published`、`raw`、大 SQLite replay。
-- 创建 sibling xuan automation 或修改其他 automation。
+- 创建 sibling `xuan-frontier-*` automation 或修改其他 owner 的 automation。
 - 启动长时间 subagent。
 
 Automation prompt 必须自包含，写明：
@@ -266,22 +285,24 @@ ssh / gh / git fetch / git push / rsync / deploy
 ```
 
 5. 如果要写文件，先声明写入范围。
-6. 如果要创建或修改 automation，先确认 namespace owner；不是 owner 就报告，不修改。
+6. 如果要创建或修改 automation，先确认 namespace owner；只改自己 namespace，不是 owner 就报告，不修改。
 7. 输出必须可验收：文件路径、命令、结果、剩余风险。
 
-## 交接给其他 agent 的短版
+## 交接给 xuan-research 的短版
 
 可以直接复制这一段：
 
 ```text
-请遵守 xuan frontier automation/subagent 规则：
-主线程负责权限、远程、副作用、最终判断；subagent 只做本地有边界的并行工作；automation 只做未来定时的本地检查/quiet archive。
+你是 pm_as_ofi-xuan-research worktree 的 owner。请使用自己的 cwd：
+/Users/hot/web3Scientist/pm_as_ofi-xuan-research
+
+你的 automation namespace 应使用 xuan-research-* 或你明确声明的 xuan-research 前缀。
+你可以维护自己的 automation/subagent，但不要创建/恢复/暂停/删除/修改 xuan-frontier-* 或 local-agg-*。
 
 不要运行 ssh、gh、git fetch、git push、rsync、远程 NFS、部署或服务控制。
-不要创建/恢复/暂停/删除/修改 xuan-frontier-* automation；xuan frontier owns this namespace。
-如果发现 automation 异常，只报告 automation id、状态、cwd 和风险。
+如果你的任务确实需要远程/权限/部署，把需求交给主线程，不要在 automation/subagent 里做。
 
-工作前运行：
+如需检查 xuan-frontier namespace 是否被误改，只读运行：
 cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
 python3 scripts/check_xuan_automation_guard.py
 
@@ -289,4 +310,27 @@ python3 scripts/check_xuan_automation_guard.py
 REMOTE_INSPECT=0 REMOTE_DISCOVERY=0 <command>
 
 只使用本地已有文件和依赖。缺数据就说明缺少什么，不要尝试远程获取。
+```
+
+## 交接给 localagg 的短版
+
+可以直接复制这一段：
+
+```text
+你是 pm_as_ofi-localagg worktree 的 owner。请使用自己的 cwd：
+/Users/hot/web3Scientist/pm_as_ofi-localagg
+
+你的 automation namespace 是 local-agg-*。
+你可以维护自己的 automation/subagent，但不要创建/恢复/暂停/删除/修改 xuan-frontier-* 或 xuan-research-*。
+
+不要运行 xuan strategy shadow/live 控制，不要修改 xuan-frontier 或 xuan-research worktree。
+不要触碰 shared ingress broker，除非主线程/用户明确授权。
+
+如果你的 automation 需要远程/权限/部署，必须在 prompt 里写清边界和安全 gate；涉及跨策略线的修改只报告，不直接执行。
+
+如需检查 xuan-frontier namespace 是否被误改，只读运行：
+cd /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
+python3 scripts/check_xuan_automation_guard.py
+
+只使用自己 worktree 的本地文件和依赖。缺数据就说明缺少什么，不要跨 worktree 写文件。
 ```

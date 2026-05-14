@@ -1,6 +1,6 @@
 # Xuan Frontier Automation Owner Rules
 
-目标：避免多个 agent 互相恢复、暂停、覆盖 automation，避免 routine loop 误触远程 SSH/NFS/runner。
+目标：避免三个 worktree 的 agent 互相恢复、暂停、覆盖 automation，避免 routine loop 误触远程 SSH/NFS/runner。
 
 给其他 agent 的可执行行动指南见：
 
@@ -41,11 +41,30 @@ Automation 负责：
 
 ## Owner 与命名
 
-- `xuan frontier` 拥有 `xuan-frontier-*` automation namespace。
-- 当前唯一应保持 active 的 xuan frontier automation 是 `xuan-frontier-research-loop`。
-- 其他 agent 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*` automation。
-- 如果其他 agent 发现 `xuan-frontier-*` 状态异常，只报告给主线程或用户，不直接修。
-- 其他策略线必须使用自己的前缀，例如 `local-agg-*`，不能复用 `xuan-frontier-*`。
+当前是多 worktree / 多 agent 协作，不是一个 agent 独占所有 automation。
+
+```text
+/Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
+  owner: xuan frontier
+  automation namespace: xuan-frontier-*
+
+/Users/hot/web3Scientist/pm_as_ofi-xuan-research
+  owner: xuan research
+  automation namespace: xuan-research-* 或该 agent 明确声明的 xuan-research 前缀
+
+/Users/hot/web3Scientist/pm_as_ofi-localagg
+  owner: localagg
+  automation namespace: local-agg-*
+```
+
+规则：
+
+- 每个 agent 可以在自己的 worktree 和 namespace 下创建/更新 automation。
+- `xuan frontier` 只拥有 `xuan-frontier-*`，不拥有 `xuan-research-*` 或 `local-agg-*`。
+- `xuan research` 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*`，但可以维护自己的 `xuan-research-*`。
+- `localagg` 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*`，但可以维护自己的 `local-agg-*`。
+- 如果发现其他 namespace 状态异常，只报告给对应 owner、主线程或用户，不直接修。
+- 旧的非规范 id 例如 `codex-owned-xuan-d-verifier-loop` 如果要恢复，建议由 `xuan research` owner 迁移/重建为 `xuan-research-*` 命名，而不是让 xuan frontier 代改。
 
 ## Automation 运行边界
 
@@ -130,4 +149,4 @@ active_xuan_ids = ["xuan-frontier-research-loop"]
 ok = true
 ```
 
-如果 guard 失败，非 owner agent 只报告，不修复。
+如果 guard 失败，非 owner agent 只报告，不修复。注意：这个 guard 只检查 `xuan-frontier-*` owner 状态，不代表禁止 `xuan-research` 或 `localagg` 在自己的 namespace 下运行 automation。
