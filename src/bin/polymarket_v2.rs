@@ -12620,6 +12620,22 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("xrp_single_binance_fast_mid_margin");
             }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Binance)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 3.5
+                && weighted_direction_margin_bps < 4.6
+                && close_abs_delta_ms >= 1_500
+                && close_abs_delta_ms <= 2_500
+            {
+                return Some("xrp_single_binance_yes_stale_upper_margin_side_error_guard");
+            }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
@@ -16274,6 +16290,28 @@ fn local_boundary_select_doge_source_lag_regime(
         }
     }
 
+    if local_boundary_source_set_eq(current_hit, LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_OKX)
+        && !current_side_yes
+        && spread_bps.is_finite()
+        && (2.5..=4.6).contains(&spread_bps)
+        && current_margin_bps >= 12.0
+    {
+        if let Some(candidate) = local_doge_pick_same_side_deeper_pre_candidate(
+            source_lag_candidates,
+            LOCAL_BOUNDARY_SOURCES_DOGE_DROP_BINANCE_CEX,
+            30_000,
+            rtds_open,
+            current_side_yes,
+            current_margin_bps,
+            3.0,
+        ) {
+            return Some(local_source_lag_hit_from_candidate(
+                "doge_bybit_okx_same_side_deeper_window",
+                candidate,
+            ));
+        }
+    }
+
     None
 }
 
@@ -17639,6 +17677,8 @@ const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID: &[LocalPriceSource] =
     &[LocalPriceSource::Binance, LocalPriceSource::Hyperliquid];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Bybit, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_OKX: &[LocalPriceSource] =
+    &[LocalPriceSource::Bybit, LocalPriceSource::Okx];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE: &[LocalPriceSource] = &[LocalPriceSource::Binance];
 const LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE: &[LocalPriceSource] = &[LocalPriceSource::Coinbase];
 const LOCAL_BOUNDARY_SOURCES_ONLY_HYPERLIQUID: &[LocalPriceSource] =
@@ -17646,6 +17686,11 @@ const LOCAL_BOUNDARY_SOURCES_ONLY_HYPERLIQUID: &[LocalPriceSource] =
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX: &[LocalPriceSource] = &[LocalPriceSource::Okx];
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Okx, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_DOGE_DROP_BINANCE_CEX: &[LocalPriceSource] = &[
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Okx,
+];
 
 const LOCAL_BOUNDARY_POLICY_PRE_MS: u64 = 5_000;
 const LOCAL_BOUNDARY_POLICY_POST_MS: u64 = 250;
