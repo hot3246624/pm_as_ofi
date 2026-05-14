@@ -10,6 +10,8 @@ Recommended reasoning effort: `xhigh`
 
 Purpose: local-only xuan/B27/RWO frontier planning, artifact review, and quiet archival. It is not a remote executor.
 
+Recommended schedule: `FREQ=HOURLY;INTERVAL=6`
+
 ```text
 Run the xuan/B27/RWO BTC 5m frontier autoresearch loop as a LOCAL-ONLY quiet-archive planning and repo/artifact loop in /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier.
 
@@ -23,5 +25,5 @@ Strategic state: b27/D+ two-sided passive BUY from public SELL flow is the leadi
 
 Code state: origin/codex/xuan-frontier has dry-run-only D+ min-order profile PM_PGT_SHADOW_PROFILE=dplus_minorder_v1 and per-side public SELL snapshots. The profile is not deployed and not production/live enabled. Highest-value local loop work: inspect local artifacts and code state for D+ min-order profile follow-ups, especially missing diagnostics/recorder fields, tests, verifier/shadow readiness notes, and patch proposals. Archive quietly unless there is a concrete local patch proposal, decision request, data-source request, failed local run, or material strategy finding.
 
-STRICT FINAL OUTPUT RULE: If this hourly run has no new local patch proposal, no decision request, no data-source request, and no material strategy finding from already-local artifacts, final output exactly: ::archive{reason="routine xuan frontier checkpoint"}. For material findings, keep visible final under 6 lines with exact artifact paths.
+STRICT FINAL OUTPUT RULE: If this six-hour local archive run has no new local patch proposal, no decision request, no data-source request, and no material strategy finding from already-local artifacts, final output exactly: ::archive{reason="routine xuan frontier checkpoint"}. For material findings, keep visible final under 6 lines with exact artifact paths.
 ```

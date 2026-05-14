@@ -10,6 +10,8 @@ Recommended reasoning effort: `xhigh`
 
 Purpose: controlled remote-verifier loop for xuan frontier. It may run only whitelisted read-only / bounded verification on the research server, write only xuan-frontier artifacts, and never make production decisions.
 
+Recommended schedule: `FREQ=HOURLY;INTERVAL=2`
+
 ```text
 Run the xuan frontier remote-verifier loop for the D+/B27/RWO BTC 5m strategy line.
 

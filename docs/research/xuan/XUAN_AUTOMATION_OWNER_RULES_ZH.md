@@ -68,7 +68,7 @@ Automation 负责：
 
 ## Automation 类型
 
-`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。
+`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。推荐频率：每 6 小时一次，避免 routine archive 刷线程。
 
 禁止：
 
@@ -85,7 +85,7 @@ Automation 负责：
 - 生成本地 patch proposal、data-source request、verifier request spec。
 - 无 material 发现时 quiet archive。
 
-`xuan-frontier-remote-verifier-loop` 是受限远端验证 loop，用来推进 P2/source-of-truth/verifier 队列，但仍不是生产执行器。
+`xuan-frontier-remote-verifier-loop` 是受限远端验证 loop，用来推进 P2/source-of-truth/verifier 队列，但仍不是生产执行器。推荐频率：每 2 小时一次；新数据通常不会小时级发布，低于 2 小时容易制造噪音。
 
 允许：
 
