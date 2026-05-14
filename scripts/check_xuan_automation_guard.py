@@ -22,10 +22,11 @@ except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback unavaila
 
 
 AUTOMATION_ROOT = Path(os.environ.get("CODEX_AUTOMATIONS_DIR", "~/.codex/automations")).expanduser()
-OWNER_ID = "xuan-frontier-research-loop"
+LOCAL_ARCHIVE_ID = "xuan-frontier-research-loop"
+REMOTE_VERIFIER_ID = "xuan-frontier-remote-verifier-loop"
 FRONTIER_PREFIX = "xuan-frontier-"
-ALLOWED_ACTIVE_FRONTIER = {OWNER_ID}
-REQUIRED_PROMPT_MARKERS = [
+ALLOWED_ACTIVE_FRONTIER = {LOCAL_ARCHIVE_ID, REMOTE_VERIFIER_ID}
+REQUIRED_LOCAL_PROMPT_MARKERS = [
     "local-only",
     "do not ssh",
     "create/update/delete other automations",
@@ -33,11 +34,22 @@ REQUIRED_PROMPT_MARKERS = [
     "xuan frontier owns xuan-frontier-* only",
     "::archive{reason=\"routine xuan frontier checkpoint\"}",
 ]
+REQUIRED_REMOTE_PROMPT_MARKERS = [
+    "remote-verifier",
+    "ssh preflight",
+    "-i ~/.ssh/polymarket-Ireland.pem",
+    "IdentitiesOnly=yes",
+    "do not rsync",
+    "do not scp",
+    "manifest",
+    "keep/discard/unknown",
+    "do not modify collector/raw/replay",
+]
 
 
 def is_frontier_owned(item: dict[str, object]) -> bool:
     automation_id = str(item.get("id", ""))
-    return automation_id == OWNER_ID or automation_id.startswith(FRONTIER_PREFIX)
+    return automation_id in ALLOWED_ACTIVE_FRONTIER or automation_id.startswith(FRONTIER_PREFIX)
 
 
 def is_related_non_frontier(item: dict[str, object]) -> bool:
@@ -105,20 +117,33 @@ def main() -> int:
     if unexpected:
         issues.append(f"unexpected active xuan-frontier automations: {unexpected}")
 
-    owner = next((item for item in frontier_automations if item.get("id") == OWNER_ID), None)
-    if owner is None:
-        issues.append(f"missing owner automation: {OWNER_ID}")
+    local_owner = next((item for item in frontier_automations if item.get("id") == LOCAL_ARCHIVE_ID), None)
+    if local_owner is None:
+        issues.append(f"missing owner automation: {LOCAL_ARCHIVE_ID}")
     else:
-        if str(owner.get("status", "")).upper() != "ACTIVE":
-            issues.append(f"{OWNER_ID} is not ACTIVE")
-        prompt = str(owner.get("prompt", ""))
+        if str(local_owner.get("status", "")).upper() != "ACTIVE":
+            issues.append(f"{LOCAL_ARCHIVE_ID} is not ACTIVE")
+        prompt = str(local_owner.get("prompt", ""))
         prompt_lower = prompt.lower()
-        for marker in REQUIRED_PROMPT_MARKERS:
+        for marker in REQUIRED_LOCAL_PROMPT_MARKERS:
             if marker.lower() not in prompt_lower:
-                issues.append(f"{OWNER_ID} missing prompt marker: {marker}")
-        cwd_text = json.dumps(owner.get("cwds", []), ensure_ascii=True)
+                issues.append(f"{LOCAL_ARCHIVE_ID} missing prompt marker: {marker}")
+        cwd_text = json.dumps(local_owner.get("cwds", []), ensure_ascii=True)
         if "pm_as_ofi-xuan-frontier" not in cwd_text:
-            issues.append(f"{OWNER_ID} cwd does not point at xuan-frontier: {cwd_text}")
+            issues.append(f"{LOCAL_ARCHIVE_ID} cwd does not point at xuan-frontier: {cwd_text}")
+
+    remote_owner = next((item for item in frontier_automations if item.get("id") == REMOTE_VERIFIER_ID), None)
+    if remote_owner is not None:
+        if str(remote_owner.get("status", "")).upper() != "ACTIVE":
+            issues.append(f"{REMOTE_VERIFIER_ID} is not ACTIVE")
+        prompt = str(remote_owner.get("prompt", ""))
+        prompt_lower = prompt.lower()
+        for marker in REQUIRED_REMOTE_PROMPT_MARKERS:
+            if marker.lower() not in prompt_lower:
+                issues.append(f"{REMOTE_VERIFIER_ID} missing prompt marker: {marker}")
+        cwd_text = json.dumps(remote_owner.get("cwds", []), ensure_ascii=True)
+        if "pm_as_ofi-xuan-frontier" not in cwd_text:
+            issues.append(f"{REMOTE_VERIFIER_ID} cwd does not point at xuan-frontier: {cwd_text}")
 
     report = {
         "automation_root": str(AUTOMATION_ROOT),

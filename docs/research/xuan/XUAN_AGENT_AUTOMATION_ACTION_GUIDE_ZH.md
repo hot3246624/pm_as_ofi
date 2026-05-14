@@ -26,7 +26,9 @@ pm_as_ofi-xuan-frontier
   cwd: /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
   owner: xuan frontier
   automation namespace: xuan-frontier-*
-  current active: xuan-frontier-research-loop
+  current active:
+    - xuan-frontier-research-loop
+    - xuan-frontier-remote-verifier-loop
 
 pm_as_ofi-xuan-research
   cwd: /Users/hot/web3Scientist/pm_as_ofi-xuan-research
@@ -54,7 +56,10 @@ python3 scripts/check_xuan_automation_guard.py
 
 ```text
 ok = true
-active_xuan_frontier_ids = ["xuan-frontier-research-loop"]
+active_xuan_frontier_ids = [
+  "xuan-frontier-remote-verifier-loop",
+  "xuan-frontier-research-loop",
+]
 ```
 
 这个 guard 只给 `xuan frontier` owner 或主线程使用，用来确认 `xuan-frontier-*` 没被误改。`xuan-research` 和 `localagg` 不需要运行这个 guard，也不需要关心 `xuan-frontier-*` 的日常状态。
@@ -149,6 +154,23 @@ Workspace: /Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
 ## Automation 使用规则
 
 Automation 是时间维度工具，不是并行开发 worker。
+
+`*-local-archive-loop` / 本地 archive 类 loop：
+
+- 只读本地 repo、docs、artifacts、ledger。
+- 不 SSH、不 rsync、不 scp、不 gh、不 git push、不部署。
+- 无 material 发现时 quiet archive。
+
+`*-remote-verifier-loop` / 远端验证类 loop：
+
+- 只由 namespace owner 创建和维护。
+- 必须显式 SSH preflight：`ssh -i ~/.ssh/<key> -o IdentitiesOnly=yes -o BatchMode=yes ...`。
+- preflight 失败就 `UNKNOWN`/archive，不绕路，不把环境失败当策略失败。
+- 启动远端任务前检查同类进程，避免重叠。
+- 只读白名单输入，只写自己 namespace 的 output dir。
+- 每次非 archive 运行必须产出 manifest：命令、时间、host、输入路径、脚本 hash、verdict。
+- verdict 只能是 `KEEP` / `DISCARD` / `UNKNOWN`。
+- 不做最终生产判断，不启停服务，不碰 broker/shared ingress/env/live。
 
 Heartbeat 适合：
 
