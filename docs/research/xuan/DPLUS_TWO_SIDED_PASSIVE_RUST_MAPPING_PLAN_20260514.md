@@ -4,6 +4,45 @@ Date (UTC): 2026-05-14
 
 Scope: **local-only** mapping plan for implementing the current D+ frontier candidate as a **Rust dry-run-only** profile, grounded in the existing `PairGatedTrancheArb` / xuan-maker-like plumbing.
 
+## Latest event-store check
+
+Remote research artifacts:
+
+- `05-13` holdout: `/home/ubuntu/xuan_frontier_runs/d_branch_minorder_fillhaircut_oos_0513_20260514_1105`
+- `05-02..05-13` fh020 full window: `/home/ubuntu/xuan_frontier_runs/d_branch_minorder_fh020_full_0502_0513_20260514_1110`
+
+`05-13` did not invalidate the D+ min-order direction. The best holdout stress row was `fh020 / imb6 / sv0960`:
+
+- `active_markets=288`
+- `pair_actions=2986`
+- `net_pair_cost_wavg=0.922410`
+- `rounds_per_market=10.3681`
+- `qty_residual_rate=3.4398%`
+- `actual_settle_pnl=+345.25`
+- `actual_settle_roi=7.1615%`
+- `stress100_worst_pnl=+175.70`
+
+On the updated `2026-05-02..2026-05-13` fh020 full window, the strongest stress row remains `imb8 / sv0950`:
+
+- `active_markets=3442`
+- `pair_actions=38960`
+- `net_pair_cost_wavg=0.922802`
+- `pair_delay_wavg_s=26.7388`
+- `rounds_per_market=11.3190`
+- `qty_residual_rate=3.8242%`
+- `actual_settle_pnl=+4985.76`
+- `actual_settle_roi=6.9520%`
+- `stress100_worst_pnl=+2410.78`
+
+Risk-balanced sibling `imb6 / sv0950` remains attractive if residual rate is weighted above raw PnL:
+
+- `net_pair_cost_wavg=0.921827`
+- `rounds_per_market=11.0421`
+- `qty_residual_rate=3.3784%`
+- `actual_settle_pnl=+4567.88`
+- `actual_settle_roi=7.4240%`
+- `stress100_worst_pnl=+2325.56`
+
 ## Local inputs snapshot (for context)
 
 - strict V2 cache labels discovered locally under `/tmp/poly-cache-local/taker_buy_signal_core_v2_strict_l1`:
@@ -79,4 +118,3 @@ This is intentionally deferred until Stage A+B are stable in dry-run.
 ## Dry-run safety gate
 
 Keep D+ profile behind **dry-run-only** checks (same pattern used by xuan maker-like), and do not alter any collector/replay/raw/production control paths.
-
