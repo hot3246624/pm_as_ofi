@@ -27,6 +27,8 @@ SSH preflight is mandatory before any remote work. If preflight fails, archive q
 
 Before starting a remote verification, check for existing similar xuan-frontier verifier processes with pgrep/ps and avoid overlap. If one is already running, write memory/manifest if needed and archive with UNKNOWN.
 
+Remote Python is explicit: use `/tmp/xuan_duckdb_venv/bin/python` for D+ verifier commands, falling back only to `/home/ubuntu/.venvs/xuan-duckdb/bin/python` if the first path is missing. Do not call bare `python3` or `/usr/bin/python3` for DuckDB verifiers. Before launching, run a one-line import preflight (`import duckdb`) with the selected interpreter and write UNKNOWN if neither interpreter exists or imports duckdb.
+
 Do not rsync. Do not scp. Do not use remote NFS from the local machine. Do not run raw/replay SQLite scans from this automation. Do not modify collector/raw/replay/rebuild/publish/broker/shared ingress/env/systemd/live trading/oracle/local agg. Do not start/stop/restart services. Do not deploy. Do not git commit/push, gh, or open PRs.
 
 Whitelisted remote inputs:
@@ -39,7 +41,7 @@ Whitelisted remote outputs:
 - /home/ubuntu/xuan_frontier_runs/d_branch_minorder_* only when running the D+ min-order verifier family
 
 Primary job:
-1. Discover latest validated completion_unwind_event_store_v2 labels on the research server.
+1. Discover latest validated completion_unwind_event_store_v2 labels on the research server. A label is runnable only when the directory contains all of `EVENT_STORE_MANIFEST.json`, `event_store.duckdb`, and `dataset/`, and the manifest `outputs.row_count` is greater than zero. Ignore `.YYYYMMDD.lock` files and incomplete placeholder directories; a lock alone is not a runnable label.
 2. Compare them with the latest D+ min-order verifier artifacts.
 3. If a new day exists that is not covered, run a bounded D+ verifier for that new day using the existing xuan_d_branch_passive_passive_redeem.py family and the current candidate grid: edge=0.04, target=10, px=0.010:0.990, fill_haircut=0.20/0.15/0.10 for single-day OOS; for full-window refresh, limit to fh020 with imbalance_qty_cap 6/8 and salvage_net_cap 0.95/0.96.
 4. If no new day exists, inspect latest artifacts and archive quietly.
