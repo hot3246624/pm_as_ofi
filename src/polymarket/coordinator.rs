@@ -24,8 +24,9 @@ use super::messages::*;
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::strategy::{
     completion_first::{CompletionFirstGateDefaults, CompletionFirstPhase},
-    PgtXuanM0001NoSeedReason, StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes,
-    StrategyTickInput, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
+    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, StrategyExecutionMode, StrategyIntent,
+    StrategyKind, StrategyQuotes, StrategyTickInput, PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT,
+    PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
 };
 use super::types::Side;
 
@@ -956,6 +957,7 @@ struct Stats {
     pgt_taker_shadow_would_open: u64,
     pgt_taker_shadow_would_close: u64,
     pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    pgt_dplus_minorder_no_seed: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
     market_trade_ticks: u64,
     market_sell_trade_ticks: u64,
 }
@@ -1003,6 +1005,7 @@ struct PgtGateLogSnapshot {
     dispatch_clear: u64,
     stale_target_dropped: u64,
     xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    dplus_minorder_no_seed: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1248,6 +1251,7 @@ pub struct StrategyCoordinator {
     /// Last known VALID book (non-zero prices). Fallback for empty orderbook.
     last_valid_book: Book,
     last_public_trade: Option<PublicTradeSnapshot>,
+    last_public_trade_by_side: [Option<PublicTradeSnapshot>; 2],
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
     /// P5 FIX: Per-side timestamps to catch single-side staleness.
     last_valid_ts_yes: Instant,
@@ -1493,6 +1497,7 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_dispatch_clear: u64,
     pub pgt_stale_target_dropped: u64,
     pub pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    pub pgt_dplus_minorder_no_seed: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
     pub market_trade_ticks: u64,
     pub market_sell_trade_ticks: u64,
 }
@@ -1643,6 +1648,7 @@ impl StrategyCoordinator {
             book: Book::default(),
             last_valid_book: Book::default(),
             last_public_trade: None,
+            last_public_trade_by_side: [None; 2],
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
             yes_stale_since: None,
@@ -2187,6 +2193,7 @@ impl StrategyCoordinator {
             pgt_dispatch_clear: self.stats.pgt_dispatch_clear,
             pgt_stale_target_dropped: self.stats.pgt_stale_target_dropped,
             pgt_xuan_m0001_no_seed: self.stats.pgt_xuan_m0001_no_seed,
+            pgt_dplus_minorder_no_seed: self.stats.pgt_dplus_minorder_no_seed,
             market_trade_ticks: self.stats.market_trade_ticks,
             market_sell_trade_ticks: self.stats.market_sell_trade_ticks,
         };
@@ -2269,6 +2276,14 @@ impl StrategyCoordinator {
             .pgt_xuan_m0001_no_seed
             .iter_mut()
             .zip(quotes.diagnostics.pgt_xuan_m0001_no_seed)
+        {
+            *dst = dst.saturating_add(src as u64);
+        }
+        for (dst, src) in self
+            .stats
+            .pgt_dplus_minorder_no_seed
+            .iter_mut()
+            .zip(quotes.diagnostics.pgt_dplus_minorder_no_seed)
         {
             *dst = dst.saturating_add(src as u64);
         }
@@ -2387,6 +2402,19 @@ impl StrategyCoordinator {
 
     pub(crate) fn recent_public_trade(&self, max_age: Duration) -> Option<PublicTradeSnapshot> {
         let trade = self.last_public_trade?;
+        if Instant::now().saturating_duration_since(trade.ts) <= max_age {
+            Some(trade)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn recent_public_trade_for(
+        &self,
+        side: Side,
+        max_age: Duration,
+    ) -> Option<PublicTradeSnapshot> {
+        let trade = self.last_public_trade_by_side[side.index()]?;
         if Instant::now().saturating_duration_since(trade.ts) <= max_age {
             Some(trade)
         } else {

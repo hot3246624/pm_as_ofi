@@ -44,11 +44,10 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
-use pm_as_ofi::polymarket::recorder::{
-    RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
-};
+use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta, RecorderSessionStart};
 use pm_as_ofi::polymarket::strategy::{
-    PgtXuanM0001NoSeedReason, StrategyKind, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
+    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, StrategyKind,
+    PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
 };
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
@@ -157,11 +156,19 @@ fn set_shared_ingress_role_override(role: SharedIngressRole) {
     let _ = SHARED_INGRESS_ROLE_OVERRIDE.set(role);
 }
 
-fn pgt_xuan_m0001_no_seed_counts_json(
-    counts: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
-) -> Value {
+fn pgt_xuan_m0001_no_seed_counts_json(counts: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT]) -> Value {
     let mut out = serde_json::Map::new();
     for reason in PgtXuanM0001NoSeedReason::ALL {
+        out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
+    }
+    Value::Object(out)
+}
+
+fn pgt_dplus_minorder_no_seed_counts_json(
+    counts: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for reason in PgtDPlusMinOrderNoSeedReason::ALL {
         out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
     }
     Value::Object(out)
@@ -8221,9 +8228,8 @@ async fn run_post_close_winner_hint_listener(
                         && direction_margin_bps < 13.90
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 10
                     {
-                        close_only_filter_reason = Some(
-                            "hype_close_only_single_hyperliquid_no_micro_high_margin_tail",
-                        );
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_micro_high_margin_tail");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_high_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -8267,9 +8273,8 @@ async fn run_post_close_winner_hint_listener(
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 50
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 80
                     {
-                        close_only_filter_reason = Some(
-                            "hype_close_only_single_hyperliquid_no_micro_upper_margin_tail",
-                        );
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_micro_upper_margin_tail");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -8449,9 +8454,8 @@ async fn run_post_close_winner_hint_listener(
                         && direction_margin_bps < 19.18
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 60
                     {
-                        close_only_filter_reason = Some(
-                            "hype_close_only_single_hyperliquid_no_micro_far_margin_tail",
-                        );
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_micro_far_margin_tail");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_far_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -8495,9 +8499,8 @@ async fn run_post_close_winner_hint_listener(
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 40
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 250
                     {
-                        close_only_filter_reason = Some(
-                            "hype_close_only_single_hyperliquid_no_fast_far_margin_tail",
-                        );
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_fast_far_margin_tail");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_fast_far_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -8693,9 +8696,8 @@ async fn run_post_close_winner_hint_listener(
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 450
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 550
                     {
-                        close_only_filter_reason = Some(
-                            "hype_close_only_single_hyperliquid_yes_late_low_margin_tail",
-                        );
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_yes_late_low_margin_tail");
                         warn!(
                             "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_yes_late_low_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
                             slug,
@@ -12971,7 +12973,9 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms >= 400
                 && close_abs_delta_ms <= 600
             {
-                return Some("doge_three_bybit_coinbase_okx_last_fast_midspread_no_mid_margin_tail");
+                return Some(
+                    "doge_three_bybit_coinbase_okx_last_fast_midspread_no_mid_margin_tail",
+                );
             }
             if hit.source_subset_name == "drop_binance"
                 && hit.rule == LocalBoundaryCloseRule::LastBefore
@@ -13136,7 +13140,9 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_spread_bps < 1.0
                 && close_abs_delta_ms >= 3_500
             {
-                return Some("doge_three_bybit_coinbase_okx_last_very_stale_tightspread_low_signal");
+                return Some(
+                    "doge_three_bybit_coinbase_okx_last_very_stale_tightspread_low_signal",
+                );
             }
             if hit.source_subset_name == "drop_binance"
                 && hit.rule == LocalBoundaryCloseRule::LastBefore
@@ -16690,15 +16696,33 @@ impl LocalAggUncertaintyGateModel {
             );
         }
         if stats.side_rate > self.config.max_side_rate + 1e-12 {
-            return LocalAggUncertaintyGateDecision::from_stats(false, "train_side_rate", level, stats, self.config.safety_bps);
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "train_side_rate",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
         }
         if stats.q_bps > self.config.max_train_quantile_bps + 1e-12 {
-            return LocalAggUncertaintyGateDecision::from_stats(false, "train_quantile_too_wide", level, stats, self.config.safety_bps);
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "train_quantile_too_wide",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
         }
         if self.config.max_train_max_bps > 0.0
             && stats.max_bps > self.config.max_train_max_bps + 1e-12
         {
-            return LocalAggUncertaintyGateDecision::from_stats(false, "train_max_too_wide", level, stats, self.config.safety_bps);
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "train_max_too_wide",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
         }
         let required_margin_bps = stats.q_bps + self.config.safety_bps;
         if candidate.direction_margin_bps + 1e-12 < required_margin_bps {
@@ -16711,7 +16735,13 @@ impl LocalAggUncertaintyGateModel {
                     rescue_stats.max_bps,
                 );
             }
-            return LocalAggUncertaintyGateDecision::from_stats(false, "margin_below_trained_error", level, stats, self.config.safety_bps);
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "margin_below_trained_error",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
         }
         LocalAggUncertaintyGateDecision::from_stats(true, "", level, stats, self.config.safety_bps)
     }
@@ -16819,7 +16849,9 @@ fn local_agg_uncertainty_gate_spread_bucket(value: f64) -> &'static str {
     local_agg_uncertainty_gate_bucket(
         value,
         &[0.0, 0.5, 1.0, 2.0, 4.0, 8.0, 12.0],
-        &["s0", "s050", "s100", "s200", "s400", "s800", "s1200", "s_gt1200"],
+        &[
+            "s0", "s050", "s100", "s200", "s400", "s800", "s1200", "s_gt1200",
+        ],
     )
 }
 
@@ -16828,8 +16860,8 @@ fn local_agg_uncertainty_gate_margin_bucket(value: f64) -> &'static str {
         value,
         &[0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 13.0, 21.0, 34.0, 55.0],
         &[
-            "m050", "m100", "m200", "m300", "m500", "m800", "m1300", "m2100",
-            "m3400", "m5500", "m_gt5500",
+            "m050", "m100", "m200", "m300", "m500", "m800", "m1300", "m2100", "m3400", "m5500",
+            "m_gt5500",
         ],
     )
 }
@@ -16896,7 +16928,8 @@ fn local_agg_uncertainty_gate_key_levels(
     } else {
         "no".to_string()
     };
-    let source_count = local_agg_uncertainty_gate_source_count_bucket(candidate.source_count).to_string();
+    let source_count =
+        local_agg_uncertainty_gate_source_count_bucket(candidate.source_count).to_string();
     let exact = if candidate.exact_sources > 0 {
         "exact".to_string()
     } else {
@@ -16904,7 +16937,8 @@ fn local_agg_uncertainty_gate_key_levels(
     };
     let delta = local_agg_uncertainty_gate_delta_bucket(candidate.close_abs_delta_ms).to_string();
     let spread = local_agg_uncertainty_gate_spread_bucket(candidate.source_spread_bps).to_string();
-    let margin = local_agg_uncertainty_gate_margin_bucket(candidate.direction_margin_bps).to_string();
+    let margin =
+        local_agg_uncertainty_gate_margin_bucket(candidate.direction_margin_bps).to_string();
     vec![
         (
             "full",
@@ -17116,8 +17150,7 @@ fn local_agg_gate_candidate_from_boundary_hit(
         rtds_close: first_obs,
         close_abs_diff,
         close_diff_bps: close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0,
-        direction_margin_bps: (hit.close_price - first_ref).abs()
-            / first_ref.abs().max(1e-12)
+        direction_margin_bps: (hit.close_price - first_ref).abs() / first_ref.abs().max(1e-12)
             * 10_000.0,
         source_count: hit.source_count,
         source_spread_bps: hit.source_spread_bps,
@@ -17168,8 +17201,7 @@ fn local_agg_gate_candidate_from_close_only_hit(
         rtds_close: first_obs,
         close_abs_diff,
         close_diff_bps: close_abs_diff / first_obs.abs().max(1e-12) * 10_000.0,
-        direction_margin_bps: (hit.close_price - first_ref).abs()
-            / first_ref.abs().max(1e-12)
+        direction_margin_bps: (hit.close_price - first_ref).abs() / first_ref.abs().max(1e-12)
             * 10_000.0,
         source_count: hit.source_count,
         source_spread_bps: hit.source_spread_bps,
@@ -17290,13 +17322,16 @@ fn local_agg_uncertainty_gate_finalize_round(round_end_ts: u64) {
                     .iter()
                     .map(|candidate| candidate.direction_margin_bps)
                     .filter(|value| value.is_finite())
-                    .fold(f64::NAN, |acc, value| {
-                        if acc.is_nan() {
-                            value
-                        } else {
-                            acc.max(value)
-                        }
-                    });
+                    .fold(
+                        f64::NAN,
+                        |acc, value| {
+                            if acc.is_nan() {
+                                value
+                            } else {
+                                acc.max(value)
+                            }
+                        },
+                    );
                 Some((candidates, round_max, state.candidates.len()))
             }
             _ => None,
@@ -17342,13 +17377,16 @@ fn local_agg_uncertainty_gate_observe_candidate(candidate: LocalAggUncertaintyGa
             .values()
             .map(|candidate| candidate.direction_margin_bps)
             .filter(|value| value.is_finite())
-            .fold(f64::NAN, |acc, value| {
-                if acc.is_nan() {
-                    value
-                } else {
-                    acc.max(value)
-                }
-            });
+            .fold(
+                f64::NAN,
+                |acc, value| {
+                    if acc.is_nan() {
+                        value
+                    } else {
+                        acc.max(value)
+                    }
+                },
+            );
         let observed = state.candidates.len();
         if state.finalized {
             final_update_candidates = state.candidates.values().cloned().collect::<Vec<_>>();
@@ -18992,13 +19030,16 @@ async fn run_chainlink_winner_hint(
 
             // Log first successful batch for diagnostics.
             if open_point.is_none() && close_point.is_none() {
-                let ts_range: Vec<String> = ticks.iter()
+                let ts_range: Vec<String> = ticks
+                    .iter()
                     .take(5)
                     .map(|(p, t)| format!("{:.4}@{}", p, t))
                     .collect();
                 info!(
                     "🔬 rtds_batch | symbol={} n={} samples=[{}]",
-                    target_symbol, ticks.len(), ts_range.join(", ")
+                    target_symbol,
+                    ticks.len(),
+                    ts_range.join(", ")
                 );
             }
 
@@ -23862,6 +23903,9 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "market_sell_trade_ticks": coord_obs.market_sell_trade_ticks,
                     "pgt_xuan_m0001_no_seed": pgt_xuan_m0001_no_seed_counts_json(
                         coord_obs.pgt_xuan_m0001_no_seed,
+                    ),
+                    "pgt_dplus_minorder_no_seed": pgt_dplus_minorder_no_seed_counts_json(
+                        coord_obs.pgt_dplus_minorder_no_seed,
                     ),
                     "pgt_single_seed_first_side": coord_obs
                         .pgt_single_seed_first_side

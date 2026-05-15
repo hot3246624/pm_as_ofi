@@ -10,8 +10,8 @@ use tracing::info;
 
 use super::pair_arb::PairArbStrategy;
 use super::{
-    PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes,
-    StrategyTickInput,
+    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent,
+    StrategyKind, StrategyQuotes, StrategyTickInput,
 };
 
 const RESIDUAL_EPS: f64 = 10.0;
@@ -154,6 +154,25 @@ const XUAN_M0001_SEED_COOLDOWN_MS: u64 = 5_000;
 const XUAN_M0001_BLOCKED_SKIP_AGE_SECS: f64 = 120.0;
 const XUAN_M0001_AGED_UNWIND_PAIR_CAP: f64 = 1.000;
 const XUAN_M0001_BLOCKED_SKIP_MARGIN: f64 = 0.001;
+const DPLUS_MINORDER_START_OFFSET_SECS: u64 = 4;
+const DPLUS_MINORDER_STOP_BEFORE_END_SECS: u64 = 25;
+const DPLUS_MINORDER_EDGE: f64 = 0.040;
+const DPLUS_MINORDER_MIN_PRICE: f64 = 0.10;
+const DPLUS_MINORDER_MAX_PRICE: f64 = 0.990;
+const DPLUS_MINORDER_OPEN_PAIR_CAP: f64 = 0.990;
+const DPLUS_MINORDER_COMPLETION_BASE_PAIR_CAP: f64 = 0.950;
+const DPLUS_MINORDER_COMPLETION_LATE_PAIR_CAP: f64 = 0.990;
+const DPLUS_MINORDER_COMPLETION_FINAL_PAIR_CAP: f64 = 1.000;
+const DPLUS_MINORDER_LATE_REMAINING_SECS: u64 = 60;
+const DPLUS_MINORDER_FINAL_REMAINING_SECS: u64 = 30;
+const DPLUS_MINORDER_TARGET_QTY: f64 = 10.0;
+const DPLUS_MINORDER_FILL_HAIRCUT: f64 = 0.20;
+const DPLUS_MINORDER_IMBALANCE_MULT: f64 = 8.0;
+const DPLUS_MINORDER_MAX_OPEN_COST: f64 = 250.0;
+const DPLUS_MINORDER_TRADE_FRESH_MS: u64 = 1_500;
+const DPLUS_MINORDER_SEED_COOLDOWN_MS: u64 = 1_000;
+const DPLUS_MINORDER_MATERIAL_RESIDUAL_QTY: f64 = 5.0;
+const DPLUS_MINORDER_MATERIAL_RESIDUAL_COST: f64 = 5.0;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -169,6 +188,7 @@ enum PgtShadowProfile {
     XuanCycleMergeV1,
     XuanCycleCappedV1,
     XuanM0001MakerLikeV1,
+    DPlusMinOrderV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,6 +420,31 @@ impl PgtTuning {
         }
     }
 
+    fn dplus_minorder_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::DPlusMinOrderV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - DPLUS_MINORDER_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(DPLUS_MINORDER_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: DPLUS_MINORDER_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: DPLUS_MINORDER_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(DPLUS_MINORDER_OPEN_PAIR_CAP),
+            completed_cycle_cap: None,
+            completion_early_pair_cap: DPLUS_MINORDER_COMPLETION_BASE_PAIR_CAP,
+            completion_late_pair_cap: DPLUS_MINORDER_COMPLETION_LATE_PAIR_CAP,
+            taker_close_pair_cap: DPLUS_MINORDER_COMPLETION_FINAL_PAIR_CAP,
+            fixed_clip_qty: None,
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: DPLUS_MINORDER_TARGET_QTY,
+            min_clip_qty: 0.0,
+            max_clip_qty: DPLUS_MINORDER_TARGET_QTY,
+        }
+    }
+
     fn from_env() -> Self {
         let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
             .unwrap_or_default()
@@ -421,6 +466,11 @@ impl PgtTuning {
             | "xuan_m0001_maker_like"
             | "xuan_m0001"
             | "xuan_frontier_m0001" => Self::xuan_m0001_maker_like_v1(),
+            "dplus_minorder_v1"
+            | "dplus_minorder"
+            | "xuan_dplus_minorder"
+            | "xuan_frontier_dplus"
+            | "b27_dplus" => Self::dplus_minorder_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -440,6 +490,7 @@ impl PgtTuning {
                     | PgtShadowProfile::XuanCycleMergeV1
                     | PgtShadowProfile::XuanCycleCappedV1
                     | PgtShadowProfile::XuanM0001MakerLikeV1
+                    | PgtShadowProfile::DPlusMinOrderV1
             ) {
                 base.max(cap)
             } else {
@@ -461,7 +512,10 @@ pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
 }
 
 fn pgt_profile_quotes_allowed(tuning: PgtTuning, dry_run: bool) -> bool {
-    tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 || dry_run
+    !matches!(
+        tuning.profile,
+        PgtShadowProfile::XuanM0001MakerLikeV1 | PgtShadowProfile::DPlusMinOrderV1
+    ) || dry_run
 }
 
 struct CompletionPlan {
@@ -620,6 +674,68 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                 Err(reason) => {
                     quotes.note_pgt_skip_no_seed();
                     quotes.note_pgt_xuan_m0001_no_seed(reason);
+                }
+            }
+            return quotes;
+        }
+
+        if tuning.profile == PgtShadowProfile::DPlusMinOrderV1 {
+            let yes_seed = match self.dplus_minorder_public_trade_seed_intent_for_side(
+                coordinator,
+                input,
+                Side::Yes,
+            ) {
+                Ok(seed) => Some(seed),
+                Err(reason) => {
+                    quotes.note_pgt_dplus_minorder_no_seed(reason);
+                    None
+                }
+            };
+            let no_seed = match self.dplus_minorder_public_trade_seed_intent_for_side(
+                coordinator,
+                input,
+                Side::No,
+            ) {
+                Ok(seed) => Some(seed),
+                Err(reason) => {
+                    quotes.note_pgt_dplus_minorder_no_seed(reason);
+                    None
+                }
+            };
+            if yes_seed.is_none() && no_seed.is_none() {
+                quotes.note_pgt_skip_no_seed();
+                return quotes;
+            }
+            match self.select_flat_seed_plans(
+                yes_seed.as_ref(),
+                no_seed.as_ref(),
+                tuning.profile,
+                coordinator.cfg().dry_run,
+                None,
+                false,
+            ) {
+                FlatSeedSelection::None => quotes.note_pgt_skip_geometry_guard(),
+                FlatSeedSelection::Dual => {
+                    if let Some(seed) = yes_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                    if let Some(seed) = no_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                }
+                FlatSeedSelection::YesOnly => {
+                    if let Some(seed) = yes_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                }
+                FlatSeedSelection::NoOnly => {
+                    if let Some(seed) = no_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
                 }
             }
             return quotes;
@@ -849,6 +965,110 @@ impl PairGatedTrancheStrategy {
             visible_completion_slack_ticks,
             fill_distance_ticks,
             preference_score: visible_completion_slack_ticks - 0.60 * fill_distance_ticks,
+            intent: StrategyIntent {
+                side,
+                direction: TradeDirection::Buy,
+                price,
+                size,
+                reason: BidReason::Provide,
+            },
+        })
+    }
+
+    fn dplus_minorder_public_trade_seed_intent_for_side(
+        &self,
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+        side: Side,
+    ) -> Result<SeedPlan, PgtDPlusMinOrderNoSeedReason> {
+        let trade = coordinator
+            .recent_public_trade_for(side, Duration::from_millis(DPLUS_MINORDER_TRADE_FRESH_MS))
+            .ok_or(PgtDPlusMinOrderNoSeedReason::NoRecentSellTrade)?;
+        if trade.taker_side != TakerSide::Sell
+            || trade.market_side != side
+            || !trade.price.is_finite()
+            || !trade.size.is_finite()
+            || trade.price <= 0.0
+            || trade.size <= 0.0
+        {
+            return Err(PgtDPlusMinOrderNoSeedReason::BadTrade);
+        }
+        let (best_bid, best_ask, opp_ask, same_qty, opp_qty) = match side {
+            Side::Yes => (
+                input.book.yes_bid,
+                input.book.yes_ask,
+                input.book.no_ask,
+                input.inv.yes_qty,
+                input.inv.no_qty,
+            ),
+            Side::No => (
+                input.book.no_bid,
+                input.book.no_ask,
+                input.book.yes_ask,
+                input.inv.no_qty,
+                input.inv.yes_qty,
+            ),
+        };
+        if best_bid <= 0.0 || best_ask <= 0.0 || opp_ask <= 0.0 {
+            return Err(PgtDPlusMinOrderNoSeedReason::InvalidBook);
+        }
+        let price = coordinator.safe_price(
+            (trade.price - DPLUS_MINORDER_EDGE)
+                .max(DPLUS_MINORDER_MIN_PRICE)
+                .min(DPLUS_MINORDER_MAX_PRICE),
+        );
+        if !(DPLUS_MINORDER_MIN_PRICE..=DPLUS_MINORDER_MAX_PRICE).contains(&price) {
+            return Err(PgtDPlusMinOrderNoSeedReason::PriceBand);
+        }
+        if price <= 0.0 || price >= best_ask {
+            return Err(PgtDPlusMinOrderNoSeedReason::NotMakerPrice);
+        }
+        if price + opp_ask > DPLUS_MINORDER_OPEN_PAIR_CAP + 1e-9 {
+            return Err(PgtDPlusMinOrderNoSeedReason::PairCap);
+        }
+        if coordinator.pgt_buy_slot_age(side)
+            < Duration::from_millis(DPLUS_MINORDER_SEED_COOLDOWN_MS)
+        {
+            return Err(PgtDPlusMinOrderNoSeedReason::Cooldown);
+        }
+        let inventory_cost = pgt_xuan_cycle_inventory_cost(input.inv);
+        let mut size = pgt_dplus_minorder_seed_size(
+            trade.size,
+            price,
+            same_qty,
+            opp_qty,
+            inventory_cost,
+            coordinator.cfg().min_order_size,
+        )
+        .ok_or(PgtDPlusMinOrderNoSeedReason::SmallSize)?;
+        let projected = coordinator
+            .simulate_buy(input.inv, side, size, price)
+            .ok_or(PgtDPlusMinOrderNoSeedReason::SimulateBuyBlocked)?;
+        let max_imbalance = DPLUS_MINORDER_TARGET_QTY * DPLUS_MINORDER_IMBALANCE_MULT;
+        if projected.projected_abs_net_diff > max_imbalance + 1e-9 {
+            size = (size - (projected.projected_abs_net_diff - max_imbalance)).max(0.0);
+            size = quantize_tenth(size);
+            if size < coordinator.cfg().min_order_size {
+                return Err(PgtDPlusMinOrderNoSeedReason::Imbalance);
+            }
+            coordinator
+                .simulate_buy(input.inv, side, size, price)
+                .ok_or(PgtDPlusMinOrderNoSeedReason::SimulateBuyBlocked)?;
+        }
+
+        let tick = coordinator.cfg().tick_size.max(1e-9);
+        let visible_completion_slack_ticks =
+            ((DPLUS_MINORDER_OPEN_PAIR_CAP - price - opp_ask) / tick).max(-10.0);
+        let fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
+        Ok(SeedPlan {
+            size,
+            taker_shadow_would_open: false,
+            visible_taker_completion_ok: price + opp_ask
+                <= DPLUS_MINORDER_COMPLETION_BASE_PAIR_CAP + 1e-9,
+            entry_pressure_extra_ticks: 0,
+            visible_completion_slack_ticks,
+            fill_distance_ticks,
+            preference_score: visible_completion_slack_ticks - 0.25 * fill_distance_ticks,
             intent: StrategyIntent {
                 side,
                 direction: TradeDirection::Buy,
@@ -1200,9 +1420,6 @@ impl PairGatedTrancheStrategy {
             (Some(_), None) => FlatSeedSelection::YesOnly,
             (None, Some(_)) => FlatSeedSelection::NoOnly,
             (Some(yes), Some(no)) => {
-                if profile == PgtShadowProfile::XuanCycleMergeV1 {
-                    return FlatSeedSelection::Dual;
-                }
                 let yes_reject = Self::seed_geometry_reject(yes);
                 let no_reject = Self::seed_geometry_reject(no);
                 match (yes_reject, no_reject) {
@@ -1210,6 +1427,12 @@ impl PairGatedTrancheStrategy {
                     (false, true) => return FlatSeedSelection::YesOnly,
                     (true, false) => return FlatSeedSelection::NoOnly,
                     (false, false) => {}
+                }
+                if matches!(
+                    profile,
+                    PgtShadowProfile::XuanCycleMergeV1 | PgtShadowProfile::DPlusMinOrderV1
+                ) {
+                    return FlatSeedSelection::Dual;
                 }
                 if profile == PgtShadowProfile::XuanLadderV1 {
                     let yes_unsafe_dual = Self::xuan_unsafe_dual_first_leg(yes);
@@ -2025,7 +2248,12 @@ fn pgt_tuning_seed_open_remaining_allowed(tuning: PgtTuning, remaining_secs: u64
         }
     }
     if let Some(min_remaining) = tuning.seed_open_min_remaining_secs {
-        if remaining_secs < min_remaining {
+        let inside_stop_window = if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
+            remaining_secs <= min_remaining
+        } else {
+            remaining_secs < min_remaining
+        };
+        if inside_stop_window {
             return false;
         }
     }
@@ -2258,6 +2486,7 @@ fn pgt_effective_completion_pair_caps(
 
     if tuning.profile == PgtShadowProfile::XuanCycleCappedV1
         || tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
+        || tuning.profile == PgtShadowProfile::DPlusMinOrderV1
     {
         let (base, late, final_cap, late_secs, final_secs) =
             if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
@@ -2267,6 +2496,14 @@ fn pgt_effective_completion_pair_caps(
                     XUAN_M0001_FINAL_PAIR_CAP,
                     XUAN_M0001_LATE_REMAINING_SECS,
                     XUAN_M0001_FINAL_REMAINING_SECS,
+                )
+            } else if tuning.profile == PgtShadowProfile::DPlusMinOrderV1 {
+                (
+                    DPLUS_MINORDER_COMPLETION_BASE_PAIR_CAP,
+                    DPLUS_MINORDER_COMPLETION_LATE_PAIR_CAP,
+                    DPLUS_MINORDER_COMPLETION_FINAL_PAIR_CAP,
+                    DPLUS_MINORDER_LATE_REMAINING_SECS,
+                    DPLUS_MINORDER_FINAL_REMAINING_SECS,
                 )
             } else {
                 (
@@ -2482,10 +2719,10 @@ fn pgt_blocks_completed_cycle_cap(
 }
 
 fn pgt_residual_guard_eps(tuning: PgtTuning) -> f64 {
-    if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
-        XUAN_M0001_MATERIAL_RESIDUAL_QTY
-    } else {
-        RESIDUAL_EPS
+    match tuning.profile {
+        PgtShadowProfile::XuanM0001MakerLikeV1 => XUAN_M0001_MATERIAL_RESIDUAL_QTY,
+        PgtShadowProfile::DPlusMinOrderV1 => DPLUS_MINORDER_MATERIAL_RESIDUAL_QTY,
+        _ => RESIDUAL_EPS,
     }
 }
 
@@ -2493,17 +2730,60 @@ fn pgt_material_residual_blocks_new_seed(
     tuning: PgtTuning,
     pair_ledger: &PairLedgerSnapshot,
 ) -> bool {
-    if tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 {
+    if !matches!(
+        tuning.profile,
+        PgtShadowProfile::XuanM0001MakerLikeV1 | PgtShadowProfile::DPlusMinOrderV1
+    ) {
         return pair_ledger.residual_qty.abs() > RESIDUAL_EPS;
     }
-    if pair_ledger.residual_qty.abs() > XUAN_M0001_MATERIAL_RESIDUAL_QTY {
+    let material_qty = pgt_residual_guard_eps(tuning);
+    let material_cost = if tuning.profile == PgtShadowProfile::DPlusMinOrderV1 {
+        DPLUS_MINORDER_MATERIAL_RESIDUAL_COST
+    } else {
+        XUAN_M0001_MATERIAL_RESIDUAL_COST
+    };
+    if pair_ledger.residual_qty.abs() > material_qty {
         return true;
     }
     pair_ledger
         .active_tranche
         .map(|active| active.residual_qty.max(0.0) * active.first_vwap.max(0.0))
         .unwrap_or(0.0)
-        > XUAN_M0001_MATERIAL_RESIDUAL_COST
+        > material_cost
+}
+
+fn pgt_dplus_minorder_seed_size(
+    trade_size: f64,
+    price: f64,
+    same_qty: f64,
+    opp_qty: f64,
+    inventory_cost: f64,
+    min_order_size: f64,
+) -> Option<f64> {
+    if !trade_size.is_finite()
+        || !price.is_finite()
+        || !same_qty.is_finite()
+        || !opp_qty.is_finite()
+        || !inventory_cost.is_finite()
+        || trade_size <= 0.0
+        || price <= 0.0
+    {
+        return None;
+    }
+    let max_imbalance = DPLUS_MINORDER_TARGET_QTY * DPLUS_MINORDER_IMBALANCE_MULT;
+    let same_excess = (same_qty.max(0.0) - opp_qty.max(0.0)).max(0.0);
+    let imbalance_room = (max_imbalance - same_excess).max(0.0);
+    let remaining_open_cost = (DPLUS_MINORDER_MAX_OPEN_COST - inventory_cost.max(0.0)).max(0.0);
+    let size = DPLUS_MINORDER_TARGET_QTY
+        .min(trade_size * DPLUS_MINORDER_FILL_HAIRCUT)
+        .min(imbalance_room)
+        .min(remaining_open_cost / price);
+    let size = quantize_tenth(size);
+    if size + 1e-9 < min_order_size.max(0.0) {
+        None
+    } else {
+        Some(size)
+    }
 }
 
 fn pgt_xuan_m0001_allows_blocked_residual_probe(
@@ -3312,6 +3592,79 @@ mod profile_tests {
         assert!(pgt_profile_quotes_allowed(
             PgtTuning::xuan_ladder_v1(),
             false
+        ));
+    }
+
+    #[test]
+    fn dplus_minorder_profile_matches_frontier_candidate() {
+        let tuning = PgtTuning::dplus_minorder_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::DPlusMinOrderV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(296));
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(DPLUS_MINORDER_STOP_BEFORE_END_SECS)
+        );
+        assert_eq!(tuning.open_pair_band(0.98), DPLUS_MINORDER_OPEN_PAIR_CAP);
+        assert_eq!(
+            tuning.completion_early_pair_cap,
+            DPLUS_MINORDER_COMPLETION_BASE_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.completion_late_pair_cap,
+            DPLUS_MINORDER_COMPLETION_LATE_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.taker_close_pair_cap,
+            DPLUS_MINORDER_COMPLETION_FINAL_PAIR_CAP
+        );
+        assert_eq!(tuning.fixed_clip_qty, None);
+        assert_eq!(tuning.base_clip_qty, DPLUS_MINORDER_TARGET_QTY);
+        assert_eq!(
+            pgt_residual_guard_eps(tuning),
+            DPLUS_MINORDER_MATERIAL_RESIDUAL_QTY
+        );
+        assert!(!pgt_profile_quotes_allowed(tuning, false));
+        assert!(pgt_profile_quotes_allowed(tuning, true));
+    }
+
+    #[test]
+    fn dplus_minorder_seed_size_uses_fill_haircut_and_imbalance_room() {
+        assert_eq!(
+            pgt_dplus_minorder_seed_size(100.0, 0.40, 0.0, 0.0, 0.0, 5.0),
+            Some(DPLUS_MINORDER_TARGET_QTY)
+        );
+        assert_eq!(
+            pgt_dplus_minorder_seed_size(30.0, 0.40, 0.0, 0.0, 0.0, 5.0),
+            Some(6.0)
+        );
+        assert_eq!(
+            pgt_dplus_minorder_seed_size(20.0, 0.40, 0.0, 0.0, 0.0, 5.0),
+            None
+        );
+        assert_eq!(
+            pgt_dplus_minorder_seed_size(100.0, 0.40, 78.0, 0.0, 0.0, 5.0),
+            None
+        );
+        assert_eq!(
+            pgt_dplus_minorder_seed_size(100.0, 0.40, 60.0, 0.0, 0.0, 5.0),
+            Some(DPLUS_MINORDER_TARGET_QTY)
+        );
+    }
+
+    #[test]
+    fn xuan_m0001_seed_open_window_stops_at_final_60s_boundary() {
+        let tuning = PgtTuning::xuan_m0001_maker_like_v1();
+        assert!(pgt_tuning_seed_open_remaining_allowed(
+            tuning,
+            XUAN_M0001_STOP_BEFORE_END_SECS + 1
+        ));
+        assert!(!pgt_tuning_seed_open_remaining_allowed(
+            tuning,
+            XUAN_M0001_STOP_BEFORE_END_SECS
+        ));
+        assert!(!pgt_tuning_seed_open_remaining_allowed(
+            tuning,
+            XUAN_M0001_STOP_BEFORE_END_SECS - 1
         ));
     }
 
@@ -4426,6 +4779,48 @@ mod tests {
         );
 
         assert_eq!(selection, FlatSeedSelection::Dual);
+    }
+
+    #[test]
+    fn dplus_minorder_keeps_dual_seed_quotes_without_latch_exhaustion() {
+        let strategy = PairGatedTrancheStrategy;
+        let yes = seed_plan_with_slack(Side::Yes, 0.44, 0, 2.0);
+        let no = seed_plan_with_slack(Side::No, 0.45, 0, 2.0);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::DPlusMinOrderV1,
+            true,
+            Some(Side::Yes),
+            false,
+        );
+
+        assert_eq!(
+            selection,
+            FlatSeedSelection::Dual,
+            "D+ intentionally keeps B27-style two-sided passive BUY inventory in dry-run shadow"
+        );
+    }
+
+    #[test]
+    fn dplus_minorder_rejects_dual_seed_when_both_sides_have_bad_geometry() {
+        let strategy = PairGatedTrancheStrategy;
+        let mut yes = seed_plan_with_slack(Side::Yes, 0.45, 0, -5.0);
+        let mut no = seed_plan_with_slack(Side::No, 0.45, 0, -5.0);
+        yes.fill_distance_ticks = 5.0;
+        no.fill_distance_ticks = 5.0;
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::DPlusMinOrderV1,
+            true,
+            None,
+            false,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::None);
     }
 
     #[test]

@@ -112,6 +112,56 @@ impl PgtXuanM0001NoSeedReason {
     }
 }
 
+pub const PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT: usize = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgtDPlusMinOrderNoSeedReason {
+    NoRecentSellTrade = 0,
+    BadTrade = 1,
+    InvalidBook = 2,
+    PriceBand = 3,
+    NotMakerPrice = 4,
+    PairCap = 5,
+    Cooldown = 6,
+    SmallSize = 7,
+    SimulateBuyBlocked = 8,
+    Imbalance = 9,
+}
+
+impl PgtDPlusMinOrderNoSeedReason {
+    pub const ALL: [Self; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT] = [
+        Self::NoRecentSellTrade,
+        Self::BadTrade,
+        Self::InvalidBook,
+        Self::PriceBand,
+        Self::NotMakerPrice,
+        Self::PairCap,
+        Self::Cooldown,
+        Self::SmallSize,
+        Self::SimulateBuyBlocked,
+        Self::Imbalance,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoRecentSellTrade => "no_recent_sell_trade",
+            Self::BadTrade => "bad_trade",
+            Self::InvalidBook => "invalid_book",
+            Self::PriceBand => "price_band",
+            Self::NotMakerPrice => "not_maker_price",
+            Self::PairCap => "pair_cap",
+            Self::Cooldown => "cooldown",
+            Self::SmallSize => "small_size",
+            Self::SimulateBuyBlocked => "simulate_buy_blocked",
+            Self::Imbalance => "imbalance",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_ofi_softened_quotes: u8,
@@ -137,6 +187,7 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pgt_taker_shadow_would_open: u8,
     pub(crate) pgt_taker_shadow_would_close: u8,
     pub(crate) pgt_xuan_m0001_no_seed: [u8; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
+    pub(crate) pgt_dplus_minorder_no_seed: [u8; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -299,6 +350,11 @@ impl StrategyQuotes {
 
     pub(crate) fn note_pgt_xuan_m0001_no_seed(&mut self, reason: PgtXuanM0001NoSeedReason) {
         let slot = &mut self.diagnostics.pgt_xuan_m0001_no_seed[reason.index()];
+        *slot = slot.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_dplus_minorder_no_seed(&mut self, reason: PgtDPlusMinOrderNoSeedReason) {
+        let slot = &mut self.diagnostics.pgt_dplus_minorder_no_seed[reason.index()];
         *slot = slot.saturating_add(1);
     }
 

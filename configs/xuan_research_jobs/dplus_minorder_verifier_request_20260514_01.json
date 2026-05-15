@@ -1,0 +1,13 @@
+{
+  "job_id": "dplus_minorder_verifier_request_20260514_01",
+  "kind": "verifier_spec_request",
+  "notes": {
+    "candidate": "dpass_all_e040_t10_px010_990_imb8_sv0950 plus imb6 risk controls",
+    "purpose": "Register D+ min-order scaled source-of-truth verifier request without running heavy verifier from Codex automation.",
+    "safety": "No raw/replay scan, no production service control."
+  },
+  "params": {
+    "markdown_path": "/home/ubuntu/xuan_frontier_runs/verifier_specs/verifier_spec_d_plus_minorder_fillhaircut_20260514_0310.md",
+    "spec_path": "/home/ubuntu/xuan_frontier_runs/verifier_specs/verifier_spec_d_plus_minorder_fillhaircut_20260514_0310.json"
+  }
+}
