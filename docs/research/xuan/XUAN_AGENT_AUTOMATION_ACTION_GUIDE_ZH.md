@@ -27,8 +27,9 @@ pm_as_ofi-xuan-frontier
   owner: xuan frontier
   automation namespace: xuan-frontier-*
   current active:
-    - xuan-frontier-research-loop
     - xuan-frontier-remote-verifier-loop
+  current paused:
+    - xuan-frontier-research-loop
 
 pm_as_ofi-xuan-research
   cwd: /Users/hot/web3Scientist/pm_as_ofi-xuan-research
@@ -58,7 +59,6 @@ python3 scripts/check_xuan_automation_guard.py
 ok = true
 active_xuan_frontier_ids = [
   "xuan-frontier-remote-verifier-loop",
-  "xuan-frontier-research-loop",
 ]
 ```
 
@@ -160,7 +160,7 @@ Automation 是时间维度工具，不是并行开发 worker。
 - 只读本地 repo、docs、artifacts、ledger。
 - 不 SSH、不 rsync、不 scp、不 gh、不 git push、不部署。
 - 无 material 发现时最终输出必须只有 archive directive，不要输出摘要、bullet、status 或“no changes”。
-- 建议频率：每小时一次；不要靠降频降噪，routine run 必须自动 archive。
+- 由于 Codex cron-generated thread 目前没有可靠隐藏 archive directive，xuan-frontier 的本地 archive loop 默认保持 `PAUSED`；需要本地巡检时由主线程手动运行或用户显式打开。
 
 `*-remote-verifier-loop` / 远端验证类 loop：
 

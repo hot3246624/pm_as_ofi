@@ -25,9 +25,10 @@ AUTOMATION_ROOT = Path(os.environ.get("CODEX_AUTOMATIONS_DIR", "~/.codex/automat
 LOCAL_ARCHIVE_ID = "xuan-frontier-research-loop"
 REMOTE_VERIFIER_ID = "xuan-frontier-remote-verifier-loop"
 FRONTIER_PREFIX = "xuan-frontier-"
-ALLOWED_ACTIVE_FRONTIER = {LOCAL_ARCHIVE_ID, REMOTE_VERIFIER_ID}
+ALLOWED_ACTIVE_FRONTIER = {REMOTE_VERIFIER_ID}
 REQUIRED_LOCAL_PROMPT_MARKERS = [
     "local-only",
+    "intentionally paused",
     "do not ssh",
     "create/update/delete other automations",
     "create sibling xuan heartbeats/crons",
@@ -124,8 +125,8 @@ def main() -> int:
     if local_owner is None:
         issues.append(f"missing owner automation: {LOCAL_ARCHIVE_ID}")
     else:
-        if str(local_owner.get("status", "")).upper() != "ACTIVE":
-            issues.append(f"{LOCAL_ARCHIVE_ID} is not ACTIVE")
+        if str(local_owner.get("status", "")).upper() != "PAUSED":
+            issues.append(f"{LOCAL_ARCHIVE_ID} should be PAUSED until cron archive is reliable")
         prompt = str(local_owner.get("prompt", ""))
         prompt_lower = prompt.lower()
         for marker in REQUIRED_LOCAL_PROMPT_MARKERS:
@@ -136,7 +137,9 @@ def main() -> int:
             issues.append(f"{LOCAL_ARCHIVE_ID} cwd does not point at xuan-frontier: {cwd_text}")
 
     remote_owner = next((item for item in frontier_automations if item.get("id") == REMOTE_VERIFIER_ID), None)
-    if remote_owner is not None:
+    if remote_owner is None:
+        issues.append(f"missing owner automation: {REMOTE_VERIFIER_ID}")
+    else:
         if str(remote_owner.get("status", "")).upper() != "ACTIVE":
             issues.append(f"{REMOTE_VERIFIER_ID} is not ACTIVE")
         prompt = str(remote_owner.get("prompt", ""))

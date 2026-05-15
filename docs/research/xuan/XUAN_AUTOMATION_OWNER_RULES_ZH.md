@@ -68,7 +68,7 @@ Automation 负责：
 
 ## Automation 类型
 
-`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。推荐频率：每小时一次；真正的降噪机制是 routine run 必须自动归档，而不是降低频率或输出“无变化”摘要。
+`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。由于 Codex cron-generated thread 目前没有可靠隐藏 archive directive，这个 loop 默认保持 `PAUSED`；需要本地巡检时由主线程手动运行或用户显式打开。
 
 禁止：
 
@@ -192,7 +192,6 @@ python3 scripts/check_xuan_automation_guard.py
 ```text
 active_xuan_frontier_ids = [
   "xuan-frontier-remote-verifier-loop",
-  "xuan-frontier-research-loop",
 ]
 ok = true
 ```
