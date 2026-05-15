@@ -55,15 +55,34 @@ Risk-balanced sibling `imb6 / sv0950` remains attractive if residual rate is wei
 - Action: place **passive BUY** quotes (YES_BUY and/or NO_BUY) with strict pair-cost ceilings and min-order-scaled sizing (the “minorder + fill_haircut” research axis).
 - Inventory discipline: prefer “completion/inventory lifecycle” semantics compatible with the existing tranche ledger; do not introduce new capital flows or production execution paths in the first pass.
 
-## Why current Rust can’t be “two-sided” yet
+## Local implementation state (2026-05-14T11:18Z)
 
-Today, `StrategyCoordinator` stores only a single `last_public_trade` snapshot, so `PairGatedTrancheArb` can only seed off **one side at a time**.
+Stage A is now present locally:
 
-For “two-sided passive BUY from public SELL flow”, the engine needs a **per-side** recent public SELL cache so both YES and NO can independently become eligible in the same tick.
+- `StrategyCoordinator` stores `last_public_trade_by_side: [Option<PublicTradeSnapshot>; 2]`.
+- `handle_market_data` updates the per-side slot for public SELL ticks.
+- `recent_public_trade_for(side, max_age)` is covered by `public_trade_snapshot_tracks_latest_sell_per_side`.
+
+Stage B is also present as a dry-run-only profile:
+
+- `PgtShadowProfile::DPlusMinOrderV1` maps `PM_PGT_SHADOW_PROFILE=dplus_minorder_v1`.
+- The profile uses public SELL price minus `0.040`, `[0.10, 0.990]` price band, `0.990` open pair cap, `0.20` fill haircut, `10.0` target qty, `8x` imbalance room, and D+ no-seed diagnostics.
+
+Open readiness decision before shadow:
+
+- The first D+ shadow should intentionally test simultaneous YES/NO passive BUY seeds when both sides pass D+ admission.
+- Reason: the validated D+/B27 edge is a two-sided passive inventory effect; forcing a deterministic single side before shadow would likely destroy the cycles/market and pair-cost advantage that made the candidate interesting.
+- Safety is owned by dry-run-only execution, min-order target sizing, fill haircut, imbalance cap, material-residual guard, and shadow acceptance metrics rather than by collapsing the strategy into a different single-side family.
+- D+ now routes candidate pairs through `select_flat_seed_plans` for geometry rejection while explicitly preserving dual seed selection for valid two-sided candidates.
+
+Patch proposal if the conservative path is chosen:
+
+- If shadow shows the current tranche lifecycle cannot represent true two-sided passive inventory safely, fall back to a conservative single-side D+ variant and keep the current dual-side profile as Stage C.
+- Keep all D+ profiles dry-run-only until live-equivalent shadow confirms fill realism, pair cost, cycles, and residual gates.
 
 ## Staged implementation plan (dry-run first)
 
-### Stage A — Per-side public trade cache (prerequisite)
+### Stage A — Per-side public trade cache (implemented)
 
 - Change `StrategyCoordinator` state to store last public SELL trade **per market side**:
   - Replace `last_public_trade: Option<PublicTradeSnapshot>` with `last_public_trade_by_side: [Option<PublicTradeSnapshot>; 2]` (index by `Side`).
@@ -77,7 +96,7 @@ Files:
 - `src/polymarket/coordinator_order_io.rs`
 - `src/polymarket/coordinator_tests.rs` (extend coverage)
 
-### Stage B — Add a D+ dry-run profile inside `PairGatedTrancheArb`
+### Stage B — Add a D+ dry-run profile inside `PairGatedTrancheArb` (implemented, pending dual-seed policy decision)
 
 Goal: implement D+ as a **new `PgtShadowProfile` variant** so it reuses tranche lifecycle + completion logic, but has D+-specific seed selection and gates.
 
@@ -93,7 +112,7 @@ Seed logic (high level):
     - explicit price band (the `px010_990` family)
     - min-order-scaled sizing with `fill_haircut` (the `fh010/fh020` family)
   - Enforce a hard imbalance gate (the `imb6/imb8` family) using `input.inv.net_diff` vs `cfg.max_net_diff`.
-- Allow both sides to emit seed intents in the same tick **only if** the tranche model can represent it safely:
+- Allow both sides to emit seed intents in the same tick **only if** the tranche model can represent it safely and shadow evidence confirms the lifecycle:
   - First pass (recommended): pick *one* side using a deterministic preference score (e.g., current `preference_score` shape) until tranche model supports multiple concurrent opens.
   - Second pass: enable true dual seed once multi-tranche support exists (Stage C).
 

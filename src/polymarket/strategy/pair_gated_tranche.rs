@@ -10,8 +10,8 @@ use tracing::info;
 
 use super::pair_arb::PairArbStrategy;
 use super::{
-    PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes,
-    StrategyTickInput,
+    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent,
+    StrategyKind, StrategyQuotes, StrategyTickInput,
 };
 
 const RESIDUAL_EPS: f64 = 10.0;
@@ -680,20 +680,63 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         }
 
         if tuning.profile == PgtShadowProfile::DPlusMinOrderV1 {
-            let yes_seed =
-                self.dplus_minorder_public_trade_seed_intent_for_side(coordinator, input, Side::Yes);
-            let no_seed =
-                self.dplus_minorder_public_trade_seed_intent_for_side(coordinator, input, Side::No);
-            if let Some(seed) = yes_seed {
-                quotes.note_pgt_seed_quote();
-                quotes.set(seed.intent);
-            }
-            if let Some(seed) = no_seed {
-                quotes.note_pgt_seed_quote();
-                quotes.set(seed.intent);
-            }
-            if quotes.yes_buy.is_none() && quotes.no_buy.is_none() {
+            let yes_seed = match self.dplus_minorder_public_trade_seed_intent_for_side(
+                coordinator,
+                input,
+                Side::Yes,
+            ) {
+                Ok(seed) => Some(seed),
+                Err(reason) => {
+                    quotes.note_pgt_dplus_minorder_no_seed(reason);
+                    None
+                }
+            };
+            let no_seed = match self.dplus_minorder_public_trade_seed_intent_for_side(
+                coordinator,
+                input,
+                Side::No,
+            ) {
+                Ok(seed) => Some(seed),
+                Err(reason) => {
+                    quotes.note_pgt_dplus_minorder_no_seed(reason);
+                    None
+                }
+            };
+            if yes_seed.is_none() && no_seed.is_none() {
                 quotes.note_pgt_skip_no_seed();
+                return quotes;
+            }
+            match self.select_flat_seed_plans(
+                yes_seed.as_ref(),
+                no_seed.as_ref(),
+                tuning.profile,
+                coordinator.cfg().dry_run,
+                None,
+                false,
+            ) {
+                FlatSeedSelection::None => quotes.note_pgt_skip_geometry_guard(),
+                FlatSeedSelection::Dual => {
+                    if let Some(seed) = yes_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                    if let Some(seed) = no_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                }
+                FlatSeedSelection::YesOnly => {
+                    if let Some(seed) = yes_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                }
+                FlatSeedSelection::NoOnly => {
+                    if let Some(seed) = no_seed {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                }
             }
             return quotes;
         }
@@ -937,11 +980,10 @@ impl PairGatedTrancheStrategy {
         coordinator: &StrategyCoordinator,
         input: StrategyTickInput<'_>,
         side: Side,
-    ) -> Option<SeedPlan> {
-        let trade = coordinator.recent_public_trade_for(
-            side,
-            Duration::from_millis(DPLUS_MINORDER_TRADE_FRESH_MS),
-        )?;
+    ) -> Result<SeedPlan, PgtDPlusMinOrderNoSeedReason> {
+        let trade = coordinator
+            .recent_public_trade_for(side, Duration::from_millis(DPLUS_MINORDER_TRADE_FRESH_MS))
+            .ok_or(PgtDPlusMinOrderNoSeedReason::NoRecentSellTrade)?;
         if trade.taker_side != TakerSide::Sell
             || trade.market_side != side
             || !trade.price.is_finite()
@@ -949,7 +991,7 @@ impl PairGatedTrancheStrategy {
             || trade.price <= 0.0
             || trade.size <= 0.0
         {
-            return None;
+            return Err(PgtDPlusMinOrderNoSeedReason::BadTrade);
         }
         let (best_bid, best_ask, opp_ask, same_qty, opp_qty) = match side {
             Side::Yes => (
@@ -968,7 +1010,7 @@ impl PairGatedTrancheStrategy {
             ),
         };
         if best_bid <= 0.0 || best_ask <= 0.0 || opp_ask <= 0.0 {
-            return None;
+            return Err(PgtDPlusMinOrderNoSeedReason::InvalidBook);
         }
         let price = coordinator.safe_price(
             (trade.price - DPLUS_MINORDER_EDGE)
@@ -976,18 +1018,18 @@ impl PairGatedTrancheStrategy {
                 .min(DPLUS_MINORDER_MAX_PRICE),
         );
         if !(DPLUS_MINORDER_MIN_PRICE..=DPLUS_MINORDER_MAX_PRICE).contains(&price) {
-            return None;
+            return Err(PgtDPlusMinOrderNoSeedReason::PriceBand);
         }
         if price <= 0.0 || price >= best_ask {
-            return None;
+            return Err(PgtDPlusMinOrderNoSeedReason::NotMakerPrice);
         }
         if price + opp_ask > DPLUS_MINORDER_OPEN_PAIR_CAP + 1e-9 {
-            return None;
+            return Err(PgtDPlusMinOrderNoSeedReason::PairCap);
         }
         if coordinator.pgt_buy_slot_age(side)
             < Duration::from_millis(DPLUS_MINORDER_SEED_COOLDOWN_MS)
         {
-            return None;
+            return Err(PgtDPlusMinOrderNoSeedReason::Cooldown);
         }
         let inventory_cost = pgt_xuan_cycle_inventory_cost(input.inv);
         let mut size = pgt_dplus_minorder_seed_size(
@@ -997,23 +1039,28 @@ impl PairGatedTrancheStrategy {
             opp_qty,
             inventory_cost,
             coordinator.cfg().min_order_size,
-        )?;
-        let projected = coordinator.simulate_buy(input.inv, side, size, price)?;
+        )
+        .ok_or(PgtDPlusMinOrderNoSeedReason::SmallSize)?;
+        let projected = coordinator
+            .simulate_buy(input.inv, side, size, price)
+            .ok_or(PgtDPlusMinOrderNoSeedReason::SimulateBuyBlocked)?;
         let max_imbalance = DPLUS_MINORDER_TARGET_QTY * DPLUS_MINORDER_IMBALANCE_MULT;
         if projected.projected_abs_net_diff > max_imbalance + 1e-9 {
             size = (size - (projected.projected_abs_net_diff - max_imbalance)).max(0.0);
             size = quantize_tenth(size);
             if size < coordinator.cfg().min_order_size {
-                return None;
+                return Err(PgtDPlusMinOrderNoSeedReason::Imbalance);
             }
-            coordinator.simulate_buy(input.inv, side, size, price)?;
+            coordinator
+                .simulate_buy(input.inv, side, size, price)
+                .ok_or(PgtDPlusMinOrderNoSeedReason::SimulateBuyBlocked)?;
         }
 
         let tick = coordinator.cfg().tick_size.max(1e-9);
         let visible_completion_slack_ticks =
             ((DPLUS_MINORDER_OPEN_PAIR_CAP - price - opp_ask) / tick).max(-10.0);
         let fill_distance_ticks = ((best_ask - price) / tick).max(0.0);
-        Some(SeedPlan {
+        Ok(SeedPlan {
             size,
             taker_shadow_would_open: false,
             visible_taker_completion_ok: price + opp_ask
@@ -1373,9 +1420,6 @@ impl PairGatedTrancheStrategy {
             (Some(_), None) => FlatSeedSelection::YesOnly,
             (None, Some(_)) => FlatSeedSelection::NoOnly,
             (Some(yes), Some(no)) => {
-                if profile == PgtShadowProfile::XuanCycleMergeV1 {
-                    return FlatSeedSelection::Dual;
-                }
                 let yes_reject = Self::seed_geometry_reject(yes);
                 let no_reject = Self::seed_geometry_reject(no);
                 match (yes_reject, no_reject) {
@@ -1383,6 +1427,12 @@ impl PairGatedTrancheStrategy {
                     (false, true) => return FlatSeedSelection::YesOnly,
                     (true, false) => return FlatSeedSelection::NoOnly,
                     (false, false) => {}
+                }
+                if matches!(
+                    profile,
+                    PgtShadowProfile::XuanCycleMergeV1 | PgtShadowProfile::DPlusMinOrderV1
+                ) {
+                    return FlatSeedSelection::Dual;
                 }
                 if profile == PgtShadowProfile::XuanLadderV1 {
                     let yes_unsafe_dual = Self::xuan_unsafe_dual_first_leg(yes);
@@ -4729,6 +4779,48 @@ mod tests {
         );
 
         assert_eq!(selection, FlatSeedSelection::Dual);
+    }
+
+    #[test]
+    fn dplus_minorder_keeps_dual_seed_quotes_without_latch_exhaustion() {
+        let strategy = PairGatedTrancheStrategy;
+        let yes = seed_plan_with_slack(Side::Yes, 0.44, 0, 2.0);
+        let no = seed_plan_with_slack(Side::No, 0.45, 0, 2.0);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::DPlusMinOrderV1,
+            true,
+            Some(Side::Yes),
+            false,
+        );
+
+        assert_eq!(
+            selection,
+            FlatSeedSelection::Dual,
+            "D+ intentionally keeps B27-style two-sided passive BUY inventory in dry-run shadow"
+        );
+    }
+
+    #[test]
+    fn dplus_minorder_rejects_dual_seed_when_both_sides_have_bad_geometry() {
+        let strategy = PairGatedTrancheStrategy;
+        let mut yes = seed_plan_with_slack(Side::Yes, 0.45, 0, -5.0);
+        let mut no = seed_plan_with_slack(Side::No, 0.45, 0, -5.0);
+        yes.fill_distance_ticks = 5.0;
+        no.fill_distance_ticks = 5.0;
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::DPlusMinOrderV1,
+            true,
+            None,
+            false,
+        );
+
+        assert_eq!(selection, FlatSeedSelection::None);
     }
 
     #[test]
