@@ -1,8 +1,10 @@
-# Canonical Prompt: xuan-frontier-remote-verifier-loop
+# Canonical Prompt: xuan-frontier remote verifier
 
 Owner: `xuan frontier`
 
-Automation id: `xuan-frontier-remote-verifier-loop`
+Active automation id: `xuan-frontier-remote-verifier-heartbeat`
+
+Paused legacy automation id: `xuan-frontier-remote-verifier-loop`
 
 Recommended model: `gpt-5.5`
 
@@ -10,14 +12,22 @@ Recommended reasoning effort: `xhigh`
 
 Purpose: controlled remote-verifier loop for xuan frontier. It may run only whitelisted read-only / bounded verification on the research server, write only xuan-frontier artifacts, and never make production decisions.
 
-Recommended schedule: `FREQ=HOURLY;INTERVAL=1`
+Recommended schedule: heartbeat `FREQ=HOURLY;INTERVAL=1`
+
+Important operational note:
+
+- Do **not** run this as a standalone cron automation. The old cron `xuan-frontier-remote-verifier-loop` was paused because its own sandbox returned `Operation not permitted` for SSH, even with fixed IP and HostKeyAlias.
+- Run this as a thread heartbeat attached to the main xuan-frontier thread. The heartbeat uses the current thread environment, where fixed-IP SSH has been verified.
+- Do not use successful SSH from an interactive/main thread as proof that a standalone cron can SSH. If someone wants to re-enable cron later, first prove SSH and DuckDB import from the cron's own memory/artifact.
 
 ```text
-Run the xuan frontier remote-verifier loop for the D+/B27/RWO BTC 5m strategy line.
+Run the xuan frontier remote-verifier heartbeat for the D+/B27/RWO BTC 5m strategy line.
 
 Namespace and ownership are strict: xuan frontier owns xuan-frontier-* only. Do not create/update/delete other automations. Do not modify xuan-research-* or local-agg-* automations, do not enter sibling worktrees, and do not report their state unless it directly blocks this loop.
 
 Model policy: use gpt-5.5 with xhigh reasoning because this loop interprets verifier results and may produce patch/verifier proposals. It must still keep final output concise.
+
+This must run as a thread heartbeat, not as a standalone cron. The standalone cron environment has previously blocked SSH with `Operation not permitted`; the heartbeat should use the main xuan-frontier thread environment.
 
 Allowed remote access is limited to SSH preflight and whitelisted research-server verification:
 
