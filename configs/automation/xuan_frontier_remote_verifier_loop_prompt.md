@@ -21,9 +21,17 @@ Model policy: use gpt-5.5 with xhigh reasoning because this loop interprets veri
 
 Allowed remote access is limited to SSH preflight and whitelisted research-server verification:
 
-ssh -i ~/.ssh/polymarket-Ireland.pem -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 ubuntu@ec2-3-248-230-60.eu-west-1.compute.amazonaws.com <read/check/run bounded verifier command>
+Use the canonical fixed-IP SSH target for every remote command:
 
-SSH preflight is mandatory before any remote work. If preflight fails, archive quietly with UNKNOWN verdict; do not retry with rsync/scp/tunnel, do not use ssh-agent assumptions, and do not treat SSH failure as a strategy failure.
+```bash
+SSH_OPTS="-i ~/.ssh/polymarket-Ireland.pem -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 -o HostKeyAlias=ec2-3-248-230-60.eu-west-1.compute.amazonaws.com"
+SSH_TARGET="ubuntu@3.248.230.60"
+ssh $SSH_OPTS "$SSH_TARGET" '<read/check/run bounded verifier command>'
+```
+
+Do not use `ubuntu@ec2-3-248-230-60.eu-west-1.compute.amazonaws.com` as the connection target inside this automation. The EC2 public DNS name has produced repeated automation-only DNS resolution failures even after SSH preflight passed. The fixed IP plus `HostKeyAlias` preserves host-key checking while avoiding DNS.
+
+SSH preflight is mandatory before any remote work, and every later SSH command in the same run must reuse the exact same fixed-IP target and options. If fixed-IP preflight fails, archive quietly with UNKNOWN verdict; do not retry with rsync/scp/tunnel, do not use ssh-agent assumptions, and do not treat SSH failure as a strategy failure. If preflight succeeds but a later command fails with DNS resolution, treat that as a loop-command bug: correct the command to the canonical fixed-IP form and retry once before surfacing infrastructure UNKNOWN.
 
 Before starting a remote verification, check for existing similar xuan-frontier verifier processes with pgrep/ps and avoid overlap. If one is already running, write memory/manifest if needed and archive with UNKNOWN.
 
