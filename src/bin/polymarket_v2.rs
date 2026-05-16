@@ -45,9 +45,11 @@ use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
 use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta, RecorderSessionStart};
+use pm_as_ofi::polymarket::strategy::pair_gated_tranche::pgt_shadow_profile_name;
 use pm_as_ofi::polymarket::strategy::{
-    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, StrategyKind,
-    PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
+    PgtDPlusMinOrderNoSeedReason, PgtHighPressureNoSeedReason, PgtXuanM0001NoSeedReason,
+    StrategyKind, PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT, PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT,
+    PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
 };
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
@@ -169,6 +171,16 @@ fn pgt_dplus_minorder_no_seed_counts_json(
 ) -> Value {
     let mut out = serde_json::Map::new();
     for reason in PgtDPlusMinOrderNoSeedReason::ALL {
+        out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
+    }
+    Value::Object(out)
+}
+
+fn pgt_high_pressure_no_seed_counts_json(
+    counts: [u64; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT],
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for reason in PgtHighPressureNoSeedReason::ALL {
         out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
     }
     Value::Object(out)
@@ -23881,6 +23893,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 "pgt_shadow_summary",
                 json!({
                     "reason": format!("{:?}", reason),
+                    "pgt_shadow_profile": pgt_shadow_profile_name(),
                     "round_end_ts": ws_round_end_ts,
                     "winner_side": pgt_local_winner_side.map(|s| s.as_str().to_string()),
                     "paired_qty": paired_qty,
@@ -23894,6 +23907,8 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "pgt_completion_quotes": coord_obs.pgt_completion_quotes,
                     "pgt_taker_shadow_would_open": coord_obs.pgt_taker_shadow_would_open,
                     "pgt_taker_shadow_would_close": coord_obs.pgt_taker_shadow_would_close,
+                    "pgt_entry_pressure_sides": coord_obs.pgt_entry_pressure_sides,
+                    "pgt_entry_pressure_extra_ticks": coord_obs.pgt_entry_pressure_extra_ticks,
                     "pgt_dispatch_taker_open": coord_obs.pgt_dispatch_taker_open,
                     "pgt_dispatch_taker_close": coord_obs.pgt_dispatch_taker_close,
                     "pgt_dispatch_place": coord_obs.pgt_dispatch_place,
@@ -23906,6 +23921,9 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     ),
                     "pgt_dplus_minorder_no_seed": pgt_dplus_minorder_no_seed_counts_json(
                         coord_obs.pgt_dplus_minorder_no_seed,
+                    ),
+                    "pgt_high_pressure_no_seed": pgt_high_pressure_no_seed_counts_json(
+                        coord_obs.pgt_high_pressure_no_seed,
                     ),
                     "pgt_single_seed_first_side": coord_obs
                         .pgt_single_seed_first_side

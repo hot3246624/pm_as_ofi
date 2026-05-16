@@ -162,6 +162,53 @@ impl PgtDPlusMinOrderNoSeedReason {
     }
 }
 
+pub const PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT: usize = 9;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PgtHighPressureNoSeedReason {
+    NoRecentBuyPressure = 0,
+    WeakPressure = 1,
+    BadTrade = 2,
+    PriceBand = 3,
+    StaleSideBuy = 4,
+    InvalidBook = 5,
+    Cooldown = 6,
+    SmallSize = 7,
+    SimulateBuyBlocked = 8,
+}
+
+impl PgtHighPressureNoSeedReason {
+    pub const ALL: [Self; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT] = [
+        Self::NoRecentBuyPressure,
+        Self::WeakPressure,
+        Self::BadTrade,
+        Self::PriceBand,
+        Self::StaleSideBuy,
+        Self::InvalidBook,
+        Self::Cooldown,
+        Self::SmallSize,
+        Self::SimulateBuyBlocked,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoRecentBuyPressure => "no_recent_buy_pressure",
+            Self::WeakPressure => "weak_pressure",
+            Self::BadTrade => "bad_trade",
+            Self::PriceBand => "price_band",
+            Self::StaleSideBuy => "stale_side_buy",
+            Self::InvalidBook => "invalid_book",
+            Self::Cooldown => "cooldown",
+            Self::SmallSize => "small_size",
+            Self::SimulateBuyBlocked => "simulate_buy_blocked",
+        }
+    }
+
+    pub fn index(self) -> usize {
+        self as usize
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pair_arb_ofi_softened_quotes: u8,
@@ -188,6 +235,7 @@ pub(crate) struct StrategyQuoteDiagnostics {
     pub(crate) pgt_taker_shadow_would_close: u8,
     pub(crate) pgt_xuan_m0001_no_seed: [u8; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
     pub(crate) pgt_dplus_minorder_no_seed: [u8; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
+    pub(crate) pgt_high_pressure_no_seed: [u8; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -355,6 +403,11 @@ impl StrategyQuotes {
 
     pub(crate) fn note_pgt_dplus_minorder_no_seed(&mut self, reason: PgtDPlusMinOrderNoSeedReason) {
         let slot = &mut self.diagnostics.pgt_dplus_minorder_no_seed[reason.index()];
+        *slot = slot.saturating_add(1);
+    }
+
+    pub(crate) fn note_pgt_high_pressure_no_seed(&mut self, reason: PgtHighPressureNoSeedReason) {
+        let slot = &mut self.diagnostics.pgt_high_pressure_no_seed[reason.index()];
         *slot = slot.saturating_add(1);
     }
 

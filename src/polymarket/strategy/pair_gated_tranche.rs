@@ -10,8 +10,8 @@ use tracing::info;
 
 use super::pair_arb::PairArbStrategy;
 use super::{
-    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, QuoteStrategy, StrategyIntent,
-    StrategyKind, StrategyQuotes, StrategyTickInput,
+    PgtDPlusMinOrderNoSeedReason, PgtHighPressureNoSeedReason, PgtXuanM0001NoSeedReason,
+    QuoteStrategy, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput,
 };
 
 const RESIDUAL_EPS: f64 = 10.0;
@@ -173,6 +173,19 @@ const DPLUS_MINORDER_TRADE_FRESH_MS: u64 = 1_500;
 const DPLUS_MINORDER_SEED_COOLDOWN_MS: u64 = 1_000;
 const DPLUS_MINORDER_MATERIAL_RESIDUAL_QTY: f64 = 5.0;
 const DPLUS_MINORDER_MATERIAL_RESIDUAL_COST: f64 = 5.0;
+const XUAN_HIGH_PRESSURE_START_OFFSET_SECS: u64 = 60;
+const XUAN_HIGH_PRESSURE_STOP_BEFORE_END_SECS: u64 = 120;
+const XUAN_HIGH_PRESSURE_MIN_PRICE: f64 = 0.50;
+const XUAN_HIGH_PRESSURE_MAX_PRICE: f64 = 0.65;
+const XUAN_HIGH_PRESSURE_CLIP_QTY: f64 = 10.0;
+const XUAN_HIGH_PRESSURE_FLOW_FRACTION: f64 = 0.10;
+const XUAN_HIGH_PRESSURE_MAX_SIDE_INV: f64 = 100.0;
+const XUAN_HIGH_PRESSURE_MAX_MARKET_GROSS: f64 = 250.0;
+const XUAN_HIGH_PRESSURE_MIN_HIGH_QTY_5S: f64 = 10.0;
+const XUAN_HIGH_PRESSURE_MIN_RATIO_5S: f64 = 1.0;
+const XUAN_HIGH_PRESSURE_LOOKBACK_SECS: u64 = 5;
+const XUAN_HIGH_PRESSURE_TRADE_FRESH_MS: u64 = 1_500;
+const XUAN_HIGH_PRESSURE_SEED_COOLDOWN_MS: u64 = 1_000;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -189,6 +202,7 @@ enum PgtShadowProfile {
     XuanCycleCappedV1,
     XuanM0001MakerLikeV1,
     DPlusMinOrderV1,
+    XuanHighPressureV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -445,6 +459,31 @@ impl PgtTuning {
         }
     }
 
+    fn xuan_high_pressure_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanHighPressureV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_HIGH_PRESSURE_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_HIGH_PRESSURE_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_HIGH_PRESSURE_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_HIGH_PRESSURE_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: None,
+            completed_cycle_cap: None,
+            completion_early_pair_cap: 1.000,
+            completion_late_pair_cap: 1.000,
+            taker_close_pair_cap: 1.000,
+            fixed_clip_qty: Some(XUAN_HIGH_PRESSURE_CLIP_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: XUAN_HIGH_PRESSURE_CLIP_QTY,
+            min_clip_qty: 0.0,
+            max_clip_qty: XUAN_HIGH_PRESSURE_CLIP_QTY,
+        }
+    }
+
     fn from_env() -> Self {
         let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
             .unwrap_or_default()
@@ -471,6 +510,10 @@ impl PgtTuning {
             | "xuan_dplus_minorder"
             | "xuan_frontier_dplus"
             | "b27_dplus" => Self::dplus_minorder_v1(),
+            "xuan_high_pressure_v1"
+            | "xuan_high_pressure"
+            | "b27_high_pressure"
+            | "xuan_frontier_high_pressure" => Self::xuan_high_pressure_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -491,6 +534,7 @@ impl PgtTuning {
                     | PgtShadowProfile::XuanCycleCappedV1
                     | PgtShadowProfile::XuanM0001MakerLikeV1
                     | PgtShadowProfile::DPlusMinOrderV1
+                    | PgtShadowProfile::XuanHighPressureV1
             ) {
                 base.max(cap)
             } else {
@@ -507,14 +551,39 @@ fn pgt_tuning() -> PgtTuning {
     *TUNING.get_or_init(PgtTuning::from_env)
 }
 
+pub fn pgt_shadow_profile_name() -> &'static str {
+    match pgt_tuning().profile {
+        PgtShadowProfile::Legacy => "legacy",
+        PgtShadowProfile::ReplayFocusedV1 => "replay_focused_v1",
+        PgtShadowProfile::ReplayLowerClipV1 => "replay_lower_clip_v1",
+        PgtShadowProfile::XuanLadderV1 => "xuan_ladder_v1",
+        PgtShadowProfile::XuanTailTakerV1 => "xuan_tail_taker_v1",
+        PgtShadowProfile::XuanCycleMergeV1 => "xuan_cycle_merge_v1",
+        PgtShadowProfile::XuanCycleCappedV1 => "xuan_cycle_capped_v1",
+        PgtShadowProfile::XuanM0001MakerLikeV1 => "xuan_m0001_maker_like_v1",
+        PgtShadowProfile::DPlusMinOrderV1 => "dplus_minorder_v1",
+        PgtShadowProfile::XuanHighPressureV1 => "xuan_high_pressure_v1",
+    }
+}
+
 pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
     pgt_tuning().profile == PgtShadowProfile::XuanTailTakerV1
+}
+
+pub(crate) fn pgt_settlement_alpha_inventory_net_cap() -> Option<f64> {
+    if pgt_is_settlement_alpha_profile(pgt_tuning()) {
+        Some(XUAN_HIGH_PRESSURE_MAX_SIDE_INV)
+    } else {
+        None
+    }
 }
 
 fn pgt_profile_quotes_allowed(tuning: PgtTuning, dry_run: bool) -> bool {
     !matches!(
         tuning.profile,
-        PgtShadowProfile::XuanM0001MakerLikeV1 | PgtShadowProfile::DPlusMinOrderV1
+        PgtShadowProfile::XuanM0001MakerLikeV1
+            | PgtShadowProfile::DPlusMinOrderV1
+            | PgtShadowProfile::XuanHighPressureV1
     ) || dry_run
 }
 
@@ -566,49 +635,51 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
         let hard_no_new_open = remaining_secs <= tuning.hard_no_new_open_secs;
         let harvest_window_active = self.should_shadow_harvest(input, remaining_secs);
 
-        if let Some(active) = input
-            .pair_ledger
-            .active_tranche
-            .filter(|tranche| tranche.first_side.is_some() && tranche.residual_qty > f64::EPSILON)
-        {
-            let same_side_add = if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
-                None
-            } else {
-                self.same_side_add_intent(coordinator, input, active, remaining_secs)
-            };
-            if let Some(plan) = self.completion_intent(coordinator, input, active, remaining_secs) {
-                quotes.note_pgt_completion_quote();
-                if plan.taker_shadow_would_close {
-                    quotes.note_pgt_taker_shadow_would_close();
-                }
-                if let Some(limit_price) = plan.taker_close_limit {
-                    quotes.set_pgt_taker_close_limit(plan.intent.side, limit_price);
-                }
-                quotes.set(plan.intent);
-            } else {
-                quotes.note_pgt_skip_invalid_book();
-            }
-            if let Some(intent) = same_side_add {
-                quotes.set(intent);
-            }
-            if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
-                && quotes.yes_buy.is_none()
-                && quotes.no_buy.is_none()
-                && pgt_xuan_m0001_allows_blocked_residual_probe(
-                    tuning,
-                    input.pair_ledger,
-                    active,
-                    remaining_secs,
-                )
-            {
-                if let Ok(seed) =
-                    self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs)
+        if !pgt_is_settlement_alpha_profile(tuning) {
+            if let Some(active) = input.pair_ledger.active_tranche.filter(|tranche| {
+                tranche.first_side.is_some() && tranche.residual_qty > f64::EPSILON
+            }) {
+                let same_side_add = if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
+                    None
+                } else {
+                    self.same_side_add_intent(coordinator, input, active, remaining_secs)
+                };
+                if let Some(plan) =
+                    self.completion_intent(coordinator, input, active, remaining_secs)
                 {
-                    quotes.note_pgt_seed_quote();
-                    quotes.set(seed.intent);
+                    quotes.note_pgt_completion_quote();
+                    if plan.taker_shadow_would_close {
+                        quotes.note_pgt_taker_shadow_would_close();
+                    }
+                    if let Some(limit_price) = plan.taker_close_limit {
+                        quotes.set_pgt_taker_close_limit(plan.intent.side, limit_price);
+                    }
+                    quotes.set(plan.intent);
+                } else {
+                    quotes.note_pgt_skip_invalid_book();
                 }
+                if let Some(intent) = same_side_add {
+                    quotes.set(intent);
+                }
+                if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
+                    && quotes.yes_buy.is_none()
+                    && quotes.no_buy.is_none()
+                    && pgt_xuan_m0001_allows_blocked_residual_probe(
+                        tuning,
+                        input.pair_ledger,
+                        active,
+                        remaining_secs,
+                    )
+                {
+                    if let Ok(seed) =
+                        self.xuan_m0001_public_trade_seed_intent(coordinator, input, remaining_secs)
+                    {
+                        quotes.note_pgt_seed_quote();
+                        quotes.set(seed.intent);
+                    }
+                }
+                return quotes;
             }
-            return quotes;
         }
 
         if harvest_window_active {
@@ -623,7 +694,8 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             .pgt_post_close_reopen_attempted_for_fill_count(
                 input.episode_metrics.round_buy_fill_count,
             );
-        if coordinator.pgt_blocks_new_seed_after_rescue_close()
+        if !pgt_is_settlement_alpha_profile(tuning)
+            && coordinator.pgt_blocks_new_seed_after_rescue_close()
             && !pgt_allow_reopen_after_rescue_close(
                 tuning,
                 input,
@@ -634,17 +706,21 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             quotes.note_pgt_skip_after_rescue_close();
             return quotes;
         }
-        if pgt_blocks_reopen_after_closed_pair(tuning, input, post_close_reopen_attempted) {
+        if !pgt_is_settlement_alpha_profile(tuning)
+            && pgt_blocks_reopen_after_closed_pair(tuning, input, post_close_reopen_attempted)
+        {
             quotes.note_pgt_skip_after_closed_pair();
             return quotes;
         }
-        if pgt_blocks_completed_cycle_cap(
-            tuning,
-            input.episode_metrics.completed_pair_count,
-            input.pair_ledger.residual_qty,
-            input.pair_ledger.active_tranche.is_some(),
-            pgt_residual_guard_eps(tuning),
-        ) {
+        if !pgt_is_settlement_alpha_profile(tuning)
+            && pgt_blocks_completed_cycle_cap(
+                tuning,
+                input.episode_metrics.completed_pair_count,
+                input.pair_ledger.residual_qty,
+                input.pair_ledger.active_tranche.is_some(),
+                pgt_residual_guard_eps(tuning),
+            )
+        {
             quotes.note_pgt_skip_after_closed_pair();
             return quotes;
         }
@@ -652,10 +728,11 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
             quotes.note_pgt_skip_residual_guard();
             return quotes;
         }
-        if input
-            .pair_ledger
-            .capital_state
-            .would_block_new_open_due_to_capital
+        if !pgt_is_settlement_alpha_profile(tuning)
+            && input
+                .pair_ledger
+                .capital_state
+                .would_block_new_open_due_to_capital
         {
             quotes.note_pgt_skip_capital_guard();
             return quotes;
@@ -736,6 +813,23 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                         quotes.note_pgt_seed_quote();
                         quotes.set(seed.intent);
                     }
+                }
+            }
+            return quotes;
+        }
+
+        if tuning.profile == PgtShadowProfile::XuanHighPressureV1 {
+            match self.xuan_high_pressure_seed_intent(coordinator, input) {
+                Ok(seed) => {
+                    quotes.note_pgt_seed_quote();
+                    if seed.entry_pressure_extra_ticks > 0 {
+                        quotes.note_pgt_entry_pressure(seed.entry_pressure_extra_ticks);
+                    }
+                    quotes.set(seed.intent);
+                }
+                Err(reason) => {
+                    quotes.note_pgt_high_pressure_no_seed(reason);
+                    quotes.note_pgt_skip_no_seed();
                 }
             }
             return quotes;
@@ -1069,6 +1163,98 @@ impl PairGatedTrancheStrategy {
             visible_completion_slack_ticks,
             fill_distance_ticks,
             preference_score: visible_completion_slack_ticks - 0.25 * fill_distance_ticks,
+            intent: StrategyIntent {
+                side,
+                direction: TradeDirection::Buy,
+                price,
+                size,
+                reason: BidReason::Provide,
+            },
+        })
+    }
+
+    fn xuan_high_pressure_seed_intent(
+        &self,
+        coordinator: &StrategyCoordinator,
+        input: StrategyTickInput<'_>,
+    ) -> Result<SeedPlan, PgtHighPressureNoSeedReason> {
+        let pressure = coordinator
+            .recent_high_side_public_buy_pressure(
+                Duration::from_millis(XUAN_HIGH_PRESSURE_TRADE_FRESH_MS),
+                Duration::from_secs(XUAN_HIGH_PRESSURE_LOOKBACK_SECS),
+            )
+            .ok_or(PgtHighPressureNoSeedReason::NoRecentBuyPressure)?;
+        if pressure.high_qty + 1e-9 < XUAN_HIGH_PRESSURE_MIN_HIGH_QTY_5S
+            || pressure.pressure_ratio + 1e-9 < XUAN_HIGH_PRESSURE_MIN_RATIO_5S
+        {
+            return Err(PgtHighPressureNoSeedReason::WeakPressure);
+        }
+        let trade = pressure.latest_trade;
+        if trade.taker_side != TakerSide::Buy
+            || !trade.price.is_finite()
+            || !trade.size.is_finite()
+            || trade.price <= 0.0
+            || trade.size <= 0.0
+        {
+            return Err(PgtHighPressureNoSeedReason::BadTrade);
+        }
+        if trade.price < XUAN_HIGH_PRESSURE_MIN_PRICE - 1e-9
+            || trade.price > XUAN_HIGH_PRESSURE_MAX_PRICE + 1e-9
+        {
+            return Err(PgtHighPressureNoSeedReason::PriceBand);
+        }
+        let side = trade.market_side;
+        coordinator
+            .recent_public_buy_trade_for(
+                side,
+                Duration::from_millis(XUAN_HIGH_PRESSURE_TRADE_FRESH_MS),
+            )
+            .ok_or(PgtHighPressureNoSeedReason::StaleSideBuy)?;
+        let (best_bid, best_ask, same_qty, opp_qty) = match side {
+            Side::Yes => (
+                input.book.yes_bid,
+                input.book.yes_ask,
+                input.inv.yes_qty,
+                input.inv.no_qty,
+            ),
+            Side::No => (
+                input.book.no_bid,
+                input.book.no_ask,
+                input.inv.no_qty,
+                input.inv.yes_qty,
+            ),
+        };
+        if best_bid <= 0.0 || best_ask <= 0.0 || best_ask > XUAN_HIGH_PRESSURE_MAX_PRICE + 1e-9 {
+            return Err(PgtHighPressureNoSeedReason::InvalidBook);
+        }
+        if coordinator.pgt_buy_slot_age(side)
+            < Duration::from_millis(XUAN_HIGH_PRESSURE_SEED_COOLDOWN_MS)
+        {
+            return Err(PgtHighPressureNoSeedReason::Cooldown);
+        }
+        let price = coordinator.safe_price(best_ask);
+        let gross_qty = (input.inv.yes_qty + input.inv.no_qty).max(0.0);
+        let mut size = XUAN_HIGH_PRESSURE_CLIP_QTY
+            .min(trade.size * XUAN_HIGH_PRESSURE_FLOW_FRACTION)
+            .min((XUAN_HIGH_PRESSURE_MAX_SIDE_INV - same_qty.max(0.0)).max(0.0))
+            .min((XUAN_HIGH_PRESSURE_MAX_MARKET_GROSS - gross_qty).max(0.0));
+        size = quantize_tenth(size);
+        if size < coordinator.cfg().min_order_size {
+            return Err(PgtHighPressureNoSeedReason::SmallSize);
+        }
+        coordinator
+            .simulate_buy(input.inv, side, size, price)
+            .ok_or(PgtHighPressureNoSeedReason::SimulateBuyBlocked)?;
+        Ok(SeedPlan {
+            size,
+            taker_shadow_would_open: false,
+            visible_taker_completion_ok: false,
+            entry_pressure_extra_ticks: pressure.pressure_ratio.min(u8::MAX as f64) as u8,
+            visible_completion_slack_ticks: 0.0,
+            fill_distance_ticks: 0.0,
+            preference_score: pressure.pressure_ratio
+                - pressure.low_qty.max(0.0) / 100.0
+                - opp_qty.max(0.0) / 100.0,
             intent: StrategyIntent {
                 side,
                 direction: TradeDirection::Buy,
@@ -2726,10 +2912,17 @@ fn pgt_residual_guard_eps(tuning: PgtTuning) -> f64 {
     }
 }
 
+fn pgt_is_settlement_alpha_profile(tuning: PgtTuning) -> bool {
+    tuning.profile == PgtShadowProfile::XuanHighPressureV1
+}
+
 fn pgt_material_residual_blocks_new_seed(
     tuning: PgtTuning,
     pair_ledger: &PairLedgerSnapshot,
 ) -> bool {
+    if pgt_is_settlement_alpha_profile(tuning) {
+        return false;
+    }
     if !matches!(
         tuning.profile,
         PgtShadowProfile::XuanM0001MakerLikeV1 | PgtShadowProfile::DPlusMinOrderV1
@@ -3625,6 +3818,49 @@ mod profile_tests {
         );
         assert!(!pgt_profile_quotes_allowed(tuning, false));
         assert!(pgt_profile_quotes_allowed(tuning, true));
+    }
+
+    #[test]
+    fn xuan_high_pressure_profile_matches_keep_candidate_envelope() {
+        let tuning = PgtTuning::xuan_high_pressure_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanHighPressureV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(240));
+        assert_eq!(tuning.seed_open_min_remaining_secs, Some(120));
+        assert_eq!(
+            tuning.hard_no_new_open_secs,
+            XUAN_HIGH_PRESSURE_STOP_BEFORE_END_SECS
+        );
+        assert_eq!(tuning.fixed_clip_qty, Some(XUAN_HIGH_PRESSURE_CLIP_QTY));
+        assert_eq!(tuning.base_clip_qty, XUAN_HIGH_PRESSURE_CLIP_QTY);
+        assert_eq!(tuning.max_clip_qty, XUAN_HIGH_PRESSURE_CLIP_QTY);
+        assert!(tuning.preserve_seed_clip_qty);
+        assert!(pgt_profile_quotes_allowed(tuning, true));
+        assert!(!pgt_profile_quotes_allowed(tuning, false));
+    }
+
+    #[test]
+    fn xuan_high_pressure_uses_settlement_alpha_lifecycle_not_pair_residual_guard() {
+        let tuning = PgtTuning::xuan_high_pressure_v1();
+        let pair_like_residual = PairLedgerSnapshot {
+            residual_qty: 80.0,
+            active_tranche: Some(PairTranche {
+                residual_qty: 80.0,
+                first_vwap: 0.62,
+                first_side: Some(Side::Yes),
+                ..PairTranche::default()
+            }),
+            ..PairLedgerSnapshot::default()
+        };
+
+        assert!(pgt_is_settlement_alpha_profile(tuning));
+        assert!(!pgt_material_residual_blocks_new_seed(
+            tuning,
+            &pair_like_residual
+        ));
+        assert!(pgt_material_residual_blocks_new_seed(
+            PgtTuning::xuan_m0001_maker_like_v1(),
+            &pair_like_residual
+        ));
     }
 
     #[test]

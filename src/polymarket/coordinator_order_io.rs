@@ -1629,21 +1629,25 @@ impl StrategyCoordinator {
                 ..
             } => {
                 self.stats.market_trade_ticks = self.stats.market_trade_ticks.saturating_add(1);
+                let snapshot = PublicTradeSnapshot {
+                    market_side,
+                    taker_side,
+                    price,
+                    size,
+                    ts,
+                };
                 if taker_side == TakerSide::Sell {
                     self.stats.market_sell_trade_ticks =
                         self.stats.market_sell_trade_ticks.saturating_add(1);
-                    let snapshot = PublicTradeSnapshot {
-                        market_side,
-                        taker_side,
-                        price,
-                        size,
-                        ts,
-                    };
                     self.last_public_trade = Some(snapshot);
                     self.last_public_trade_by_side[market_side.index()] = Some(snapshot);
+                } else if taker_side == TakerSide::Buy {
+                    self.last_public_buy_trade_by_side[market_side.index()] = Some(snapshot);
+                    self.record_public_buy_pressure(snapshot);
                 }
-                // Trades are primarily for OFI actor; PGT m0001 consumes the
-                // latest public SELL tick as a maker-shadow trigger.
+                // Trades are primarily for OFI actor. PGT m0001/D+ consume
+                // latest public SELL ticks; xuan frontier pressure profiles
+                // consume recent public BUY pressure separately.
             }
             MarketDataMsg::OracleLagSelection {
                 round_end_ts,
