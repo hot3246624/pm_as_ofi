@@ -6454,6 +6454,7 @@ async fn fetch_gamma_winner_hint(slug: &str) -> Option<(Side, f64)> {
     let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1500))
+        .user_agent("pm-as-ofi-xuan-shadow/1.0")
         .build()
         .ok()?;
     let resp = client.get(&url).send().await.ok()?;
