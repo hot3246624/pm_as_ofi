@@ -31,6 +31,8 @@ class RoundRow:
     round_id: int
     slug: str
     path: str
+    profile: str = ""
+    winner_side: str = ""
     complete: bool = False
     fills: list[Fill] = field(default_factory=list)
     paired_qty: float = 0.0
@@ -52,7 +54,11 @@ class RoundRow:
     merge_executed: int = 0
     market_trade_ticks: int = 0
     market_sell_trade_ticks: int = 0
+    pgt_entry_pressure_sides: int = 0
+    pgt_entry_pressure_extra_ticks: int = 0
     xuan_m0001_no_seed: dict[str, int] = field(default_factory=dict)
+    dplus_minorder_no_seed: dict[str, int] = field(default_factory=dict)
+    high_pressure_no_seed: dict[str, int] = field(default_factory=dict)
     last_recv_ms: int = 0
 
     @property
@@ -76,6 +82,24 @@ class RoundRow:
     @property
     def turnover_cost(self) -> float:
         return self.paired_qty * self.pair_cost + self.residual_cost_worst_case
+
+    @property
+    def inventory_cost(self) -> float:
+        return self.yes_qty * self.yes_avg_cost + self.no_qty * self.no_avg_cost
+
+    @property
+    def settlement_pnl(self) -> float | None:
+        if self.winner_side == "YES":
+            return self.yes_qty - self.inventory_cost
+        if self.winner_side == "NO":
+            return self.no_qty - self.inventory_cost
+        return None
+
+    def settlement_pnl_after_fee_bps(self, fee_bps: float) -> float | None:
+        pnl = self.settlement_pnl
+        if pnl is None:
+            return None
+        return pnl - self.inventory_cost * fee_bps / 10_000.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -106,57 +130,82 @@ def load_round(path: Path) -> RoundRow:
     except Exception:
         round_id = int(path.parts[-4])
     out = RoundRow(round_id=round_id, slug=slug, path=str(path))
-    for line in path.open(encoding="utf-8", errors="ignore"):
-        try:
-            row = json.loads(line)
-        except Exception:
-            continue
-        out.last_recv_ms = max(out.last_recv_ms, int(row.get("recv_unix_ms") or 0))
-        event, data = event_payload(row)
-        if event == "fill_snapshot" and str(data.get("direction", "")).lower() == "buy":
-            side = str(data.get("side") or "").upper()
-            if side in {"YES", "NO"}:
-                out.fills.append(
-                    Fill(
-                        recv_ms=int(row.get("recv_unix_ms") or 0),
-                        side=side,
-                        price=float(data.get("price") or 0.0),
-                        size=float(data.get("size") or 0.0),
-                        source=str(data.get("fill_source") or data.get("source") or ""),
+    with path.open(encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            out.last_recv_ms = max(out.last_recv_ms, int(row.get("recv_unix_ms") or 0))
+            event, data = event_payload(row)
+            if event == "fill_snapshot" and str(data.get("direction", "")).lower() == "buy":
+                side = str(data.get("side") or "").upper()
+                if side in {"YES", "NO"}:
+                    out.fills.append(
+                        Fill(
+                            recv_ms=int(row.get("recv_unix_ms") or 0),
+                            side=side,
+                            price=float(data.get("price") or 0.0),
+                            size=float(data.get("size") or 0.0),
+                            source=str(data.get("fill_source") or data.get("source") or ""),
+                        )
                     )
+            elif event == "pgt_shadow_summary":
+                out.complete = True
+                out.profile = str(data.get("pgt_shadow_profile") or "")
+                out.winner_side = str(data.get("winner_side") or "").upper()
+                out.paired_qty = float(data.get("paired_qty") or 0.0)
+                out.pair_cost = float(data.get("pair_cost") or 0.0)
+                out.residual_qty = float(data.get("residual_qty") or 0.0)
+                out.yes_qty = float(data.get("yes_qty") or 0.0)
+                out.yes_avg_cost = float(data.get("yes_avg_cost") or 0.0)
+                out.no_qty = float(data.get("no_qty") or 0.0)
+                out.no_avg_cost = float(data.get("no_avg_cost") or 0.0)
+                out.market_trade_ticks = int(data.get("market_trade_ticks") or 0)
+                out.market_sell_trade_ticks = int(data.get("market_sell_trade_ticks") or 0)
+                out.pgt_entry_pressure_sides = int(data.get("pgt_entry_pressure_sides") or 0)
+                out.pgt_entry_pressure_extra_ticks = int(
+                    data.get("pgt_entry_pressure_extra_ticks") or 0
                 )
-        elif event == "pgt_shadow_summary":
-            out.complete = True
-            out.paired_qty = float(data.get("paired_qty") or 0.0)
-            out.pair_cost = float(data.get("pair_cost") or 0.0)
-            out.residual_qty = float(data.get("residual_qty") or 0.0)
-            out.yes_qty = float(data.get("yes_qty") or 0.0)
-            out.yes_avg_cost = float(data.get("yes_avg_cost") or 0.0)
-            out.no_qty = float(data.get("no_qty") or 0.0)
-            out.no_avg_cost = float(data.get("no_avg_cost") or 0.0)
-            out.market_trade_ticks = int(data.get("market_trade_ticks") or 0)
-            out.market_sell_trade_ticks = int(data.get("market_sell_trade_ticks") or 0)
-            raw_reasons = data.get("pgt_xuan_m0001_no_seed")
-            if isinstance(raw_reasons, dict):
-                out.xuan_m0001_no_seed = {
-                    str(k): int(v or 0) for k, v in raw_reasons.items()
-                }
-        elif event == "taker_repair_sent":
-            out.taker_repairs += 1
-        elif event == "dry_run_touch_fill_confirmed":
-            source = str(data.get("source") or "")
-            if source == "book_touch":
-                out.dry_run_touch_book += 1
-            elif source == "trade_sell_touch":
-                out.dry_run_touch_trade += 1
-            else:
-                out.dry_run_touch_other += 1
-        elif event == "cancel_sent":
-            out.cancel_sent += 1
-        elif event == "order_accepted":
-            out.accepted_orders += 1
-        elif event == "merge_executed":
-            out.merge_executed += 1
+                raw_reasons = data.get("pgt_xuan_m0001_no_seed")
+                if isinstance(raw_reasons, dict):
+                    out.xuan_m0001_no_seed = {
+                        str(k): int(v or 0) for k, v in raw_reasons.items()
+                    }
+                raw_reasons = data.get("pgt_dplus_minorder_no_seed")
+                if isinstance(raw_reasons, dict):
+                    out.dplus_minorder_no_seed = {
+                        str(k): int(v or 0) for k, v in raw_reasons.items()
+                    }
+                raw_reasons = data.get("pgt_high_pressure_no_seed")
+                if isinstance(raw_reasons, dict):
+                    out.high_pressure_no_seed = {
+                        str(k): int(v or 0) for k, v in raw_reasons.items()
+                    }
+            elif event == "market_resolved":
+                winner_side = str(data.get("winner_side") or "").upper()
+                if winner_side in {"YES", "NO"}:
+                    out.winner_side = winner_side
+            elif event == "redeem_requested":
+                winner_side = str(data.get("resolved_winner_side") or "").upper()
+                if winner_side in {"YES", "NO"}:
+                    out.winner_side = winner_side
+            elif event == "taker_repair_sent":
+                out.taker_repairs += 1
+            elif event == "dry_run_touch_fill_confirmed":
+                source = str(data.get("source") or "")
+                if source == "book_touch":
+                    out.dry_run_touch_book += 1
+                elif source == "trade_sell_touch":
+                    out.dry_run_touch_trade += 1
+                else:
+                    out.dry_run_touch_other += 1
+            elif event == "cancel_sent":
+                out.cancel_sent += 1
+            elif event == "order_accepted":
+                out.accepted_orders += 1
+            elif event == "merge_executed":
+                out.merge_executed += 1
 
     out.locked_pnl = out.paired_qty * (1.0 - out.pair_cost)
     out.residual_cost_worst_case = (
@@ -189,16 +238,38 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
     pair_costs = [r.pair_cost for r in paired_rows]
     delays = [r.completion_delay_s for r in rows if r.completion_delay_s is not None]
     fill_sources: dict[str, int] = {}
+    profiles: dict[str, int] = {}
     xuan_m0001_no_seed: dict[str, int] = {}
+    dplus_minorder_no_seed: dict[str, int] = {}
+    high_pressure_no_seed: dict[str, int] = {}
+    settlement_pnls = [r.settlement_pnl for r in rows if r.settlement_pnl is not None]
+    settlement_fee50_pnls = [
+        r.settlement_pnl_after_fee_bps(50.0)
+        for r in rows
+        if r.settlement_pnl_after_fee_bps(50.0) is not None
+    ]
+    settlement_fee100_pnls = [
+        r.settlement_pnl_after_fee_bps(100.0)
+        for r in rows
+        if r.settlement_pnl_after_fee_bps(100.0) is not None
+    ]
+    settlement_cost = sum(r.inventory_cost for r in rows if r.settlement_pnl is not None)
     for r in rows:
+        if r.profile:
+            profiles[r.profile] = profiles.get(r.profile, 0) + 1
         for f in r.fills:
             key = f.source or "unknown"
             fill_sources[key] = fill_sources.get(key, 0) + 1
         for key, value in r.xuan_m0001_no_seed.items():
             xuan_m0001_no_seed[key] = xuan_m0001_no_seed.get(key, 0) + value
+        for key, value in r.dplus_minorder_no_seed.items():
+            dplus_minorder_no_seed[key] = dplus_minorder_no_seed.get(key, 0) + value
+        for key, value in r.high_pressure_no_seed.items():
+            high_pressure_no_seed[key] = high_pressure_no_seed.get(key, 0) + value
     return {
         "rounds": len(rows),
         "range": [rows[0].round_id, rows[-1].round_id] if rows else None,
+        "profiles": dict(sorted(profiles.items())),
         "paired_rounds": len(paired_rows),
         "residual_rounds": len(residual_rows),
         "weighted_pair_cost": paired_cost / paired_qty if paired_qty > 1e-9 else None,
@@ -228,7 +299,27 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "merge_executed": sum(r.merge_executed for r in rows),
         "market_trade_ticks": sum(r.market_trade_ticks for r in rows),
         "market_sell_trade_ticks": sum(r.market_sell_trade_ticks for r in rows),
+        "market_buy_trade_ticks": sum(
+            max(r.market_trade_ticks - r.market_sell_trade_ticks, 0) for r in rows
+        ),
+        "pgt_entry_pressure_sides": sum(r.pgt_entry_pressure_sides for r in rows),
+        "pgt_entry_pressure_extra_ticks": sum(r.pgt_entry_pressure_extra_ticks for r in rows),
         "xuan_m0001_no_seed": dict(sorted(xuan_m0001_no_seed.items())),
+        "dplus_minorder_no_seed": dict(sorted(dplus_minorder_no_seed.items())),
+        "high_pressure_no_seed": dict(sorted(high_pressure_no_seed.items())),
+        "settlement_alpha_rows": len(settlement_pnls),
+        "settlement_alpha_pnl": sum(settlement_pnls),
+        "settlement_alpha_roi": (
+            sum(settlement_pnls) / settlement_cost if settlement_cost > 1e-9 else None
+        ),
+        "settlement_alpha_fee50_pnl": sum(settlement_fee50_pnls),
+        "settlement_alpha_fee50_roi": (
+            sum(settlement_fee50_pnls) / settlement_cost if settlement_cost > 1e-9 else None
+        ),
+        "settlement_alpha_fee100_pnl": sum(settlement_fee100_pnls),
+        "settlement_alpha_fee100_roi": (
+            sum(settlement_fee100_pnls) / settlement_cost if settlement_cost > 1e-9 else None
+        ),
         "residuals": [
             {
                 "round_id": r.round_id,
@@ -273,8 +364,13 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
         {
             "round_id": r.round_id,
             "pair_cost": r.pair_cost,
+            "profile": r.profile,
+            "winner_side": r.winner_side,
             "locked_pnl": r.locked_pnl,
             "worst_case_pnl": r.worst_case_pnl,
+            "settlement_pnl": r.settlement_pnl,
+            "settlement_fee50_pnl": r.settlement_pnl_after_fee_bps(50.0),
+            "settlement_fee100_pnl": r.settlement_pnl_after_fee_bps(100.0),
             "residual_qty": r.residual_qty,
             "completion_delay_s": r.completion_delay_s,
             "first_side": r.first_fill_side,
@@ -298,7 +394,12 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
             "merge_executed": r.merge_executed,
             "market_trade_ticks": r.market_trade_ticks,
             "market_sell_trade_ticks": r.market_sell_trade_ticks,
+            "market_buy_trade_ticks": max(r.market_trade_ticks - r.market_sell_trade_ticks, 0),
+            "pgt_entry_pressure_sides": r.pgt_entry_pressure_sides,
+            "pgt_entry_pressure_extra_ticks": r.pgt_entry_pressure_extra_ticks,
             "xuan_m0001_no_seed": r.xuan_m0001_no_seed,
+            "dplus_minorder_no_seed": r.dplus_minorder_no_seed,
+            "high_pressure_no_seed": r.high_pressure_no_seed,
         }
         for r in rows
     ]
@@ -381,10 +482,20 @@ def main() -> None:
             f"residual={s['residual_rounds']} wpc={s['weighted_pair_cost']} "
             f"locked={s['locked_pnl']:.4f} residual_worst={s['residual_cost_worst_case']:.4f} "
             f"worst={s['worst_case_pnl']:.4f} roi={s['worst_case_roi']} "
+            f"profiles={s['profiles']} settlement_pnl={s['settlement_alpha_pnl']:.4f} "
+            f"settlement_roi={s['settlement_alpha_roi']} "
+            f"fee50_pnl={s['settlement_alpha_fee50_pnl']:.4f} "
+            f"fee50_roi={s['settlement_alpha_fee50_roi']} "
+            f"fee100_pnl={s['settlement_alpha_fee100_pnl']:.4f} "
+            f"fee100_roi={s['settlement_alpha_fee100_roi']} "
             f"touch(book/trade/other)="
             f"{s['dry_run_touch_book']}/{s['dry_run_touch_trade']}/{s['dry_run_touch_other']}"
             f" fill_sources={s['fill_sources']} market_trades={s['market_trade_ticks']}"
-            f"/{s['market_sell_trade_ticks']} xuan_m0001_no_seed={s['xuan_m0001_no_seed']}"
+            f"/{s['market_sell_trade_ticks']} buy={s['market_buy_trade_ticks']} "
+            f"entry_pressure={s['pgt_entry_pressure_sides']}/{s['pgt_entry_pressure_extra_ticks']} "
+            f"xuan_m0001_no_seed={s['xuan_m0001_no_seed']}"
+            f" dplus_minorder_no_seed={s['dplus_minorder_no_seed']}"
+            f" high_pressure_no_seed={s['high_pressure_no_seed']}"
         )
     if result["incomplete"]:
         print(f"incomplete_tail={result['incomplete']}")
@@ -411,13 +522,20 @@ def main() -> None:
             delay = r["completion_delay_s"]
             delay_s = "none" if delay is None else f"{delay:.3f}s"
             print(
-                f"  {r['round_id']} cost={r['pair_cost']:.3f} pnl={r['locked_pnl']:+.4f} "
+                f"  {r['round_id']} profile={r['profile']} winner={r['winner_side']} "
+                f"cost={r['pair_cost']:.3f} pnl={r['locked_pnl']:+.4f} "
                 f"worst={r['worst_case_pnl']:+.4f} residual={r['residual_qty']:.2f} "
+                f"settlement={r['settlement_pnl']} "
+                f"fee50={r['settlement_fee50_pnl']} fee100={r['settlement_fee100_pnl']} "
                 f"delay={delay_s} taker={r['taker_repairs']} cancels={r['cancel_sent']} "
                 f"orders={r['accepted_orders']} touch(book/trade/other)="
                 f"{r['dry_run_touch_book']}/{r['dry_run_touch_trade']}/{r['dry_run_touch_other']} "
-                f"market_trades={r['market_trade_ticks']}/{r['market_sell_trade_ticks']} "
+                f"market_trades={r['market_trade_ticks']}/{r['market_sell_trade_ticks']}"
+                f"/{r['market_buy_trade_ticks']} "
+                f"entry_pressure={r['pgt_entry_pressure_sides']}/{r['pgt_entry_pressure_extra_ticks']} "
                 f"xuan_m0001_no_seed={r['xuan_m0001_no_seed']} "
+                f"dplus_minorder_no_seed={r['dplus_minorder_no_seed']} "
+                f"high_pressure_no_seed={r['high_pressure_no_seed']} "
                 f"fills={fills}"
             )
 

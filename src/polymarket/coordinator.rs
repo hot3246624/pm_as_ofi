@@ -12,7 +12,7 @@
 //! 3. **Anti-Thrashing**: debounce plus toxicity recovery hold-down.
 //!    Empty book → refuse to bid (return 0.0). Never use ceiling as fallback.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,8 +24,9 @@ use super::messages::*;
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::strategy::{
     completion_first::{CompletionFirstGateDefaults, CompletionFirstPhase},
-    PgtDPlusMinOrderNoSeedReason, PgtXuanM0001NoSeedReason, StrategyExecutionMode, StrategyIntent,
-    StrategyKind, StrategyQuotes, StrategyTickInput, PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT,
+    PgtDPlusMinOrderNoSeedReason, PgtHighPressureNoSeedReason, PgtXuanM0001NoSeedReason,
+    StrategyExecutionMode, StrategyIntent, StrategyKind, StrategyQuotes, StrategyTickInput,
+    PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT, PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT,
     PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
 };
 use super::types::Side;
@@ -45,6 +46,7 @@ const BOOK_SIDE_STALE_CLEAR_HOLD_MS: u64 = 2_500;
 const PGT_SAME_SIDE_RELEASE_QUARANTINE_MS: u64 = 4_000;
 const PGT_FLAT_SEED_LATCH_MS: u64 = 20_000;
 const PGT_FLAT_SEED_LATCH_MAX_MS: u64 = 30_000;
+const PUBLIC_BUY_PRESSURE_RETENTION_SECS: u64 = 15;
 const LIVE_OBS_MIN_PLACED_SAMPLE: u64 = 10;
 const LIVE_OBS_REPLACE_RATIO_WARN: f64 = 0.45;
 const LIVE_OBS_REPLACE_RATIO_ALERT: f64 = 0.65;
@@ -842,6 +844,27 @@ pub(crate) struct PublicTradeSnapshot {
     pub(crate) ts: Instant,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PublicTradeSideAlignment {
+    High,
+    Low,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PublicBuyPressureEvent {
+    alignment: PublicTradeSideAlignment,
+    size: f64,
+    ts: Instant,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PublicBuyPressureSnapshot {
+    pub(crate) latest_trade: PublicTradeSnapshot,
+    pub(crate) high_qty: f64,
+    pub(crate) low_qty: f64,
+    pub(crate) pressure_ratio: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum EndgamePhase {
     Normal,
@@ -958,6 +981,7 @@ struct Stats {
     pgt_taker_shadow_would_close: u64,
     pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
     pgt_dplus_minorder_no_seed: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
+    pgt_high_pressure_no_seed: [u64; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT],
     market_trade_ticks: u64,
     market_sell_trade_ticks: u64,
 }
@@ -1006,6 +1030,7 @@ struct PgtGateLogSnapshot {
     stale_target_dropped: u64,
     xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
     dplus_minorder_no_seed: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
+    high_pressure_no_seed: [u64; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT],
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1252,6 +1277,9 @@ pub struct StrategyCoordinator {
     last_valid_book: Book,
     last_public_trade: Option<PublicTradeSnapshot>,
     last_public_trade_by_side: [Option<PublicTradeSnapshot>; 2],
+    last_public_buy_trade_by_side: [Option<PublicTradeSnapshot>; 2],
+    last_high_side_public_buy_trade: Option<PublicTradeSnapshot>,
+    public_buy_pressure_events: VecDeque<PublicBuyPressureEvent>,
     /// P2 FIX: Timestamp of last valid book update for staleness detection.
     /// P5 FIX: Per-side timestamps to catch single-side staleness.
     last_valid_ts_yes: Instant,
@@ -1498,6 +1526,7 @@ pub struct CoordinatorObsSnapshot {
     pub pgt_stale_target_dropped: u64,
     pub pgt_xuan_m0001_no_seed: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT],
     pub pgt_dplus_minorder_no_seed: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
+    pub pgt_high_pressure_no_seed: [u64; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT],
     pub market_trade_ticks: u64,
     pub market_sell_trade_ticks: u64,
 }
@@ -1649,6 +1678,9 @@ impl StrategyCoordinator {
             last_valid_book: Book::default(),
             last_public_trade: None,
             last_public_trade_by_side: [None; 2],
+            last_public_buy_trade_by_side: [None; 2],
+            last_high_side_public_buy_trade: None,
+            public_buy_pressure_events: VecDeque::new(),
             last_valid_ts_yes: Instant::now(),
             last_valid_ts_no: Instant::now(),
             yes_stale_since: None,
@@ -2194,6 +2226,7 @@ impl StrategyCoordinator {
             pgt_stale_target_dropped: self.stats.pgt_stale_target_dropped,
             pgt_xuan_m0001_no_seed: self.stats.pgt_xuan_m0001_no_seed,
             pgt_dplus_minorder_no_seed: self.stats.pgt_dplus_minorder_no_seed,
+            pgt_high_pressure_no_seed: self.stats.pgt_high_pressure_no_seed,
             market_trade_ticks: self.stats.market_trade_ticks,
             market_sell_trade_ticks: self.stats.market_sell_trade_ticks,
         };
@@ -2284,6 +2317,14 @@ impl StrategyCoordinator {
             .pgt_dplus_minorder_no_seed
             .iter_mut()
             .zip(quotes.diagnostics.pgt_dplus_minorder_no_seed)
+        {
+            *dst = dst.saturating_add(src as u64);
+        }
+        for (dst, src) in self
+            .stats
+            .pgt_high_pressure_no_seed
+            .iter_mut()
+            .zip(quotes.diagnostics.pgt_high_pressure_no_seed)
         {
             *dst = dst.saturating_add(src as u64);
         }
@@ -2422,6 +2463,51 @@ impl StrategyCoordinator {
         }
     }
 
+    pub(crate) fn recent_public_buy_trade_for(
+        &self,
+        side: Side,
+        max_age: Duration,
+    ) -> Option<PublicTradeSnapshot> {
+        let trade = self.last_public_buy_trade_by_side[side.index()]?;
+        if Instant::now().saturating_duration_since(trade.ts) <= max_age {
+            Some(trade)
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn recent_high_side_public_buy_pressure(
+        &self,
+        max_age: Duration,
+        lookback: Duration,
+    ) -> Option<PublicBuyPressureSnapshot> {
+        let latest_trade = self.last_high_side_public_buy_trade?;
+        if Instant::now().saturating_duration_since(latest_trade.ts) > max_age {
+            return None;
+        }
+        let cutoff = latest_trade
+            .ts
+            .checked_sub(lookback)
+            .unwrap_or(latest_trade.ts);
+        let mut high_qty = 0.0;
+        let mut low_qty = 0.0;
+        for event in self.public_buy_pressure_events.iter() {
+            if event.ts < cutoff || event.ts > latest_trade.ts {
+                continue;
+            }
+            match event.alignment {
+                PublicTradeSideAlignment::High => high_qty += event.size.max(0.0),
+                PublicTradeSideAlignment::Low => low_qty += event.size.max(0.0),
+            }
+        }
+        Some(PublicBuyPressureSnapshot {
+            latest_trade,
+            high_qty,
+            low_qty,
+            pressure_ratio: high_qty / low_qty.max(1.0),
+        })
+    }
+
     pub(crate) fn pgt_buy_slot_age(&self, side: Side) -> Duration {
         self.slot_last_ts(OrderSlot::new(side, TradeDirection::Buy))
             .elapsed()
@@ -2458,6 +2544,65 @@ impl StrategyCoordinator {
                 self.side_target_reason(side),
                 Some(BidReason::Provide | BidReason::Hedge)
             )
+    }
+
+    fn public_trade_alignment_for(&self, side: Side) -> Option<PublicTradeSideAlignment> {
+        let (side_bid, side_ask, opp_bid, opp_ask) = match side {
+            Side::Yes => (
+                self.book.yes_bid,
+                self.book.yes_ask,
+                self.book.no_bid,
+                self.book.no_ask,
+            ),
+            Side::No => (
+                self.book.no_bid,
+                self.book.no_ask,
+                self.book.yes_bid,
+                self.book.yes_ask,
+            ),
+        };
+        let side_mid = if side_bid > 0.0 && side_ask > 0.0 {
+            0.5 * (side_bid + side_ask)
+        } else if side_bid > 0.0 {
+            side_bid
+        } else {
+            return None;
+        };
+        let opp_mid = if opp_bid > 0.0 && opp_ask > 0.0 {
+            0.5 * (opp_bid + opp_ask)
+        } else if opp_bid > 0.0 {
+            opp_bid
+        } else {
+            return None;
+        };
+        if side_mid + 1e-9 >= opp_mid {
+            Some(PublicTradeSideAlignment::High)
+        } else {
+            Some(PublicTradeSideAlignment::Low)
+        }
+    }
+
+    fn record_public_buy_pressure(&mut self, snapshot: PublicTradeSnapshot) {
+        let Some(alignment) = self.public_trade_alignment_for(snapshot.market_side) else {
+            return;
+        };
+        self.public_buy_pressure_events
+            .push_back(PublicBuyPressureEvent {
+                alignment,
+                size: snapshot.size.max(0.0),
+                ts: snapshot.ts,
+            });
+        if alignment == PublicTradeSideAlignment::High {
+            self.last_high_side_public_buy_trade = Some(snapshot);
+        }
+        let retention = Duration::from_secs(PUBLIC_BUY_PRESSURE_RETENTION_SECS);
+        while self
+            .public_buy_pressure_events
+            .front()
+            .is_some_and(|event| snapshot.ts.saturating_duration_since(event.ts) > retention)
+        {
+            self.public_buy_pressure_events.pop_front();
+        }
     }
 
     pub(crate) fn pgt_flat_seed_latched_side(&self) -> Option<Side> {

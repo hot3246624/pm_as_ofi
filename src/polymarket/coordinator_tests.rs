@@ -247,6 +247,96 @@ async fn public_trade_snapshot_tracks_latest_sell_per_side() {
     assert_eq!(no.ts, no_ts);
 }
 
+#[tokio::test]
+async fn public_buy_pressure_tracks_recent_high_low_flow() {
+    let (_, _, _, _, _, mut coord) = make(cfg());
+    coord.handle_market_data(bt(0.60, 0.62, 0.38, 0.40)).await;
+    let t0 = Instant::now();
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "yes".to_string(),
+            trade_id: Some("yes-buy-1".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Buy,
+            price: 0.61,
+            size: 12.0,
+            ts: t0,
+        })
+        .await;
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "no".to_string(),
+            trade_id: Some("no-buy-1".to_string()),
+            market_side: Side::No,
+            taker_side: TakerSide::Buy,
+            price: 0.39,
+            size: 4.0,
+            ts: t0 + Duration::from_secs(1),
+        })
+        .await;
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "yes".to_string(),
+            trade_id: Some("yes-buy-2".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Buy,
+            price: 0.62,
+            size: 8.0,
+            ts: t0 + Duration::from_secs(2),
+        })
+        .await;
+
+    let latest_yes = coord
+        .recent_public_buy_trade_for(Side::Yes, Duration::from_secs(5))
+        .expect("YES buy should be retained separately from SELL triggers");
+    assert_eq!(latest_yes.taker_side, TakerSide::Buy);
+    assert!((latest_yes.size - 8.0).abs() < 1e-9);
+
+    let pressure = coord
+        .recent_high_side_public_buy_pressure(Duration::from_secs(5), Duration::from_secs(5))
+        .expect("recent high-side buy pressure should be available");
+    assert_eq!(pressure.latest_trade.market_side, Side::Yes);
+    assert!((pressure.high_qty - 20.0).abs() < 1e-9);
+    assert!((pressure.low_qty - 4.0).abs() < 1e-9);
+    assert!((pressure.pressure_ratio - 5.0).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn public_buy_pressure_prunes_by_lookback_from_latest_high_buy() {
+    let (_, _, _, _, _, mut coord) = make(cfg());
+    coord.handle_market_data(bt(0.60, 0.62, 0.38, 0.40)).await;
+    let t0 = Instant::now() - Duration::from_secs(10);
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "no".to_string(),
+            trade_id: Some("old-no-buy".to_string()),
+            market_side: Side::No,
+            taker_side: TakerSide::Buy,
+            price: 0.39,
+            size: 30.0,
+            ts: t0,
+        })
+        .await;
+    coord
+        .handle_market_data(MarketDataMsg::TradeTick {
+            asset_id: "yes".to_string(),
+            trade_id: Some("fresh-yes-buy".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Buy,
+            price: 0.61,
+            size: 11.0,
+            ts: Instant::now(),
+        })
+        .await;
+
+    let pressure = coord
+        .recent_high_side_public_buy_pressure(Duration::from_secs(5), Duration::from_secs(5))
+        .expect("fresh high-side buy should be available");
+    assert!((pressure.high_qty - 11.0).abs() < 1e-9);
+    assert_eq!(pressure.low_qty, 0.0);
+    assert!((pressure.pressure_ratio - 11.0).abs() < 1e-9);
+}
+
 fn book(yb: f64, ya: f64, nb: f64, na: f64) -> Book {
     Book {
         yes_bid: yb,
@@ -7487,6 +7577,53 @@ fn test_pair_gated_tranche_execution_gate_rejects_same_side_add_when_disabled() 
     assert!(
         !coord.can_place_strategy_intent(&inv, Some(oversized)),
         "execution gate should reject same-side add larger than the strategy clip"
+    );
+}
+
+#[test]
+fn test_settlement_alpha_inventory_mode_bypasses_pair_completion_execution_gate() {
+    let mut c = cfg();
+    c.strategy = StrategyKind::PairGatedTrancheArb;
+    c.max_net_diff = 5.0;
+    let (_o, inv_tx, _m, _k, _e, coord) = make(c);
+
+    let inv = InventoryState {
+        yes_qty: 80.0,
+        no_qty: 0.0,
+        yes_avg_cost: 0.53,
+        no_avg_cost: 0.0,
+        net_diff: 80.0,
+        portfolio_cost: 0.0,
+    };
+    let ledger = build_pair_ledger(&[pgt_fill(Side::Yes, 80.0, 0.53)], PathKind::MakerShadow);
+    let inventory =
+        test_inventory_snapshot_with_ledger(inv, ledger.snapshot, ledger.episode_metrics);
+    inv_tx.0.send(inventory).unwrap();
+
+    let same_side_inventory_buy = StrategyIntent {
+        side: Side::Yes,
+        direction: TradeDirection::Buy,
+        price: 0.60,
+        size: 10.0,
+        reason: BidReason::Provide,
+    };
+
+    assert!(
+        !coord.can_buy_pair_gated_tranche_for_inventory_mode(same_side_inventory_buy, None),
+        "pair-completion mode must keep same-side active-tranche buys blocked"
+    );
+    assert!(
+        coord.can_buy_pair_gated_tranche_for_inventory_mode(same_side_inventory_buy, Some(100.0)),
+        "settlement-alpha mode should use its profile cap instead of stale global max_net_diff"
+    );
+
+    let over_profile_cap = StrategyIntent {
+        size: 25.0,
+        ..same_side_inventory_buy
+    };
+    assert!(
+        !coord.can_buy_pair_gated_tranche_for_inventory_mode(over_profile_cap, Some(100.0)),
+        "settlement-alpha mode should still enforce the profile net cap"
     );
 }
 
