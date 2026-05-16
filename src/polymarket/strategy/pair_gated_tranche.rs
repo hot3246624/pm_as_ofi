@@ -570,6 +570,14 @@ pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
     pgt_tuning().profile == PgtShadowProfile::XuanTailTakerV1
 }
 
+fn pgt_settlement_alpha_taker_open_exec_enabled_for(tuning: PgtTuning) -> bool {
+    tuning.profile == PgtShadowProfile::XuanHighPressureV1
+}
+
+pub(crate) fn pgt_settlement_alpha_taker_open_exec_enabled() -> bool {
+    pgt_settlement_alpha_taker_open_exec_enabled_for(pgt_tuning())
+}
+
 pub(crate) fn pgt_settlement_alpha_inventory_net_cap() -> Option<f64> {
     if pgt_is_settlement_alpha_profile(pgt_tuning()) {
         Some(XUAN_HIGH_PRESSURE_MAX_SIDE_INV)
@@ -3860,6 +3868,19 @@ mod profile_tests {
         assert!(pgt_material_residual_blocks_new_seed(
             PgtTuning::xuan_m0001_maker_like_v1(),
             &pair_like_residual
+        ));
+    }
+
+    #[test]
+    fn xuan_high_pressure_executes_as_dry_run_taker_open() {
+        assert!(pgt_settlement_alpha_taker_open_exec_enabled_for(
+            PgtTuning::xuan_high_pressure_v1()
+        ));
+        assert!(!pgt_settlement_alpha_taker_open_exec_enabled_for(
+            PgtTuning::xuan_ladder_v1()
+        ));
+        assert!(!pgt_settlement_alpha_taker_open_exec_enabled_for(
+            PgtTuning::xuan_tail_taker_v1()
         ));
     }
 

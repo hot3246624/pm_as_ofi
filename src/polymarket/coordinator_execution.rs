@@ -3,7 +3,8 @@ use tracing::{debug, info};
 use super::*;
 use crate::polymarket::strategy::pair_gated_tranche::{
     pgt_absent_seed_retain_allowed, pgt_effective_open_pair_band_value,
-    pgt_open_leg_ceiling_from_opposite_bid, pgt_shadow_taker_open_exec_enabled,
+    pgt_open_leg_ceiling_from_opposite_bid, pgt_settlement_alpha_taker_open_exec_enabled,
+    pgt_shadow_taker_open_exec_enabled,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -1698,6 +1699,18 @@ impl StrategyCoordinator {
             }
             if intent.price > 0.0 && intent.size > 0.0 {
                 if intent.reason == BidReason::Provide {
+                    if self.cfg.dry_run
+                        && self.cfg.strategy.is_pair_gated_tranche_arb()
+                        && pgt_settlement_alpha_taker_open_exec_enabled()
+                    {
+                        if self.pgt_shadow_taker_open_fired_epoch == Some(self.pgt_decision_epoch) {
+                            return ProvideSideAction::None;
+                        }
+                        return ProvideSideAction::ShadowTaker {
+                            intent,
+                            limit_price: intent.price,
+                        };
+                    }
                     if let Some(limit_price) = shadow_taker_limit_price {
                         return ProvideSideAction::ShadowTaker {
                             intent,
@@ -1827,6 +1840,13 @@ impl StrategyCoordinator {
                     "⚡ PGT shadow taker-open | side={:?} price={:.4} size={:.2} limit={:.4}",
                     side, intent.price, intent.size, limit_price
                 );
+                let slot = OrderSlot::new(side, intent.direction);
+                let now = std::time::Instant::now();
+                self.slot_last_ts[slot.index()] = now;
+                match side {
+                    Side::Yes => self.yes_last_ts = now,
+                    Side::No => self.no_last_ts = now,
+                }
                 self.dispatch_taker_intent(
                     side,
                     intent.direction,
