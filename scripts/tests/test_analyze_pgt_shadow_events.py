@@ -167,6 +167,41 @@ class AnalyzePgtShadowEventsTests(unittest.TestCase):
         self.assertAlmostEqual(details[0]["settlement_fee50_pnl"], 3.97)
         self.assertAlmostEqual(details[0]["settlement_fee100_pnl"], 3.94)
 
+    def test_gamma_winner_backfill_populates_missing_winner(self):
+        with tempfile.TemporaryDirectory(prefix="pgt_shadow_events_") as tmp:
+            root = Path(tmp)
+            instance = "xuan_high_pressure_v1"
+            day = "2026-05-16"
+            write_jsonl(
+                root / instance / day / "btc-updown-5m-3000" / "events.jsonl",
+                [
+                    event_row(
+                        "pgt_shadow_summary",
+                        {
+                            "pgt_shadow_profile": "xuan_high_pressure_v1",
+                            "paired_qty": 0.0,
+                            "pair_cost": 0.0,
+                            "residual_qty": 10.0,
+                            "yes_qty": 10.0,
+                            "yes_avg_cost": 0.60,
+                            "no_qty": 0.0,
+                            "no_avg_cost": 0.0,
+                        },
+                    ),
+                ],
+            )
+            rows = analyze_mod.collect_rows(root, instance, day)
+            old_fetch = analyze_mod.fetch_gamma_winner_side
+            analyze_mod.fetch_gamma_winner_side = lambda slug: "YES"
+            try:
+                analyze_mod.backfill_missing_winners(rows, True)
+            finally:
+                analyze_mod.fetch_gamma_winner_side = old_fetch
+            summary = analyze_mod.summarize(rows)
+
+        self.assertEqual(rows[0].winner_side, "YES")
+        self.assertAlmostEqual(summary["settlement_alpha_pnl"], 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

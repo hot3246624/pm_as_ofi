@@ -11,6 +11,7 @@ import argparse
 import json
 import math
 import statistics
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -110,9 +111,111 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--last", type=int, default=24, help="last complete rounds window")
     p.add_argument("--from-round", type=int, help="only include rounds with id >= this value")
     p.add_argument("--to-round", type=int, help="only include rounds with id <= this value")
+    p.add_argument(
+        "--gamma-winner-backfill",
+        action="store_true",
+        help="read Gamma /events to fill missing resolved winners for settlement-alpha analysis",
+    )
     p.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     p.add_argument("--details", action="store_true", help="print per-round rows for the last window")
     return p.parse_args()
+
+
+def map_outcome_label_to_side(label: str) -> str | None:
+    lower = label.strip().lower()
+    if not lower:
+        return None
+    if "yes" in lower or "up" in lower:
+        return "YES"
+    if "no" in lower or "down" in lower:
+        return "NO"
+    return None
+
+
+def parse_jsonish_list(value: Any) -> list[Any] | None:
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        if isinstance(parsed, list):
+            return parsed
+    return None
+
+
+def extract_gamma_winner_side(market: dict[str, Any]) -> str | None:
+    for key in ("winningOutcome", "winning_outcome", "winner"):
+        raw = market.get(key)
+        if isinstance(raw, str):
+            side = map_outcome_label_to_side(raw)
+            if side:
+                return side
+
+    outcomes = parse_jsonish_list(market.get("outcomes"))
+    prices = parse_jsonish_list(market.get("outcomePrices") or market.get("outcome_prices"))
+    if not outcomes or not prices or len(outcomes) != len(prices) or len(outcomes) < 2:
+        return None
+
+    yes_idx = no_idx = None
+    for idx, outcome in enumerate(outcomes):
+        side = map_outcome_label_to_side(str(outcome))
+        if side == "YES":
+            yes_idx = idx
+        elif side == "NO":
+            no_idx = idx
+    if yes_idx is None or no_idx is None:
+        yes_idx, no_idx = 0, 1
+
+    try:
+        yes_px = float(prices[yes_idx])
+        no_px = float(prices[no_idx])
+    except Exception:
+        return None
+    if yes_px >= 0.99 and no_px <= 0.01:
+        return "YES"
+    if no_px >= 0.99 and yes_px <= 0.01:
+        return "NO"
+    return None
+
+
+def fetch_gamma_winner_side(slug: str) -> str | None:
+    url = f"https://gamma-api.polymarket.com/events?slug={slug}"
+    req = urllib.request.Request(url, headers={"User-Agent": "pm-as-ofi-xuan-shadow/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
+            body = json.load(resp)
+    except Exception:
+        return None
+    if not isinstance(body, list):
+        return None
+    for event in body:
+        if not isinstance(event, dict):
+            continue
+        markets = event.get("markets")
+        if not isinstance(markets, list):
+            continue
+        for market in markets:
+            if isinstance(market, dict):
+                side = extract_gamma_winner_side(market)
+                if side:
+                    return side
+    return None
+
+
+def backfill_missing_winners(rows: list[RoundRow], enabled: bool) -> None:
+    if not enabled:
+        return
+    cache: dict[str, str | None] = {}
+    for row in rows:
+        if row.winner_side in {"YES", "NO"} or not row.slug:
+            continue
+        if row.slug not in cache:
+            cache[row.slug] = fetch_gamma_winner_side(row.slug)
+        side = cache[row.slug]
+        if side in {"YES", "NO"}:
+            row.winner_side = side
 
 
 def event_payload(row: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
@@ -437,6 +540,7 @@ def main() -> None:
         args.from_round,
         args.to_round,
     )
+    backfill_missing_winners(rows, args.gamma_winner_backfill)
     complete = [r for r in rows if r.complete]
     last_complete = complete[-args.last :]
     incomplete = [r for r in rows if not r.complete]
