@@ -170,6 +170,8 @@ pub struct Executor {
     /// Dry-run market-touch source gates. Defaults keep legacy behavior, while
     /// conservative shadows can require real trade prints into our resting bid.
     dry_run_market_touch_book_fills: bool,
+    dry_run_market_touch_book_partial_fills: bool,
+    dry_run_market_touch_book_fill_fraction: f64,
     dry_run_market_touch_trade_fills: bool,
     dry_run_market_touch_trade_partial_fills: bool,
     dry_run_market_touch_trade_fill_fraction: f64,
@@ -196,8 +198,9 @@ struct DryRunPendingTouchFill {
     side: Side,
     direction: TradeDirection,
     /// Size to emit for this synthetic fill. For book-touch this remains the
-    /// full visible order remainder; for trade-touch partial mode it is capped
-    /// by public SELL trade size observed during the confirm window.
+    /// full visible order remainder unless book-touch partial mode is enabled;
+    /// for trade-touch partial mode it is capped by public SELL trade size
+    /// observed during the confirm window.
     size: f64,
     price: f64,
     source: &'static str,
@@ -330,6 +333,17 @@ impl Executor {
                 "PM_DRY_RUN_MARKET_TOUCH_BOOK_FILLS",
                 true,
             ),
+            dry_run_market_touch_book_partial_fills: Self::env_bool_or(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_PARTIAL_FILLS",
+                false,
+            ),
+            dry_run_market_touch_book_fill_fraction: std::env::var(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_FILL_FRACTION",
+            )
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| v.clamp(0.0, 1.0))
+            .unwrap_or(1.0),
             dry_run_market_touch_trade_fills: Self::env_bool_or(
                 "PM_DRY_RUN_MARKET_TOUCH_TRADE_FILLS",
                 true,
@@ -519,12 +533,21 @@ impl Executor {
                         self.dry_run_pending_touch_fills.remove(order_id);
                         continue;
                     }
+                    let fill_size = if self.dry_run_market_touch_book_partial_fills {
+                        remaining * self.dry_run_market_touch_book_fill_fraction
+                    } else {
+                        remaining
+                    };
+                    if fill_size <= 0.0 {
+                        self.dry_run_pending_touch_fills.remove(order_id);
+                        continue;
+                    }
                     self.dry_run_pending_touch_fills
                         .entry(order_id.clone())
                         .or_insert(DryRunPendingTouchFill {
                             side: meta.side,
                             direction: meta.direction,
-                            size: remaining,
+                            size: fill_size,
                             price: meta.price,
                             source: "book_touch",
                             detected_at: now,
@@ -754,11 +777,13 @@ impl Executor {
 
     pub async fn run(mut self) {
         info!(
-            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/trade/partial_trade/fraction)={}/{}/{}/{:.3}",
+            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/partial_book/book_fraction/trade/partial_trade/trade_fraction)={}/{}/{:.3}/{}/{}/{:.3}",
             self.cfg.dry_run,
             self.client.is_some(),
             self.dry_run_fill_probability,
             self.dry_run_market_touch_book_fills,
+            self.dry_run_market_touch_book_partial_fills,
+            self.dry_run_market_touch_book_fill_fraction,
             self.dry_run_market_touch_trade_fills,
             self.dry_run_market_touch_trade_partial_fills,
             self.dry_run_market_touch_trade_fill_fraction,
@@ -3364,6 +3389,84 @@ mod tests {
         assert_eq!(fill.direction, TradeDirection::Buy);
         assert_eq!(fill.status, FillStatus::Confirmed);
         assert!((fill.filled_size - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_book_touch_partial_fill_fraction_haircuts_visible_remainder() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (_md_tx, md_rx) = broadcast::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        exec.dry_run_market_touch_book_partial_fills = true;
+        exec.dry_run_market_touch_book_fill_fraction = 0.25;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            5.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        exec.handle_dry_run_market_data(MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.50,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        let first_fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("haircut book touch should emit partial simulated fill");
+        assert!((first_fill.filled_size - 1.25).abs() < 1e-9);
+        assert_eq!(first_fill.source, FillSource::DryRunBookTouch);
+        exec.handle_fill_notification(&first_fill).await;
+        assert!(exec
+            .slot_orders(OrderSlot::YES_BUY)
+            .values()
+            .any(|remaining| (*remaining - 3.75).abs() < 1e-9));
+        assert!(result_rx.try_recv().is_err());
     }
 
     #[tokio::test]

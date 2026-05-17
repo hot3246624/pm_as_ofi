@@ -186,6 +186,15 @@ const XUAN_HIGH_PRESSURE_MIN_RATIO_5S: f64 = 1.0;
 const XUAN_HIGH_PRESSURE_LOOKBACK_SECS: u64 = 5;
 const XUAN_HIGH_PRESSURE_TRADE_FRESH_MS: u64 = 1_500;
 const XUAN_HIGH_PRESSURE_SEED_COOLDOWN_MS: u64 = 1_000;
+const XUAN_PREPOSITIONED_LIVE_START_OFFSET_SECS: u64 = 4;
+const XUAN_PREPOSITIONED_LIVE_STOP_BEFORE_END_SECS: u64 = 25;
+const XUAN_PREPOSITIONED_LIVE_OPEN_PAIR_CAP: f64 = 0.975;
+const XUAN_PREPOSITIONED_LIVE_LATE_OPEN_PAIR_CAP: f64 = 0.980;
+const XUAN_PREPOSITIONED_LIVE_LATE_OFFSET_SECS: u64 = 180;
+const XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP: f64 = 0.980;
+const XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP: f64 = 1.020;
+const XUAN_PREPOSITIONED_LIVE_TAIL_REMAINING_SECS: u64 = 25;
+const XUAN_PREPOSITIONED_LIVE_CLIP_QTY: f64 = 40.0;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -203,6 +212,7 @@ enum PgtShadowProfile {
     XuanM0001MakerLikeV1,
     DPlusMinOrderV1,
     XuanHighPressureV1,
+    XuanPrepositionedLiveV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -484,6 +494,31 @@ impl PgtTuning {
         }
     }
 
+    fn xuan_prepositioned_live_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanPrepositionedLiveV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_PREPOSITIONED_LIVE_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_PREPOSITIONED_LIVE_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_PREPOSITIONED_LIVE_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_PREPOSITIONED_LIVE_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_PREPOSITIONED_LIVE_OPEN_PAIR_CAP),
+            completed_cycle_cap: None,
+            completion_early_pair_cap: XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP,
+            completion_late_pair_cap: XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP,
+            taker_close_pair_cap: XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP,
+            fixed_clip_qty: Some(XUAN_PREPOSITIONED_LIVE_CLIP_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: XUAN_PREPOSITIONED_LIVE_CLIP_QTY,
+            min_clip_qty: 0.0,
+            max_clip_qty: XUAN_PREPOSITIONED_LIVE_CLIP_QTY,
+        }
+    }
+
     fn from_env() -> Self {
         let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
             .unwrap_or_default()
@@ -514,6 +549,10 @@ impl PgtTuning {
             | "xuan_high_pressure"
             | "b27_high_pressure"
             | "xuan_frontier_high_pressure" => Self::xuan_high_pressure_v1(),
+            "xuan_prepositioned_live_v1"
+            | "xuan_prepositioned_live"
+            | "xuan_frontier_prepositioned"
+            | "b27_prepositioned_live" => Self::xuan_prepositioned_live_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -535,6 +574,7 @@ impl PgtTuning {
                     | PgtShadowProfile::XuanM0001MakerLikeV1
                     | PgtShadowProfile::DPlusMinOrderV1
                     | PgtShadowProfile::XuanHighPressureV1
+                    | PgtShadowProfile::XuanPrepositionedLiveV1
             ) {
                 base.max(cap)
             } else {
@@ -563,6 +603,7 @@ pub fn pgt_shadow_profile_name() -> &'static str {
         PgtShadowProfile::XuanM0001MakerLikeV1 => "xuan_m0001_maker_like_v1",
         PgtShadowProfile::DPlusMinOrderV1 => "dplus_minorder_v1",
         PgtShadowProfile::XuanHighPressureV1 => "xuan_high_pressure_v1",
+        PgtShadowProfile::XuanPrepositionedLiveV1 => "xuan_prepositioned_live_v1",
     }
 }
 
@@ -592,6 +633,7 @@ fn pgt_profile_quotes_allowed(tuning: PgtTuning, dry_run: bool) -> bool {
         PgtShadowProfile::XuanM0001MakerLikeV1
             | PgtShadowProfile::DPlusMinOrderV1
             | PgtShadowProfile::XuanHighPressureV1
+            | PgtShadowProfile::XuanPrepositionedLiveV1
     ) || dry_run
 }
 
@@ -1624,7 +1666,9 @@ impl PairGatedTrancheStrategy {
                 }
                 if matches!(
                     profile,
-                    PgtShadowProfile::XuanCycleMergeV1 | PgtShadowProfile::DPlusMinOrderV1
+                    PgtShadowProfile::XuanCycleMergeV1
+                        | PgtShadowProfile::DPlusMinOrderV1
+                        | PgtShadowProfile::XuanPrepositionedLiveV1
                 ) {
                     return FlatSeedSelection::Dual;
                 }
@@ -2378,6 +2422,9 @@ impl PairGatedTrancheStrategy {
 
 pub(crate) fn pgt_effective_open_pair_band_value(base: f64, remaining_secs: u64) -> f64 {
     let tuning = pgt_tuning();
+    if tuning.profile == PgtShadowProfile::XuanPrepositionedLiveV1 {
+        return pgt_xuan_prepositioned_live_open_pair_cap(remaining_secs);
+    }
     if tuning.profile != PgtShadowProfile::Legacy {
         return tuning.open_pair_band(base);
     }
@@ -2452,6 +2499,17 @@ fn pgt_tuning_seed_open_remaining_allowed(tuning: PgtTuning, remaining_secs: u64
         }
     }
     true
+}
+
+fn pgt_xuan_prepositioned_live_open_pair_cap(remaining_secs: u64) -> f64 {
+    let Some(elapsed) = pgt_round_elapsed_secs(remaining_secs) else {
+        return XUAN_PREPOSITIONED_LIVE_OPEN_PAIR_CAP;
+    };
+    if elapsed >= XUAN_PREPOSITIONED_LIVE_LATE_OFFSET_SECS {
+        XUAN_PREPOSITIONED_LIVE_LATE_OPEN_PAIR_CAP
+    } else {
+        XUAN_PREPOSITIONED_LIVE_OPEN_PAIR_CAP
+    }
 }
 
 pub(crate) fn pgt_absent_seed_retain_allowed(remaining_secs: u64, slot_age: Duration) -> bool {
@@ -2681,6 +2739,7 @@ fn pgt_effective_completion_pair_caps(
     if tuning.profile == PgtShadowProfile::XuanCycleCappedV1
         || tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1
         || tuning.profile == PgtShadowProfile::DPlusMinOrderV1
+        || tuning.profile == PgtShadowProfile::XuanPrepositionedLiveV1
     {
         let (base, late, final_cap, late_secs, final_secs) =
             if tuning.profile == PgtShadowProfile::XuanM0001MakerLikeV1 {
@@ -2698,6 +2757,14 @@ fn pgt_effective_completion_pair_caps(
                     DPLUS_MINORDER_COMPLETION_FINAL_PAIR_CAP,
                     DPLUS_MINORDER_LATE_REMAINING_SECS,
                     DPLUS_MINORDER_FINAL_REMAINING_SECS,
+                )
+            } else if tuning.profile == PgtShadowProfile::XuanPrepositionedLiveV1 {
+                (
+                    XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP,
+                    XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP,
+                    XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP,
+                    XUAN_PREPOSITIONED_LIVE_TAIL_REMAINING_SECS,
+                    XUAN_PREPOSITIONED_LIVE_TAIL_REMAINING_SECS,
                 )
             } else {
                 (
@@ -3885,6 +3952,70 @@ mod profile_tests {
     }
 
     #[test]
+    fn xuan_prepositioned_live_profile_matches_recovered_keep_candidate() {
+        let tuning = PgtTuning::xuan_prepositioned_live_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanPrepositionedLiveV1);
+        assert_eq!(tuning.seed_open_max_remaining_secs, Some(296));
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(XUAN_PREPOSITIONED_LIVE_STOP_BEFORE_END_SECS)
+        );
+        assert_eq!(
+            tuning.fixed_clip_qty,
+            Some(XUAN_PREPOSITIONED_LIVE_CLIP_QTY)
+        );
+        assert_eq!(
+            tuning.completion_early_pair_cap,
+            XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.completion_late_pair_cap,
+            XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP
+        );
+        assert_eq!(
+            tuning.taker_close_pair_cap,
+            XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP
+        );
+        assert!(tuning.preserve_seed_clip_qty);
+        assert!(!pgt_profile_quotes_allowed(tuning, false));
+        assert!(pgt_profile_quotes_allowed(tuning, true));
+        assert!(!pgt_is_settlement_alpha_profile(tuning));
+    }
+
+    #[test]
+    fn xuan_prepositioned_live_open_and_completion_caps_match_scorecard() {
+        let tuning = PgtTuning::xuan_prepositioned_live_v1();
+        assert_eq!(
+            pgt_xuan_prepositioned_live_open_pair_cap(121),
+            XUAN_PREPOSITIONED_LIVE_OPEN_PAIR_CAP
+        );
+        assert_eq!(
+            pgt_xuan_prepositioned_live_open_pair_cap(120),
+            XUAN_PREPOSITIONED_LIVE_LATE_OPEN_PAIR_CAP
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(tuning, 120, 1.0),
+            (
+                XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP,
+                XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP,
+                XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP
+            )
+        );
+        assert_eq!(
+            pgt_effective_completion_pair_caps(
+                tuning,
+                XUAN_PREPOSITIONED_LIVE_TAIL_REMAINING_SECS,
+                1.0
+            ),
+            (
+                XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP,
+                XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP,
+                XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP
+            )
+        );
+    }
+
+    #[test]
     fn dplus_minorder_seed_size_uses_fill_haircut_and_imbalance_room() {
         assert_eq!(
             pgt_dplus_minorder_seed_size(100.0, 0.40, 0.0, 0.0, 0.0, 5.0),
@@ -5057,6 +5188,28 @@ mod tests {
             selection,
             FlatSeedSelection::Dual,
             "D+ intentionally keeps B27-style two-sided passive BUY inventory in dry-run shadow"
+        );
+    }
+
+    #[test]
+    fn xuan_prepositioned_live_keeps_dual_passive_seed_quotes() {
+        let strategy = PairGatedTrancheStrategy;
+        let yes = seed_plan_with_slack(Side::Yes, 0.47, 0, 1.0);
+        let no = seed_plan_with_slack(Side::No, 0.48, 0, 1.0);
+
+        let selection = strategy.select_flat_seed_plans(
+            Some(&yes),
+            Some(&no),
+            PgtShadowProfile::XuanPrepositionedLiveV1,
+            true,
+            Some(Side::Yes),
+            false,
+        );
+
+        assert_eq!(
+            selection,
+            FlatSeedSelection::Dual,
+            "pre-positioned live profile must keep both passive legs resting when both pass geometry"
         );
     }
 
