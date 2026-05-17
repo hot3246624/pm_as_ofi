@@ -3454,6 +3454,9 @@ fn pgt_effective_repair_budget_per_share(
     remaining_secs: u64,
     completion_age_secs: f64,
 ) -> f64 {
+    if tuning.profile == PgtShadowProfile::XuanPrepositionedLiveV1 {
+        return 0.0;
+    }
     if repair_budget_available <= 0.0 || residual_qty <= 0.0 {
         return 0.0;
     }
@@ -4602,6 +4605,27 @@ mod profile_tests {
             (pgt_effective_repair_budget_per_share(tuning, 10.0, 120.0, 44, 10.0) - 0.030).abs()
                 < 1e-9,
             "tail safety can spend capped repair budget even for a fresh residual"
+        );
+    }
+
+    #[test]
+    fn xuan_prepositioned_live_repair_budget_never_lifts_completion_cap() {
+        let tuning = PgtTuning::xuan_prepositioned_live_v1();
+        assert_eq!(
+            pgt_effective_repair_budget_per_share(tuning, 50.0, 12.0, 120, 90.0),
+            0.0,
+            "pre-positioned live verifier uses hard pair caps; shadow must not spend prior locked edge to chase residuals"
+        );
+        assert_eq!(
+            pgt_effective_repair_budget_per_share(
+                tuning,
+                50.0,
+                12.0,
+                XUAN_PREPOSITIONED_LIVE_TAIL_REMAINING_SECS,
+                290.0
+            ),
+            0.0,
+            "tail mode may use the explicit tail pair cap, but not an additional repair-budget lift"
         );
     }
 
