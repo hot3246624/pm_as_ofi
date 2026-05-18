@@ -99,6 +99,8 @@ mod coordinator_metrics;
 mod coordinator_order_io;
 #[path = "coordinator_pricing.rs"]
 mod coordinator_pricing;
+#[path = "coordinator_xuan_b27_dplus.rs"]
+mod coordinator_xuan_b27_dplus;
 
 // ─────────────────────────────────────────────────────────
 // Config
@@ -173,6 +175,156 @@ pub struct CompletionFirstStrategyConfig {
     pub gate_defaults: CompletionFirstGateDefaults,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum XuanB27DplusMode {
+    Disabled,
+    Observer,
+    AuthObserver,
+    Canary,
+}
+
+impl XuanB27DplusMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Observer => "observer",
+            Self::AuthObserver => "auth_observer",
+            Self::Canary => "canary",
+        }
+    }
+
+    fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "disabled" | "off" | "false" => Some(Self::Disabled),
+            "observer" | "dry_observer" | "dry-run-observer" => Some(Self::Observer),
+            "auth_observer" | "auth-observer" | "authenticated_observer" => {
+                Some(Self::AuthObserver)
+            }
+            "canary" | "smoke" => Some(Self::Canary),
+            _ => None,
+        }
+    }
+
+    pub fn allows_order_submission(self) -> bool {
+        matches!(self, Self::Canary)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct XuanB27DplusStrategyConfig {
+    pub mode: XuanB27DplusMode,
+    pub market_slug: Option<String>,
+    pub edge: f64,
+    pub target_qty: f64,
+    pub seed_px_lo: f64,
+    pub seed_px_hi: f64,
+    pub imbalance_qty_cap: f64,
+    pub salvage_net_cap: f64,
+    pub max_open_cost_usdc: f64,
+    pub max_strategy_exposure_usdc: f64,
+    pub max_active_markets: usize,
+    pub max_live_orders: usize,
+    pub post_only: bool,
+    pub allow_passive_taker: bool,
+    pub stop_on_unknown: bool,
+    pub explicit_canary_approval: bool,
+    pub runtime_wiring_enabled: bool,
+    pub oms_adapter_enabled: bool,
+    pub account_truth_ready: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum XuanB27DplusRuntimeTruthStatus {
+    Unknown,
+    Pass,
+    Fail,
+}
+
+impl XuanB27DplusRuntimeTruthStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "UNKNOWN",
+            Self::Pass => "PASS",
+            Self::Fail => "FAIL",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct XuanB27DplusRuntimeSourceTruth {
+    pub order_truth: XuanB27DplusRuntimeTruthStatus,
+    pub fill_truth: XuanB27DplusRuntimeTruthStatus,
+    pub wallet_truth: XuanB27DplusRuntimeTruthStatus,
+    pub redeem_truth: XuanB27DplusRuntimeTruthStatus,
+    pub cashflow_truth: XuanB27DplusRuntimeTruthStatus,
+}
+
+impl Default for XuanB27DplusRuntimeSourceTruth {
+    fn default() -> Self {
+        Self {
+            order_truth: XuanB27DplusRuntimeTruthStatus::Unknown,
+            fill_truth: XuanB27DplusRuntimeTruthStatus::Unknown,
+            wallet_truth: XuanB27DplusRuntimeTruthStatus::Unknown,
+            redeem_truth: XuanB27DplusRuntimeTruthStatus::Unknown,
+            cashflow_truth: XuanB27DplusRuntimeTruthStatus::Unknown,
+        }
+    }
+}
+
+impl XuanB27DplusRuntimeSourceTruth {
+    pub(crate) fn all_pass() -> Self {
+        Self {
+            order_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+            fill_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+            wallet_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+            redeem_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+            cashflow_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        }
+    }
+
+    pub(crate) fn account_truth_ready(self) -> bool {
+        [
+            self.order_truth,
+            self.fill_truth,
+            self.wallet_truth,
+            self.redeem_truth,
+            self.cashflow_truth,
+        ]
+        .into_iter()
+        .all(|status| status == XuanB27DplusRuntimeTruthStatus::Pass)
+    }
+
+    pub(crate) fn missing_components(self) -> Vec<&'static str> {
+        [
+            ("order_truth", self.order_truth),
+            ("fill_truth", self.fill_truth),
+            ("wallet_truth", self.wallet_truth),
+            ("redeem_truth", self.redeem_truth),
+            ("cashflow_truth", self.cashflow_truth),
+        ]
+        .into_iter()
+        .filter_map(|(name, status)| {
+            (status == XuanB27DplusRuntimeTruthStatus::Unknown).then_some(name)
+        })
+        .collect()
+    }
+
+    pub(crate) fn failed_components(self) -> Vec<&'static str> {
+        [
+            ("order_truth", self.order_truth),
+            ("fill_truth", self.fill_truth),
+            ("wallet_truth", self.wallet_truth),
+            ("redeem_truth", self.redeem_truth),
+            ("cashflow_truth", self.cashflow_truth),
+        ]
+        .into_iter()
+        .filter_map(|(name, status)| {
+            (status == XuanB27DplusRuntimeTruthStatus::Fail).then_some(name)
+        })
+        .collect()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OracleLagSnipingStrategyConfig {
     /// Post-close strategy live window (seconds after market end).
@@ -238,6 +390,8 @@ pub struct CoordinatorConfig {
     pub pair_arb: PairArbStrategyConfig,
     /// Completion-first strategy runtime config.
     pub completion_first: CompletionFirstStrategyConfig,
+    /// Xuan/B27 D+ research strategy runtime config.
+    pub xuan_b27_dplus: XuanB27DplusStrategyConfig,
     /// Post-close HYPE strategy-specific runtime config.
     pub oracle_lag_sniping: OracleLagSnipingStrategyConfig,
     /// Unix timestamp (seconds) when the market expires. None = no decay.
@@ -326,6 +480,27 @@ impl Default for CoordinatorConfig {
                 gate_defaults_path: None,
                 gate_defaults: CompletionFirstGateDefaults::default(),
             },
+            xuan_b27_dplus: XuanB27DplusStrategyConfig {
+                mode: XuanB27DplusMode::Disabled,
+                market_slug: None,
+                edge: 0.040,
+                target_qty: 5.0,
+                seed_px_lo: 0.010,
+                seed_px_hi: 0.990,
+                imbalance_qty_cap: 2.0,
+                salvage_net_cap: 0.950,
+                max_open_cost_usdc: 50.0,
+                max_strategy_exposure_usdc: 100.0,
+                max_active_markets: 1,
+                max_live_orders: 2,
+                post_only: true,
+                allow_passive_taker: false,
+                stop_on_unknown: true,
+                explicit_canary_approval: false,
+                runtime_wiring_enabled: false,
+                oms_adapter_enabled: false,
+                account_truth_ready: false,
+            },
             oracle_lag_sniping: OracleLagSnipingStrategyConfig {
                 // ~Polymarket liquidity lifecycle post-close (all resting orders cleared by then).
                 window_secs: 105,
@@ -369,6 +544,7 @@ impl CoordinatorConfig {
         cfg.apply_glft_env();
         cfg.apply_pair_arb_env();
         cfg.apply_completion_first_env();
+        cfg.apply_xuan_b27_dplus_env();
         cfg.apply_oracle_lag_env();
         cfg.apply_hedge_env();
         cfg.apply_runtime_env();
@@ -611,6 +787,114 @@ impl CoordinatorConfig {
         }
     }
 
+    fn apply_xuan_b27_dplus_env(&mut self) {
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_MODE") {
+            if let Some(mode) = XuanB27DplusMode::parse(&v) {
+                self.xuan_b27_dplus.mode = mode;
+            } else {
+                warn!(
+                    "⚠️ Ignoring invalid PM_XUAN_B27_DPLUS_MODE={} (supported: disabled|observer|auth_observer|canary), using {}",
+                    v,
+                    self.xuan_b27_dplus.mode.as_str()
+                );
+            }
+        }
+        self.xuan_b27_dplus.market_slug = std::env::var("PM_XUAN_B27_DPLUS_MARKET_SLUG")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty());
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_EDGE") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    self.xuan_b27_dplus.edge = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_TARGET_QTY") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f > 0.0 {
+                    self.xuan_b27_dplus.target_qty = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_SEED_PX_LO") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    self.xuan_b27_dplus.seed_px_lo = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_SEED_PX_HI") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..1.0).contains(&f) {
+                    self.xuan_b27_dplus.seed_px_hi = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_IMBALANCE_QTY_CAP") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    self.xuan_b27_dplus.imbalance_qty_cap = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_SALVAGE_NET_CAP") {
+            if let Ok(f) = v.parse::<f64>() {
+                if (0.0..=1.0).contains(&f) {
+                    self.xuan_b27_dplus.salvage_net_cap = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_MAX_OPEN_COST_USDC") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    self.xuan_b27_dplus.max_open_cost_usdc = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_MAX_STRATEGY_EXPOSURE_USDC") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    self.xuan_b27_dplus.max_strategy_exposure_usdc = f;
+                }
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_MAX_ACTIVE_MARKETS") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.xuan_b27_dplus.max_active_markets = n;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_MAX_LIVE_ORDERS") {
+            if let Ok(n) = v.parse::<usize>() {
+                self.xuan_b27_dplus.max_live_orders = n;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_POST_ONLY") {
+            let lv = v.to_ascii_lowercase();
+            self.xuan_b27_dplus.post_only = v == "1" || lv == "true";
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_ALLOW_PASSIVE_TAKER") {
+            let lv = v.to_ascii_lowercase();
+            self.xuan_b27_dplus.allow_passive_taker = v == "1" || lv == "true";
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_STOP_ON_UNKNOWN") {
+            let lv = v.to_ascii_lowercase();
+            self.xuan_b27_dplus.stop_on_unknown = v != "0" && lv != "false";
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_EXPLICIT_CANARY_APPROVAL") {
+            let lv = v.to_ascii_lowercase();
+            self.xuan_b27_dplus.explicit_canary_approval = v == "1" || lv == "true";
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_RUNTIME_WIRING_ENABLED") {
+            let lv = v.to_ascii_lowercase();
+            self.xuan_b27_dplus.runtime_wiring_enabled = v == "1" || lv == "true";
+        }
+        if let Ok(v) = std::env::var("PM_XUAN_B27_DPLUS_OMS_ADAPTER_ENABLED") {
+            let lv = v.to_ascii_lowercase();
+            self.xuan_b27_dplus.oms_adapter_enabled = v == "1" || lv == "true";
+        }
+    }
+
     fn apply_oracle_lag_env(&mut self) {
         if let Ok(v) = std::env::var("PM_POST_CLOSE_WINDOW_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
@@ -780,6 +1064,30 @@ impl CoordinatorConfig {
     }
 
     fn finalize_invariants(&mut self) {
+        if self.xuan_b27_dplus.seed_px_lo > self.xuan_b27_dplus.seed_px_hi {
+            warn!(
+                "⚠️ Swapping PM_XUAN_B27_DPLUS_SEED_PX_LO/HI because lo {:.4} > hi {:.4}",
+                self.xuan_b27_dplus.seed_px_lo, self.xuan_b27_dplus.seed_px_hi
+            );
+            std::mem::swap(
+                &mut self.xuan_b27_dplus.seed_px_lo,
+                &mut self.xuan_b27_dplus.seed_px_hi,
+            );
+        }
+        if self.xuan_b27_dplus.mode.allows_order_submission() {
+            if !self.xuan_b27_dplus.post_only {
+                warn!("⚠️ Forcing xuan_b27_dplus canary post_only=true");
+                self.xuan_b27_dplus.post_only = true;
+            }
+            if self.xuan_b27_dplus.allow_passive_taker {
+                warn!("⚠️ Forcing xuan_b27_dplus canary allow_passive_taker=false");
+                self.xuan_b27_dplus.allow_passive_taker = false;
+            }
+            if !self.xuan_b27_dplus.stop_on_unknown {
+                warn!("⚠️ Forcing xuan_b27_dplus canary stop_on_unknown=true");
+                self.xuan_b27_dplus.stop_on_unknown = true;
+            }
+        }
         if self.endgame_edge_exit_mult > self.endgame_edge_keep_mult {
             warn!(
                 "⚠️ Clamping PM_ENDGAME_EDGE_EXIT_MULT from {:.4} to {:.4} (must be <= keep_mult)",
@@ -1425,6 +1733,7 @@ pub struct StrategyCoordinator {
     yes_maker_friction: MakerFriction,
     no_maker_friction: MakerFriction,
     stats: Stats,
+    xuan_b27_dplus_source_truth: XuanB27DplusRuntimeSourceTruth,
 
     ofi_rx: watch::Receiver<OfiSnapshot>,
     inv_rx: watch::Receiver<InventorySnapshot>,
@@ -1439,6 +1748,8 @@ pub struct StrategyCoordinator {
     kill_rx: mpsc::Receiver<KillSwitchSignal>,
     /// Execution-layer feedback channel used for adaptive maker safety.
     feedback_rx: mpsc::Receiver<ExecutionFeedback>,
+    /// D+ source-truth feed channel. Carries no-secret order/fill/wallet/redeem/cashflow facts.
+    xuan_b27_dplus_source_truth_rx: mpsc::Receiver<XuanB27DplusSourceTruthEvent>,
     /// Slot lifecycle release events from OMS.
     slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
     /// Optional low-overhead observability snapshot channel for round validation.
@@ -1666,6 +1977,7 @@ impl StrategyCoordinator {
         slot_release_rx: mpsc::Receiver<SlotReleaseEvent>,
         shared_post_close_winner_side: Option<Arc<Mutex<Option<Side>>>>,
     ) -> Self {
+        let (_dead_xuan_source_truth_tx, dead_xuan_source_truth_rx) = mpsc::channel(1);
         let now = Instant::now();
         let last_metrics_log_ts = if cfg.strategy_metrics_log_secs > 0 {
             now.checked_sub(Duration::from_secs(cfg.strategy_metrics_log_secs))
@@ -1803,6 +2115,7 @@ impl StrategyCoordinator {
             yes_maker_friction: MakerFriction::default(),
             no_maker_friction: MakerFriction::default(),
             stats: Stats::default(),
+            xuan_b27_dplus_source_truth: XuanB27DplusRuntimeSourceTruth::default(),
             ofi_rx,
             inv_rx,
             md_rx,
@@ -1811,6 +2124,7 @@ impl StrategyCoordinator {
             om_tx,
             kill_rx,
             feedback_rx,
+            xuan_b27_dplus_source_truth_rx: dead_xuan_source_truth_rx,
             slot_release_rx,
             obs_tx: None,
             recorder: None,
@@ -1821,6 +2135,14 @@ impl StrategyCoordinator {
 
     pub fn with_obs_tx(mut self, obs_tx: watch::Sender<CoordinatorObsSnapshot>) -> Self {
         self.obs_tx = Some(obs_tx);
+        self
+    }
+
+    pub fn with_xuan_b27_dplus_source_truth_rx(
+        mut self,
+        rx: mpsc::Receiver<XuanB27DplusSourceTruthEvent>,
+    ) -> Self {
+        self.xuan_b27_dplus_source_truth_rx = rx;
         self
     }
 
@@ -1844,6 +2166,17 @@ impl StrategyCoordinator {
 
     pub(crate) fn cfg(&self) -> &CoordinatorConfig {
         &self.cfg
+    }
+
+    pub(crate) fn set_xuan_b27_dplus_runtime_source_truth(
+        &mut self,
+        source_truth: XuanB27DplusRuntimeSourceTruth,
+    ) {
+        self.xuan_b27_dplus_source_truth = source_truth;
+    }
+
+    pub(crate) fn xuan_b27_dplus_runtime_source_truth(&self) -> XuanB27DplusRuntimeSourceTruth {
+        self.xuan_b27_dplus_source_truth
     }
 
     pub fn post_close_winner_side(&self) -> Option<Side> {
@@ -2013,6 +2346,12 @@ impl StrategyCoordinator {
 
                 Some(feedback) = self.feedback_rx.recv() => {
                     self.handle_execution_feedback(feedback);
+                    self.tick().await;
+                    self.emit_obs_snapshot();
+                }
+
+                Some(source_truth_event) = self.xuan_b27_dplus_source_truth_rx.recv() => {
+                    self.handle_xuan_b27_dplus_source_truth_event(source_truth_event);
                     self.tick().await;
                     self.emit_obs_snapshot();
                 }
@@ -3471,6 +3810,12 @@ impl StrategyCoordinator {
             glft: glft_snapshot.as_ref(),
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
+        if self.cfg.strategy == StrategyKind::XuanB27Dplus {
+            self.emit_xuan_b27_dplus_observer_tick(&inv_snapshot, &ub, &metrics);
+            self.maybe_dispatch_xuan_b27_dplus_canary_commands(&inv_snapshot, &ub, &metrics)
+                .await;
+            quotes = StrategyQuotes::default();
+        }
         if self.cfg.strategy == StrategyKind::CompletionFirst {
             self.emit_completion_first_decision_events(&inv_snapshot, &quotes);
             if self.completion_first_mode() == CompletionFirstMode::Shadow {
