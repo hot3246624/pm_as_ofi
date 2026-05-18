@@ -24,7 +24,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    FillEvent, FillStatus, OrderSlot, TradeDirection, XuanB27DplusSourceTruthEvent,
+    FillEvent, FillSource, FillStatus, OrderSlot, TradeDirection, XuanB27DplusSourceTruthEvent,
 };
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
@@ -605,6 +605,7 @@ impl UserWsListener {
                 filled_size: size,
                 price,
                 status,
+                source: FillSource::UserWs,
                 ts: Instant::now(),
             });
         }
@@ -689,6 +690,7 @@ impl UserWsListener {
             filled_size: size,
             price,
             status,
+            source: FillSource::UserWs,
             ts: Instant::now(),
         })
     }

@@ -44,8 +44,15 @@ use pm_as_ofi::polymarket::inventory::{InventoryConfig, InventoryManager};
 use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
-use pm_as_ofi::polymarket::recorder::{RecorderHandle, RecorderSessionMeta, RecorderSessionStart};
-use pm_as_ofi::polymarket::strategy::StrategyKind;
+use pm_as_ofi::polymarket::recorder::{
+    MarketBookDepthEvidence, RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
+};
+use pm_as_ofi::polymarket::strategy::pair_gated_tranche::pgt_shadow_profile_name;
+use pm_as_ofi::polymarket::strategy::{
+    PgtDPlusMinOrderNoSeedReason, PgtHighPressureNoSeedReason, PgtXuanM0001NoSeedReason,
+    StrategyKind, PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT, PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT,
+    PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
+};
 use pm_as_ofi::polymarket::types::Side;
 use pm_as_ofi::polymarket::user_ws::{UserWsConfig, UserWsListener};
 
@@ -151,6 +158,34 @@ fn shared_ingress_role() -> SharedIngressRole {
 
 fn set_shared_ingress_role_override(role: SharedIngressRole) {
     let _ = SHARED_INGRESS_ROLE_OVERRIDE.set(role);
+}
+
+fn pgt_xuan_m0001_no_seed_counts_json(counts: [u64; PGT_XUAN_M0001_NO_SEED_REASON_COUNT]) -> Value {
+    let mut out = serde_json::Map::new();
+    for reason in PgtXuanM0001NoSeedReason::ALL {
+        out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
+    }
+    Value::Object(out)
+}
+
+fn pgt_dplus_minorder_no_seed_counts_json(
+    counts: [u64; PGT_DPLUS_MINORDER_NO_SEED_REASON_COUNT],
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for reason in PgtDPlusMinOrderNoSeedReason::ALL {
+        out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
+    }
+    Value::Object(out)
+}
+
+fn pgt_high_pressure_no_seed_counts_json(
+    counts: [u64; PGT_HIGH_PRESSURE_NO_SEED_REASON_COUNT],
+) -> Value {
+    let mut out = serde_json::Map::new();
+    for reason in PgtHighPressureNoSeedReason::ALL {
+        out.insert(reason.as_str().to_string(), json!(counts[reason.index()]));
+    }
+    Value::Object(out)
 }
 
 fn shared_ingress_root() -> PathBuf {
@@ -638,6 +673,13 @@ async fn spawn_shared_ingress_broker_sidecar() -> anyhow::Result<()> {
 async fn ensure_shared_ingress_broker_running() -> anyhow::Result<()> {
     let root = shared_ingress_root();
     let required_caps = shared_ingress_required_capabilities_from_env();
+    if shared_ingress_role() == SharedIngressRole::Client {
+        return wait_for_shared_ingress_broker_healthy(
+            SHARED_INGRESS_BROKER_START_TIMEOUT_MS,
+            &required_caps,
+        )
+        .await;
+    }
     let market_only_wait_ms = shared_ingress_market_only_auto_wait_ms();
     fs::create_dir_all(shared_ingress_clients_dir())?;
     let deadline =
@@ -3486,7 +3528,7 @@ const PGT_SHADOW_HARVEST_FIRST_SECS: u64 = 25;
 const PGT_SHADOW_HARVEST_RETRY_SECS: u64 = 18;
 const PGT_SHADOW_HARVEST_MIN_PAIRABLE_QTY: f64 = 10.0;
 const PGT_SHADOW_REDEEM_FIRST_SECS: u64 = 35;
-const PGT_SHADOW_REDEEM_RETRY_SECS: u64 = 50;
+const PGT_SHADOW_REDEEM_RETRY_SECS: u64 = 240;
 const PGT_SHADOW_REDEEM_GAMMA_TIMEOUT_MS: u64 = 2_000;
 
 fn pgt_shadow_redeem_lifecycle_enabled() -> bool {
@@ -3975,6 +4017,14 @@ fn local_price_agg_boundary_window_ms() -> u64 {
         .and_then(|v| v.parse::<u64>().ok())
         .map(|v| v.clamp(100, 30_000))
         .unwrap_or(5_000)
+}
+
+fn local_price_agg_boundary_diag_window_ms() -> u64 {
+    env::var("PM_LOCAL_PRICE_AGG_BOUNDARY_DIAG_WINDOW_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map(|v| v.clamp(0, 60_000))
+        .unwrap_or(30_000)
 }
 
 fn local_price_agg_uncertainty_gate_enabled() -> bool {
@@ -4878,6 +4928,8 @@ enum SharedIngressWireMsg {
         no_bid: f64,
         no_ask: f64,
         ts_ms: u64,
+        #[serde(default)]
+        depth: Option<MarketBookDepthEvidence>,
     },
     MarketTradeTick {
         asset_id: String,
@@ -6491,6 +6543,7 @@ async fn fetch_gamma_winner_hint(slug: &str) -> Option<(Side, f64)> {
     let url = format!("https://gamma-api.polymarket.com/events?slug={}", slug);
     let client = reqwest::Client::builder()
         .timeout(Duration::from_millis(1500))
+        .user_agent("pm-as-ofi-xuan-shadow/1.0")
         .build()
         .ok()?;
     let resp = client.get(&url).send().await.ok()?;
@@ -7947,11 +8000,39 @@ async fn run_post_close_winner_hint_listener(
                         );
                     }
                 }
-                let weighted_shadow_hit = compare_hit
+                let weighted_shadow_hit_owned = compare_hit
                     .boundary_shadow_outcomes
                     .iter()
                     .find(|outcome| outcome.policy_name == "boundary_weighted")
-                    .and_then(|outcome| outcome.hit.as_ref());
+                    .and_then(|outcome| outcome.hit.clone());
+                let source_lag_regime_hit = weighted_shadow_hit_owned.as_ref().and_then(|hit| {
+                    local_boundary_select_hype_source_lag_regime(
+                        &symbol,
+                        hit,
+                        &compare_hit.source_lag_candidates,
+                        first_ref,
+                    )
+                    .or_else(|| {
+                        local_boundary_select_doge_source_lag_regime(
+                            &symbol,
+                            hit,
+                            &compare_hit.source_lag_candidates,
+                            first_ref,
+                        )
+                    })
+                });
+                if let Some(hit) = source_lag_regime_hit.as_ref() {
+                    compare_hit
+                        .boundary_shadow_outcomes
+                        .push(LocalBoundaryShadowOutcome {
+                            policy_name: hit.policy_name,
+                            source_subset_name: hit.source_subset_name,
+                            rule: hit.rule,
+                            min_sources: hit.min_sources,
+                            hit: Some(hit.clone()),
+                        });
+                }
+                let weighted_shadow_hit = weighted_shadow_hit_owned.as_ref();
                 let mut close_only_filtered = false;
                 let mut close_only_filter_reason: Option<&'static str> = None;
                 let mut close_only_direction_margin_bps: Option<f64> = None;
@@ -8162,6 +8243,231 @@ async fn run_post_close_winner_hint_listener(
                             .source_contributions
                             .first()
                             .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 12.68
+                        && direction_margin_bps < 12.71
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 120
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_upper_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            12.68,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 13.40
+                        && direction_margin_bps < 13.45
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 30
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_micro_upper_high_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_high_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            13.40,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 13.82
+                        && direction_margin_bps < 13.90
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 10
+                    {
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_micro_high_margin_tail");
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_high_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            13.82,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 11.4
+                        && direction_margin_bps < 11.7
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 50
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 80
+                    {
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_micro_upper_margin_tail");
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_upper_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            11.4,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 14.42
+                        && direction_margin_bps < 14.45
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 500
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 600
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_late_upper_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_late_upper_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            14.42,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
                         && direction_margin_bps + 1e-9 >= 10.0
                         && direction_margin_bps < 16.0
                         && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 850
@@ -8176,6 +8482,141 @@ async fn run_post_close_winner_hint_listener(
                             compare_truth_open_source,
                             direction_margin_bps,
                             10.0,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 14.45
+                        && direction_margin_bps < 14.55
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 400
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 450
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_single_hyperliquid_no_midlag_upper_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_midlag_upper_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            14.45,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 19.14
+                        && direction_margin_bps < 19.18
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 60
+                    {
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_micro_far_margin_tail");
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_micro_far_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            19.14,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 19.27
+                        && direction_margin_bps < 19.35
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 40
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 250
+                    {
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_no_fast_far_margin_tail");
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_no_fast_far_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            19.27,
                             hit.close_price,
                             hit.close_ts_ms,
                             first_ref,
@@ -8262,6 +8703,56 @@ async fn run_post_close_winner_hint_listener(
                             .source_contributions
                             .iter()
                             .any(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 10.5
+                        && direction_margin_bps < 10.8
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 2_000
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 2_600
+                    {
+                        close_only_filter_reason = Some(
+                            "hype_close_only_bybit_hyperliquid_yes_very_stale_mid_margin_tail",
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_bybit_hyperliquid_yes_very_stale_mid_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            10.5,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 2
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::Yes
+                        && hit
+                            .source_contributions
+                            .iter()
+                            .any(|src| src.source == LocalPriceSource::Bybit)
+                        && hit
+                            .source_contributions
+                            .iter()
+                            .any(|src| src.source == LocalPriceSource::Hyperliquid)
                         && hit.source_spread_bps < 0.5
                         && direction_margin_bps + 1e-9 >= 30.0
                         && direction_margin_bps < 40.0
@@ -8278,6 +8769,51 @@ async fn run_post_close_winner_hint_listener(
                             compare_truth_open_source,
                             direction_margin_bps,
                             30.0,
+                            hit.close_price,
+                            hit.close_ts_ms,
+                            first_ref,
+                            first_obs,
+                            hit.source_count,
+                            hit.close_exact_sources,
+                            hit.source_spread_bps,
+                        );
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                            slug,
+                            symbol,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            ready_ms.saturating_sub(started_ms),
+                            first_ref,
+                            first_side,
+                            first_obs,
+                        );
+                        close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::Yes
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                        && direction_margin_bps + 1e-9 >= 5.5
+                        && direction_margin_bps < 5.6
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) >= 450
+                        && hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000)) <= 550
+                    {
+                        close_only_filter_reason =
+                            Some("hype_close_only_single_hyperliquid_yes_late_low_margin_tail");
+                        warn!(
+                            "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason=hype_close_only_single_hyperliquid_yes_late_low_margin_tail direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                            slug,
+                            symbol,
+                            compare_truth_open_source,
+                            direction_margin_bps,
+                            5.5,
                             hit.close_price,
                             hit.close_ts_ms,
                             first_ref,
@@ -8351,6 +8887,117 @@ async fn run_post_close_winner_hint_listener(
                             first_obs,
                         );
                         close_only_filtered = true;
+                    }
+                    if !close_only_filtered
+                        && symbol == "hype/usd"
+                        && hit.source_count == 1
+                        && hit.close_exact_sources == 0
+                        && local_side_vs_rtds_open == Side::No
+                        && hit
+                            .source_contributions
+                            .first()
+                            .is_some_and(|src| src.source == LocalPriceSource::Hyperliquid)
+                    {
+                        let close_abs_delta_ms =
+                            hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000));
+                        let close_only_tail_reason = if direction_margin_bps + 1e-9 >= 2.95
+                            && direction_margin_bps < 3.0
+                            && close_abs_delta_ms >= 280
+                            && close_abs_delta_ms <= 320
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_late_mid_margin_side_tail",
+                                2.95,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 5.0
+                            && direction_margin_bps < 5.1
+                            && close_abs_delta_ms >= 180
+                            && close_abs_delta_ms <= 230
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_fast_low_margin_side_tail",
+                                5.0,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 6.4
+                            && direction_margin_bps < 6.5
+                            && close_abs_delta_ms >= 80
+                            && close_abs_delta_ms <= 120
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_micro_mid_margin_error_tail",
+                                6.4,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 4.35
+                            && direction_margin_bps < 4.39
+                            && close_abs_delta_ms >= 480
+                            && close_abs_delta_ms <= 520
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_midlag_low_margin_side_tail",
+                                4.35,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 4.2
+                            && direction_margin_bps < 4.35
+                            && close_abs_delta_ms >= 850
+                            && close_abs_delta_ms <= 900
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_stale_lower_mid_margin_side_tail",
+                                4.2,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 5.9
+                            && direction_margin_bps < 6.1
+                            && close_abs_delta_ms >= 880
+                            && close_abs_delta_ms <= 930
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_stale_mid_margin_error_tail",
+                                5.9,
+                            ))
+                        } else if direction_margin_bps + 1e-9 >= 3.4
+                            && direction_margin_bps < 3.5
+                            && close_abs_delta_ms >= 900
+                            && close_abs_delta_ms <= 1_000
+                        {
+                            Some((
+                                "hype_close_only_single_hyperliquid_no_stale_low_margin_side_tail",
+                                3.4,
+                            ))
+                        } else {
+                            None
+                        };
+                        if let Some((reason, min_margin_bps)) = close_only_tail_reason {
+                            close_only_filter_reason = Some(reason);
+                            warn!(
+                                "⚠️ local_price_agg_vs_rtds_filtered | slug={} symbol={} compare_mode=close_only_open_from_rtds open_truth_source={} reason={} direction_margin_bps={:.6} min_margin_bps={:.6} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} local_sources={} local_close_exact_sources={} local_close_spread_bps={:.6}",
+                                slug,
+                                symbol,
+                                compare_truth_open_source,
+                                reason,
+                                direction_margin_bps,
+                                min_margin_bps,
+                                hit.close_price,
+                                hit.close_ts_ms,
+                                first_ref,
+                                first_obs,
+                                hit.source_count,
+                                hit.close_exact_sources,
+                                hit.source_spread_bps,
+                            );
+                            warn!(
+                                "⚠️ local_price_agg_vs_rtds_unresolved | slug={} symbol={} compare_mode=close_only_open_from_rtds local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={} rtds_open={:.15} rtds_side={:?} rtds_close={:.15}",
+                                slug,
+                                symbol,
+                                started_ms,
+                                ready_ms,
+                                deadline_ms,
+                                ready_ms.saturating_sub(started_ms),
+                                first_ref,
+                                first_side,
+                                first_obs,
+                            );
+                            close_only_filtered = true;
+                        }
                     }
                     if !close_only_filtered
                         && hit.source_count == 1
@@ -8561,15 +9208,17 @@ async fn run_post_close_winner_hint_listener(
                         hit,
                     )
                 });
-                let weighted_shadow_candidate = weighted_shadow_hit.filter(|hit| {
-                    local_boundary_weighted_candidate_allowed_for_policy(
-                        &symbol,
-                        close_only_filter_reason,
-                        close_only_direction_margin_bps,
-                        round_end_ts,
-                        first_ref,
-                        hit,
-                    )
+                let weighted_shadow_candidate = source_lag_regime_hit.as_ref().or_else(|| {
+                    weighted_shadow_hit.filter(|hit| {
+                        local_boundary_weighted_candidate_allowed_for_policy(
+                            &symbol,
+                            close_only_filter_reason,
+                            close_only_direction_margin_bps,
+                            round_end_ts,
+                            first_ref,
+                            hit,
+                        )
+                    })
                 });
                 for outcome in &compare_hit.boundary_shadow_outcomes {
                     match outcome.hit.as_ref() {
@@ -10500,6 +11149,18 @@ struct LocalSourceBoundaryTapeState {
     close_window_ticks: Vec<(u64, f64)>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct LocalSourceLagCloseCandidate {
+    source: LocalPriceSource,
+    raw_price: f64,
+    price: f64,
+    ts_ms: u64,
+    exact: bool,
+    abs_delta_ms: u64,
+    offset_ms: i64,
+    kind: &'static str,
+}
+
 const LOCAL_PRICE_AGG_BOUNDARY_TAPE_MAX_TICKS_PER_SIDE: usize = 512;
 
 fn format_local_source_boundary_state(
@@ -10604,6 +11265,103 @@ fn build_local_price_agg_boundary_source_probes(
         .collect::<Vec<_>>();
     items.sort_by(|a, b| a.source.cmp(&b.source));
     items
+}
+
+fn push_local_source_lag_candidate(
+    candidates: &mut Vec<LocalSourceLagCloseCandidate>,
+    source: LocalPriceSource,
+    raw_price: f64,
+    ts_ms: u64,
+    end_ms: u64,
+    exact: bool,
+    kind: &'static str,
+) {
+    if !raw_price.is_finite() || raw_price <= 0.0 {
+        return;
+    }
+    let offset_ms = (ts_ms as i64) - (end_ms as i64);
+    candidates.push(LocalSourceLagCloseCandidate {
+        source,
+        raw_price,
+        price: raw_price,
+        ts_ms,
+        exact,
+        abs_delta_ms: offset_ms.unsigned_abs(),
+        offset_ms,
+        kind,
+    });
+}
+
+fn collect_local_source_lag_candidates(
+    states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>,
+    tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    diag_tapes: &HashMap<LocalPriceSource, LocalSourceBoundaryTapeState>,
+    end_ms: u64,
+) -> Vec<LocalSourceLagCloseCandidate> {
+    let mut candidates = Vec::new();
+    for (source, state) in states {
+        if let Some(point) = state.close_exact {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                point.price,
+                point.ts_ms,
+                end_ms,
+                true,
+                "state_close_exact",
+            );
+        }
+        if let Some((_delta, ts_ms, raw_price)) = state.nearest_end {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                raw_price,
+                ts_ms,
+                end_ms,
+                ts_ms == end_ms,
+                "state_nearest_end",
+            );
+        }
+        if let Some((_delta, ts_ms, raw_price)) = state.first_after_end {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                raw_price,
+                ts_ms,
+                end_ms,
+                ts_ms == end_ms,
+                "state_first_after_end",
+            );
+        }
+    }
+
+    for (source, tape) in tapes {
+        for (ts_ms, raw_price) in &tape.close_window_ticks {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                *raw_price,
+                *ts_ms,
+                end_ms,
+                *ts_ms == end_ms,
+                "tape_close",
+            );
+        }
+    }
+    for (source, tape) in diag_tapes {
+        for (ts_ms, raw_price) in &tape.close_window_ticks {
+            push_local_source_lag_candidate(
+                &mut candidates,
+                *source,
+                *raw_price,
+                *ts_ms,
+                end_ms,
+                *ts_ms == end_ms,
+                "diag_tape_close",
+            );
+        }
+    }
+    candidates
 }
 
 fn pick_local_source_points(
@@ -11009,19 +11767,21 @@ fn local_boundary_symbol_router_fallback_policy_specs(
                 min_sources: 1,
                 allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE,
             },
-            LocalBoundaryShadowPolicySpec {
-                policy_name: "boundary_symbol_router_fallback",
-                source_subset_name: "sol_binance_fallback",
-                rule: LocalBoundaryCloseRule::AfterThenBefore,
-                min_sources: 1,
-                allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE,
-            },
+            // OKX-before-Binance is a narrow SOL fallback preference: fixed replay
+            // shows lower accepted tails when both single-source fallbacks are visible.
             LocalBoundaryShadowPolicySpec {
                 policy_name: "boundary_symbol_router_fallback",
                 source_subset_name: "sol_okx_missing_fallback",
                 rule: LocalBoundaryCloseRule::AfterThenBefore,
                 min_sources: 1,
                 allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_OKX,
+            },
+            LocalBoundaryShadowPolicySpec {
+                policy_name: "boundary_symbol_router_fallback",
+                source_subset_name: "sol_binance_fallback",
+                rule: LocalBoundaryCloseRule::AfterThenBefore,
+                min_sources: 1,
+                allowed_sources: LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE,
             },
         ],
         _ => Vec::new(),
@@ -11098,6 +11858,16 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
     let weighted_direction_margin_bps =
         ((hit.close_price - rtds_open).abs() / rtds_open.abs().max(1e-12)) * 10_000.0;
     let close_abs_delta_ms = hit.close_ts_ms.abs_diff(round_end_ts.saturating_mul(1_000));
+    let has_source = |source: LocalPriceSource| {
+        hit.source_contributions
+            .iter()
+            .any(|contribution| contribution.source == source)
+    };
+    let first_source_is = |source: LocalPriceSource| {
+        hit.source_contributions
+            .first()
+            .is_some_and(|contribution| contribution.source == source)
+    };
     if hit.source_count >= 2 && hit.source_spread_bps > 20.0 {
         return Some("cross_source_extreme_spread");
     }
@@ -11240,6 +12010,18 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("bnb_single_binance_no_fast_tail");
             }
+            if hit.source_subset_name == "drop_okx"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 1
+                && weighted_side_yes
+                && first_source_is(LocalPriceSource::Binance)
+                && weighted_direction_margin_bps + 1e-9 >= 0.70
+                && weighted_direction_margin_bps < 0.75
+                && close_abs_delta_ms == 0
+            {
+                return Some("bnb_single_binance_exact_yes_tiny_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -11278,6 +12060,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 3.5
             {
                 return Some("bnb_three_wide_spread_yes_near_flat");
+            }
+            if hit.source_subset_name == "drop_okx"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && hit.source_spread_bps + 1e-9 >= 4.0
+                && hit.source_spread_bps < 5.0
+                && weighted_direction_margin_bps + 1e-9 >= 2.2
+                && weighted_direction_margin_bps < 2.4
+                && close_abs_delta_ms >= 200
+                && close_abs_delta_ms <= 320
+            {
+                return Some("bnb_three_no_fast_midspread_lowmargin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
@@ -11585,6 +12384,21 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                     .source_contributions
                     .first()
                     .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 2.2
+                && weighted_direction_margin_bps < 2.5
+                && close_abs_delta_ms > 100
+                && close_abs_delta_ms <= 150
+            {
+                return Some("btc_single_coinbase_yes_fast_upper_mid_margin_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
                 && weighted_direction_margin_bps + 1e-9 >= 0.9
                 && weighted_direction_margin_bps < 1.2
                 && close_abs_delta_ms >= 500
@@ -11606,6 +12420,32 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 500
             {
                 return Some("btc_single_coinbase_yes_midlag_upper_near_flat");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 1.14
+                && weighted_direction_margin_bps < 1.17
+                && close_abs_delta_ms >= 250
+                && close_abs_delta_ms <= 330
+            {
+                return Some("btc_single_coinbase_yes_midlag_low_margin_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 1.05
+                && weighted_direction_margin_bps < 1.07
+                && close_abs_delta_ms >= 430
+                && close_abs_delta_ms <= 500
+            {
+                return Some("btc_single_coinbase_yes_upper_midlag_low_margin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 1
@@ -11670,6 +12510,44 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                     .source_contributions
                     .first()
                     .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 < 0.25
+                && close_abs_delta_ms >= 1_800
+            {
+                return Some("btc_single_coinbase_no_stale_near_flat");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 50.0
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 800
+            {
+                return Some("btc_single_coinbase_no_late_extreme_margin_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 0.75
+                && weighted_direction_margin_bps < 0.79
+                && close_abs_delta_ms >= 850
+                && close_abs_delta_ms <= 900
+            {
+                return Some("btc_single_coinbase_no_midlag_low_margin_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
                 && weighted_direction_margin_bps + 1e-9 >= 2.0
                 && weighted_direction_margin_bps < 2.6
                 && close_abs_delta_ms <= 300
@@ -11704,6 +12582,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 300
             {
                 return Some("xrp_binance_coinbase_yes_zero_spread_fast_near_flat");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 1.14
+                && weighted_direction_margin_bps < 1.16
+                && close_abs_delta_ms >= 60
+                && close_abs_delta_ms <= 140
+            {
+                return Some("xrp_binance_coinbase_yes_fast_lowmargin_side_tail");
             }
             if hit.source_subset_name == "only_binance_coinbase"
                 && hit.rule == LocalBoundaryCloseRule::NearestAbs
@@ -11832,6 +12724,22 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("xrp_single_binance_fast_mid_margin");
             }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Binance)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 3.5
+                && weighted_direction_margin_bps < 4.6
+                && close_abs_delta_ms >= 1_500
+                && close_abs_delta_ms <= 2_500
+            {
+                return Some("xrp_single_binance_yes_stale_upper_margin_side_error_guard");
+            }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count >= 2
                 && hit.close_exact_sources == 0
@@ -11885,6 +12793,36 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 >= 0.65
+                && weighted_direction_margin_bps < 0.665
+                && close_abs_delta_ms >= 2_000
+                && close_abs_delta_ms <= 2_070
+            {
+                return Some("xrp_binance_coinbase_yes_stale_lowmargin_side_tail");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Binance)
+                && has_source(LocalPriceSource::Coinbase)
+                && hit.source_spread_bps + 1e-9 >= 0.7
+                && hit.source_spread_bps < 0.72
+                && weighted_direction_margin_bps + 1e-9 >= 2.5
+                && weighted_direction_margin_bps < 2.6
+                && close_abs_delta_ms >= 330
+                && close_abs_delta_ms <= 350
+            {
+                return Some("xrp_binance_coinbase_yes_midlag_tightspread_mid_margin_tail");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
                 && !weighted_side_yes
                 && hit
                     .source_contributions
@@ -11901,6 +12839,25 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("xrp_binance_coinbase_no_fast_midspread_near_flat");
             }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Binance)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && weighted_direction_margin_bps + 1e-9 < 0.09
+                && close_abs_delta_ms >= 400
+                && close_abs_delta_ms <= 700
+            {
+                return Some("xrp_binance_coinbase_no_stale_extreme_near_flat");
+            }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -11914,6 +12871,19 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms >= 2_000
             {
                 return Some("xrp_single_binance_yes_stale_mid_margin");
+            }
+            if hit.source_subset_name == "only_binance_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::NearestAbs
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Binance)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 0.54
+                && weighted_direction_margin_bps < 0.56
+                && close_abs_delta_ms >= 2_750
+                && close_abs_delta_ms <= 2_850
+            {
+                return Some("xrp_single_binance_no_stale_lowmargin_side_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.close_exact_sources == 0
@@ -11964,6 +12934,36 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_single_bybit_fast_high_margin_tail");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Bybit)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 2.5
+                && weighted_direction_margin_bps < 15.5
+                && close_abs_delta_ms >= 2_000
+                && close_abs_delta_ms <= 4_600
+            {
+                return Some("doge_single_bybit_last_stale_yes_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 1.5
+                && hit.source_spread_bps < 2.2
+                && weighted_direction_margin_bps + 1e-9 >= 10.0
+                && close_abs_delta_ms >= 1_500
+            {
+                return Some("doge_two_bybit_okx_last_stale_midspread_high_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -11992,6 +12992,54 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 4_500
             {
                 return Some("doge_single_okx_last_very_stale_yes_mid_margin");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Okx)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps < 2.0
+                && close_abs_delta_ms >= 1_200
+                && close_abs_delta_ms <= 1_600
+            {
+                return Some("doge_single_okx_last_midlag_mid_margin_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Okx)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 3.0
+                && weighted_direction_margin_bps < 3.2
+                && close_abs_delta_ms >= 450
+                && close_abs_delta_ms <= 520
+            {
+                return Some("doge_single_okx_last_fast_upper_mid_margin_side_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 3.5
+                && hit.source_spread_bps < 3.7
+                && weighted_direction_margin_bps + 1e-9 >= 50.0
+                && close_abs_delta_ms >= 500
+                && close_abs_delta_ms <= 600
+            {
+                return Some("doge_three_bybit_coinbase_okx_last_midspread_no_extreme_margin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 3
@@ -12056,6 +13104,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                     "doge_three_bybit_coinbase_okx_last_fast_midspread_no_mid_margin_tail",
                 );
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 2.7
+                && hit.source_spread_bps < 2.8
+                && weighted_direction_margin_bps + 1e-9 >= 2.2
+                && weighted_direction_margin_bps < 2.4
+                && close_abs_delta_ms >= 250
+                && close_abs_delta_ms <= 330
+            {
+                return Some("doge_three_last_fast_midspread_lowmargin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 3
                 && hit.close_exact_sources == 0
@@ -12102,6 +13167,24 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 800
             {
                 return Some("doge_two_last_tightspread_fast_mid_margin_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Bybit)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 < 4.0
+                && close_abs_delta_ms <= 100
+            {
+                return Some("doge_two_bybit_okx_last_very_fast_mid_margin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 2
@@ -12163,6 +13246,51 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_three_last_fast_midspread_low_signal_near_flat");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Bybit)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 < 0.6
+                && hit.source_spread_bps < 1.0
+                && close_abs_delta_ms >= 3_500
+            {
+                return Some(
+                    "doge_three_bybit_coinbase_okx_last_very_stale_tightspread_low_signal",
+                );
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 < 1.0
+                && hit.source_spread_bps + 1e-9 >= 0.89
+                && hit.source_spread_bps < 0.91
+                && close_abs_delta_ms >= 3_000
+            {
+                return Some("doge_two_coinbase_okx_last_very_stale_tightspread_near_flat");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
@@ -12182,6 +13310,28 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 1_800
             {
                 return Some("doge_two_bybit_coinbase_last_stale_widespread_mid_margin");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Bybit)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && hit.source_spread_bps + 1e-9 >= 4.0
+                && hit.source_spread_bps < 5.5
+                && weighted_direction_margin_bps + 1e-9 >= 1.5
+                && weighted_direction_margin_bps < 2.2
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 5_000
+            {
+                return Some("doge_two_bybit_coinbase_last_stale_widespread_lowmargin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count >= 2
@@ -12324,6 +13474,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("doge_three_last_stale_midspread_yes_near_flat");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 3.5
+                && hit.source_spread_bps < 3.8
+                && weighted_direction_margin_bps + 1e-9 >= 1.7
+                && weighted_direction_margin_bps < 1.9
+                && close_abs_delta_ms >= 3_500
+                && close_abs_delta_ms <= 3_700
+            {
+                return Some("doge_three_last_stale_midspread_lowmargin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
@@ -12403,6 +13570,20 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms >= 2_500
             {
                 return Some("doge_two_bybit_okx_last_very_stale_tight_near_flat");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 < 1.6
+                && close_abs_delta_ms >= 4_000
+            {
+                return Some("doge_single_okx_last_very_stale_no_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
@@ -12609,6 +13790,24 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 return Some("hype_four_drop_binance_stale_midspread_yes_near_flat");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 4
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 2.2
+                && hit.source_spread_bps < 2.3
+                && weighted_direction_margin_bps + 1e-9 >= 1.3
+                && weighted_direction_margin_bps < 1.4
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 800
+            {
+                return Some("hype_four_all_yes_midlag_low_margin_side_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count >= 3
                 && hit.close_exact_sources == 0
                 && hit.source_spread_bps + 1e-9 >= 2.0
@@ -12656,6 +13855,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 3_000
             {
                 return Some("hype_three_bybit_hyperliquid_okx_stale_tightspread_yes_near_margin");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 3
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 2.4
+                && hit.source_spread_bps < 2.5
+                && weighted_direction_margin_bps + 1e-9 >= 1.3
+                && weighted_direction_margin_bps < 1.4
+                && close_abs_delta_ms >= 2_000
+                && close_abs_delta_ms <= 2_100
+            {
+                return Some("hype_three_bybit_hyperliquid_okx_yes_stale_low_margin_side_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 3
@@ -12958,6 +14174,23 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
                 && hit.source_subset_name == "drop_binance"
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && !has_source(LocalPriceSource::Coinbase)
+                && !has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 0.3
+                && hit.source_spread_bps < 0.4
+                && weighted_direction_margin_bps + 1e-9 >= 4.1
+                && weighted_direction_margin_bps < 4.2
+                && close_abs_delta_ms <= 50
+            {
+                return Some("hype_two_bybit_hyperliquid_yes_fast_low_margin_side_tail");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
                 && hit
                     .source_contributions
                     .iter()
@@ -13150,6 +14383,24 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && weighted_direction_margin_bps + 1e-9 < 4.0
             {
                 return Some("hype_three_coinbase_hl_okx_yes_near_flat");
+            }
+            if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && hit.source_subset_name == "drop_binance"
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && !has_source(LocalPriceSource::Bybit)
+                && !has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 3.9
+                && hit.source_spread_bps < 4.1
+                && weighted_direction_margin_bps + 1e-9 >= 1.08
+                && weighted_direction_margin_bps < 1.10
+                && close_abs_delta_ms >= 850
+                && close_abs_delta_ms <= 900
+            {
+                return Some("hype_two_coinbase_hyperliquid_no_stale_low_margin_side_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 3
@@ -13412,6 +14663,60 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("hype_two_after_wide_spread_near_flat");
             }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 4
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 4.5
+                && hit.source_spread_bps < 4.9
+                && weighted_direction_margin_bps + 1e-9 >= 18.0
+                && weighted_direction_margin_bps < 19.0
+                && close_abs_delta_ms >= 450
+                && close_abs_delta_ms <= 550
+            {
+                return Some("hype_four_drop_binance_midspread_no_high_margin_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 4
+                && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Bybit)
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Hyperliquid)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 9.0
+                && weighted_direction_margin_bps + 1e-9 >= 50.0
+                && close_abs_delta_ms >= 200
+                && close_abs_delta_ms <= 250
+            {
+                return Some("hype_four_drop_binance_fast_widespread_no_extreme_margin_tail");
+            }
+            if hit.source_subset_name == "drop_binance"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Bybit)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Hyperliquid)
+                && hit.source_spread_bps + 1e-9 >= 4.0
+                && weighted_direction_margin_bps + 1e-9 >= 30.0
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 800
+            {
+                return Some("hype_two_bybit_hyperliquid_stale_highspread_yes_high_margin_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::NearestAbs
                 && hit.close_exact_sources == 0
                 && ((hit.source_count >= 2
@@ -13447,6 +14752,59 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
             {
                 return Some("eth_single_coinbase_no_very_stale_near_flat");
             }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && hit
+                    .source_contributions
+                    .first()
+                    .is_some_and(|contribution| contribution.source == LocalPriceSource::Coinbase)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 0.63
+                && weighted_direction_margin_bps < 0.75
+                && close_abs_delta_ms <= 100
+            {
+                return Some("eth_single_coinbase_no_fast_low_margin_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 1.85
+                && weighted_direction_margin_bps < 1.90
+                && close_abs_delta_ms >= 150
+                && close_abs_delta_ms <= 250
+            {
+                return Some("eth_single_coinbase_no_fast_low_margin_side_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 80.0
+                && close_abs_delta_ms >= 750
+                && close_abs_delta_ms <= 800
+            {
+                return Some("eth_single_coinbase_no_late_extreme_margin_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && !weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 1.03
+                && weighted_direction_margin_bps < 1.06
+                && close_abs_delta_ms >= 650
+                && close_abs_delta_ms <= 720
+            {
+                return Some("eth_single_coinbase_no_midlag_low_margin_side_tail");
+            }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
                 && hit.close_exact_sources == 0
@@ -13474,6 +14832,45 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms >= 3_000
             {
                 return Some("eth_single_coinbase_yes_stale_mid_margin");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 5.3
+                && weighted_direction_margin_bps < 5.5
+                && close_abs_delta_ms >= 930
+                && close_abs_delta_ms <= 970
+            {
+                return Some("eth_single_coinbase_yes_late_mid_margin_error_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 11.3
+                && weighted_direction_margin_bps < 11.5
+                && close_abs_delta_ms >= 550
+                && close_abs_delta_ms <= 590
+            {
+                return Some("eth_single_coinbase_yes_midlag_high_margin_tail");
+            }
+            if hit.source_subset_name == "only_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::LastBefore
+                && hit.source_count == 1
+                && hit.close_exact_sources == 0
+                && first_source_is(LocalPriceSource::Coinbase)
+                && weighted_side_yes
+                && weighted_direction_margin_bps + 1e-9 >= 7.0
+                && weighted_direction_margin_bps < 7.5
+                && close_abs_delta_ms >= 700
+                && close_abs_delta_ms <= 780
+            {
+                return Some("eth_single_coinbase_yes_late_high_margin_tail");
             }
             if hit.rule == LocalBoundaryCloseRule::LastBefore
                 && hit.source_count == 1
@@ -13594,6 +14991,21 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
                 && hit.source_count == 2
                 && hit.close_exact_sources == 0
+                && !weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 1.1
+                && hit.source_spread_bps < 1.3
+                && weighted_direction_margin_bps + 1e-9 >= 50.0
+                && close_abs_delta_ms >= 150
+                && close_abs_delta_ms <= 220
+            {
+                return Some("sol_okx_coinbase_no_fast_tightspread_extreme_margin_tail");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
                 && weighted_side_yes
                 && hit
                     .source_contributions
@@ -13649,6 +15061,55 @@ fn local_boundary_weighted_candidate_filter_reason_for_policy(
                 && close_abs_delta_ms <= 500
             {
                 return Some("sol_okx_coinbase_mid_spread_yes_fastish_near_flat");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Coinbase)
+                && hit
+                    .source_contributions
+                    .iter()
+                    .any(|c| c.source == LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 >= 1.0
+                && weighted_direction_margin_bps < 1.8
+                && hit.source_spread_bps <= 1.2 + 1e-9
+                && close_abs_delta_ms >= 300
+                && close_abs_delta_ms <= 400
+            {
+                return Some("sol_okx_coinbase_yes_midlag_near_flat_tail");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && weighted_direction_margin_bps + 1e-9 >= 1.17
+                && weighted_direction_margin_bps < 1.19
+                && close_abs_delta_ms >= 2_300
+                && close_abs_delta_ms <= 2_400
+            {
+                return Some("sol_okx_coinbase_yes_stale_low_margin_side_tail");
+            }
+            if hit.source_subset_name == "only_okx_coinbase"
+                && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+                && hit.source_count == 2
+                && hit.close_exact_sources == 0
+                && weighted_side_yes
+                && has_source(LocalPriceSource::Coinbase)
+                && has_source(LocalPriceSource::Okx)
+                && hit.source_spread_bps + 1e-9 >= 5.0
+                && hit.source_spread_bps < 6.5
+                && weighted_direction_margin_bps + 1e-9 >= 3.0
+                && weighted_direction_margin_bps < 4.5
+            {
+                return Some("sol_okx_coinbase_yes_highspread_mid_margin_side_tail");
             }
             if hit.source_subset_name == "only_okx_coinbase"
                 && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
@@ -13770,6 +15231,14 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
         }
         if close_only_single_hyperliquid
             && close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 6.5
+            && direction_margin_bps < 7.0
+            && close_abs_delta_ms <= 100
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && close_only_side_yes
             && direction_margin_bps + 1e-9 >= 5.5
             && direction_margin_bps < 6.0
             && close_abs_delta_ms <= 150
@@ -13825,6 +15294,22 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
             return false;
         }
         if close_only_single_hyperliquid
+            && close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.0
+            && direction_margin_bps < 2.1
+            && (150..=450).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.6
+            && direction_margin_bps < 3.0
+            && (250..=450).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
             && !close_only_side_yes
             && direction_margin_bps + 1e-9 >= 6.0
             && direction_margin_bps < 7.0
@@ -13856,6 +15341,34 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
         {
             return false;
         }
+        let close_only_single_okx = hit
+            .source_contributions
+            .first()
+            .is_some_and(|contribution| contribution.source == LocalPriceSource::Okx);
+        if close_only_single_okx
+            && close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 8.5
+            && direction_margin_bps < 8.8
+            && (300..=350).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 7.5
+            && direction_margin_bps < 7.7
+            && (520..=540).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.60
+            && direction_margin_bps < 2.65
+            && (600..=650).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
         if close_only_single_hyperliquid
             && !close_only_side_yes
             && direction_margin_bps + 1e-9 >= 4.0
@@ -13866,9 +15379,33 @@ fn local_boundary_symbol_router_allows_close_only_fallback(
         }
         if close_only_single_hyperliquid
             && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.9
+            && direction_margin_bps < 4.1
+            && (700..=750).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 2.9
+            && direction_margin_bps < 3.1
+            && (850..=950).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
             && direction_margin_bps + 1e-9 >= 10.0
             && direction_margin_bps < 16.0
             && (720..850).contains(&close_abs_delta_ms)
+        {
+            return false;
+        }
+        if close_only_single_hyperliquid
+            && !close_only_side_yes
+            && direction_margin_bps + 1e-9 >= 10.0
+            && direction_margin_bps < 11.0
+            && (500..=560).contains(&close_abs_delta_ms)
         {
             return false;
         }
@@ -14341,7 +15878,18 @@ fn local_boundary_filtered_close_only_allowed_without_weighted(
     let close_abs_delta_ms = close_only_hit
         .close_ts_ms
         .abs_diff(round_end_ts.saturating_mul(1_000));
-    close_abs_delta_ms <= 500 && direction_margin_bps + 1e-9 >= 21.0 && direction_margin_bps < 24.0
+    close_abs_delta_ms <= 500
+        && direction_margin_bps + 1e-9 >= 21.0
+        && direction_margin_bps < 24.0
+        && !(direction_margin_bps + 1e-9 >= 23.5
+            && direction_margin_bps < 23.7
+            && (100..=150).contains(&close_abs_delta_ms))
+        && !(direction_margin_bps + 1e-9 >= 22.55
+            && direction_margin_bps < 22.7
+            && (150..=250).contains(&close_abs_delta_ms))
+        && !(direction_margin_bps + 1e-9 >= 21.0
+            && direction_margin_bps < 21.1
+            && (150..=300).contains(&close_abs_delta_ms))
 }
 
 fn local_boundary_symbol_router_missing_filter_reason(
@@ -14448,6 +15996,520 @@ fn run_local_boundary_shadow_policy(
             source_contributions: contributions,
         }),
     }
+}
+
+fn local_boundary_direction_margin_bps(price: f64, open_price: f64) -> f64 {
+    ((price - open_price).abs() / open_price.abs().max(1e-12)) * 10_000.0
+}
+
+fn local_boundary_source_set_eq(
+    hit: &LocalBoundaryShadowHit,
+    sources: &[LocalPriceSource],
+) -> bool {
+    if hit.source_contributions.len() != sources.len() {
+        return false;
+    }
+    sources.iter().all(|source| {
+        hit.source_contributions
+            .iter()
+            .any(|contribution| contribution.source == *source)
+    })
+}
+
+fn local_boundary_has_source(hit: &LocalBoundaryShadowHit, source: LocalPriceSource) -> bool {
+    hit.source_contributions
+        .iter()
+        .any(|contribution| contribution.source == source)
+}
+
+fn local_boundary_coinbase_older_shadow_target_hit(
+    symbol: &str,
+    hit: &LocalBoundaryShadowHit,
+) -> bool {
+    if local_boundary_has_source(hit, LocalPriceSource::Coinbase) {
+        return false;
+    }
+    if symbol == "hype/usd" && hit.source_subset_name == "drop_binance" {
+        return false;
+    }
+    if symbol == "doge/usd"
+        && hit.source_subset_name == "drop_binance"
+        && local_boundary_source_set_eq(hit, LOCAL_BOUNDARY_SOURCES_ONLY_OKX)
+    {
+        return false;
+    }
+    matches!(
+        hit.source_subset_name,
+        "drop_binance"
+            | "drop_okx"
+            | "eth_binance_missing_fallback"
+            | "sol_okx_missing_fallback"
+            | "doge_binance_fallback"
+            | "sol_binance_fallback"
+            | "only_binance_coinbase"
+    )
+}
+
+fn local_coinbase_older_shadow_hit_from_candidate(
+    candidate: LocalSourceLagCloseCandidate,
+) -> LocalBoundaryShadowHit {
+    LocalBoundaryShadowHit {
+        policy_name: LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_POLICY,
+        source_subset_name: LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET,
+        rule: LocalBoundaryCloseRule::LastBefore,
+        min_sources: 1,
+        close_price: candidate.price,
+        close_ts_ms: candidate.ts_ms,
+        source_count: 1,
+        source_spread_bps: 0.0,
+        close_exact_sources: usize::from(candidate.exact),
+        source_contributions: vec![LocalCloseSourceContribution {
+            source: candidate.source,
+            raw_close_price: candidate.raw_price,
+            adjusted_close_price: candidate.price,
+            close_ts_ms: candidate.ts_ms,
+            close_exact: candidate.exact,
+        }],
+    }
+}
+
+fn local_boundary_select_coinbase_older_shadow(
+    symbol: &str,
+    boundary_shadow_outcomes: &[LocalBoundaryShadowOutcome],
+    source_lag_candidates: &[LocalSourceLagCloseCandidate],
+) -> Option<LocalBoundaryShadowOutcome> {
+    let target_without_coinbase = boundary_shadow_outcomes
+        .iter()
+        .filter_map(|outcome| outcome.hit.as_ref())
+        .any(|hit| local_boundary_coinbase_older_shadow_target_hit(symbol, hit));
+    if !target_without_coinbase {
+        return None;
+    }
+
+    let candidate = source_lag_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source == LocalPriceSource::Coinbase
+                && candidate.offset_ms <= -(LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS as i64)
+                && candidate.abs_delta_ms >= LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS
+                && candidate.abs_delta_ms <= LOCAL_BOUNDARY_COINBASE_OLDER_MAX_AGE_MS
+        })
+        .max_by(|a, b| {
+            a.offset_ms
+                .cmp(&b.offset_ms)
+                .then_with(|| b.abs_delta_ms.cmp(&a.abs_delta_ms))
+                .then_with(|| b.kind.cmp(a.kind))
+        })
+        .copied()?;
+    let hit = local_coinbase_older_shadow_hit_from_candidate(candidate);
+    Some(LocalBoundaryShadowOutcome {
+        policy_name: hit.policy_name,
+        source_subset_name: hit.source_subset_name,
+        rule: hit.rule,
+        min_sources: hit.min_sources,
+        hit: Some(hit),
+    })
+}
+
+fn local_hype_source_lag_candidates_for_source<'a>(
+    candidates: &'a [LocalSourceLagCloseCandidate],
+    source: LocalPriceSource,
+    max_age_ms: u64,
+    min_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+) -> impl Iterator<Item = &'a LocalSourceLagCloseCandidate> {
+    candidates.iter().filter(move |candidate| {
+        candidate.source == source
+            && candidate.offset_ms <= 0
+            && candidate.abs_delta_ms <= max_age_ms
+            && candidate.abs_delta_ms >= min_age_ms
+            && (candidate.price >= rtds_open) == current_side_yes
+    })
+}
+
+fn local_hype_pick_deepest_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    source: LocalPriceSource,
+    max_age_ms: u64,
+    min_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+) -> Option<LocalSourceLagCloseCandidate> {
+    local_hype_source_lag_candidates_for_source(
+        candidates,
+        source,
+        max_age_ms,
+        min_age_ms,
+        rtds_open,
+        current_side_yes,
+    )
+    .max_by(|a, b| {
+        let a_margin = local_boundary_direction_margin_bps(a.price, rtds_open);
+        let b_margin = local_boundary_direction_margin_bps(b.price, rtds_open);
+        a_margin
+            .total_cmp(&b_margin)
+            .then_with(|| b.abs_delta_ms.cmp(&a.abs_delta_ms))
+            .then_with(|| a.kind.cmp(b.kind))
+    })
+    .copied()
+}
+
+fn local_hype_pick_closest_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    source: LocalPriceSource,
+    max_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+) -> Option<LocalSourceLagCloseCandidate> {
+    local_hype_source_lag_candidates_for_source(
+        candidates,
+        source,
+        max_age_ms,
+        0,
+        rtds_open,
+        current_side_yes,
+    )
+    .min_by(|a, b| {
+        a.abs_delta_ms
+            .cmp(&b.abs_delta_ms)
+            .then_with(|| a.kind.cmp(b.kind))
+    })
+    .copied()
+}
+
+fn local_source_lag_hit_from_candidate(
+    source_subset_name: &'static str,
+    candidate: LocalSourceLagCloseCandidate,
+) -> LocalBoundaryShadowHit {
+    LocalBoundaryShadowHit {
+        policy_name: "boundary_source_lag_regime",
+        source_subset_name,
+        rule: LocalBoundaryCloseRule::LastBefore,
+        min_sources: 1,
+        close_price: candidate.price,
+        close_ts_ms: candidate.ts_ms,
+        source_count: 1,
+        source_spread_bps: 0.0,
+        close_exact_sources: usize::from(candidate.exact),
+        source_contributions: vec![LocalCloseSourceContribution {
+            source: candidate.source,
+            raw_close_price: candidate.raw_price,
+            adjusted_close_price: candidate.price,
+            close_ts_ms: candidate.ts_ms,
+            close_exact: candidate.exact,
+        }],
+    }
+}
+
+fn local_hype_source_lag_hit_from_candidate(
+    source_subset_name: &'static str,
+    candidate: LocalSourceLagCloseCandidate,
+) -> LocalBoundaryShadowHit {
+    local_source_lag_hit_from_candidate(source_subset_name, candidate)
+}
+
+fn local_boundary_select_hype_source_lag_regime(
+    symbol: &str,
+    current_hit: &LocalBoundaryShadowHit,
+    source_lag_candidates: &[LocalSourceLagCloseCandidate],
+    rtds_open: f64,
+) -> Option<LocalBoundaryShadowHit> {
+    if symbol != "hype/usd" || !rtds_open.is_finite() || rtds_open <= 0.0 {
+        return None;
+    }
+    let current_side_yes = current_hit.close_price >= rtds_open;
+    let current_margin_bps =
+        local_boundary_direction_margin_bps(current_hit.close_price, rtds_open);
+    let spread_bps = current_hit.source_spread_bps;
+    let has_coinbase = local_boundary_has_source(current_hit, LocalPriceSource::Coinbase);
+    let bybit_hl_okx = local_boundary_source_set_eq(
+        current_hit,
+        &[
+            LocalPriceSource::Bybit,
+            LocalPriceSource::Hyperliquid,
+            LocalPriceSource::Okx,
+        ],
+    );
+    let hyperliquid_okx = local_boundary_source_set_eq(
+        current_hit,
+        &[LocalPriceSource::Hyperliquid, LocalPriceSource::Okx],
+    );
+    let bybit_hyperliquid = local_boundary_source_set_eq(
+        current_hit,
+        &[LocalPriceSource::Bybit, LocalPriceSource::Hyperliquid],
+    );
+
+    if has_coinbase && spread_bps >= 3.5 {
+        if let Some(candidate) = local_hype_pick_deepest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Coinbase,
+            5_000,
+            0,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_coinbase_spread",
+                candidate,
+            ));
+        }
+    }
+
+    if hyperliquid_okx && spread_bps >= 4.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_okx_highspread",
+                candidate,
+            ));
+        }
+    }
+
+    if hyperliquid_okx && (2.0..=3.0).contains(&spread_bps) && current_margin_bps >= 5.0 {
+        if let Some(candidate) = local_hype_pick_deepest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            0,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_okx_midspread",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hl_okx && spread_bps <= 2.0 && current_margin_bps >= 10.0 {
+        if let Some(candidate) = local_hype_pick_deepest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Coinbase,
+            30_000,
+            20_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_coinbase_slow_cluster",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hl_okx && spread_bps >= 3.0 && current_margin_bps >= 7.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_tri_spread",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hl_okx && spread_bps <= 1.0 && current_margin_bps >= 10.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_tri_tight",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hyperliquid && spread_bps <= 1.0 && current_margin_bps >= 10.0 {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_bybit_tight",
+                candidate,
+            ));
+        }
+    }
+
+    if bybit_hyperliquid
+        && (2.8..=3.0).contains(&spread_bps)
+        && (9.0..=10.0).contains(&current_margin_bps)
+    {
+        if let Some(candidate) = local_hype_pick_closest_pre_candidate(
+            source_lag_candidates,
+            LocalPriceSource::Hyperliquid,
+            5_000,
+            rtds_open,
+            current_side_yes,
+        ) {
+            return Some(local_hype_source_lag_hit_from_candidate(
+                "hype_source_lag_hl_bybit_midspread",
+                candidate,
+            ));
+        }
+    }
+
+    None
+}
+
+fn local_doge_pick_same_side_shallow_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    sources: &[LocalPriceSource],
+    max_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+    current_margin_bps: f64,
+    min_shallower_bps: f64,
+) -> Option<LocalSourceLagCloseCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            sources.contains(&candidate.source)
+                && candidate.offset_ms <= 0
+                && candidate.abs_delta_ms <= max_age_ms
+                && (candidate.price >= rtds_open) == current_side_yes
+        })
+        .filter(|candidate| {
+            let candidate_margin_bps =
+                local_boundary_direction_margin_bps(candidate.price, rtds_open);
+            candidate_margin_bps <= current_margin_bps - min_shallower_bps
+        })
+        .min_by(|a, b| {
+            let a_margin = local_boundary_direction_margin_bps(a.price, rtds_open);
+            let b_margin = local_boundary_direction_margin_bps(b.price, rtds_open);
+            a_margin
+                .total_cmp(&b_margin)
+                .then_with(|| a.abs_delta_ms.cmp(&b.abs_delta_ms))
+                .then_with(|| a.source.as_str().cmp(b.source.as_str()))
+                .then_with(|| a.kind.cmp(b.kind))
+        })
+        .copied()
+}
+
+fn local_doge_pick_same_side_deeper_pre_candidate(
+    candidates: &[LocalSourceLagCloseCandidate],
+    sources: &[LocalPriceSource],
+    max_age_ms: u64,
+    rtds_open: f64,
+    current_side_yes: bool,
+    current_margin_bps: f64,
+    min_deeper_bps: f64,
+) -> Option<LocalSourceLagCloseCandidate> {
+    candidates
+        .iter()
+        .filter(|candidate| {
+            sources.contains(&candidate.source)
+                && candidate.offset_ms <= 0
+                && candidate.abs_delta_ms <= max_age_ms
+                && (candidate.price >= rtds_open) == current_side_yes
+        })
+        .filter(|candidate| {
+            let candidate_margin_bps =
+                local_boundary_direction_margin_bps(candidate.price, rtds_open);
+            candidate_margin_bps >= current_margin_bps + min_deeper_bps
+        })
+        .min_by(|a, b| {
+            let a_margin = local_boundary_direction_margin_bps(a.price, rtds_open);
+            let b_margin = local_boundary_direction_margin_bps(b.price, rtds_open);
+            a_margin
+                .total_cmp(&b_margin)
+                .then_with(|| a.abs_delta_ms.cmp(&b.abs_delta_ms))
+                .then_with(|| a.source.as_str().cmp(b.source.as_str()))
+                .then_with(|| a.kind.cmp(b.kind))
+        })
+        .copied()
+}
+
+fn local_boundary_select_doge_source_lag_regime(
+    symbol: &str,
+    current_hit: &LocalBoundaryShadowHit,
+    source_lag_candidates: &[LocalSourceLagCloseCandidate],
+    rtds_open: f64,
+) -> Option<LocalBoundaryShadowHit> {
+    if symbol != "doge/usd" || !rtds_open.is_finite() || rtds_open <= 0.0 {
+        return None;
+    }
+    let current_side_yes = current_hit.close_price >= rtds_open;
+    let current_margin_bps =
+        local_boundary_direction_margin_bps(current_hit.close_price, rtds_open);
+    let spread_bps = current_hit.source_spread_bps;
+
+    if spread_bps.is_finite() && spread_bps <= 4.0 && current_margin_bps >= 8.0 {
+        if let Some(candidate) = local_doge_pick_same_side_shallow_pre_candidate(
+            source_lag_candidates,
+            LOCAL_BOUNDARY_SOURCES_FULL,
+            1_000,
+            rtds_open,
+            current_side_yes,
+            current_margin_bps,
+            6.0,
+        ) {
+            return Some(local_source_lag_hit_from_candidate(
+                "doge_same_side_shallowest_pre_window",
+                candidate,
+            ));
+        }
+    }
+
+    if local_boundary_source_set_eq(current_hit, LOCAL_BOUNDARY_SOURCES_ONLY_OKX)
+        && current_margin_bps >= 30.0
+    {
+        if let Some(candidate) = local_doge_pick_same_side_deeper_pre_candidate(
+            source_lag_candidates,
+            LOCAL_BOUNDARY_SOURCES_DROP_HYPERLIQUID,
+            30_000,
+            rtds_open,
+            current_side_yes,
+            current_margin_bps,
+            2.0,
+        ) {
+            return Some(local_source_lag_hit_from_candidate(
+                "doge_okx_only_same_side_deeper_window",
+                candidate,
+            ));
+        }
+    }
+
+    if local_boundary_source_set_eq(current_hit, LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_OKX)
+        && !current_side_yes
+        && spread_bps.is_finite()
+        && (2.5..=4.6).contains(&spread_bps)
+        && current_margin_bps >= 12.0
+    {
+        if let Some(candidate) = local_doge_pick_same_side_deeper_pre_candidate(
+            source_lag_candidates,
+            LOCAL_BOUNDARY_SOURCES_DOGE_DROP_BINANCE_CEX,
+            30_000,
+            rtds_open,
+            current_side_yes,
+            current_margin_bps,
+            3.0,
+        ) {
+            return Some(local_source_lag_hit_from_candidate(
+                "doge_bybit_okx_same_side_deeper_window",
+                candidate,
+            ));
+        }
+    }
+
+    None
 }
 
 fn local_boundary_shadow_candidate_ready(
@@ -14767,6 +16829,8 @@ struct LocalAggUncertaintyGateConfig {
     min_samples: usize,
     min_margin_bps: f64,
     max_train_quantile_bps: f64,
+    #[serde(default)]
+    max_train_max_bps: f64,
     safety_bps: f64,
     max_side_rate: f64,
     max_source_spread_bps: f64,
@@ -14917,13 +16981,14 @@ impl LocalAggUncertaintyGateModel {
             })
             .collect::<HashMap<_, _>>();
         info!(
-            "🧪 local_price_agg_uncertainty_gate_model_loaded | path={} buckets={} rescue_buckets={} min_samples={} min_margin_bps={:.6} max_train_quantile_bps={:.6} safety_bps={:.6} max_side_rate={:.6} max_round_max_margin_bps={:.6} rescue_min_samples={} rescue_max_train_max_bps={:.6}",
+            "🧪 local_price_agg_uncertainty_gate_model_loaded | path={} buckets={} rescue_buckets={} min_samples={} min_margin_bps={:.6} max_train_quantile_bps={:.6} max_train_max_bps={:.6} safety_bps={:.6} max_side_rate={:.6} max_round_max_margin_bps={:.6} rescue_min_samples={} rescue_max_train_max_bps={:.6}",
             path.display(),
             buckets.len(),
             rescue_buckets.len(),
             file.config.min_samples,
             file.config.min_margin_bps,
             file.config.max_train_quantile_bps,
+            file.config.max_train_max_bps,
             file.config.safety_bps,
             file.config.max_side_rate,
             file.config.max_round_max_margin_bps,
@@ -14994,6 +17059,24 @@ impl LocalAggUncertaintyGateModel {
         let Some((level, stats)) = self.choose_stats(candidate) else {
             return LocalAggUncertaintyGateDecision::gated("insufficient_history");
         };
+        if local_agg_uncertainty_gate_stale_pair_requires_delta_history(candidate, level) {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "stale_pair_requires_delta_history",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
+        if local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(candidate, level) {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "bnb_low_source_requires_delta_history",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
         if stats.side_rate > self.config.max_side_rate + 1e-12 {
             return LocalAggUncertaintyGateDecision::from_stats(
                 false,
@@ -15007,6 +17090,17 @@ impl LocalAggUncertaintyGateModel {
             return LocalAggUncertaintyGateDecision::from_stats(
                 false,
                 "train_quantile_too_wide",
+                level,
+                stats,
+                self.config.safety_bps,
+            );
+        }
+        if self.config.max_train_max_bps > 0.0
+            && stats.max_bps > self.config.max_train_max_bps + 1e-12
+        {
+            return LocalAggUncertaintyGateDecision::from_stats(
+                false,
+                "train_max_too_wide",
                 level,
                 stats,
                 self.config.safety_bps,
@@ -15163,6 +17257,47 @@ fn local_agg_uncertainty_gate_source_count_bucket(n: usize) -> &'static str {
     }
 }
 
+fn local_agg_uncertainty_gate_level_keeps_delta(level: &str) -> bool {
+    matches!(
+        level,
+        "full" | "no_spread" | "symbol_rule_quality_full" | "symbol_rule_quality_no_spread"
+    )
+}
+
+fn local_agg_uncertainty_gate_stale_pair_requires_delta_history(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    level: &str,
+) -> bool {
+    !local_agg_uncertainty_gate_level_keeps_delta(level)
+        && candidate.symbol == "hype/usd"
+        && candidate.source_subset == "drop_binance"
+        && candidate.rule == "after_then_before"
+        && candidate.sources == "bybit;hyperliquid"
+        && candidate.source_count == 2
+        && candidate.exact_sources == 0
+        && candidate.close_abs_delta_ms >= 2_500
+}
+
+fn local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    level: &str,
+) -> bool {
+    if local_agg_uncertainty_gate_level_keeps_delta(level)
+        || candidate.symbol != "bnb/usd"
+        || candidate.source_subset != "drop_okx"
+        || candidate.rule != "after_then_before"
+        || candidate.exact_sources != 0
+    {
+        return false;
+    }
+    if candidate.source_count == 1 && candidate.sources == "binance" {
+        return true;
+    }
+    candidate.source_count == 2
+        && candidate.sources == "binance;bybit"
+        && candidate.close_abs_delta_ms >= 1_000
+}
+
 fn local_agg_uncertainty_gate_key_levels(
     candidate: &LocalAggUncertaintyGateCandidate,
 ) -> Vec<(&'static str, Vec<String>)> {
@@ -15256,24 +17391,28 @@ fn local_agg_uncertainty_gate_key_levels(
             ],
         ),
         (
-            "source_margin",
+            "symbol_rule_quality_full",
             vec![
                 symbol.clone(),
-                subset.clone(),
                 rule.clone(),
-                sources.clone(),
                 side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                delta.clone(),
+                spread.clone(),
                 margin.clone(),
             ],
         ),
         (
-            "source",
+            "symbol_rule_quality_no_delta",
             vec![
                 symbol.clone(),
-                subset.clone(),
                 rule.clone(),
-                sources.clone(),
                 side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                spread.clone(),
+                margin.clone(),
             ],
         ),
         (
@@ -15287,12 +17426,49 @@ fn local_agg_uncertainty_gate_key_levels(
             ],
         ),
         (
-            "policy",
-            vec![symbol.clone(), subset.clone(), rule.clone(), side.clone()],
+            "symbol_rule_quality_no_spread",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                delta.clone(),
+                margin.clone(),
+            ],
         ),
-        ("symbol_margin", vec![symbol.clone(), side.clone(), margin]),
-        ("symbol", vec![symbol, side.clone()]),
-        ("all", vec!["ALL".to_string(), side]),
+        (
+            "symbol_rule_quality_margin",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                margin.clone(),
+            ],
+        ),
+        (
+            "symbol_rule_quality",
+            vec![
+                symbol.clone(),
+                rule.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+            ],
+        ),
+        (
+            "symbol_quality_margin",
+            vec![
+                symbol.clone(),
+                side.clone(),
+                source_count.clone(),
+                exact.clone(),
+                margin,
+            ],
+        ),
+        ("symbol_quality", vec![symbol, side, source_count, exact]),
     ]
 }
 
@@ -15643,6 +17819,7 @@ fn local_agg_uncertainty_gate_observe_candidate(candidate: LocalAggUncertaintyGa
 struct LocalCloseAggCompareResult {
     base_hit: Option<LocalCloseOnlyAggHit>,
     boundary_shadow_outcomes: Vec<LocalBoundaryShadowOutcome>,
+    source_lag_candidates: Vec<LocalSourceLagCloseCandidate>,
 }
 
 fn local_boundary_maybe_equalize_xrp_binance_coinbase_fast_no(
@@ -15739,6 +17916,8 @@ const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE_HYPERLIQUID: &[LocalPriceSource] =
     &[LocalPriceSource::Binance, LocalPriceSource::Hyperliquid];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Bybit, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_ONLY_BYBIT_OKX: &[LocalPriceSource] =
+    &[LocalPriceSource::Bybit, LocalPriceSource::Okx];
 const LOCAL_BOUNDARY_SOURCES_ONLY_BINANCE: &[LocalPriceSource] = &[LocalPriceSource::Binance];
 const LOCAL_BOUNDARY_SOURCES_ONLY_COINBASE: &[LocalPriceSource] = &[LocalPriceSource::Coinbase];
 const LOCAL_BOUNDARY_SOURCES_ONLY_HYPERLIQUID: &[LocalPriceSource] =
@@ -15746,7 +17925,17 @@ const LOCAL_BOUNDARY_SOURCES_ONLY_HYPERLIQUID: &[LocalPriceSource] =
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX: &[LocalPriceSource] = &[LocalPriceSource::Okx];
 const LOCAL_BOUNDARY_SOURCES_ONLY_OKX_COINBASE: &[LocalPriceSource] =
     &[LocalPriceSource::Okx, LocalPriceSource::Coinbase];
+const LOCAL_BOUNDARY_SOURCES_DOGE_DROP_BINANCE_CEX: &[LocalPriceSource] = &[
+    LocalPriceSource::Bybit,
+    LocalPriceSource::Coinbase,
+    LocalPriceSource::Okx,
+];
 
+const LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_POLICY: &str = "boundary_coinbase_older_shadow";
+const LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET: &str =
+    "coinbase_older_hard_fallback_subsets_age5000_20000";
+const LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS: u64 = 5_000;
+const LOCAL_BOUNDARY_COINBASE_OLDER_MAX_AGE_MS: u64 = 20_000;
 const LOCAL_BOUNDARY_POLICY_PRE_MS: u64 = 5_000;
 const LOCAL_BOUNDARY_POLICY_POST_MS: u64 = 250;
 
@@ -15816,6 +18005,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes: Vec::new(),
+            source_lag_candidates: Vec::new(),
         };
     };
     let target_symbol = normalize_chainlink_symbol(symbol);
@@ -15823,6 +18013,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes: Vec::new(),
+            source_lag_candidates: Vec::new(),
         };
     }
 
@@ -15832,9 +18023,13 @@ async fn run_local_price_close_aggregator(
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
     let boundary_window_ms = local_price_agg_boundary_window_ms();
+    let boundary_diag_window_ms = local_price_agg_boundary_diag_window_ms();
+    let boundary_diag_enabled =
+        boundary_diag_window_ms > 0 && boundary_diag_window_ms != boundary_window_ms;
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
     let mut tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
+    let mut diag_tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
     for (price, ts_ms, source) in hub.snapshot_recent_ticks(&target_symbol) {
         local_price_agg_ingest_state(&mut states, source, price, ts_ms, start_ms, end_ms);
         local_price_agg_collect_boundary_tape_tick(
@@ -15846,6 +18041,17 @@ async fn run_local_price_close_aggregator(
             end_ms,
             boundary_window_ms,
         );
+        if boundary_diag_enabled {
+            local_price_agg_collect_boundary_tape_tick(
+                &mut diag_tapes,
+                source,
+                price,
+                ts_ms,
+                start_ms,
+                end_ms,
+                boundary_diag_window_ms,
+            );
+        }
     }
 
     let close_ready_sources = |states: &HashMap<LocalPriceSource, LocalSourceBoundaryState>| {
@@ -15879,6 +18085,17 @@ async fn run_local_price_close_aggregator(
                             end_ms,
                             boundary_window_ms,
                         );
+                        if boundary_diag_enabled {
+                            local_price_agg_collect_boundary_tape_tick(
+                                &mut diag_tapes,
+                                source,
+                                price,
+                                ts_ms,
+                                start_ms,
+                                end_ms,
+                                boundary_diag_window_ms,
+                            );
+                        }
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Closed)) => break,
@@ -15958,6 +18175,24 @@ async fn run_local_price_close_aggregator(
         boundary_window_ms,
         source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
     });
+    if boundary_diag_enabled {
+        append_local_price_agg_boundary_probe(&LocalPriceAggBoundaryProbe {
+            unix_ms: unix_now_millis_u64(),
+            symbol: target_symbol.clone(),
+            round_start_ts,
+            round_end_ts,
+            mode: "close_only_diag".to_string(),
+            status: status.to_string(),
+            boundary_window_ms: boundary_diag_window_ms,
+            source_tapes: build_local_price_agg_boundary_source_probes(
+                &diag_tapes,
+                start_ms,
+                end_ms,
+            ),
+        });
+    }
+    let source_lag_candidates =
+        collect_local_source_lag_candidates(&states, &tapes, &diag_tapes, end_ms);
 
     let mut boundary_shadow_outcomes = vec![run_local_boundary_shadow_policy(
         &target_symbol,
@@ -15973,11 +18208,19 @@ async fn run_local_price_close_aggregator(
             end_ms,
         ));
     }
+    if let Some(outcome) = local_boundary_select_coinbase_older_shadow(
+        &target_symbol,
+        &boundary_shadow_outcomes,
+        &source_lag_candidates,
+    ) {
+        boundary_shadow_outcomes.push(outcome);
+    }
 
     if source_hits.len() < min_sources {
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes,
+            source_lag_candidates,
         };
     }
 
@@ -15994,6 +18237,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes,
+            source_lag_candidates,
         };
     };
     let close_ts_med = median_u64(close_timestamps).unwrap_or(end_ms);
@@ -16012,6 +18256,7 @@ async fn run_local_price_close_aggregator(
         return LocalCloseAggCompareResult {
             base_hit: None,
             boundary_shadow_outcomes,
+            source_lag_candidates,
         };
     }
 
@@ -16025,6 +18270,7 @@ async fn run_local_price_close_aggregator(
             source_contributions,
         }),
         boundary_shadow_outcomes,
+        source_lag_candidates,
     }
 }
 
@@ -16051,6 +18297,9 @@ async fn run_local_price_aggregator(
     let min_sources = local_price_agg_min_sources();
     let max_source_spread_bps = local_price_agg_max_source_spread_bps();
     let boundary_window_ms = local_price_agg_boundary_window_ms();
+    let boundary_diag_window_ms = local_price_agg_boundary_diag_window_ms();
+    let boundary_diag_enabled =
+        boundary_diag_window_ms > 0 && boundary_diag_window_ms != boundary_window_ms;
     let single_source_min_direction_margin_bps =
         local_price_agg_single_source_min_direction_margin_bps();
     let relief_min_confidence = LOCAL_PRICE_AGG_RELIEF_MIN_CONFIDENCE_DEFAULT;
@@ -16059,6 +18308,7 @@ async fn run_local_price_aggregator(
 
     let mut states: HashMap<LocalPriceSource, LocalSourceBoundaryState> = HashMap::new();
     let mut tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
+    let mut diag_tapes: HashMap<LocalPriceSource, LocalSourceBoundaryTapeState> = HashMap::new();
     let mut observed_ticks: u64 = 0;
     let mut observed_snapshot_ticks: u64 = 0;
     let mut observed_live_ticks: u64 = 0;
@@ -16077,6 +18327,17 @@ async fn run_local_price_aggregator(
             end_ms,
             boundary_window_ms,
         );
+        if boundary_diag_enabled {
+            local_price_agg_collect_boundary_tape_tick(
+                &mut diag_tapes,
+                source,
+                price,
+                ts_ms,
+                start_ms,
+                end_ms,
+                boundary_diag_window_ms,
+            );
+        }
     }
     apply_local_prewarmed_open_seed(&mut states, &target_symbol, start_ms);
 
@@ -16112,6 +18373,17 @@ async fn run_local_price_aggregator(
                             end_ms,
                             boundary_window_ms,
                         );
+                        if boundary_diag_enabled {
+                            local_price_agg_collect_boundary_tape_tick(
+                                &mut diag_tapes,
+                                source,
+                                price,
+                                ts_ms,
+                                start_ms,
+                                end_ms,
+                                boundary_diag_window_ms,
+                            );
+                        }
                     }
                     Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(n))) => {
                         lagged_ticks = lagged_ticks.saturating_add(n);
@@ -16229,6 +18501,22 @@ async fn run_local_price_aggregator(
             boundary_window_ms,
             source_tapes: build_local_price_agg_boundary_source_probes(&tapes, start_ms, end_ms),
         });
+        if boundary_diag_enabled {
+            append_local_price_agg_boundary_probe(&LocalPriceAggBoundaryProbe {
+                unix_ms: unix_now_millis_u64(),
+                symbol: target_symbol.clone(),
+                round_start_ts,
+                round_end_ts,
+                mode: "full_diag".to_string(),
+                status: status.to_string(),
+                boundary_window_ms: boundary_diag_window_ms,
+                source_tapes: build_local_price_agg_boundary_source_probes(
+                    &diag_tapes,
+                    start_ms,
+                    end_ms,
+                ),
+            });
+        }
     };
 
     let boundary_debug = || {
@@ -17349,6 +19637,115 @@ fn parse_price_value(v: &Value) -> Option<f64> {
         .filter(|p| *p > 0.0 && *p < 1.0)
 }
 
+fn parse_book_size_value(v: &Value) -> Option<f64> {
+    parse_f64_value(v).filter(|size| *size >= 0.0)
+}
+
+fn parse_source_sequence_id(value: &Value) -> Option<String> {
+    for key in [
+        "source_sequence_id",
+        "sequence_id",
+        "seq_num",
+        "sequence",
+        "seq",
+        "hash",
+    ] {
+        let Some(raw) = value.get(key) else {
+            continue;
+        };
+        if let Some(s) = raw.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(s.to_string());
+        }
+        if let Some(u) = raw.as_u64() {
+            return Some(u.to_string());
+        }
+        if let Some(i) = raw.as_i64() {
+            return Some(i.to_string());
+        }
+    }
+    None
+}
+
+fn parse_source_event_time_ms(value: &Value) -> Option<u64> {
+    for key in [
+        "source_event_time_ms",
+        "event_time_ms",
+        "timestamp_ms",
+        "ts_ms",
+        "time_ms",
+        "event_time",
+        "timestamp",
+        "ts",
+        "time",
+        "created_at",
+    ] {
+        let Some(raw) = value.get(key) else {
+            continue;
+        };
+        if let Some(ms) = parse_unix_ms_value(raw) {
+            return Some(ms);
+        }
+        if let Some(s) = raw.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                let ms = dt.timestamp_millis();
+                if ms >= 0 {
+                    return Some(ms as u64);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn level_price(level: &Value) -> Option<f64> {
+    level.get("price").and_then(parse_price_value)
+}
+
+fn level_size(level: &Value) -> Option<f64> {
+    for key in ["size", "qty", "quantity"] {
+        if let Some(size) = level.get(key).and_then(parse_book_size_value) {
+            return Some(size);
+        }
+    }
+    None
+}
+
+fn top_book_level(levels: Option<&Vec<Value>>, is_bid: bool) -> (Option<f64>, Option<f64>) {
+    let mut best_price: Option<f64> = None;
+    let mut best_size: Option<f64> = None;
+    let Some(levels) = levels else {
+        return (None, None);
+    };
+    for level in levels {
+        let Some(price) = level_price(level) else {
+            continue;
+        };
+        let replace = match best_price {
+            None => true,
+            Some(current) if is_bid => price > current,
+            Some(current) => price < current,
+        };
+        if replace {
+            best_price = Some(price);
+            best_size = level_size(level);
+        }
+    }
+    (best_price, best_size)
+}
+
+fn first_named_book_size(value: &Value, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(size) = value.get(*key).and_then(parse_book_size_value) {
+            return Some(size);
+        }
+    }
+    None
+}
+
+fn price_close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9
+}
+
 fn is_market_ws_keepalive_text(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.is_empty()
@@ -17465,6 +19862,154 @@ fn market_ws_payload_debug_summary(settings: &Settings, text: &str) -> String {
         settings.no_asset_id,
         raw_len
     )
+}
+
+fn market_book_depth_evidence(
+    settings: &Settings,
+    source: &Value,
+    fallback_source: Option<&Value>,
+    asset_id: &str,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+    best_bid_size: Option<f64>,
+    best_ask_size: Option<f64>,
+) -> Option<MarketBookDepthEvidence> {
+    let side = classify_side(asset_id, settings)?;
+    Some(MarketBookDepthEvidence {
+        market_side: Some(side.as_str().to_string()),
+        asset_id: Some(asset_id.to_string()),
+        event_time_ms: parse_source_event_time_ms(source)
+            .or_else(|| fallback_source.and_then(parse_source_event_time_ms)),
+        source_sequence_id: parse_source_sequence_id(source)
+            .or_else(|| fallback_source.and_then(parse_source_sequence_id)),
+        best_bid,
+        best_ask,
+        best_bid_size,
+        best_ask_size,
+        best_bid_size_delta: None,
+        best_ask_size_delta: None,
+        best_bid_drop_qty: None,
+        best_ask_drop_qty: None,
+    })
+}
+
+fn parse_ws_message_book_depth_evidence(
+    settings: &Settings,
+    value: &Value,
+) -> Vec<Option<MarketBookDepthEvidence>> {
+    let mut out = Vec::new();
+    match value.get("event_type").and_then(|v| v.as_str()) {
+        Some("book") => {
+            if let Some(asset_id) = value.get("asset_id").and_then(|v| v.as_str()) {
+                if classify_side(asset_id, settings).is_some() {
+                    let bids = value
+                        .get("bids")
+                        .or_else(|| value.get("buys"))
+                        .and_then(|v| v.as_array());
+                    let asks = value
+                        .get("asks")
+                        .or_else(|| value.get("sells"))
+                        .and_then(|v| v.as_array());
+                    let (best_bid, best_bid_size) = top_book_level(bids, true);
+                    let (best_ask, best_ask_size) = top_book_level(asks, false);
+                    out.push(market_book_depth_evidence(
+                        settings,
+                        value,
+                        None,
+                        asset_id,
+                        best_bid,
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                    ));
+                }
+            }
+        }
+        Some("price_change") => {
+            if let Some(changes) = value.get("price_changes").and_then(|v| v.as_array()) {
+                for ch in changes {
+                    let Some(asset_id) = ch.get("asset_id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    if classify_side(asset_id, settings).is_none() {
+                        continue;
+                    }
+                    let best_bid = ch.get("best_bid").and_then(parse_price_value);
+                    let best_ask = ch.get("best_ask").and_then(parse_price_value);
+                    let mut best_bid_size = first_named_book_size(
+                        ch,
+                        &["best_bid_size", "best_bid_sz", "bid_size", "bid_sz"],
+                    );
+                    let mut best_ask_size = first_named_book_size(
+                        ch,
+                        &["best_ask_size", "best_ask_sz", "ask_size", "ask_sz"],
+                    );
+                    let changed_price = ch.get("price").and_then(parse_price_value);
+                    let changed_size = ch.get("size").and_then(parse_book_size_value);
+                    let changed_side = ch
+                        .get("side")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_ascii_uppercase());
+                    if best_bid_size.is_none()
+                        && matches!(changed_side.as_deref(), Some("BUY") | Some("BID"))
+                        && changed_price
+                            .zip(best_bid)
+                            .map(|(p, bid)| price_close(p, bid))
+                            .unwrap_or(false)
+                    {
+                        best_bid_size = changed_size;
+                    }
+                    if best_ask_size.is_none()
+                        && matches!(changed_side.as_deref(), Some("SELL") | Some("ASK"))
+                        && changed_price
+                            .zip(best_ask)
+                            .map(|(p, ask)| price_close(p, ask))
+                            .unwrap_or(false)
+                    {
+                        best_ask_size = changed_size;
+                    }
+                    out.push(market_book_depth_evidence(
+                        settings,
+                        ch,
+                        Some(value),
+                        asset_id,
+                        best_bid,
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                    ));
+                }
+            }
+        }
+        Some("best_bid_ask") => {
+            if let Some(asset_id) = value.get("asset_id").and_then(|v| v.as_str()) {
+                if classify_side(asset_id, settings).is_some() {
+                    let best_bid = value.get("best_bid").and_then(parse_price_value);
+                    let best_ask = value.get("best_ask").and_then(parse_price_value);
+                    let best_bid_size = first_named_book_size(
+                        value,
+                        &["best_bid_size", "best_bid_sz", "bid_size", "bid_sz"],
+                    );
+                    let best_ask_size = first_named_book_size(
+                        value,
+                        &["best_ask_size", "best_ask_sz", "ask_size", "ask_sz"],
+                    );
+                    out.push(market_book_depth_evidence(
+                        settings,
+                        value,
+                        None,
+                        asset_id,
+                        best_bid,
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Parse a WS message into MarketDataMsg events.
@@ -17763,8 +20308,15 @@ fn parse_ws_message_with_drop_reason(
 fn parse_ws_payload(
     settings: &Settings,
     text: &str,
-) -> (Vec<MarketDataMsg>, u64, u64, Vec<String>) {
+) -> (
+    Vec<MarketDataMsg>,
+    VecDeque<Option<MarketBookDepthEvidence>>,
+    u64,
+    u64,
+    Vec<String>,
+) {
     let mut out = Vec::new();
+    let mut book_depth = VecDeque::new();
     let mut unknown_events = 0_u64;
     let mut parse_drops = 0_u64;
     let mut drop_reasons = Vec::new();
@@ -17773,14 +20325,14 @@ fn parse_ws_payload(
         || trimmed.eq_ignore_ascii_case("PING")
         || trimmed.eq_ignore_ascii_case("PONG")
     {
-        return (out, unknown_events, parse_drops, drop_reasons);
+        return (out, book_depth, unknown_events, parse_drops, drop_reasons);
     }
 
     let value = match serde_json::from_str::<Value>(trimmed) {
         Ok(v) => v,
         Err(err) => {
             drop_reasons.push(format!("event_type=parse_error reason={}", err));
-            return (out, unknown_events, 1, drop_reasons);
+            return (out, book_depth, unknown_events, 1, drop_reasons);
         }
     };
 
@@ -17804,6 +20356,12 @@ fn parse_ws_payload(
         }
 
         let (parsed, drop_reason) = parse_ws_message_with_drop_reason(settings, val);
+        if parsed
+            .iter()
+            .any(|msg| matches!(msg, MarketDataMsg::BookTick { .. }))
+        {
+            book_depth.extend(parse_ws_message_book_depth_evidence(settings, val));
+        }
         if known_event && parsed.is_empty() {
             parse_drops = parse_drops.saturating_add(1);
             if let Some(reason) = drop_reason {
@@ -17813,7 +20371,7 @@ fn parse_ws_payload(
         out.extend(parsed);
     }
 
-    (out, unknown_events, parse_drops, drop_reasons)
+    (out, book_depth, unknown_events, parse_drops, drop_reasons)
 }
 
 // ─────────────────────────────────────────────────────────
@@ -17828,6 +20386,106 @@ struct BookAssembler {
     no_ask: f64,
     yes_seen: bool,
     no_seen: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BestLevelDepthState {
+    price: Option<f64>,
+    size: Option<f64>,
+}
+
+impl BestLevelDepthState {
+    fn observe(
+        &mut self,
+        price: Option<f64>,
+        size: Option<f64>,
+        is_bid: bool,
+    ) -> (Option<f64>, Option<f64>) {
+        let prev_price = self.price;
+        let prev_size = self.size;
+        let mut delta = None;
+        let mut drop_qty = None;
+
+        if let Some(prev_size) = prev_size {
+            if let Some(cur_size) = size {
+                let same_level = prev_price
+                    .zip(price)
+                    .map(|(prev, cur)| price_close(prev, cur))
+                    .unwrap_or(false);
+                if same_level {
+                    let d = cur_size - prev_size;
+                    delta = Some(d);
+                    drop_qty = Some(if d < 0.0 { -d } else { 0.0 });
+                }
+            }
+
+            let worse_price = prev_price
+                .zip(price)
+                .map(|(prev, cur)| {
+                    if is_bid {
+                        cur + 1e-9 < prev
+                    } else {
+                        cur > prev + 1e-9
+                    }
+                })
+                .unwrap_or(false);
+            if worse_price && delta.is_none() && prev_size > 0.0 {
+                delta = Some(-prev_size);
+                drop_qty = Some(prev_size);
+            }
+        }
+
+        if price.is_some() {
+            self.price = price;
+        }
+        if size.is_some() {
+            self.size = size;
+        } else if price.is_some() {
+            self.size = None;
+        }
+
+        (delta, drop_qty)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SideBookDepthState {
+    bid: BestLevelDepthState,
+    ask: BestLevelDepthState,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BookDepthTracker {
+    yes: SideBookDepthState,
+    no: SideBookDepthState,
+}
+
+impl BookDepthTracker {
+    fn annotate(
+        &mut self,
+        mut depth: Option<MarketBookDepthEvidence>,
+    ) -> Option<MarketBookDepthEvidence> {
+        let depth = depth.as_mut()?;
+        let state = match depth
+            .market_side
+            .as_deref()
+            .map(|side| side.to_ascii_uppercase())
+            .as_deref()
+        {
+            Some("YES") => &mut self.yes,
+            Some("NO") => &mut self.no,
+            _ => return Some(depth.clone()),
+        };
+        let (bid_delta, bid_drop) = state.bid.observe(depth.best_bid, depth.best_bid_size, true);
+        let (ask_delta, ask_drop) = state
+            .ask
+            .observe(depth.best_ask, depth.best_ask_size, false);
+        depth.best_bid_size_delta = depth.best_bid_size_delta.or(bid_delta);
+        depth.best_ask_size_delta = depth.best_ask_size_delta.or(ask_delta);
+        depth.best_bid_drop_qty = depth.best_bid_drop_qty.or(bid_drop);
+        depth.best_ask_drop_qty = depth.best_ask_drop_qty.or(ask_drop);
+        Some(depth.clone())
+    }
 }
 
 impl BookAssembler {
@@ -18080,6 +20738,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
             break;
         }
         let mut book_asm = BookAssembler::default();
+        let mut book_depth_tracker = BookDepthTracker::default();
         let url = settings.ws_url("market");
         info!(
             "📡 shared ingress market broker connecting | slug={} url={} fixed_round={} subscribers={} connect_jitter_ms={}",
@@ -18271,7 +20930,13 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     }
                                     session_raw_msg_count = session_raw_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
-                                    let (parsed, unknown_events, parse_drops, drop_reasons) =
+                                    let (
+                                        parsed,
+                                        mut book_depth_evidence,
+                                        unknown_events,
+                                        parse_drops,
+                                        drop_reasons,
+                                    ) =
                                         parse_ws_payload(&settings, text_ref);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -18330,6 +20995,9 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                             MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
                                                 session_book_tick_count =
                                                     session_book_tick_count.saturating_add(1);
+                                                let depth = book_depth_tracker.annotate(
+                                                    book_depth_evidence.pop_front().flatten(),
+                                                );
                                                 let recv_ms = unix_now_millis_u64();
                                                 if yes_bid.is_finite() || yes_ask.is_finite() {
                                                     feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
@@ -18362,6 +21030,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                             no_bid: *no_bid,
                                                             no_ask: *no_ask,
                                                             ts_ms: recv_ms,
+                                                            depth: depth.clone(),
                                                         });
                                                     }
                                                     last_full_book_at = Some(tokio::time::Instant::now());
@@ -18384,7 +21053,13 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     }
                                     session_raw_msg_count = session_raw_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
-                                    let (parsed, unknown_events, parse_drops, drop_reasons) =
+                                    let (
+                                        parsed,
+                                        mut book_depth_evidence,
+                                        unknown_events,
+                                        parse_drops,
+                                        drop_reasons,
+                                    ) =
                                         parse_ws_payload(&settings, text);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -18443,6 +21118,9 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                             MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
                                                 session_book_tick_count =
                                                     session_book_tick_count.saturating_add(1);
+                                                let depth = book_depth_tracker.annotate(
+                                                    book_depth_evidence.pop_front().flatten(),
+                                                );
                                                 let recv_ms = unix_now_millis_u64();
                                                 if yes_bid.is_finite() || yes_ask.is_finite() {
                                                     feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
@@ -18475,6 +21153,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                             no_bid: *no_bid,
                                                             no_ask: *no_ask,
                                                             ts_ms: recv_ms,
+                                                            depth: depth.clone(),
                                                         });
                                                     }
                                                     last_full_book_at = Some(tokio::time::Instant::now());
@@ -18596,6 +21275,8 @@ async fn run_market_ws_remote_with_wall_guard(
     coord_accept_partial_book: bool,
     post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
     let hard_cutoff_grace_secs = market_ws_hard_cutoff_grace_secs();
     let hard_cutoff_ts = end_ts.saturating_add(hard_cutoff_grace_secs);
@@ -18726,10 +21407,11 @@ async fn run_market_ws_remote_with_wall_guard(
                                     ts: Instant::now(),
                                 };
                                 try_broadcast_dry_run_touch_md(&dry_run_touch_md_tx, &md_msg);
+                                let _ = coord_tx.send(md_msg.clone());
                                 try_forward_md(&ofi_tx, md_msg.clone(), &mut tx_drop_count);
                                 try_forward_md(&glft_tx, md_msg, &mut tx_drop_count);
                             }
-                            SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                            SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, depth, .. } => {
                                 session_wire_book_tick_count =
                                     session_wire_book_tick_count.saturating_add(1);
                                 let md_msg = MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, ts: Instant::now() };
@@ -18741,6 +21423,27 @@ async fn run_market_ws_remote_with_wall_guard(
                                 }
                                 if let Some(full) = book_asm.update(&md_msg) {
                                     last_full_book_at = Some(tokio::time::Instant::now());
+                                    if let (
+                                        Some(rec),
+                                        Some(meta),
+                                        MarketDataMsg::BookTick {
+                                            yes_bid,
+                                            yes_ask,
+                                            no_bid,
+                                            no_ask,
+                                            ..
+                                        },
+                                    ) = (&recorder, &recorder_meta, &full)
+                                    {
+                                        rec.record_market_book_l1(
+                                            meta,
+                                            *yes_bid,
+                                            *yes_ask,
+                                            *no_bid,
+                                            *no_ask,
+                                            depth.as_ref(),
+                                        );
+                                    }
                                     try_broadcast_dry_run_touch_md(&dry_run_touch_md_tx, &full);
                                     try_forward_md(&glft_tx, full.clone(), &mut tx_drop_count);
                                     let _ = coord_tx.send(full);
@@ -19098,6 +21801,8 @@ async fn run_market_ws(
             coord_accept_partial_book,
             post_close_book_tx,
             end_ts,
+            recorder,
+            recorder_meta,
         )
         .await;
     }
@@ -19132,6 +21837,7 @@ async fn run_market_ws(
         // previous session to be mixed with fresh data on reconnect. E.g., old NO
         // price combined with new YES price would produce a wrong BookTick.
         let mut book_asm = BookAssembler::default();
+        let mut book_depth_tracker = BookDepthTracker::default();
 
         let url = settings.ws_url("market");
         info!(%url, "📡 connecting market WS");
@@ -19327,7 +22033,13 @@ async fn run_market_ws(
                                         rec.record_market_ws_raw(meta, &text);
                                     }
 
-                                    let (parsed, unknown_events, parse_drops, _drop_reasons) =
+                                    let (
+                                        parsed,
+                                        mut book_depth_evidence,
+                                        unknown_events,
+                                        parse_drops,
+                                        _drop_reasons,
+                                    ) =
                                         parse_ws_payload(&settings, &text);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -19367,6 +22079,7 @@ async fn run_market_ws(
                                                         &dry_run_touch_md_tx,
                                                         &md_msg,
                                                     );
+                                                    let _ = coord_tx.send(md_msg.clone());
                                                     try_forward_md(
                                                         &ofi_tx,
                                                         md_msg.clone(),
@@ -19379,6 +22092,9 @@ async fn run_market_ws(
                                                 );
                                             }
                                             MarketDataMsg::BookTick { .. } => {
+                                                let depth = book_depth_tracker.annotate(
+                                                    book_depth_evidence.pop_front().flatten(),
+                                                );
                                                 if let MarketDataMsg::BookTick {
                                                     yes_bid,
                                                     yes_ask,
@@ -19447,7 +22163,12 @@ async fn run_market_ws(
                                                     ) = (&recorder, &recorder_meta, &full)
                                                     {
                                                             rec.record_market_book_l1(
-                                                                meta, *yes_bid, *yes_ask, *no_bid, *no_ask,
+                                                                meta,
+                                                                *yes_bid,
+                                                                *yes_ask,
+                                                                *no_bid,
+                                                                *no_ask,
+                                                                depth.as_ref(),
                                                             );
                                                         }
                                                         try_broadcast_dry_run_touch_md(
@@ -19491,7 +22212,13 @@ async fn run_market_ws(
                                             {
                                                 rec.record_market_ws_raw(meta, text);
                                             }
-                                            let (parsed, unknown_events, parse_drops, _drop_reasons) =
+                                            let (
+                                                parsed,
+                                                mut book_depth_evidence,
+                                                unknown_events,
+                                                parse_drops,
+                                                _drop_reasons,
+                                            ) =
                                                 parse_ws_payload(&settings, text);
                                             session_unknown_event_count = session_unknown_event_count
                                                 .saturating_add(unknown_events);
@@ -19533,6 +22260,7 @@ async fn run_market_ws(
                                                                 &dry_run_touch_md_tx,
                                                                 &md_msg,
                                                             );
+                                                            let _ = coord_tx.send(md_msg.clone());
                                                             try_forward_md(
                                                                 &ofi_tx,
                                                                 md_msg.clone(),
@@ -19545,6 +22273,11 @@ async fn run_market_ws(
                                                         );
                                                     }
                                                     MarketDataMsg::BookTick { .. } => {
+                                                        let depth = book_depth_tracker.annotate(
+                                                            book_depth_evidence
+                                                                .pop_front()
+                                                                .flatten(),
+                                                        );
                                                         if let MarketDataMsg::BookTick {
                                                             yes_bid,
                                                             yes_ask,
@@ -19614,7 +22347,12 @@ async fn run_market_ws(
                                                             ) = (&recorder, &recorder_meta, &full)
                                                                 {
                                                                     rec.record_market_book_l1(
-                                                                        meta, *yes_bid, *yes_ask, *no_bid, *no_ask,
+                                                                        meta,
+                                                                        *yes_bid,
+                                                                        *yes_ask,
+                                                                        *no_bid,
+                                                                        *no_ask,
+                                                                        depth.as_ref(),
                                                                     );
                                                                 }
                                                                 try_broadcast_dry_run_touch_md(
@@ -19773,17 +22511,30 @@ struct SlugLock {
     port: u16,
 }
 
-fn slug_lock_port(slug: &str) -> u16 {
+fn slug_lock_class_name(lab_only: bool) -> &'static str {
+    if lab_only {
+        "lab"
+    } else {
+        "trade"
+    }
+}
+
+fn slug_lock_key(slug: &str, lab_only: bool) -> String {
+    format!("{}::{}", slug_lock_class_name(lab_only), slug)
+}
+
+fn slug_lock_port(slug: &str, lab_only: bool) -> u16 {
+    let lock_key = slug_lock_key(slug, lab_only);
     let mut h: u32 = 0x811c9dc5u32;
-    for b in slug.bytes() {
+    for b in lock_key.bytes() {
         h = h.wrapping_mul(0x01000193).wrapping_add(b as u32);
     }
     // Dynamic/private port range: 49152–59999 (10848 slots)
     49152 + (h % 10848) as u16
 }
 
-fn try_acquire_slug_lock(slug: &str) -> Option<SlugLock> {
-    let port = slug_lock_port(slug);
+fn try_acquire_slug_lock(slug: &str, lab_only: bool) -> Option<SlugLock> {
+    let port = slug_lock_port(slug, lab_only);
     match TcpListener::bind(format!("127.0.0.1:{}", port)) {
         Ok(listener) => Some(SlugLock {
             _listener: listener,
@@ -20608,24 +23359,28 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     let coord_cfg_base = CoordinatorConfig::from_env();
     // Slug lock: standalone mode only (ctx=None = single OS-process worker).
     // In inproc mode the supervisor IS the single process, so no cross-process
-    // conflict is possible and we skip the lock.
+    // conflict is possible and we skip the lock. Lab-only challenger workers
+    // use a separate lock class so they can shadow one tradable oracle-lag
+    // worker on the same slug without disabling duplicate protection entirely.
     let _slug_lock = if ctx.is_none()
         && prefix_mode
         && coord_cfg_base.strategy.is_oracle_lag_sniping()
     {
-        match try_acquire_slug_lock(&raw_slug) {
+        let slug_lock_lab_only = coord_cfg_base.oracle_lag_sniping.lab_only;
+        let slug_lock_class = slug_lock_class_name(slug_lock_lab_only);
+        match try_acquire_slug_lock(&raw_slug, slug_lock_lab_only) {
             Some(lock) => {
                 info!(
-                    "🔒 slug_lock acquired | slug={} port={}",
-                    raw_slug, lock.port
+                    "🔒 slug_lock acquired | slug={} class={} port={}",
+                    raw_slug, slug_lock_class, lock.port
                 );
                 Some(lock)
             }
             None => {
-                let port = slug_lock_port(&raw_slug);
+                let port = slug_lock_port(&raw_slug, slug_lock_lab_only);
                 anyhow::bail!(
-                    "🚨 slug_lock_conflict: another process is already running oracle_lag_sniping for slug='{}' (port {}). Exiting to prevent duplicate orders.",
-                    raw_slug, port
+                    "🚨 slug_lock_conflict: another process is already running oracle_lag_sniping class='{}' for slug='{}' (port {}). Exiting to prevent duplicate orders.",
+                    slug_lock_class, raw_slug, port
                 );
             }
         }
@@ -22045,6 +24800,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 "pgt_shadow_summary",
                 json!({
                     "reason": format!("{:?}", reason),
+                    "pgt_shadow_profile": pgt_shadow_profile_name(),
                     "round_end_ts": ws_round_end_ts,
                     "winner_side": pgt_local_winner_side.map(|s| s.as_str().to_string()),
                     "paired_qty": paired_qty,
@@ -22058,11 +24814,24 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     "pgt_completion_quotes": coord_obs.pgt_completion_quotes,
                     "pgt_taker_shadow_would_open": coord_obs.pgt_taker_shadow_would_open,
                     "pgt_taker_shadow_would_close": coord_obs.pgt_taker_shadow_would_close,
+                    "pgt_entry_pressure_sides": coord_obs.pgt_entry_pressure_sides,
+                    "pgt_entry_pressure_extra_ticks": coord_obs.pgt_entry_pressure_extra_ticks,
                     "pgt_dispatch_taker_open": coord_obs.pgt_dispatch_taker_open,
                     "pgt_dispatch_taker_close": coord_obs.pgt_dispatch_taker_close,
                     "pgt_dispatch_place": coord_obs.pgt_dispatch_place,
                     "pgt_dispatch_retain": coord_obs.pgt_dispatch_retain,
                     "pgt_dispatch_clear": coord_obs.pgt_dispatch_clear,
+                    "market_trade_ticks": coord_obs.market_trade_ticks,
+                    "market_sell_trade_ticks": coord_obs.market_sell_trade_ticks,
+                    "pgt_xuan_m0001_no_seed": pgt_xuan_m0001_no_seed_counts_json(
+                        coord_obs.pgt_xuan_m0001_no_seed,
+                    ),
+                    "pgt_dplus_minorder_no_seed": pgt_dplus_minorder_no_seed_counts_json(
+                        coord_obs.pgt_dplus_minorder_no_seed,
+                    ),
+                    "pgt_high_pressure_no_seed": pgt_high_pressure_no_seed_counts_json(
+                        coord_obs.pgt_high_pressure_no_seed,
+                    ),
                     "pgt_single_seed_first_side": coord_obs
                         .pgt_single_seed_first_side
                         .map(|s| s.as_str().to_string()),
@@ -22782,6 +25551,77 @@ mod tests {
             }
             other => panic!("unexpected message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_ws_payload_book_depth_evidence() {
+        let settings = Settings {
+            market_slug: Some("btc-updown-5m-test".to_string()),
+            market_id: "0xmarket".to_string(),
+            yes_asset_id: "111".to_string(),
+            no_asset_id: "222".to_string(),
+            ws_base_url: String::new(),
+            rest_url: String::new(),
+            private_key: None,
+            funder_address: None,
+            custom_feature: false,
+        };
+        let payload = json!({
+            "event_type": "book",
+            "asset_id": "111",
+            "timestamp": 1_746_000_000_123_u64,
+            "sequence": 42,
+            "bids": [
+                {"price": "0.47", "size": "8"},
+                {"price": "0.49", "size": "12.5"}
+            ],
+            "asks": [
+                {"price": "0.53", "size": "3"},
+                {"price": "0.51", "size": "4.5"}
+            ]
+        })
+        .to_string();
+
+        let (msgs, mut depth, unknown, drops, reasons) = parse_ws_payload(&settings, &payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(unknown, 0);
+        assert_eq!(drops, 0);
+        assert!(reasons.is_empty());
+        let depth = depth
+            .pop_front()
+            .flatten()
+            .expect("book depth evidence should be parsed");
+        assert_eq!(depth.market_side.as_deref(), Some("YES"));
+        assert_eq!(depth.asset_id.as_deref(), Some("111"));
+        assert_eq!(depth.event_time_ms, Some(1_746_000_000_123));
+        assert_eq!(depth.source_sequence_id.as_deref(), Some("42"));
+        assert_eq!(depth.best_bid, Some(0.49));
+        assert_eq!(depth.best_ask, Some(0.51));
+        assert_eq!(depth.best_bid_size, Some(12.5));
+        assert_eq!(depth.best_ask_size, Some(4.5));
+    }
+
+    #[test]
+    fn test_book_depth_tracker_records_best_level_drop() {
+        let mut tracker = BookDepthTracker::default();
+        let first = MarketBookDepthEvidence {
+            market_side: Some("YES".to_string()),
+            best_bid: Some(0.49),
+            best_bid_size: Some(12.5),
+            ..Default::default()
+        };
+        let second = MarketBookDepthEvidence {
+            market_side: Some("YES".to_string()),
+            best_bid: Some(0.49),
+            best_bid_size: Some(7.0),
+            ..Default::default()
+        };
+
+        let first = tracker.annotate(Some(first)).expect("first evidence");
+        assert_eq!(first.best_bid_size_delta, None);
+        let second = tracker.annotate(Some(second)).expect("second evidence");
+        assert_eq!(second.best_bid_size_delta, Some(-5.5));
+        assert_eq!(second.best_bid_drop_qty, Some(5.5));
     }
 
     #[test]

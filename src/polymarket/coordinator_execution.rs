@@ -2,7 +2,9 @@ use tracing::{debug, info};
 
 use super::*;
 use crate::polymarket::strategy::pair_gated_tranche::{
-    pgt_effective_open_pair_band_value, pgt_open_leg_ceiling_from_opposite_bid,
+    pgt_absent_seed_retain_allowed, pgt_effective_open_pair_band_value,
+    pgt_open_leg_ceiling_from_opposite_bid, pgt_settlement_alpha_taker_open_exec_enabled,
+    pgt_shadow_taker_open_exec_enabled,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -15,7 +17,6 @@ pub(super) struct PgtShadowTakerOpenCandidate {
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
 const PGT_TAIL_NO_NEW_OPEN_SECS: u64 = 25;
-const PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED: bool = false;
 const PGT_SHADOW_TAKER_CLOSE_EXEC_ENABLED: bool = true;
 
 impl StrategyCoordinator {
@@ -632,7 +633,11 @@ impl StrategyCoordinator {
         {
             return false;
         }
-        if self.seconds_to_market_end().unwrap_or(u64::MAX) <= PGT_TAIL_NO_NEW_OPEN_SECS {
+        let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
+        if remaining_secs <= PGT_TAIL_NO_NEW_OPEN_SECS {
+            return false;
+        }
+        if !pgt_absent_seed_retain_allowed(remaining_secs, self.slot_last_ts(slot).elapsed()) {
             return false;
         }
         let snapshot = self.inv_rx.borrow();
@@ -1012,17 +1017,18 @@ impl StrategyCoordinator {
         if !self.cfg.strategy.is_pair_gated_tranche_arb() || !self.cfg.dry_run {
             return None;
         }
-        if !PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED {
+        if !pgt_shadow_taker_open_exec_enabled() {
             // Keep taker-open as a strategy counterfactual only. Executing the
-            // first leg aggressively can strand an expensive residual that later
-            // needs lossy repair, which is the opposite of PGT's maker-first
-            // replication target.
+            // first leg aggressively is only enabled for profiles whose replay
+            // validation was explicitly built around a taker seed.
             return None;
         }
         if inv.net_diff.abs() > PAIR_ARB_NET_EPS {
             return None;
         }
-        if self.endgame_phase() != EndgamePhase::Normal {
+        // Tail-taker profiles are explicitly validated in the soft-close tail;
+        // keep aggressive opens out of hard-close/freeze only.
+        if self.endgame_phase() >= EndgamePhase::HardClose {
             return None;
         }
 
@@ -1693,6 +1699,18 @@ impl StrategyCoordinator {
             }
             if intent.price > 0.0 && intent.size > 0.0 {
                 if intent.reason == BidReason::Provide {
+                    if self.cfg.dry_run
+                        && self.cfg.strategy.is_pair_gated_tranche_arb()
+                        && pgt_settlement_alpha_taker_open_exec_enabled()
+                    {
+                        if self.pgt_shadow_taker_open_fired_epoch == Some(self.pgt_decision_epoch) {
+                            return ProvideSideAction::None;
+                        }
+                        return ProvideSideAction::ShadowTaker {
+                            intent,
+                            limit_price: intent.price,
+                        };
+                    }
                     if let Some(limit_price) = shadow_taker_limit_price {
                         return ProvideSideAction::ShadowTaker {
                             intent,
@@ -1822,6 +1840,13 @@ impl StrategyCoordinator {
                     "⚡ PGT shadow taker-open | side={:?} price={:.4} size={:.2} limit={:.4}",
                     side, intent.price, intent.size, limit_price
                 );
+                let slot = OrderSlot::new(side, intent.direction);
+                let now = std::time::Instant::now();
+                self.slot_last_ts[slot.index()] = now;
+                match side {
+                    Side::Yes => self.yes_last_ts = now,
+                    Side::No => self.no_last_ts = now,
+                }
                 self.dispatch_taker_intent(
                     side,
                     intent.direction,

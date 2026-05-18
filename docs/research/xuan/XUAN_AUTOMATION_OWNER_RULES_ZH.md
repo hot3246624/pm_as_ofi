@@ -1,0 +1,199 @@
+# Xuan Frontier Automation Owner Rules
+
+目标：避免三个 worktree 的 agent 互相恢复、暂停、覆盖 automation，同时允许各自 owner 在边界清楚的 namespace 内建立自我迭代 loop。
+
+给其他 agent 的可执行行动指南见：
+
+```text
+docs/research/xuan/XUAN_AGENT_AUTOMATION_ACTION_GUIDE_ZH.md
+```
+
+## 核心分工
+
+```text
+主线程：权限、远程、副作用、最终判断
+Subagent：当前任务内的并行本地工作
+Automation：未来时间点或周期性的本地检查/汇报
+```
+
+不要把 subagent 或 automation 当成完整复制主线程环境的 worker。它们不应默认拥有 `ssh-agent`、`gh auth`、私有 token、后台进程、当前 shell env 或已登录状态。
+
+主线程负责：
+
+- `ssh`、`gh auth`、`gh pr`、`gh workflow`。
+- `git fetch`、`git pull`、`git push`、创建 PR、merge。
+- 访问私有 repo/registry、处理密钥/token/keychain。
+- 部署、远程服务器操作、最终验收。
+- 最终架构判断、实验方向裁决、是否进入 shadow/live。
+
+Subagent 负责：
+
+- explorer：只读调查代码入口、数据流、配置来源、测试覆盖、日志/CSV/parquet。
+- worker：在明确文件边界内做本地代码修改或报告生成。
+- verifier：跑本地测试、小样本复现、输出一致性检查。
+
+Automation 负责：
+
+- heartbeat：稍后回到当前 thread 检查长实验或日志。
+- cron：周期性读取本地 workspace 输出，生成本地检查/汇报/quiet archive。
+
+需要身份的事由主线程做；需要并行脑力的事交给 subagent；需要未来定时的事交给 automation；需要最终判断的事回到主线程。
+
+## Owner 与命名
+
+当前是多 worktree / 多 agent 协作，不是一个 agent 独占所有 automation。
+
+```text
+/Users/hot/web3Scientist/pm_as_ofi-xuan-frontier
+  owner: xuan frontier
+  automation namespace: xuan-frontier-*
+
+/Users/hot/web3Scientist/pm_as_ofi-xuan-research
+  owner: xuan research
+  automation namespace: xuan-research-* 或该 agent 明确声明的 xuan-research 前缀
+
+/Users/hot/web3Scientist/pm_as_ofi-localagg
+  owner: localagg
+  automation namespace: local-agg-*
+```
+
+规则：
+
+- 每个 agent 可以在自己的 worktree 和 namespace 下创建/更新 automation。
+- `xuan frontier` 只拥有 `xuan-frontier-*`，不拥有 `xuan-research-*` 或 `local-agg-*`。
+- `xuan research` 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*`，但可以维护自己的 `xuan-research-*`。
+- `localagg` 不应创建、恢复、暂停、删除或修改 `xuan-frontier-*`，但可以维护自己的 `local-agg-*`。
+- 如果发现其他 namespace 状态异常，只报告给对应 owner、主线程或用户，不进入对方 worktree，不运行对方 guard，不直接修。
+- 旧的非规范 id 例如 `codex-owned-xuan-d-verifier-loop` 如果要恢复，建议由 `xuan research` owner 迁移/重建为 `xuan-research-*` 命名，而不是让 xuan frontier 代改。
+
+## Automation 类型
+
+`xuan-frontier-research-loop` 是本地 quiet archive loop，不是远程执行器。由于 Codex cron-generated thread 目前没有可靠隐藏 archive directive，这个 loop 默认保持 `PAUSED`；需要本地巡检时由主线程手动运行或用户显式打开。
+
+禁止：
+
+- SSH、rsync、远程 NFS、远程 EC2 job。
+- GitHub/`gh` push、commit、merge、创建 PR。
+- 启停服务、重启 shadow、启动 broker、修改 env/root/protocol/market universe。
+- 读取或扫描 `/mnt/poly-replay`、`replay_published`、`raw`、大 SQLite replay。
+- 创建 sibling xuan heartbeat/cron，或启动长时间 subagent。
+
+允许：
+
+- 读本地 repo、docs、scripts、artifacts、ledger。
+- 运行本地 lightweight discovery/guard/test。
+- 生成本地 patch proposal、data-source request、verifier request spec。
+- 无 material 发现时最终输出必须只有 archive directive：
+
+```text
+::archive{reason="routine xuan frontier checkpoint"}
+```
+
+- routine run 禁止输出摘要、bullet、status、`quiet archive` 字样或“no changes”。
+
+`xuan-frontier-remote-verifier-loop` 是受限远端验证 loop，用来推进 P2/source-of-truth/verifier 队列，但仍不是生产执行器。推荐频率：每小时一次；真正的降噪机制是 no-new-day / ordinary UNKNOWN 自动归档。
+
+允许：
+
+- 使用显式 key 做 SSH preflight：
+
+```bash
+ssh -i ~/.ssh/polymarket-Ireland.pem -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=8 \
+  ubuntu@ec2-3-248-230-60.eu-west-1.compute.amazonaws.com <command>
+```
+
+- 只读检查 research server 上的白名单输入：
+  - `/mnt/poly-verification-store/completion_unwind_event_store_v2/*`
+  - `/mnt/poly-cache/taker_buy_signal_core_v2_strict_l1/*`
+  - `/home/ubuntu/xuan_frontier_runs/*`
+- 只写 `xuan frontier` 自己的输出目录：
+  - `/home/ubuntu/xuan_frontier_runs/xuan-frontier-remote-verifier-loop/<timestamp>/`
+  - `/home/ubuntu/xuan_frontier_runs/d_branch_minorder_*`
+- 启动前检查同类 verifier 是否已在运行，避免重叠。
+- 每次非 archive 运行必须写 manifest，包含命令、时间、host、输入路径、脚本 hash、指标摘要和 `KEEP` / `DISCARD` / `UNKNOWN` verdict。
+
+禁止：
+
+- `rsync`、`scp`、tunnel、本地挂远端 NFS。
+- 从 automation 扫 raw/replay SQLite。
+- 修改 collector/raw/replay/rebuild/publish。
+- 启停服务、部署、修改 broker/shared ingress/env/root/protocol/market universe、live 交易。
+- 做最终生产判断。`KEEP` 只能表示“建议主线程考虑 patch/verifier/shadow”，不是上线授权。
+
+可见输出规则：
+
+- `KEEP` / `DISCARD` 新 verifier 结果：允许浮出，附 artifact 和 verdict。
+- 重复 verifier 基础设施失败、需要主线程处理：允许浮出。
+- no-new-day、preflight 成功但无工作、普通 SSH preflight 失败、overlap/no-op、普通 `UNKNOWN`：必须自动归档：
+
+```text
+::archive{reason="routine xuan frontier remote verifier checkpoint"}
+```
+
+Automation prompt 必须自包含，不能依赖当前聊天里的隐含上下文。prompt 里必须写明：
+
+- 工作目录。
+- 可读输入和禁止读取的数据源。
+- 可运行命令边界。
+- 输出格式和何时 quiet archive。
+- 失败时只报告失败命令、错误摘要和缺少的本地输入。
+
+普通 subagent 和 local archive automation prompt 都应包含这类固定约束：
+
+```text
+你可能不在主线程的权限环境中。不要依赖 ssh、gh、git remote、私有 token、
+当前 shell env、后台服务或交互登录状态。不要运行 git fetch、git push、gh、ssh。
+只使用本地已有文件和依赖。如果遇到权限或环境问题，停止并说明缺少什么。
+```
+
+Subagent 任务必须满足：
+
+- 目标明确。
+- 输入在本地。
+- 输出可检查。
+- 文件边界清楚。
+- 不依赖权限或交互登录。
+- 不和其他 worker 写同一组文件。
+
+禁止把 subagent 用作：
+
+- “优化整个系统”这类无边界任务。
+- 远程 SSH/GitHub/CI/部署执行器。
+- 与另一个 worker 同时改同一文件的并发 writer。
+- 主线程等待它完成后才开始工作的关键路径阻塞项。
+
+## 远程 Artifact 与 Job
+
+- 文档里的远程路径只作为 evidence reference。
+- 需要生产相关远程 research/verifier 时，只能通过标准 job spec 交给运行面或显式授权的 runner。
+- `xuan-frontier-remote-verifier-loop` 只能执行白名单 verifier/read-only 远程命令，不能触碰生产面。
+- job 输出目录必须唯一，不能多个 agent 共用。
+
+## Remote Fallback
+
+部分历史脚本带有 SSH/rsync fallback。automation 调用这些脚本时必须显式禁用远程路径：
+
+```bash
+REMOTE_INSPECT=0 REMOTE_DISCOVERY=0 <command>
+```
+
+如果本地缺数据，automation 只记录 local ledger/archive，不把 SSH denied 当作需要刷屏的 blocker。
+
+## 修改前检查
+
+`xuan frontier` owner 或主线程在触碰 `xuan-frontier-*` automation 前必须先运行：
+
+```bash
+python3 scripts/check_xuan_automation_guard.py
+```
+
+预期只有：
+
+```text
+active_xuan_frontier_ids = [
+  "xuan-frontier-remote-verifier-loop",
+]
+ok = true
+```
+
+如果 guard 失败，非 owner agent 只报告，不修复。注意：这个 guard 只检查 `xuan-frontier-*` owner 状态，不代表禁止 `xuan-research` 或 `localagg` 在自己的 namespace 下运行 automation；它们也不需要主动运行这个 guard。

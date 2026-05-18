@@ -155,6 +155,7 @@ impl InventoryManager {
                                     "size": fill.filled_size,
                                     "price": fill.price,
                                     "status": format!("{:?}", fill.status),
+                                    "fill_source": fill.source.as_str(),
                                     "order_id": fill.order_id,
                                     "working_net_diff": self.snapshot.working.net_diff,
                                     "working_portfolio_cost": self.snapshot.working.portfolio_cost,
@@ -735,6 +736,7 @@ impl InventoryManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polymarket::messages::FillSource;
     use crate::polymarket::recorder::{
         RecorderConfig, RecorderHandle, RecorderMarketMode, RecorderSessionMeta,
     };
@@ -750,6 +752,7 @@ mod tests {
             filled_size: size,
             price,
             status: FillStatus::Matched,
+            source: FillSource::Unknown,
             ts: Instant::now(),
         }
     }
@@ -828,6 +831,7 @@ mod tests {
             filled_size: 10.0,
             price: 0.40,
             status: FillStatus::Confirmed,
+            source: FillSource::Unknown,
             ts: Instant::now(),
         };
         let no = FillEvent {
@@ -837,6 +841,7 @@ mod tests {
             filled_size: 10.0,
             price: 0.58,
             status: FillStatus::Confirmed,
+            source: FillSource::Unknown,
             ts: Instant::now(),
         };
         im.apply_fill(&yes);
@@ -858,6 +863,7 @@ mod tests {
             filled_size: 15.0,
             price: 0.50,
             status: FillStatus::Confirmed,
+            source: FillSource::Unknown,
             ts: Instant::now(),
         };
         let no = FillEvent {
@@ -867,6 +873,7 @@ mod tests {
             filled_size: 10.0,
             price: 0.41,
             status: FillStatus::Confirmed,
+            source: FillSource::Unknown,
             ts: Instant::now(),
         };
         let pending_no = FillEvent {
@@ -876,6 +883,7 @@ mod tests {
             filled_size: 5.0,
             price: 0.51,
             status: FillStatus::Matched,
+            source: FillSource::Unknown,
             ts: Instant::now(),
         };
 
@@ -946,6 +954,7 @@ mod tests {
                 filled_size: 5.0,
                 price: 0.48,
                 status: FillStatus::Confirmed,
+                source: FillSource::DryRunTradeSellTouch,
                 ts: Instant::now(),
             }))
             .await;

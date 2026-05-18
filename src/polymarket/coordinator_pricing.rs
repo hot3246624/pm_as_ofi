@@ -1,7 +1,9 @@
 use tracing::debug;
 
 use super::*;
-use crate::polymarket::strategy::pair_gated_tranche::pgt_same_side_add_clip_qty;
+use crate::polymarket::strategy::pair_gated_tranche::{
+    pgt_same_side_add_clip_qty, pgt_settlement_alpha_inventory_net_cap,
+};
 
 impl StrategyCoordinator {
     // ═════════════════════════════════════════════════
@@ -536,8 +538,18 @@ impl StrategyCoordinator {
         }
     }
 
-    fn can_buy_pair_gated_tranche(&self, intent: StrategyIntent) -> bool {
+    pub(crate) fn can_buy_pair_gated_tranche_for_inventory_mode(
+        &self,
+        intent: StrategyIntent,
+        settlement_alpha_net_cap: Option<f64>,
+    ) -> bool {
         let snapshot = self.current_inventory_snapshot();
+        if let Some(max_net_diff) = settlement_alpha_net_cap {
+            return match intent.side {
+                Side::Yes => snapshot.working.net_diff + intent.size <= max_net_diff + 1e-4,
+                Side::No => snapshot.working.net_diff - intent.size >= -max_net_diff - 1e-4,
+            };
+        }
         let ledger = snapshot.pair_ledger;
         let active = ledger
             .active_tranche
@@ -560,6 +572,13 @@ impl StrategyCoordinator {
         }
 
         !ledger.capital_state.would_block_new_open_due_to_capital
+    }
+
+    fn can_buy_pair_gated_tranche(&self, intent: StrategyIntent) -> bool {
+        self.can_buy_pair_gated_tranche_for_inventory_mode(
+            intent,
+            pgt_settlement_alpha_inventory_net_cap(),
+        )
     }
 
     pub(super) fn should_clear_on_toxic(&self, side: Side) -> bool {

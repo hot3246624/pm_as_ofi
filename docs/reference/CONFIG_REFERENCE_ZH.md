@@ -161,6 +161,7 @@ profile 说明：
 | `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed seed clip `57.6` |
 | `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed seed clip `30.0` |
 | `xuan_ladder_v1` | 最新 xuan public 行为 shadow 近似 + profit guard | 开盘后 4s 开始；收盘前 25s 停新 first leg；seed pair cap `1.040`；completion cap 按 residual age 分层；fresh residual 不花 repair budget；age >= 90s 可用 `1.010` stale exposure insurance；age >= 45s 或 remaining <= 45s 才允许真实 surplus repair budget，且总 pair cost 仍封顶 `1.030`；亏损闭合后新 first leg 启用 breakeven-path brake；clip 随轮内时间梯度变化 |
+| `xuan_high_pressure_v1` | high-side public BUY pressure settlement-alpha paper-shadow | 开盘后 60s 开始；收盘前 120s 停新仓；只在 dry-run/shadow 报价；触发条件为 5s high-side BUY qty `>=10` 且 high/low BUY qty ratio `>=1.0`；BUY price band `[0.50,0.65]`；clip `10.0`；public flow haircut `0.10`；side cap `100`；market gross cap `250`；trade fresh `1500ms`；seed cooldown `1000ms`；该 profile 是 settlement inventory，不按 pair-completion residual 解释 |
 
 Replay profile 下的 `fixed seed clip` 是 replay 搜索里的实际 seed clip；`xuan_ladder_v1` 使用内置时间梯度 clip。它们都会绕过 legacy seed 缩量逻辑，例如 “no immediate completion 时乘 `0.60`” 和 thin-slack clip haircut；否则 shadow 样本会变成不同策略，不能直接验证 replay/xuan 候选。
 
@@ -217,11 +218,11 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_PGT_FIXED_AUTO_BUILD` | fixed 单轮默认 `true`；shadow loop 默认 `false` | 单轮 `run_pgt_fixed_shadow_next.sh` 仍会按需 build；连续 loop 内禁用每轮 build，避免外部源码 mtime 变化导致错过开盘 |
 | `PM_PGT_FIXED_PRESTART_SECS` | `10` | fixed worker 在目标 round start 前约 10 秒启动；覆盖 Rust 进程启动、shared-ingress client 握手与 feed attach 的热路径开销 |
 | `PM_PGT_FIXED_INTERVAL_SECS` | `300` | fixed BTC 5m round 的生命周期长度；用于迟到启动防护，不参与策略报价 |
-| `PM_PGT_FIXED_STALE_SKIP_GRACE_SECS` | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` 或 `2` | fixed worker 醒来后若已超过 `round_start + interval + grace`，直接 `stale_target_skipped` 并以 `76` 退出，避免机器睡眠/DNS 卡顿后记录零 tick 伪样本 |
+| `PM_PGT_FIXED_STALE_SKIP_GRACE_SECS` | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` 或 shadow loop 默认 `45` | fixed worker 醒来后若已超过 `round_start + interval + grace`，直接 `stale_target_skipped` 并以 `76` 退出，避免机器睡眠/DNS 卡顿后记录零 tick 伪样本 |
 | `PM_PGT_SHADOW_LOOP_OVERLAP` | `true` | shadow loop 使用 overlapping scheduler，每轮提前调度下一个 fixed worker，避免当前 worker 到 end+grace 后才串行启动下一轮 |
 | `PM_PGT_FIXED_INSTANCE_PER_ROUND` | overlap loop 默认 `true` | overlapping worker 按 round timestamp 拆分 `PM_INSTANCE_ID`、log root 与 recorder root，避免前后轮短暂重叠时互相覆盖 |
 | `PM_PGT_SHADOW_LOOP_BACKOFF_SEC` | `1` | 正常轮转退出后的重启间隔 |
-| `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `2` | fixed shadow round 收盘后快速退出，避免下一轮迟到 |
+| `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `45` | fixed shadow round 收盘后继续追踪 45 秒；下一轮由 overlap loop 独立预启动，不再依赖上一轮退出后 systemd 重启 |
 | `PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED` | shadow loop 默认 `false` | PGT shadow 轮转默认不跑 post-close redeem lifecycle，redeem 行为单独验证 |
 | `PM_CLAIM_MONITOR` | fixed shadow 默认 `false` | PGT shadow 热启动不跑 claim monitor，避免非交易 HTTP 阻塞下一轮开盘 |
 | `PM_MIN_ORDER_SIZE` | fixed shadow 默认 `5` | PGT shadow 固定最低下单量，避免每轮启动同步探测 `/books` 拖慢开盘 |

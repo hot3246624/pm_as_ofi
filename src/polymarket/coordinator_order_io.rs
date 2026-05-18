@@ -1620,9 +1620,34 @@ impl StrategyCoordinator {
                 self.update_book(yes_bid, yes_ask, no_bid, no_ask);
                 self.stats.ticks += 1;
             }
-            MarketDataMsg::TradeTick { .. } => {
-                // Trades are primarily for OFI actor; Coordinator mostly skips
-                // but we could track last trade prices here if needed.
+            MarketDataMsg::TradeTick {
+                market_side,
+                taker_side,
+                price,
+                size,
+                ts,
+                ..
+            } => {
+                self.stats.market_trade_ticks = self.stats.market_trade_ticks.saturating_add(1);
+                let snapshot = PublicTradeSnapshot {
+                    market_side,
+                    taker_side,
+                    price,
+                    size,
+                    ts,
+                };
+                if taker_side == TakerSide::Sell {
+                    self.stats.market_sell_trade_ticks =
+                        self.stats.market_sell_trade_ticks.saturating_add(1);
+                    self.last_public_trade = Some(snapshot);
+                    self.last_public_trade_by_side[market_side.index()] = Some(snapshot);
+                } else if taker_side == TakerSide::Buy {
+                    self.last_public_buy_trade_by_side[market_side.index()] = Some(snapshot);
+                    self.record_public_buy_pressure(snapshot);
+                }
+                // Trades are primarily for OFI actor. PGT m0001/D+ consume
+                // latest public SELL ticks; xuan frontier pressure profiles
+                // consume recent public BUY pressure separately.
             }
             MarketDataMsg::OracleLagSelection {
                 round_end_ts,

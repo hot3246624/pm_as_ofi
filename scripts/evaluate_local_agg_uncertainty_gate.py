@@ -28,6 +28,7 @@ class GateConfig:
     min_margin_bps: float
     quantile: float
     max_train_quantile_bps: float
+    max_train_max_bps: float
     safety_bps: float
     max_side_rate: float
     max_source_spread_bps: float
@@ -45,7 +46,8 @@ class GateConfig:
         )
         return (
             f"n{self.min_samples}_m{self.min_margin_bps:g}_q{self.quantile:g}"
-            f"_maxq{self.max_train_quantile_bps:g}_safe{self.safety_bps:g}"
+            f"_maxq{self.max_train_quantile_bps:g}_max{self.max_train_max_bps:g}"
+            f"_safe{self.safety_bps:g}"
             f"_side{self.max_side_rate:g}_spr{spread}_rmaxm{round_margin}"
             f"_rescue{rescue}"
         )
@@ -197,13 +199,13 @@ def key_levels(row: dict) -> list[tuple[str, tuple[str, ...]]]:
         ("no_spread", (symbol, subset, rule, sources, side, sc, ex, d, m)),
         ("shape_margin", (symbol, subset, rule, sources, side, sc, ex, m)),
         ("shape", (symbol, subset, rule, sources, side, sc, ex)),
-        ("source_margin", (symbol, subset, rule, sources, side, m)),
-        ("source", (symbol, subset, rule, sources, side)),
-        ("policy_margin", (symbol, subset, rule, side, m)),
-        ("policy", (symbol, subset, rule, side)),
-        ("symbol_margin", (symbol, side, m)),
-        ("symbol", (symbol, side)),
-        ("all", ("ALL", side)),
+        ("symbol_rule_quality_full", (symbol, rule, side, sc, ex, d, s, m)),
+        ("symbol_rule_quality_no_delta", (symbol, rule, side, sc, ex, s, m)),
+        ("symbol_rule_quality_no_spread", (symbol, rule, side, sc, ex, d, m)),
+        ("symbol_rule_quality_margin", (symbol, rule, side, sc, ex, m)),
+        ("symbol_rule_quality", (symbol, rule, side, sc, ex)),
+        ("symbol_quality_margin", (symbol, side, sc, ex, m)),
+        ("symbol_quality", (symbol, side, sc, ex)),
     ]
 
 
@@ -310,6 +312,56 @@ def choose_rescue_stats(
     return level, stats
 
 
+def level_keeps_delta(level: str | None) -> bool:
+    return level in {
+        "full",
+        "no_spread",
+        "symbol_rule_quality_full",
+        "symbol_rule_quality_no_spread",
+    }
+
+
+def stale_pair_requires_delta_history(row: dict, level: str | None) -> bool:
+    if level_keeps_delta(level):
+        return False
+    if str(row.get("symbol", "")) != "hype/usd":
+        return False
+    if str(row.get("source_subset", "")) != "drop_binance":
+        return False
+    if str(row.get("rule", "")) != "after_then_before":
+        return False
+    if str(row.get("sources", "")) != "bybit;hyperliquid":
+        return False
+    if source_count_bucket(row) != "n2" or exact_bucket(row) != "no_exact":
+        return False
+    delta_ms = to_float(row.get("close_abs_delta_ms"))
+    return delta_ms is not None and delta_ms >= 2_500.0
+
+
+def bnb_low_source_requires_delta_history(row: dict, level: str | None) -> bool:
+    if level_keeps_delta(level):
+        return False
+    if str(row.get("symbol", "")) != "bnb/usd":
+        return False
+    if str(row.get("source_subset", "")) != "drop_okx":
+        return False
+    if str(row.get("rule", "")) != "after_then_before":
+        return False
+    if exact_bucket(row) != "no_exact":
+        return False
+    sources = str(row.get("sources", ""))
+    source_count = source_count_bucket(row)
+    if source_count == "n1" and sources == "binance":
+        return True
+    delta_ms = to_float(row.get("close_abs_delta_ms"))
+    return (
+        source_count == "n2"
+        and sources == "binance;bybit"
+        and delta_ms is not None
+        and delta_ms >= 1_000.0
+    )
+
+
 def gate_row(
     row: dict,
     index: dict[tuple[str, tuple[str, ...]], BucketStats],
@@ -347,6 +399,34 @@ def gate_row(
     level, stats = choose_stats(row, index, cfg)
     if stats is None:
         return False, {"gate_status": "gated", "gate_reason": "insufficient_history"}
+    if stale_pair_requires_delta_history(row, level):
+        return False, {
+            "gate_status": "gated",
+            "gate_reason": "stale_pair_requires_delta_history",
+            "gate_key_level": level,
+            "gate_train_n": stats.n,
+            "gate_train_side_errors": stats.side_errors,
+            "gate_train_q_bps": stats.q,
+            "gate_train_q95_bps": stats.q95,
+            "gate_train_q99_bps": stats.q99,
+            "gate_train_mean_bps": stats.mean_bps,
+            "gate_train_max_bps": stats.max_bps,
+            "gate_required_margin_bps": stats.q + cfg.safety_bps,
+        }
+    if bnb_low_source_requires_delta_history(row, level):
+        return False, {
+            "gate_status": "gated",
+            "gate_reason": "bnb_low_source_requires_delta_history",
+            "gate_key_level": level,
+            "gate_train_n": stats.n,
+            "gate_train_side_errors": stats.side_errors,
+            "gate_train_q_bps": stats.q,
+            "gate_train_q95_bps": stats.q95,
+            "gate_train_q99_bps": stats.q99,
+            "gate_train_mean_bps": stats.mean_bps,
+            "gate_train_max_bps": stats.max_bps,
+            "gate_required_margin_bps": stats.q + cfg.safety_bps,
+        }
 
     side_rate = stats.side_errors / stats.n if stats.n else 1.0
     if side_rate > cfg.max_side_rate + 1e-12:
@@ -366,6 +446,19 @@ def gate_row(
         return False, {
             "gate_status": "gated",
             "gate_reason": "train_quantile_too_wide",
+            "gate_key_level": level,
+            "gate_train_n": stats.n,
+            "gate_train_side_errors": stats.side_errors,
+            "gate_train_q_bps": stats.q,
+            "gate_train_q95_bps": stats.q95,
+            "gate_train_q99_bps": stats.q99,
+            "gate_train_mean_bps": stats.mean_bps,
+            "gate_train_max_bps": stats.max_bps,
+        }
+    if cfg.max_train_max_bps > 0 and stats.max_bps > cfg.max_train_max_bps + 1e-12:
+        return False, {
+            "gate_status": "gated",
+            "gate_reason": "train_max_too_wide",
             "gate_key_level": level,
             "gate_train_n": stats.n,
             "gate_train_side_errors": stats.side_errors,
@@ -505,6 +598,7 @@ def evaluate_config(rows: list[dict], cfg: GateConfig, min_train_rounds: int, te
             "min_margin_bps": cfg.min_margin_bps,
             "quantile": cfg.quantile,
             "max_train_quantile_bps": cfg.max_train_quantile_bps,
+            "max_train_max_bps": cfg.max_train_max_bps,
             "safety_bps": cfg.safety_bps,
             "max_side_rate": cfg.max_side_rate,
             "max_source_spread_bps": cfg.max_source_spread_bps,
@@ -541,6 +635,7 @@ def grid_configs(args: argparse.Namespace) -> list[GateConfig]:
                                             margin,
                                             q,
                                             max_q,
+                                            args.max_train_max_bps,
                                             safety,
                                             side_rate,
                                             spread,
@@ -662,6 +757,7 @@ def export_model(path: Path, rows: list[dict], cfg: GateConfig) -> None:
             "min_margin_bps": cfg.min_margin_bps,
             "quantile": cfg.quantile,
             "max_train_quantile_bps": cfg.max_train_quantile_bps,
+            "max_train_max_bps": cfg.max_train_max_bps,
             "safety_bps": cfg.safety_bps,
             "max_side_rate": cfg.max_side_rate,
             "max_source_spread_bps": cfg.max_source_spread_bps,
@@ -684,6 +780,20 @@ def export_model(path: Path, rows: list[dict], cfg: GateConfig) -> None:
             "delta_bucket",
             "spread_bucket",
             "margin_bucket",
+        ],
+        "supported_bucket_levels": [
+            "full",
+            "no_delta",
+            "no_spread",
+            "shape_margin",
+            "shape",
+            "symbol_rule_quality_full",
+            "symbol_rule_quality_no_delta",
+            "symbol_rule_quality_no_spread",
+            "symbol_rule_quality_margin",
+            "symbol_rule_quality",
+            "symbol_quality_margin",
+            "symbol_quality",
         ],
         "rescue_bucket_key_order": [
             "symbol",
@@ -714,7 +824,8 @@ def main() -> int:
     ap.add_argument("--min-margin-bps", type=float, default=1.0)
     ap.add_argument("--quantile", type=float, default=0.95)
     ap.add_argument("--max-train-quantile-bps", type=float, default=5.0)
-    ap.add_argument("--safety-bps", type=float, default=0.5)
+    ap.add_argument("--max-train-max-bps", type=float, default=5.0, help="0 disables the historical bucket max-error gate")
+    ap.add_argument("--safety-bps", type=float, default=0.75)
     ap.add_argument("--max-side-rate", type=float, default=0.0)
     ap.add_argument("--max-source-spread-bps", type=float, default=0.0, help="0 disables this global spread gate")
     ap.add_argument("--max-round-max-margin-bps", type=float, default=0.0, help="0 disables the round-level volatility gate")
@@ -762,6 +873,7 @@ def main() -> int:
             min_margin_bps=float(best_summary["min_margin_bps"]),
             quantile=float(best_summary["quantile"]),
             max_train_quantile_bps=float(best_summary["max_train_quantile_bps"]),
+            max_train_max_bps=float(best_summary["max_train_max_bps"]),
             safety_bps=float(best_summary["safety_bps"]),
             max_side_rate=float(best_summary["max_side_rate"]),
             max_source_spread_bps=float(best_summary["max_source_spread_bps"]),
@@ -775,6 +887,7 @@ def main() -> int:
             min_margin_bps=args.min_margin_bps,
             quantile=args.quantile,
             max_train_quantile_bps=args.max_train_quantile_bps,
+            max_train_max_bps=args.max_train_max_bps,
             safety_bps=args.safety_bps,
             max_side_rate=args.max_side_rate,
             max_source_spread_bps=args.max_source_spread_bps,

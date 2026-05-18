@@ -5,13 +5,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 PREFIX="${1:-btc-updown-5m}"
-ROUND_OFFSET="${PM_FIXED_ROUND_OFFSET:-1}"
+ROUND_OFFSET="${PM_FIXED_ROUND_OFFSET:-0}"
 MIN_REMAINING_SECS="${PM_FIXED_MIN_REMAINING_SECS:-240}"
 
 if [[ "$ROUND_OFFSET" =~ ^[0-9]+$ ]] && [[ "$MIN_REMAINING_SECS" =~ ^[0-9]+$ ]]; then
   now="$(date +%s)"
   current_base="$(( (now / 300) * 300 ))"
-  target_end="$(( current_base + (300 * ROUND_OFFSET) ))"
+  target_start="$(( current_base + (300 * ROUND_OFFSET) ))"
+  target_end="$(( target_start + 300 ))"
   remaining="$(( target_end - now ))"
   if (( remaining < MIN_REMAINING_SECS )); then
     ROUND_OFFSET="$(( ROUND_OFFSET + 1 ))"
