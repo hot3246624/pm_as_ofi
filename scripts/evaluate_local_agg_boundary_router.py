@@ -199,6 +199,31 @@ ROUTER_SOURCE_FALLBACK_POLICIES = {
     ],
 }
 
+COINBASE_OLDER_SHADOW_SOURCE_SUBSET = "coinbase_older_hard_fallback_subsets_age5000_20000"
+COINBASE_OLDER_SHADOW_TARGET_SOURCE_SUBSETS = {
+    "drop_binance",
+    "drop_okx",
+    "eth_binance_missing_fallback",
+    "sol_okx_missing_fallback",
+    "doge_binance_fallback",
+    "sol_binance_fallback",
+    "only_binance_coinbase",
+}
+COINBASE_OLDER_SHADOW_MIN_AGE_MS = 5_000
+COINBASE_OLDER_SHADOW_MAX_AGE_MS = 20_000
+
+
+def coinbase_older_shadow_target_hit(symbol: str, source_subset: str, current_sources: set[str]) -> bool:
+    if source_subset not in COINBASE_OLDER_SHADOW_TARGET_SOURCE_SUBSETS:
+        return False
+    if "coinbase" in current_sources:
+        return False
+    if symbol == "hype/usd" and source_subset == "drop_binance":
+        return False
+    if symbol == "doge/usd" and source_subset == "drop_binance" and current_sources == {"okx"}:
+        return False
+    return True
+
 
 def load_bias_cache(path: str) -> dict[tuple[str, str], float]:
     if not path:
@@ -560,6 +585,59 @@ def source_fallback_hit(sample: dict) -> dict | None:
             "sources": ";".join(source for source, _, _ in sorted(per_source)),
         }
     return None
+
+
+def apply_coinbase_older_shadow(sample: dict, row: dict) -> dict:
+    if row.get("status") != "ok":
+        return row
+    current_sources = {
+        source
+        for source in str(row.get("sources", "")).split(";")
+        if source
+    }
+    if not coinbase_older_shadow_target_hit(sample["symbol"], row.get("source_subset", ""), current_sources):
+        return row
+
+    candidates = [
+        (off, price)
+        for source, off, price in sample["close_points"]
+        if source == "coinbase"
+        and -COINBASE_OLDER_SHADOW_MAX_AGE_MS <= off <= -COINBASE_OLDER_SHADOW_MIN_AGE_MS
+    ]
+    if not candidates:
+        return row
+
+    off, pred_close = max(candidates, key=lambda point: point[0])
+    rtds_open = sample["rtds_open"]
+    rtds_close = sample["rtds_close"]
+    side_yes = pred_close >= rtds_open
+    truth_yes = rtds_close >= rtds_open
+    close_diff_bps = abs(pred_close - rtds_close) / max(abs(rtds_close), 1e-12) * 10_000.0
+    margin_bps = abs(pred_close - rtds_open) / max(abs(rtds_open), 1e-12) * 10_000.0
+    shadow = dict(row)
+    shadow.update(
+        {
+            "status": "ok",
+            "filter_reason": "",
+            "source_subset": COINBASE_OLDER_SHADOW_SOURCE_SUBSET,
+            "rule": "last_before",
+            "min_sources": 1,
+            "pred_close": pred_close,
+            "rtds_open": rtds_open,
+            "rtds_close": rtds_close,
+            "pred_yes": side_yes,
+            "truth_yes": truth_yes,
+            "side_error": side_yes != truth_yes,
+            "close_diff_bps": close_diff_bps,
+            "direction_margin_bps": margin_bps,
+            "source_count": 1,
+            "source_spread_bps": 0.0,
+            "exact_sources": 0,
+            "close_abs_delta_ms": abs(off),
+            "sources": "coinbase",
+        }
+    )
+    return shadow
 
 
 def source_fallback_rescues_filtered(symbol: str, filter_reason: str, fallback_hit: dict) -> bool:
@@ -4183,6 +4261,11 @@ def main() -> int:
         action="store_true",
         help="Use all boundary-tape ticks even if they arrived after the runtime router decision. Default is ready-time aware.",
     )
+    parser.add_argument(
+        "--coinbase-older-shadow",
+        action="store_true",
+        help="Evaluate the shadow-only older Coinbase 5s..20s replacement over eligible router hits.",
+    )
     args = parser.parse_args()
 
     samples = [
@@ -4203,6 +4286,8 @@ def main() -> int:
     reasons = Counter()
     for sample in samples:
         row = evaluate_sample(sample, args.pre_ms, args.post_ms, biases)
+        if args.coinbase_older_shadow:
+            row = apply_coinbase_older_shadow(sample, row)
         for key in (
             "local_started_ms",
             "local_ready_ms",

@@ -45,7 +45,7 @@ use pm_as_ofi::polymarket::messages::*;
 use pm_as_ofi::polymarket::ofi::{OfiConfig, OfiEngine};
 use pm_as_ofi::polymarket::order_manager::OrderManager;
 use pm_as_ofi::polymarket::recorder::{
-    RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
+    MarketBookDepthEvidence, RecorderHandle, RecorderSessionMeta, RecorderSessionStart,
 };
 use pm_as_ofi::polymarket::strategy::{
     PgtXuanM0001NoSeedReason, StrategyKind, PGT_XUAN_M0001_NO_SEED_REASON_COUNT,
@@ -4822,6 +4822,8 @@ enum SharedIngressWireMsg {
         no_bid: f64,
         no_ask: f64,
         ts_ms: u64,
+        #[serde(default)]
+        depth: Option<MarketBookDepthEvidence>,
     },
     MarketTradeTick {
         asset_id: String,
@@ -15914,6 +15916,95 @@ fn local_boundary_has_source(hit: &LocalBoundaryShadowHit, source: LocalPriceSou
         .any(|contribution| contribution.source == source)
 }
 
+fn local_boundary_coinbase_older_shadow_target_hit(
+    symbol: &str,
+    hit: &LocalBoundaryShadowHit,
+) -> bool {
+    if local_boundary_has_source(hit, LocalPriceSource::Coinbase) {
+        return false;
+    }
+    if symbol == "hype/usd" && hit.source_subset_name == "drop_binance" {
+        return false;
+    }
+    if symbol == "doge/usd"
+        && hit.source_subset_name == "drop_binance"
+        && local_boundary_source_set_eq(hit, LOCAL_BOUNDARY_SOURCES_ONLY_OKX)
+    {
+        return false;
+    }
+    matches!(
+        hit.source_subset_name,
+        "drop_binance"
+            | "drop_okx"
+            | "eth_binance_missing_fallback"
+            | "sol_okx_missing_fallback"
+            | "doge_binance_fallback"
+            | "sol_binance_fallback"
+            | "only_binance_coinbase"
+    )
+}
+
+fn local_coinbase_older_shadow_hit_from_candidate(
+    candidate: LocalSourceLagCloseCandidate,
+) -> LocalBoundaryShadowHit {
+    LocalBoundaryShadowHit {
+        policy_name: LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_POLICY,
+        source_subset_name: LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET,
+        rule: LocalBoundaryCloseRule::LastBefore,
+        min_sources: 1,
+        close_price: candidate.price,
+        close_ts_ms: candidate.ts_ms,
+        source_count: 1,
+        source_spread_bps: 0.0,
+        close_exact_sources: usize::from(candidate.exact),
+        source_contributions: vec![LocalCloseSourceContribution {
+            source: candidate.source,
+            raw_close_price: candidate.raw_price,
+            adjusted_close_price: candidate.price,
+            close_ts_ms: candidate.ts_ms,
+            close_exact: candidate.exact,
+        }],
+    }
+}
+
+fn local_boundary_select_coinbase_older_shadow(
+    symbol: &str,
+    boundary_shadow_outcomes: &[LocalBoundaryShadowOutcome],
+    source_lag_candidates: &[LocalSourceLagCloseCandidate],
+) -> Option<LocalBoundaryShadowOutcome> {
+    let target_without_coinbase = boundary_shadow_outcomes
+        .iter()
+        .filter_map(|outcome| outcome.hit.as_ref())
+        .any(|hit| local_boundary_coinbase_older_shadow_target_hit(symbol, hit));
+    if !target_without_coinbase {
+        return None;
+    }
+
+    let candidate = source_lag_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.source == LocalPriceSource::Coinbase
+                && candidate.offset_ms <= -(LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS as i64)
+                && candidate.abs_delta_ms >= LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS
+                && candidate.abs_delta_ms <= LOCAL_BOUNDARY_COINBASE_OLDER_MAX_AGE_MS
+        })
+        .max_by(|a, b| {
+            a.offset_ms
+                .cmp(&b.offset_ms)
+                .then_with(|| b.abs_delta_ms.cmp(&a.abs_delta_ms))
+                .then_with(|| b.kind.cmp(a.kind))
+        })
+        .copied()?;
+    let hit = local_coinbase_older_shadow_hit_from_candidate(candidate);
+    Some(LocalBoundaryShadowOutcome {
+        policy_name: hit.policy_name,
+        source_subset_name: hit.source_subset_name,
+        rule: hit.rule,
+        min_sources: hit.min_sources,
+        hit: Some(hit),
+    })
+}
+
 fn local_hype_source_lag_candidates_for_source<'a>(
     candidates: &'a [LocalSourceLagCloseCandidate],
     source: LocalPriceSource,
@@ -17692,6 +17783,11 @@ const LOCAL_BOUNDARY_SOURCES_DOGE_DROP_BINANCE_CEX: &[LocalPriceSource] = &[
     LocalPriceSource::Okx,
 ];
 
+const LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_POLICY: &str = "boundary_coinbase_older_shadow";
+const LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET: &str =
+    "coinbase_older_hard_fallback_subsets_age5000_20000";
+const LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS: u64 = 5_000;
+const LOCAL_BOUNDARY_COINBASE_OLDER_MAX_AGE_MS: u64 = 20_000;
 const LOCAL_BOUNDARY_POLICY_PRE_MS: u64 = 5_000;
 const LOCAL_BOUNDARY_POLICY_POST_MS: u64 = 250;
 
@@ -17963,6 +18059,11 @@ async fn run_local_price_close_aggregator(
             &tapes,
             end_ms,
         ));
+    }
+    if let Some(outcome) =
+        local_boundary_select_coinbase_older_shadow(&target_symbol, &boundary_shadow_outcomes, &source_lag_candidates)
+    {
+        boundary_shadow_outcomes.push(outcome);
     }
 
     if source_hits.len() < min_sources {
@@ -19383,6 +19484,115 @@ fn parse_price_value(v: &Value) -> Option<f64> {
         .filter(|p| *p > 0.0 && *p < 1.0)
 }
 
+fn parse_book_size_value(v: &Value) -> Option<f64> {
+    parse_f64_value(v).filter(|size| *size >= 0.0)
+}
+
+fn parse_source_sequence_id(value: &Value) -> Option<String> {
+    for key in [
+        "source_sequence_id",
+        "sequence_id",
+        "seq_num",
+        "sequence",
+        "seq",
+        "hash",
+    ] {
+        let Some(raw) = value.get(key) else {
+            continue;
+        };
+        if let Some(s) = raw.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            return Some(s.to_string());
+        }
+        if let Some(u) = raw.as_u64() {
+            return Some(u.to_string());
+        }
+        if let Some(i) = raw.as_i64() {
+            return Some(i.to_string());
+        }
+    }
+    None
+}
+
+fn parse_source_event_time_ms(value: &Value) -> Option<u64> {
+    for key in [
+        "source_event_time_ms",
+        "event_time_ms",
+        "timestamp_ms",
+        "ts_ms",
+        "time_ms",
+        "event_time",
+        "timestamp",
+        "ts",
+        "time",
+        "created_at",
+    ] {
+        let Some(raw) = value.get(key) else {
+            continue;
+        };
+        if let Some(ms) = parse_unix_ms_value(raw) {
+            return Some(ms);
+        }
+        if let Some(s) = raw.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+                let ms = dt.timestamp_millis();
+                if ms >= 0 {
+                    return Some(ms as u64);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn level_price(level: &Value) -> Option<f64> {
+    level.get("price").and_then(parse_price_value)
+}
+
+fn level_size(level: &Value) -> Option<f64> {
+    for key in ["size", "qty", "quantity"] {
+        if let Some(size) = level.get(key).and_then(parse_book_size_value) {
+            return Some(size);
+        }
+    }
+    None
+}
+
+fn top_book_level(levels: Option<&Vec<Value>>, is_bid: bool) -> (Option<f64>, Option<f64>) {
+    let mut best_price: Option<f64> = None;
+    let mut best_size: Option<f64> = None;
+    let Some(levels) = levels else {
+        return (None, None);
+    };
+    for level in levels {
+        let Some(price) = level_price(level) else {
+            continue;
+        };
+        let replace = match best_price {
+            None => true,
+            Some(current) if is_bid => price > current,
+            Some(current) => price < current,
+        };
+        if replace {
+            best_price = Some(price);
+            best_size = level_size(level);
+        }
+    }
+    (best_price, best_size)
+}
+
+fn first_named_book_size(value: &Value, keys: &[&str]) -> Option<f64> {
+    for key in keys {
+        if let Some(size) = value.get(*key).and_then(parse_book_size_value) {
+            return Some(size);
+        }
+    }
+    None
+}
+
+fn price_close(a: f64, b: f64) -> bool {
+    (a - b).abs() <= 1e-9
+}
+
 fn is_market_ws_keepalive_text(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.is_empty()
@@ -19499,6 +19709,154 @@ fn market_ws_payload_debug_summary(settings: &Settings, text: &str) -> String {
         settings.no_asset_id,
         raw_len
     )
+}
+
+fn market_book_depth_evidence(
+    settings: &Settings,
+    source: &Value,
+    fallback_source: Option<&Value>,
+    asset_id: &str,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+    best_bid_size: Option<f64>,
+    best_ask_size: Option<f64>,
+) -> Option<MarketBookDepthEvidence> {
+    let side = classify_side(asset_id, settings)?;
+    Some(MarketBookDepthEvidence {
+        market_side: Some(side.as_str().to_string()),
+        asset_id: Some(asset_id.to_string()),
+        event_time_ms: parse_source_event_time_ms(source)
+            .or_else(|| fallback_source.and_then(parse_source_event_time_ms)),
+        source_sequence_id: parse_source_sequence_id(source)
+            .or_else(|| fallback_source.and_then(parse_source_sequence_id)),
+        best_bid,
+        best_ask,
+        best_bid_size,
+        best_ask_size,
+        best_bid_size_delta: None,
+        best_ask_size_delta: None,
+        best_bid_drop_qty: None,
+        best_ask_drop_qty: None,
+    })
+}
+
+fn parse_ws_message_book_depth_evidence(
+    settings: &Settings,
+    value: &Value,
+) -> Vec<Option<MarketBookDepthEvidence>> {
+    let mut out = Vec::new();
+    match value.get("event_type").and_then(|v| v.as_str()) {
+        Some("book") => {
+            if let Some(asset_id) = value.get("asset_id").and_then(|v| v.as_str()) {
+                if classify_side(asset_id, settings).is_some() {
+                    let bids = value
+                        .get("bids")
+                        .or_else(|| value.get("buys"))
+                        .and_then(|v| v.as_array());
+                    let asks = value
+                        .get("asks")
+                        .or_else(|| value.get("sells"))
+                        .and_then(|v| v.as_array());
+                    let (best_bid, best_bid_size) = top_book_level(bids, true);
+                    let (best_ask, best_ask_size) = top_book_level(asks, false);
+                    out.push(market_book_depth_evidence(
+                        settings,
+                        value,
+                        None,
+                        asset_id,
+                        best_bid,
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                    ));
+                }
+            }
+        }
+        Some("price_change") => {
+            if let Some(changes) = value.get("price_changes").and_then(|v| v.as_array()) {
+                for ch in changes {
+                    let Some(asset_id) = ch.get("asset_id").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    if classify_side(asset_id, settings).is_none() {
+                        continue;
+                    }
+                    let best_bid = ch.get("best_bid").and_then(parse_price_value);
+                    let best_ask = ch.get("best_ask").and_then(parse_price_value);
+                    let mut best_bid_size = first_named_book_size(
+                        ch,
+                        &["best_bid_size", "best_bid_sz", "bid_size", "bid_sz"],
+                    );
+                    let mut best_ask_size = first_named_book_size(
+                        ch,
+                        &["best_ask_size", "best_ask_sz", "ask_size", "ask_sz"],
+                    );
+                    let changed_price = ch.get("price").and_then(parse_price_value);
+                    let changed_size = ch.get("size").and_then(parse_book_size_value);
+                    let changed_side = ch
+                        .get("side")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.trim().to_ascii_uppercase());
+                    if best_bid_size.is_none()
+                        && matches!(changed_side.as_deref(), Some("BUY") | Some("BID"))
+                        && changed_price
+                            .zip(best_bid)
+                            .map(|(p, bid)| price_close(p, bid))
+                            .unwrap_or(false)
+                    {
+                        best_bid_size = changed_size;
+                    }
+                    if best_ask_size.is_none()
+                        && matches!(changed_side.as_deref(), Some("SELL") | Some("ASK"))
+                        && changed_price
+                            .zip(best_ask)
+                            .map(|(p, ask)| price_close(p, ask))
+                            .unwrap_or(false)
+                    {
+                        best_ask_size = changed_size;
+                    }
+                    out.push(market_book_depth_evidence(
+                        settings,
+                        ch,
+                        Some(value),
+                        asset_id,
+                        best_bid,
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                    ));
+                }
+            }
+        }
+        Some("best_bid_ask") => {
+            if let Some(asset_id) = value.get("asset_id").and_then(|v| v.as_str()) {
+                if classify_side(asset_id, settings).is_some() {
+                    let best_bid = value.get("best_bid").and_then(parse_price_value);
+                    let best_ask = value.get("best_ask").and_then(parse_price_value);
+                    let best_bid_size = first_named_book_size(
+                        value,
+                        &["best_bid_size", "best_bid_sz", "bid_size", "bid_sz"],
+                    );
+                    let best_ask_size = first_named_book_size(
+                        value,
+                        &["best_ask_size", "best_ask_sz", "ask_size", "ask_sz"],
+                    );
+                    out.push(market_book_depth_evidence(
+                        settings,
+                        value,
+                        None,
+                        asset_id,
+                        best_bid,
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                    ));
+                }
+            }
+        }
+        _ => {}
+    }
+    out
 }
 
 /// Parse a WS message into MarketDataMsg events.
@@ -19797,8 +20155,15 @@ fn parse_ws_message_with_drop_reason(
 fn parse_ws_payload(
     settings: &Settings,
     text: &str,
-) -> (Vec<MarketDataMsg>, u64, u64, Vec<String>) {
+) -> (
+    Vec<MarketDataMsg>,
+    VecDeque<Option<MarketBookDepthEvidence>>,
+    u64,
+    u64,
+    Vec<String>,
+) {
     let mut out = Vec::new();
+    let mut book_depth = VecDeque::new();
     let mut unknown_events = 0_u64;
     let mut parse_drops = 0_u64;
     let mut drop_reasons = Vec::new();
@@ -19807,14 +20172,14 @@ fn parse_ws_payload(
         || trimmed.eq_ignore_ascii_case("PING")
         || trimmed.eq_ignore_ascii_case("PONG")
     {
-        return (out, unknown_events, parse_drops, drop_reasons);
+        return (out, book_depth, unknown_events, parse_drops, drop_reasons);
     }
 
     let value = match serde_json::from_str::<Value>(trimmed) {
         Ok(v) => v,
         Err(err) => {
             drop_reasons.push(format!("event_type=parse_error reason={}", err));
-            return (out, unknown_events, 1, drop_reasons);
+            return (out, book_depth, unknown_events, 1, drop_reasons);
         }
     };
 
@@ -19838,6 +20203,12 @@ fn parse_ws_payload(
         }
 
         let (parsed, drop_reason) = parse_ws_message_with_drop_reason(settings, val);
+        if parsed
+            .iter()
+            .any(|msg| matches!(msg, MarketDataMsg::BookTick { .. }))
+        {
+            book_depth.extend(parse_ws_message_book_depth_evidence(settings, val));
+        }
         if known_event && parsed.is_empty() {
             parse_drops = parse_drops.saturating_add(1);
             if let Some(reason) = drop_reason {
@@ -19847,7 +20218,7 @@ fn parse_ws_payload(
         out.extend(parsed);
     }
 
-    (out, unknown_events, parse_drops, drop_reasons)
+    (out, book_depth, unknown_events, parse_drops, drop_reasons)
 }
 
 // ─────────────────────────────────────────────────────────
@@ -19862,6 +20233,110 @@ struct BookAssembler {
     no_ask: f64,
     yes_seen: bool,
     no_seen: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct BestLevelDepthState {
+    price: Option<f64>,
+    size: Option<f64>,
+}
+
+impl BestLevelDepthState {
+    fn observe(
+        &mut self,
+        price: Option<f64>,
+        size: Option<f64>,
+        is_bid: bool,
+    ) -> (Option<f64>, Option<f64>) {
+        let prev_price = self.price;
+        let prev_size = self.size;
+        let mut delta = None;
+        let mut drop_qty = None;
+
+        if let Some(prev_size) = prev_size {
+            if let Some(cur_size) = size {
+                let same_level = prev_price
+                    .zip(price)
+                    .map(|(prev, cur)| price_close(prev, cur))
+                    .unwrap_or(false);
+                if same_level {
+                    let d = cur_size - prev_size;
+                    delta = Some(d);
+                    drop_qty = Some(if d < 0.0 { -d } else { 0.0 });
+                }
+            }
+
+            let worse_price = prev_price
+                .zip(price)
+                .map(|(prev, cur)| {
+                    if is_bid {
+                        cur + 1e-9 < prev
+                    } else {
+                        cur > prev + 1e-9
+                    }
+                })
+                .unwrap_or(false);
+            if worse_price && delta.is_none() && prev_size > 0.0 {
+                delta = Some(-prev_size);
+                drop_qty = Some(prev_size);
+            }
+        }
+
+        if price.is_some() {
+            self.price = price;
+        }
+        if size.is_some() {
+            self.size = size;
+        } else if price.is_some() {
+            self.size = None;
+        }
+
+        (delta, drop_qty)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SideBookDepthState {
+    bid: BestLevelDepthState,
+    ask: BestLevelDepthState,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BookDepthTracker {
+    yes: SideBookDepthState,
+    no: SideBookDepthState,
+}
+
+impl BookDepthTracker {
+    fn annotate(
+        &mut self,
+        mut depth: Option<MarketBookDepthEvidence>,
+    ) -> Option<MarketBookDepthEvidence> {
+        let depth = depth.as_mut()?;
+        let state = match depth
+            .market_side
+            .as_deref()
+            .map(|side| side.to_ascii_uppercase())
+            .as_deref()
+        {
+            Some("YES") => &mut self.yes,
+            Some("NO") => &mut self.no,
+            _ => return Some(depth.clone()),
+        };
+        let (bid_delta, bid_drop) =
+            state
+                .bid
+                .observe(depth.best_bid, depth.best_bid_size, true);
+        let (ask_delta, ask_drop) =
+            state
+                .ask
+                .observe(depth.best_ask, depth.best_ask_size, false);
+        depth.best_bid_size_delta = depth.best_bid_size_delta.or(bid_delta);
+        depth.best_ask_size_delta = depth.best_ask_size_delta.or(ask_delta);
+        depth.best_bid_drop_qty = depth.best_bid_drop_qty.or(bid_drop);
+        depth.best_ask_drop_qty = depth.best_ask_drop_qty.or(ask_drop);
+        Some(depth.clone())
+    }
 }
 
 impl BookAssembler {
@@ -20114,6 +20589,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
             break;
         }
         let mut book_asm = BookAssembler::default();
+        let mut book_depth_tracker = BookDepthTracker::default();
         let url = settings.ws_url("market");
         info!(
             "📡 shared ingress market broker connecting | slug={} url={} fixed_round={} subscribers={} connect_jitter_ms={}",
@@ -20305,7 +20781,13 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     }
                                     session_raw_msg_count = session_raw_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
-                                    let (parsed, unknown_events, parse_drops, drop_reasons) =
+                                    let (
+                                        parsed,
+                                        mut book_depth_evidence,
+                                        unknown_events,
+                                        parse_drops,
+                                        drop_reasons,
+                                    ) =
                                         parse_ws_payload(&settings, text_ref);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -20364,6 +20846,9 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                             MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
                                                 session_book_tick_count =
                                                     session_book_tick_count.saturating_add(1);
+                                                let depth = book_depth_tracker.annotate(
+                                                    book_depth_evidence.pop_front().flatten(),
+                                                );
                                                 let recv_ms = unix_now_millis_u64();
                                                 if yes_bid.is_finite() || yes_ask.is_finite() {
                                                     feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
@@ -20396,6 +20881,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                             no_bid: *no_bid,
                                                             no_ask: *no_ask,
                                                             ts_ms: recv_ms,
+                                                            depth: depth.clone(),
                                                         });
                                                     }
                                                     last_full_book_at = Some(tokio::time::Instant::now());
@@ -20418,7 +20904,13 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                     }
                                     session_raw_msg_count = session_raw_msg_count.saturating_add(1);
                                     last_raw_msg_at = tokio::time::Instant::now();
-                                    let (parsed, unknown_events, parse_drops, drop_reasons) =
+                                    let (
+                                        parsed,
+                                        mut book_depth_evidence,
+                                        unknown_events,
+                                        parse_drops,
+                                        drop_reasons,
+                                    ) =
                                         parse_ws_payload(&settings, text);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -20477,6 +20969,9 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                             MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
                                                 session_book_tick_count =
                                                     session_book_tick_count.saturating_add(1);
+                                                let depth = book_depth_tracker.annotate(
+                                                    book_depth_evidence.pop_front().flatten(),
+                                                );
                                                 let recv_ms = unix_now_millis_u64();
                                                 if yes_bid.is_finite() || yes_ask.is_finite() {
                                                     feed.publish(SharedIngressWireMsg::PostCloseBookUpdate {
@@ -20509,6 +21004,7 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                             no_bid: *no_bid,
                                                             no_ask: *no_ask,
                                                             ts_ms: recv_ms,
+                                                            depth: depth.clone(),
                                                         });
                                                     }
                                                     last_full_book_at = Some(tokio::time::Instant::now());
@@ -20630,6 +21126,8 @@ async fn run_market_ws_remote_with_wall_guard(
     coord_accept_partial_book: bool,
     post_close_book_tx: mpsc::Sender<PostCloseSideBookUpdate>,
     end_ts: u64,
+    recorder: Option<RecorderHandle>,
+    recorder_meta: Option<RecorderSessionMeta>,
 ) -> MarketEnd {
     let hard_cutoff_grace_secs = market_ws_hard_cutoff_grace_secs();
     let hard_cutoff_ts = end_ts.saturating_add(hard_cutoff_grace_secs);
@@ -20764,7 +21262,7 @@ async fn run_market_ws_remote_with_wall_guard(
                                 try_forward_md(&ofi_tx, md_msg.clone(), &mut tx_drop_count);
                                 try_forward_md(&glft_tx, md_msg, &mut tx_drop_count);
                             }
-                            SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, .. } => {
+                            SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, depth, .. } => {
                                 session_wire_book_tick_count =
                                     session_wire_book_tick_count.saturating_add(1);
                                 let md_msg = MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, ts: Instant::now() };
@@ -20776,6 +21274,27 @@ async fn run_market_ws_remote_with_wall_guard(
                                 }
                                 if let Some(full) = book_asm.update(&md_msg) {
                                     last_full_book_at = Some(tokio::time::Instant::now());
+                                    if let (
+                                        Some(rec),
+                                        Some(meta),
+                                        MarketDataMsg::BookTick {
+                                            yes_bid,
+                                            yes_ask,
+                                            no_bid,
+                                            no_ask,
+                                            ..
+                                        },
+                                    ) = (&recorder, &recorder_meta, &full)
+                                    {
+                                        rec.record_market_book_l1(
+                                            meta,
+                                            *yes_bid,
+                                            *yes_ask,
+                                            *no_bid,
+                                            *no_ask,
+                                            depth.as_ref(),
+                                        );
+                                    }
                                     try_broadcast_dry_run_touch_md(&dry_run_touch_md_tx, &full);
                                     try_forward_md(&glft_tx, full.clone(), &mut tx_drop_count);
                                     let _ = coord_tx.send(full);
@@ -21133,6 +21652,8 @@ async fn run_market_ws(
             coord_accept_partial_book,
             post_close_book_tx,
             end_ts,
+            recorder,
+            recorder_meta,
         )
         .await;
     }
@@ -21167,6 +21688,7 @@ async fn run_market_ws(
         // previous session to be mixed with fresh data on reconnect. E.g., old NO
         // price combined with new YES price would produce a wrong BookTick.
         let mut book_asm = BookAssembler::default();
+        let mut book_depth_tracker = BookDepthTracker::default();
 
         let url = settings.ws_url("market");
         info!(%url, "📡 connecting market WS");
@@ -21362,7 +21884,13 @@ async fn run_market_ws(
                                         rec.record_market_ws_raw(meta, &text);
                                     }
 
-                                    let (parsed, unknown_events, parse_drops, _drop_reasons) =
+                                    let (
+                                        parsed,
+                                        mut book_depth_evidence,
+                                        unknown_events,
+                                        parse_drops,
+                                        _drop_reasons,
+                                    ) =
                                         parse_ws_payload(&settings, &text);
                                     session_unknown_event_count = session_unknown_event_count
                                         .saturating_add(unknown_events);
@@ -21415,6 +21943,9 @@ async fn run_market_ws(
                                                 );
                                             }
                                             MarketDataMsg::BookTick { .. } => {
+                                                let depth = book_depth_tracker.annotate(
+                                                    book_depth_evidence.pop_front().flatten(),
+                                                );
                                                 if let MarketDataMsg::BookTick {
                                                     yes_bid,
                                                     yes_ask,
@@ -21483,7 +22014,12 @@ async fn run_market_ws(
                                                     ) = (&recorder, &recorder_meta, &full)
                                                     {
                                                             rec.record_market_book_l1(
-                                                                meta, *yes_bid, *yes_ask, *no_bid, *no_ask,
+                                                                meta,
+                                                                *yes_bid,
+                                                                *yes_ask,
+                                                                *no_bid,
+                                                                *no_ask,
+                                                                depth.as_ref(),
                                                             );
                                                         }
                                                         try_broadcast_dry_run_touch_md(
@@ -21527,7 +22063,13 @@ async fn run_market_ws(
                                             {
                                                 rec.record_market_ws_raw(meta, text);
                                             }
-                                            let (parsed, unknown_events, parse_drops, _drop_reasons) =
+                                            let (
+                                                parsed,
+                                                mut book_depth_evidence,
+                                                unknown_events,
+                                                parse_drops,
+                                                _drop_reasons,
+                                            ) =
                                                 parse_ws_payload(&settings, text);
                                             session_unknown_event_count = session_unknown_event_count
                                                 .saturating_add(unknown_events);
@@ -21582,6 +22124,11 @@ async fn run_market_ws(
                                                         );
                                                     }
                                                     MarketDataMsg::BookTick { .. } => {
+                                                        let depth = book_depth_tracker.annotate(
+                                                            book_depth_evidence
+                                                                .pop_front()
+                                                                .flatten(),
+                                                        );
                                                         if let MarketDataMsg::BookTick {
                                                             yes_bid,
                                                             yes_ask,
@@ -21651,7 +22198,12 @@ async fn run_market_ws(
                                                             ) = (&recorder, &recorder_meta, &full)
                                                                 {
                                                                     rec.record_market_book_l1(
-                                                                        meta, *yes_bid, *yes_ask, *no_bid, *no_ask,
+                                                                        meta,
+                                                                        *yes_bid,
+                                                                        *yes_ask,
+                                                                        *no_bid,
+                                                                        *no_ask,
+                                                                        depth.as_ref(),
                                                                     );
                                                                 }
                                                                 try_broadcast_dry_run_touch_md(
@@ -24778,6 +25330,77 @@ mod tests {
             }
             other => panic!("unexpected message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_ws_payload_book_depth_evidence() {
+        let settings = Settings {
+            market_slug: Some("btc-updown-5m-test".to_string()),
+            market_id: "0xmarket".to_string(),
+            yes_asset_id: "111".to_string(),
+            no_asset_id: "222".to_string(),
+            ws_base_url: String::new(),
+            rest_url: String::new(),
+            private_key: None,
+            funder_address: None,
+            custom_feature: false,
+        };
+        let payload = json!({
+            "event_type": "book",
+            "asset_id": "111",
+            "timestamp": 1_746_000_000_123_u64,
+            "sequence": 42,
+            "bids": [
+                {"price": "0.47", "size": "8"},
+                {"price": "0.49", "size": "12.5"}
+            ],
+            "asks": [
+                {"price": "0.53", "size": "3"},
+                {"price": "0.51", "size": "4.5"}
+            ]
+        })
+        .to_string();
+
+        let (msgs, mut depth, unknown, drops, reasons) = parse_ws_payload(&settings, &payload);
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(unknown, 0);
+        assert_eq!(drops, 0);
+        assert!(reasons.is_empty());
+        let depth = depth
+            .pop_front()
+            .flatten()
+            .expect("book depth evidence should be parsed");
+        assert_eq!(depth.market_side.as_deref(), Some("YES"));
+        assert_eq!(depth.asset_id.as_deref(), Some("111"));
+        assert_eq!(depth.event_time_ms, Some(1_746_000_000_123));
+        assert_eq!(depth.source_sequence_id.as_deref(), Some("42"));
+        assert_eq!(depth.best_bid, Some(0.49));
+        assert_eq!(depth.best_ask, Some(0.51));
+        assert_eq!(depth.best_bid_size, Some(12.5));
+        assert_eq!(depth.best_ask_size, Some(4.5));
+    }
+
+    #[test]
+    fn test_book_depth_tracker_records_best_level_drop() {
+        let mut tracker = BookDepthTracker::default();
+        let first = MarketBookDepthEvidence {
+            market_side: Some("YES".to_string()),
+            best_bid: Some(0.49),
+            best_bid_size: Some(12.5),
+            ..Default::default()
+        };
+        let second = MarketBookDepthEvidence {
+            market_side: Some("YES".to_string()),
+            best_bid: Some(0.49),
+            best_bid_size: Some(7.0),
+            ..Default::default()
+        };
+
+        let first = tracker.annotate(Some(first)).expect("first evidence");
+        assert_eq!(first.best_bid_size_delta, None);
+        let second = tracker.annotate(Some(second)).expect("second evidence");
+        assert_eq!(second.best_bid_size_delta, Some(-5.5));
+        assert_eq!(second.best_bid_drop_qty, Some(5.5));
     }
 
     #[test]
