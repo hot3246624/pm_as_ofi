@@ -95,6 +95,9 @@ class RunnerConfig:
     seed_px_hi: float = 0.90
     seed_offset_min_s: float = 0.0
     seed_offset_max_s: float = 120.0
+    late_target_after_s: float | None = None
+    late_target_qty: float | None = None
+    late_repair_after_s: float | None = None
     cooldown_ms: int = 5_000
     order_ttl_ms: int = 120_000
     imbalance_qty_cap: float = 2.0
@@ -106,6 +109,27 @@ class RunnerConfig:
     salvage_age_ms: int = 30_000
     salvage_min_lot_cost: float = 0.25
     max_salvage_qty: float = 250.0
+
+    def target_for(self, offset_s: float | None) -> float:
+        if (
+            offset_s is not None
+            and self.late_target_after_s is not None
+            and self.late_target_qty is not None
+            and offset_s >= self.late_target_after_s
+        ):
+            return min(self.target_qty, self.late_target_qty)
+        return self.target_qty
+
+    def late_target_active(self, offset_s: float | None) -> bool:
+        return (
+            offset_s is not None
+            and self.late_target_after_s is not None
+            and self.late_target_qty is not None
+            and offset_s >= self.late_target_after_s
+        )
+
+    def late_repair_active(self, offset_s: float | None) -> bool:
+        return offset_s is not None and self.late_repair_after_s is not None and offset_s >= self.late_repair_after_s
 
 
 @dataclass
@@ -378,10 +402,14 @@ class DPlusRunner:
 
         same_qty = self.exposure_qty(side)
         opp_qty = self.exposure_qty(opp(side))
+        target_qty = self.cfg.target_for(offset)
         if self.cfg.pairing_only_when_residual and same_qty > opp_qty + self.cfg.dust_qty:
             self.block("pairing_only_when_residual")
             return
-        if same_qty >= self.cfg.target_qty - self.cfg.dust_qty:
+        if self.cfg.late_repair_active(offset) and same_qty + self.cfg.dust_qty >= opp_qty:
+            self.block("late_repair_only")
+            return
+        if same_qty >= target_qty - self.cfg.dust_qty:
             self.block("target")
             return
         if max(0.0, self.exposure_cost(side) - self.exposure_cost(opp(side))) > self.cfg.imbalance_cost_cap + 1e-12:
@@ -394,7 +422,7 @@ class DPlusRunner:
 
         seed_px = max(0.01, px - self.cfg.edge)
         room_cost = self.cfg.max_open_cost - self.total_open_cost()
-        qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, self.cfg.target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
+        qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
         if qty <= self.cfg.dust_qty:
             self.block("qty_zero")
             return
@@ -406,7 +434,7 @@ class DPlusRunner:
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
-        self.emit({"kind": "candidate", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": side, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
+        self.emit({"kind": "candidate", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": side, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
 
     def write_summary(self, final: bool = False) -> None:
         if final:
@@ -619,6 +647,9 @@ async def main() -> None:
     ap.add_argument("--seed-px-lo", type=float, default=0.05)
     ap.add_argument("--seed-px-hi", type=float, default=0.90)
     ap.add_argument("--seed-offset-max-s", type=float, default=120.0)
+    ap.add_argument("--late-target-after-s", type=float, default=None)
+    ap.add_argument("--late-target-qty", type=float, default=None)
+    ap.add_argument("--late-repair-after-s", type=float, default=None)
     ap.add_argument("--order-ttl-s", type=float, default=120.0)
     ap.add_argument("--imbalance-qty-cap", type=float, default=2.0)
     ap.add_argument("--imbalance-cost-cap", type=float, default=1_000_000_000.0)
@@ -627,6 +658,9 @@ async def main() -> None:
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
     args = ap.parse_args()
+
+    if (args.late_target_after_s is None) != (args.late_target_qty is None):
+        ap.error("--late-target-after-s and --late-target-qty must be provided together")
 
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -641,6 +675,9 @@ async def main() -> None:
         seed_px_lo=args.seed_px_lo,
         seed_px_hi=args.seed_px_hi,
         seed_offset_max_s=args.seed_offset_max_s,
+        late_target_after_s=args.late_target_after_s,
+        late_target_qty=args.late_target_qty,
+        late_repair_after_s=args.late_repair_after_s,
         order_ttl_ms=int(args.order_ttl_s * 1000),
         imbalance_qty_cap=args.imbalance_qty_cap,
         imbalance_cost_cap=args.imbalance_cost_cap,
@@ -649,6 +686,10 @@ async def main() -> None:
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
     )
+    if cfg.imbalance_qty_cap <= cfg.dust_qty:
+        raise SystemExit(f"--imbalance-qty-cap must exceed dust_qty={cfg.dust_qty}; otherwise every seed is blocked")
+    if cfg.late_target_qty is not None and cfg.late_target_qty <= cfg.dust_qty:
+        raise SystemExit(f"--late-target-qty must exceed dust_qty={cfg.dust_qty}; otherwise the late window cannot seed")
     markets = resolve_markets(Path(args.repo), args.prefix, args.round_offsets)
     manifest = {
         "kind": "manifest",

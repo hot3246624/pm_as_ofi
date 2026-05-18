@@ -1,0 +1,111 @@
+{
+  "acceptance_passed": false,
+  "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_driver_20260518T114638Z/remote/output/aggregate_report.json",
+  "artifact": "xuan_b27_dplus_shadow_trading_acceptance",
+  "auth_network_started": false,
+  "cancels_sent": false,
+  "checks": {
+    "market_scope_ok": true,
+    "no_order_safety_ok": true,
+    "paths_safe": true,
+    "pnl_metrics_ok": true,
+    "report_present": true,
+    "report_shape_ok": true,
+    "residual_risk_ok": true,
+    "sample_size_ok": false
+  },
+  "created_utc": "20260518T122122Z",
+  "evidence_interpretation": {
+    "does_not_prove": [
+      "shadow trading acceptance",
+      "live authenticated exchange fills",
+      "actual exchange queue position",
+      "real wallet/cashflow PnL",
+      "maker fee/rebate settlement"
+    ],
+    "proves": [
+      "existing D+ passive/passive shadow runner produced simulated trading metrics",
+      "virtual fills/pairing were evaluated without sending orders"
+    ]
+  },
+  "failures": [
+    "shadow_trading_sample_size_failed"
+  ],
+  "metric_failures": {
+    "pnl_metrics": [],
+    "residual_risk": [],
+    "sample_size": [
+      {
+        "actual": 23,
+        "metric": "candidates",
+        "required_min": 100
+      }
+    ]
+  },
+  "next_gate": "run or locate a real D+ passive/passive shadow trading report with pair/PnL/residual metrics before any G2 canary",
+  "orders_sent": false,
+  "redeems_sent": false,
+  "report_safety": {
+    "dry_run": "true",
+    "orders_sent": false,
+    "shared_ingress_role": "client",
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+  },
+  "runner_manifest": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_driver_20260518T114638Z/remote/output/manifest.json",
+  "schema_version": 1,
+  "scope": "local_no_network_shadow_trading_acceptance",
+  "shadow_run_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_driver_20260518T114638Z/remote/output",
+  "side_effects": {
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_scanned": false,
+    "redeems_sent": false,
+    "shadow_runner_started": false,
+    "started_canary": false
+  },
+  "source_tool": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+  "started_canary": false,
+  "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+  "strategy": "xuan_b27_dplus",
+  "thresholds": {
+    "market_prefix": "btc-updown-5m",
+    "max_material_residual_lots": 0,
+    "max_net_pair_cost_p90": 1.0,
+    "max_residual_cost": 5.0,
+    "max_residual_qty": 10.0,
+    "min_candidates": 100,
+    "min_markets": 1,
+    "min_pair_actions": 1,
+    "min_pair_pnl": 0.0,
+    "min_pair_qty": 1.0,
+    "min_qty_pair_share_of_filled": 0.5,
+    "min_queue_supported_fills": 1,
+    "min_roi_on_filled_cost": 0.0
+  },
+  "trading_metrics": {
+    "candidates": 23,
+    "fill_rate": 0.782608695652174,
+    "fill_wait_p50_ms": 18308.0,
+    "fill_wait_p90_ms": 51573.0,
+    "filled_cost": 15.499675,
+    "filled_qty": 32.0675,
+    "markets": 12,
+    "material_residual_lots": 0,
+    "net_pair_cost_p50": 0.96,
+    "net_pair_cost_p90": 0.96,
+    "pair_actions": 10,
+    "pair_cost_p50": 0.96,
+    "pair_cost_p90": 0.96,
+    "pair_pnl": 0.719825,
+    "pair_qty": 11.2425,
+    "pair_wait_p50_ms": 31653.0,
+    "pair_wait_p90_ms": 69567.0,
+    "qty_pair_share_of_filled": 0.7011772043346067,
+    "queue_supported_fills": 18,
+    "residual_cost": 4.977,
+    "residual_qty": 9.5825,
+    "roi_on_filled_cost": 0.046441296349762164,
+    "roi_on_seed_cost": 0.03878602555381185
+  }
+}
