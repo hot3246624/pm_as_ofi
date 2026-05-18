@@ -1649,6 +1649,10 @@ impl StrategyCoordinator {
                 // latest public SELL ticks; xuan frontier pressure profiles
                 // consume recent public BUY pressure separately.
             }
+            MarketDataMsg::BookDepthTick { .. } => {
+                // Executor dry-run evidence only; coordinator admission remains
+                // price/trade driven until a separate strategy review promotes it.
+            }
             MarketDataMsg::OracleLagSelection {
                 round_end_ts,
                 selected,

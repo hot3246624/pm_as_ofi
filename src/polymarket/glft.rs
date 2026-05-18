@@ -779,6 +779,9 @@ impl GlftSignalEngine {
                 self.prune_windows(ts);
                 self.fast_refit_if_needed(ts);
             }
+            MarketDataMsg::BookDepthTick { .. } => {
+                // Executor dry-run evidence only; GLFT ignores it.
+            }
             MarketDataMsg::WinnerHint { .. }
             | MarketDataMsg::OracleLagSelection { .. }
             | MarketDataMsg::OracleLagTailAction { .. } => {

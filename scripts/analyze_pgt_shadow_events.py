@@ -50,6 +50,7 @@ class RoundRow:
     taker_open_sends: int = 0
     taker_hedge_sends: int = 0
     dry_run_touch_book: int = 0
+    dry_run_touch_book_depth: int = 0
     dry_run_touch_trade: int = 0
     dry_run_touch_other: int = 0
     cancel_sent: int = 0
@@ -57,6 +58,18 @@ class RoundRow:
     merge_executed: int = 0
     market_trade_ticks: int = 0
     market_sell_trade_ticks: int = 0
+    market_book_l1_ticks: int = 0
+    depth_evidence_ticks: int = 0
+    depth_size_ticks: int = 0
+    depth_event_time_ticks: int = 0
+    depth_sequence_ticks: int = 0
+    depth_bid_drop_ticks: int = 0
+    depth_ask_drop_ticks: int = 0
+    depth_bid_drop_qty_yes: float = 0.0
+    depth_bid_drop_qty_no: float = 0.0
+    depth_ask_drop_qty_yes: float = 0.0
+    depth_ask_drop_qty_no: float = 0.0
+    depth_side_ticks: dict[str, int] = field(default_factory=dict)
     pgt_entry_pressure_sides: int = 0
     pgt_entry_pressure_extra_ticks: int = 0
     xuan_m0001_no_seed: dict[str, int] = field(default_factory=dict)
@@ -228,6 +241,114 @@ def event_payload(row: dict[str, Any]) -> tuple[str | None, dict[str, Any]]:
     return row.get("event"), row.get("data") if isinstance(row.get("data"), dict) else {}
 
 
+def float_or_zero(value: Any) -> float:
+    try:
+        return float(value or 0.0)
+    except Exception:
+        return 0.0
+
+
+def market_md_payload(row: dict[str, Any]) -> dict[str, Any]:
+    payload = row.get("payload")
+    if isinstance(payload, dict):
+        return payload
+    data = row.get("data")
+    if isinstance(data, dict):
+        return data
+    return {}
+
+
+DEPTH_EVIDENCE_KEYS = {
+    "market_side",
+    "asset_id",
+    "event_time_ms",
+    "source_sequence_id",
+    "best_bid_size",
+    "best_ask_size",
+    "best_bid_size_delta",
+    "best_ask_size_delta",
+    "best_bid_drop_qty",
+    "best_ask_drop_qty",
+    "yes_bid_sz",
+    "yes_ask_sz",
+    "yes_bid_size_delta",
+    "yes_ask_size_delta",
+    "yes_bid_drop_qty",
+    "yes_ask_drop_qty",
+    "no_bid_sz",
+    "no_ask_sz",
+    "no_bid_size_delta",
+    "no_ask_size_delta",
+    "no_bid_drop_qty",
+    "no_ask_drop_qty",
+}
+
+DEPTH_SIZE_KEYS = {
+    "best_bid_size",
+    "best_ask_size",
+    "yes_bid_sz",
+    "yes_ask_sz",
+    "no_bid_sz",
+    "no_ask_sz",
+}
+
+
+def add_depth_drop(out: RoundRow, side: str, bid_drop: float, ask_drop: float) -> None:
+    if side == "YES":
+        out.depth_bid_drop_qty_yes += bid_drop
+        out.depth_ask_drop_qty_yes += ask_drop
+    elif side == "NO":
+        out.depth_bid_drop_qty_no += bid_drop
+        out.depth_ask_drop_qty_no += ask_drop
+
+
+def load_market_depth(path: Path, out: RoundRow) -> None:
+    md_path = path.parent / "market_md.jsonl"
+    if not md_path.exists():
+        return
+    with md_path.open(encoding="utf-8", errors="ignore") as f:
+        for line in f:
+            try:
+                row = json.loads(line)
+            except Exception:
+                continue
+            payload = market_md_payload(row)
+            if payload.get("kind") != "book_l1":
+                continue
+            out.market_book_l1_ticks += 1
+            keys = set(payload)
+            if keys & DEPTH_EVIDENCE_KEYS:
+                out.depth_evidence_ticks += 1
+            if any(payload.get(key) is not None for key in DEPTH_SIZE_KEYS):
+                out.depth_size_ticks += 1
+            if payload.get("event_time_ms") is not None:
+                out.depth_event_time_ticks += 1
+            if payload.get("source_sequence_id"):
+                out.depth_sequence_ticks += 1
+
+            side = str(payload.get("market_side") or "").upper()
+            if side in {"YES", "NO"}:
+                out.depth_side_ticks[side] = out.depth_side_ticks.get(side, 0) + 1
+
+            yes_bid_drop = float_or_zero(payload.get("yes_bid_drop_qty"))
+            yes_ask_drop = float_or_zero(payload.get("yes_ask_drop_qty"))
+            no_bid_drop = float_or_zero(payload.get("no_bid_drop_qty"))
+            no_ask_drop = float_or_zero(payload.get("no_ask_drop_qty"))
+            generic_bid_drop = float_or_zero(payload.get("best_bid_drop_qty"))
+            generic_ask_drop = float_or_zero(payload.get("best_ask_drop_qty"))
+
+            if yes_bid_drop > 0 or yes_ask_drop > 0 or no_bid_drop > 0 or no_ask_drop > 0:
+                add_depth_drop(out, "YES", yes_bid_drop, yes_ask_drop)
+                add_depth_drop(out, "NO", no_bid_drop, no_ask_drop)
+            elif side in {"YES", "NO"}:
+                add_depth_drop(out, side, generic_bid_drop, generic_ask_drop)
+
+            if yes_bid_drop > 0 or no_bid_drop > 0 or generic_bid_drop > 0:
+                out.depth_bid_drop_ticks += 1
+            if yes_ask_drop > 0 or no_ask_drop > 0 or generic_ask_drop > 0:
+                out.depth_ask_drop_ticks += 1
+
+
 def load_round(path: Path) -> RoundRow:
     slug = path.parent.name
     try:
@@ -306,6 +427,8 @@ def load_round(path: Path) -> RoundRow:
                 source = str(data.get("source") or "")
                 if source == "book_touch":
                     out.dry_run_touch_book += 1
+                elif source == "book_depth_touch":
+                    out.dry_run_touch_book_depth += 1
                 elif source == "trade_sell_touch":
                     out.dry_run_touch_trade += 1
                 else:
@@ -317,6 +440,7 @@ def load_round(path: Path) -> RoundRow:
             elif event == "merge_executed":
                 out.merge_executed += 1
 
+    load_market_depth(path, out)
     out.locked_pnl = out.paired_qty * (1.0 - out.pair_cost)
     out.residual_cost_worst_case = (
         max(out.yes_qty - out.paired_qty, 0.0) * out.yes_avg_cost
@@ -352,6 +476,7 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
     xuan_m0001_no_seed: dict[str, int] = {}
     dplus_minorder_no_seed: dict[str, int] = {}
     high_pressure_no_seed: dict[str, int] = {}
+    depth_side_ticks: dict[str, int] = {}
     settlement_pnls = [r.settlement_pnl for r in rows if r.settlement_pnl is not None]
     settlement_fee50_pnls = [
         r.settlement_pnl_after_fee_bps(50.0)
@@ -376,6 +501,8 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
             dplus_minorder_no_seed[key] = dplus_minorder_no_seed.get(key, 0) + value
         for key, value in r.high_pressure_no_seed.items():
             high_pressure_no_seed[key] = high_pressure_no_seed.get(key, 0) + value
+        for key, value in r.depth_side_ticks.items():
+            depth_side_ticks[key] = depth_side_ticks.get(key, 0) + value
     return {
         "rounds": len(rows),
         "range": [rows[0].round_id, rows[-1].round_id] if rows else None,
@@ -404,6 +531,7 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "taker_open_sends": sum(r.taker_open_sends for r in rows),
         "taker_hedge_sends": sum(r.taker_hedge_sends for r in rows),
         "dry_run_touch_book": sum(r.dry_run_touch_book for r in rows),
+        "dry_run_touch_book_depth": sum(r.dry_run_touch_book_depth for r in rows),
         "dry_run_touch_trade": sum(r.dry_run_touch_trade for r in rows),
         "dry_run_touch_other": sum(r.dry_run_touch_other for r in rows),
         "fill_sources": dict(sorted(fill_sources.items())),
@@ -414,6 +542,18 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "market_buy_trade_ticks": sum(
             max(r.market_trade_ticks - r.market_sell_trade_ticks, 0) for r in rows
         ),
+        "market_book_l1_ticks": sum(r.market_book_l1_ticks for r in rows),
+        "depth_evidence_ticks": sum(r.depth_evidence_ticks for r in rows),
+        "depth_size_ticks": sum(r.depth_size_ticks for r in rows),
+        "depth_event_time_ticks": sum(r.depth_event_time_ticks for r in rows),
+        "depth_sequence_ticks": sum(r.depth_sequence_ticks for r in rows),
+        "depth_bid_drop_ticks": sum(r.depth_bid_drop_ticks for r in rows),
+        "depth_ask_drop_ticks": sum(r.depth_ask_drop_ticks for r in rows),
+        "depth_bid_drop_qty_yes": sum(r.depth_bid_drop_qty_yes for r in rows),
+        "depth_bid_drop_qty_no": sum(r.depth_bid_drop_qty_no for r in rows),
+        "depth_ask_drop_qty_yes": sum(r.depth_ask_drop_qty_yes for r in rows),
+        "depth_ask_drop_qty_no": sum(r.depth_ask_drop_qty_no for r in rows),
+        "depth_side_ticks": dict(sorted(depth_side_ticks.items())),
         "pgt_entry_pressure_sides": sum(r.pgt_entry_pressure_sides for r in rows),
         "pgt_entry_pressure_extra_ticks": sum(r.pgt_entry_pressure_extra_ticks for r in rows),
         "xuan_m0001_no_seed": dict(sorted(xuan_m0001_no_seed.items())),
@@ -499,6 +639,7 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
             ],
             "taker_repairs": r.taker_repairs,
             "dry_run_touch_book": r.dry_run_touch_book,
+            "dry_run_touch_book_depth": r.dry_run_touch_book_depth,
             "dry_run_touch_trade": r.dry_run_touch_trade,
             "dry_run_touch_other": r.dry_run_touch_other,
             "cancel_sent": r.cancel_sent,
@@ -507,6 +648,18 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
             "market_trade_ticks": r.market_trade_ticks,
             "market_sell_trade_ticks": r.market_sell_trade_ticks,
             "market_buy_trade_ticks": max(r.market_trade_ticks - r.market_sell_trade_ticks, 0),
+            "market_book_l1_ticks": r.market_book_l1_ticks,
+            "depth_evidence_ticks": r.depth_evidence_ticks,
+            "depth_size_ticks": r.depth_size_ticks,
+            "depth_event_time_ticks": r.depth_event_time_ticks,
+            "depth_sequence_ticks": r.depth_sequence_ticks,
+            "depth_bid_drop_ticks": r.depth_bid_drop_ticks,
+            "depth_ask_drop_ticks": r.depth_ask_drop_ticks,
+            "depth_bid_drop_qty_yes": r.depth_bid_drop_qty_yes,
+            "depth_bid_drop_qty_no": r.depth_bid_drop_qty_no,
+            "depth_ask_drop_qty_yes": r.depth_ask_drop_qty_yes,
+            "depth_ask_drop_qty_no": r.depth_ask_drop_qty_no,
+            "depth_side_ticks": r.depth_side_ticks,
             "pgt_entry_pressure_sides": r.pgt_entry_pressure_sides,
             "pgt_entry_pressure_extra_ticks": r.pgt_entry_pressure_extra_ticks,
             "xuan_m0001_no_seed": r.xuan_m0001_no_seed,
@@ -601,12 +754,23 @@ def main() -> None:
             f"fee50_roi={s['settlement_alpha_fee50_roi']} "
             f"fee100_pnl={s['settlement_alpha_fee100_pnl']:.4f} "
             f"fee100_roi={s['settlement_alpha_fee100_roi']} "
-            f"touch(book/trade/other)="
-            f"{s['dry_run_touch_book']}/{s['dry_run_touch_trade']}/{s['dry_run_touch_other']}"
+            f"touch(book/depth/trade/other)="
+            f"{s['dry_run_touch_book']}/{s['dry_run_touch_book_depth']}/"
+            f"{s['dry_run_touch_trade']}/{s['dry_run_touch_other']}"
             f" taker(open/hedge/all)="
             f"{s['taker_open_sends']}/{s['taker_hedge_sends']}/{s['taker_repairs']}"
             f" fill_sources={s['fill_sources']} market_trades={s['market_trade_ticks']}"
             f"/{s['market_sell_trade_ticks']} buy={s['market_buy_trade_ticks']} "
+            f"book_l1={s['market_book_l1_ticks']} "
+            f"depth(evidence/size/event/seq)="
+            f"{s['depth_evidence_ticks']}/{s['depth_size_ticks']}/"
+            f"{s['depth_event_time_ticks']}/{s['depth_sequence_ticks']} "
+            f"depth_drop(bid/ask)="
+            f"{s['depth_bid_drop_ticks']}/{s['depth_ask_drop_ticks']} "
+            f"depth_drop_qty(yes_bid/no_bid/yes_ask/no_ask)="
+            f"{s['depth_bid_drop_qty_yes']:.2f}/{s['depth_bid_drop_qty_no']:.2f}/"
+            f"{s['depth_ask_drop_qty_yes']:.2f}/{s['depth_ask_drop_qty_no']:.2f} "
+            f"depth_sides={s['depth_side_ticks']} "
             f"entry_pressure={s['pgt_entry_pressure_sides']}/{s['pgt_entry_pressure_extra_ticks']} "
             f"xuan_m0001_no_seed={s['xuan_m0001_no_seed']}"
             f" dplus_minorder_no_seed={s['dplus_minorder_no_seed']}"
@@ -643,10 +807,19 @@ def main() -> None:
                 f"settlement={r['settlement_pnl']} "
                 f"fee50={r['settlement_fee50_pnl']} fee100={r['settlement_fee100_pnl']} "
                 f"delay={delay_s} taker={r['taker_repairs']} cancels={r['cancel_sent']} "
-                f"orders={r['accepted_orders']} touch(book/trade/other)="
-                f"{r['dry_run_touch_book']}/{r['dry_run_touch_trade']}/{r['dry_run_touch_other']} "
+                f"orders={r['accepted_orders']} touch(book/depth/trade/other)="
+                f"{r['dry_run_touch_book']}/{r['dry_run_touch_book_depth']}/"
+                f"{r['dry_run_touch_trade']}/{r['dry_run_touch_other']} "
                 f"market_trades={r['market_trade_ticks']}/{r['market_sell_trade_ticks']}"
                 f"/{r['market_buy_trade_ticks']} "
+                f"book_l1={r['market_book_l1_ticks']} "
+                f"depth={r['depth_evidence_ticks']}/{r['depth_size_ticks']}/"
+                f"{r['depth_event_time_ticks']}/{r['depth_sequence_ticks']} "
+                f"drop={r['depth_bid_drop_ticks']}/{r['depth_ask_drop_ticks']} "
+                f"drop_qty={r['depth_bid_drop_qty_yes']:.1f}/"
+                f"{r['depth_bid_drop_qty_no']:.1f}/"
+                f"{r['depth_ask_drop_qty_yes']:.1f}/"
+                f"{r['depth_ask_drop_qty_no']:.1f} "
                 f"entry_pressure={r['pgt_entry_pressure_sides']}/{r['pgt_entry_pressure_extra_ticks']} "
                 f"xuan_m0001_no_seed={r['xuan_m0001_no_seed']} "
                 f"dplus_minorder_no_seed={r['dplus_minorder_no_seed']} "

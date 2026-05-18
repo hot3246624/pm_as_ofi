@@ -24,6 +24,22 @@ pub enum MarketDataMsg {
         no_ask: f64,
         ts: Instant,
     },
+    /// Best-level depth/depletion evidence from shared ingress/localagg.
+    /// This is only consumed by dry-run touch simulation; strategy/coordinator
+    /// logic should continue using price-only `BookTick` unless explicitly
+    /// promoted through a separate review.
+    BookDepthTick {
+        market_side: Side,
+        best_bid: f64,
+        best_ask: Option<f64>,
+        best_bid_size: Option<f64>,
+        best_ask_size: Option<f64>,
+        best_bid_drop_qty: f64,
+        best_ask_drop_qty: f64,
+        event_time_ms: Option<u64>,
+        source_sequence_id: Option<String>,
+        ts: Instant,
+    },
     /// Individual trade tick (from `last_trade_price` WS event).
     TradeTick {
         asset_id: String,
@@ -604,6 +620,7 @@ pub enum FillSource {
     UserWs,
     DryRunImmediate,
     DryRunBookTouch,
+    DryRunBookDepthTouch,
     DryRunTradeSellTouch,
     DryRunTaker,
 }
@@ -615,6 +632,7 @@ impl FillSource {
             Self::UserWs => "user_ws",
             Self::DryRunImmediate => "dry_run_immediate",
             Self::DryRunBookTouch => "dry_run_book_touch",
+            Self::DryRunBookDepthTouch => "dry_run_book_depth_touch",
             Self::DryRunTradeSellTouch => "dry_run_trade_sell_touch",
             Self::DryRunTaker => "dry_run_taker",
         }
