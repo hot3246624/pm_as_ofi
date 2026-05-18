@@ -35,6 +35,7 @@ printf '{}\n' > "$completion_root/20260502_20260508/EVENT_STORE_MANIFEST.json"
 : > "$completion_root/20260502_20260508/event_store.duckdb"
 printf '{}\n' > "$completion_root/20260517/EVENT_STORE_MANIFEST.json"
 : > "$completion_root/20260517/event_store.duckdb"
+printf '{}\n' > "$truth_root/EVENT_STORE_MANIFEST.json"
 : > "$truth_root/event_store.duckdb"
 
 pass_dir="$out_dir/pass_case"
@@ -60,10 +61,36 @@ ok = (
     and data.get("can_run_compliant_backtest_locally") is True
     and data.get("strict_ready_label_count") == 2
     and data.get("completion_ready_label_count") == 2
+    and data.get("dataset_type") == "local_poly_backtest_cache_store"
     and data.get("public_account_execution_truth_v1", {}).get("event_store_duckdb_exists") is True
+    and data.get("public_account_execution_truth_v1", {}).get("manifest_exists") is True
+    and data.get("collector_scanned") is False
     and data.get("raw_replay_scanned") is False
     and data.get("duckdb_tables_read") is False
     and all(value is False for value in side_effects.values())
+)
+raise SystemExit(0 if ok else 1)
+PY
+
+auto_dir="$out_dir/auto_discovery_case"
+run_check "fixture_auto_discovery_pass" python3 "$script" \
+  --strict-root "$strict_root" \
+  --completion-root "$completion_root" \
+  --public-truth-root "$truth_root" \
+  --output-dir "$auto_dir"
+
+run_check "fixture_auto_discovery_manifest" python3 - "$auto_dir/manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+data = json.loads(pathlib.Path(sys.argv[1]).read_text())
+ok = (
+    data.get("status") == "PASS_COMPLIANT_BACKTEST_INPUTS_AVAILABLE"
+    and data.get("strict_labels_expected") == ["20260502_20260507", "20260516"]
+    and data.get("completion_labels_expected") == ["20260502_20260508", "20260517"]
+    and data.get("excluded_days") == ["20260514", "20260515"]
+    and data.get("not_ready_days") == ["20260518"]
 )
 raise SystemExit(0 if ok else 1)
 PY
@@ -144,6 +171,7 @@ cat > "$out_dir/manifest.json" <<JSON
   "scope": "local_no_network_compliant_backtest_input_preflight_gate",
   "created_utc": "$ts",
   "pass_case_manifest": "$pass_dir/manifest.json",
+  "auto_discovery_case_manifest": "$auto_dir/manifest.json",
   "missing_case_manifest": "$missing_dir/manifest.json",
   "forbidden_label_case_manifest": "$forbidden_dir/manifest.json",
   "orders_sent": false,
