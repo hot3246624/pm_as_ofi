@@ -2,7 +2,7 @@ use super::messages::TakerSide;
 use super::types::Side;
 use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 use std::fs::{create_dir_all, File, OpenOptions};
 use std::io::{BufWriter, Write};
@@ -126,6 +126,24 @@ fn sanitize_instance_id(raw: &str) -> String {
     }
 }
 
+fn insert_opt_string(obj: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+    if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        obj.insert(key.to_string(), json!(value));
+    }
+}
+
+fn insert_opt_u64(obj: &mut Map<String, Value>, key: &str, value: Option<u64>) {
+    if let Some(value) = value {
+        obj.insert(key.to_string(), json!(value));
+    }
+}
+
+fn insert_opt_f64(obj: &mut Map<String, Value>, key: &str, value: Option<f64>) {
+    if let Some(value) = value.filter(|value| value.is_finite()) {
+        obj.insert(key.to_string(), json!(value));
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecorderSessionMeta {
     pub slug: String,
@@ -133,6 +151,22 @@ pub struct RecorderSessionMeta {
     pub market_id: String,
     pub strategy: String,
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct MarketBookDepthEvidence {
+    pub market_side: Option<String>,
+    pub asset_id: Option<String>,
+    pub event_time_ms: Option<u64>,
+    pub source_sequence_id: Option<String>,
+    pub best_bid: Option<f64>,
+    pub best_ask: Option<f64>,
+    pub best_bid_size: Option<f64>,
+    pub best_ask_size: Option<f64>,
+    pub best_bid_size_delta: Option<f64>,
+    pub best_ask_size_delta: Option<f64>,
+    pub best_bid_drop_qty: Option<f64>,
+    pub best_ask_drop_qty: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,19 +387,61 @@ impl RecorderHandle {
         yes_ask: f64,
         no_bid: f64,
         no_ask: f64,
+        depth: Option<&MarketBookDepthEvidence>,
     ) {
         if !self.market_mode.captures_structured() {
             return;
         }
+        let mut payload = json!({
+            "kind": "book_l1",
+            "yes_bid": yes_bid,
+            "yes_ask": yes_ask,
+            "no_bid": no_bid,
+            "no_ask": no_ask,
+        });
+        if let Some(depth) = depth {
+            if let Some(obj) = payload.as_object_mut() {
+                insert_opt_string(obj, "market_side", depth.market_side.as_deref());
+                insert_opt_string(obj, "asset_id", depth.asset_id.as_deref());
+                insert_opt_u64(obj, "event_time_ms", depth.event_time_ms);
+                insert_opt_string(
+                    obj,
+                    "source_sequence_id",
+                    depth.source_sequence_id.as_deref(),
+                );
+                insert_opt_f64(obj, "best_bid", depth.best_bid);
+                insert_opt_f64(obj, "best_ask", depth.best_ask);
+                insert_opt_f64(obj, "best_bid_size", depth.best_bid_size);
+                insert_opt_f64(obj, "best_ask_size", depth.best_ask_size);
+                insert_opt_f64(obj, "best_bid_size_delta", depth.best_bid_size_delta);
+                insert_opt_f64(obj, "best_ask_size_delta", depth.best_ask_size_delta);
+                insert_opt_f64(obj, "best_bid_drop_qty", depth.best_bid_drop_qty);
+                insert_opt_f64(obj, "best_ask_drop_qty", depth.best_ask_drop_qty);
+
+                match depth.market_side.as_deref().map(|s| s.to_ascii_uppercase()) {
+                    Some(side) if side == "YES" => {
+                        insert_opt_f64(obj, "yes_bid_sz", depth.best_bid_size);
+                        insert_opt_f64(obj, "yes_ask_sz", depth.best_ask_size);
+                        insert_opt_f64(obj, "yes_bid_size_delta", depth.best_bid_size_delta);
+                        insert_opt_f64(obj, "yes_ask_size_delta", depth.best_ask_size_delta);
+                        insert_opt_f64(obj, "yes_bid_drop_qty", depth.best_bid_drop_qty);
+                        insert_opt_f64(obj, "yes_ask_drop_qty", depth.best_ask_drop_qty);
+                    }
+                    Some(side) if side == "NO" => {
+                        insert_opt_f64(obj, "no_bid_sz", depth.best_bid_size);
+                        insert_opt_f64(obj, "no_ask_sz", depth.best_ask_size);
+                        insert_opt_f64(obj, "no_bid_size_delta", depth.best_bid_size_delta);
+                        insert_opt_f64(obj, "no_ask_size_delta", depth.best_ask_size_delta);
+                        insert_opt_f64(obj, "no_bid_drop_qty", depth.best_bid_drop_qty);
+                        insert_opt_f64(obj, "no_ask_drop_qty", depth.best_ask_drop_qty);
+                    }
+                    _ => {}
+                }
+            }
+        }
         self.try_send_md(
             meta,
-            json!({
-                "kind": "book_l1",
-                "yes_bid": yes_bid,
-                "yes_ask": yes_ask,
-                "no_bid": no_bid,
-                "no_ask": no_ask,
-            }),
+            payload,
             RecorderStream::MarketMd,
         );
     }
@@ -669,7 +745,21 @@ mod tests {
         let meta = test_meta("btc-updown-5m-test");
 
         rec.emit_session_start(&meta, &session_start());
-        rec.record_market_book_l1(&meta, 0.48, 0.52, 0.47, 0.53);
+        let depth = MarketBookDepthEvidence {
+            market_side: Some("YES".to_string()),
+            asset_id: Some("yes-asset".to_string()),
+            event_time_ms: Some(1_746_000_000_050),
+            source_sequence_id: Some("seq-17".to_string()),
+            best_bid: Some(0.48),
+            best_ask: Some(0.52),
+            best_bid_size: Some(12.5),
+            best_ask_size: Some(8.0),
+            best_bid_size_delta: Some(-3.0),
+            best_ask_size_delta: Some(1.25),
+            best_bid_drop_qty: Some(3.0),
+            best_ask_drop_qty: Some(0.0),
+        };
+        rec.record_market_book_l1(&meta, 0.48, 0.52, 0.47, 0.53, Some(&depth));
         rec.record_market_trade(
             &meta,
             "yes-asset",
@@ -706,6 +796,26 @@ mod tests {
             market_rows[1]["payload"]["trade_ts_ms"].as_u64(),
             Some(1_746_000_000_000),
             "structured trade should carry trade_ts_ms"
+        );
+        assert_eq!(
+            market_rows[0]["payload"]["market_side"].as_str(),
+            Some("YES"),
+            "structured book depth should carry market side"
+        );
+        assert_eq!(
+            market_rows[0]["payload"]["yes_bid_sz"].as_f64(),
+            Some(12.5),
+            "structured book depth should carry side-specific bid size"
+        );
+        assert_eq!(
+            market_rows[0]["payload"]["best_bid_drop_qty"].as_f64(),
+            Some(3.0),
+            "structured book depth should carry best-level drop quantity"
+        );
+        assert_eq!(
+            market_rows[0]["payload"]["source_sequence_id"].as_str(),
+            Some("seq-17"),
+            "structured book depth should carry source sequence id"
         );
         assert_eq!(event_rows.len(), 1, "own_order_events should be recorded");
         assert_eq!(
@@ -767,7 +877,7 @@ mod tests {
 
             rec.emit_session_start(&meta, &session_start());
             rec.record_market_ws_raw(&meta, r#"{"event_type":"book"}"#);
-            rec.record_market_book_l1(&meta, 0.48, 0.52, 0.47, 0.53);
+            rec.record_market_book_l1(&meta, 0.48, 0.52, 0.47, 0.53, None);
             rec.record_market_trade(
                 &meta,
                 "yes-asset",
