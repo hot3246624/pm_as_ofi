@@ -1535,6 +1535,21 @@ def main() -> int:
             "requires_compliant_backtest_dataset_for_promotion"
         ),
         "scope_limited_passive_probe_status": scope_limited_passive_probe_summary.get("status"),
+        "completion_passive_probe_status": scope_limited_passive_probe_summary.get("status"),
+        "completion_passive_probe_dataset_type": scope_limited_passive_probe_summary.get(
+            "dataset_type"
+        ),
+        "completion_passive_probe_data_root": scope_limited_passive_probe_summary.get(
+            "data_root"
+        ),
+        "completion_passive_probe_row_count": scope_limited_passive_probe_summary.get(
+            "row_count"
+        ),
+        "completion_passive_probe_requires_compliant_dataset": (
+            scope_limited_passive_probe_summary.get(
+                "requires_compliant_backtest_dataset_for_promotion"
+            )
+        ),
         "scope_limited_passive_probe_positive_net_pnl_run_count": (
             scope_limited_passive_probe_summary.get("positive_net_pnl_run_count")
         ),

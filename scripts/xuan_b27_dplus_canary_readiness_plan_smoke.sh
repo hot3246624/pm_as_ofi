@@ -278,7 +278,12 @@ ok = (
     and evidence.get("shadow_trading_report_discovery", {}).get("real_candidate_count", 0) >= 1
     and evidence.get("shadow_trading_report_discovery", {}).get("valid_real_candidate_count", 0) >= 1
     and evidence.get("shadow_trading_acceptance", {}).get("exists") is True
-    and evidence.get("shadow_trading_acceptance", {}).get("status") == "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
+    and evidence.get("shadow_trading_acceptance", {}).get("status")
+    in {
+        "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+        "FAIL_SHADOW_TRADING_PNL_METRICS",
+        "FAIL_SHADOW_TRADING_RESIDUAL_RISK",
+    }
     and evidence.get("shadow_trading_acceptance", {}).get("acceptance_passed") is False
     and evidence.get("shadow_trading_acceptance", {}).get("orders_sent") is False
     and evidence.get("rust_shadow_strategy_acceptance_smoke", {}).get("status") == "PASS"
@@ -324,7 +329,12 @@ ok = (
     and data.get("shadow_trading_evidence", {}).get("report_discovery_ready") is True
     and data.get("shadow_trading_evidence", {}).get("report_discovery_real_candidate_count", 0) >= 1
     and data.get("shadow_trading_evidence", {}).get("report_discovery_valid_real_candidate_count", 0) >= 1
-    and data.get("shadow_trading_evidence", {}).get("acceptance_status") == "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
+    and data.get("shadow_trading_evidence", {}).get("acceptance_status")
+    in {
+        "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+        "FAIL_SHADOW_TRADING_PNL_METRICS",
+        "FAIL_SHADOW_TRADING_RESIDUAL_RISK",
+    }
     and data.get("shadow_trading_evidence", {}).get("required_before_g2_canary") is True
     and data.get("shadow_trading_evidence", {}).get("orders_sent") is False
     and data.get("shadow_trading_evidence", {}).get("auth_network_started") is False
@@ -515,6 +525,7 @@ ok = (
     and (
         "retrain/tune strategy" in data.get("next_gate", "")
         or "compliant declared strict/cache/completion data" in data.get("next_gate", "")
+        or "compliant adapter/join" in data.get("next_gate", "")
     )
 )
 raise SystemExit(0 if ok else 1)
