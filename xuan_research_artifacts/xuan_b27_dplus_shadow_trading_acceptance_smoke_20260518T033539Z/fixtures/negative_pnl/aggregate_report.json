@@ -1,0 +1,33 @@
+{
+  "kind": "aggregate_report",
+  "script": "xuan_dplus_passive_passive_shadow_runner.py",
+  "slugs": 4,
+  "blocked": {},
+  "metrics": {
+    "candidates": 140,
+    "queue_supported_fills": 84,
+    "fill_rate": 0.6,
+    "pair_actions": 80,
+    "seed_qty": 410.0,
+    "seed_cost": 184.0,
+    "filled_qty": 360.0,
+    "filled_cost": 162.0,
+    "pair_qty": 176.0,
+    "qty_pair_share_of_filled": 0.9777777778,
+    "pair_pnl": -0.25,
+    "roi_on_seed_cost": 0.0828804348,
+    "roi_on_filled_cost": 0.0941358025,
+    "residual_qty": 2.0,
+    "residual_cost": 0.8,
+    "material_residual_lots": 0,
+    "pair_cost_proxy_p50": 0.91,
+    "pair_cost_proxy_p90": 0.95,
+    "net_pair_cost_proxy_p50": 0.91,
+    "net_pair_cost_proxy_p90": 0.96,
+    "fill_wait_proxy_p50_ms": 2500,
+    "fill_wait_proxy_p90_ms": 11000,
+    "pair_wait_proxy_p50_ms": 7000,
+    "pair_wait_proxy_p90_ms": 30000
+  },
+  "top_residual_lots": []
+}
