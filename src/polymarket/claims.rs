@@ -129,21 +129,91 @@ pub struct AutoClaimState {
     pub warned_proxy_mode: bool,
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct AutoClaimRunResult {
     pub positions: usize,
     pub candidates: usize,
     pub claimed: usize,
+    pub redeem_evidence: Vec<RedeemExecutionEvidence>,
 }
 
 impl AutoClaimRunResult {
     #[must_use]
-    pub fn succeeded(self, dry_run: bool) -> bool {
+    pub fn succeeded(&self, dry_run: bool) -> bool {
         if dry_run {
             self.candidates > 0
         } else {
             self.claimed > 0
         }
+    }
+
+    #[must_use]
+    pub fn has_redeem_attempt(&self) -> bool {
+        !self.redeem_evidence.is_empty()
+    }
+
+    #[must_use]
+    pub fn has_redeem_tx_hash(&self) -> bool {
+        self.redeem_evidence
+            .iter()
+            .any(RedeemExecutionEvidence::has_tx_hash)
+    }
+
+    #[must_use]
+    pub fn has_redeem_confirmation(&self) -> bool {
+        self.redeem_evidence
+            .iter()
+            .any(RedeemExecutionEvidence::has_confirmation)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct RedeemExecutionEvidence {
+    pub condition_id: String,
+    pub execution_mode: String,
+    pub relayer_tx_id: Option<String>,
+    pub tx_hash: Option<String>,
+    pub confirmed: bool,
+}
+
+impl RedeemExecutionEvidence {
+    fn eoa(condition_id: B256, tx_hash: impl ToString) -> Self {
+        Self {
+            condition_id: condition_id.to_string(),
+            execution_mode: "eoa_onchain".to_string(),
+            relayer_tx_id: None,
+            tx_hash: Some(tx_hash.to_string()),
+            confirmed: true,
+        }
+    }
+
+    fn safe_relayer(condition_id: B256, relayer_tx_id: String) -> Self {
+        Self {
+            condition_id: condition_id.to_string(),
+            execution_mode: "safe_relayer".to_string(),
+            relayer_tx_id: Some(relayer_tx_id),
+            tx_hash: None,
+            confirmed: false,
+        }
+    }
+
+    #[must_use]
+    pub fn has_tx_hash(&self) -> bool {
+        self.tx_hash
+            .as_deref()
+            .map(|v| !v.trim().is_empty())
+            .unwrap_or(false)
+    }
+
+    #[must_use]
+    pub fn has_confirmation(&self) -> bool {
+        self.has_tx_hash()
+            || (self.confirmed
+                && self
+                    .relayer_tx_id
+                    .as_deref()
+                    .map(|v| !v.trim().is_empty())
+                    .unwrap_or(false))
     }
 }
 
@@ -438,21 +508,23 @@ pub async fn execute_market_merge(
                 return Ok(());
             }
 
-            match relayer_wait_transaction(&http, cfg, &tx_id).await? {
-                Some(hash) => tracing::info!(
+            let wait = relayer_wait_transaction(&http, cfg, &tx_id).await?;
+            if wait.confirmed {
+                tracing::info!(
                     "♻️ Merge SAFE confirmed: condition={} amount_usdc={} tx_id={} tx_hash={}",
                     condition_id,
                     amount_usdc,
                     tx_id,
-                    hash
-                ),
-                None => tracing::warn!(
+                    wait.tx_hash.as_deref().unwrap_or("none")
+                );
+            } else {
+                tracing::warn!(
                     "⚠️ Merge SAFE pending timeout after {}s: condition={} amount_usdc={} tx_id={}",
                     cfg.relayer_wait_timeout.as_secs(),
                     condition_id,
                     amount_usdc,
                     tx_id
-                ),
+                );
             }
             Ok(())
         }
@@ -827,7 +899,7 @@ async fn relayer_wait_transaction(
     http: &reqwest::Client,
     cfg: &AutoClaimConfig,
     transaction_id: &str,
-) -> anyhow::Result<Option<String>> {
+) -> anyhow::Result<RelayerWaitOutcome> {
     let base = cfg.relayer_url.trim_end_matches('/');
     let deadline = Instant::now() + cfg.relayer_wait_timeout;
     while Instant::now() < deadline {
@@ -870,18 +942,30 @@ async fn relayer_wait_transaction(
                 .and_then(Value::as_str)
                 .or_else(|| tx.get("txHash").and_then(Value::as_str))
                 .map(ToOwned::to_owned);
-            return Ok(hash);
+            return Ok(RelayerWaitOutcome {
+                confirmed: true,
+                tx_hash: hash,
+            });
         }
     }
 
-    Ok(None)
+    Ok(RelayerWaitOutcome {
+        confirmed: false,
+        tx_hash: None,
+    })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RelayerWaitOutcome {
+    confirmed: bool,
+    tx_hash: Option<String>,
 }
 
 async fn run_eoa_onchain_claims(
     cfg: &AutoClaimConfig,
     private_key: &str,
     candidates: Vec<ClaimableCondition>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Vec<RedeemExecutionEvidence>> {
     let signer: LocalSigner<alloy::signers::k256::ecdsa::SigningKey> = private_key.parse()?;
     let signer = signer.with_chain_id(Some(POLYGON));
     let provider = ProviderBuilder::new()
@@ -893,7 +977,7 @@ async fn run_eoa_onchain_claims(
     let standard = CtfClient::new(provider.clone(), POLYGON)?;
     let neg_risk = CtfClient::with_neg_risk(provider, POLYGON)?;
     let collateral = v2_contract_config(false).collateral;
-    let mut claimed = 0_usize;
+    let mut evidence = Vec::new();
 
     for c in candidates {
         if c.negative_risk {
@@ -908,7 +992,10 @@ async fn run_eoa_onchain_claims(
                 .build();
             match neg_risk.redeem_neg_risk(&req).await {
                 Ok(resp) => {
-                    claimed += 1;
+                    evidence.push(RedeemExecutionEvidence::eoa(
+                        c.condition_id,
+                        resp.transaction_hash,
+                    ));
                     tracing::info!(
                         "✅ AUTO-CLAIM neg-risk success: condition={} tx={} block={}",
                         c.condition_id,
@@ -926,7 +1013,10 @@ async fn run_eoa_onchain_claims(
             let req = RedeemPositionsRequest::for_binary_market(collateral, c.condition_id);
             match standard.redeem_positions(&req).await {
                 Ok(resp) => {
-                    claimed += 1;
+                    evidence.push(RedeemExecutionEvidence::eoa(
+                        c.condition_id,
+                        resp.transaction_hash,
+                    ));
                     tracing::info!(
                         "✅ AUTO-CLAIM success: condition={} tx={} block={}",
                         c.condition_id,
@@ -943,7 +1033,7 @@ async fn run_eoa_onchain_claims(
         }
     }
 
-    Ok(claimed)
+    Ok(evidence)
 }
 
 async fn run_safe_relayer_claims(
@@ -952,7 +1042,7 @@ async fn run_safe_relayer_claims(
     funder: Address,
     private_key: &str,
     candidates: Vec<ClaimableCondition>,
-) -> anyhow::Result<usize> {
+) -> anyhow::Result<Vec<RedeemExecutionEvidence>> {
     let creds = cfg
         .builder_credentials
         .as_ref()
@@ -980,10 +1070,10 @@ async fn run_safe_relayer_claims(
             "⚠️ Safe relayer claim skipped: safe wallet not deployed yet (safe={:#x})",
             funder
         );
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
-    let mut claimed = 0_usize;
+    let mut evidence = Vec::new();
     for c in candidates {
         let (to, data, mode_tag) = if c.negative_risk {
             let yes = decimal_to_u256_6(c.yes_size).unwrap_or(U256::ZERO);
@@ -1020,7 +1110,8 @@ async fn run_safe_relayer_claims(
         )
         .await
         .with_context(|| format!("relayer submit failed for condition {}", c.condition_id))?;
-        claimed += 1;
+        let mut redeem_evidence =
+            RedeemExecutionEvidence::safe_relayer(c.condition_id, tx_id.clone());
 
         if !cfg.relayer_wait_confirm {
             tracing::info!(
@@ -1028,17 +1119,22 @@ async fn run_safe_relayer_claims(
                 c.condition_id,
                 tx_id,
             );
+            evidence.push(redeem_evidence);
             continue;
         }
 
         match relayer_wait_transaction(&http, cfg, &tx_id).await {
-            Ok(Some(hash)) => tracing::info!(
-                "✅ AUTO-CLAIM SAFE confirmed: condition={} tx_id={} tx_hash={}",
-                c.condition_id,
-                tx_id,
-                hash
-            ),
-            Ok(None) => tracing::warn!(
+            Ok(wait) if wait.confirmed => {
+                redeem_evidence.confirmed = true;
+                redeem_evidence.tx_hash = wait.tx_hash;
+                tracing::info!(
+                    "✅ AUTO-CLAIM SAFE confirmed: condition={} tx_id={} tx_hash={}",
+                    c.condition_id,
+                    tx_id,
+                    redeem_evidence.tx_hash.as_deref().unwrap_or("none")
+                );
+            }
+            Ok(_) => tracing::warn!(
                 "⚠️ AUTO-CLAIM SAFE pending timeout after {}s: condition={} tx_id={}",
                 cfg.relayer_wait_timeout.as_secs(),
                 c.condition_id,
@@ -1051,9 +1147,10 @@ async fn run_safe_relayer_claims(
                 e
             ),
         }
+        evidence.push(redeem_evidence);
     }
 
-    Ok(claimed)
+    Ok(evidence)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1205,7 +1302,7 @@ pub async fn run_auto_claim_once(
 
     let execute = |run_candidates: Vec<ClaimableCondition>, scope_label: &'static str| async move {
         if run_candidates.is_empty() {
-            return Ok(0_usize);
+            return Ok(Vec::new());
         }
         tracing::info!(
             "💸 AUTO-CLAIM run: scope={} mode={:?} candidates={} min_value=${}",
@@ -1226,7 +1323,7 @@ pub async fn run_auto_claim_once(
                     c.no_size
                 );
             }
-            return Ok(0_usize);
+            return Ok(Vec::new());
         }
         match mode {
             ClaimExecutionMode::EoaOnchain => run_eoa_onchain_claims(cfg, pk, run_candidates).await,
@@ -1234,17 +1331,21 @@ pub async fn run_auto_claim_once(
                 run_safe_relayer_claims(cfg, signer, funder, pk, run_candidates).await
             }
             ClaimExecutionMode::ProxyRelayerUnsupported
-            | ClaimExecutionMode::UnknownProxyOrSafe => Ok(0_usize),
+            | ClaimExecutionMode::UnknownProxyOrSafe => Ok(Vec::new()),
         }
     };
 
     if !primary.is_empty() {
         result.candidates += primary.len();
-        result.claimed += execute(primary, "primary").await?;
+        let evidence = execute(primary, "primary").await?;
+        result.claimed += evidence.len();
+        result.redeem_evidence.extend(evidence);
     }
     if result.claimed == 0 && !fallback.is_empty() {
         result.candidates += fallback.len();
-        result.claimed += execute(fallback, "fallback_global").await?;
+        let evidence = execute(fallback, "fallback_global").await?;
+        result.claimed += evidence.len();
+        result.redeem_evidence.extend(evidence);
     }
 
     Ok(result)
@@ -1281,6 +1382,7 @@ mod tests {
             positions: 3,
             candidates: 2,
             claimed: 1,
+            ..AutoClaimRunResult::default()
         };
         assert!(outcome.succeeded(false));
         assert!(outcome.succeeded(true));
@@ -1292,8 +1394,51 @@ mod tests {
             positions: 3,
             candidates: 2,
             claimed: 0,
+            ..AutoClaimRunResult::default()
         };
         assert!(!outcome.succeeded(false));
         assert!(outcome.succeeded(true));
+    }
+
+    #[test]
+    fn xuan_b27_dplus_redeem_execution_evidence_accepts_onchain_tx_hash() {
+        let evidence = RedeemExecutionEvidence {
+            condition_id: "0xabc".to_string(),
+            execution_mode: "eoa_onchain".to_string(),
+            relayer_tx_id: None,
+            tx_hash: Some("0xtx".to_string()),
+            confirmed: true,
+        };
+
+        assert!(evidence.has_tx_hash());
+        assert!(evidence.has_confirmation());
+    }
+
+    #[test]
+    fn xuan_b27_dplus_redeem_execution_evidence_accepts_confirmed_safe_tx_id() {
+        let evidence = RedeemExecutionEvidence {
+            condition_id: "0xabc".to_string(),
+            execution_mode: "safe_relayer".to_string(),
+            relayer_tx_id: Some("relayer-1".to_string()),
+            tx_hash: None,
+            confirmed: true,
+        };
+
+        assert!(!evidence.has_tx_hash());
+        assert!(evidence.has_confirmation());
+    }
+
+    #[test]
+    fn xuan_b27_dplus_redeem_execution_evidence_rejects_unconfirmed_safe_submit() {
+        let evidence = RedeemExecutionEvidence {
+            condition_id: "0xabc".to_string(),
+            execution_mode: "safe_relayer".to_string(),
+            relayer_tx_id: Some("relayer-1".to_string()),
+            tx_hash: None,
+            confirmed: false,
+        };
+
+        assert!(!evidence.has_tx_hash());
+        assert!(!evidence.has_confirmation());
     }
 }

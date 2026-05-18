@@ -23,7 +23,9 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use super::messages::{FillEvent, FillStatus, TradeDirection};
+use super::messages::{
+    FillEvent, FillStatus, OrderSlot, TradeDirection, XuanB27DplusSourceTruthEvent,
+};
 use super::recorder::{RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
 
@@ -58,6 +60,7 @@ pub struct UserWsListener {
     fill_tx: mpsc::Sender<FillEvent>,
     recorder: Option<RecorderHandle>,
     recorder_meta: Option<RecorderSessionMeta>,
+    xuan_b27_dplus_source_truth_tx: Option<mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
 }
 
 /// Cross-reconnect dedup cache for fill events.
@@ -140,6 +143,7 @@ impl UserWsListener {
             fill_tx,
             recorder: None,
             recorder_meta: None,
+            xuan_b27_dplus_source_truth_tx: None,
         }
     }
 
@@ -153,6 +157,32 @@ impl UserWsListener {
         self
     }
 
+    pub fn with_xuan_b27_dplus_source_truth_tx(
+        mut self,
+        tx: mpsc::Sender<XuanB27DplusSourceTruthEvent>,
+    ) -> Self {
+        self.xuan_b27_dplus_source_truth_tx = Some(tx);
+        self
+    }
+
+    fn emit_lifecycle_event(&self, event: &str, payload: Value) {
+        let (Some(recorder), Some(meta)) = (&self.recorder, &self.recorder_meta) else {
+            return;
+        };
+        recorder.emit_strategy_event(
+            meta,
+            event,
+            json!({
+                "schema_version": 1,
+                "source": "authenticated_user_ws",
+                "market_id": self.cfg.market_id.as_str(),
+                "yes_asset_id_present": !self.cfg.yes_asset_id.trim().is_empty(),
+                "no_asset_id_present": !self.cfg.no_asset_id.trim().is_empty(),
+                "data": payload,
+            }),
+        );
+    }
+
     /// Actor main loop. Connects to User WS with auth, listens for trades.
     /// Reconnects on disconnect. Dedup cache is kept across reconnects.
     pub async fn run(self) {
@@ -161,6 +191,13 @@ impl UserWsListener {
             &self.cfg.market_id[..8.min(self.cfg.market_id.len())],
             &self.cfg.yes_asset_id[..8.min(self.cfg.yes_asset_id.len())],
             &self.cfg.no_asset_id[..8.min(self.cfg.no_asset_id.len())],
+        );
+        self.emit_lifecycle_event(
+            "user_ws_listener_started",
+            json!({
+                "api_key_present": !self.cfg.api_key.trim().is_empty(),
+                "ws_base_url_present": !self.cfg.ws_base_url.trim().is_empty(),
+            }),
         );
 
         // Keep dedup state across reconnects to avoid replay double-counting.
@@ -177,6 +214,10 @@ impl UserWsListener {
             match self.connect_and_listen(&mut dedup).await {
                 Ok(()) => {
                     info!("👤 User WS closed normally");
+                    self.emit_lifecycle_event(
+                        "user_ws_closed_normally",
+                        json!({"reconnect_backoff_ms": backoff.as_millis()}),
+                    );
                     backoff = Duration::from_millis(100); // Reset on clean close
                     fast_reset_streak = 0;
                 }
@@ -198,6 +239,14 @@ impl UserWsListener {
                         warn!("👤 User WS error: {:?}", e);
                         fast_reset_streak = 0;
                     }
+                    self.emit_lifecycle_event(
+                        "user_ws_connect_or_read_error",
+                        json!({
+                            "error": msg,
+                            "fast_reset_streak": fast_reset_streak,
+                            "reconnect_backoff_ms": backoff.as_millis(),
+                        }),
+                    );
                 }
             }
 
@@ -210,6 +259,12 @@ impl UserWsListener {
     async fn connect_and_listen(&self, dedup: &mut DedupCache) -> anyhow::Result<()> {
         let url = format!("{}/user", self.cfg.ws_base_url);
         info!(%url, "👤 Connecting User WS (authenticated)");
+        self.emit_lifecycle_event(
+            "user_ws_connect_attempt",
+            json!({
+                "url_path": "/user",
+            }),
+        );
 
         let connect_result =
             tokio::time::timeout(Duration::from_secs(10), connect_async(&url)).await;
@@ -221,6 +276,12 @@ impl UserWsListener {
         };
 
         info!("✅ User WS connected (status={:?})", response.status());
+        self.emit_lifecycle_event(
+            "user_ws_connected",
+            json!({
+                "http_status": response.status().as_u16(),
+            }),
+        );
         let (mut write, mut read) = ws.split();
 
         // Polymarket User WS subscribe schema:
@@ -238,12 +299,16 @@ impl UserWsListener {
             "👤 Subscribe User WS: market={}",
             &self.cfg.market_id[..8.min(self.cfg.market_id.len())],
         );
-        info!(
-            "👤 Subscribe auth: apiKey={}...",
-            &self.cfg.api_key[..8.min(self.cfg.api_key.len())]
-        );
+        info!("👤 Subscribe auth: apiKey present");
 
         write.send(Message::Text(subscribe.to_string())).await?;
+        self.emit_lifecycle_event(
+            "user_ws_subscribe_sent",
+            json!({
+                "market_count": 1,
+                "api_key_present": !self.cfg.api_key.trim().is_empty(),
+            }),
+        );
 
         // Ping keepalive
         let write_clone = tokio::spawn(async move {
@@ -260,6 +325,12 @@ impl UserWsListener {
         while let Some(msg) = read.next().await {
             match msg {
                 Ok(Message::Text(text)) => {
+                    self.emit_lifecycle_event(
+                        "user_ws_text_received",
+                        json!({
+                            "byte_len": text.len(),
+                        }),
+                    );
                     if let (Some(recorder), Some(meta)) = (&self.recorder, &self.recorder_meta) {
                         recorder.record_user_ws_raw(meta, &text);
                     }
@@ -274,6 +345,10 @@ impl UserWsListener {
                         for val in &values {
                             if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
                                 warn!("👤 User WS server error payload: {}", err);
+                                self.emit_lifecycle_event(
+                                    "user_ws_server_error_payload",
+                                    json!({"error": err}),
+                                );
                             }
                             let fills = self.parse_trade_event(val, dedup);
                             for fill in fills {
@@ -297,10 +372,18 @@ impl UserWsListener {
                         .as_ref()
                         .map(|f| format!("code={:?} reason='{}'", f.code, f.reason))
                         .unwrap_or_else(|| "no close frame".to_string());
+                    self.emit_lifecycle_event(
+                        "user_ws_closed_by_server",
+                        json!({"reason": reason.clone()}),
+                    );
                     return Err(anyhow::anyhow!("User WS closed by server: {}", reason));
                 }
                 Err(e) => {
                     write_clone.abort();
+                    self.emit_lifecycle_event(
+                        "user_ws_read_error",
+                        json!({"error": format!("{:?}", e)}),
+                    );
                     return Err(anyhow::anyhow!("User WS read error: {:?}", e));
                 }
                 _ => {}
@@ -502,10 +585,23 @@ impl UserWsListener {
                 &order_id[..8.min(order_id.len())],
             );
 
+            let direction = parse_trade_direction(mo).unwrap_or(TradeDirection::Buy);
+            self.emit_user_ws_fill_parsed(
+                val,
+                Some(mo),
+                "maker",
+                &order_id,
+                trade_id,
+                side,
+                direction,
+                size,
+                price,
+                status,
+            );
             fills.push(FillEvent {
                 order_id,
                 side,
-                direction: parse_trade_direction(mo).unwrap_or(TradeDirection::Buy),
+                direction,
                 filled_size: size,
                 price,
                 status,
@@ -582,15 +678,112 @@ impl UserWsListener {
             return None;
         }
 
+        let direction = parse_trade_direction(val).unwrap_or(TradeDirection::Buy);
+        self.emit_user_ws_fill_parsed(
+            val, None, "taker", &order_id, trade_id, side, direction, size, price, status,
+        );
         Some(FillEvent {
             order_id,
             side,
-            direction: parse_trade_direction(val).unwrap_or(TradeDirection::Buy),
+            direction,
             filled_size: size,
             price,
             status,
             ts: Instant::now(),
         })
+    }
+
+    fn emit_user_ws_fill_parsed(
+        &self,
+        trade_event: &Value,
+        maker_order: Option<&Value>,
+        liquidity_role: &str,
+        order_id: &str,
+        trade_id: &str,
+        side: Side,
+        direction: TradeDirection,
+        size: f64,
+        price: f64,
+        status: FillStatus,
+    ) {
+        let source = maker_order.unwrap_or(trade_event);
+        let asset_id = source
+            .get("asset_id")
+            .or_else(|| trade_event.get("asset_id"))
+            .map(json_value_to_string);
+        let fee_rate_bps = source
+            .get("fee_rate_bps")
+            .or_else(|| source.get("feeRateBps"))
+            .or_else(|| trade_event.get("fee_rate_bps"))
+            .or_else(|| trade_event.get("feeRateBps"))
+            .map(json_value_to_string);
+        let has_fee_rate_bps = fee_rate_bps.is_some();
+        let has_order_id = !order_id.trim().is_empty() && order_id != "unknown";
+        let has_trade_id = !trade_id.trim().is_empty();
+        let has_liquidity_role = !liquidity_role.trim().is_empty();
+
+        if let Some(tx) = &self.xuan_b27_dplus_source_truth_tx {
+            let _ = tx.try_send(XuanB27DplusSourceTruthEvent::UserWsFillParsed {
+                slot: OrderSlot::new(side, direction),
+                has_order_id,
+                has_trade_id,
+                has_liquidity_role,
+                has_fee_rate_bps,
+                status,
+                ts: Instant::now(),
+            });
+        }
+
+        let (Some(recorder), Some(meta)) = (&self.recorder, &self.recorder_meta) else {
+            return;
+        };
+
+        recorder.emit_own_inventory_event(
+            meta,
+            "user_ws_fill_parsed",
+            json!({
+                "schema_version": 1,
+                "source": "authenticated_user_ws",
+                "liquidity_role": liquidity_role,
+                "order_id": order_id,
+                "trade_id": empty_string_to_json_null(trade_id),
+                "side": format!("{:?}", side),
+                "direction": format!("{:?}", direction),
+                "filled_size": size,
+                "price": price,
+                "status": format!("{:?}", status),
+                "asset_id": asset_id,
+                "event_type": trade_event
+                    .get("event_type")
+                    .or_else(|| trade_event.get("type"))
+                    .map(json_value_to_string),
+                "trader_side": trade_event.get("trader_side").map(json_value_to_string),
+                "fee_rate_bps": fee_rate_bps,
+                "maker_order_present": maker_order.is_some(),
+                "truth_fields": {
+                    "has_order_id": has_order_id,
+                    "has_trade_id": has_trade_id,
+                    "has_liquidity_role": has_liquidity_role,
+                    "has_fee_rate_bps": has_fee_rate_bps,
+                },
+            }),
+        );
+    }
+}
+
+fn json_value_to_string(value: &Value) -> String {
+    value
+        .as_str()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| value.to_string().trim_matches('"').to_string())
+}
+
+fn empty_string_to_json_null(value: &str) -> Value {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        Value::Null
+    } else {
+        Value::String(trimmed.to_string())
     }
 }
 

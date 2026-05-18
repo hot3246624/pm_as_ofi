@@ -1,0 +1,66 @@
+{
+  "schema": "xuan_taker_buy_shadow_pair_quality_l1_097",
+  "status": "shadow_pair_quality_l1_097_after_full_rebuilt_20260427_20260501_backtest",
+  "purpose": "Pair-quality xuan-inspired public-state taker BUY shadow candidate. This version tightens l1_immediate_pair from 0.98 to 0.97 to reduce residual exposure while preserving high market coverage. Shadow/research only.",
+  "source_research": {
+    "window": "2026-04-27..2026-05-01",
+    "data_policy": "full rebuilt 2026-04-27 cache plus rebuilt 2026-04-28..2026-05-01 cache; old 23-market 2026-04-27 cache excluded",
+    "cache_rows_loaded": 416077,
+    "rows": 4249,
+    "markets": 1240,
+    "market_total": 1344,
+    "market_coverage": 0.9226,
+    "pnl_actual_residual_truth": 7024.21,
+    "pnl_100bps_per_leg": 1926.01,
+    "pnl_worst_residual_100bps_per_leg": 1866.01,
+    "closed_rate": 0.999765,
+    "residual_count": 1,
+    "residual_rate": 0.000235,
+    "roi_on_first_cost": 0.04653,
+    "reason_selected": "Compared with l1<=0.98, l1<=0.97 sacrifices nominal PnL/coverage but cuts residuals from 14 to 1 and improves worst-residual+100bps from +1369.43 to +1866.01."
+  },
+  "execution_model": {
+    "trigger": "public MarketTradeTick taker_side=BUY",
+    "first_side": "MarketTradeTick market_side",
+    "first_side_gate": "must equal current L1 high-side by midpoint",
+    "first_leg_cost_model": "CLOB REST L2 ask sweep VWAP for clip_size",
+    "completion_cost_model": "opposite CLOB REST L2 ask sweep VWAP for clip_size during completion_window_s, with pair-quality ceiling 0.98",
+    "active_tranche_limit": 1,
+    "block_after_residual": false,
+    "cooldown_s": 0,
+    "max_entries_per_market": 6,
+    "max_residuals_per_market": 1,
+    "place_real_orders": false
+  },
+  "rule": {
+    "trade_price_min": 0.45,
+    "trade_price_max": 0.75,
+    "trade_size_min": 10.0,
+    "trade_size_max": 160.0,
+    "min_first_l2_vwap": 0.5,
+    "max_first_l2_vwap": 0.8,
+    "max_l1_immediate_pair": 0.97,
+    "completion_pair_ceiling": 0.98,
+    "completion_window_s": 30,
+    "clip_size": 60.0,
+    "tail_freeze_s": 60,
+    "max_l1_book_age_ms": 1000,
+    "l2_poll_ms": 350,
+    "clob_rest_timeout_s": 2.0
+  },
+  "shadow_required_observations": [
+    "Live public WS trigger rate under l1_immediate_pair<=0.97",
+    "Near-miss count for 0.97<l1_immediate_pair<=0.98 research envelope",
+    "CLOB REST L2 latency and first-leg full-clip availability",
+    "Completion full-clip availability within 30s",
+    "Pair-cost distribution versus 0.98 ceiling",
+    "Residual count and residual cause",
+    "Whether price window 0.45-0.75 misses meaningful live regimes outside the backtested envelope"
+  ],
+  "safety": {
+    "must_set_pm_dry_run": true,
+    "must_use_shared_ingress_client": true,
+    "must_not_start_broker": true,
+    "must_not_place_orders": true
+  }
+}

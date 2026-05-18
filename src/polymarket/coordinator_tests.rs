@@ -3,6 +3,7 @@ use crate::polymarket::glft::{
     DriftMode, FitQuality, GlftFitStatus, GlftReadinessBlockers, GlftSignalState, QuoteRegime,
     ReferenceHealth, WarmStartStatus,
 };
+use crate::polymarket::messages::XuanB27DplusSourceTruthEvent;
 use crate::polymarket::pair_ledger::{
     build_pair_ledger, EpisodeMetrics, PairLedgerEvent, PairLedgerEventKind, PairLedgerSnapshot,
     PathKind,
@@ -29,6 +30,615 @@ fn cfg() -> CoordinatorConfig {
 fn with_strategy(mut c: CoordinatorConfig, strategy: StrategyKind) -> CoordinatorConfig {
     c.strategy = strategy;
     c
+}
+
+#[test]
+fn xuan_b27_dplus_auth_observer_never_allows_order_submission() {
+    assert!(!XuanB27DplusMode::Disabled.allows_order_submission());
+    assert!(!XuanB27DplusMode::Observer.allows_order_submission());
+    assert!(!XuanB27DplusMode::AuthObserver.allows_order_submission());
+    assert!(XuanB27DplusMode::Canary.allows_order_submission());
+}
+
+#[test]
+fn xuan_b27_dplus_canary_invariants_force_safe_execution_flags() {
+    let mut c = cfg();
+    c.xuan_b27_dplus.mode = XuanB27DplusMode::Canary;
+    c.xuan_b27_dplus.post_only = false;
+    c.xuan_b27_dplus.allow_passive_taker = true;
+    c.xuan_b27_dplus.stop_on_unknown = false;
+
+    c.finalize_invariants();
+
+    assert!(c.xuan_b27_dplus.post_only);
+    assert!(!c.xuan_b27_dplus.allow_passive_taker);
+    assert!(c.xuan_b27_dplus.stop_on_unknown);
+}
+
+#[test]
+fn xuan_b27_dplus_auth_observer_preserves_no_order_mode_flags() {
+    let mut c = cfg();
+    c.xuan_b27_dplus.mode = XuanB27DplusMode::AuthObserver;
+    c.xuan_b27_dplus.post_only = true;
+    c.xuan_b27_dplus.allow_passive_taker = false;
+    c.xuan_b27_dplus.stop_on_unknown = true;
+
+    c.finalize_invariants();
+
+    assert_eq!(c.xuan_b27_dplus.mode, XuanB27DplusMode::AuthObserver);
+    assert!(!c.xuan_b27_dplus.mode.allows_order_submission());
+    assert!(c.xuan_b27_dplus.post_only);
+    assert!(!c.xuan_b27_dplus.allow_passive_taker);
+    assert!(c.xuan_b27_dplus.stop_on_unknown);
+}
+
+fn xuan_b27_dplus_canary_runtime_cfg() -> CoordinatorConfig {
+    let mut c = with_strategy(cfg(), StrategyKind::XuanB27Dplus);
+    c.xuan_b27_dplus.mode = XuanB27DplusMode::Canary;
+    c.xuan_b27_dplus.target_qty = 5.0;
+    c.xuan_b27_dplus.edge = 0.04;
+    c.xuan_b27_dplus.max_open_cost_usdc = 50.0;
+    c.xuan_b27_dplus.max_strategy_exposure_usdc = 100.0;
+    c.xuan_b27_dplus.max_active_markets = 1;
+    c.xuan_b27_dplus.max_live_orders = 2;
+    c.xuan_b27_dplus.post_only = true;
+    c.xuan_b27_dplus.allow_passive_taker = false;
+    c.xuan_b27_dplus.stop_on_unknown = true;
+    c
+}
+
+fn xuan_b27_dplus_mark_runtime_source_truth_pass(coord: &mut StrategyCoordinator) {
+    coord.set_xuan_b27_dplus_runtime_source_truth(XuanB27DplusRuntimeSourceTruth::all_pass());
+}
+
+#[test]
+fn xuan_b27_dplus_runtime_source_truth_defaults_unknown() {
+    let truth = XuanB27DplusRuntimeSourceTruth::default();
+
+    assert!(!truth.account_truth_ready());
+    assert_eq!(
+        truth.missing_components(),
+        vec![
+            "order_truth",
+            "fill_truth",
+            "wallet_truth",
+            "redeem_truth",
+            "cashflow_truth"
+        ]
+    );
+    assert!(truth.failed_components().is_empty());
+}
+
+fn xuan_b27_dplus_feed_complete_source_truth_events(coord: &mut StrategyCoordinator) {
+    let now = Instant::now();
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::OrderAccepted {
+        slot: OrderSlot::YES_BUY,
+        venue_order_id_present: true,
+        ts: now,
+    });
+    coord.handle_xuan_b27_dplus_source_truth_event(
+        XuanB27DplusSourceTruthEvent::UserWsFillParsed {
+            slot: OrderSlot::new(Side::Yes, TradeDirection::Buy),
+            has_order_id: true,
+            has_trade_id: true,
+            has_liquidity_role: true,
+            has_fee_rate_bps: true,
+            status: FillStatus::Confirmed,
+            ts: now,
+        },
+    );
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::WalletSnapshot {
+        valid: true,
+        ts: now,
+    });
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::RedeemResult {
+        has_redeem_attempt_id: true,
+        has_redeem_tx_hash: true,
+        has_redeem_confirmation: true,
+        ts: now,
+    });
+    coord.handle_xuan_b27_dplus_source_truth_event(
+        XuanB27DplusSourceTruthEvent::CashflowSnapshot {
+            has_cashflow_snapshot_id: true,
+            ts: now,
+        },
+    );
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_source_truth_events_feed_runtime_gate() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_feed_complete_source_truth_events(&mut coord);
+    assert!(coord
+        .xuan_b27_dplus_runtime_source_truth()
+        .account_truth_ready());
+
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.status, "COMMANDS_READY");
+    assert_eq!(summary.command_count, 2);
+    assert_eq!(summary.sent_count, 2);
+    assert!(matches!(
+        timeout(Duration::from_millis(20), e.recv()).await,
+        Ok(Some(OrderManagerCmd::SetTargetWithTrace { .. }))
+    ));
+    assert!(matches!(
+        timeout(Duration::from_millis(20), e.recv()).await,
+        Ok(Some(OrderManagerCmd::SetTargetWithTrace { .. }))
+    ));
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_source_truth_fill_missing_trade_id_stays_unknown() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    let now = Instant::now();
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::OrderAccepted {
+        slot: OrderSlot::YES_BUY,
+        venue_order_id_present: true,
+        ts: now,
+    });
+    coord.handle_xuan_b27_dplus_source_truth_event(
+        XuanB27DplusSourceTruthEvent::UserWsFillParsed {
+            slot: OrderSlot::new(Side::Yes, TradeDirection::Buy),
+            has_order_id: true,
+            has_trade_id: false,
+            has_liquidity_role: true,
+            has_fee_rate_bps: true,
+            status: FillStatus::Confirmed,
+            ts: now,
+        },
+    );
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::WalletSnapshot {
+        valid: true,
+        ts: now,
+    });
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::RedeemResult {
+        has_redeem_attempt_id: true,
+        has_redeem_tx_hash: true,
+        has_redeem_confirmation: true,
+        ts: now,
+    });
+    coord.handle_xuan_b27_dplus_source_truth_event(
+        XuanB27DplusSourceTruthEvent::CashflowSnapshot {
+            has_cashflow_snapshot_id: true,
+            ts: now,
+        },
+    );
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    assert!(!source_truth.account_truth_ready());
+    assert_eq!(source_truth.missing_components(), vec!["fill_truth"]);
+
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_source_truth_wallet_invalid_fails_runtime_gate() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_feed_complete_source_truth_events(&mut coord);
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::WalletSnapshot {
+        valid: false,
+        ts: Instant::now(),
+    });
+
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    assert!(!source_truth.account_truth_ready());
+    assert_eq!(source_truth.failed_components(), vec!["wallet_truth"]);
+
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_source_truth_redeem_missing_tx_hash_stays_unknown() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_feed_complete_source_truth_events(&mut coord);
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::RedeemResult {
+        has_redeem_attempt_id: true,
+        has_redeem_tx_hash: false,
+        has_redeem_confirmation: false,
+        ts: Instant::now(),
+    });
+
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    assert!(!source_truth.account_truth_ready());
+    assert_eq!(source_truth.missing_components(), vec!["redeem_truth"]);
+
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_source_truth_confirmed_safe_redeem_id_passes_without_tx_hash() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_feed_complete_source_truth_events(&mut coord);
+    coord.handle_xuan_b27_dplus_source_truth_event(XuanB27DplusSourceTruthEvent::RedeemResult {
+        has_redeem_attempt_id: true,
+        has_redeem_tx_hash: false,
+        has_redeem_confirmation: true,
+        ts: Instant::now(),
+    });
+
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    assert!(source_truth.account_truth_ready());
+
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.status, "COMMANDS_READY");
+    assert_eq!(summary.sent_count, 2);
+    assert!(matches!(
+        timeout(Duration::from_millis(20), e.recv()).await,
+        Ok(Some(OrderManagerCmd::SetTargetWithTrace { .. }))
+    ));
+    assert!(matches!(
+        timeout(Duration::from_millis(20), e.recv()).await,
+        Ok(Some(OrderManagerCmd::SetTargetWithTrace { .. }))
+    ));
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_source_truth_cashflow_missing_id_stays_unknown() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_feed_complete_source_truth_events(&mut coord);
+    coord.handle_xuan_b27_dplus_source_truth_event(
+        XuanB27DplusSourceTruthEvent::CashflowSnapshot {
+            has_cashflow_snapshot_id: false,
+            ts: Instant::now(),
+        },
+    );
+
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    assert!(!source_truth.account_truth_ready());
+    assert_eq!(source_truth.missing_components(), vec!["cashflow_truth"]);
+
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[test]
+fn xuan_b27_dplus_source_truth_feed_ignored_for_non_dplus_strategy() {
+    let (_o, _i, _m, _k, _e, mut coord) = make(cfg());
+    xuan_b27_dplus_feed_complete_source_truth_events(&mut coord);
+
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    assert!(!source_truth.account_truth_ready());
+    assert_eq!(
+        source_truth.missing_components(),
+        vec![
+            "order_truth",
+            "fill_truth",
+            "wallet_truth",
+            "redeem_truth",
+            "cashflow_truth"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_emits_no_commands_without_explicit_approval() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_mark_runtime_source_truth_pass(&mut coord);
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary
+        .block_reasons
+        .contains(&"explicit_canary_approval_missing"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_emits_no_commands_without_account_truth() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_emits_no_commands_with_unknown_source_truth() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert!(!source_truth.account_truth_ready());
+    assert_eq!(
+        source_truth.missing_components(),
+        vec![
+            "order_truth",
+            "fill_truth",
+            "wallet_truth",
+            "redeem_truth",
+            "cashflow_truth"
+        ]
+    );
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_emits_no_commands_with_wallet_truth_unknown() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    coord.set_xuan_b27_dplus_runtime_source_truth(XuanB27DplusRuntimeSourceTruth {
+        order_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        fill_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        wallet_truth: XuanB27DplusRuntimeTruthStatus::Unknown,
+        redeem_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        cashflow_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+    });
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert_eq!(source_truth.missing_components(), vec!["wallet_truth"]);
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_emits_no_commands_with_cashflow_truth_failed() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    coord.set_xuan_b27_dplus_runtime_source_truth(XuanB27DplusRuntimeSourceTruth {
+        order_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        fill_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        wallet_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        redeem_truth: XuanB27DplusRuntimeTruthStatus::Pass,
+        cashflow_truth: XuanB27DplusRuntimeTruthStatus::Fail,
+    });
+    let source_truth = coord.xuan_b27_dplus_runtime_source_truth();
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"account_truth_unknown"));
+    assert_eq!(source_truth.failed_components(), vec!["cashflow_truth"]);
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_emits_no_commands_when_risk_caps_fail() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    c.xuan_b27_dplus.max_live_orders = 3;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_mark_runtime_source_truth_pass(&mut coord);
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.command_count, 0);
+    assert!(summary.block_reasons.contains(&"risk_caps_not_ready"));
+    assert!(timeout(Duration::from_millis(20), e.recv()).await.is_err());
+}
+
+#[tokio::test]
+async fn xuan_b27_dplus_runtime_wiring_can_emit_traced_targets_only_after_all_gates() {
+    let mut c = xuan_b27_dplus_canary_runtime_cfg();
+    c.xuan_b27_dplus.explicit_canary_approval = true;
+    c.xuan_b27_dplus.runtime_wiring_enabled = true;
+    c.xuan_b27_dplus.oms_adapter_enabled = true;
+    c.xuan_b27_dplus.account_truth_ready = true;
+    let (_o, _i, _m, _k, mut e, mut coord) = make(c);
+    xuan_b27_dplus_mark_runtime_source_truth_pass(&mut coord);
+    let inv = test_inventory_snapshot(InventoryState::default());
+    let metrics = coord.derive_inventory_metrics(&inv.working);
+
+    let summary = coord
+        .maybe_dispatch_xuan_b27_dplus_canary_commands(
+            &inv,
+            &book(0.42, 0.46, 0.52, 0.56),
+            &metrics,
+        )
+        .await;
+
+    assert_eq!(summary.status, "COMMANDS_READY");
+    assert_eq!(summary.command_count, 2);
+    assert_eq!(summary.sent_count, 2);
+    assert!(!summary.orders_submitted);
+    match timeout(Duration::from_millis(20), e.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTargetWithTrace { target, trace })) => {
+            assert_eq!(target.side, Side::Yes);
+            assert_eq!(target.direction, TradeDirection::Buy);
+            assert_eq!(target.price, 0.42);
+            assert_eq!(
+                trace.order_attempt_id,
+                "xuan_b27_dplus:local:0:yes:attempt:preview"
+            );
+        }
+        other => panic!("unexpected first command: {other:?}"),
+    }
+    match timeout(Duration::from_millis(20), e.recv()).await {
+        Ok(Some(OrderManagerCmd::SetTargetWithTrace { target, trace })) => {
+            assert_eq!(target.side, Side::No);
+            assert_eq!(target.direction, TradeDirection::Buy);
+            assert_eq!(target.price, 0.52);
+            assert_eq!(
+                trace.order_attempt_id,
+                "xuan_b27_dplus:local:0:no:attempt:preview"
+            );
+        }
+        other => panic!("unexpected second command: {other:?}"),
+    }
 }
 
 #[derive(Clone)]
@@ -1192,7 +1802,10 @@ async fn test_pair_gated_tranche_absent_intent_clears_on_seed_side_flip() {
             assert_eq!(slot, OrderSlot::NO_BUY);
             assert_eq!(reason, CancelReason::Reprice);
         }
-        other => panic!("expected side-flip ClearTarget for old PGT seed, got {:?}", other),
+        other => panic!(
+            "expected side-flip ClearTarget for old PGT seed, got {:?}",
+            other
+        ),
     }
     assert!(
         coord.slot_target(OrderSlot::NO_BUY).is_none(),

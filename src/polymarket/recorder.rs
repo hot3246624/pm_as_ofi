@@ -437,6 +437,17 @@ impl RecorderHandle {
         );
     }
 
+    pub fn emit_strategy_event(&self, meta: &RecorderSessionMeta, event: &str, payload: Value) {
+        self.try_send_ops(
+            meta,
+            json!({
+                "event": event,
+                "data": payload,
+            }),
+            RecorderStream::Events,
+        );
+    }
+
     pub fn emit_redeem_result(&self, meta: &RecorderSessionMeta, payload: Value) {
         self.try_send_ops(
             meta,

@@ -219,6 +219,16 @@ impl TradePurpose {
 }
 
 /// Unified execution intent across strategies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderAttemptTrace {
+    pub strategy: String,
+    pub run_id: String,
+    pub market_session_id: String,
+    pub candidate_id: String,
+    pub order_attempt_id: String,
+}
+
+/// Unified execution intent across strategies.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TradeIntent {
     pub side: Side,
@@ -233,6 +243,7 @@ pub struct TradeIntent {
     /// Local estimate of unresolved matched buy notional (USDC) used by executor
     /// affordability precheck. Non-pair_arb paths keep this as 0.0.
     pub local_unreleased_matched_notional_usdc: f64,
+    pub trace: Option<OrderAttemptTrace>,
 }
 
 // ─────────────────────────────────────────────────────────
@@ -379,6 +390,11 @@ impl DesiredTarget {
 pub enum OrderManagerCmd {
     /// Update the desired target for an order slot.
     SetTarget(DesiredTarget),
+    /// Update the desired target while preserving source-of-truth correlation.
+    SetTargetWithTrace {
+        target: DesiredTarget,
+        trace: OrderAttemptTrace,
+    },
     /// Pair_arb-only metadata for executor affordability precheck.
     SetPairArbHeadroom {
         slot: OrderSlot,
@@ -552,6 +568,38 @@ pub enum ExecutionFeedback {
         side: Side,
         reason: BidReason,
         kind: RejectKind,
+        ts: Instant,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum XuanB27DplusSourceTruthEvent {
+    OrderAccepted {
+        slot: OrderSlot,
+        venue_order_id_present: bool,
+        ts: Instant,
+    },
+    UserWsFillParsed {
+        slot: OrderSlot,
+        has_order_id: bool,
+        has_trade_id: bool,
+        has_liquidity_role: bool,
+        has_fee_rate_bps: bool,
+        status: FillStatus,
+        ts: Instant,
+    },
+    WalletSnapshot {
+        valid: bool,
+        ts: Instant,
+    },
+    RedeemResult {
+        has_redeem_attempt_id: bool,
+        has_redeem_tx_hash: bool,
+        has_redeem_confirmation: bool,
+        ts: Instant,
+    },
+    CashflowSnapshot {
+        has_cashflow_snapshot_id: bool,
         ts: Instant,
     },
 }

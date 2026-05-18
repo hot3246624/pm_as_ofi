@@ -118,6 +118,8 @@ pub struct Executor {
     capital_tx: Option<mpsc::Sender<PlacementRejectEvent>>,
     /// Side channel for Coordinator execution feedback (e.g. crossed-book reject adaptation).
     feedback_tx: Option<mpsc::Sender<ExecutionFeedback>>,
+    /// Optional D+ source-truth side channel. It only carries no-secret field-completeness facts.
+    xuan_b27_dplus_source_truth_tx: Option<mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
 
     /// Cached free collateral balance (pUSD) used by pre-place affordability checks.
     balance_cache_usdc: Option<f64>,
@@ -288,6 +290,7 @@ impl Executor {
             dry_run_md_rx,
             capital_tx,
             feedback_tx,
+            xuan_b27_dplus_source_truth_tx: None,
             balance_cache_usdc: None,
             balance_cache_ts: Instant::now() - Duration::from_secs(60),
             balance_cache_ttl: Duration::from_millis(
@@ -346,6 +349,33 @@ impl Executor {
             last_guard_reconcile_ts: Instant::now() - Duration::from_secs(60),
             recorder,
             recorder_meta,
+        }
+    }
+
+    pub fn with_xuan_b27_dplus_source_truth_tx(
+        mut self,
+        tx: mpsc::Sender<XuanB27DplusSourceTruthEvent>,
+    ) -> Self {
+        self.xuan_b27_dplus_source_truth_tx = Some(tx);
+        self
+    }
+
+    fn emit_xuan_b27_dplus_order_truth(&self, slot: OrderSlot, order_id: &str) {
+        if let Some(tx) = &self.xuan_b27_dplus_source_truth_tx {
+            let _ = tx.try_send(XuanB27DplusSourceTruthEvent::OrderAccepted {
+                slot,
+                venue_order_id_present: !order_id.trim().is_empty(),
+                ts: Instant::now(),
+            });
+        }
+    }
+
+    fn emit_xuan_b27_dplus_wallet_truth(&self, valid: bool) {
+        if let Some(tx) = &self.xuan_b27_dplus_source_truth_tx {
+            let _ = tx.try_send(XuanB27DplusSourceTruthEvent::WalletSnapshot {
+                valid,
+                ts: Instant::now(),
+            });
         }
     }
 
@@ -735,6 +765,7 @@ impl Executor {
                                 reason,
                                 purpose,
                                 0.0,
+                                None,
                             )
                             .await;
                         }
@@ -753,6 +784,7 @@ impl Executor {
                                 direction,
                                 size,
                                 TradePurpose::Hedge,
+                                None,
                                 None,
                                 None,
                             )
@@ -1297,6 +1329,7 @@ impl Executor {
                     intent.purpose.as_bid_reason(),
                     intent.purpose,
                     intent.local_unreleased_matched_notional_usdc,
+                    intent.trace,
                 )
                 .await;
             }
@@ -1308,6 +1341,7 @@ impl Executor {
                     intent.purpose,
                     intent.price,
                     intent.expected_fill_price,
+                    intent.trace,
                 )
                 .await;
             }
@@ -1323,6 +1357,7 @@ impl Executor {
         reason: BidReason,
         _purpose: TradePurpose,
         local_unreleased_matched_notional_usdc: f64,
+        trace: Option<OrderAttemptTrace>,
     ) {
         let size = size;
         let slot = OrderSlot::new(side, direction);
@@ -1574,6 +1609,7 @@ impl Executor {
                 ts: Instant::now(),
             })
             .await;
+            self.emit_xuan_b27_dplus_order_truth(slot, &order_id);
             let _ = self
                 .result_tx
                 .send(OrderResult::OrderPlaced {
@@ -1597,6 +1633,9 @@ impl Executor {
                     "size": size,
                     "reason": format!("{:?}", reason),
                     "dry_run": true,
+                    "order_id": order_id.clone(),
+                    "venue_order_id": order_id.clone(),
+                    "correlation": order_attempt_trace_payload(trace.as_ref()),
                 }),
             );
             if !self.dry_run_market_touch_fills && self.dry_run_should_fill(&order_id) {
@@ -1628,12 +1667,13 @@ impl Executor {
                 if direction == TradeDirection::Buy {
                     self.last_buy_place_ts[side.index()] = Some(Instant::now());
                 }
-                self.slot_orders_mut(slot).insert(order_id, size);
+                self.slot_orders_mut(slot).insert(order_id.clone(), size);
                 self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
                     slot,
                     ts: Instant::now(),
                 })
                 .await;
+                self.emit_xuan_b27_dplus_order_truth(slot, &order_id);
                 // Notify OrderManager that state can transition to Live
                 let _ = self
                     .result_tx
@@ -1657,6 +1697,10 @@ impl Executor {
                         "price": price,
                         "size": size,
                         "reason": format!("{:?}", reason),
+                        "dry_run": false,
+                        "order_id": order_id.clone(),
+                        "venue_order_id": order_id.clone(),
+                        "correlation": order_attempt_trace_payload(trace.as_ref()),
                     }),
                 );
                 // NO FillEvent here. Fills come from User WS only.
@@ -1688,12 +1732,13 @@ impl Executor {
                             if direction == TradeDirection::Buy {
                                 self.last_buy_place_ts[side.index()] = Some(Instant::now());
                             }
-                            self.slot_orders_mut(slot).insert(order_id, size);
+                            self.slot_orders_mut(slot).insert(order_id.clone(), size);
                             self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
                                 slot,
                                 ts: Instant::now(),
                             })
                             .await;
+                            self.emit_xuan_b27_dplus_order_truth(slot, &order_id);
                             let _ = self
                                 .result_tx
                                 .send(OrderResult::OrderPlaced {
@@ -1717,6 +1762,10 @@ impl Executor {
                                     "size": size,
                                     "reason": format!("{:?}", reason),
                                     "retry": "tick_size",
+                                    "dry_run": false,
+                                    "order_id": order_id.clone(),
+                                    "venue_order_id": order_id.clone(),
+                                    "correlation": order_attempt_trace_payload(trace.as_ref()),
                                 }),
                             );
                             return;
@@ -1755,12 +1804,13 @@ impl Executor {
                                 self.last_buy_place_ts[side.index()] = Some(Instant::now());
                             }
                             self.slot_orders_mut(slot)
-                                .insert(order_id, fallback_bid_size);
+                                .insert(order_id.clone(), fallback_bid_size);
                             self.emit_execution_feedback(ExecutionFeedback::OrderAccepted {
                                 slot,
                                 ts: Instant::now(),
                             })
                             .await;
+                            self.emit_xuan_b27_dplus_order_truth(slot, &order_id);
                             let _ = self
                                 .result_tx
                                 .send(OrderResult::OrderPlaced {
@@ -1784,6 +1834,10 @@ impl Executor {
                                     "size": fallback_bid_size,
                                     "reason": format!("{:?}", reason),
                                     "retry": "fallback_bid_size",
+                                    "dry_run": false,
+                                    "order_id": order_id.clone(),
+                                    "venue_order_id": order_id.clone(),
+                                    "correlation": order_attempt_trace_payload(trace.as_ref()),
                                 }),
                             );
                             return;
@@ -1951,6 +2005,7 @@ impl Executor {
         purpose: TradePurpose,
         limit_price: Option<f64>,
         expected_fill_price: Option<f64>,
+        trace: Option<OrderAttemptTrace>,
     ) {
         let mut size = if self.cfg.dry_run
             && direction == TradeDirection::Buy
@@ -2043,6 +2098,7 @@ impl Executor {
                     "size": size,
                     "limit_price": limit_price,
                     "dry_run": true,
+                    "correlation": order_attempt_trace_payload(trace.as_ref()),
                 }),
             );
             return;
@@ -2091,7 +2147,9 @@ impl Executor {
                         "size": size,
                         "limit_price": limit_price,
                         "purpose": format!("{:?}", purpose),
-                        "order_id": order_id,
+                        "order_id": order_id.clone(),
+                        "venue_order_id": order_id.clone(),
+                        "correlation": order_attempt_trace_payload(trace.as_ref()),
                     }),
                 );
                 let _ = self
@@ -2442,12 +2500,14 @@ impl Executor {
                 let free = (raw / 1_000_000.0).max(0.0);
                 self.balance_cache_usdc = Some(free);
                 self.balance_cache_ts = Instant::now();
+                self.emit_xuan_b27_dplus_wallet_truth(free.is_finite() && free >= 0.0);
                 Some(free)
             }
             Err(e) => {
                 warn!("⚠️ balance precheck fetch failed: {:?}", e);
                 self.balance_cache_usdc = None;
                 self.balance_cache_ts = Instant::now();
+                self.emit_xuan_b27_dplus_wallet_truth(false);
                 None
             }
         }
@@ -2939,6 +2999,19 @@ pub async fn init_clob_client(
     }
 }
 
+fn order_attempt_trace_payload(trace: Option<&OrderAttemptTrace>) -> serde_json::Value {
+    let Some(trace) = trace else {
+        return serde_json::Value::Null;
+    };
+    serde_json::json!({
+        "strategy": trace.strategy,
+        "run_id": trace.run_id,
+        "market_session_id": trace.market_session_id,
+        "candidate_id": trace.candidate_id,
+        "order_attempt_id": trace.order_attempt_id,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -3160,6 +3233,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
 
@@ -3222,6 +3296,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
 
@@ -3303,6 +3378,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
         let placed = result_rx
@@ -3375,6 +3451,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
         let _ = result_rx
@@ -3450,6 +3527,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
 
@@ -3539,6 +3617,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
 
@@ -3617,6 +3696,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
         let placed = result_rx
@@ -3714,6 +3794,7 @@ mod tests {
             TradePurpose::Provide,
             Some(0.52),
             None,
+            None,
         )
         .await;
 
@@ -3775,6 +3856,7 @@ mod tests {
             TradePurpose::Hedge,
             Some(0.51),
             None,
+            None,
         )
         .await;
 
@@ -3833,6 +3915,7 @@ mod tests {
             TradePurpose::Hedge,
             Some(0.24),
             Some(0.23),
+            None,
         )
         .await;
 
@@ -3955,6 +4038,7 @@ mod tests {
             BidReason::Provide,
             TradePurpose::Provide,
             0.0,
+            None,
         )
         .await;
 

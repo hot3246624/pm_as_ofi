@@ -4,8 +4,9 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use super::messages::{
-    BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderManagerCmd, OrderResult, OrderSlot,
-    SlotReleaseEvent, TradeDirection, TradeIntent, TradePurpose, TradeUrgency,
+    BidReason, CancelReason, DesiredTarget, ExecutionCmd, OrderAttemptTrace, OrderManagerCmd,
+    OrderResult, OrderSlot, SlotReleaseEvent, TradeDirection, TradeIntent, TradePurpose,
+    TradeUrgency,
 };
 use super::types::Side;
 
@@ -38,6 +39,7 @@ enum SideTakerState {
 pub struct SlotTracker {
     pub slot: OrderSlot,
     pub desired: Option<DesiredTarget>,
+    pub trace: Option<OrderAttemptTrace>,
     pub pair_arb_local_unreleased_matched_notional_usdc: f64,
     pub clear_reason: CancelReason,
     pub state: OrderState,
@@ -50,6 +52,7 @@ impl SlotTracker {
         Self {
             slot,
             desired: None,
+            trace: None,
             pair_arb_local_unreleased_matched_notional_usdc: 0.0,
             clear_reason: CancelReason::InventoryLimit,
             state: OrderState::Idle,
@@ -226,7 +229,13 @@ impl OrderManager {
                     match cmd {
                         Some(OrderManagerCmd::SetTarget(target)) => {
                             let slot = target.slot();
-                            self.handle_target(target).await;
+                            self.handle_target(target, None).await;
+                            self.pump_slot(slot).await;
+                            self.pump_side_taker(slot.side).await;
+                        }
+                        Some(OrderManagerCmd::SetTargetWithTrace { target, trace }) => {
+                            let slot = target.slot();
+                            self.handle_target(target, Some(trace)).await;
                             self.pump_slot(slot).await;
                             self.pump_side_taker(slot.side).await;
                         }
@@ -295,18 +304,21 @@ impl OrderManager {
         info!("🚦 OrderManager shutting down");
     }
 
-    async fn handle_target(&mut self, target: DesiredTarget) {
+    async fn handle_target(&mut self, target: DesiredTarget, trace: Option<OrderAttemptTrace>) {
         let tracker = self.tracker_mut(target.slot());
         if target.price <= 0.0 || target.size <= 0.0 {
             tracker.desired = None;
+            tracker.trace = None;
         } else {
             tracker.desired = Some(target);
+            tracker.trace = trace;
         }
     }
 
     async fn handle_clear(&mut self, slot: OrderSlot, reason: CancelReason) {
         let tracker = self.tracker_mut(slot);
         tracker.desired = None;
+        tracker.trace = None;
         tracker.pair_arb_local_unreleased_matched_notional_usdc = 0.0;
         tracker.clear_reason = reason;
     }
@@ -326,6 +338,7 @@ impl OrderManager {
         for slot in OrderSlot::side_slots(side) {
             let tracker = self.tracker_mut(slot);
             tracker.desired = None;
+            tracker.trace = None;
             tracker.clear_reason = CancelReason::Reprice;
         }
         *self.side_taker_mut(side) = SideTakerState::Pending(TradeIntent {
@@ -337,6 +350,7 @@ impl OrderManager {
             expected_fill_price,
             purpose,
             local_unreleased_matched_notional_usdc: 0.0,
+            trace: None,
         });
     }
 
@@ -344,6 +358,7 @@ impl OrderManager {
         for slot in OrderSlot::ALL {
             let tracker = self.tracker_mut(slot);
             tracker.desired = None;
+            tracker.trace = None;
             tracker.pair_arb_local_unreleased_matched_notional_usdc = 0.0;
             tracker.clear_reason = CancelReason::Shutdown;
         }
@@ -569,6 +584,7 @@ impl OrderManager {
         match current_state {
             OrderState::Idle => {
                 if let Some(desired) = self.tracker(slot).desired.clone() {
+                    let trace = self.tracker(slot).trace.clone();
                     let cmd = ExecutionCmd::ExecuteIntent {
                         intent: TradeIntent {
                             side: desired.side,
@@ -585,6 +601,7 @@ impl OrderManager {
                             local_unreleased_matched_notional_usdc: self
                                 .tracker(slot)
                                 .pair_arb_local_unreleased_matched_notional_usdc,
+                            trace,
                         },
                     };
                     let tracker = self.tracker_mut(slot);
@@ -650,6 +667,16 @@ mod tests {
         }
     }
 
+    fn trace() -> OrderAttemptTrace {
+        OrderAttemptTrace {
+            strategy: "xuan_b27_dplus".to_string(),
+            run_id: "run-1".to_string(),
+            market_session_id: "btc-updown-5m:cond".to_string(),
+            candidate_id: "candidate-1".to_string(),
+            order_attempt_id: "attempt-1".to_string(),
+        }
+    }
+
     #[tokio::test]
     async fn test_one_shot_taker_dispatches_execution_cmd() {
         let (cmd_tx, cmd_rx) = mpsc::channel(8);
@@ -689,6 +716,86 @@ mod tests {
             .send(OrderResult::TakerHedgeDone { side: Side::Yes })
             .await;
         drop(cmd_tx);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_set_target_with_trace_propagates_to_execute_intent() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (exec_tx, mut exec_rx) = mpsc::channel(8);
+        let (result_tx, result_rx) = mpsc::channel(8);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(8);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
+        let h = tokio::spawn(om.run());
+
+        let slot = OrderSlot::YES_BUY;
+        let expected_trace = trace();
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTargetWithTrace {
+                target: target(slot, 0.45, 5.0, BidReason::Provide),
+                trace: expected_trace.clone(),
+            })
+            .await;
+
+        let cmd = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        match cmd {
+            ExecutionCmd::ExecuteIntent { intent } => {
+                assert_eq!(intent.side, Side::Yes);
+                assert_eq!(intent.direction, TradeDirection::Buy);
+                assert_eq!(intent.urgency, TradeUrgency::MakerPostOnly);
+                assert_eq!(intent.trace, Some(expected_trace));
+            }
+            other => panic!(
+                "expected traced ExecuteIntent(MakerPostOnly), got {:?}",
+                other
+            ),
+        }
+
+        drop(cmd_tx);
+        drop(result_tx);
+        let _ = h.await;
+    }
+
+    #[tokio::test]
+    async fn test_plain_set_target_has_no_trace() {
+        let (cmd_tx, cmd_rx) = mpsc::channel(8);
+        let (exec_tx, mut exec_rx) = mpsc::channel(8);
+        let (result_tx, result_rx) = mpsc::channel(8);
+        let (slot_release_tx, _slot_release_rx) = mpsc::channel(8);
+
+        let om = OrderManager::new(cmd_rx, exec_tx, result_rx, slot_release_tx);
+        let h = tokio::spawn(om.run());
+
+        let _ = cmd_tx
+            .send(OrderManagerCmd::SetTarget(target(
+                OrderSlot::NO_BUY,
+                0.44,
+                3.0,
+                BidReason::Provide,
+            )))
+            .await;
+
+        let cmd = timeout(Duration::from_millis(100), exec_rx.recv())
+            .await
+            .expect("timeout")
+            .expect("cmd");
+        match cmd {
+            ExecutionCmd::ExecuteIntent { intent } => {
+                assert_eq!(intent.side, Side::No);
+                assert_eq!(intent.trace, None);
+            }
+            other => panic!(
+                "expected untraced ExecuteIntent(MakerPostOnly), got {:?}",
+                other
+            ),
+        }
+
+        drop(cmd_tx);
+        drop(result_tx);
         let _ = h.await;
     }
 

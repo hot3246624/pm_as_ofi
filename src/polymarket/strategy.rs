@@ -17,6 +17,7 @@ pub mod pair_arb;
 pub mod pair_gated_tranche;
 pub mod phase_builder;
 pub mod post_close_hype;
+pub mod xuan_b27_dplus;
 
 pub(crate) trait QuoteStrategy: Send + Sync {
     fn kind(&self) -> StrategyKind;
@@ -35,6 +36,7 @@ pub enum StrategyKind {
     CompletionFirst,
     PairArb,
     PairGatedTrancheArb,
+    XuanB27Dplus,
     DipBuy,
     PhaseBuilder,
     OracleLagSniping,
@@ -299,6 +301,10 @@ impl StrategyKind {
             | "pairgatedtranchearb"
             | "pgt_arb"
             | "pgt-arb" => Some(Self::PairGatedTrancheArb),
+            "xuan_b27_dplus" | "xuan-b27-dplus" | "xuanb27dplus" => Some(Self::XuanB27Dplus),
+            "dplus_passive_redeem" | "dplus-passive-redeem" | "dpluspassiveredeem" => {
+                Some(Self::XuanB27Dplus)
+            }
             "dip_buy" | "dipbuy" | "dip-buy" => Some(Self::DipBuy),
             "phase_builder" | "phasebuilder" | "phase-builder" => Some(Self::PhaseBuilder),
             "oracle_lag_sniping" | "oraclelagsniping" | "oracle-lag-sniping"
@@ -321,6 +327,7 @@ impl StrategyKind {
             Self::CompletionFirst => "completion_first",
             Self::PairArb => "pair_arb",
             Self::PairGatedTrancheArb => "pair_gated_tranche_arb",
+            Self::XuanB27Dplus => "xuan_b27_dplus",
             Self::DipBuy => "dip_buy",
             Self::PhaseBuilder => "phase_builder",
             Self::OracleLagSniping => "oracle_lag_sniping",
@@ -358,7 +365,8 @@ impl StrategyKind {
             | Self::GabagoolCorridor
             | Self::CompletionFirst
             | Self::PairArb
-            | Self::PairGatedTrancheArb => StrategyExecutionMode::UnifiedBuys,
+            | Self::PairGatedTrancheArb
+            | Self::XuanB27Dplus => StrategyExecutionMode::UnifiedBuys,
             Self::OracleLagSniping => StrategyExecutionMode::UnifiedBuys,
             Self::GlftMm => StrategyExecutionMode::SlotMarketMaking,
             Self::DipBuy | Self::PhaseBuilder => StrategyExecutionMode::DirectionalHedgeOverlay,
@@ -422,13 +430,14 @@ pub(crate) struct StrategyRegistry;
 
 impl StrategyRegistry {
     fn entries() -> &'static [&'static dyn QuoteStrategy] {
-        static ENTRIES: [&'static dyn QuoteStrategy; 9] = [
+        static ENTRIES: [&'static dyn QuoteStrategy; 10] = [
             &gabagool_grid::GABAGOOL_GRID_STRATEGY,
             &gabagool_corridor::GABAGOOL_CORRIDOR_STRATEGY,
             &glft_mm::GLFT_MM_STRATEGY,
             &completion_first::COMPLETION_FIRST_STRATEGY,
             &pair_arb::PAIR_ARB_STRATEGY,
             &pair_gated_tranche::PAIR_GATED_TRANCHE_STRATEGY,
+            &xuan_b27_dplus::XUAN_B27_DPLUS_STRATEGY,
             &dip_buy::DIP_BUY_STRATEGY,
             &phase_builder::PHASE_BUILDER_STRATEGY,
             &post_close_hype::POST_CLOSE_HYPE_STRATEGY,
@@ -482,6 +491,18 @@ mod tests {
             StrategyKind::parse("pair_gated_tranche_arb"),
             Some(StrategyKind::PairGatedTrancheArb)
         );
+        assert_eq!(
+            StrategyKind::parse("xuan_b27_dplus"),
+            Some(StrategyKind::XuanB27Dplus)
+        );
+        assert_eq!(
+            StrategyKind::parse("xuan-b27-dplus"),
+            Some(StrategyKind::XuanB27Dplus)
+        );
+        assert_eq!(
+            StrategyKind::parse("dplus_passive_redeem"),
+            Some(StrategyKind::XuanB27Dplus)
+        );
         assert_eq!(StrategyKind::parse("dipbuy"), Some(StrategyKind::DipBuy));
         assert_eq!(
             StrategyKind::parse("phase-builder"),
@@ -507,6 +528,7 @@ mod tests {
         assert!(names.contains(&"completion_first"));
         assert!(names.contains(&"pair_arb"));
         assert!(names.contains(&"pair_gated_tranche_arb"));
+        assert!(names.contains(&"xuan_b27_dplus"));
         assert!(names.contains(&"dip_buy"));
         assert!(names.contains(&"phase_builder"));
         assert!(names.contains(&"oracle_lag_sniping"));

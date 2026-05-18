@@ -55,3 +55,7 @@ path = "src/bin/probe_clob_trades.rs"
 [[bin]]
 name = "probe_clob_v2"
 path = "src/bin/probe_clob_v2.rs"
+
+[[bin]]
+name = "xuan_b27_dplus_user_ws_observer"
+path = "src/bin/xuan_b27_dplus_user_ws_observer.rs"
