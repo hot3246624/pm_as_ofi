@@ -47,6 +47,8 @@ class RoundRow:
     residual_cost_worst_case: float = 0.0
     worst_case_pnl: float = 0.0
     taker_repairs: int = 0
+    taker_open_sends: int = 0
+    taker_hedge_sends: int = 0
     dry_run_touch_book: int = 0
     dry_run_touch_trade: int = 0
     dry_run_touch_other: int = 0
@@ -295,6 +297,11 @@ def load_round(path: Path) -> RoundRow:
                     out.winner_side = winner_side
             elif event == "taker_repair_sent":
                 out.taker_repairs += 1
+                purpose = str(data.get("purpose") or "")
+                if purpose == "Provide":
+                    out.taker_open_sends += 1
+                elif purpose == "Hedge":
+                    out.taker_hedge_sends += 1
             elif event == "dry_run_touch_fill_confirmed":
                 source = str(data.get("source") or "")
                 if source == "book_touch":
@@ -394,6 +401,8 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "completion_delay_max_s": max(delays) if delays else None,
         "fills": sum(len(r.fills) for r in rows),
         "taker_repairs": sum(r.taker_repairs for r in rows),
+        "taker_open_sends": sum(r.taker_open_sends for r in rows),
+        "taker_hedge_sends": sum(r.taker_hedge_sends for r in rows),
         "dry_run_touch_book": sum(r.dry_run_touch_book for r in rows),
         "dry_run_touch_trade": sum(r.dry_run_touch_trade for r in rows),
         "dry_run_touch_other": sum(r.dry_run_touch_other for r in rows),
@@ -594,6 +603,8 @@ def main() -> None:
             f"fee100_roi={s['settlement_alpha_fee100_roi']} "
             f"touch(book/trade/other)="
             f"{s['dry_run_touch_book']}/{s['dry_run_touch_trade']}/{s['dry_run_touch_other']}"
+            f" taker(open/hedge/all)="
+            f"{s['taker_open_sends']}/{s['taker_hedge_sends']}/{s['taker_repairs']}"
             f" fill_sources={s['fill_sources']} market_trades={s['market_trade_ticks']}"
             f"/{s['market_sell_trade_ticks']} buy={s['market_buy_trade_ticks']} "
             f"entry_pressure={s['pgt_entry_pressure_sides']}/{s['pgt_entry_pressure_extra_ticks']} "

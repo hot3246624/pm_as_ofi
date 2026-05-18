@@ -195,6 +195,11 @@ const XUAN_PREPOSITIONED_LIVE_COMPLETION_PAIR_CAP: f64 = 0.980;
 const XUAN_PREPOSITIONED_LIVE_TAIL_PAIR_CAP: f64 = 1.020;
 const XUAN_PREPOSITIONED_LIVE_TAIL_REMAINING_SECS: u64 = 25;
 const XUAN_PREPOSITIONED_LIVE_CLIP_QTY: f64 = 40.0;
+const XUAN_PAIR_ASK_RESCUE_START_OFFSET_SECS: u64 = 4;
+const XUAN_PAIR_ASK_RESCUE_STOP_BEFORE_END_SECS: u64 = 25;
+pub(crate) const XUAN_PAIR_ASK_RESCUE_PAIR_CAP: f64 = 0.980;
+pub(crate) const XUAN_PAIR_ASK_RESCUE_CLIP_QTY: f64 = 10.0;
+pub(crate) const XUAN_PAIR_ASK_RESCUE_GAP_COOLDOWN_SECS: u64 = 3;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -213,6 +218,7 @@ enum PgtShadowProfile {
     DPlusMinOrderV1,
     XuanHighPressureV1,
     XuanPrepositionedLiveV1,
+    XuanPairAskRescueV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,11 +525,33 @@ impl PgtTuning {
         }
     }
 
-    fn from_env() -> Self {
-        let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase();
+    fn xuan_pair_ask_rescue_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanPairAskRescueV1,
+            seed_open_max_remaining_secs: Some(
+                XUAN_LADDER_ROUND_SECS - XUAN_PAIR_ASK_RESCUE_START_OFFSET_SECS,
+            ),
+            seed_open_min_remaining_secs: Some(XUAN_PAIR_ASK_RESCUE_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_PAIR_ASK_RESCUE_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_PAIR_ASK_RESCUE_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_PAIR_ASK_RESCUE_PAIR_CAP),
+            completed_cycle_cap: None,
+            completion_early_pair_cap: XUAN_PAIR_ASK_RESCUE_PAIR_CAP,
+            completion_late_pair_cap: XUAN_PAIR_ASK_RESCUE_PAIR_CAP,
+            taker_close_pair_cap: XUAN_PAIR_ASK_RESCUE_PAIR_CAP,
+            fixed_clip_qty: Some(XUAN_PAIR_ASK_RESCUE_CLIP_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: -100.0,
+            seed_min_visible_breakeven_slack_ticks: -100.0,
+            base_clip_qty: XUAN_PAIR_ASK_RESCUE_CLIP_QTY,
+            min_clip_qty: XUAN_PAIR_ASK_RESCUE_CLIP_QTY,
+            max_clip_qty: XUAN_PAIR_ASK_RESCUE_CLIP_QTY,
+        }
+    }
+
+    fn from_profile_name(raw: &str) -> Self {
+        let raw = raw.trim().to_ascii_lowercase();
         match raw.as_str() {
             "" | "legacy" | "default" => Self::legacy(),
             "replay_focused_v1" | "focused" | "focused_v1" => Self::replay_focused_v1(),
@@ -553,6 +581,10 @@ impl PgtTuning {
             | "xuan_prepositioned_live"
             | "xuan_frontier_prepositioned"
             | "b27_prepositioned_live" => Self::xuan_prepositioned_live_v1(),
+            "xuan_pair_ask_rescue_v1"
+            | "xuan_pair_ask_rescue"
+            | "xuan_frontier_pair_ask_rescue"
+            | "pair_ask_rescue" => Self::xuan_pair_ask_rescue_v1(),
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -561,6 +593,11 @@ impl PgtTuning {
                 Self::legacy()
             }
         }
+    }
+
+    fn from_env() -> Self {
+        let raw = std::env::var("PM_PGT_SHADOW_PROFILE").unwrap_or_default();
+        Self::from_profile_name(&raw)
     }
 
     fn open_pair_band(self, base: f64) -> f64 {
@@ -575,6 +612,7 @@ impl PgtTuning {
                     | PgtShadowProfile::DPlusMinOrderV1
                     | PgtShadowProfile::XuanHighPressureV1
                     | PgtShadowProfile::XuanPrepositionedLiveV1
+                    | PgtShadowProfile::XuanPairAskRescueV1
             ) {
                 base.max(cap)
             } else {
@@ -604,6 +642,7 @@ pub fn pgt_shadow_profile_name() -> &'static str {
         PgtShadowProfile::DPlusMinOrderV1 => "dplus_minorder_v1",
         PgtShadowProfile::XuanHighPressureV1 => "xuan_high_pressure_v1",
         PgtShadowProfile::XuanPrepositionedLiveV1 => "xuan_prepositioned_live_v1",
+        PgtShadowProfile::XuanPairAskRescueV1 => "xuan_pair_ask_rescue_v1",
     }
 }
 
@@ -617,6 +656,10 @@ fn pgt_settlement_alpha_taker_open_exec_enabled_for(tuning: PgtTuning) -> bool {
 
 pub(crate) fn pgt_settlement_alpha_taker_open_exec_enabled() -> bool {
     pgt_settlement_alpha_taker_open_exec_enabled_for(pgt_tuning())
+}
+
+pub(crate) fn pgt_pair_ask_rescue_exec_enabled() -> bool {
+    pgt_tuning().profile == PgtShadowProfile::XuanPairAskRescueV1
 }
 
 pub(crate) fn pgt_settlement_alpha_inventory_net_cap() -> Option<f64> {
@@ -634,6 +677,7 @@ fn pgt_profile_quotes_allowed(tuning: PgtTuning, dry_run: bool) -> bool {
             | PgtShadowProfile::DPlusMinOrderV1
             | PgtShadowProfile::XuanHighPressureV1
             | PgtShadowProfile::XuanPrepositionedLiveV1
+            | PgtShadowProfile::XuanPairAskRescueV1
     ) || dry_run
 }
 
@@ -881,6 +925,37 @@ impl QuoteStrategy for PairGatedTrancheStrategy {
                     quotes.note_pgt_high_pressure_no_seed(reason);
                     quotes.note_pgt_skip_no_seed();
                 }
+            }
+            return quotes;
+        }
+
+        if tuning.profile == PgtShadowProfile::XuanPairAskRescueV1 {
+            let yes_ask = input.book.yes_ask;
+            let no_ask = input.book.no_ask;
+            if yes_ask <= 0.0 || no_ask <= 0.0 {
+                quotes.note_pgt_skip_invalid_book();
+                return quotes;
+            }
+            let pair_ask = yes_ask + no_ask;
+            if pair_ask > XUAN_PAIR_ASK_RESCUE_PAIR_CAP + 1e-9 {
+                quotes.note_pgt_skip_geometry_guard();
+                return quotes;
+            }
+            let size = quantize_tenth(XUAN_PAIR_ASK_RESCUE_CLIP_QTY);
+            if size < coordinator.cfg().min_order_size {
+                quotes.note_pgt_skip_no_seed();
+                return quotes;
+            }
+            for (side, price) in [(Side::Yes, yes_ask), (Side::No, no_ask)] {
+                quotes.note_pgt_seed_quote();
+                quotes.note_pgt_taker_shadow_would_open();
+                quotes.set(StrategyIntent {
+                    side,
+                    direction: TradeDirection::Buy,
+                    price,
+                    size,
+                    reason: BidReason::Provide,
+                });
             }
             return quotes;
         }
@@ -3983,6 +4058,31 @@ mod profile_tests {
         assert!(!pgt_profile_quotes_allowed(tuning, false));
         assert!(pgt_profile_quotes_allowed(tuning, true));
         assert!(!pgt_is_settlement_alpha_profile(tuning));
+    }
+
+    #[test]
+    fn xuan_pair_ask_rescue_profile_is_dry_run_only_paired_taker() {
+        let tuning = PgtTuning::from_profile_name("xuan_pair_ask_rescue_v1");
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanPairAskRescueV1);
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(XUAN_PAIR_ASK_RESCUE_STOP_BEFORE_END_SECS)
+        );
+        assert_eq!(
+            tuning.open_pair_band_cap,
+            Some(XUAN_PAIR_ASK_RESCUE_PAIR_CAP)
+        );
+        assert_eq!(tuning.fixed_clip_qty, Some(XUAN_PAIR_ASK_RESCUE_CLIP_QTY));
+        assert_eq!(tuning.min_clip_qty, XUAN_PAIR_ASK_RESCUE_CLIP_QTY);
+        assert_eq!(tuning.max_clip_qty, XUAN_PAIR_ASK_RESCUE_CLIP_QTY);
+        assert!(tuning.preserve_seed_clip_qty);
+        assert!(!pgt_profile_quotes_allowed(tuning, false));
+        assert!(pgt_profile_quotes_allowed(tuning, true));
+        assert!(!pgt_is_settlement_alpha_profile(tuning));
+        assert_eq!(
+            PgtTuning::from_profile_name("pair_ask_rescue").profile,
+            PgtShadowProfile::XuanPairAskRescueV1
+        );
     }
 
     #[test]

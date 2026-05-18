@@ -1,3 +1,4 @@
+use super::coordinator_execution::PgtPairAskRescueCandidate;
 use super::*;
 use crate::polymarket::glft::{
     DriftMode, FitQuality, GlftFitStatus, GlftReadinessBlockers, GlftSignalState, QuoteRegime,
@@ -9280,6 +9281,70 @@ async fn test_pair_gated_tranche_tail_force_keeps_active_completion_hedge() {
         coord.slot_target_active(OrderSlot::YES_BUY),
         "completion hedge target should remain live through endgame freeze"
     );
+}
+
+#[tokio::test]
+async fn test_xuan_pair_ask_rescue_dispatches_two_takers_in_one_epoch() {
+    let mut config = cfg();
+    config.strategy = StrategyKind::PairGatedTrancheArb;
+    config.dry_run = true;
+    let (_o, _i, _m, _k, mut er, mut coord) = make(config);
+    coord.pgt_decision_epoch = 42;
+
+    coord
+        .dispatch_pgt_pair_ask_rescue(PgtPairAskRescueCandidate {
+            yes_limit_price: 0.41,
+            no_limit_price: 0.56,
+            size: 10.0,
+            pair_ask: 0.97,
+        })
+        .await;
+
+    let mut got = Vec::new();
+    for _ in 0..2 {
+        match timeout(Duration::from_millis(100), er.recv()).await {
+            Ok(Some(OrderManagerCmd::OneShotTakerHedge {
+                side,
+                direction,
+                size,
+                purpose,
+                limit_price,
+                expected_fill_price,
+            })) => got.push((
+                side,
+                direction,
+                size,
+                purpose,
+                limit_price,
+                expected_fill_price,
+            )),
+            other => panic!("expected paired dry-run taker command, got {:?}", other),
+        }
+    }
+    got.sort_by_key(|(side, _, _, _, _, _)| side.index());
+
+    assert_eq!(got.len(), 2);
+    assert_eq!(got[0].0, Side::Yes);
+    assert_eq!(got[0].1, TradeDirection::Buy);
+    assert_eq!(got[0].2, 10.0);
+    assert_eq!(got[0].3, TradePurpose::Provide);
+    assert_eq!(got[0].4, Some(0.41));
+    assert_eq!(got[0].5, Some(0.41));
+    assert_eq!(got[1].0, Side::No);
+    assert_eq!(got[1].1, TradeDirection::Buy);
+    assert_eq!(got[1].2, 10.0);
+    assert_eq!(got[1].3, TradePurpose::Provide);
+    assert_eq!(got[1].4, Some(0.56));
+    assert_eq!(got[1].5, Some(0.56));
+    assert_eq!(
+        coord.pgt_pair_ask_rescue_fired_epoch,
+        Some(coord.pgt_decision_epoch)
+    );
+    assert_eq!(
+        coord.pgt_shadow_taker_open_fired_epoch, None,
+        "pair rescue must not consume the legacy single-leg taker-open guard"
+    );
+    assert_eq!(coord.stats.pgt_dispatch_taker_open, 2);
 }
 
 #[test]

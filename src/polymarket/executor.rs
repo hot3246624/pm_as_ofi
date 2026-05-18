@@ -2197,7 +2197,9 @@ impl Executor {
                     "side": format!("{:?}", side),
                     "direction": format!("{:?}", direction),
                     "size": size,
+                    "purpose": format!("{:?}", purpose),
                     "limit_price": limit_price,
+                    "expected_fill_price": expected_fill_price,
                     "dry_run": true,
                 }),
             );
