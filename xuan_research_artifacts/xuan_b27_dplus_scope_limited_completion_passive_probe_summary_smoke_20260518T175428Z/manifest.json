@@ -1,0 +1,13 @@
+{
+  "artifact": "xuan_b27_dplus_scope_limited_completion_passive_probe_summary_smoke",
+  "status": "PASS",
+  "strategy": "xuan_b27_dplus",
+  "scope": "local_scope_limited_completion_passive_probe_summary_gate",
+  "created_utc": "20260518T175428Z",
+  "summary_manifest": "xuan_research_artifacts/xuan_b27_dplus_scope_limited_completion_passive_probe_summary_smoke_20260518T175428Z/summary/manifest.json",
+  "orders_sent": false,
+  "cancels_sent": false,
+  "redeems_sent": false,
+  "auth_network_started": false,
+  "raw_replay_scanned": false
+}

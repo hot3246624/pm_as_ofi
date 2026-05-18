@@ -1298,11 +1298,22 @@ def main() -> int:
         )
         and not positive_backtest_ready
     )
+    completion_passive_probe_positive_research = (
+        bundle.get("completion_passive_probe_dataset_type")
+        == "local_poly_backtest_completion_unwind_event_store_v2"
+        and (bundle.get("scope_limited_passive_probe_positive_stress100_worst_run_count") or 0) > 0
+        and bundle.get("scope_limited_passive_probe_can_support_promotion") is False
+    )
     shadow_trading_failed_next_gate = (
         "shadow trading acceptance failed; OOS and walk-forward qualified residual-control backtest exists, "
         "run larger no-order shadow trading with the same residual-control logic before any "
         "G2 read-write canary; retrain/tune strategy if shadow fails"
         if positive_backtest_ready
+        else
+        "shadow trading acceptance failed; local completion-store event-layer passive/passive probe is positive "
+        "but completion-only and not strict-cache/public-truth/source-of-truth replay validated, so implement the "
+        "compliant adapter/join and pass larger no-order shadow trading acceptance before any G2 read-write canary"
+        if completion_passive_probe_positive_research
         else
         "shadow trading acceptance failed; numeric OOS/walk-forward residual-control backtest is positive "
         "but the backtest dataset is scope-limited, so rerun on compliant declared strict/cache/completion "
@@ -1466,6 +1477,22 @@ def main() -> int:
                 pair_arb_walkforward_compare_evidence[
                     "requires_compliant_backtest_dataset_for_promotion"
                 ]
+            ),
+            "completion_passive_probe_status": bundle.get("completion_passive_probe_status"),
+            "completion_passive_probe_dataset_type": bundle.get(
+                "completion_passive_probe_dataset_type"
+            ),
+            "completion_passive_probe_row_count": bundle.get(
+                "completion_passive_probe_row_count"
+            ),
+            "completion_passive_probe_positive_stress100_worst_run_count": bundle.get(
+                "scope_limited_passive_probe_positive_stress100_worst_run_count"
+            ),
+            "completion_passive_probe_best_stress100_worst_pnl": bundle.get(
+                "scope_limited_passive_probe_best_stress100_worst_pnl"
+            ),
+            "completion_passive_probe_can_support_promotion": bundle.get(
+                "scope_limited_passive_probe_can_support_promotion"
             ),
             "requires_live_fill_pnl_queue_position_proof_before_scale": True,
             "ready_for_explicit_g2_canary_approval": status == "READY_FOR_EXPLICIT_G2_CANARY_APPROVAL",

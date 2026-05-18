@@ -574,6 +574,7 @@ canary_plan_ok = (
     and (
         "retrain/tune strategy" in data.get("canary_next_gate")
         or "compliant declared strict/cache/completion data" in data.get("canary_next_gate")
+        or "compliant adapter/join" in data.get("canary_next_gate")
     )
 )
 ok = (
@@ -632,7 +633,22 @@ ok = (
     and data.get("completion_store_schema_probe_market_count_sum_by_day", 0) > 0
     and data.get("completion_store_schema_probe_can_support_promotion") is False
     and data.get("completion_store_schema_probe_requires_compliant_dataset") is True
-    and data.get("scope_limited_passive_probe_status") == "PASS_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY"
+    and data.get("scope_limited_passive_probe_status")
+    in {
+        "PASS_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY",
+        "PASS_LOCAL_COMPLETION_RESEARCH_ONLY",
+    }
+    and data.get("completion_passive_probe_status")
+    in {
+        "PASS_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY",
+        "PASS_LOCAL_COMPLETION_RESEARCH_ONLY",
+    }
+    and data.get("completion_passive_probe_dataset_type")
+    in {
+        "scope_limited_completion_unwind_event_store_v2",
+        "local_poly_backtest_completion_unwind_event_store_v2",
+    }
+    and data.get("completion_passive_probe_requires_compliant_dataset") is True
     and data.get("scope_limited_passive_probe_positive_net_pnl_run_count", 0) >= 1
     and data.get("scope_limited_passive_probe_positive_stress100_run_count", 0) >= 0
     and data.get("scope_limited_passive_probe_positive_worst_residual_run_count", 0) >= 0
@@ -712,7 +728,11 @@ ok = (
     and data.get("completion_store_schema_probe_smoke", {}).get("status") == "PASS"
     and data.get("scope_limited_passive_probe_summary", {}).get("exists") is True
     and data.get("scope_limited_passive_probe_summary", {}).get("artifact") == "xuan_b27_dplus_scope_limited_completion_passive_probe_summary"
-    and data.get("scope_limited_passive_probe_summary", {}).get("status") == "PASS_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY"
+    and data.get("scope_limited_passive_probe_summary", {}).get("status")
+    in {
+        "PASS_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY",
+        "PASS_LOCAL_COMPLETION_RESEARCH_ONLY",
+    }
     and data.get("scope_limited_passive_probe_summary", {}).get("can_support_strategy_promotion") is False
     and data.get("scope_limited_passive_probe_summary_smoke", {}).get("exists") is True
     and data.get("scope_limited_passive_probe_summary_smoke", {}).get("artifact") == "xuan_b27_dplus_scope_limited_completion_passive_probe_summary_smoke"

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,8 @@ from typing import Any
 
 ARTIFACT = "xuan_b27_dplus_scope_limited_completion_passive_probe_summary"
 SCHEMA_PROBE_ARTIFACT = "xuan_b27_dplus_completion_store_schema_probe"
+DEFAULT_POLY_BT_ROOT = Path(os.environ.get("POLY_BT_ROOT", "/Users/hot/web3Scientist/poly_backtest_data"))
+DEFAULT_LOCAL_COMPLETION_ROOT = DEFAULT_POLY_BT_ROOT / "verification_store/completion_unwind_event_store_v2"
 
 
 def utc_label() -> str:
@@ -73,6 +76,65 @@ def pick_top(results: list[dict[str, Any]], key: str, count: int = 5, reverse: b
     return sorted(results, key=lambda item: safe_float(item.get(key)), reverse=reverse)[:count]
 
 
+def classify_store_scope(stores: list[Any]) -> dict[str, Any]:
+    store_paths = [Path(str(item[0])).resolve() for item in stores if item]
+    local_root = DEFAULT_LOCAL_COMPLETION_ROOT.resolve()
+    if store_paths and all(path.is_relative_to(local_root) for path in store_paths):
+        return {
+            "summary_scope": "local_compliant_completion_passive_passive_research_probe_summary",
+            "data_root": str(DEFAULT_POLY_BT_ROOT),
+            "completion_root": str(DEFAULT_LOCAL_COMPLETION_ROOT),
+            "dataset_type": "local_poly_backtest_completion_unwind_event_store_v2",
+            "conclusion_scope": (
+                "local completion-store event-layer research only; not strict-cache joined, "
+                "not public-account-truth validated, not source-of-truth replay, not deployable or canary-ready"
+            ),
+            "status_suffix": "LOCAL_COMPLETION_RESEARCH_ONLY",
+            "duckdb_tables_read": True,
+            "promotion_blockers": [
+                "completion_store_only_no_strict_cache_join",
+                "public_account_execution_truth_v1_not_used",
+                "not_source_of_truth_replay_verification",
+                "not_large_no_order_shadow_acceptance",
+                "stress_or_worst_residual_risk_not_cleared",
+            ],
+        }
+    return {
+        "summary_scope": "local_scope_limited_completion_passive_passive_research_probe_summary",
+        "data_root": str(Path(stores[0][0]).parent.parent) if stores else None,
+        "completion_root": str(Path(stores[0][0]).parent.parent) if stores else None,
+        "dataset_type": "scope_limited_completion_unwind_event_store_v2",
+        "conclusion_scope": (
+            "BTC strict-V2 scope-limited completion-store research only; not full-data, "
+            "multi-asset, account-truth, deployable, or canary-ready evidence"
+        ),
+        "status_suffix": "SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY",
+        "duckdb_tables_read": False,
+        "promotion_blockers": [
+            "scope_limited_completion_store_only",
+            "no_public_account_execution_truth_v1",
+            "not_current_full_strict_cache_completion_dataset",
+            "not_large_no_order_shadow_acceptance",
+            "stress_or_worst_residual_risk_not_cleared",
+        ],
+    }
+
+
+def row_counts_from_event_manifests(stores: list[Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in stores:
+        if not item:
+            continue
+        store = Path(str(item[0]))
+        label = label_from_store(str(store))
+        manifest_path = store.parent / "EVENT_STORE_MANIFEST.json"
+        manifest = read_json(manifest_path)
+        row_count = int((manifest.get("outputs") or {}).get("row_count") or 0)
+        if row_count:
+            counts[label] = row_count
+    return counts
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--runner-dir")
@@ -100,11 +162,15 @@ def main() -> int:
     stores = runner_manifest.get("stores") or []
     labels = [label_from_store(str(item[0])) for item in stores if item]
     days = [normalize_day(day) for item in stores for day in (item[1] if len(item) > 1 else [])]
+    store_scope = classify_store_scope(stores)
+    manifest_rows = row_counts_from_event_manifests(stores)
     schema_rows = {
         str(item.get("label")): int(item.get("row_count") or 0)
         for item in (schema_probe.get("probes") or [])
     }
-    row_count = sum(schema_rows.get(item, 0) for item in labels)
+    row_count = sum(manifest_rows.get(item, 0) for item in labels)
+    if not row_count:
+        row_count = sum(schema_rows.get(item, 0) for item in labels)
     if not row_count:
         row_count = int(schema_probe.get("row_count") or 0)
 
@@ -130,19 +196,20 @@ def main() -> int:
         "artifact": ARTIFACT,
         "created_utc": label,
         "strategy": "xuan_b27_dplus",
-        "scope": "local_scope_limited_completion_passive_passive_research_probe_summary",
+        "scope": store_scope["summary_scope"],
         "status": (
-            "PASS_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY"
+            f"PASS_{store_scope['status_suffix']}"
             if summary_passed
-            else "FAIL_SCOPE_LIMITED_COMPLETION_PASSIVE_PROBE_SUMMARY"
+            else f"FAIL_{store_scope['status_suffix']}"
         ),
         "summary_passed": summary_passed,
         "runner_dir": str(runner_dir) if runner_dir else None,
         "runner_manifest": str(runner_dir / "manifest.json") if runner_dir else None,
         "combined_results": str(runner_dir / "combined_results.json") if runner_dir else None,
         "schema_probe": str(schema_probe_path) if schema_probe_path else None,
-        "data_root": str(Path(stores[0][0]).parent.parent) if stores else None,
-        "dataset_type": "scope_limited_completion_unwind_event_store_v2",
+        "data_root": store_scope["data_root"],
+        "completion_root": store_scope["completion_root"],
+        "dataset_type": store_scope["dataset_type"],
         "labels": labels,
         "days": days,
         "market_prefix": "btc-updown-5m",
@@ -153,7 +220,7 @@ def main() -> int:
         "includes_public_account_execution_truth_v1": False,
         "can_support_strategy_promotion": False,
         "requires_compliant_backtest_dataset_for_promotion": True,
-        "conclusion_scope": "BTC strict-V2 scope-limited completion-store research only; not full-data, multi-asset, account-truth, deployable, or canary-ready evidence",
+        "conclusion_scope": store_scope["conclusion_scope"],
         "run_count": len(results),
         "nonzero_seed_run_count": len(nonzero_seed),
         "zero_seed_run_count": max(0, len(results) - len(nonzero_seed)),
@@ -177,15 +244,11 @@ def main() -> int:
             if positive_net
             else "no positive nominal net PnL in this scope-limited probe"
         ),
-        "promotion_blockers": [
-            "scope_limited_completion_store_only",
-            "no_public_account_execution_truth_v1",
-            "not_current_full_strict_cache_completion_dataset",
-            "not_large_no_order_shadow_acceptance",
-            "stress_or_worst_residual_risk_not_cleared",
-        ],
+        "promotion_blockers": store_scope["promotion_blockers"],
         "raw_replay_scanned": False,
-        "duckdb_tables_read": False,
+        "duckdb_tables_read": store_scope["duckdb_tables_read"],
+        "summary_duckdb_tables_read": False,
+        "runner_duckdb_tables_read": store_scope["duckdb_tables_read"],
         "orders_sent": False,
         "cancels_sent": False,
         "redeems_sent": False,
@@ -194,7 +257,7 @@ def main() -> int:
         "side_effects": {
             "raw_replay_scanned": False,
             "raw_replay_written": False,
-            "duckdb_tables_read": False,
+            "duckdb_tables_read": store_scope["duckdb_tables_read"],
             "orders_sent": False,
             "cancels_sent": False,
             "redeems_sent": False,
