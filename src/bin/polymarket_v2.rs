@@ -2001,6 +2001,46 @@ async fn fetch_collateral_status(client: &AuthClient) -> anyhow::Result<Collater
     })
 }
 
+fn emit_xuan_b27_dplus_wallet_snapshot(
+    tx: Option<&mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
+    valid: bool,
+) {
+    if let Some(tx) = tx {
+        let _ = tx.try_send(XuanB27DplusSourceTruthEvent::WalletSnapshot {
+            valid,
+            ts: Instant::now(),
+        });
+    }
+}
+
+fn emit_xuan_b27_dplus_redeem_result_flags(
+    tx: Option<&mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
+    has_redeem_attempt_id: bool,
+    has_redeem_tx_hash: bool,
+    has_redeem_confirmation: bool,
+) {
+    if let Some(tx) = tx {
+        let _ = tx.try_send(XuanB27DplusSourceTruthEvent::RedeemResult {
+            has_redeem_attempt_id,
+            has_redeem_tx_hash,
+            has_redeem_confirmation,
+            ts: Instant::now(),
+        });
+    }
+}
+
+fn emit_xuan_b27_dplus_cashflow_snapshot(
+    tx: Option<&mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
+    has_cashflow_snapshot_id: bool,
+) {
+    if let Some(tx) = tx {
+        let _ = tx.try_send(XuanB27DplusSourceTruthEvent::CashflowSnapshot {
+            has_cashflow_snapshot_id,
+            ts: Instant::now(),
+        });
+    }
+}
+
 fn should_count_recycle_reject(cfg: &CapitalRecycleConfig, evt: &PlacementRejectEvent) -> bool {
     if evt.kind != RejectKind::BalanceOrAllowance {
         return false;
@@ -2026,6 +2066,7 @@ async fn try_recycle_merge(
     funder_address: Option<&str>,
     signer_address: Option<&str>,
     private_key: Option<&str>,
+    xuan_b27_dplus_source_truth_tx: Option<&mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
     dry_run: bool,
 ) {
     if state.merges_done >= cfg.max_merges_per_round {
@@ -2044,8 +2085,15 @@ async fn try_recycle_merge(
     }
 
     let status = match fetch_collateral_status(client).await {
-        Ok(v) => v,
+        Ok(v) => {
+            emit_xuan_b27_dplus_wallet_snapshot(
+                xuan_b27_dplus_source_truth_tx,
+                v.free_balance.is_finite() && v.free_balance >= 0.0,
+            );
+            v
+        }
         Err(e) => {
+            emit_xuan_b27_dplus_wallet_snapshot(xuan_b27_dplus_source_truth_tx, false);
             if matches!(trigger, RecycleTrigger::Reject) {
                 warn!("⚠️ Recycler balance fetch failed: {:?}", e);
             } else {
@@ -2179,12 +2227,23 @@ async fn try_recycle_merge(
             state.recent_rejects.clear();
             match fetch_free_collateral_usdc(client).await {
                 Ok(after) => {
+                    emit_xuan_b27_dplus_wallet_snapshot(
+                        xuan_b27_dplus_source_truth_tx,
+                        after.is_finite() && after >= 0.0,
+                    );
+                    emit_xuan_b27_dplus_cashflow_snapshot(
+                        xuan_b27_dplus_source_truth_tx,
+                        after.is_finite() && after >= 0.0,
+                    );
                     info!(
                         "♻️ Recycler post-merge balance: before={:.2} after={:.2}",
                         status.free_balance, after
                     );
                 }
-                Err(e) => warn!("⚠️ Recycler post-merge balance refresh failed: {:?}", e),
+                Err(e) => {
+                    emit_xuan_b27_dplus_wallet_snapshot(xuan_b27_dplus_source_truth_tx, false);
+                    warn!("⚠️ Recycler post-merge balance refresh failed: {:?}", e)
+                }
             }
         }
         Err(e) => {
@@ -2206,6 +2265,7 @@ async fn run_capital_recycler(
     funder_address: Option<String>,
     signer_address: Option<String>,
     private_key: Option<String>,
+    xuan_b27_dplus_source_truth_tx: Option<mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
     dry_run: bool,
 ) {
     if !cfg.enabled {
@@ -2297,6 +2357,7 @@ async fn run_capital_recycler(
                     funder_address.as_deref(),
                     signer_address.as_deref(),
                     private_key.as_deref(),
+                    xuan_b27_dplus_source_truth_tx.as_ref(),
                     dry_run,
                 )
                 .await;
@@ -2316,6 +2377,7 @@ async fn run_capital_recycler(
                     funder_address.as_deref(),
                     signer_address.as_deref(),
                     private_key.as_deref(),
+                    xuan_b27_dplus_source_truth_tx.as_ref(),
                     dry_run,
                 )
                 .await;
@@ -3265,6 +3327,7 @@ async fn run_round_claim_window(
     private_key: Option<&str>,
     recorder: Option<&RecorderHandle>,
     recorder_meta: Option<&RecorderSessionMeta>,
+    xuan_b27_dplus_source_truth_tx: Option<mpsc::Sender<XuanB27DplusSourceTruthEvent>>,
 ) -> anyhow::Result<()> {
     if !cfg.enabled {
         info!("💸 Round claim runner skipped: PM_AUTO_CLAIM disabled");
@@ -3366,6 +3429,10 @@ async fn run_round_claim_window(
                             "positions": outcome.positions,
                             "candidates": outcome.candidates,
                             "claimed": outcome.claimed,
+                            "redeem_evidence": &outcome.redeem_evidence,
+                            "has_redeem_attempt_id": outcome.has_redeem_attempt(),
+                            "has_redeem_tx_hash": outcome.has_redeem_tx_hash(),
+                            "has_redeem_confirmation": outcome.has_redeem_confirmation(),
                             "dry_run": cfg.dry_run,
                             "scope": runner_cfg.scope.as_str(),
                             "preferred_condition": preferred_condition.map(|v| v.to_string()),
@@ -3373,6 +3440,12 @@ async fn run_round_claim_window(
                         }),
                     );
                 }
+                emit_xuan_b27_dplus_redeem_result_flags(
+                    xuan_b27_dplus_source_truth_tx.as_ref(),
+                    outcome.has_redeem_attempt(),
+                    outcome.has_redeem_tx_hash(),
+                    outcome.has_redeem_confirmation(),
+                );
                 info!(
                     "💸 Round claim result: positions={} candidates={} claimed={} dry_run={}",
                     outcome.positions, outcome.candidates, outcome.claimed, cfg.dry_run
@@ -3408,6 +3481,12 @@ async fn run_round_claim_window(
                         }),
                     );
                 }
+                emit_xuan_b27_dplus_redeem_result_flags(
+                    xuan_b27_dplus_source_truth_tx.as_ref(),
+                    true,
+                    false,
+                    false,
+                );
                 warn!(
                     "⚠️ Round claim retry failed at +{}s: {:?}",
                     start.elapsed().as_secs(),
@@ -3436,6 +3515,12 @@ async fn run_round_claim_window(
             }),
         );
     }
+    emit_xuan_b27_dplus_redeem_result_flags(
+        xuan_b27_dplus_source_truth_tx.as_ref(),
+        attempts > 0,
+        false,
+        false,
+    );
     Ok(())
 }
 
@@ -17331,6 +17416,16 @@ fn local_agg_uncertainty_gate_key_levels(
             ],
         ),
         (
+            "policy_margin",
+            vec![
+                symbol.clone(),
+                subset.clone(),
+                rule.clone(),
+                side.clone(),
+                margin.clone(),
+            ],
+        ),
+        (
             "symbol_rule_quality_no_spread",
             vec![
                 symbol.clone(),
@@ -23402,6 +23497,17 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
     if dry_run {
         auto_claim_cfg.dry_run = true;
     }
+    let xuan_dplus_readonly_user_ws_requested =
+        env_bool("PM_XUAN_B27_DPLUS_USER_WS_IN_DRY_RUN", false);
+    let xuan_dplus_readonly_user_ws_in_dry_run = dry_run
+        && xuan_dplus_readonly_user_ws_requested
+        && coord_cfg_base.strategy == StrategyKind::XuanB27Dplus
+        && coord_cfg_base.xuan_b27_dplus.mode.as_str() == "auth_observer";
+    if xuan_dplus_readonly_user_ws_requested && !xuan_dplus_readonly_user_ws_in_dry_run {
+        warn!(
+            "⚠️ Ignoring PM_XUAN_B27_DPLUS_USER_WS_IN_DRY_RUN outside xuan_b27_dplus auth_observer dry-run"
+        );
+    }
     let min_order_size_env_raw = env::var("PM_MIN_ORDER_SIZE")
         .ok()
         .filter(|s| !s.trim().is_empty());
@@ -23830,8 +23936,10 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         warn!("⚠️ Auto-claim runner failed at startup: {:?}", e);
     }
 
-    // ═══ L2 API credentials for User WS (live mode only) ═══
-    // Always source credentials from authenticated CLOB client to avoid REST/WS identity drift.
+    // ═══ L2 API credentials for User WS ═══
+    // Live mode sources credentials from the authenticated CLOB client to avoid
+    // REST/WS identity drift. The xuan_b27_dplus auth observer may also run a
+    // read-only User WS in dry-run, but only from explicit env-provided creds.
     let api_creds: Option<(String, String, String)> = if !dry_run {
         use secrecy::ExposeSecret;
         if let Some(client) = clob_client.as_ref() {
@@ -23853,6 +23961,36 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             anyhow::bail!(
                 "🚨 FATAL: dry_run=false but no authenticated CLOB client available for User WS credentials."
             );
+        }
+    } else if xuan_dplus_readonly_user_ws_in_dry_run {
+        if let Some(creds) = shared_api_creds_env.clone() {
+            info!(
+                "🔎 xuan_b27_dplus auth_observer dry-run: User WS enabled read-only from env credentials; orders remain disabled"
+            );
+            Some(creds)
+        } else {
+            info!(
+                "🔎 xuan_b27_dplus auth_observer dry-run: deriving read-only User WS credentials from private key; executor orders remain disabled"
+            );
+            use secrecy::ExposeSecret;
+            let (readonly_client, _readonly_signer) = init_clob_client(
+                &base_settings.rest_url,
+                base_settings.private_key.as_deref(),
+                funder_alloy,
+                None,
+            )
+            .await;
+            let Some(client) = readonly_client else {
+                anyhow::bail!(
+                    "🚨 FATAL: PM_XUAN_B27_DPLUS_USER_WS_IN_DRY_RUN=true could not derive CLOB/User WS API credentials from POLYMARKET_PRIVATE_KEY."
+                );
+            };
+            let creds = client.credentials();
+            Some((
+                creds.key().to_string(),
+                creds.secret().expose_secret().to_string(),
+                creds.passphrase().expose_secret().to_string(),
+            ))
         }
     } else {
         None
@@ -24304,6 +24442,10 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
         let (result_tx, result_rx) = mpsc::channel::<OrderResult>(32);
         let (capital_tx, capital_rx) = mpsc::channel::<PlacementRejectEvent>(64);
         let (feedback_tx, feedback_rx) = mpsc::channel::<ExecutionFeedback>(32);
+        let (xuan_b27_dplus_source_truth_tx, xuan_b27_dplus_source_truth_rx) =
+            mpsc::channel::<XuanB27DplusSourceTruthEvent>(64);
+        let xuan_b27_dplus_source_truth_tx_opt = (coord_cfg.strategy == StrategyKind::XuanB27Dplus)
+            .then_some(xuan_b27_dplus_source_truth_tx);
         let (om_tx, om_rx) = mpsc::channel::<OrderManagerCmd>(64);
         let (ofi_md_tx, ofi_md_rx) = mpsc::channel::<MarketDataMsg>(512);
         let (glft_md_tx, glft_md_rx) = mpsc::channel::<MarketDataMsg>(512);
@@ -24541,6 +24683,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             slot_release_rx,
             shared_pgt_winner_side.clone(),
         )
+        .with_xuan_b27_dplus_source_truth_rx(xuan_b27_dplus_source_truth_rx)
         .with_recorder(recorder.clone(), recorder_meta.clone())
         .with_obs_tx(coord_obs_tx);
         session_handles.push(tokio::spawn(coord.run()));
@@ -24570,11 +24713,12 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 funder_address.clone(),
                 signer_address.clone(),
                 base_settings.private_key.clone(),
+                xuan_b27_dplus_source_truth_tx_opt.clone(),
                 dry_run,
             )));
         }
 
-        let executor = Executor::new(
+        let mut executor = Executor::new(
             ExecutorConfig {
                 rest_url: settings.rest_url.clone(),
                 market_id: market_id.clone(),
@@ -24605,6 +24749,9 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             recorder.enabled().then_some(recorder.clone()),
             recorder.enabled().then_some(recorder_meta.clone()),
         );
+        if let Some(tx) = xuan_b27_dplus_source_truth_tx_opt.clone() {
+            executor = executor.with_xuan_b27_dplus_source_truth_tx(tx);
+        }
         let executor_handle = tokio::spawn(executor.run());
         let executor_abort = executor_handle.abort_handle();
 
@@ -24615,7 +24762,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             } else {
                 base_settings.ws_base_url.clone()
             };
-            let user_ws = UserWsListener::new(
+            let mut user_ws = UserWsListener::new(
                 UserWsConfig {
                     ws_base_url: ws_base,
                     api_key: api_key.clone(),
@@ -24628,8 +24775,17 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                 fill_tx,
             )
             .with_recorder(recorder.clone(), recorder_meta.clone());
+            if let Some(tx) = xuan_b27_dplus_source_truth_tx_opt.clone() {
+                user_ws = user_ws.with_xuan_b27_dplus_source_truth_tx(tx);
+            }
             session_handles.push(tokio::spawn(user_ws.run()));
-            info!("👤 User WS Listener spawned (real fills only)");
+            if dry_run {
+                info!(
+                    "👤 User WS Listener spawned in xuan_b27_dplus read-only dry-run observer mode"
+                );
+            } else {
+                info!("👤 User WS Listener spawned (real fills only)");
+            }
         } else {
             info!(
                 "📝 DRY-RUN: User WS disabled — executor synthetic fills enabled via PM_DRY_RUN_FILL_PROBABILITY"
@@ -24938,6 +25094,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             let claim_pk = base_settings.private_key.clone();
             let claim_recorder = recorder.enabled().then_some(recorder.clone());
             let claim_recorder_meta = recorder.enabled().then_some(recorder_meta.clone());
+            let claim_source_truth_tx = xuan_b27_dplus_source_truth_tx_opt.clone();
             round_claim_task = Some(tokio::spawn(async move {
                 let mut round_state = AutoClaimState::default();
                 if let Err(e) = run_round_claim_window(
@@ -24950,6 +25107,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
                     claim_pk.as_deref(),
                     claim_recorder.as_ref(),
                     claim_recorder_meta.as_ref(),
+                    claim_source_truth_tx,
                 )
                 .await
                 {

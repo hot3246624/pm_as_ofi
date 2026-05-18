@@ -1,0 +1,6 @@
+REMOTE_SHADOW_RUN_STARTED 2026-05-18T11:47:13Z user=pmofi remote_base=/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_residual_control_20260518T114638Z
+hypothesis=same-host explicit shared ingress root plus residual-control pairing reduces pair-cost/residual risk while preserving positive pair PnL
+repo_path=/srv/pm_as_ofi/repo
+shared_ingress_root=/srv/pm_as_ofi/shared-ingress-main
+argv=/usr/bin/python3 runner --round-offsets 0..11 --duration-s 1800 --edge 0.05 --target-qty 2 --pairing-only-when-residual
+REMOTE_SHADOW_RUN_FINISHED 2026-05-18T12:17:15Z rc=0

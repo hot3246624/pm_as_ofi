@@ -1,0 +1,6 @@
+REMOTE_SHADOW_RUN_STARTED 2026-05-18T14:05:40Z user=pmofi remote_base=/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_edge005_target5_imb125_20260518T140502Z
+hypothesis=target_qty=5 with imbalance_qty_cap=1.25 reduces residual tail versus cap=2 while keeping nonzero sample
+repo_path=/srv/pm_as_ofi/repo
+shared_ingress_root=/srv/pm_as_ofi/shared-ingress-main
+argv=/usr/bin/python3 runner --round-offsets 0..11 --duration-s 1800 --edge 0.05 --target-qty 5 --imbalance-qty-cap 1.25 --pairing-only-when-residual
+REMOTE_SHADOW_RUN_FINISHED 2026-05-18T14:35:43Z rc=0
