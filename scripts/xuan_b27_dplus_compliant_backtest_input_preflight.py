@@ -10,16 +10,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 ARTIFACT = "xuan_b27_dplus_compliant_backtest_input_preflight"
-DEFAULT_STRICT_ROOT = Path("/mnt/poly-cache/taker_buy_signal_core_v2_strict_l1")
-DEFAULT_COMPLETION_ROOT = Path("/mnt/poly-verification-store/completion_unwind_event_store_v2")
+DEFAULT_POLY_BT_ROOT = Path(
+    os.environ.get("POLY_BT_ROOT", "/Users/hot/web3Scientist/poly_backtest_data")
+)
+DEFAULT_STRICT_ROOT = DEFAULT_POLY_BT_ROOT / "backtest_cache/taker_buy_signal_core_v2_strict_l1"
+DEFAULT_COMPLETION_ROOT = DEFAULT_POLY_BT_ROOT / "verification_store/completion_unwind_event_store_v2"
 DEFAULT_PUBLIC_TRUTH_ROOT = Path(
-    "/mnt/poly-verification-store/public_account_execution_truth_v1/20260502_20260513"
+    DEFAULT_POLY_BT_ROOT
+    / "verification_store/public_account_execution_truth_v1/20260502_20260513"
 )
 DEFAULT_SCOPE_LIMITED_COMPLETION_ROOT = Path(
     "/tmp/xuan_frontier_data/completion_unwind_event_store_v2"
@@ -73,6 +78,17 @@ def label_days(label: str) -> set[str]:
 def label_is_allowed(label: str) -> bool:
     days = label_days(label)
     return not bool(days & FORBIDDEN_DAYS) and not bool(days & NOT_READY_DAYS)
+
+
+def discover_labels(root: Path, manifest_name: str) -> list[str]:
+    if not root.exists():
+        return []
+    labels = []
+    for manifest in root.glob(f"*/{manifest_name}"):
+        label = manifest.parent.name
+        if label_is_allowed(label):
+            labels.append(label)
+    return sorted(labels)
 
 
 def inspect_strict_label(root: Path, label: str) -> dict[str, Any]:
@@ -129,7 +145,13 @@ def inspect_public_truth(root: Path) -> dict[str, Any]:
         "event_store_duckdb_exists": duckdb.exists(),
         "table": "public_account_execution_events",
         "truth_level": "public_account_audit_proxy_truth_not_private_owner_trade_truth",
-        "ready": root.exists() and duckdb.exists() and path_is_safe(root) and label_is_allowed(root.name),
+        "ready": (
+            root.exists()
+            and manifest.exists()
+            and duckdb.exists()
+            and path_is_safe(root)
+            and label_is_allowed(root.name)
+        ),
     }
 
 
@@ -159,8 +181,21 @@ def main() -> int:
     parser.add_argument("--completion-root", default=str(DEFAULT_COMPLETION_ROOT))
     parser.add_argument("--public-truth-root", default=str(DEFAULT_PUBLIC_TRUTH_ROOT))
     parser.add_argument("--scope-limited-completion-root", default=str(DEFAULT_SCOPE_LIMITED_COMPLETION_ROOT))
-    parser.add_argument("--strict-labels", default=",".join(DEFAULT_STRICT_LABELS))
-    parser.add_argument("--completion-labels", default=",".join(DEFAULT_COMPLETION_LABELS))
+    parser.add_argument(
+        "--poly-bt-root",
+        default=str(DEFAULT_POLY_BT_ROOT),
+        help="Recorded for report declaration; roots default from POLY_BT_ROOT.",
+    )
+    parser.add_argument(
+        "--strict-labels",
+        default="",
+        help="Comma-separated override. Default discovers labels from CACHE_MANIFEST.json.",
+    )
+    parser.add_argument(
+        "--completion-labels",
+        default="",
+        help="Comma-separated override. Default discovers labels from EVENT_STORE_MANIFEST.json.",
+    )
     parser.add_argument(
         "--scope-limited-completion-labels",
         default=",".join(DEFAULT_SCOPE_LIMITED_COMPLETION_LABELS),
@@ -176,8 +211,11 @@ def main() -> int:
     completion_root = Path(args.completion_root)
     public_truth_root = Path(args.public_truth_root)
     scope_limited_completion_root = Path(args.scope_limited_completion_root)
-    strict_labels = split_labels(args.strict_labels)
-    completion_labels = split_labels(args.completion_labels)
+    strict_labels = split_labels(args.strict_labels) or discover_labels(strict_root, "CACHE_MANIFEST.json")
+    completion_labels = split_labels(args.completion_labels) or discover_labels(
+        completion_root,
+        "EVENT_STORE_MANIFEST.json",
+    )
     scope_limited_completion_labels = split_labels(args.scope_limited_completion_labels)
     strict = [inspect_strict_label(strict_root, item) for item in strict_labels]
     completion = [inspect_completion_label(completion_root, item) for item in completion_labels]
@@ -192,7 +230,12 @@ def main() -> int:
         1 for item in scope_limited_completion if item["ready_for_scope_limited_research"]
     )
     roots_ready = strict_root.exists() and completion_root.exists() and public_truth_root.exists()
-    labels_ready = strict_ready_count == len(strict) and completion_ready_count == len(completion)
+    labels_ready = (
+        bool(strict_labels)
+        and bool(completion_labels)
+        and strict_ready_count == len(strict)
+        and completion_ready_count == len(completion)
+    )
     preflight_passed = roots_ready and labels_ready and public_truth["ready"]
     missing_roots = [
         str(path)
@@ -212,6 +255,9 @@ def main() -> int:
         ),
         "preflight_passed": preflight_passed,
         "can_run_compliant_backtest_locally": preflight_passed,
+        "poly_bt_root": str(Path(args.poly_bt_root)),
+        "data_root": str(Path(args.poly_bt_root)),
+        "dataset_type": "local_poly_backtest_cache_store",
         "strict_root": str(strict_root),
         "completion_root": str(completion_root),
         "public_truth_root": str(public_truth_root),
@@ -247,9 +293,12 @@ def main() -> int:
             "contains_20260518",
             "includes_public_account_execution_truth_v1",
         ],
-        "normal_research_complete_days": "20260502..20260513 plus current approved 20260516 and 20260517",
+        "normal_research_complete_days": "discover from local manifests; current expected set is 20260502..20260513 plus 20260516 and 20260517",
         "excluded_days": sorted(FORBIDDEN_DAYS),
         "not_ready_days": sorted(NOT_READY_DAYS),
+        "collector_scanned": False,
+        "final_source_of_truth_replay_available": False,
+        "final_source_of_truth_replay_required_before_deploy": True,
         "raw_replay_scanned": False,
         "duckdb_tables_read": False,
         "orders_sent": False,
