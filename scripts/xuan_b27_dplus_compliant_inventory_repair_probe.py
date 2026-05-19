@@ -54,6 +54,9 @@ class RepairProfile:
     repair_after_s: float = 75.0
     repair_max_qty: float = 0.0
     repair_pair_cap: float = 1.00
+    repair_budget_mode: str = "none"
+    repair_budget_fraction: float = 0.50
+    min_edge_per_pair: float = 0.005
     block_risk_increasing_after_repair_threshold: bool = True
 
 
@@ -61,35 +64,69 @@ def parse_csv_floats(raw: str) -> list[float]:
     return [float(item.strip()) for item in raw.split(",") if item.strip()]
 
 
-def profile_name(target_qty: float, after_s: float, repair_qty: float, pair_cap: float) -> str:
+def parse_csv_strings(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def profile_name(
+    target_qty: float,
+    after_s: float,
+    repair_qty: float,
+    pair_cap: float,
+    budget_mode: str = "none",
+    pair_select: str = "fifo",
+) -> str:
     if repair_qty <= 0:
-        return f"baseline_t{target_qty:g}"
-    return f"repair_t{target_qty:g}_a{after_s:g}_q{repair_qty:g}_cap{pair_cap:g}".replace(".", "p")
+        base_name = f"baseline_t{target_qty:g}"
+    else:
+        base_name = f"repair_t{target_qty:g}_a{after_s:g}_q{repair_qty:g}_cap{pair_cap:g}"
+        if budget_mode != "none":
+            base_name += f"_budget{budget_mode}"
+    if pair_select != "fifo":
+        base_name += f"_pair{pair_select}"
+    return base_name.replace(".", "p")
 
 
 def build_profiles(args: argparse.Namespace) -> list[RepairProfile]:
+    pair_selects = parse_csv_strings(args.pair_selects)
+    repair_budget_modes = parse_csv_strings(args.repair_budget_modes)
     profiles = [
         RepairProfile(
-            name=profile_name(target, 0, 0, 0),
+            name=profile_name(target, 0, 0, 0, pair_select=pair_select),
             target_qty=target,
+            pair_select=pair_select,
             repair_max_qty=0.0,
             block_risk_increasing_after_repair_threshold=False,
         )
         for target in parse_csv_floats(args.target_qtys)
+        for pair_select in pair_selects
     ]
     for target in parse_csv_floats(args.target_qtys):
         for after_s in parse_csv_floats(args.repair_after_s):
             for repair_qty in parse_csv_floats(args.repair_max_qtys):
                 for pair_cap in parse_csv_floats(args.repair_pair_caps):
-                    profiles.append(
-                        RepairProfile(
-                            name=profile_name(target, after_s, repair_qty, pair_cap),
-                            target_qty=target,
-                            repair_after_s=after_s,
-                            repair_max_qty=repair_qty,
-                            repair_pair_cap=pair_cap,
+                    for budget_mode in repair_budget_modes:
+                        for pair_select in pair_selects:
+                            profiles.append(
+                                RepairProfile(
+                                    name=profile_name(
+                                        target,
+                                        after_s,
+                                        repair_qty,
+                                        pair_cap,
+                                        budget_mode,
+                                        pair_select,
+                                    ),
+                                    target_qty=target,
+                                    pair_select=pair_select,
+                                    repair_after_s=after_s,
+                                    repair_max_qty=repair_qty,
+                                    repair_pair_cap=pair_cap,
+                                    repair_budget_mode=budget_mode,
+                                    repair_budget_fraction=args.repair_budget_fraction,
+                                    min_edge_per_pair=args.min_edge_per_pair,
+                                )
                         )
-                    )
     return profiles
 
 
@@ -117,6 +154,66 @@ def avg_cost(state: base.State, side: str) -> float:
     assert state.inv is not None
     qty = base.lot_qty(state.inv[side])
     return base.lot_cost(state.inv[side]) / qty if qty > 1e-9 else 0.0
+
+
+def selected_lot_px(state: base.State, side: str, pair_select: str) -> float:
+    assert state.inv is not None
+    lots = state.inv[side]
+    if not lots:
+        return 0.0
+    if pair_select == "low_pair_cost":
+        return min(lot.px for lot in lots)
+    if pair_select == "high_cost":
+        return max(lot.px for lot in lots)
+    return lots[0].px
+
+
+def repair_budget_available(state: base.State) -> float:
+    return float(getattr(state, "repair_budget_available", 0.0))
+
+
+def add_repair_budget(state: base.State, amount: float) -> None:
+    setattr(state, "repair_budget_available", max(0.0, repair_budget_available(state) + amount))
+
+
+def pair_inventory_budgeted(
+    profile: RepairProfile,
+    state: base.State,
+    metrics: defaultdict[str, float],
+    ts_ms: int,
+) -> None:
+    before_pair_qty = metrics["pair_qty"]
+    before_pair_pnl = metrics["pair_pnl"]
+    base.pair_inventory(profile, state, metrics, ts_ms)
+    pair_qty_delta = metrics["pair_qty"] - before_pair_qty
+    pair_pnl_delta = metrics["pair_pnl"] - before_pair_pnl
+    if pair_qty_delta <= 1e-9:
+        return
+    spendable = max(0.0, pair_pnl_delta - profile.min_edge_per_pair * pair_qty_delta)
+    deposit = spendable * max(0.0, profile.repair_budget_fraction)
+    add_repair_budget(state, deposit)
+    metrics["repair_budget_deposited"] += deposit
+    metrics["pair_qty_budget_observed"] += pair_qty_delta
+
+
+def maybe_seed_budgeted(
+    row: dict[str, Any],
+    profile: RepairProfile,
+    state: base.State,
+    metrics: defaultdict[str, float],
+) -> None:
+    before_pair_qty = metrics["pair_qty"]
+    before_pair_pnl = metrics["pair_pnl"]
+    base.maybe_seed(row, profile, state, metrics)
+    pair_qty_delta = metrics["pair_qty"] - before_pair_qty
+    pair_pnl_delta = metrics["pair_pnl"] - before_pair_pnl
+    if pair_qty_delta <= 1e-9:
+        return
+    spendable = max(0.0, pair_pnl_delta - profile.min_edge_per_pair * pair_qty_delta)
+    deposit = spendable * max(0.0, profile.repair_budget_fraction)
+    add_repair_budget(state, deposit)
+    metrics["repair_budget_deposited"] += deposit
+    metrics["pair_qty_budget_observed"] += pair_qty_delta
 
 
 def can_use_repair_row(row: dict[str, Any], repair_side: str) -> tuple[bool, float]:
@@ -150,16 +247,32 @@ def maybe_completion_repair(
         metrics["repair_no_opportunity"] += 1
         return False
     dom_avg = avg_cost(state, dom_side)
-    if dom_avg + repair_px > profile.repair_pair_cap + 1e-12:
+    dom_pair_px = selected_lot_px(state, dom_side, profile.pair_select)
+    projected_pair_cost = dom_pair_px + repair_px
+    if projected_pair_cost > profile.repair_pair_cap + 1e-12:
         metrics["repair_block_pair_cap"] += 1
         return False
     assert state.inv is not None
     open_cost = base.lot_cost(state.inv["YES"]) + base.lot_cost(state.inv["NO"])
     cost_room_qty = (profile.max_open_cost - open_cost) / max(repair_px, 1e-9)
-    qty = min(profile.repair_max_qty, imbalance_qty, cost_room_qty)
+    budget_per_qty = max(0.0, projected_pair_cost + profile.min_edge_per_pair - 1.0)
+    if profile.repair_budget_mode == "surplus" and budget_per_qty > 1e-12:
+        budget_room_qty = repair_budget_available(state) / budget_per_qty
+    else:
+        budget_room_qty = INF
+    qty = min(profile.repair_max_qty, imbalance_qty, cost_room_qty, budget_room_qty)
     if qty <= profile.dust_qty:
-        metrics["repair_block_budget"] += 1
+        if budget_room_qty <= profile.dust_qty:
+            metrics["repair_block_surplus_budget"] += 1
+        else:
+            metrics["repair_block_budget"] += 1
         return False
+    budget_spend = budget_per_qty * qty if profile.repair_budget_mode == "surplus" else 0.0
+    if budget_spend > 0.0:
+        add_repair_budget(state, -budget_spend)
+        metrics["repair_budget_spent"] += budget_spend
+        metrics["repair_budget_required"] += budget_spend
+    metrics["repair_projected_pair_cost_sum"] += qty * projected_pair_cost
     state.inv[repair_side].append(base.Lot(qty=qty, px=repair_px, ts_ms=ts_ms, side=repair_side))
     state.last_seed_ts = ts_ms
     state.last_ts_ms = max(state.last_ts_ms, ts_ms)
@@ -169,7 +282,7 @@ def maybe_completion_repair(
     metrics["repair_cost"] += qty * repair_px
     metrics["gross_buy_qty"] += qty
     metrics["gross_buy_cost"] += qty * repair_px
-    base.pair_inventory(profile, state, metrics, ts_ms)
+    pair_inventory_budgeted(profile, state, metrics, ts_ms)
     return True
 
 
@@ -197,7 +310,7 @@ def maybe_seed_with_repair(
         if not repaired:
             metrics["risk_block_without_repair"] += 1
         return
-    base.maybe_seed(row, profile, state, metrics)
+    maybe_seed_budgeted(row, profile, state, metrics)
 
 
 def run_metrics(
@@ -239,6 +352,8 @@ def run_metrics(
             state.last_ts_ms = max(state.last_ts_ms, int(row.get("trigger_ts_ms") or 0))
             maybe_seed_with_repair(row, profile, state, metrics)
         base.settle(states, profile, metrics)
+        for state in states.values():
+            metrics["repair_budget_available_end"] += repair_budget_available(state)
         results.append(finish(profile, metrics))
     results.sort(key=lambda row: (row["stress100_worst_pnl"], row["net_pnl"]), reverse=True)
     return results
@@ -256,6 +371,17 @@ def finish(profile: RepairProfile, metrics: defaultdict[str, float]) -> dict[str
             "repair_no_opportunity": int(metrics["repair_no_opportunity"]),
             "repair_block_pair_cap": int(metrics["repair_block_pair_cap"]),
             "repair_block_budget": int(metrics["repair_block_budget"]),
+            "repair_block_surplus_budget": int(metrics["repair_block_surplus_budget"]),
+            "repair_budget_deposited": round(metrics["repair_budget_deposited"], 6),
+            "repair_budget_spent": round(metrics["repair_budget_spent"], 6),
+            "repair_budget_required": round(metrics["repair_budget_required"], 6),
+            "repair_budget_available_end": round(metrics["repair_budget_available_end"], 6),
+            "repair_pair_cost_wavg_projected": round(
+                (metrics["repair_projected_pair_cost_sum"] / metrics["repair_qty"])
+                if metrics["repair_qty"]
+                else 0.0,
+                6,
+            ),
             "seed_block_risk_increasing_repair_mode": int(metrics["seed_block_risk_increasing_repair_mode"]),
             "risk_block_without_repair": int(metrics["risk_block_without_repair"]),
         }
@@ -298,6 +424,13 @@ def aggregate_results(profiles: list[RepairProfile], combined: list[dict[str, An
         "repair_no_opportunity",
         "repair_block_pair_cap",
         "repair_block_budget",
+        "repair_block_surplus_budget",
+        "repair_budget_deposited",
+        "repair_budget_spent",
+        "repair_budget_required",
+        "repair_budget_available_end",
+        "repair_projected_pair_cost_sum",
+        "pair_qty_budget_observed",
         "seed_block_risk_increasing_repair_mode",
         "risk_block_without_repair",
         "resid_cost_gt6_markets",
@@ -374,6 +507,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repair-after-s", default="60,75")
     parser.add_argument("--repair-max-qtys", default="1.25,2.5,5")
     parser.add_argument("--repair-pair-caps", default="1.00,1.02")
+    parser.add_argument("--repair-budget-modes", default="none")
+    parser.add_argument("--repair-budget-fraction", type=float, default=0.50)
+    parser.add_argument("--min-edge-per-pair", type=float, default=0.005)
+    parser.add_argument("--pair-selects", default="fifo")
     parser.add_argument("--completion-window-ms", type=int, default=30_000)
     parser.add_argument("--max-strict-candidates-per-plan", type=int, default=0)
     parser.add_argument("--output-dir")
