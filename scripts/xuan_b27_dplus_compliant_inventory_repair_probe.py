@@ -75,6 +75,7 @@ def profile_name(
     pair_cap: float,
     budget_mode: str = "none",
     pair_select: str = "fifo",
+    edge: float = 0.055,
 ) -> str:
     if repair_qty <= 0:
         base_name = f"baseline_t{target_qty:g}"
@@ -82,6 +83,8 @@ def profile_name(
         base_name = f"repair_t{target_qty:g}_a{after_s:g}_q{repair_qty:g}_cap{pair_cap:g}"
         if budget_mode != "none":
             base_name += f"_budget{budget_mode}"
+    if abs(edge - 0.055) > 1e-12:
+        base_name += f"_e{edge:g}"
     if pair_select != "fifo":
         base_name += f"_pair{pair_select}"
     return base_name.replace(".", "p")
@@ -90,43 +93,49 @@ def profile_name(
 def build_profiles(args: argparse.Namespace) -> list[RepairProfile]:
     pair_selects = parse_csv_strings(args.pair_selects)
     repair_budget_modes = parse_csv_strings(args.repair_budget_modes)
+    edges = parse_csv_floats(args.edges)
     profiles = [
         RepairProfile(
-            name=profile_name(target, 0, 0, 0, pair_select=pair_select),
+            name=profile_name(target, 0, 0, 0, pair_select=pair_select, edge=edge),
+            edge=edge,
             target_qty=target,
             pair_select=pair_select,
             repair_max_qty=0.0,
             block_risk_increasing_after_repair_threshold=False,
         )
+        for edge in edges
         for target in parse_csv_floats(args.target_qtys)
         for pair_select in pair_selects
     ]
-    for target in parse_csv_floats(args.target_qtys):
-        for after_s in parse_csv_floats(args.repair_after_s):
-            for repair_qty in parse_csv_floats(args.repair_max_qtys):
-                for pair_cap in parse_csv_floats(args.repair_pair_caps):
-                    for budget_mode in repair_budget_modes:
-                        for pair_select in pair_selects:
-                            profiles.append(
-                                RepairProfile(
-                                    name=profile_name(
-                                        target,
-                                        after_s,
-                                        repair_qty,
-                                        pair_cap,
-                                        budget_mode,
-                                        pair_select,
-                                    ),
-                                    target_qty=target,
-                                    pair_select=pair_select,
-                                    repair_after_s=after_s,
-                                    repair_max_qty=repair_qty,
-                                    repair_pair_cap=pair_cap,
-                                    repair_budget_mode=budget_mode,
-                                    repair_budget_fraction=args.repair_budget_fraction,
-                                    min_edge_per_pair=args.min_edge_per_pair,
-                                )
-                        )
+    for edge in edges:
+        for target in parse_csv_floats(args.target_qtys):
+            for after_s in parse_csv_floats(args.repair_after_s):
+                for repair_qty in parse_csv_floats(args.repair_max_qtys):
+                    for pair_cap in parse_csv_floats(args.repair_pair_caps):
+                        for budget_mode in repair_budget_modes:
+                            for pair_select in pair_selects:
+                                profiles.append(
+                                    RepairProfile(
+                                        name=profile_name(
+                                            target,
+                                            after_s,
+                                            repair_qty,
+                                            pair_cap,
+                                            budget_mode,
+                                            pair_select,
+                                            edge,
+                                        ),
+                                        edge=edge,
+                                        target_qty=target,
+                                        pair_select=pair_select,
+                                        repair_after_s=after_s,
+                                        repair_max_qty=repair_qty,
+                                        repair_pair_cap=pair_cap,
+                                        repair_budget_mode=budget_mode,
+                                        repair_budget_fraction=args.repair_budget_fraction,
+                                        min_edge_per_pair=args.min_edge_per_pair,
+                                    )
+                            )
     return profiles
 
 
@@ -504,6 +513,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--strict-labels", default="")
     parser.add_argument("--completion-labels", default="")
     parser.add_argument("--target-qtys", default="3,5")
+    parser.add_argument("--edges", default="0.055")
     parser.add_argument("--repair-after-s", default="60,75")
     parser.add_argument("--repair-max-qtys", default="1.25,2.5,5")
     parser.add_argument("--repair-pair-caps", default="1.00,1.02")
