@@ -41,6 +41,13 @@ class ShadowTouch:
     touch_ms: int
     slot: str
     order_end_ms: int | None = None
+    depth_source_sequence_id: str | None = None
+    depth_event_time_ms: int | None = None
+    depth_event_lag_ms: int | None = None
+    depth_best_bid: float | None = None
+    depth_best_ask: float | None = None
+    depth_best_bid_drop_qty: float | None = None
+    depth_best_ask_drop_qty: float | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +205,41 @@ def load_touches(path: Path, legacy_orders: bool = False) -> list[ShadowTouch]:
                     touch_ms=recv_ms,
                     slot=slot,
                     order_end_ms=recv_ms,
+                    depth_source_sequence_id=(
+                        str(data.get("depth_source_sequence_id"))
+                        if data.get("depth_source_sequence_id") is not None
+                        else None
+                    ),
+                    depth_event_time_ms=(
+                        int(data.get("depth_event_time_ms"))
+                        if data.get("depth_event_time_ms") is not None
+                        else None
+                    ),
+                    depth_event_lag_ms=(
+                        int(data.get("depth_event_lag_ms"))
+                        if data.get("depth_event_lag_ms") is not None
+                        else None
+                    ),
+                    depth_best_bid=(
+                        float(data.get("depth_best_bid"))
+                        if data.get("depth_best_bid") is not None
+                        else None
+                    ),
+                    depth_best_ask=(
+                        float(data.get("depth_best_ask"))
+                        if data.get("depth_best_ask") is not None
+                        else None
+                    ),
+                    depth_best_bid_drop_qty=(
+                        float(data.get("depth_best_bid_drop_qty"))
+                        if data.get("depth_best_bid_drop_qty") is not None
+                        else None
+                    ),
+                    depth_best_ask_drop_qty=(
+                        float(data.get("depth_best_ask_drop_qty"))
+                        if data.get("depth_best_ask_drop_qty") is not None
+                        else None
+                    ),
                 )
             )
         elif event == "fill_snapshot":
@@ -432,6 +474,7 @@ def summarize(rows: list[FollowThrough], windows_ms: list[int]) -> dict[str, Any
         "pre_touch_sell_through_ratio": pct(sum(1 for r in book if r.pre_touch_sell_count > 0), len(book)),
         "first_after_delay_ms_p50": statistics.median(delays) if delays else None,
         "first_after_delay_ms_p90": percentile([float(v) for v in delays], 90.0),
+        "depth_evidence_quality": depth_evidence_quality([r.touch for r in book]),
     }
     for window in windows_ms:
         hit = sum(1 for r in book if r.hit_within(window))
@@ -463,6 +506,33 @@ def summarize(rows: list[FollowThrough], windows_ms: list[int]) -> dict[str, Any
     return out
 
 
+def depth_evidence_quality(touches: list[ShadowTouch]) -> dict[str, Any]:
+    total = len(touches)
+    seq_non_null = sum(1 for t in touches if t.depth_source_sequence_id)
+    drop_qty_present = sum(
+        1
+        for t in touches
+        if t.depth_best_bid_drop_qty is not None or t.depth_best_ask_drop_qty is not None
+    )
+    lags = [float(t.depth_event_lag_ms) for t in touches if t.depth_event_lag_ms is not None]
+    best_bid_present = sum(1 for t in touches if t.depth_best_bid is not None)
+    best_ask_present = sum(1 for t in touches if t.depth_best_ask is not None)
+    return {
+        "touches": total,
+        "seq_non_null": seq_non_null,
+        "seq_non_null_rate": pct(seq_non_null, total),
+        "drop_qty_present": drop_qty_present,
+        "drop_qty_coverage": pct(drop_qty_present, total),
+        "best_bid_present": best_bid_present,
+        "best_bid_coverage": pct(best_bid_present, total),
+        "best_ask_present": best_ask_present,
+        "best_ask_coverage": pct(best_ask_present, total),
+        "depth_event_lag_ms_p50": statistics.median(lags) if lags else None,
+        "depth_event_lag_ms_p90": percentile(lags, 90.0),
+        "depth_event_lag_ms_max": max(lags) if lags else None,
+    }
+
+
 def row_to_dict(row: FollowThrough, windows_ms: list[int]) -> dict[str, Any]:
     item: dict[str, Any] = {
         "round_id": row.touch.round_id,
@@ -479,6 +549,13 @@ def row_to_dict(row: FollowThrough, windows_ms: list[int]) -> dict[str, Any]:
         "pre_touch_sell_size": row.pre_touch_sell_size,
         "first_after_delay_ms": row.first_after_delay_ms,
         "first_after_price": row.first_after_price,
+        "depth_source_sequence_id": row.touch.depth_source_sequence_id,
+        "depth_event_time_ms": row.touch.depth_event_time_ms,
+        "depth_event_lag_ms": row.touch.depth_event_lag_ms,
+        "depth_best_bid": row.touch.depth_best_bid,
+        "depth_best_ask": row.touch.depth_best_ask,
+        "depth_best_bid_drop_qty": row.touch.depth_best_bid_drop_qty,
+        "depth_best_ask_drop_qty": row.touch.depth_best_ask_drop_qty,
     }
     for window in windows_ms:
         item[f"count_{window}ms"] = (row.window_counts or {}).get(window, 0)
@@ -529,6 +606,17 @@ def main() -> None:
     print(
         f"first_after_delay_ms p50={s['first_after_delay_ms_p50']} "
         f"p90={s['first_after_delay_ms_p90']}"
+    )
+    dq = s["depth_evidence_quality"]
+    print(
+        f"depth_quality: touches={dq['touches']} "
+        f"seq={dq['seq_non_null']}/{dq['touches']} rate={dq['seq_non_null_rate']} "
+        f"drop_qty={dq['drop_qty_present']}/{dq['touches']} coverage={dq['drop_qty_coverage']} "
+        f"best_bid={dq['best_bid_present']}/{dq['touches']} "
+        f"best_ask={dq['best_ask_present']}/{dq['touches']} "
+        f"lag_ms_p50={dq['depth_event_lag_ms_p50']} "
+        f"lag_ms_p90={dq['depth_event_lag_ms_p90']} "
+        f"lag_ms_max={dq['depth_event_lag_ms_max']}"
     )
     if s["price_buckets"]:
         print("price_buckets:")

@@ -4970,6 +4970,7 @@ fn partial_book_tick_from_post_close_update(side: Side, bid: f64, ask: f64) -> M
             yes_ask: ask,
             no_bid: f64::NAN,
             no_ask: f64::NAN,
+            depth: None,
             ts: Instant::now(),
         },
         Side::No => MarketDataMsg::BookTick {
@@ -4977,6 +4978,7 @@ fn partial_book_tick_from_post_close_update(side: Side, bid: f64, ask: f64) -> M
             yes_ask: f64::NAN,
             no_bid: bid,
             no_ask: ask,
+            depth: None,
             ts: Instant::now(),
         },
     }
@@ -7119,6 +7121,7 @@ fn snapshot_book(msg: &MarketDataMsg) -> Option<BookSnapshot> {
             no_bid,
             no_ask,
             ts,
+            ..
         } => Some(BookSnapshot {
             yes_bid: *yes_bid,
             yes_ask: *yes_ask,
@@ -20061,6 +20064,7 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
         yes_ask: if s == Side::Yes { best_ask } else { f64::NAN },
         no_bid: if s == Side::No { best_bid } else { f64::NAN },
         no_ask: if s == Side::No { best_ask } else { f64::NAN },
+        depth: None,
         ts: Instant::now(),
     };
 
@@ -20536,6 +20540,7 @@ impl BookAssembler {
             yes_ask,
             no_bid,
             no_ask,
+            depth,
             ts,
         } = msg
         {
@@ -20579,6 +20584,7 @@ impl BookAssembler {
                     yes_ask: self.yes_ask,
                     no_bid: self.no_bid,
                     no_ask: self.no_ask,
+                    depth: depth.clone(),
                     ts: *ts,
                 });
             }
@@ -21455,7 +21461,14 @@ async fn run_market_ws_remote_with_wall_guard(
                             SharedIngressWireMsg::MarketBookTick { yes_bid, yes_ask, no_bid, no_ask, depth, .. } => {
                                 session_wire_book_tick_count =
                                     session_wire_book_tick_count.saturating_add(1);
-                                let md_msg = MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, ts: Instant::now() };
+                                let md_msg = MarketDataMsg::BookTick {
+                                    yes_bid,
+                                    yes_ask,
+                                    no_bid,
+                                    no_ask,
+                                    depth: depth.clone(),
+                                    ts: Instant::now(),
+                                };
                                 try_broadcast_dry_run_touch_md(&dry_run_touch_md_tx, &md_msg);
                                 if let Some(depth_msg) =
                                     depth.as_ref().and_then(market_book_depth_tick_from_evidence)
@@ -22153,6 +22166,26 @@ async fn run_market_ws(
                                                         &depth_msg,
                                                     );
                                                 }
+                                                let md_msg = if let MarketDataMsg::BookTick {
+                                                    yes_bid,
+                                                    yes_ask,
+                                                    no_bid,
+                                                    no_ask,
+                                                    ts,
+                                                    ..
+                                                } = &md_msg
+                                                {
+                                                    MarketDataMsg::BookTick {
+                                                        yes_bid: *yes_bid,
+                                                        yes_ask: *yes_ask,
+                                                        no_bid: *no_bid,
+                                                        no_ask: *no_ask,
+                                                        depth: depth.clone(),
+                                                        ts: *ts,
+                                                    }
+                                                } else {
+                                                    md_msg.clone()
+                                                };
                                                 if let MarketDataMsg::BookTick {
                                                     yes_bid,
                                                     yes_ask,
@@ -22349,6 +22382,26 @@ async fn run_market_ws(
                                                                 &depth_msg,
                                                             );
                                                         }
+                                                        let md_msg = if let MarketDataMsg::BookTick {
+                                                            yes_bid,
+                                                            yes_ask,
+                                                            no_bid,
+                                                            no_ask,
+                                                            ts,
+                                                            ..
+                                                        } = &md_msg
+                                                        {
+                                                            MarketDataMsg::BookTick {
+                                                                yes_bid: *yes_bid,
+                                                                yes_ask: *yes_ask,
+                                                                no_bid: *no_bid,
+                                                                no_ask: *no_ask,
+                                                                depth: depth.clone(),
+                                                                ts: *ts,
+                                                            }
+                                                        } else {
+                                                            md_msg.clone()
+                                                        };
                                                         if let MarketDataMsg::BookTick {
                                                             yes_bid,
                                                             yes_ask,
@@ -24454,6 +24507,7 @@ async fn run_prefix_worker(ctx: Option<Arc<WorkerCtx>>) -> anyhow::Result<()> {
             yes_ask: 0.0,
             no_bid: 0.0,
             no_ask: 0.0,
+            depth: None,
             ts: Instant::now(),
         });
         let (dry_run_touch_md_tx, dry_run_executor_md_rx) =
@@ -25708,6 +25762,7 @@ mod tests {
             yes_ask: 0.51,
             no_bid: f64::NAN,
             no_ask: f64::NAN,
+            depth: None,
             ts,
         };
         let no_only = MarketDataMsg::BookTick {
@@ -25715,6 +25770,7 @@ mod tests {
             yes_ask: f64::NAN,
             no_bid: 0.48,
             no_ask: 0.52,
+            depth: None,
             ts,
         };
 

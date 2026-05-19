@@ -7,6 +7,7 @@
 use std::time::Instant;
 
 use super::pair_ledger::{EpisodeMetrics, PairLedgerSnapshot};
+use super::recorder::MarketBookDepthEvidence;
 use super::types::Side;
 
 // ─────────────────────────────────────────────────────────
@@ -22,6 +23,7 @@ pub enum MarketDataMsg {
         yes_ask: f64,
         no_bid: f64,
         no_ask: f64,
+        depth: Option<MarketBookDepthEvidence>,
         ts: Instant,
     },
     /// Best-level depth/depletion evidence from shared ingress/localagg.
