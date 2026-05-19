@@ -103,6 +103,8 @@ class RunnerConfig:
     imbalance_qty_cap: float = 2.0
     imbalance_cost_cap: float = 1_000_000_000.0
     pairing_only_when_residual: bool = False
+    activation_mode: str = "none"
+    activation_window_s: float = 60.0
     dust_qty: float = 1.0
     taker_fee_rate: float = 0.07
     salvage_net_cap: float = 0.95
@@ -208,6 +210,7 @@ class DPlusRunner:
         self.next_order_id = 1
         self.next_lot_id = 1
         self.last_seed_ms = -(10**18)
+        self.activation_last_seen_ms: dict[str, int | None] = {"YES": None, "NO": None}
         self.events_path = out_dir / f"{slug}.events.jsonl"
         self.summary_path = out_dir / f"{slug}.summary.json"
 
@@ -220,6 +223,21 @@ class DPlusRunner:
 
     def block(self, reason: str) -> None:
         self.blocked[reason] = self.blocked.get(reason, 0) + 1
+
+    def record_activation_seen(self, side: str, ts_ms: int) -> None:
+        if side in self.activation_last_seen_ms:
+            self.activation_last_seen_ms[side] = ts_ms
+
+    def activation_allows_seed(self, side: str, ts_ms: int) -> tuple[bool, int | None]:
+        if self.cfg.activation_mode == "none":
+            return True, None
+        if self.cfg.activation_mode != "opp_seen":
+            raise ValueError(f"unsupported activation_mode={self.cfg.activation_mode!r}")
+        opp_seen_ms = self.activation_last_seen_ms.get(opp(side))
+        if opp_seen_ms is None:
+            return False, None
+        age_ms = ts_ms - opp_seen_ms
+        return age_ms >= 0 and age_ms <= self.cfg.activation_window_s * 1000.0 + 1e-9, int(age_ms)
 
     def pending_orders(self, side: str | None = None) -> list[VirtualOrder]:
         out = [o for o in self.pending if not o.fill_ms and not o.cancel_ms]
@@ -405,19 +423,44 @@ class DPlusRunner:
         target_qty = self.cfg.target_for(offset)
         if self.cfg.pairing_only_when_residual and same_qty > opp_qty + self.cfg.dust_qty:
             self.block("pairing_only_when_residual")
+            self.record_activation_seen(side, ts_ms)
             return
         if self.cfg.late_repair_active(offset) and same_qty + self.cfg.dust_qty >= opp_qty:
             self.block("late_repair_only")
+            self.record_activation_seen(side, ts_ms)
+            return
+        risk_increasing_seed = same_qty + self.cfg.dust_qty >= opp_qty
+        activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
+        if risk_increasing_seed and not activation_ok:
+            self.block("activation_opp_seen")
+            self.emit(
+                {
+                    "kind": "activation_block",
+                    "slug": self.slug,
+                    "ts_ms": ts_ms,
+                    "side": side,
+                    "offset_s": offset,
+                    "activation_mode": self.cfg.activation_mode,
+                    "activation_window_s": self.cfg.activation_window_s,
+                    "activation_required": True,
+                    "risk_increasing_seed": risk_increasing_seed,
+                    "opp_last_seen_ms": self.activation_last_seen_ms.get(opp(side)),
+                }
+            )
+            self.record_activation_seen(side, ts_ms)
             return
         if same_qty >= target_qty - self.cfg.dust_qty:
             self.block("target")
+            self.record_activation_seen(side, ts_ms)
             return
         if max(0.0, self.exposure_cost(side) - self.exposure_cost(opp(side))) > self.cfg.imbalance_cost_cap + 1e-12:
             self.block("imbalance_cost")
+            self.record_activation_seen(side, ts_ms)
             return
         imbalance_room = self.cfg.imbalance_qty_cap - max(0.0, same_qty - opp_qty)
         if imbalance_room <= self.cfg.dust_qty:
             self.block("imbalance_qty")
+            self.record_activation_seen(side, ts_ms)
             return
 
         seed_px = max(0.01, px - self.cfg.edge)
@@ -425,6 +468,7 @@ class DPlusRunner:
         qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
         if qty <= self.cfg.dust_qty:
             self.block("qty_zero")
+            self.record_activation_seen(side, ts_ms)
             return
 
         order = VirtualOrder(id=self.next_order_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size)
@@ -434,7 +478,8 @@ class DPlusRunner:
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
-        self.emit({"kind": "candidate", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": side, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
+        self.emit({"kind": "candidate", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": side, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
+        self.record_activation_seen(side, ts_ms)
 
     def write_summary(self, final: bool = False) -> None:
         if final:
@@ -654,6 +699,8 @@ async def main() -> None:
     ap.add_argument("--imbalance-qty-cap", type=float, default=2.0)
     ap.add_argument("--imbalance-cost-cap", type=float, default=1_000_000_000.0)
     ap.add_argument("--pairing-only-when-residual", action="store_true")
+    ap.add_argument("--activation-mode", choices=["none", "opp_seen"], default="none")
+    ap.add_argument("--activation-window-s", type=float, default=60.0)
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -682,6 +729,8 @@ async def main() -> None:
         imbalance_qty_cap=args.imbalance_qty_cap,
         imbalance_cost_cap=args.imbalance_cost_cap,
         pairing_only_when_residual=args.pairing_only_when_residual,
+        activation_mode=args.activation_mode,
+        activation_window_s=args.activation_window_s,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -690,6 +739,8 @@ async def main() -> None:
         raise SystemExit(f"--imbalance-qty-cap must exceed dust_qty={cfg.dust_qty}; otherwise every seed is blocked")
     if cfg.late_target_qty is not None and cfg.late_target_qty <= cfg.dust_qty:
         raise SystemExit(f"--late-target-qty must exceed dust_qty={cfg.dust_qty}; otherwise the late window cannot seed")
+    if cfg.activation_window_s <= 0:
+        raise SystemExit("--activation-window-s must be positive")
     markets = resolve_markets(Path(args.repo), args.prefix, args.round_offsets)
     manifest = {
         "kind": "manifest",
