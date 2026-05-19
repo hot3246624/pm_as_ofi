@@ -1,0 +1,1917 @@
+{
+  "artifact": "xuan_symmetric_admission_activation_residual_stress_probe",
+  "assets": [
+    "BTC"
+  ],
+  "assumption": "candidate is quoted only if opposite-side strict flow was observed in the past activation window; expired unmatched quotes leak at leak_rate",
+  "auth_network_started": false,
+  "can_support_strategy_promotion": false,
+  "cancels_sent": false,
+  "collector_scanned": false,
+  "config": {
+    "activation_window_s": [
+      10.0
+    ],
+    "clip": 5.0,
+    "edges": [
+      0.06,
+      0.065,
+      0.07
+    ],
+    "fill_haircut": 0.25,
+    "leak_rates": [
+      0.01,
+      0.02,
+      0.03
+    ],
+    "max_residual_qty_rate": 0.05,
+    "min_opp_counts": [
+      1
+    ],
+    "pair_fee_rate": 0.0283,
+    "residual_fee_rate": 0.0283,
+    "strict_l1_pair_cap": 1.02,
+    "window_s": 10.0
+  },
+  "created_utc": "2026-05-19T12:34:35.335667Z",
+  "data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+  "dataset_type": "strict_cache_symmetric_admission_activation_residual_stress_probe",
+  "days": {
+    "covered": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13"
+    ],
+    "holdout": [
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ]
+  },
+  "elapsed_s": 1.553,
+  "excluded_20260514_20260515": true,
+  "filtered_row_count": 113220,
+  "hypothesis": "past-only opposite-side activation can reduce unmatched first-leg exposure enough to tolerate leakage",
+  "labels": {
+    "covered": [
+      "20260502_20260507",
+      "20260508",
+      "20260509",
+      "20260510",
+      "20260511",
+      "20260512",
+      "20260513"
+    ],
+    "holdout": [
+      "20260516",
+      "20260517",
+      "20260518"
+    ]
+  },
+  "market_prefix": "btc-updown-5m-",
+  "next_action": "if UNKNOWN, review implementability and source truth; if DISCARD, do not use past-only activation as leakage repair",
+  "orders_sent": false,
+  "outputs": {
+    "results_jsonl": "results.jsonl"
+  },
+  "public_account_execution_truth_v1_included": false,
+  "qualified": [
+    {
+      "activation_window_s": 10.0,
+      "covered_pair_actions": 3732,
+      "covered_residual_qty_rate": 0.013449,
+      "covered_worst_day": 24.29617,
+      "covered_worst_net_fee_after": 655.015598,
+      "edge": 0.06,
+      "holdout_pair_actions": 726,
+      "holdout_residual_qty_rate": 0.014143,
+      "holdout_worst_day": 19.172526,
+      "holdout_worst_net_fee_after": 125.30578,
+      "leak_rate": 0.01,
+      "min_opp_count": 1
+    },
+    {
+      "activation_window_s": 10.0,
+      "covered_pair_actions": 3732,
+      "covered_residual_qty_rate": 0.013449,
+      "covered_worst_day": 31.456994,
+      "covered_worst_net_fee_after": 849.512116,
+      "edge": 0.065,
+      "holdout_pair_actions": 726,
+      "holdout_residual_qty_rate": 0.014143,
+      "holdout_worst_day": 23.921473,
+      "holdout_worst_net_fee_after": 163.168557,
+      "leak_rate": 0.01,
+      "min_opp_count": 1
+    },
+    {
+      "activation_window_s": 10.0,
+      "covered_pair_actions": 3732,
+      "covered_residual_qty_rate": 0.026541,
+      "covered_worst_day": 17.859806,
+      "covered_worst_net_fee_after": 593.082117,
+      "edge": 0.065,
+      "holdout_pair_actions": 726,
+      "holdout_residual_qty_rate": 0.027891,
+      "holdout_worst_day": 17.27377,
+      "holdout_worst_net_fee_after": 111.424244,
+      "leak_rate": 0.02,
+      "min_opp_count": 1
+    },
+    {
+      "activation_window_s": 10.0,
+      "covered_pair_actions": 3732,
+      "covered_residual_qty_rate": 0.013449,
+      "covered_worst_day": 38.617818,
+      "covered_worst_net_fee_after": 1044.008634,
+      "edge": 0.07,
+      "holdout_pair_actions": 726,
+      "holdout_residual_qty_rate": 0.014143,
+      "holdout_worst_day": 28.670419,
+      "holdout_worst_net_fee_after": 201.031334,
+      "leak_rate": 0.01,
+      "min_opp_count": 1
+    },
+    {
+      "activation_window_s": 10.0,
+      "covered_pair_actions": 3732,
+      "covered_residual_qty_rate": 0.026541,
+      "covered_worst_day": 27.313716,
+      "covered_worst_net_fee_after": 790.194374,
+      "edge": 0.07,
+      "holdout_pair_actions": 726,
+      "holdout_residual_qty_rate": 0.027891,
+      "holdout_worst_day": 22.092898,
+      "holdout_worst_net_fee_after": 149.822508,
+      "leak_rate": 0.02,
+      "min_opp_count": 1
+    },
+    {
+      "activation_window_s": 10.0,
+      "covered_pair_actions": 3732,
+      "covered_residual_qty_rate": 0.03929,
+      "covered_worst_day": 7.406622,
+      "covered_worst_net_fee_after": 536.380113,
+      "edge": 0.07,
+      "holdout_pair_actions": 726,
+      "holdout_residual_qty_rate": 0.041261,
+      "holdout_worst_day": 15.515377,
+      "holdout_worst_net_fee_after": 98.613682,
+      "leak_rate": 0.03,
+      "min_opp_count": 1
+    }
+  ],
+  "raw_replay_scanned": false,
+  "redeems_sent": false,
+  "results": [
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 947.765598,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 41.748215,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 24.6,
+          "worst_net_fee_after": 27.848215
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 37.39617,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 22.75,
+          "worst_net_fee_after": 24.29617
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 64.437682,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 60.75,
+          "worst_net_fee_after": 28.937682
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 67.809592,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 50.3,
+          "worst_net_fee_after": 38.509592
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 68.800629,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 39.45,
+          "worst_net_fee_after": 47.850629
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 88.506735,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 57.65,
+          "worst_net_fee_after": 53.506735
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 135.060798,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 69.65,
+          "worst_net_fee_after": 94.310798
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 79.720767,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 34.6,
+          "worst_net_fee_after": 61.820767
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 162.649363,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 40.45,
+          "worst_net_fee_after": 139.549363
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 69.850651,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 44.85,
+          "worst_net_fee_after": 43.400651
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 59.347659,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 34.15,
+          "worst_net_fee_after": 39.997659
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 72.437337,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 29.55,
+          "worst_net_fee_after": 54.987337
+        }
+      ],
+      "edge": 0.06,
+      "leak_rate": 0.01,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 488.388665,
+      "pair_gross_pnl": 1402.45,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 251.9165,
+      "residual_fee": 7.129237,
+      "residual_qty": 508.75,
+      "residual_qty_rate": 0.013449,
+      "weighted_pair_cost": 0.924842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 37.39617,
+      "worst_day_worst_net_fee_after": 24.29617,
+      "worst_net_fee_after": 655.015598
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 981.469861,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 43.266454,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 49.2,
+          "worst_net_fee_after": 15.466454
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 38.95813,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 45.5,
+          "worst_net_fee_after": 12.75813
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 68.440339,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 121.5,
+          "worst_net_fee_after": -2.559661
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 71.552224,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 100.6,
+          "worst_net_fee_after": 12.952224
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 69.726543,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 78.9,
+          "worst_net_fee_after": 27.826543
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 93.598116,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 115.3,
+          "worst_net_fee_after": 23.598116
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 140.229562,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 139.3,
+          "worst_net_fee_after": 58.729562
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 80.241468,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 69.2,
+          "worst_net_fee_after": 44.441468
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 165.362802,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 80.9,
+          "worst_net_fee_after": 119.162802
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 73.383957,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 89.7,
+          "worst_net_fee_after": 20.483957
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 61.453068,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 68.3,
+          "worst_net_fee_after": 22.753068
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 75.257199,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 59.1,
+          "worst_net_fee_after": 40.357198
+        }
+      ],
+      "edge": 0.06,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 488.388665,
+      "pair_gross_pnl": 1402.45,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 503.833,
+      "residual_fee": 14.258474,
+      "residual_qty": 1017.5,
+      "residual_qty_rate": 0.026541,
+      "weighted_pair_cost": 0.924842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 38.95813,
+      "worst_day_worst_net_fee_after": -2.559661,
+      "worst_net_fee_after": 395.969861
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1015.174124,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 44.784694,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 73.8,
+          "worst_net_fee_after": 3.084694
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 40.52009,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 68.25,
+          "worst_net_fee_after": 1.22009
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 72.442996,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 182.25,
+          "worst_net_fee_after": -34.057004
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 75.294855,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 150.9,
+          "worst_net_fee_after": -12.605145
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 70.652457,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 118.35,
+          "worst_net_fee_after": 7.802457
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 98.689496,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 172.95,
+          "worst_net_fee_after": -6.310504
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 145.398325,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 208.95,
+          "worst_net_fee_after": 23.148325
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 80.76217,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 103.8,
+          "worst_net_fee_after": 27.06217
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 168.07624,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 121.35,
+          "worst_net_fee_after": 98.77624
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 76.917264,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 134.55,
+          "worst_net_fee_after": -2.432736
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 63.558477,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 102.45,
+          "worst_net_fee_after": 5.508477
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 78.07706,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 88.65,
+          "worst_net_fee_after": 25.72706
+        }
+      ],
+      "edge": 0.06,
+      "leak_rate": 0.03,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 488.388665,
+      "pair_gross_pnl": 1402.45,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 755.7495,
+      "residual_fee": 21.387711,
+      "residual_qty": 1526.25,
+      "residual_qty_rate": 0.03929,
+      "weighted_pair_cost": 0.924842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 40.52009,
+      "worst_day_worst_net_fee_after": -34.057004,
+      "worst_net_fee_after": 136.924124
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1142.262116,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 49.021381,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 24.6,
+          "worst_net_fee_after": 35.121381
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 44.556994,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 22.75,
+          "worst_net_fee_after": 31.456994
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 84.544803,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 60.75,
+          "worst_net_fee_after": 49.044803
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 84.469594,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 50.3,
+          "worst_net_fee_after": 55.169594
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 83.965226,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 39.45,
+          "worst_net_fee_after": 63.015226
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 109.626218,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 57.65,
+          "worst_net_fee_after": 74.626218
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 163.491494,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 69.65,
+          "worst_net_fee_after": 122.741494
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 94.294863,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 34.6,
+          "worst_net_fee_after": 76.394863
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 188.719082,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 40.45,
+          "worst_net_fee_after": 165.619082
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 86.019897,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 44.85,
+          "worst_net_fee_after": 59.569897
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 69.549166,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 34.15,
+          "worst_net_fee_after": 50.199166
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 84.003398,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 29.55,
+          "worst_net_fee_after": 66.553398
+        }
+      ],
+      "edge": 0.065,
+      "leak_rate": 0.01,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 483.107885,
+      "pair_gross_pnl": 1589.05,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 249.37275,
+      "residual_fee": 7.057249,
+      "residual_qty": 508.75,
+      "residual_qty_rate": 0.013449,
+      "weighted_pair_cost": 0.914842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 44.556994,
+      "worst_day_worst_net_fee_after": 31.456994,
+      "worst_net_fee_after": 849.512116
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1178.582117,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 50.666101,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 49.2,
+          "worst_net_fee_after": 22.866101
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 46.235923,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 45.5,
+          "worst_net_fee_after": 20.035923
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 88.859806,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 121.5,
+          "worst_net_fee_after": 17.859806
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 88.470844,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 100.6,
+          "worst_net_fee_after": 29.870843
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 85.093973,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 78.9,
+          "worst_net_fee_after": 43.193973
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 115.014006,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 115.3,
+          "worst_net_fee_after": 45.014006
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 169.018363,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 139.3,
+          "worst_net_fee_after": 87.518363
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 94.99346,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 69.2,
+          "worst_net_fee_after": 59.19346
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 191.640494,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 80.9,
+          "worst_net_fee_after": 145.440494
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 89.7838,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 89.7,
+          "worst_net_fee_after": 36.8838
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 71.830157,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 68.3,
+          "worst_net_fee_after": 33.130157
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 86.975191,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 59.1,
+          "worst_net_fee_after": 52.075191
+        }
+      ],
+      "edge": 0.065,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 483.107885,
+      "pair_gross_pnl": 1589.05,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 498.7455,
+      "residual_fee": 14.114498,
+      "residual_qty": 1017.5,
+      "residual_qty_rate": 0.026541,
+      "weighted_pair_cost": 0.914842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 46.235923,
+      "worst_day_worst_net_fee_after": 17.859806,
+      "worst_net_fee_after": 593.082117
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1214.902119,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 52.310822,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 73.8,
+          "worst_net_fee_after": 10.610822
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 47.914852,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 68.25,
+          "worst_net_fee_after": 8.614852
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 93.174809,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 182.25,
+          "worst_net_fee_after": -13.325191
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 92.472093,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 150.9,
+          "worst_net_fee_after": 4.572093
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 86.222719,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 118.35,
+          "worst_net_fee_after": 23.372719
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 120.401793,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 172.95,
+          "worst_net_fee_after": 15.401793
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 174.545232,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 208.95,
+          "worst_net_fee_after": 52.295232
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 95.692058,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 103.8,
+          "worst_net_fee_after": 41.992058
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 194.561906,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 121.35,
+          "worst_net_fee_after": 125.261906
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 93.547702,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 134.55,
+          "worst_net_fee_after": 14.197702
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 74.111149,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 102.45,
+          "worst_net_fee_after": 16.061149
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 89.946984,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 88.65,
+          "worst_net_fee_after": 37.596984
+        }
+      ],
+      "edge": 0.065,
+      "leak_rate": 0.03,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 483.107885,
+      "pair_gross_pnl": 1589.05,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 748.11825,
+      "residual_fee": 21.171746,
+      "residual_qty": 1526.25,
+      "residual_qty_rate": 0.03929,
+      "weighted_pair_cost": 0.914842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 47.914852,
+      "worst_day_worst_net_fee_after": -13.325191,
+      "worst_net_fee_after": 336.652119
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1336.758634,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 56.294547,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 24.6,
+          "worst_net_fee_after": 42.394546
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 51.717818,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 22.75,
+          "worst_net_fee_after": 38.617818
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 104.651924,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 60.75,
+          "worst_net_fee_after": 69.151924
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 101.129597,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 50.3,
+          "worst_net_fee_after": 71.829597
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 99.129823,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 39.45,
+          "worst_net_fee_after": 78.179823
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 130.7457,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 57.65,
+          "worst_net_fee_after": 95.7457
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 191.922189,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 69.65,
+          "worst_net_fee_after": 151.172189
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 108.868959,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 34.6,
+          "worst_net_fee_after": 90.968959
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 214.788801,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 40.45,
+          "worst_net_fee_after": 191.688801
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 102.189144,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 44.85,
+          "worst_net_fee_after": 75.739144
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 79.750673,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 34.15,
+          "worst_net_fee_after": 60.400673
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 95.569459,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 29.55,
+          "worst_net_fee_after": 78.119459
+        }
+      ],
+      "edge": 0.07,
+      "leak_rate": 0.01,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 477.827105,
+      "pair_gross_pnl": 1775.65,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 246.829,
+      "residual_fee": 6.985261,
+      "residual_qty": 508.75,
+      "residual_qty_rate": 0.013449,
+      "weighted_pair_cost": 0.904842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 51.717818,
+      "worst_day_worst_net_fee_after": 38.617818,
+      "worst_net_fee_after": 1044.008634
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1375.694374,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 58.065748,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 49.2,
+          "worst_net_fee_after": 30.265748
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 53.513716,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 45.5,
+          "worst_net_fee_after": 27.313716
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 109.279273,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 121.5,
+          "worst_net_fee_after": 38.279273
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 105.389463,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 100.6,
+          "worst_net_fee_after": 46.789463
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 100.461402,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 78.9,
+          "worst_net_fee_after": 58.561402
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 136.429896,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 115.3,
+          "worst_net_fee_after": 66.429896
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 197.807164,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 139.3,
+          "worst_net_fee_after": 116.307164
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 109.745452,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 69.2,
+          "worst_net_fee_after": 73.945452
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 217.918186,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 80.9,
+          "worst_net_fee_after": 171.718186
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 106.183643,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 89.7,
+          "worst_net_fee_after": 53.283643
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 82.207247,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 68.3,
+          "worst_net_fee_after": 43.507247
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 98.693184,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 59.1,
+          "worst_net_fee_after": 63.793184
+        }
+      ],
+      "edge": 0.07,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 477.827105,
+      "pair_gross_pnl": 1775.65,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 493.658,
+      "residual_fee": 13.970521,
+      "residual_qty": 1017.5,
+      "residual_qty_rate": 0.026541,
+      "weighted_pair_cost": 0.904842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 53.513716,
+      "worst_day_worst_net_fee_after": 27.313716,
+      "worst_net_fee_after": 790.194374
+    },
+    {
+      "activation_passed": 17639,
+      "activation_rate": 0.190168,
+      "activation_skipped": 75116,
+      "activation_window_s": 10.0,
+      "active_markets": 1357,
+      "actual_settle_net_fee_after": 1414.630113,
+      "bucket": "covered",
+      "candidate_rows_seen": 92755,
+      "daily": [
+        {
+          "activation_skipped": 4294,
+          "actual_settle_net_fee_after": 59.836949,
+          "day": "2026-05-02",
+          "pair_actions": 139,
+          "pair_qty": 695.0,
+          "residual_qty": 73.8,
+          "worst_net_fee_after": 18.13695
+        },
+        {
+          "activation_skipped": 4706,
+          "actual_settle_net_fee_after": 55.309614,
+          "day": "2026-05-03",
+          "pair_actions": 137,
+          "pair_qty": 685.0,
+          "residual_qty": 68.25,
+          "worst_net_fee_after": 16.009614
+        },
+        {
+          "activation_skipped": 9133,
+          "actual_settle_net_fee_after": 113.906622,
+          "day": "2026-05-04",
+          "pair_actions": 385,
+          "pair_qty": 1925.0,
+          "residual_qty": 182.25,
+          "worst_net_fee_after": 7.406622
+        },
+        {
+          "activation_skipped": 6577,
+          "actual_settle_net_fee_after": 109.64933,
+          "day": "2026-05-05",
+          "pair_actions": 319,
+          "pair_qty": 1595.0,
+          "residual_qty": 150.9,
+          "worst_net_fee_after": 21.74933
+        },
+        {
+          "activation_skipped": 6212,
+          "actual_settle_net_fee_after": 101.79298,
+          "day": "2026-05-06",
+          "pair_actions": 291,
+          "pair_qty": 1455.0,
+          "residual_qty": 118.35,
+          "worst_net_fee_after": 38.94298
+        },
+        {
+          "activation_skipped": 7685,
+          "actual_settle_net_fee_after": 142.114091,
+          "day": "2026-05-07",
+          "pair_actions": 405,
+          "pair_qty": 2025.0,
+          "residual_qty": 172.95,
+          "worst_net_fee_after": 37.114091
+        },
+        {
+          "activation_skipped": 8451,
+          "actual_settle_net_fee_after": 203.692138,
+          "day": "2026-05-08",
+          "pair_actions": 546,
+          "pair_qty": 2730.0,
+          "residual_qty": 208.95,
+          "worst_net_fee_after": 81.442138
+        },
+        {
+          "activation_skipped": 5655,
+          "actual_settle_net_fee_after": 110.621945,
+          "day": "2026-05-09",
+          "pair_actions": 280,
+          "pair_qty": 1400.0,
+          "residual_qty": 103.8,
+          "worst_net_fee_after": 56.921945
+        },
+        {
+          "activation_skipped": 5178,
+          "actual_settle_net_fee_after": 221.047572,
+          "day": "2026-05-10",
+          "pair_actions": 503,
+          "pair_qty": 2515.0,
+          "residual_qty": 121.35,
+          "worst_net_fee_after": 151.747572
+        },
+        {
+          "activation_skipped": 6587,
+          "actual_settle_net_fee_after": 110.178141,
+          "day": "2026-05-11",
+          "pair_actions": 310,
+          "pair_qty": 1550.0,
+          "residual_qty": 134.55,
+          "worst_net_fee_after": 30.828141
+        },
+        {
+          "activation_skipped": 5386,
+          "actual_settle_net_fee_after": 84.66382,
+          "day": "2026-05-12",
+          "pair_actions": 195,
+          "pair_qty": 975.0,
+          "residual_qty": 102.45,
+          "worst_net_fee_after": 26.61382
+        },
+        {
+          "activation_skipped": 5252,
+          "actual_settle_net_fee_after": 101.816908,
+          "day": "2026-05-13",
+          "pair_actions": 222,
+          "pair_qty": 1110.0,
+          "residual_qty": 88.65,
+          "worst_net_fee_after": 49.466908
+        }
+      ],
+      "edge": 0.07,
+      "leak_rate": 0.03,
+      "min_opp_count": 1,
+      "pair_actions": 3732,
+      "pair_fee": 477.827105,
+      "pair_gross_pnl": 1775.65,
+      "pair_qty": 18660.0,
+      "pending_opened_qty": 69535.0,
+      "residual_cost": 740.487,
+      "residual_fee": 20.955782,
+      "residual_qty": 1526.25,
+      "residual_qty_rate": 0.03929,
+      "weighted_pair_cost": 0.904842,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 55.309614,
+      "worst_day_worst_net_fee_after": 7.406622,
+      "worst_net_fee_after": 536.380113
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 183.15578,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 69.304284,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 34.55,
+          "worst_net_fee_after": 49.554284
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 26.422526,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 13.65,
+          "worst_net_fee_after": 19.172526
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 87.42897,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 55.95,
+          "worst_net_fee_after": 56.57897
+        }
+      ],
+      "edge": 0.06,
+      "leak_rate": 0.01,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 95.01442,
+      "pair_gross_pnl": 272.6,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 50.841,
+      "residual_fee": 1.4388,
+      "residual_qty": 104.15,
+      "residual_qty_rate": 0.014143,
+      "weighted_pair_cost": 0.924904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 26.422526,
+      "worst_day_worst_net_fee_after": 19.172526,
+      "worst_net_fee_after": 125.30578
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 188.725979,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 71.960853,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 69.1,
+          "worst_net_fee_after": 32.460853
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 26.954642,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 27.3,
+          "worst_net_fee_after": 12.454642
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 89.810484,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 111.9,
+          "worst_net_fee_after": 28.110484
+        }
+      ],
+      "edge": 0.06,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 95.01442,
+      "pair_gross_pnl": 272.6,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 101.682,
+      "residual_fee": 2.877601,
+      "residual_qty": 208.3,
+      "residual_qty_rate": 0.027891,
+      "weighted_pair_cost": 0.924904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 26.954642,
+      "worst_day_worst_net_fee_after": 12.454642,
+      "worst_net_fee_after": 73.025979
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 194.296179,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 74.617422,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 103.65,
+          "worst_net_fee_after": 15.367422
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 27.486758,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 40.95,
+          "worst_net_fee_after": 5.736758
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 92.191998,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 167.85,
+          "worst_net_fee_after": -0.358002
+        }
+      ],
+      "edge": 0.06,
+      "leak_rate": 0.03,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 95.01442,
+      "pair_gross_pnl": 272.6,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 152.523,
+      "residual_fee": 4.316401,
+      "residual_qty": 312.45,
+      "residual_qty_rate": 0.041261,
+      "weighted_pair_cost": 0.924904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 27.486758,
+      "worst_day_worst_net_fee_after": -0.358002,
+      "worst_net_fee_after": 20.746179
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 221.018557,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 81.153128,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 34.55,
+          "worst_net_fee_after": 61.403128
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 31.171473,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 13.65,
+          "worst_net_fee_after": 23.921473
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 108.693956,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 55.95,
+          "worst_net_fee_after": 77.843956
+        }
+      ],
+      "edge": 0.065,
+      "leak_rate": 0.01,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 93.98713,
+      "pair_gross_pnl": 308.9,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 50.32025,
+      "residual_fee": 1.424063,
+      "residual_qty": 104.15,
+      "residual_qty_rate": 0.014143,
+      "weighted_pair_cost": 0.914904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 31.171473,
+      "worst_day_worst_net_fee_after": 23.921473,
+      "worst_net_fee_after": 163.168557
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 227.124244,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 83.987336,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 69.1,
+          "worst_net_fee_after": 44.487336
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 31.77377,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 27.3,
+          "worst_net_fee_after": 17.27377
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 111.363138,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 111.9,
+          "worst_net_fee_after": 49.663138
+        }
+      ],
+      "edge": 0.065,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 93.98713,
+      "pair_gross_pnl": 308.9,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 100.6405,
+      "residual_fee": 2.848126,
+      "residual_qty": 208.3,
+      "residual_qty_rate": 0.027891,
+      "weighted_pair_cost": 0.914904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 31.77377,
+      "worst_day_worst_net_fee_after": 17.27377,
+      "worst_net_fee_after": 111.424244
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 233.229931,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 86.821544,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 103.65,
+          "worst_net_fee_after": 27.571544
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 32.376068,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 40.95,
+          "worst_net_fee_after": 10.626068
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 114.032319,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 167.85,
+          "worst_net_fee_after": 21.482319
+        }
+      ],
+      "edge": 0.065,
+      "leak_rate": 0.03,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 93.98713,
+      "pair_gross_pnl": 308.9,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 150.96075,
+      "residual_fee": 4.272189,
+      "residual_qty": 312.45,
+      "residual_qty_rate": 0.041261,
+      "weighted_pair_cost": 0.914904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 32.376068,
+      "worst_day_worst_net_fee_after": 10.626068,
+      "worst_net_fee_after": 59.679931
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 258.881334,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 93.001972,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 34.55,
+          "worst_net_fee_after": 73.251972
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 35.920419,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 13.65,
+          "worst_net_fee_after": 28.670419
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 129.958943,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 55.95,
+          "worst_net_fee_after": 99.108943
+        }
+      ],
+      "edge": 0.07,
+      "leak_rate": 0.01,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 92.95984,
+      "pair_gross_pnl": 345.2,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 49.7995,
+      "residual_fee": 1.409326,
+      "residual_qty": 104.15,
+      "residual_qty_rate": 0.014143,
+      "weighted_pair_cost": 0.904904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 35.920419,
+      "worst_day_worst_net_fee_after": 28.670419,
+      "worst_net_fee_after": 201.031334
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 265.522508,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 96.013819,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 69.1,
+          "worst_net_fee_after": 56.513819
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 36.592898,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 27.3,
+          "worst_net_fee_after": 22.092898
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 132.915792,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 111.9,
+          "worst_net_fee_after": 71.215792
+        }
+      ],
+      "edge": 0.07,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 92.95984,
+      "pair_gross_pnl": 345.2,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 99.599,
+      "residual_fee": 2.818652,
+      "residual_qty": 208.3,
+      "residual_qty_rate": 0.027891,
+      "weighted_pair_cost": 0.904904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 36.592898,
+      "worst_day_worst_net_fee_after": 22.092898,
+      "worst_net_fee_after": 149.822508
+    },
+    {
+      "activation_passed": 3535,
+      "activation_rate": 0.172734,
+      "activation_skipped": 16930,
+      "activation_window_s": 10.0,
+      "active_markets": 275,
+      "actual_settle_net_fee_after": 272.163682,
+      "bucket": "holdout",
+      "candidate_rows_seen": 20465,
+      "daily": [
+        {
+          "activation_skipped": 6017,
+          "actual_settle_net_fee_after": 99.025665,
+          "day": "2026-05-16",
+          "pair_actions": 227,
+          "pair_qty": 1135.0,
+          "residual_qty": 103.65,
+          "worst_net_fee_after": 39.775665
+        },
+        {
+          "activation_skipped": 3884,
+          "actual_settle_net_fee_after": 37.265377,
+          "day": "2026-05-17",
+          "pair_actions": 91,
+          "pair_qty": 455.0,
+          "residual_qty": 40.95,
+          "worst_net_fee_after": 15.515377
+        },
+        {
+          "activation_skipped": 7029,
+          "actual_settle_net_fee_after": 135.87264,
+          "day": "2026-05-18",
+          "pair_actions": 408,
+          "pair_qty": 2040.0,
+          "residual_qty": 167.85,
+          "worst_net_fee_after": 43.32264
+        }
+      ],
+      "edge": 0.07,
+      "leak_rate": 0.03,
+      "min_opp_count": 1,
+      "pair_actions": 726,
+      "pair_fee": 92.95984,
+      "pair_gross_pnl": 345.2,
+      "pair_qty": 3630.0,
+      "pending_opened_qty": 14045.0,
+      "residual_cost": 149.3985,
+      "residual_fee": 4.227978,
+      "residual_qty": 312.45,
+      "residual_qty_rate": 0.041261,
+      "weighted_pair_cost": 0.904904,
+      "window_s": 10.0,
+      "worst_day_actual_settle_net_fee_after": 37.265377,
+      "worst_day_worst_net_fee_after": 15.515377,
+      "worst_net_fee_after": 98.613682
+    }
+  ],
+  "row_count": 185342,
+  "schema_version": 1,
+  "status": "UNKNOWN_ACTIVATION_REPAIR_LEAD"
+}
