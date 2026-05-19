@@ -84,6 +84,7 @@ fn make(
         yes_ask: 0.0,
         no_bid: 0.0,
         no_ask: 0.0,
+        depth: None,
         ts: Instant::now(),
     });
     let (e, er) = mpsc::channel(16);
@@ -116,6 +117,7 @@ fn make_with_glft(
         yes_ask: 0.0,
         no_bid: 0.0,
         no_ask: 0.0,
+        depth: None,
         ts: Instant::now(),
     });
     let (g, gr) = watch::channel(GlftSignalSnapshot::default());
@@ -141,6 +143,7 @@ fn bt(yb: f64, ya: f64, nb: f64, na: f64) -> MarketDataMsg {
         yes_ask: ya,
         no_bid: nb,
         no_ask: na,
+        depth: None,
         ts: Instant::now(),
     }
 }

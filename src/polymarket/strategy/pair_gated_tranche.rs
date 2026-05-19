@@ -154,6 +154,11 @@ const XUAN_M0001_SEED_COOLDOWN_MS: u64 = 5_000;
 const XUAN_M0001_BLOCKED_SKIP_AGE_SECS: f64 = 120.0;
 const XUAN_M0001_AGED_UNWIND_PAIR_CAP: f64 = 1.000;
 const XUAN_M0001_BLOCKED_SKIP_MARGIN: f64 = 0.001;
+const XUAN_DEPTH_BALANCED_MAX_REMAINING_SECS: u64 = 90;
+const XUAN_DEPTH_BALANCED_STOP_BEFORE_END_SECS: u64 = 20;
+const XUAN_DEPTH_BALANCED_PAIR_CAP: f64 = 0.995;
+const XUAN_DEPTH_BALANCED_OPEN_PAIR_CAP: f64 = 0.985;
+const XUAN_DEPTH_BALANCED_CLIP_QTY: f64 = 20.0;
 
 static PGT_LAST_SEED_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
 static PGT_LAST_COMPLETION_NONE_DIAG_UNIX_SECS: AtomicU64 = AtomicU64::new(0);
@@ -169,6 +174,7 @@ enum PgtShadowProfile {
     XuanCycleMergeV1,
     XuanCycleCappedV1,
     XuanM0001MakerLikeV1,
+    XuanDepthBalancedV1,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -400,6 +406,29 @@ impl PgtTuning {
         }
     }
 
+    fn xuan_depth_balanced_v1() -> Self {
+        Self {
+            profile: PgtShadowProfile::XuanDepthBalancedV1,
+            seed_open_max_remaining_secs: Some(XUAN_DEPTH_BALANCED_MAX_REMAINING_SECS),
+            seed_open_min_remaining_secs: Some(XUAN_DEPTH_BALANCED_STOP_BEFORE_END_SECS),
+            hard_no_new_open_secs: XUAN_DEPTH_BALANCED_STOP_BEFORE_END_SECS,
+            price_aware_no_new_open_secs: XUAN_DEPTH_BALANCED_STOP_BEFORE_END_SECS,
+            open_pair_band_cap: Some(XUAN_DEPTH_BALANCED_OPEN_PAIR_CAP),
+            completed_cycle_cap: Some(1),
+            completion_early_pair_cap: XUAN_DEPTH_BALANCED_PAIR_CAP,
+            completion_late_pair_cap: XUAN_DEPTH_BALANCED_PAIR_CAP,
+            taker_close_pair_cap: XUAN_DEPTH_BALANCED_PAIR_CAP,
+            fixed_clip_qty: Some(XUAN_DEPTH_BALANCED_CLIP_QTY),
+            clip_profile: PgtClipProfile::Adaptive,
+            preserve_seed_clip_qty: true,
+            expensive_seed_min_visible_slack_ticks: 1.0,
+            seed_min_visible_breakeven_slack_ticks: 1.0,
+            base_clip_qty: XUAN_DEPTH_BALANCED_CLIP_QTY,
+            min_clip_qty: XUAN_DEPTH_BALANCED_CLIP_QTY,
+            max_clip_qty: XUAN_DEPTH_BALANCED_CLIP_QTY,
+        }
+    }
+
     fn from_env() -> Self {
         let raw = std::env::var("PM_PGT_SHADOW_PROFILE")
             .unwrap_or_default()
@@ -421,6 +450,9 @@ impl PgtTuning {
             | "xuan_m0001_maker_like"
             | "xuan_m0001"
             | "xuan_frontier_m0001" => Self::xuan_m0001_maker_like_v1(),
+            "xuan_depth_balanced_v1" | "xuan_depth_balanced" | "depth_balanced" => {
+                Self::xuan_depth_balanced_v1()
+            }
             _ => {
                 eprintln!(
                     "⚠️ unknown PM_PGT_SHADOW_PROFILE={} ; falling back to legacy PGT tuning",
@@ -440,6 +472,7 @@ impl PgtTuning {
                     | PgtShadowProfile::XuanCycleMergeV1
                     | PgtShadowProfile::XuanCycleCappedV1
                     | PgtShadowProfile::XuanM0001MakerLikeV1
+                    | PgtShadowProfile::XuanDepthBalancedV1
             ) {
                 base.max(cap)
             } else {
@@ -460,8 +493,8 @@ pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
     pgt_tuning().profile == PgtShadowProfile::XuanTailTakerV1
 }
 
-fn pgt_profile_quotes_allowed(tuning: PgtTuning, dry_run: bool) -> bool {
-    tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1 || dry_run
+fn pgt_profile_quotes_allowed(tuning: PgtTuning, _dry_run: bool) -> bool {
+    tuning.profile != PgtShadowProfile::XuanM0001MakerLikeV1
 }
 
 struct CompletionPlan {
@@ -1195,6 +1228,18 @@ impl PairGatedTrancheStrategy {
         latched_side: Option<Side>,
         latch_exhausted: bool,
     ) -> FlatSeedSelection {
+        if profile == PgtShadowProfile::XuanDepthBalancedV1 {
+            return match (yes_seed, no_seed) {
+                (Some(yes), Some(no)) => {
+                    if Self::seed_geometry_reject(yes) || Self::seed_geometry_reject(no) {
+                        FlatSeedSelection::None
+                    } else {
+                        FlatSeedSelection::Dual
+                    }
+                }
+                _ => FlatSeedSelection::None,
+            };
+        }
         match (yes_seed, no_seed) {
             (None, None) => FlatSeedSelection::None,
             (Some(_), None) => FlatSeedSelection::YesOnly,
@@ -3308,11 +3353,32 @@ mod profile_tests {
             XUAN_M0001_MATERIAL_RESIDUAL_QTY
         );
         assert!(!pgt_profile_quotes_allowed(tuning, false));
-        assert!(pgt_profile_quotes_allowed(tuning, true));
+        assert!(!pgt_profile_quotes_allowed(tuning, true));
         assert!(pgt_profile_quotes_allowed(
             PgtTuning::xuan_ladder_v1(),
             false
         ));
+    }
+
+    #[test]
+    fn xuan_depth_balanced_profile_uses_short_symmetric_window() {
+        let tuning = PgtTuning::xuan_depth_balanced_v1();
+        assert_eq!(tuning.profile, PgtShadowProfile::XuanDepthBalancedV1);
+        assert_eq!(
+            tuning.seed_open_max_remaining_secs,
+            Some(XUAN_DEPTH_BALANCED_MAX_REMAINING_SECS)
+        );
+        assert_eq!(
+            tuning.seed_open_min_remaining_secs,
+            Some(XUAN_DEPTH_BALANCED_STOP_BEFORE_END_SECS)
+        );
+        assert_eq!(tuning.open_pair_band(0.98), XUAN_DEPTH_BALANCED_OPEN_PAIR_CAP);
+        assert_eq!(tuning.completion_early_pair_cap, XUAN_DEPTH_BALANCED_PAIR_CAP);
+        assert_eq!(tuning.completion_late_pair_cap, XUAN_DEPTH_BALANCED_PAIR_CAP);
+        assert_eq!(tuning.taker_close_pair_cap, XUAN_DEPTH_BALANCED_PAIR_CAP);
+        assert_eq!(tuning.fixed_clip_qty, Some(XUAN_DEPTH_BALANCED_CLIP_QTY));
+        assert_eq!(tuning.completed_cycle_cap, Some(1));
+        assert!(pgt_profile_quotes_allowed(tuning, true));
     }
 
     #[test]

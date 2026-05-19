@@ -1449,6 +1449,7 @@ mod tests {
                 yes_ask: 0.51,
                 no_bid: 0.49,
                 no_ask: 0.51,
+                depth: None,
                 ts: now,
             })
             .await;
@@ -1477,6 +1478,7 @@ mod tests {
                 yes_ask: 0.48,
                 no_bid: 0.52,
                 no_ask: 0.54,
+                depth: None,
                 ts: now + Duration::from_millis(30),
             })
             .await;
@@ -1512,6 +1514,7 @@ mod tests {
                 yes_ask: 0.51,
                 no_bid: 0.49,
                 no_ask: 0.51,
+                depth: None,
                 ts: now,
             })
             .await;
@@ -1574,6 +1577,7 @@ mod tests {
                 yes_ask: 0.51,
                 no_bid: 0.49,
                 no_ask: 0.51,
+                depth: None,
                 ts: t0,
             })
             .await;
@@ -1595,6 +1599,7 @@ mod tests {
                 yes_ask: 0.48,
                 no_bid: 0.52,
                 no_ask: 0.54,
+                depth: None,
                 ts: t0 + Duration::from_millis(1),
             })
             .await;
@@ -1640,6 +1645,7 @@ mod tests {
                 yes_ask: 0.51,
                 no_bid: 0.49,
                 no_ask: 0.51,
+                depth: None,
                 ts: now,
             })
             .await;
@@ -1661,6 +1667,7 @@ mod tests {
                 yes_ask: 0.56,
                 no_bid: 0.44,
                 no_ask: 0.46,
+                depth: None,
                 ts: now + Duration::from_millis(1),
             })
             .await;
@@ -1686,6 +1693,7 @@ mod tests {
                 yes_ask: 0.57,
                 no_bid: 0.43,
                 no_ask: 0.45,
+                depth: None,
                 ts: now + Duration::from_millis(2),
             })
             .await;
