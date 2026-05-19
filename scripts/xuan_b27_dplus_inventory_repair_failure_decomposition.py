@@ -46,6 +46,7 @@ def make_profile(args: argparse.Namespace) -> repair.RepairProfile:
             args.repair_pair_cap,
             args.repair_budget_mode,
             args.pair_select,
+            args.edge,
         ),
         edge=args.edge,
         target_qty=args.target_qty,
@@ -261,6 +262,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--public-audit-db", default=str(base.DEFAULT_PUBLIC_AUDIT_DB))
     parser.add_argument("--strict-labels", required=True)
     parser.add_argument("--completion-labels", required=True)
+    parser.add_argument("--exclude-label-fragments", default="20260514,20260515,20260518")
     parser.add_argument("--edge", type=float, default=0.055)
     parser.add_argument("--target-qty", type=float, default=3.0)
     parser.add_argument("--repair-after-s", type=float, default=60.0)
@@ -289,6 +291,9 @@ def main() -> int:
     completion_labels = {
         label: completion_labels_all[label] for label in completion_wanted if label in completion_labels_all
     }
+    excluded_label_fragments = repair.parse_csv_strings(args.exclude_label_fragments)
+    strict_labels = repair.filter_excluded_labels(strict_labels, excluded_label_fragments)
+    completion_labels = repair.filter_excluded_labels(completion_labels, excluded_label_fragments)
     profile = make_profile(args)
     plans: list[tuple[str, str, list[str]]] = []
     for strict_label, strict_days in strict_labels.items():
@@ -399,8 +404,11 @@ def main() -> int:
         "public_audit_ready": public_ready,
         "public_audit_day_counts": public_day_counts,
         "public_account_truth_missing_days": sorted(day for day in all_days if day not in set(public_day_counts)),
-        "excluded_20260514_20260515": True,
-        "contains_20260518": False,
+        "excluded_label_fragments": excluded_label_fragments,
+        "excluded_20260514_20260515": not (
+            "2026-05-14" in all_days or "2026-05-15" in all_days
+        ),
+        "contains_20260518": "2026-05-18" in all_days,
         "includes_public_account_execution_truth_v1": public_ready,
         "public_account_truth_level": "public_account_audit_proxy_truth_not_private_owner_trade_truth",
         "global_summary": global_summary,
