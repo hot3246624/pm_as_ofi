@@ -68,6 +68,26 @@ def parse_csv_strings(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+def filter_excluded_labels(
+    labels: dict[str, list[str]],
+    excluded_fragments: list[str],
+) -> dict[str, list[str]]:
+    if not excluded_fragments:
+        return labels
+    normalized_fragments = [item.replace("-", "") for item in excluded_fragments]
+    out: dict[str, list[str]] = {}
+    for label, days in labels.items():
+        normalized_label = label.replace("-", "")
+        normalized_days = {day.replace("-", "") for day in days}
+        if any(
+            fragment in normalized_label or fragment in normalized_days
+            for fragment in normalized_fragments
+        ):
+            continue
+        out[label] = days
+    return out
+
+
 def profile_name(
     target_qty: float,
     after_s: float,
@@ -512,6 +532,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--public-audit-db", default=str(base.DEFAULT_PUBLIC_AUDIT_DB))
     parser.add_argument("--strict-labels", default="")
     parser.add_argument("--completion-labels", default="")
+    parser.add_argument("--exclude-label-fragments", default="20260514,20260515,20260518")
     parser.add_argument("--target-qtys", default="3,5")
     parser.add_argument("--edges", default="0.055")
     parser.add_argument("--repair-after-s", default="60,75")
@@ -540,6 +561,9 @@ def main() -> int:
     if args.completion_labels:
         wanted = base.split_labels(args.completion_labels)
         completion_labels = {label: completion_labels[label] for label in wanted if label in completion_labels}
+    excluded_label_fragments = parse_csv_strings(args.exclude_label_fragments)
+    strict_labels = filter_excluded_labels(strict_labels, excluded_label_fragments)
+    completion_labels = filter_excluded_labels(completion_labels, excluded_label_fragments)
     profiles = build_profiles(args)
     plans: list[tuple[str, str, list[str]]] = []
     for strict_label, strict_days in strict_labels.items():
@@ -619,8 +643,11 @@ def main() -> int:
         "public_account_truth_missing_days": sorted(
             day for day in all_days if day not in set(public_day_counts)
         ),
-        "excluded_20260514_20260515": True,
-        "contains_20260518": False,
+        "excluded_label_fragments": excluded_label_fragments,
+        "excluded_20260514_20260515": not (
+            "2026-05-14" in all_days or "2026-05-15" in all_days
+        ),
+        "contains_20260518": "2026-05-18" in all_days,
         "includes_public_account_execution_truth_v1": public_ready,
         "public_account_truth_level": "public_account_audit_proxy_truth_not_private_owner_trade_truth",
         "can_support_strategy_promotion": False,
