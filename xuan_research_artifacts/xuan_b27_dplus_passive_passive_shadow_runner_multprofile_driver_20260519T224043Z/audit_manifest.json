@@ -1,0 +1,191 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_multprofile_audit_20260519T224043Z",
+  "kind": "shadow_observe_audit",
+  "generated_at_utc": "2026-05-19T23:21:29.050Z",
+  "decision_label": "UNKNOWN",
+  "status": "UNKNOWN_SAME_WINDOW_REPAIR75_RANKS_BEST_SAMPLE_THIN",
+  "lane": "shadow_observe",
+  "hypothesis": "Same-window multi-profile shadow should identify whether late_repair_after_s=45,60,75 preserves p90/residual/PnL while restoring sample under the same market stream.",
+  "local_artifact_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multprofile_driver_20260519T224043Z",
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_multprofile_repair456075_edge007_20260519T224043Z",
+  "remote_manifest": "remote/output/manifest.json",
+  "aggregate_report": "remote/output/multi_profile_aggregate_report.json",
+  "run_config": {
+    "duration_s": 1800,
+    "offsets": "0..11",
+    "edge": 0.07,
+    "target_qty": 5,
+    "imbalance_qty_cap": 1.25,
+    "pairing_only_when_residual": true,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "profile_late_repair_after_s": [
+      45,
+      60,
+      75
+    ],
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main",
+    "dry_run": "true"
+  },
+  "scoreboard_delta": {
+    "same_window_ranking": {
+      "best_by_candidates": "repair75",
+      "best_by_pair_pnl": "repair75",
+      "profiles_order_by_candidates": [
+        "repair75",
+        "repair60",
+        "repair45"
+      ],
+      "profiles_order_by_pair_pnl": [
+        "repair75",
+        "repair60",
+        "repair45"
+      ]
+    },
+    "profile_metrics": {
+      "repair45": {
+        "late_repair_after_s": 45,
+        "candidates": 25,
+        "candidates_3600s_equiv": 50,
+        "queue_supported_fills": 19,
+        "pair_actions": 11,
+        "pair_qty": 13.75,
+        "pair_pnl": 1.1155,
+        "roi_on_filled_cost": 0.10257471264367815,
+        "net_pair_cost_proxy_p90": 0.97,
+        "residual_qty": 1.25,
+        "residual_cost": 0.6125,
+        "material_residual_lots": 0,
+        "filled_qty": 23.75,
+        "seed_qty": 31.09,
+        "blocked": {
+          "activation_opp_seen": 8,
+          "cooldown": 67,
+          "l1_pair_ask_gt_cap": 28,
+          "late_repair_only": 262,
+          "offset": 1741,
+          "pairing_only_when_residual": 8,
+          "qty_zero": 5
+        },
+        "gates": {
+          "p90_le_1": true,
+          "residual_qty_le_10": true,
+          "positive_pair_pnl": true,
+          "material_residual_lots_zero": true,
+          "candidates_3600s_equiv_ge_100": false
+        }
+      },
+      "repair60": {
+        "late_repair_after_s": 60,
+        "candidates": 33,
+        "candidates_3600s_equiv": 66,
+        "queue_supported_fills": 26,
+        "pair_actions": 15,
+        "pair_qty": 18.7425,
+        "pair_pnl": 1.473615,
+        "roi_on_filled_cost": 0.1019095748451334,
+        "net_pair_cost_proxy_p90": 0.97,
+        "residual_qty": 2.5,
+        "residual_cost": 0.8,
+        "material_residual_lots": 0,
+        "filled_qty": 32.4925,
+        "seed_qty": 41.0825,
+        "blocked": {
+          "activation_opp_seen": 9,
+          "cooldown": 86,
+          "l1_pair_ask_gt_cap": 28,
+          "late_repair_only": 225,
+          "offset": 1741,
+          "pairing_only_when_residual": 14,
+          "qty_zero": 8
+        },
+        "gates": {
+          "p90_le_1": true,
+          "residual_qty_le_10": true,
+          "positive_pair_pnl": true,
+          "material_residual_lots_zero": true,
+          "candidates_3600s_equiv_ge_100": false
+        }
+      },
+      "repair75": {
+        "late_repair_after_s": 75,
+        "candidates": 37,
+        "candidates_3600s_equiv": 74,
+        "queue_supported_fills": 29,
+        "pair_actions": 17,
+        "pair_qty": 21.2425,
+        "pair_pnl": 1.751115,
+        "roi_on_filled_cost": 0.10895083379867196,
+        "net_pair_cost_proxy_p90": 0.97,
+        "residual_qty": 2.5,
+        "residual_cost": 0.725,
+        "material_residual_lots": 0,
+        "filled_qty": 36.2425,
+        "seed_qty": 46.0825,
+        "blocked": {
+          "activation_opp_seen": 11,
+          "cooldown": 96,
+          "l1_pair_ask_gt_cap": 28,
+          "late_repair_only": 203,
+          "offset": 1741,
+          "pairing_only_when_residual": 15,
+          "qty_zero": 13
+        },
+        "gates": {
+          "p90_le_1": true,
+          "residual_qty_le_10": true,
+          "positive_pair_pnl": true,
+          "material_residual_lots_zero": true,
+          "candidates_3600s_equiv_ge_100": false
+        }
+      }
+    },
+    "global_gates": {
+      "all_profiles_p90_le_1": true,
+      "all_profiles_residual_qty_le_10": true,
+      "all_profiles_pair_pnl_positive": true,
+      "all_profiles_material_residual_lots_zero": true,
+      "any_profile_3600s_equiv_candidates_ge_100": false
+    }
+  },
+  "safety": {
+    "no_order": true,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "broker_modified": false,
+    "shared_ingress_modified": false,
+    "service_control_used": false,
+    "pulled_events_jsonl": false,
+    "pulled_files_count": 44,
+    "remote_runner_alive_post_run": false,
+    "remote_small_file_count_post_run": 41,
+    "repo_sync_or_build_used": false
+  },
+  "interpretation": "Same-window ranking is clear and favors repair75 for candidates, pair_qty, and pair_pnl while all three profiles pass p90/residual/PnL/no-order safety on this 1800s window. The best profile still has only 37 candidates, 74 on a naive 3600s equivalent, so this is not promotion evidence.",
+  "next_executable_action": {
+    "lane": "shadow_observe",
+    "action": "Run one bounded sample-scale same-host no-order shadow A/B only after EC2 preflight is clear.",
+    "config": {
+      "duration_s": 3600,
+      "offsets": "0..25",
+      "edge": 0.07,
+      "target_qty": 5,
+      "imbalance_qty_cap": 1.25,
+      "pairing_only_when_residual": true,
+      "activation_mode": "opp_seen",
+      "activation_window_s": 15,
+      "profile_late_repair_after_s": [
+        60,
+        75
+      ],
+      "dry_run": true,
+      "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+    },
+    "pullback": "Pull only manifest.json, multi_profile_aggregate_report.json, each profile aggregate_report.json, each profile *.summary.json, stdout/stderr, runner.pid; do not pull events JSONL.",
+    "keep_criteria": "At least one profile has candidates>=100, net_pair_cost_p90<=1.0, residual_qty<=10, positive pair_pnl/ROI, material_residual_lots=0, no-order safety, and beats the prior repair75/repair45 baselines.",
+    "unknown_criteria": "Sample remains thin but profile ranking is clear and p90/residual/PnL/no-order safety hold.",
+    "discard_criteria": "No profile preserves p90/residual/PnL or sample collapse is inherent across profiles.",
+    "blocked_criteria": "Any preflight/safety conflict, especially another namespace runner on shared-ingress."
+  }
+}
