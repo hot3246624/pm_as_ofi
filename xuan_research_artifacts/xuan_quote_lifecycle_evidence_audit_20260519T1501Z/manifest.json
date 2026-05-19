@@ -1,0 +1,81 @@
+{
+  "artifact": "xuan_quote_lifecycle_evidence_audit",
+  "artifact_scope": {
+    "artifact_status_counts": {
+      "BLOCKED_NO_QUOTE_LIFECYCLE_EVENT_LOGS": 1,
+      "BLOCKED_SOURCE_TRUTH_REQUIRED": 1,
+      "DISCARD": 6,
+      "DISCARD_RESIDUAL_FRAGILE": 1,
+      "UNKNOWN_ACTIVATION_REPAIR_LEAD": 4,
+      "UNKNOWN_PROMISING_MECHANISM_CLUE": 5,
+      "UNKNOWN_RESIDUAL_TOLERANT_MECHANISM_CLUE": 1
+    },
+    "days": [],
+    "labels": []
+  },
+  "audit": {
+    "core_quote_field_counts": {},
+    "core_quote_field_coverage": {
+      "condition_id": 0.0,
+      "price": 0.0,
+      "quote_intent_id": 0.0,
+      "side": 0.0,
+      "size": 0.0
+    },
+    "event_counts": {},
+    "event_log_count": 0,
+    "event_log_paths": [],
+    "file_row_counts": {},
+    "fill_event_count": 0,
+    "fill_provenance_field_counts": {},
+    "fill_provenance_field_coverage": {
+      "depth_best_bid": 0.0,
+      "depth_best_bid_drop_qty": 0.0,
+      "depth_event_time_ms": 0.0,
+      "depth_source_sequence_id": 0.0,
+      "source": 0.0
+    },
+    "fill_source_counts": {},
+    "lifecycle_event_count": 0,
+    "max_events_reached": false,
+    "pair_link_any_count": 0,
+    "pair_link_any_coverage": 0.0,
+    "pair_link_field_counts": {},
+    "parsed_row_count": 0,
+    "path_error_count": 0,
+    "path_errors": [],
+    "quote_event_count": 0
+  },
+  "data_declaration": {
+    "assets": [
+      "BTC"
+    ],
+    "collector_scanned": false,
+    "data_root": "/Users/hot/web3Scientist/pm_as_ofi-xuan-frontier/xuan_research_artifacts",
+    "dataset_type": "xuan_artifact_quote_lifecycle_evidence_audit",
+    "days": [],
+    "excluded_20260514_20260515": true,
+    "labels": [],
+    "market_prefix": "btc-updown-5m-",
+    "public_account_execution_truth_v1_included": false,
+    "raw_replay_scanned": false,
+    "row_count": 0
+  },
+  "gate": {
+    "blockers": [
+      "No events.jsonl/orders.jsonl/market_md.jsonl logs were found under artifact_root."
+    ],
+    "blocks_shadow_deploy": true,
+    "can_support_strategy_promotion": false,
+    "next_action": "add quote-lifecycle event logging or run a xuan-owned no-order shadow that emits quote_intent_id, lifecycle timestamps, pair linkage, leaked fill denominator, and depth source_sequence_id linkage"
+  },
+  "generated_at_utc": "2026-05-19T15:04:07.635469+00:00",
+  "safety": {
+    "collector_scanned": false,
+    "raw_replay_scanned": false,
+    "read_only": true,
+    "services_touched": false,
+    "xuan_shadow_deployed_or_restarted": false
+  },
+  "status": "BLOCKED_NO_QUOTE_LIFECYCLE_EVENT_LOGS"
+}
