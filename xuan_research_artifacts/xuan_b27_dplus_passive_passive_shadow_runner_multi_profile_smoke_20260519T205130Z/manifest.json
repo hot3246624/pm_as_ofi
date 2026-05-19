@@ -1,0 +1,31 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke",
+  "checks": {
+    "default_single_profile_metrics_preserved": true,
+    "multi_profile_outputs_separate_aggregates": true,
+    "profile_state_is_independent": true,
+    "profiles_share_identical_fixture_stream": true,
+    "repair45_differs_from_repair60_on_late_repair_gate": true
+  },
+  "decision_label": "KEEP",
+  "hypothesis": "same-window multi-profile runner can compare repair_after_s profiles over identical fixture events without changing default single-profile metrics",
+  "next_action": "Run one bounded EC2 same-host no-order multi-profile shadow A/B only after preflight confirms no overlapping runner.",
+  "outputs": {
+    "multi_profile_dir": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke_20260519T205130Z/multi_profile",
+    "multi_profile_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke_20260519T205130Z/multi_profile/multi_profile_aggregate_report.json",
+    "single_direct_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke_20260519T205130Z/single_direct/btc-updown-5m-1900000000.summary.json",
+    "single_profile_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke_20260519T205130Z/single_profile/repair60/btc-updown-5m-1900000000.summary.json"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "tool": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/tools/xuan_dplus_passive_passive_shadow_runner.py"
+}

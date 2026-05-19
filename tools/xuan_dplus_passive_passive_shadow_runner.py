@@ -20,7 +20,7 @@ import re
 import shlex
 import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -88,6 +88,23 @@ def source_sequence_id(msg: dict[str, Any]) -> Any:
         if value is not None:
             return value
     return None
+
+
+def parse_float_csv(raw: str | None) -> list[float]:
+    if raw is None:
+        return []
+    out: list[float] = []
+    for item in raw.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        out.append(float(text))
+    return out
+
+
+def profile_name_for_late_repair(value: float) -> str:
+    text = ("%g" % value).replace("-", "m").replace(".", "p")
+    return f"repair{text}"
 
 
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
@@ -612,6 +629,14 @@ class DPlusRunner:
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
+def handle_market_message(runner: DPlusRunner, msg: dict[str, Any]) -> None:
+    kind = msg.get("kind")
+    if kind == "market_book_tick":
+        runner.on_book(msg)
+    elif kind == "market_trade_tick":
+        runner.on_trade(msg)
+
+
 async def run_market(market: dict[str, str], socket_path: str, out: Path, duration_s: int, cfg: RunnerConfig) -> None:
     slug = market["POLYMARKET_MARKET_SLUG"]
     runner = DPlusRunner(slug, out, cfg, condition_id=market.get("POLYMARKET_MARKET_ID"))
@@ -641,16 +666,64 @@ async def run_market(market: dict[str, str], socket_path: str, out: Path, durati
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
                     continue
-                kind = msg.get("kind")
-                if kind == "market_book_tick":
-                    runner.on_book(msg)
-                elif kind == "market_trade_tick":
-                    runner.on_trade(msg)
+                handle_market_message(runner, msg)
             if time.monotonic() - last_summary >= 30:
                 runner.write_summary(False)
                 last_summary = time.monotonic()
     finally:
         runner.write_summary(True)
+        writer.close()
+        await writer.wait_closed()
+
+
+async def run_market_profiles(
+    market: dict[str, str],
+    socket_path: str,
+    out: Path,
+    duration_s: int,
+    profile_cfgs: dict[str, RunnerConfig],
+) -> None:
+    slug = market["POLYMARKET_MARKET_SLUG"]
+    runners: dict[str, DPlusRunner] = {}
+    for profile, cfg in profile_cfgs.items():
+        profile_out = out / profile
+        profile_out.mkdir(parents=True, exist_ok=True)
+        runners[profile] = DPlusRunner(slug, profile_out, cfg, condition_id=market.get("POLYMARKET_MARKET_ID"))
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    req = {
+        "stream": "market",
+        "symbols": [],
+        "market_slug": slug,
+        "market_id": market["POLYMARKET_MARKET_ID"],
+        "yes_asset_id": market["POLYMARKET_YES_ASSET_ID"],
+        "no_asset_id": market["POLYMARKET_NO_ASSET_ID"],
+        "ws_base_url": "wss://ws-subscriptions-clob.polymarket.com/ws",
+        "custom_feature_enabled": False,
+    }
+    writer.write((json.dumps(req, separators=(",", ":")) + "\n").encode())
+    await writer.drain()
+    deadline = time.monotonic() + duration_s
+    last_summary = 0.0
+    try:
+        while time.monotonic() < deadline:
+            try:
+                raw = await asyncio.wait_for(reader.readline(), timeout=1.0)
+            except asyncio.TimeoutError:
+                raw = b""
+            if raw:
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                for runner in runners.values():
+                    handle_market_message(runner, msg)
+            if time.monotonic() - last_summary >= 30:
+                for runner in runners.values():
+                    runner.write_summary(False)
+                last_summary = time.monotonic()
+    finally:
+        for runner in runners.values():
+            runner.write_summary(True)
         writer.close()
         await writer.wait_closed()
 
@@ -736,6 +809,34 @@ def aggregate(out: Path) -> dict[str, Any]:
     return aggregate_report
 
 
+def aggregate_profiles(out: Path, profile_cfgs: dict[str, RunnerConfig]) -> dict[str, Any]:
+    profiles: dict[str, Any] = {}
+    for profile, cfg in profile_cfgs.items():
+        profile_out = out / profile
+        report = aggregate(profile_out)
+        profiles[profile] = {
+            "output_dir": str(profile_out),
+            "config": cfg.__dict__,
+            "aggregate_report": report,
+        }
+    report = {
+        "kind": "multi_profile_aggregate_report",
+        "script": "xuan_dplus_passive_passive_shadow_runner.py",
+        "profile_axis": "late_repair_after_s",
+        "profiles": profiles,
+        "safety": {
+            "orders_sent": False,
+            "cancels_sent": False,
+            "redeems_sent": False,
+            "shared_ingress_modified": False,
+            "broker_modified": False,
+            "service_control_used": False,
+        },
+    }
+    (out / "multi_profile_aggregate_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    return report
+
+
 async def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", default="/srv/pm_as_ofi/repo")
@@ -757,6 +858,7 @@ async def main() -> None:
     ap.add_argument("--late-target-after-s", type=float, default=None)
     ap.add_argument("--late-target-qty", type=float, default=None)
     ap.add_argument("--late-repair-after-s", type=float, default=None)
+    ap.add_argument("--profile-late-repair-after-s", default="", help="CSV repair_after_s values for same-window multi-profile causal verification")
     ap.add_argument("--order-ttl-s", type=float, default=120.0)
     ap.add_argument("--imbalance-qty-cap", type=float, default=2.0)
     ap.add_argument("--imbalance-cost-cap", type=float, default=1_000_000_000.0)
@@ -803,6 +905,15 @@ async def main() -> None:
         raise SystemExit(f"--late-target-qty must exceed dust_qty={cfg.dust_qty}; otherwise the late window cannot seed")
     if cfg.activation_window_s <= 0:
         raise SystemExit("--activation-window-s must be positive")
+    profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
+    if any(value <= 0 for value in profile_late_repair_after_s):
+        raise SystemExit("--profile-late-repair-after-s values must be positive")
+    profile_cfgs: dict[str, RunnerConfig] = {}
+    for value in profile_late_repair_after_s:
+        name = profile_name_for_late_repair(value)
+        if name in profile_cfgs:
+            raise SystemExit(f"duplicate profile late_repair_after_s={value}")
+        profile_cfgs[name] = replace(cfg, late_repair_after_s=value)
     markets = resolve_markets(Path(args.repo), args.prefix, args.round_offsets)
     manifest = {
         "kind": "manifest",
@@ -811,8 +922,15 @@ async def main() -> None:
         "duration_s": args.duration_s,
         "markets": markets,
         "config": cfg.__dict__,
+        "mode": "multi_profile_late_repair_after_s" if profile_cfgs else "single_profile",
+        "profiles": {
+            name: {"profile_axis": "late_repair_after_s", "late_repair_after_s": cfg.late_repair_after_s, "output_dir": str(out / name)}
+            for name, cfg in profile_cfgs.items()
+        },
         "safety": {
             "orders_sent": False,
+            "cancels_sent": False,
+            "redeems_sent": False,
             "dry_run": os.environ.get("PM_DRY_RUN"),
             "shared_ingress_role": os.environ.get("PM_SHARED_INGRESS_ROLE"),
             "shared_ingress_root": args.shared_ingress_root,
@@ -821,8 +939,12 @@ async def main() -> None:
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
     socket_path = str(Path(args.shared_ingress_root) / "market.sock")
-    await asyncio.gather(*(run_market(m, socket_path, out, args.duration_s, cfg) for m in markets))
-    print(json.dumps(aggregate(out), indent=2, sort_keys=True))
+    if profile_cfgs:
+        await asyncio.gather(*(run_market_profiles(m, socket_path, out, args.duration_s, profile_cfgs) for m in markets))
+        print(json.dumps(aggregate_profiles(out, profile_cfgs), indent=2, sort_keys=True))
+    else:
+        await asyncio.gather(*(run_market(m, socket_path, out, args.duration_s, cfg) for m in markets))
+        print(json.dumps(aggregate(out), indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":
