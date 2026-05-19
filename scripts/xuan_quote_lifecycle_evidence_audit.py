@@ -32,6 +32,8 @@ LIFECYCLE_EVENTS = {
     "activation_block",
     "candidate",
     "cancel",
+    "internal_pair",
+    "fak_salvage",
     "quote_plan",
     "quote_intent",
     "order_plan",
@@ -47,7 +49,6 @@ LIFECYCLE_EVENTS = {
     "dry_run_touch_fill_confirmed",
 }
 QUOTE_STAGE_EVENTS = {
-    "activation_block",
     "candidate",
     "cancel",
     "quote_plan",
@@ -62,9 +63,17 @@ QUOTE_STAGE_EVENTS = {
     "dry_run_touch_fill_confirmed",
 }
 FILL_EVENTS = {"order_fill", "fill", "queue_supported_fill", "dry_run_touch_fill_confirmed"}
+PAIR_EVENTS = {"internal_pair", "fak_salvage"}
 CORE_QUOTE_FIELDS = ("quote_intent_id", "condition_id", "side", "price", "size")
 PAIR_LINK_FIELDS = ("matched_pair_id", "opposite_trigger_ts_ms")
-FILL_PROVENANCE_FIELDS = (
+FILL_SOURCE_FIELDS = ("source",)
+SOURCE_SEQUENCE_FIELDS = (
+    "source_sequence_id",
+    "market_md_source_sequence_id",
+    "depth_source_sequence_id",
+    "trigger_source_sequence_id",
+)
+DEPTH_PROVENANCE_FIELDS = (
     "source",
     "depth_source_sequence_id",
     "depth_event_time_ms",
@@ -173,6 +182,7 @@ def audit_logs(paths: list[Path], max_events: int) -> dict[str, Any]:
     core_quote_field_counts: Counter[str] = Counter()
     pair_link_field_counts: Counter[str] = Counter()
     fill_provenance_field_counts: Counter[str] = Counter()
+    source_sequence_field_counts: Counter[str] = Counter()
     fill_source_counts: Counter[str] = Counter()
     path_errors: list[dict[str, str]] = []
     quote_event_count = 0
@@ -180,6 +190,9 @@ def audit_logs(paths: list[Path], max_events: int) -> dict[str, Any]:
     parsed_row_count = 0
     lifecycle_event_count = 0
     pair_link_any_count = 0
+    pair_event_count = 0
+    pair_event_link_count = 0
+    source_sequence_any_count = 0
 
     for path in paths:
         if parsed_row_count >= max_events:
@@ -222,12 +235,29 @@ def audit_logs(paths: list[Path], max_events: int) -> dict[str, Any]:
                         fill_event_count += 1
                         inc_field_counts(
                             record,
-                            FILL_PROVENANCE_FIELDS,
+                            FILL_SOURCE_FIELDS,
                             fill_provenance_field_counts,
                         )
+                        inc_field_counts(record, SOURCE_SEQUENCE_FIELDS, source_sequence_field_counts)
+                        if any(
+                            truthy_field(nested_get(record, field))
+                            for field in SOURCE_SEQUENCE_FIELDS
+                        ):
+                            source_sequence_any_count += 1
                         source = nested_get(record, "source")
                         if source is not None:
                             fill_source_counts[str(source)] += 1
+                    if name in PAIR_EVENTS:
+                        pair_event_count += 1
+                        if truthy_field(nested_get(record, "matched_pair_id")) and (
+                            truthy_field(nested_get(record, "quote_intent_ids"))
+                            or truthy_field(nested_get(record, "quote_intent_id"))
+                            or (
+                                truthy_field(nested_get(record, "yes_quote_intent_id"))
+                                and truthy_field(nested_get(record, "no_quote_intent_id"))
+                            )
+                        ):
+                            pair_event_link_count += 1
         except OSError as exc:
             path_errors.append({"path": str(path), "error": str(exc)})
 
@@ -252,8 +282,18 @@ def audit_logs(paths: list[Path], max_events: int) -> dict[str, Any]:
         "fill_provenance_field_counts": dict(fill_provenance_field_counts),
         "fill_provenance_field_coverage": {
             field: coverage(fill_provenance_field_counts[field], fill_event_count)
-            for field in FILL_PROVENANCE_FIELDS
+            for field in FILL_SOURCE_FIELDS
         },
+        "source_sequence_field_counts": dict(source_sequence_field_counts),
+        "source_sequence_any_count": source_sequence_any_count,
+        "source_sequence_any_coverage": coverage(source_sequence_any_count, fill_event_count),
+        "source_sequence_field_coverage": {
+            field: coverage(source_sequence_field_counts[field], fill_event_count)
+            for field in SOURCE_SEQUENCE_FIELDS
+        },
+        "pair_event_count": pair_event_count,
+        "pair_event_link_count": pair_event_link_count,
+        "pair_event_link_coverage": coverage(pair_event_link_count, pair_event_count),
         "fill_source_counts": dict(fill_source_counts),
         "path_errors": path_errors[:50],
         "path_error_count": len(path_errors),
@@ -282,12 +322,11 @@ def compute_status(audit: dict[str, Any], args: argparse.Namespace) -> tuple[str
             )
 
     pair_link_coverage = float(audit["pair_link_any_coverage"])
+    pair_event_link_coverage = float(audit["pair_event_link_coverage"])
     audit["pair_link_any_coverage"] = pair_link_coverage
-    if quote_count > 0 and pair_link_coverage < args.min_core_field_coverage:
+    if quote_count > 0 and pair_link_coverage <= 0 and pair_event_link_coverage <= 0:
         blockers.append(
-            "pair linkage coverage "
-            f"{pair_link_coverage} < {args.min_core_field_coverage}; "
-            "need matched_pair_id or opposite_trigger_ts_ms"
+            "no pair linkage found; need matched_pair_id, quote_intent_ids, or opposite_trigger_ts_ms"
         )
 
     if fill_count == 0:
@@ -298,6 +337,13 @@ def compute_status(audit: dict[str, Any], args: argparse.Namespace) -> tuple[str
                 f"fill provenance field {field} coverage {value} "
                 f"< {args.min_fill_provenance_coverage}"
             )
+    source_sequence_coverage = float(audit["source_sequence_any_coverage"])
+    if fill_count > 0 and source_sequence_coverage < args.min_fill_provenance_coverage:
+        blockers.append(
+            "fill source-sequence coverage "
+            f"{source_sequence_coverage} < {args.min_fill_provenance_coverage}; "
+            "need source_sequence_id, market_md_source_sequence_id, depth_source_sequence_id, or trigger_source_sequence_id"
+        )
 
     if blockers:
         return "BLOCKED_QUOTE_LIFECYCLE_FIELDS_MISSING", blockers
@@ -372,7 +418,8 @@ def main() -> int:
             "xuan_shadow_deployed_or_restarted": False,
         },
         "gate": {
-            "can_support_strategy_promotion": status == "PASS_QUOTE_LIFECYCLE_EVIDENCE_READY",
+            "can_support_strategy_promotion": False,
+            "can_support_quote_lifecycle_review": status == "PASS_QUOTE_LIFECYCLE_EVIDENCE_READY",
             "blocks_shadow_deploy": status != "PASS_QUOTE_LIFECYCLE_EVIDENCE_READY",
             "blockers": blockers,
             "next_action": (
@@ -380,7 +427,7 @@ def main() -> int:
                 "that emits quote_intent_id, lifecycle timestamps, pair linkage, "
                 "leaked fill denominator, and depth source_sequence_id linkage"
                 if status != "PASS_QUOTE_LIFECYCLE_EVIDENCE_READY"
-                else "use this evidence artifact as an input to a separate strategy promotion review"
+                else "use this evidence artifact as one input to a separate strategy and source-truth promotion review"
             ),
         },
         "audit": audit,

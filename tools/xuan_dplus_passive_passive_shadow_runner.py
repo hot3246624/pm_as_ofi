@@ -82,6 +82,22 @@ def fee_per_share(px: float, rate: float) -> float:
     return rate * min(max(px, 0.0), max(1.0 - px, 0.0))
 
 
+def source_sequence_id(msg: dict[str, Any]) -> Any:
+    for key in ("source_sequence_id", "source_seq", "sequence_id", "seq"):
+        value = msg.get(key)
+        if value is not None:
+            return value
+    return None
+
+
+def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
+    value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return fallback_ts_ms
+
+
 @dataclass(frozen=True)
 class RunnerConfig:
     edge: float = 0.040
@@ -137,13 +153,19 @@ class RunnerConfig:
 @dataclass
 class VirtualOrder:
     id: int
+    quote_intent_id: str
+    condition_id: str
     side: str
     px: float
     qty: float
     created_ms: int
+    accepted_ms: int
     offset_s: float
     trigger_px: float
     trigger_size: float
+    trigger_ts_ms: int
+    trigger_source_sequence_id: Any | None = None
+    opposite_trigger_ts_ms: int | None = None
     queue_credit: float = 0.0
     first_bid_touch_ms: int | None = None
     first_trade_touch_ms: int | None = None
@@ -155,6 +177,7 @@ class VirtualOrder:
 @dataclass
 class Lot:
     id: int
+    quote_intent_id: str
     side: str
     qty: float
     px: float
@@ -194,8 +217,9 @@ class Metrics:
 
 
 class DPlusRunner:
-    def __init__(self, slug: str, out_dir: Path, cfg: RunnerConfig) -> None:
+    def __init__(self, slug: str, out_dir: Path, cfg: RunnerConfig, condition_id: str | None = None) -> None:
         self.slug = slug
+        self.condition_id = condition_id or slug
         self.start_s = round_start_from_slug(slug)
         self.out_dir = out_dir
         self.cfg = cfg
@@ -213,6 +237,12 @@ class DPlusRunner:
         self.activation_last_seen_ms: dict[str, int | None] = {"YES": None, "NO": None}
         self.events_path = out_dir / f"{slug}.events.jsonl"
         self.summary_path = out_dir / f"{slug}.summary.json"
+
+    def quote_intent_id(self, order_id: int) -> str:
+        return f"{self.slug}:quote:{order_id}"
+
+    def blocked_quote_intent_id(self, side: str, ts_ms: int) -> str:
+        return f"{self.slug}:blocked:{side}:{ts_ms}:{self.blocked.get('activation_opp_seen', 0)}"
 
     def offset_s(self, ts_ms: int) -> float | None:
         return ts_ms / 1000.0 - self.start_s if self.start_s else None
@@ -263,10 +293,10 @@ class DPlusRunner:
             bid = side_bid(self.book, order.side)
             if bid >= order.px - 1e-12 and order.first_bid_touch_ms is None:
                 order.first_bid_touch_ms = ts_ms
-                self.emit({"kind": "touch", "touch_type": "bid_touch", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": order.side, "order_px": order.px, "bid": bid, "wait_ms": ts_ms - order.created_ms})
+                self.emit({"kind": "touch", "touch_type": "bid_touch", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": order.side, "order_px": order.px, "bid": bid, "wait_ms": ts_ms - order.created_ms})
             if trade_side == order.side and trade_px is not None and trade_px <= order.px + 1e-12 and order.first_trade_touch_ms is None:
                 order.first_trade_touch_ms = ts_ms
-                self.emit({"kind": "touch", "touch_type": "trade_through", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": order.side, "order_px": order.px, "trade_px": trade_px, "wait_ms": ts_ms - order.created_ms})
+                self.emit({"kind": "touch", "touch_type": "trade_through", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": order.side, "order_px": order.px, "trade_px": trade_px, "wait_ms": ts_ms - order.created_ms})
 
     def cancel_expired(self, ts_ms: int) -> None:
         offset = self.offset_s(ts_ms)
@@ -280,18 +310,26 @@ class DPlusRunner:
             self.metrics.cancelled_orders += 1
             if order.first_bid_touch_ms or order.first_trade_touch_ms:
                 self.metrics.touch_only_orders += 1
-            self.emit({"kind": "cancel", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "reason": order.cancel_reason, "side": order.side, "px": order.px, "qty": order.qty, "queue_credit": order.queue_credit})
+            self.emit({"kind": "cancel", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "cancel_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "reason": order.cancel_reason, "side": order.side, "price": order.px, "px": order.px, "size": order.qty, "qty": order.qty, "placed_ts_ms": order.created_ms, "accepted_ts_ms": order.accepted_ms, "opposite_trigger_ts_ms": order.opposite_trigger_ts_ms, "queue_credit": order.queue_credit})
 
-    def fill_order(self, order: VirtualOrder, ts_ms: int, trade_px: float, trade_size: float) -> None:
+    def fill_order(
+        self,
+        order: VirtualOrder,
+        ts_ms: int,
+        trade_px: float,
+        trade_size: float,
+        trigger_source_sequence_id: Any | None,
+        trigger_event_time_ms: int,
+    ) -> None:
         order.fill_ms = ts_ms
         self.metrics.queue_supported_fills += 1
         self.metrics.filled_qty += order.qty
         self.metrics.filled_cost += order.qty * order.px
         self.metrics.fill_wait_ms.append(ts_ms - order.created_ms)
-        lot = Lot(id=self.next_lot_id, side=order.side, qty=order.qty, px=order.px, fill_ms=ts_ms, source_order_id=order.id)
+        lot = Lot(id=self.next_lot_id, quote_intent_id=order.quote_intent_id, side=order.side, qty=order.qty, px=order.px, fill_ms=ts_ms, source_order_id=order.id)
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
-        self.emit({"kind": "queue_supported_fill", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "lot_id": lot.id, "side": order.side, "seed_px": order.px, "qty": order.qty, "queue_share": self.cfg.queue_share, "queue_credit": order.queue_credit, "trade_px": trade_px, "trade_size": trade_size, "fill_wait_ms": ts_ms - order.created_ms})
+        self.emit({"kind": "queue_supported_fill", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "fill_ts_ms": ts_ms, "event_time_ms": trigger_event_time_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "lot_id": lot.id, "side": order.side, "source": "no_order_public_trade_queue_proxy", "seed_px": order.px, "price": order.px, "size": order.qty, "qty": order.qty, "queue_share": self.cfg.queue_share, "queue_credit": order.queue_credit, "trade_px": trade_px, "trade_size": trade_size, "trigger_ts_ms": ts_ms, "trigger_source_sequence_id": trigger_source_sequence_id, "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "placed_ts_ms": order.created_ms, "accepted_ts_ms": order.accepted_ms, "opposite_trigger_ts_ms": order.opposite_trigger_ts_ms, "fill_wait_ms": ts_ms - order.created_ms})
 
     def pair_inventory(self, ts_ms: int) -> None:
         yes = self.lots["YES"]
@@ -311,7 +349,8 @@ class DPlusRunner:
             self.metrics.pair_wait_ms.append(ts_ms - older)
             a.qty -= take
             b.qty -= take
-            self.emit({"kind": "internal_pair", "slug": self.slug, "ts_ms": ts_ms, "qty": take, "yes_px": a.px, "no_px": b.px, "pair_cost": pair_cost, "delay_ms": ts_ms - older})
+            matched_pair_id = f"{self.slug}:pair:{self.metrics.pair_actions}"
+            self.emit({"kind": "internal_pair", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "yes_quote_intent_id": a.quote_intent_id, "no_quote_intent_id": b.quote_intent_id, "quote_intent_ids": [a.quote_intent_id, b.quote_intent_id], "qty": take, "yes_px": a.px, "no_px": b.px, "pair_cost": pair_cost, "delay_ms": ts_ms - older})
             if a.qty <= DUST:
                 yes.pop(0)
             if b.qty <= DUST:
@@ -352,7 +391,8 @@ class DPlusRunner:
                 self.metrics.net_pair_costs.append(net_pair)
                 self.metrics.salvage_wait_ms.append(age)
                 self.metrics.pair_wait_ms.append(age)
-                self.emit({"kind": "fak_salvage", "slug": self.slug, "ts_ms": ts_ms, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age})
+                matched_pair_id = f"{self.slug}:salvage:{self.metrics.salvage_actions}"
+                self.emit({"kind": "fak_salvage", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "quote_intent_id": lot.quote_intent_id, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age})
                 lot.qty -= take
                 if lot.qty <= DUST:
                     lots.pop(0)
@@ -381,6 +421,8 @@ class DPlusRunner:
         px = float(msg.get("price") or 0.0)
         size = float(msg.get("size") or 0.0)
         offset = self.offset_s(ts_ms)
+        trigger_source_sequence_id = source_sequence_id(msg)
+        trigger_event_time_ms = event_time_ms(msg, ts_ms)
 
         if taker == "SELL" and side in {"YES", "NO"}:
             self.mark_touches(ts_ms, side, px)
@@ -389,7 +431,7 @@ class DPlusRunner:
                     continue
                 order.queue_credit += max(0.0, size * self.cfg.queue_share)
                 if order.queue_credit + 1e-9 >= order.qty:
-                    self.fill_order(order, ts_ms, px, size)
+                    self.fill_order(order, ts_ms, px, size, trigger_source_sequence_id, trigger_event_time_ms)
             self.pair_inventory(ts_ms)
             self.try_salvage(ts_ms)
         else:
@@ -421,6 +463,8 @@ class DPlusRunner:
         same_qty = self.exposure_qty(side)
         opp_qty = self.exposure_qty(opp(side))
         target_qty = self.cfg.target_for(offset)
+        seed_px = max(0.01, px - self.cfg.edge)
+        opposite_seen_ms = self.activation_last_seen_ms.get(opp(side))
         if self.cfg.pairing_only_when_residual and same_qty > opp_qty + self.cfg.dust_qty:
             self.block("pairing_only_when_residual")
             self.record_activation_seen(side, ts_ms)
@@ -433,18 +477,33 @@ class DPlusRunner:
         activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
         if risk_increasing_seed and not activation_ok:
             self.block("activation_opp_seen")
+            blocked_quote_intent_id = self.blocked_quote_intent_id(side, ts_ms)
             self.emit(
                 {
                     "kind": "activation_block",
                     "slug": self.slug,
+                    "condition_id": self.condition_id,
                     "ts_ms": ts_ms,
+                    "quote_intent_id": blocked_quote_intent_id,
                     "side": side,
+                    "price": seed_px,
+                    "size": min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut),
+                    "placed_ts_ms": ts_ms,
+                    "accepted_ts_ms": None,
+                    "source": "no_order_public_trade_activation_gate",
+                    "source_sequence_id": trigger_source_sequence_id,
+                    "market_md_source_sequence_id": trigger_source_sequence_id,
+                    "trigger_ts_ms": ts_ms,
+                    "trigger_event_time_ms": trigger_event_time_ms,
+                    "public_trade_px": px,
+                    "public_trade_size": size,
                     "offset_s": offset,
                     "activation_mode": self.cfg.activation_mode,
                     "activation_window_s": self.cfg.activation_window_s,
                     "activation_required": True,
                     "risk_increasing_seed": risk_increasing_seed,
-                    "opp_last_seen_ms": self.activation_last_seen_ms.get(opp(side)),
+                    "opposite_trigger_ts_ms": opposite_seen_ms,
+                    "opp_last_seen_ms": opposite_seen_ms,
                 }
             )
             self.record_activation_seen(side, ts_ms)
@@ -463,7 +522,6 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
 
-        seed_px = max(0.01, px - self.cfg.edge)
         room_cost = self.cfg.max_open_cost - self.total_open_cost()
         qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
         if qty <= self.cfg.dust_qty:
@@ -471,14 +529,18 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
 
-        order = VirtualOrder(id=self.next_order_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size)
+        quote_intent_id = self.quote_intent_id(self.next_order_id)
+        opposite_trigger_ts_ms = (
+            ts_ms - activation_opp_age_ms if activation_opp_age_ms is not None else opposite_seen_ms
+        )
+        order = VirtualOrder(id=self.next_order_id, quote_intent_id=quote_intent_id, condition_id=self.condition_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, accepted_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size, trigger_ts_ms=ts_ms, trigger_source_sequence_id=trigger_source_sequence_id, opposite_trigger_ts_ms=opposite_trigger_ts_ms)
         self.next_order_id += 1
         self.pending.append(order)
         self.last_seed_ms = ts_ms
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
-        self.emit({"kind": "candidate", "slug": self.slug, "ts_ms": ts_ms, "order_id": order.id, "side": side, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
+        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
         self.record_activation_seen(side, ts_ms)
 
     def write_summary(self, final: bool = False) -> None:
@@ -543,7 +605,7 @@ class DPlusRunner:
                 "salvage_wait_p90_ms": pct(m.salvage_wait_ms, 0.9),
             },
             "top_residual_lots": [
-                {"lot_id": lot.id, "side": lot.side, "qty": round(lot.qty, 6), "cost": round(lot.cost, 6), "px": lot.px, "age_ms": now_ms() - lot.fill_ms, "source_order_id": lot.source_order_id}
+                {"lot_id": lot.id, "quote_intent_id": lot.quote_intent_id, "side": lot.side, "qty": round(lot.qty, 6), "cost": round(lot.cost, 6), "px": lot.px, "age_ms": now_ms() - lot.fill_ms, "source_order_id": lot.source_order_id}
                 for lot in sorted(residual_lots, key=lambda x: x.cost, reverse=True)[:10]
             ],
         }
@@ -552,7 +614,7 @@ class DPlusRunner:
 
 async def run_market(market: dict[str, str], socket_path: str, out: Path, duration_s: int, cfg: RunnerConfig) -> None:
     slug = market["POLYMARKET_MARKET_SLUG"]
-    runner = DPlusRunner(slug, out, cfg)
+    runner = DPlusRunner(slug, out, cfg, condition_id=market.get("POLYMARKET_MARKET_ID"))
     reader, writer = await asyncio.open_unix_connection(socket_path)
     req = {
         "stream": "market",
