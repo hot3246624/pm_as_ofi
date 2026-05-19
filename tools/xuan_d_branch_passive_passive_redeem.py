@@ -681,51 +681,54 @@ def build_configs(args: argparse.Namespace) -> list[Config]:
             for target in args.targets:
                 for lo, hi in args.px_bands:
                     for target_policy in args.target_policies:
-                        for imb in args.imbalance_qty_caps:
-                            for salvage_cap in args.salvage_net_caps:
-                                for salvage_select in args.salvage_selects:
-                                    for residual_cooldown_cost_cap in args.residual_cooldown_cost_caps:
-                                        for pair_select in args.pair_selects:
-                                            imb_suffix = "" if imb >= 1e8 else f"_imb{int(round(imb))}"
-                                            salvage_suffix = "" if salvage_cap <= 0 else f"_sv{int(round(salvage_cap*1000)):04d}"
-                                            select_suffix = "" if salvage_select == "fifo" else f"_{salvage_select}"
-                                            pair_suffix = "" if pair_select == "fifo" else f"_pair_{pair_select}"
-                                            rc_suffix = (
-                                                ""
-                                                if residual_cooldown_cost_cap >= 1e8
-                                                else f"_rc{int(round(args.residual_cooldown_age_s))}_{int(round(residual_cooldown_cost_cap*100)):03d}"
-                                            )
-                                            policy_suffix = "" if target_policy == "fixed" else f"_tp_{target_policy}"
-                                            name = (
-                                                f"dpass_{alignment}_e{int(round(edge*1000)):03d}_t{int(target)}"
-                                                f"_px{int(round(lo*1000)):03d}_{int(round(hi*1000)):03d}{imb_suffix}{salvage_suffix}{select_suffix}{rc_suffix}{pair_suffix}{policy_suffix}"
-                                            )
-                                            configs.append(
-                                                Config(
-                                                    name=name,
-                                                    edge=edge,
-                                                    target_qty=target,
-                                                    seed_px_lo=lo,
-                                                    seed_px_hi=hi,
-                                                    target_policy=target_policy,
-                                                    alignment=alignment,
-                                                    fill_haircut=args.fill_haircut,
-                                                    max_seed_qty=args.max_seed_qty,
-                                                    max_open_cost=args.max_open_cost,
-                                                    seed_offset_max_s=args.seed_offset_max_s,
-                                                    seed_l1_pair_cap=args.seed_l1_pair_cap,
-                                                    imbalance_qty_cap=imb,
-                                                    imbalance_cost_cap=args.imbalance_cost_cap,
-                                                    taker_fee_rate=args.taker_fee_rate,
-                                                    salvage_net_cap=salvage_cap,
-                                                    salvage_age_s=args.salvage_age_s,
-                                                    salvage_min_lot_cost=args.salvage_min_lot_cost,
-                                                    salvage_select=salvage_select,
-                                                    residual_cooldown_age_s=args.residual_cooldown_age_s,
-                                                    residual_cooldown_cost_cap=residual_cooldown_cost_cap,
-                                                    pair_select=pair_select,
-                                                )
-                                            )
+                            for imb in args.imbalance_qty_caps:
+                                for imb_cost in args.imbalance_cost_caps:
+                                    for salvage_cap in args.salvage_net_caps:
+                                        for salvage_select in args.salvage_selects:
+                                            for residual_cooldown_cost_cap in args.residual_cooldown_cost_caps:
+                                                for pair_select in args.pair_selects:
+                                                    imb_suffix = "" if imb >= 1e8 else f"_imb{int(round(imb * 100)):03d}"
+                                                    imb_cost_suffix = "" if imb_cost >= 1e8 else f"_imbc{int(round(imb_cost * 100)):03d}"
+                                                    salvage_suffix = "" if salvage_cap <= 0 else f"_sv{int(round(salvage_cap*1000)):04d}"
+                                                    select_suffix = "" if salvage_select == "fifo" else f"_{salvage_select}"
+                                                    pair_suffix = "" if pair_select == "fifo" else f"_pair_{pair_select}"
+                                                    rc_suffix = (
+                                                        ""
+                                                        if residual_cooldown_cost_cap >= 1e8
+                                                        else f"_rc{int(round(args.residual_cooldown_age_s))}_{int(round(residual_cooldown_cost_cap*100)):03d}"
+                                                    )
+                                                    policy_suffix = "" if target_policy == "fixed" else f"_tp_{target_policy}"
+                                                    name = (
+                                                        f"dpass_{alignment}_e{int(round(edge*1000)):03d}_t{int(target)}"
+                                                        f"_px{int(round(lo*1000)):03d}_{int(round(hi*1000)):03d}"
+                                                        f"{imb_suffix}{imb_cost_suffix}{salvage_suffix}{select_suffix}{rc_suffix}{pair_suffix}{policy_suffix}"
+                                                    )
+                                                    configs.append(
+                                                        Config(
+                                                            name=name,
+                                                            edge=edge,
+                                                            target_qty=target,
+                                                            seed_px_lo=lo,
+                                                            seed_px_hi=hi,
+                                                            target_policy=target_policy,
+                                                            alignment=alignment,
+                                                            fill_haircut=args.fill_haircut,
+                                                            max_seed_qty=args.max_seed_qty,
+                                                            max_open_cost=args.max_open_cost,
+                                                            seed_offset_max_s=args.seed_offset_max_s,
+                                                            seed_l1_pair_cap=args.seed_l1_pair_cap,
+                                                            imbalance_qty_cap=imb,
+                                                            imbalance_cost_cap=imb_cost,
+                                                            taker_fee_rate=args.taker_fee_rate,
+                                                            salvage_net_cap=salvage_cap,
+                                                            salvage_age_s=args.salvage_age_s,
+                                                            salvage_min_lot_cost=args.salvage_min_lot_cost,
+                                                            salvage_select=salvage_select,
+                                                            residual_cooldown_age_s=args.residual_cooldown_age_s,
+                                                            residual_cooldown_cost_cap=residual_cooldown_cost_cap,
+                                                            pair_select=pair_select,
+                                                        )
+                                                    )
     return configs
 
 
@@ -760,7 +763,8 @@ def main() -> None:
     parser.add_argument("--seed-offset-max-s", type=float, default=120.0)
     parser.add_argument("--seed-l1-pair-cap", type=float, default=1.02)
     parser.add_argument("--imbalance-qty-caps", type=float, nargs="+", default=[1_000_000_000.0])
-    parser.add_argument("--imbalance-cost-cap", type=float, default=1_000_000_000.0)
+    parser.add_argument("--imbalance-cost-cap", type=float, default=None)
+    parser.add_argument("--imbalance-cost-caps", type=float, nargs="+", default=None)
     parser.add_argument("--taker-fee-rate", type=float, default=0.07)
     parser.add_argument("--salvage-net-caps", type=float, nargs="+", default=[0.0])
     parser.add_argument("--salvage-age-s", type=float, default=30.0)
@@ -773,6 +777,10 @@ def main() -> None:
     args = parser.parse_args()
 
     args.px_bands = parse_px_bands(args.px_bands)
+    if args.imbalance_cost_caps is None:
+        args.imbalance_cost_caps = [
+            1_000_000_000.0 if args.imbalance_cost_cap is None else args.imbalance_cost_cap
+        ]
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     os.makedirs(args.tmp_dir, exist_ok=True)
@@ -793,7 +801,7 @@ def main() -> None:
         "seed_offset_max_s": args.seed_offset_max_s,
         "seed_l1_pair_cap": args.seed_l1_pair_cap,
         "imbalance_qty_caps": args.imbalance_qty_caps,
-        "imbalance_cost_cap": args.imbalance_cost_cap,
+        "imbalance_cost_caps": args.imbalance_cost_caps,
         "taker_fee_rate": args.taker_fee_rate,
         "salvage_net_caps": args.salvage_net_caps,
         "salvage_age_s": args.salvage_age_s,

@@ -1,0 +1,3447 @@
+{
+  "artifact": "xuan_b27_dplus_completion_store_schema_probe",
+  "assets": [
+    "BTC"
+  ],
+  "auth_network_started": false,
+  "can_support_strategy_promotion": false,
+  "cancels_sent": false,
+  "conclusion_scope": "local completion-store event-layer schema/coverage only; promotion still requires strict-cache join, public-account audit/proxy-truth cross-check, and final source-of-truth replay validation",
+  "contains_20260518": false,
+  "created_utc": "20260519T022259Z",
+  "data_root": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2",
+  "dataset_type": "local_poly_backtest_completion_unwind_event_store_v2",
+  "days": [
+    "2026-05-02",
+    "2026-05-03",
+    "2026-05-04",
+    "2026-05-05",
+    "2026-05-06",
+    "2026-05-07",
+    "2026-05-08",
+    "2026-05-09",
+    "2026-05-10",
+    "2026-05-11",
+    "2026-05-12",
+    "2026-05-13",
+    "2026-05-16",
+    "2026-05-17"
+  ],
+  "duckdb_tables_read": true,
+  "excluded_20260514_20260515": true,
+  "includes_public_account_execution_truth_v1": false,
+  "labels": [
+    "20260502_20260508",
+    "20260509",
+    "20260510",
+    "20260511",
+    "20260512",
+    "20260513",
+    "20260516",
+    "20260517"
+  ],
+  "market_count_sum_by_day": 4032,
+  "market_prefix": "btc-updown-5m",
+  "next_gate": "use this only for scope-limited adapter research; promotion still requires declared strict/cache/completion/public-truth inputs",
+  "orders_sent": false,
+  "probe_passed": true,
+  "probes": [
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        }
+      ],
+      "day_count": 7,
+      "exists": true,
+      "expected_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "20260502",
+        "20260503",
+        "20260504",
+        "20260505",
+        "20260506",
+        "20260507",
+        "20260508"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 7241262,
+      "label": "20260502_20260508",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260502_20260508/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 2016,
+      "max_day": "2026-05-08",
+      "max_ts_ms": 1778284798734,
+      "min_day": "2026-05-02",
+      "min_ts_ms": 1777680000015,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260502_20260508/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 5696077,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 12937339,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-09",
+        "20260509"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 1056362,
+      "label": "20260509",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260509/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-09",
+      "max_ts_ms": 1778371198192,
+      "min_day": "2026-05-09",
+      "min_ts_ms": 1778284800024,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260509/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 706299,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1762661,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-10",
+        "20260510"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 1047624,
+      "label": "20260510",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260510/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-10",
+      "max_ts_ms": 1778457599869,
+      "min_day": "2026-05-10",
+      "min_ts_ms": 1778371200000,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260510/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 675198,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1722822,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-11",
+        "20260511"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 962118,
+      "label": "20260511",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260511/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-11",
+      "max_ts_ms": 1778543998607,
+      "min_day": "2026-05-11",
+      "min_ts_ms": 1778457600012,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260511/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 749323,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1711441,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-12",
+        "20260512"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 984848,
+      "label": "20260512",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260512/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-12",
+      "max_ts_ms": 1778630398854,
+      "min_day": "2026-05-12",
+      "min_ts_ms": 1778544000016,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260512/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 728829,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1713677,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-13",
+        "20260513"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 956606,
+      "label": "20260513",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260513/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-13",
+      "max_ts_ms": 1778716799889,
+      "min_day": "2026-05-13",
+      "min_ts_ms": 1778630421839,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260513/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 759019,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1715625,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-16",
+        "20260516"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 1073600,
+      "label": "20260516",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260516/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-16",
+      "max_ts_ms": 1778975999881,
+      "min_day": "2026-05-16",
+      "min_ts_ms": 1778889600018,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260516/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 743833,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1817433,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    },
+    {
+      "allowed_label": true,
+      "column_count": 92,
+      "columns": [
+        {
+          "name": "day",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_kind",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "event_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "ts_iso",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "condition_id",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "slug",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "market_start_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "market_end_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "offset_s",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opposite_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "winner_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "side_is_winner",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "side_alignment",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "high_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "strict_l1_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l1_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "strict_l2_age_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "prev_side_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_bid_level_drop_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_delta_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "side_ask_level_lift_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "book_update_reason",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "opp_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_bid_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "opp_ask_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_ask",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "l1_pair_bid",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_px",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_best_sz",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_available_qty",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_row_id",
+          "type": "BIGINT"
+        },
+        {
+          "name": "public_trade_taker_side",
+          "type": "VARCHAR"
+        },
+        {
+          "name": "public_trade_price",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_size",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "public_trade_recv_ms",
+          "type": "BIGINT"
+        },
+        {
+          "name": "buy_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_10",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_10",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_25",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_25",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_60",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_60",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_100",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_100",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "buy_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "buy_worst_px_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_full_250",
+          "type": "BOOLEAN"
+        },
+        {
+          "name": "sell_vwap_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_filled_250",
+          "type": "DOUBLE"
+        },
+        {
+          "name": "sell_worst_px_250",
+          "type": "DOUBLE"
+        }
+      ],
+      "day_count": 1,
+      "exists": true,
+      "expected_days": [
+        "2026-05-17",
+        "20260517"
+      ],
+      "failures": [],
+      "l1_price_change_rows": 1052828,
+      "label": "20260517",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260517/EVENT_STORE_MANIFEST.json",
+      "manifest_exists": true,
+      "market_count": 288,
+      "max_day": "2026-05-17",
+      "max_ts_ms": 1779062399297,
+      "min_day": "2026-05-17",
+      "min_ts_ms": 1778976000017,
+      "missing_required_columns": [],
+      "other_event_kind_rows": 0,
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260517/event_store.duckdb",
+      "path_safe": true,
+      "public_trade_rows": 677906,
+      "ready": true,
+      "required_columns": [
+        "day",
+        "event_kind",
+        "event_id",
+        "ts_ms",
+        "condition_id",
+        "offset_s",
+        "side",
+        "winner_side",
+        "side_bid",
+        "side_ask",
+        "opp_bid",
+        "opp_ask",
+        "l1_pair_ask",
+        "l1_pair_bid",
+        "public_trade_taker_side",
+        "public_trade_price",
+        "public_trade_size"
+      ],
+      "row_count": 1730734,
+      "table": "completion_unwind_events",
+      "table_exists": true
+    }
+  ],
+  "raw_replay_scanned": false,
+  "redeems_sent": false,
+  "required_columns": [
+    "day",
+    "event_kind",
+    "event_id",
+    "ts_ms",
+    "condition_id",
+    "offset_s",
+    "side",
+    "winner_side",
+    "side_bid",
+    "side_ask",
+    "opp_bid",
+    "opp_ask",
+    "l1_pair_ask",
+    "l1_pair_bid",
+    "public_trade_taker_side",
+    "public_trade_price",
+    "public_trade_size"
+  ],
+  "requires_compliant_backtest_dataset_for_promotion": true,
+  "row_count": 25111732,
+  "schema_version": 1,
+  "scope": "local_completion_store_schema_probe",
+  "side_effects": {
+    "auth_network_started": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "orders_sent": false,
+    "raw_replay_scanned": false,
+    "raw_replay_written": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "started_canary": false
+  },
+  "started_canary": false,
+  "status": "PASS_LOCAL_COMPLETION_STORE_SCHEMA_PROBE",
+  "strategy": "xuan_b27_dplus",
+  "table": "completion_unwind_events"
+}
