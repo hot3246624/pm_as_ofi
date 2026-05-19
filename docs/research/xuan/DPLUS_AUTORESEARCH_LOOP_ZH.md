@@ -64,6 +64,13 @@ D+ 进入 G2 canary 讨论前，至少需要同时满足：
 
 并行 subagent 必须使用 disjoint write sets。不要让多个 agent 同时改同一脚本。
 
+每轮开始前先拆成两类工作：
+
+- Critical path：当前主线程马上要跑的一个实验。不要把这个实验交给 subagent 后空等。
+- Sidecar lanes：不阻塞 critical path、且 write set 不重叠的分析/实现/验证任务。只有这些任务才交给 subagent。
+
+subagent 的输出必须能直接进入下一轮假设选择：候选机制、证伪理由、artifact 路径、或可执行 patch。只读探索如果不能改变下一步，就不要开。
+
 ### Lane A: Residual Tail Research
 
 Owner files:
@@ -159,6 +166,31 @@ Kill criteria:
 - 新 gate 不改变 promotion decision。
 - 新 gate 只是重复已有安全检查。
 
+## Git / Merge Rule
+
+每次产生 material artifact、代码、docs 或 queue 更新后，按以下顺序收尾：
+
+1. 只 stage 本轮必要的小型代码、docs、manifest、summary JSON/CSV；不要整目录提交 runtime artifacts。
+2. 运行对应最小验证，例如 `py_compile`、`bash -n`、`git diff --check`，以及代码路径需要的 cargo/test。
+3. commit 到 `codex/xuan-research`。
+4. push `codex/xuan-research`。
+5. 将当前 HEAD 推进 `main`。如果 `main` non-fast-forward，先 `git fetch origin main`，非破坏性 merge `origin/main` 到 `codex/xuan-research`，重新跑相关最小验证，再 push branch 和 `main`。
+6. 禁止 force push，禁止回滚或覆盖他人改动。
+
+目的：heartbeat 小步高频产出时，不能只 push feature branch 后长期不 merge；否则其他 agent 在 main 上继续推进会扩大冲突面。
+
+## Kill List
+
+以下方向已被 2026-05-19 的 candidate-stable / compliant artifacts 证伪，除非出现新机制，不再消耗 shadow 窗口或重复 sweep：
+
+- 单独放宽或收紧 `public_trade_size`。
+- `public_trade_size` 与 offset / first-price 的简单交互。
+- trigger-time side-cost / immediate pair cap 过滤。
+- public-trade price / size / slippage 薄口袋。
+- residual cooldown cost cap sweep；最严格 cap 会记录 block，但不改变 seed/pair/residual/PnL 路径。
+
+下一轮必须换成真正不同的机制，例如改变 seed admission、repair pairing、库存预算、或严格定义新的 compliant 标签语义。
+
 ## Heartbeat Operating Rule
 
 每次 heartbeat 只允许以下三类输出之一：
@@ -174,7 +206,8 @@ Kill criteria:
 当前优先级：
 
 1. 不再继续只提高 edge；先尝试降低 residual_qty。
-2. 将 target / imbalance gating 的 zero-seed 配置提前过滤，避免浪费 sweep。
-3. 研究 residual repair / two-sided entry / late cutoff / side-imbalance gating。
-4. 一旦 shared-ingress read-only client 可用，跑更大 no-order shadow report。
-5. 合规 store 可见后，复跑 promotion-capable OOS/walk-forward。
+2. 不再围绕 public-trade trigger 薄口袋或 residual cooldown cap 微调。
+3. 将 target / imbalance gating 的 zero-seed 配置提前过滤，避免浪费 sweep。
+4. 研究真正改变库存路径的 residual repair / two-sided entry / late cutoff / dynamic side gating。
+5. 对 local `POLY_BT_ROOT` strict/cache + completion + public-audit proxy truth 保持 candidate-stable 语义；public audit 缺失的 05-16/17 必须单独标注。
+6. 一旦有一个机制在 compliant runner 中同时改善 sample、residual、worst-day，再用 new-EC2 same-host no-order shadow 验证；未通过前不进入 G2 canary。
