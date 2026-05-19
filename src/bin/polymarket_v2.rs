@@ -19893,6 +19893,47 @@ fn market_book_depth_evidence(
     })
 }
 
+fn market_book_depth_tick_from_evidence(depth: &MarketBookDepthEvidence) -> Option<MarketDataMsg> {
+    let market_side = match depth
+        .market_side
+        .as_deref()?
+        .trim()
+        .to_ascii_uppercase()
+        .as_str()
+    {
+        "YES" => Side::Yes,
+        "NO" => Side::No,
+        _ => return None,
+    };
+    let best_bid = depth.best_bid.filter(|v| v.is_finite() && *v > 0.0)?;
+    let best_ask = depth.best_ask.filter(|v| v.is_finite() && *v > 0.0);
+    let best_bid_size = depth.best_bid_size.filter(|v| v.is_finite() && *v >= 0.0);
+    let best_ask_size = depth.best_ask_size.filter(|v| v.is_finite() && *v >= 0.0);
+    let best_bid_drop_qty = depth
+        .best_bid_drop_qty
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(0.0);
+    let best_ask_drop_qty = depth
+        .best_ask_drop_qty
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(0.0);
+    if best_bid_drop_qty <= 0.0 && best_ask_drop_qty <= 0.0 {
+        return None;
+    }
+    Some(MarketDataMsg::BookDepthTick {
+        market_side,
+        best_bid,
+        best_ask,
+        best_bid_size,
+        best_ask_size,
+        best_bid_drop_qty,
+        best_ask_drop_qty,
+        event_time_ms: depth.event_time_ms,
+        source_sequence_id: depth.source_sequence_id.clone(),
+        ts: Instant::now(),
+    })
+}
+
 fn parse_ws_message_book_depth_evidence(
     settings: &Settings,
     value: &Value,
@@ -21416,6 +21457,14 @@ async fn run_market_ws_remote_with_wall_guard(
                                     session_wire_book_tick_count.saturating_add(1);
                                 let md_msg = MarketDataMsg::BookTick { yes_bid, yes_ask, no_bid, no_ask, ts: Instant::now() };
                                 try_broadcast_dry_run_touch_md(&dry_run_touch_md_tx, &md_msg);
+                                if let Some(depth_msg) =
+                                    depth.as_ref().and_then(market_book_depth_tick_from_evidence)
+                                {
+                                    try_broadcast_dry_run_touch_md(
+                                        &dry_run_touch_md_tx,
+                                        &depth_msg,
+                                    );
+                                }
                                 if coord_accept_partial_book {
                                     let _ = coord_tx.send(md_msg.clone());
                                     session_coord_partial_forward_count =
@@ -22095,6 +22144,15 @@ async fn run_market_ws(
                                                 let depth = book_depth_tracker.annotate(
                                                     book_depth_evidence.pop_front().flatten(),
                                                 );
+                                                if let Some(depth_msg) = depth
+                                                    .as_ref()
+                                                    .and_then(market_book_depth_tick_from_evidence)
+                                                {
+                                                    try_broadcast_dry_run_touch_md(
+                                                        &dry_run_touch_md_tx,
+                                                        &depth_msg,
+                                                    );
+                                                }
                                                 if let MarketDataMsg::BookTick {
                                                     yes_bid,
                                                     yes_ask,
@@ -22185,6 +22243,10 @@ async fn run_market_ws(
                                             }
                                             MarketDataMsg::WinnerHint { .. } => {
                                                 let _ = coord_tx.send(md_msg.clone());
+                                            }
+                                            MarketDataMsg::BookDepthTick { .. } => {
+                                                // Dry-run-touch-only evidence; emitted directly to
+                                                // the executor touch channel above.
                                             }
                                             MarketDataMsg::OracleLagSelection { .. } => {
                                                 // Arbiter-internal; never arrives from WS parser.
@@ -22278,6 +22340,15 @@ async fn run_market_ws(
                                                                 .pop_front()
                                                                 .flatten(),
                                                         );
+                                                        if let Some(depth_msg) = depth
+                                                            .as_ref()
+                                                            .and_then(market_book_depth_tick_from_evidence)
+                                                        {
+                                                            try_broadcast_dry_run_touch_md(
+                                                                &dry_run_touch_md_tx,
+                                                                &depth_msg,
+                                                            );
+                                                        }
                                                         if let MarketDataMsg::BookTick {
                                                             yes_bid,
                                                             yes_ask,
@@ -22369,6 +22440,10 @@ async fn run_market_ws(
                                                     }
                                                     MarketDataMsg::WinnerHint { .. } => {
                                                         let _ = coord_tx.send(md_msg.clone());
+                                                    }
+                                                    MarketDataMsg::BookDepthTick { .. } => {
+                                                        // Dry-run-touch-only evidence; emitted directly to
+                                                        // the executor touch channel above.
                                                     }
                                                     MarketDataMsg::OracleLagSelection { .. } => {
                                                         // Arbiter-internal; never arrives from WS parser.

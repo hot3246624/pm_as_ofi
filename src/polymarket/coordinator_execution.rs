@@ -3,8 +3,9 @@ use tracing::{debug, info};
 use super::*;
 use crate::polymarket::strategy::pair_gated_tranche::{
     pgt_absent_seed_retain_allowed, pgt_effective_open_pair_band_value,
-    pgt_open_leg_ceiling_from_opposite_bid, pgt_settlement_alpha_taker_open_exec_enabled,
-    pgt_shadow_taker_open_exec_enabled,
+    pgt_open_leg_ceiling_from_opposite_bid, pgt_pair_ask_rescue_exec_enabled,
+    pgt_settlement_alpha_taker_open_exec_enabled, pgt_shadow_taker_open_exec_enabled,
+    XUAN_PAIR_ASK_RESCUE_GAP_COOLDOWN_SECS, XUAN_PAIR_ASK_RESCUE_PAIR_CAP,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -13,6 +14,14 @@ pub(super) struct PgtShadowTakerOpenCandidate {
     pub(super) limit_price: f64,
     slack: f64,
     best_ask: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(super) struct PgtPairAskRescueCandidate {
+    pub(super) yes_limit_price: f64,
+    pub(super) no_limit_price: f64,
+    pub(super) size: f64,
+    pub(super) pair_ask: f64,
 }
 
 const PGT_SHADOW_TAKER_CLOSE_SECS: u64 = 90;
@@ -888,6 +897,18 @@ impl StrategyCoordinator {
         st.apply_blocked_provide();
         let yes_toxic_blocked = yes_toxic_blocked && self.execution_toxic_block_applies();
         let no_toxic_blocked = no_toxic_blocked && self.execution_toxic_block_applies();
+        if let Some(candidate) = self.pgt_pair_ask_rescue_candidate(
+            inv,
+            ub,
+            st,
+            yes_toxic_blocked,
+            no_toxic_blocked,
+            yes_stale,
+            no_stale,
+        ) {
+            self.dispatch_pgt_pair_ask_rescue(candidate).await;
+            return;
+        }
         let shadow_taker_open = self.pgt_shadow_taker_open_candidate(
             inv,
             ub,
@@ -1002,6 +1023,123 @@ impl StrategyCoordinator {
             pgt_taker_close_limit_price,
         );
         self.apply_provide_side_action(inv, ub, side, action).await;
+    }
+
+    pub(super) fn pgt_pair_ask_rescue_candidate(
+        &self,
+        inv: &InventoryState,
+        ub: &Book,
+        st: &ExecutionState,
+        yes_toxic_blocked: bool,
+        no_toxic_blocked: bool,
+        yes_stale: bool,
+        no_stale: bool,
+    ) -> Option<PgtPairAskRescueCandidate> {
+        if !self.cfg.strategy.is_pair_gated_tranche_arb()
+            || !self.cfg.dry_run
+            || !pgt_pair_ask_rescue_exec_enabled()
+        {
+            return None;
+        }
+        if inv.net_diff.abs() > PAIR_ARB_NET_EPS {
+            return None;
+        }
+        if self.endgame_phase() >= EndgamePhase::HardClose {
+            return None;
+        }
+        if self.pgt_pair_ask_rescue_fired_epoch == Some(self.pgt_decision_epoch) {
+            return None;
+        }
+        let gap = std::time::Duration::from_secs(XUAN_PAIR_ASK_RESCUE_GAP_COOLDOWN_SECS);
+        if self.yes_last_ts.elapsed() < gap || self.no_last_ts.elapsed() < gap {
+            return None;
+        }
+        if yes_toxic_blocked || no_toxic_blocked || yes_stale || no_stale {
+            return None;
+        }
+        if !st.allow_provide_for(Side::Yes) || !st.allow_provide_for(Side::No) {
+            return None;
+        }
+        if st.hedge_dispatched_for(Side::Yes) || st.hedge_dispatched_for(Side::No) {
+            return None;
+        }
+        if self.pgt_same_side_release_quarantine_until[Side::Yes.index()]
+            .is_some_and(|until| until > std::time::Instant::now())
+            || self.pgt_same_side_release_quarantine_until[Side::No.index()]
+                .is_some_and(|until| until > std::time::Instant::now())
+        {
+            return None;
+        }
+        let yes_intent = st.intent_for(Side::Yes)?;
+        let no_intent = st.intent_for(Side::No)?;
+        for intent in [yes_intent, no_intent] {
+            if intent.direction != TradeDirection::Buy || intent.reason != BidReason::Provide {
+                return None;
+            }
+        }
+        if ub.yes_ask <= 0.0 || ub.no_ask <= 0.0 {
+            return None;
+        }
+        let pair_ask = ub.yes_ask + ub.no_ask;
+        if pair_ask > XUAN_PAIR_ASK_RESCUE_PAIR_CAP + 1e-9 {
+            return None;
+        }
+        if yes_intent.price + 1e-9 < ub.yes_ask || no_intent.price + 1e-9 < ub.no_ask {
+            return None;
+        }
+        let size = yes_intent.size.min(no_intent.size);
+        if size < self.cfg.min_order_size {
+            return None;
+        }
+        Some(PgtPairAskRescueCandidate {
+            yes_limit_price: ub.yes_ask,
+            no_limit_price: ub.no_ask,
+            size,
+            pair_ask,
+        })
+    }
+
+    pub(super) async fn dispatch_pgt_pair_ask_rescue(
+        &mut self,
+        candidate: PgtPairAskRescueCandidate,
+    ) {
+        self.pgt_pair_ask_rescue_fired_epoch = Some(self.pgt_decision_epoch);
+        self.stats.pgt_dispatch_taker_open = self.stats.pgt_dispatch_taker_open.saturating_add(2);
+        info!(
+            "⚡ PGT pair-ask rescue | yes_ask={:.4} no_ask={:.4} pair_ask={:.4} size={:.2} cap={:.4} cooldown_s={}",
+            candidate.yes_limit_price,
+            candidate.no_limit_price,
+            candidate.pair_ask,
+            candidate.size,
+            XUAN_PAIR_ASK_RESCUE_PAIR_CAP,
+            XUAN_PAIR_ASK_RESCUE_GAP_COOLDOWN_SECS,
+        );
+
+        let now = std::time::Instant::now();
+        for slot in [OrderSlot::YES_BUY, OrderSlot::NO_BUY] {
+            self.slot_last_ts[slot.index()] = now;
+        }
+        self.yes_last_ts = now;
+        self.no_last_ts = now;
+
+        self.dispatch_taker_intent(
+            Side::Yes,
+            TradeDirection::Buy,
+            candidate.size,
+            TradePurpose::Provide,
+            Some(candidate.yes_limit_price),
+            Some(candidate.yes_limit_price),
+        )
+        .await;
+        self.dispatch_taker_intent(
+            Side::No,
+            TradeDirection::Buy,
+            candidate.size,
+            TradePurpose::Provide,
+            Some(candidate.no_limit_price),
+            Some(candidate.no_limit_price),
+        )
+        .await;
     }
 
     pub(super) fn pgt_shadow_taker_open_candidate(

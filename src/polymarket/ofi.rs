@@ -925,6 +925,9 @@ impl OfiEngine {
                                 self.reference_mid_yes = reference_mid_yes;
                             }
                         }
+                        Some(MarketDataMsg::BookDepthTick { .. }) => {
+                            // Executor dry-run evidence only; OFI ignores it.
+                        }
                         Some(MarketDataMsg::WinnerHint { .. })
                         | Some(MarketDataMsg::OracleLagSelection { .. })
                         | Some(MarketDataMsg::OracleLagTailAction { .. }) => {

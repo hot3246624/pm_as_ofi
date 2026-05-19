@@ -202,6 +202,77 @@ class AnalyzePgtShadowEventsTests(unittest.TestCase):
         self.assertEqual(rows[0].winner_side, "YES")
         self.assertAlmostEqual(summary["settlement_alpha_pnl"], 4.0)
 
+    def test_book_depth_touch_and_market_depth_are_reported_separately(self):
+        with tempfile.TemporaryDirectory(prefix="pgt_shadow_events_") as tmp:
+            root = Path(tmp)
+            instance = "xuan_depth_consumer_v1"
+            day = "2026-05-18"
+            round_dir = root / instance / day / "btc-updown-5m-4000"
+            write_jsonl(
+                round_dir / "events.jsonl",
+                [
+                    event_row(
+                        "dry_run_touch_fill_confirmed",
+                        {
+                            "source": "book_depth_touch",
+                            "side": "YES",
+                            "price": 0.50,
+                            "size": 5.0,
+                        },
+                    ),
+                    event_row(
+                        "pgt_shadow_summary",
+                        {
+                            "pgt_shadow_profile": "xuan_depth_consumer_v1",
+                            "paired_qty": 5.0,
+                            "pair_cost": 0.90,
+                            "residual_qty": 0.0,
+                            "yes_qty": 5.0,
+                            "yes_avg_cost": 0.50,
+                            "no_qty": 5.0,
+                            "no_avg_cost": 0.40,
+                        },
+                    ),
+                ],
+            )
+            write_jsonl(
+                round_dir / "market_md.jsonl",
+                [
+                    {
+                        "recv_unix_ms": 1_800_000_000_000,
+                        "payload": {
+                            "kind": "book_l1",
+                            "market_side": "YES",
+                            "event_time_ms": 1_800_000_000_000,
+                            "source_sequence_id": "seq-1",
+                            "best_bid_size": 10.0,
+                            "best_ask_size": 11.0,
+                            "best_bid_drop_qty": 7.0,
+                            "best_ask_drop_qty": 2.0,
+                        },
+                    }
+                ],
+            )
+
+            rows = analyze_mod.collect_rows(root, instance, day)
+            summary = analyze_mod.summarize(rows)
+            details = analyze_mod.round_details(rows)
+
+        self.assertEqual(summary["dry_run_touch_book"], 0)
+        self.assertEqual(summary["dry_run_touch_book_depth"], 1)
+        self.assertEqual(summary["dry_run_touch_trade"], 0)
+        self.assertEqual(summary["market_book_l1_ticks"], 1)
+        self.assertEqual(summary["depth_evidence_ticks"], 1)
+        self.assertEqual(summary["depth_size_ticks"], 1)
+        self.assertEqual(summary["depth_event_time_ticks"], 1)
+        self.assertEqual(summary["depth_sequence_ticks"], 1)
+        self.assertEqual(summary["depth_bid_drop_ticks"], 1)
+        self.assertEqual(summary["depth_ask_drop_ticks"], 1)
+        self.assertEqual(summary["depth_side_ticks"], {"YES": 1})
+        self.assertAlmostEqual(summary["depth_bid_drop_qty_yes"], 7.0)
+        self.assertAlmostEqual(summary["depth_ask_drop_qty_yes"], 2.0)
+        self.assertEqual(details[0]["dry_run_touch_book_depth"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -172,9 +172,14 @@ pub struct Executor {
     /// Dry-run market-touch source gates. Defaults keep legacy behavior, while
     /// conservative shadows can require real trade prints into our resting bid.
     dry_run_market_touch_book_fills: bool,
+    dry_run_market_touch_book_partial_fills: bool,
+    dry_run_market_touch_book_fill_fraction: f64,
+    dry_run_market_touch_book_depth_fills: bool,
+    dry_run_market_touch_book_depth_fill_fraction: f64,
     dry_run_market_touch_trade_fills: bool,
     dry_run_market_touch_trade_partial_fills: bool,
     dry_run_market_touch_trade_fill_fraction: f64,
+    dry_run_market_touch_min_fill_size: f64,
     dry_run_touch_diag: DryRunTouchDiag,
     /// Short confirm delay for dry-run market-touch fills.
     dry_run_touch_confirm_delay: Duration,
@@ -198,16 +203,39 @@ struct DryRunPendingTouchFill {
     side: Side,
     direction: TradeDirection,
     /// Size to emit for this synthetic fill. For book-touch this remains the
-    /// full visible order remainder; for trade-touch partial mode it is capped
-    /// by public SELL trade size observed during the confirm window.
+    /// full visible order remainder unless book-touch partial mode is enabled;
+    /// for trade-touch partial mode it is capped by public SELL trade size
+    /// observed during the confirm window.
     size: f64,
     price: f64,
     source: &'static str,
     detected_at: Instant,
+    evidence: Option<DryRunTouchEvidence>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct DryRunTouchEvidence {
+    market_side: Option<Side>,
+    best_bid: Option<f64>,
+    best_ask: Option<f64>,
+    best_bid_size: Option<f64>,
+    best_ask_size: Option<f64>,
+    best_bid_drop_qty: Option<f64>,
+    best_ask_drop_qty: Option<f64>,
+    event_time_ms: Option<u64>,
+    source_sequence_id: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
 struct DryRunTouchDiag {
+    book_depth_ticks: u64,
+    book_depth_ticks_with_live_buy_same_side: u64,
+    book_depth_touch_candidates: u64,
+    book_depth_price_miss_orders: u64,
+    best_depth_miss_gap: Option<f64>,
+    best_depth_miss_side: Option<Side>,
+    best_depth_miss_bid: Option<f64>,
+    best_depth_miss_book_bid: Option<f64>,
     trade_ticks: u64,
     sell_ticks: u64,
     sell_ticks_with_live_buy_same_side: u64,
@@ -333,6 +361,28 @@ impl Executor {
                 "PM_DRY_RUN_MARKET_TOUCH_BOOK_FILLS",
                 true,
             ),
+            dry_run_market_touch_book_partial_fills: Self::env_bool_or(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_PARTIAL_FILLS",
+                false,
+            ),
+            dry_run_market_touch_book_fill_fraction: std::env::var(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_FILL_FRACTION",
+            )
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| v.clamp(0.0, 1.0))
+            .unwrap_or(1.0),
+            dry_run_market_touch_book_depth_fills: Self::env_bool_or(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_DEPTH_FILLS",
+                false,
+            ),
+            dry_run_market_touch_book_depth_fill_fraction: std::env::var(
+                "PM_DRY_RUN_MARKET_TOUCH_BOOK_DEPTH_FILL_FRACTION",
+            )
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| v.clamp(0.0, 1.0))
+            .unwrap_or(0.05),
             dry_run_market_touch_trade_fills: Self::env_bool_or(
                 "PM_DRY_RUN_MARKET_TOUCH_TRADE_FILLS",
                 true,
@@ -348,6 +398,13 @@ impl Executor {
             .and_then(|v| v.parse::<f64>().ok())
             .map(|v| v.clamp(0.0, 1.0))
             .unwrap_or(1.0),
+            dry_run_market_touch_min_fill_size: std::env::var(
+                "PM_DRY_RUN_MARKET_TOUCH_MIN_FILL_SIZE",
+            )
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite() && *v >= 0.0)
+            .unwrap_or(0.0),
             dry_run_touch_diag: DryRunTouchDiag::default(),
             dry_run_touch_confirm_delay: Duration::from_millis(DRY_RUN_TOUCH_CONFIRM_MS),
             reconcile_fetch_mode: ReconcileFetchMode::LocalById,
@@ -549,16 +606,155 @@ impl Executor {
                         self.dry_run_pending_touch_fills.remove(order_id);
                         continue;
                     }
+                    let fill_size = if self.dry_run_market_touch_book_partial_fills {
+                        remaining * self.dry_run_market_touch_book_fill_fraction
+                    } else {
+                        remaining
+                    };
+                    if fill_size <= 0.0 {
+                        self.dry_run_pending_touch_fills.remove(order_id);
+                        continue;
+                    }
+                    if !self.dry_run_touch_fill_size_is_material(fill_size) {
+                        self.dry_run_pending_touch_fills.remove(order_id);
+                        continue;
+                    }
                     self.dry_run_pending_touch_fills
                         .entry(order_id.clone())
                         .or_insert(DryRunPendingTouchFill {
                             side: meta.side,
                             direction: meta.direction,
-                            size: remaining,
+                            size: fill_size,
                             price: meta.price,
                             source: "book_touch",
                             detected_at: now,
+                            evidence: None,
                         });
+                }
+            }
+            MarketDataMsg::BookDepthTick {
+                market_side,
+                best_bid,
+                best_ask,
+                best_bid_size,
+                best_ask_size,
+                best_bid_drop_qty,
+                best_ask_drop_qty,
+                event_time_ms,
+                source_sequence_id,
+                ..
+            } => {
+                self.dry_run_touch_diag.book_depth_ticks =
+                    self.dry_run_touch_diag.book_depth_ticks.saturating_add(1);
+                if !self.dry_run_market_touch_book_depth_fills
+                    || !best_bid.is_finite()
+                    || best_bid <= 0.0
+                    || !best_bid_drop_qty.is_finite()
+                    || best_bid_drop_qty <= 0.0
+                {
+                    return;
+                }
+
+                let mut had_live_same_side_buy = false;
+                for (order_id, meta) in self.dry_run_live_orders.iter() {
+                    if meta.fill_emitted
+                        || meta.direction != TradeDirection::Buy
+                        || meta.side != market_side
+                    {
+                        continue;
+                    }
+                    had_live_same_side_buy = true;
+                    if meta.price + 1e-9 < best_bid {
+                        self.dry_run_touch_diag.book_depth_price_miss_orders = self
+                            .dry_run_touch_diag
+                            .book_depth_price_miss_orders
+                            .saturating_add(1);
+                        let gap = best_bid - meta.price;
+                        if self
+                            .dry_run_touch_diag
+                            .best_depth_miss_gap
+                            .map(|best| gap < best)
+                            .unwrap_or(true)
+                        {
+                            self.dry_run_touch_diag.best_depth_miss_gap = Some(gap);
+                            self.dry_run_touch_diag.best_depth_miss_side = Some(market_side);
+                            self.dry_run_touch_diag.best_depth_miss_bid = Some(meta.price);
+                            self.dry_run_touch_diag.best_depth_miss_book_bid = Some(best_bid);
+                        }
+                        continue;
+                    }
+                    if best_ask
+                        .filter(|ask| ask.is_finite() && *ask > 0.0)
+                        .map(|ask| meta.price + 1e-9 >= ask)
+                        .unwrap_or(false)
+                    {
+                        // A crossed best ask is already covered by the legacy
+                        // ask-touch simulator. Depth evidence is only for
+                        // passive best-bid depletion, so keep the fill source
+                        // taxonomy clean.
+                        continue;
+                    }
+                    let remaining = self
+                        .slot_orders(meta.slot)
+                        .get(order_id)
+                        .copied()
+                        .unwrap_or(meta.size)
+                        .max(0.0);
+                    if remaining <= 0.0 {
+                        continue;
+                    }
+                    let fill_size = remaining.min(
+                        best_bid_drop_qty * self.dry_run_market_touch_book_depth_fill_fraction,
+                    );
+                    if fill_size <= 0.0 || !self.dry_run_touch_fill_size_is_material(fill_size) {
+                        continue;
+                    }
+                    self.dry_run_touch_diag.book_depth_touch_candidates = self
+                        .dry_run_touch_diag
+                        .book_depth_touch_candidates
+                        .saturating_add(1);
+                    let evidence = DryRunTouchEvidence {
+                        market_side: Some(market_side),
+                        best_bid: Some(best_bid),
+                        best_ask,
+                        best_bid_size,
+                        best_ask_size,
+                        best_bid_drop_qty: Some(best_bid_drop_qty),
+                        best_ask_drop_qty: Some(best_ask_drop_qty),
+                        event_time_ms,
+                        source_sequence_id: source_sequence_id.clone(),
+                    };
+                    match self.dry_run_pending_touch_fills.entry(order_id.clone()) {
+                        std::collections::hash_map::Entry::Occupied(mut entry) => {
+                            let pending = entry.get_mut();
+                            if pending.source != "book_depth_touch" {
+                                continue;
+                            }
+                            pending.side = meta.side;
+                            pending.direction = meta.direction;
+                            pending.price = meta.price;
+                            pending.size = remaining.min(pending.size + fill_size);
+                            pending.evidence = Some(evidence);
+                        }
+                        std::collections::hash_map::Entry::Vacant(entry) => {
+                            entry.insert(DryRunPendingTouchFill {
+                                side: meta.side,
+                                direction: meta.direction,
+                                size: fill_size,
+                                price: meta.price,
+                                source: "book_depth_touch",
+                                detected_at: now,
+                                evidence: Some(evidence),
+                            });
+                        }
+                    }
+                }
+                if had_live_same_side_buy {
+                    self.dry_run_touch_diag
+                        .book_depth_ticks_with_live_buy_same_side = self
+                        .dry_run_touch_diag
+                        .book_depth_ticks_with_live_buy_same_side
+                        .saturating_add(1);
                 }
             }
             MarketDataMsg::TradeTick {
@@ -628,6 +824,9 @@ impl Executor {
                     if fill_size <= 0.0 {
                         continue;
                     }
+                    if !self.dry_run_touch_fill_size_is_material(fill_size) {
+                        continue;
+                    }
                     self.dry_run_touch_diag.trade_touch_candidates = self
                         .dry_run_touch_diag
                         .trade_touch_candidates
@@ -643,6 +842,7 @@ impl Executor {
                             pending.price = meta.price;
                             pending.source = "trade_sell_touch";
                             pending.detected_at = detected_at;
+                            pending.evidence = None;
                             pending.size = if self.dry_run_market_touch_trade_partial_fills {
                                 remaining.min(pending.size + fill_size)
                             } else {
@@ -657,6 +857,7 @@ impl Executor {
                                 price: meta.price,
                                 source: "trade_sell_touch",
                                 detected_at,
+                                evidence: None,
                             });
                         }
                     }
@@ -679,7 +880,16 @@ impl Executor {
             return;
         }
         let now = Instant::now();
-        let ready: Vec<(String, Side, TradeDirection, f64, f64, &'static str, u128)> = self
+        let ready: Vec<(
+            String,
+            Side,
+            TradeDirection,
+            f64,
+            f64,
+            &'static str,
+            u128,
+            Option<DryRunTouchEvidence>,
+        )> = self
             .dry_run_pending_touch_fills
             .iter()
             .filter_map(|(order_id, pending)| {
@@ -695,6 +905,7 @@ impl Executor {
                         pending.source,
                         now.saturating_duration_since(pending.detected_at)
                             .as_millis(),
+                        pending.evidence.clone(),
                     ))
                 } else {
                     None
@@ -702,7 +913,17 @@ impl Executor {
             })
             .collect();
 
-        for (order_id, side, direction, pending_size, fill_price, source, confirm_age_ms) in ready {
+        for (
+            order_id,
+            side,
+            direction,
+            pending_size,
+            fill_price,
+            source,
+            confirm_age_ms,
+            evidence,
+        ) in ready
+        {
             self.dry_run_pending_touch_fills.remove(&order_id);
             let Some(live_meta) = self
                 .dry_run_live_orders
@@ -724,6 +945,9 @@ impl Executor {
             if fill_size <= 0.0 {
                 continue;
             }
+            if !self.dry_run_touch_fill_size_is_material(fill_size) {
+                continue;
+            }
             let will_close = current_remaining <= fill_size + DUST_REMAINING_SHARES + 1e-9;
             if let Some(meta) = self.dry_run_live_orders.get_mut(&order_id) {
                 meta.fill_emitted = will_close;
@@ -737,6 +961,7 @@ impl Executor {
                     fill_price,
                     match source {
                         "book_touch" => FillSource::DryRunBookTouch,
+                        "book_depth_touch" => FillSource::DryRunBookDepthTouch,
                         "trade_sell_touch" => FillSource::DryRunTradeSellTouch,
                         _ => FillSource::Unknown,
                     },
@@ -759,39 +984,85 @@ impl Executor {
                         price: fill_price,
                         source,
                         detected_at: now,
+                        evidence,
                     },
                 );
             } else {
-                self.emit_order_event(
-                    "dry_run_touch_fill_confirmed",
-                    serde_json::json!({
-                        "order_id": order_id,
-                        "slot": live_meta.slot.as_str(),
-                        "side": format!("{:?}", side),
-                        "direction": format!("{:?}", direction),
-                        "reason": format!("{:?}", live_meta.reason),
-                        "price": fill_price,
-                        "size": fill_size,
-                        "remaining_before": current_remaining,
-                        "partial": !will_close,
-                        "source": source,
-                        "confirm_age_ms": confirm_age_ms,
-                    }),
-                );
+                let mut data = serde_json::json!({
+                    "order_id": order_id,
+                    "slot": live_meta.slot.as_str(),
+                    "side": format!("{:?}", side),
+                    "direction": format!("{:?}", direction),
+                    "reason": format!("{:?}", live_meta.reason),
+                    "price": fill_price,
+                    "size": fill_size,
+                    "remaining_before": current_remaining,
+                    "partial": !will_close,
+                    "source": source,
+                    "confirm_age_ms": confirm_age_ms,
+                });
+                if let Some(evidence) = evidence {
+                    if let Some(obj) = data.as_object_mut() {
+                        if let Some(market_side) = evidence.market_side {
+                            obj.insert(
+                                "depth_market_side".to_string(),
+                                serde_json::json!(market_side.as_str()),
+                            );
+                        }
+                        obj.insert(
+                            "depth_best_bid".to_string(),
+                            serde_json::json!(evidence.best_bid),
+                        );
+                        obj.insert(
+                            "depth_best_ask".to_string(),
+                            serde_json::json!(evidence.best_ask),
+                        );
+                        obj.insert(
+                            "depth_best_bid_size".to_string(),
+                            serde_json::json!(evidence.best_bid_size),
+                        );
+                        obj.insert(
+                            "depth_best_ask_size".to_string(),
+                            serde_json::json!(evidence.best_ask_size),
+                        );
+                        obj.insert(
+                            "depth_best_bid_drop_qty".to_string(),
+                            serde_json::json!(evidence.best_bid_drop_qty),
+                        );
+                        obj.insert(
+                            "depth_best_ask_drop_qty".to_string(),
+                            serde_json::json!(evidence.best_ask_drop_qty),
+                        );
+                        obj.insert(
+                            "depth_event_time_ms".to_string(),
+                            serde_json::json!(evidence.event_time_ms),
+                        );
+                        obj.insert(
+                            "depth_source_sequence_id".to_string(),
+                            serde_json::json!(evidence.source_sequence_id),
+                        );
+                    }
+                }
+                self.emit_order_event("dry_run_touch_fill_confirmed", data);
             }
         }
     }
 
     pub async fn run(mut self) {
         info!(
-            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/trade/partial_trade/fraction)={}/{}/{}/{:.3}",
+            "⚡ Executor started | dry_run={} has_client={} dry_run_fill_probability={:.2} dry_run_touch(book/partial_book/book_fraction/depth/depth_fraction/trade/partial_trade/trade_fraction/min_fill)={}/{}/{:.3}/{}/{:.3}/{}/{}/{:.3}/{:.2}",
             self.cfg.dry_run,
             self.client.is_some(),
             self.dry_run_fill_probability,
             self.dry_run_market_touch_book_fills,
+            self.dry_run_market_touch_book_partial_fills,
+            self.dry_run_market_touch_book_fill_fraction,
+            self.dry_run_market_touch_book_depth_fills,
+            self.dry_run_market_touch_book_depth_fill_fraction,
             self.dry_run_market_touch_trade_fills,
             self.dry_run_market_touch_trade_partial_fills,
             self.dry_run_market_touch_trade_fill_fraction,
+            self.dry_run_market_touch_min_fill_size,
         );
         info!(
             "🧭 Reconcile mode: {} (startup CancelAll authoritative)",
@@ -927,7 +1198,15 @@ impl Executor {
         }
 
         info!(
-            "🧪 DryRunTouchDiag | trade_ticks={} sell_ticks={} sell_live_same_side={} trade_touch_candidates={} trade_price_miss_orders={} best_miss_gap={:?} best_miss_side={:?} best_miss_bid={:?} best_miss_trade_price={:?} pending_touch_fills={} live_orders={}",
+            "🧪 DryRunTouchDiag | depth_ticks={} depth_live_same_side={} depth_touch_candidates={} depth_price_miss_orders={} best_depth_miss_gap={:?} best_depth_miss_side={:?} best_depth_miss_bid={:?} best_depth_miss_book_bid={:?} trade_ticks={} sell_ticks={} sell_live_same_side={} trade_touch_candidates={} trade_price_miss_orders={} best_trade_miss_gap={:?} best_trade_miss_side={:?} best_trade_miss_bid={:?} best_trade_miss_price={:?} pending_touch_fills={} live_orders={}",
+            self.dry_run_touch_diag.book_depth_ticks,
+            self.dry_run_touch_diag.book_depth_ticks_with_live_buy_same_side,
+            self.dry_run_touch_diag.book_depth_touch_candidates,
+            self.dry_run_touch_diag.book_depth_price_miss_orders,
+            self.dry_run_touch_diag.best_depth_miss_gap,
+            self.dry_run_touch_diag.best_depth_miss_side,
+            self.dry_run_touch_diag.best_depth_miss_bid,
+            self.dry_run_touch_diag.best_depth_miss_book_bid,
             self.dry_run_touch_diag.trade_ticks,
             self.dry_run_touch_diag.sell_ticks,
             self.dry_run_touch_diag.sell_ticks_with_live_buy_same_side,
@@ -949,6 +1228,10 @@ impl Executor {
 
     fn slot_orders_mut(&mut self, slot: OrderSlot) -> &mut HashMap<String, f64> {
         &mut self.open_orders[slot.index()]
+    }
+
+    fn dry_run_touch_fill_size_is_material(&self, size: f64) -> bool {
+        size + 1e-9 >= self.dry_run_market_touch_min_fill_size
     }
 
     async fn cancel_remote_dust_orders_for_slot(
@@ -2204,7 +2487,9 @@ impl Executor {
                     "side": format!("{:?}", side),
                     "direction": format!("{:?}", direction),
                     "size": size,
+                    "purpose": format!("{:?}", purpose),
                     "limit_price": limit_price,
+                    "expected_fill_price": expected_fill_price,
                     "dry_run": true,
                     "correlation": order_attempt_trace_payload(trace.as_ref()),
                 }),
@@ -3164,6 +3449,44 @@ mod tests {
         )
     }
 
+    fn dry_run_touch_test_executor() -> (
+        Executor,
+        mpsc::Receiver<OrderResult>,
+        mpsc::Receiver<FillEvent>,
+    ) {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, sim_fill_rx) = mpsc::channel::<FillEvent>(8);
+        let (_md_tx, md_rx) = broadcast::channel(4);
+        let exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        (exec, result_rx, sim_fill_rx)
+    }
+
     #[test]
     fn taker_size_normalization_whole_share_for_size_ge_one() {
         assert!((Executor::normalize_taker_size_for_market_buy(10.01) - 10.0).abs() < 1e-9);
@@ -3439,6 +3762,255 @@ mod tests {
         assert_eq!(fill.direction, TradeDirection::Buy);
         assert_eq!(fill.status, FillStatus::Confirmed);
         assert!((fill.filled_size - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_book_touch_partial_fill_fraction_haircuts_visible_remainder() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (_md_tx, md_rx) = broadcast::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        exec.dry_run_market_touch_book_partial_fills = true;
+        exec.dry_run_market_touch_book_fill_fraction = 0.25;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            5.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+            None,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        exec.handle_dry_run_market_data(MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.50,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        let first_fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("haircut book touch should emit partial simulated fill");
+        assert!((first_fill.filled_size - 1.25).abs() < 1e-9);
+        assert_eq!(first_fill.source, FillSource::DryRunBookTouch);
+        exec.handle_fill_notification(&first_fill).await;
+        assert!(exec
+            .slot_orders(OrderSlot::YES_BUY)
+            .values()
+            .any(|remaining| (*remaining - 3.75).abs() < 1e-9));
+        assert!(result_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_book_depth_touch_fills_best_bid_depletion() {
+        let (mut exec, mut result_rx, mut sim_fill_rx) = dry_run_touch_test_executor();
+        exec.dry_run_market_touch_book_depth_fills = true;
+        exec.dry_run_market_touch_book_depth_fill_fraction = 0.25;
+        exec.dry_run_market_touch_min_fill_size = 0.0;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            20.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+            None,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        exec.handle_dry_run_market_data(MarketDataMsg::BookDepthTick {
+            market_side: Side::Yes,
+            best_bid: 0.50,
+            best_ask: Some(0.52),
+            best_bid_size: Some(30.0),
+            best_ask_size: Some(40.0),
+            best_bid_drop_qty: 20.0,
+            best_ask_drop_qty: 0.0,
+            event_time_ms: Some(1_800_000_000_000),
+            source_sequence_id: Some("seq-1".to_string()),
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        let fill = sim_fill_rx
+            .recv()
+            .await
+            .expect("book-depth touch should emit simulated fill");
+        assert_eq!(fill.side, Side::Yes);
+        assert_eq!(fill.direction, TradeDirection::Buy);
+        assert_eq!(fill.status, FillStatus::Confirmed);
+        assert_eq!(fill.source, FillSource::DryRunBookDepthTouch);
+        assert!((fill.filled_size - 5.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_book_depth_touch_requires_order_at_best_bid() {
+        let (mut exec, mut result_rx, mut sim_fill_rx) = dry_run_touch_test_executor();
+        exec.dry_run_market_touch_book_depth_fills = true;
+        exec.dry_run_market_touch_book_depth_fill_fraction = 0.25;
+        exec.dry_run_market_touch_min_fill_size = 0.0;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.49,
+            20.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+            None,
+        )
+        .await;
+        let _ = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+
+        exec.handle_dry_run_market_data(MarketDataMsg::BookDepthTick {
+            market_side: Side::Yes,
+            best_bid: 0.50,
+            best_ask: Some(0.52),
+            best_bid_size: Some(30.0),
+            best_ask_size: Some(40.0),
+            best_bid_drop_qty: 20.0,
+            best_ask_drop_qty: 0.0,
+            event_time_ms: Some(1_800_000_000_001),
+            source_sequence_id: Some("seq-2".to_string()),
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        assert!(
+            sim_fill_rx.try_recv().is_err(),
+            "best-level depletion does not prove a lower-priced bid was filled"
+        );
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_book_touch_skips_sub_minimum_partial_fill() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (_md_tx, md_rx) = broadcast::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        exec.dry_run_market_touch_book_partial_fills = true;
+        exec.dry_run_market_touch_book_fill_fraction = 0.05;
+        exec.dry_run_market_touch_min_fill_size = 10.0;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            40.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+            None,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        exec.handle_dry_run_market_data(MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.50,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        assert!(
+            sim_fill_rx.try_recv().is_err(),
+            "2-share book-touch haircut should not create uncloseable dust residual"
+        );
     }
 
     #[tokio::test]
@@ -4038,6 +4610,80 @@ mod tests {
             .await
             .expect("second haircut trade should close remainder");
         assert!((second_fill.filled_size - 3.0).abs() < 1e-9);
+    }
+
+    #[tokio::test]
+    async fn dry_run_market_trade_touch_skips_sub_minimum_partial_fill() {
+        let (_cmd_tx, cmd_rx) = mpsc::channel::<ExecutionCmd>(4);
+        let (result_tx, mut result_rx) = mpsc::channel::<OrderResult>(8);
+        let (_fill_tx, fill_rx) = mpsc::channel(4);
+        let (sim_fill_tx, mut sim_fill_rx) = mpsc::channel::<FillEvent>(4);
+        let (_md_tx, md_rx) = broadcast::channel(4);
+        let mut exec = Executor::new(
+            ExecutorConfig {
+                rest_url: "https://example.invalid".to_string(),
+                market_id: "0x0".to_string(),
+                yes_asset_id: "1".to_string(),
+                no_asset_id: "2".to_string(),
+                tick_size: 0.01,
+                reconcile_interval_secs: 30,
+                dry_run: true,
+                market_end_ts: None,
+                pgt_shadow_same_side_provide_cooldown_ms: 0,
+            },
+            None,
+            None,
+            cmd_rx,
+            result_tx,
+            fill_rx,
+            Some(sim_fill_tx),
+            Some(md_rx),
+            true,
+            None,
+            None,
+            None,
+            None,
+        );
+        exec.dry_run_market_touch_trade_partial_fills = true;
+        exec.dry_run_market_touch_trade_fill_fraction = 0.25;
+        exec.dry_run_market_touch_min_fill_size = 10.0;
+
+        exec.handle_place_bid(
+            Side::Yes,
+            TradeDirection::Buy,
+            0.50,
+            40.0,
+            BidReason::Provide,
+            TradePurpose::Provide,
+            0.0,
+            None,
+        )
+        .await;
+        let placed = result_rx
+            .recv()
+            .await
+            .expect("dry_run should emit OrderPlaced");
+        assert!(
+            matches!(placed, OrderResult::OrderPlaced { slot, .. } if slot == OrderSlot::YES_BUY)
+        );
+
+        exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
+            asset_id: "1".to_string(),
+            trade_id: Some("dust-trade".to_string()),
+            market_side: Side::Yes,
+            taker_side: TakerSide::Sell,
+            price: 0.50,
+            size: 8.0,
+            ts: Instant::now(),
+        })
+        .await;
+        tokio::time::sleep(Duration::from_millis(super::DRY_RUN_TOUCH_CONFIRM_MS + 10)).await;
+        exec.flush_dry_run_pending_touch_fills().await;
+
+        assert!(
+            sim_fill_rx.try_recv().is_err(),
+            "2-share trade-touch haircut should not create uncloseable dust residual"
+        );
     }
 
     #[tokio::test]
