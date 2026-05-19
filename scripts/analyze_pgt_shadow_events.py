@@ -28,6 +28,22 @@ class Fill:
 
 
 @dataclass
+class DepthTouchEvidence:
+    recv_ms: int
+    side: str
+    price: float
+    size: float
+    source: str
+    depth_source_sequence_id: str | None = None
+    depth_event_time_ms: int | None = None
+    depth_event_lag_ms: int | None = None
+    depth_best_bid: float | None = None
+    depth_best_ask: float | None = None
+    depth_best_bid_drop_qty: float | None = None
+    depth_best_ask_drop_qty: float | None = None
+
+
+@dataclass
 class RoundRow:
     round_id: int
     slug: str
@@ -36,6 +52,7 @@ class RoundRow:
     winner_side: str = ""
     complete: bool = False
     fills: list[Fill] = field(default_factory=list)
+    depth_touches: list[DepthTouchEvidence] = field(default_factory=list)
     paired_qty: float = 0.0
     pair_cost: float = 0.0
     residual_qty: float = 0.0
@@ -433,6 +450,54 @@ def load_round(path: Path) -> RoundRow:
                     out.dry_run_touch_trade += 1
                 else:
                     out.dry_run_touch_other += 1
+                if source in {"book_touch", "book_depth_touch", "trade_sell_touch"}:
+                    side = str(data.get("side") or "").upper()
+                    event_time_ms = data.get("depth_event_time_ms")
+                    recv_ms = int(row.get("recv_unix_ms") or 0)
+                    lag_ms = data.get("depth_event_lag_ms")
+                    if lag_ms is None and event_time_ms is not None and recv_ms > 0:
+                        try:
+                            lag_ms = max(0, recv_ms - int(event_time_ms))
+                        except Exception:
+                            lag_ms = None
+                    out.depth_touches.append(
+                        DepthTouchEvidence(
+                            recv_ms=recv_ms,
+                            side=side,
+                            price=float(data.get("price") or 0.0),
+                            size=float(data.get("size") or 0.0),
+                            source=source,
+                            depth_source_sequence_id=(
+                                str(data.get("depth_source_sequence_id"))
+                                if data.get("depth_source_sequence_id") is not None
+                                else None
+                            ),
+                            depth_event_time_ms=(
+                                int(event_time_ms) if event_time_ms is not None else None
+                            ),
+                            depth_event_lag_ms=int(lag_ms) if lag_ms is not None else None,
+                            depth_best_bid=(
+                                float(data.get("depth_best_bid"))
+                                if data.get("depth_best_bid") is not None
+                                else None
+                            ),
+                            depth_best_ask=(
+                                float(data.get("depth_best_ask"))
+                                if data.get("depth_best_ask") is not None
+                                else None
+                            ),
+                            depth_best_bid_drop_qty=(
+                                float(data.get("depth_best_bid_drop_qty"))
+                                if data.get("depth_best_bid_drop_qty") is not None
+                                else None
+                            ),
+                            depth_best_ask_drop_qty=(
+                                float(data.get("depth_best_ask_drop_qty"))
+                                if data.get("depth_best_ask_drop_qty") is not None
+                                else None
+                            ),
+                        )
+                    )
             elif event == "cancel_sent":
                 out.cancel_sent += 1
             elif event == "order_accepted":
@@ -477,6 +542,7 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
     dplus_minorder_no_seed: dict[str, int] = {}
     high_pressure_no_seed: dict[str, int] = {}
     depth_side_ticks: dict[str, int] = {}
+    depth_touches = [touch for r in rows for touch in r.depth_touches]
     settlement_pnls = [r.settlement_pnl for r in rows if r.settlement_pnl is not None]
     settlement_fee50_pnls = [
         r.settlement_pnl_after_fee_bps(50.0)
@@ -559,6 +625,7 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
         "xuan_m0001_no_seed": dict(sorted(xuan_m0001_no_seed.items())),
         "dplus_minorder_no_seed": dict(sorted(dplus_minorder_no_seed.items())),
         "high_pressure_no_seed": dict(sorted(high_pressure_no_seed.items())),
+        "depth_evidence_quality": depth_evidence_quality(depth_touches),
         "settlement_alpha_rows": len(settlement_pnls),
         "settlement_alpha_pnl": sum(settlement_pnls),
         "settlement_alpha_roi": (
@@ -588,9 +655,54 @@ def summarize(rows: list[RoundRow]) -> dict[str, Any]:
                     }
                     for f in r.fills
                 ],
+                "depth_touches": [depth_touch_to_dict(t) for t in r.depth_touches],
             }
             for r in residual_rows
         ],
+    }
+
+
+def depth_touch_to_dict(touch: DepthTouchEvidence) -> dict[str, Any]:
+    return {
+        "recv_ms": touch.recv_ms,
+        "side": touch.side,
+        "price": touch.price,
+        "size": touch.size,
+        "source": touch.source,
+        "depth_source_sequence_id": touch.depth_source_sequence_id,
+        "depth_event_time_ms": touch.depth_event_time_ms,
+        "depth_event_lag_ms": touch.depth_event_lag_ms,
+        "depth_best_bid": touch.depth_best_bid,
+        "depth_best_ask": touch.depth_best_ask,
+        "depth_best_bid_drop_qty": touch.depth_best_bid_drop_qty,
+        "depth_best_ask_drop_qty": touch.depth_best_ask_drop_qty,
+    }
+
+
+def depth_evidence_quality(touches: list[DepthTouchEvidence]) -> dict[str, Any]:
+    total = len(touches)
+    seq_non_null = sum(1 for t in touches if t.depth_source_sequence_id)
+    drop_qty_present = sum(
+        1
+        for t in touches
+        if t.depth_best_bid_drop_qty is not None or t.depth_best_ask_drop_qty is not None
+    )
+    best_bid_present = sum(1 for t in touches if t.depth_best_bid is not None)
+    best_ask_present = sum(1 for t in touches if t.depth_best_ask is not None)
+    lags = [float(t.depth_event_lag_ms) for t in touches if t.depth_event_lag_ms is not None]
+    return {
+        "touches": total,
+        "seq_non_null": seq_non_null,
+        "seq_non_null_rate": seq_non_null / total if total else None,
+        "drop_qty_present": drop_qty_present,
+        "drop_qty_coverage": drop_qty_present / total if total else None,
+        "best_bid_present": best_bid_present,
+        "best_bid_coverage": best_bid_present / total if total else None,
+        "best_ask_present": best_ask_present,
+        "best_ask_coverage": best_ask_present / total if total else None,
+        "depth_event_lag_ms_p50": statistics.median(lags) if lags else None,
+        "depth_event_lag_ms_p90": percentile(lags, 90.0),
+        "depth_event_lag_ms_max": max(lags) if lags else None,
     }
 
 
@@ -637,6 +749,7 @@ def round_details(rows: list[RoundRow]) -> list[dict[str, Any]]:
                 }
                 for f in r.fills
             ],
+            "depth_touches": [depth_touch_to_dict(t) for t in r.depth_touches],
             "taker_repairs": r.taker_repairs,
             "dry_run_touch_book": r.dry_run_touch_book,
             "dry_run_touch_book_depth": r.dry_run_touch_book_depth,
@@ -775,6 +888,15 @@ def main() -> None:
             f"xuan_m0001_no_seed={s['xuan_m0001_no_seed']}"
             f" dplus_minorder_no_seed={s['dplus_minorder_no_seed']}"
             f" high_pressure_no_seed={s['high_pressure_no_seed']}"
+        )
+        dq = s["depth_evidence_quality"]
+        print(
+            f"{name}_depth_quality: touches={dq['touches']} "
+            f"seq={dq['seq_non_null']}/{dq['touches']} rate={dq['seq_non_null_rate']} "
+            f"drop_qty={dq['drop_qty_present']}/{dq['touches']} coverage={dq['drop_qty_coverage']} "
+            f"lag_ms_p50={dq['depth_event_lag_ms_p50']} "
+            f"lag_ms_p90={dq['depth_event_lag_ms_p90']} "
+            f"lag_ms_max={dq['depth_event_lag_ms_max']}"
         )
     if result["incomplete"]:
         print(f"incomplete_tail={result['incomplete']}")

@@ -20,7 +20,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 use super::messages::*;
-use super::recorder::{RecorderHandle, RecorderSessionMeta};
+use super::recorder::{MarketBookDepthEvidence, RecorderHandle, RecorderSessionMeta};
 use super::types::Side;
 use crate::polymarket::clob_v2::{
     build_signed_limit_order_v2, builder_code_from_env, infer_signature_type,
@@ -209,6 +209,7 @@ struct DryRunPendingTouchFill {
     size: f64,
     price: f64,
     source: &'static str,
+    depth: Option<MarketBookDepthEvidence>,
     detected_at: Instant,
     evidence: Option<DryRunTouchEvidence>,
 }
@@ -467,6 +468,26 @@ impl Executor {
         format!("dry-{}-{}", slot.as_str(), now_ns)
     }
 
+    fn unix_now_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            .min(u128::from(u64::MAX)) as u64
+    }
+
+    fn depth_matches_side(depth: &MarketBookDepthEvidence, side: Side) -> bool {
+        let expected = match side {
+            Side::Yes => "YES",
+            Side::No => "NO",
+        };
+        depth
+            .market_side
+            .as_deref()
+            .map(|market_side| market_side.eq_ignore_ascii_case(expected))
+            .unwrap_or(false)
+    }
+
     fn dry_run_should_fill(&self, order_id: &str) -> bool {
         if self.dry_run_fill_probability <= 0.0 {
             return false;
@@ -568,7 +589,10 @@ impl Executor {
         let now = Instant::now();
         match msg {
             MarketDataMsg::BookTick {
-                yes_ask, no_ask, ..
+                yes_ask,
+                no_ask,
+                depth,
+                ..
             } => {
                 if !self.dry_run_market_touch_book_fills {
                     return;
@@ -619,14 +643,24 @@ impl Executor {
                         self.dry_run_pending_touch_fills.remove(order_id);
                         continue;
                     }
+                    let touch_depth = depth
+                        .as_ref()
+                        .filter(|book_depth| Self::depth_matches_side(book_depth, meta.side))
+                        .cloned();
                     self.dry_run_pending_touch_fills
                         .entry(order_id.clone())
+                        .and_modify(|pending| {
+                            if touch_depth.is_some() {
+                                pending.depth = touch_depth.clone();
+                            }
+                        })
                         .or_insert(DryRunPendingTouchFill {
                             side: meta.side,
                             direction: meta.direction,
                             size: fill_size,
                             price: meta.price,
                             source: "book_touch",
+                            depth: touch_depth,
                             detected_at: now,
                             evidence: None,
                         });
@@ -743,6 +777,7 @@ impl Executor {
                                 size: fill_size,
                                 price: meta.price,
                                 source: "book_depth_touch",
+                                depth: None,
                                 detected_at: now,
                                 evidence: Some(evidence),
                             });
@@ -841,6 +876,7 @@ impl Executor {
                             pending.direction = meta.direction;
                             pending.price = meta.price;
                             pending.source = "trade_sell_touch";
+                            pending.depth = None;
                             pending.detected_at = detected_at;
                             pending.evidence = None;
                             pending.size = if self.dry_run_market_touch_trade_partial_fills {
@@ -856,6 +892,7 @@ impl Executor {
                                 size: fill_size,
                                 price: meta.price,
                                 source: "trade_sell_touch",
+                                depth: None,
                                 detected_at,
                                 evidence: None,
                             });
@@ -887,6 +924,7 @@ impl Executor {
             f64,
             f64,
             &'static str,
+            Option<MarketBookDepthEvidence>,
             u128,
             Option<DryRunTouchEvidence>,
         )> = self
@@ -903,6 +941,7 @@ impl Executor {
                         pending.size,
                         pending.price,
                         pending.source,
+                        pending.depth.clone(),
                         now.saturating_duration_since(pending.detected_at)
                             .as_millis(),
                         pending.evidence.clone(),
@@ -920,6 +959,7 @@ impl Executor {
             pending_size,
             fill_price,
             source,
+            depth,
             confirm_age_ms,
             evidence,
         ) in ready
@@ -983,67 +1023,67 @@ impl Executor {
                         size: fill_size,
                         price: fill_price,
                         source,
+                        depth,
                         detected_at: now,
                         evidence,
                     },
                 );
             } else {
-                let mut data = serde_json::json!({
-                    "order_id": order_id,
-                    "slot": live_meta.slot.as_str(),
-                    "side": format!("{:?}", side),
-                    "direction": format!("{:?}", direction),
-                    "reason": format!("{:?}", live_meta.reason),
-                    "price": fill_price,
-                    "size": fill_size,
-                    "remaining_before": current_remaining,
-                    "partial": !will_close,
-                    "source": source,
-                    "confirm_age_ms": confirm_age_ms,
-                });
-                if let Some(evidence) = evidence {
-                    if let Some(obj) = data.as_object_mut() {
-                        if let Some(market_side) = evidence.market_side {
-                            obj.insert(
-                                "depth_market_side".to_string(),
-                                serde_json::json!(market_side.as_str()),
-                            );
-                        }
-                        obj.insert(
-                            "depth_best_bid".to_string(),
-                            serde_json::json!(evidence.best_bid),
-                        );
-                        obj.insert(
-                            "depth_best_ask".to_string(),
-                            serde_json::json!(evidence.best_ask),
-                        );
-                        obj.insert(
-                            "depth_best_bid_size".to_string(),
-                            serde_json::json!(evidence.best_bid_size),
-                        );
-                        obj.insert(
-                            "depth_best_ask_size".to_string(),
-                            serde_json::json!(evidence.best_ask_size),
-                        );
-                        obj.insert(
-                            "depth_best_bid_drop_qty".to_string(),
-                            serde_json::json!(evidence.best_bid_drop_qty),
-                        );
-                        obj.insert(
-                            "depth_best_ask_drop_qty".to_string(),
-                            serde_json::json!(evidence.best_ask_drop_qty),
-                        );
-                        obj.insert(
-                            "depth_event_time_ms".to_string(),
-                            serde_json::json!(evidence.event_time_ms),
-                        );
-                        obj.insert(
-                            "depth_source_sequence_id".to_string(),
-                            serde_json::json!(evidence.source_sequence_id),
-                        );
-                    }
-                }
-                self.emit_order_event("dry_run_touch_fill_confirmed", data);
+                let emit_unix_ms = Self::unix_now_ms();
+                let depth_ref = depth.as_ref();
+                let evidence_ref = evidence.as_ref();
+                let depth_event_time_ms = depth_ref
+                    .and_then(|book_depth| book_depth.event_time_ms)
+                    .or_else(|| {
+                        evidence_ref.and_then(|touch_evidence| touch_evidence.event_time_ms)
+                    });
+                let depth_event_lag_ms = depth_event_time_ms
+                    .map(|event_time_ms| emit_unix_ms.saturating_sub(event_time_ms));
+                self.emit_order_event(
+                    "dry_run_touch_fill_confirmed",
+                    serde_json::json!({
+                        "order_id": order_id,
+                        "slot": live_meta.slot.as_str(),
+                        "side": format!("{:?}", side),
+                        "direction": format!("{:?}", direction),
+                        "reason": format!("{:?}", live_meta.reason),
+                        "price": fill_price,
+                        "size": fill_size,
+                        "remaining_before": current_remaining,
+                        "partial": !will_close,
+                        "source": source,
+                        "confirm_age_ms": confirm_age_ms,
+                        "depth_market_side": depth_ref
+                            .and_then(|book_depth| book_depth.market_side.as_deref())
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.market_side.map(|side| side.as_str()))),
+                        "depth_asset_id": depth_ref.and_then(|book_depth| book_depth.asset_id.as_deref()),
+                        "depth_event_time_ms": depth_event_time_ms,
+                        "depth_event_lag_ms": depth_event_lag_ms,
+                        "depth_source_sequence_id": depth_ref
+                            .and_then(|book_depth| book_depth.source_sequence_id.as_deref())
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.source_sequence_id.as_deref())),
+                        "depth_best_bid": depth_ref
+                            .and_then(|book_depth| book_depth.best_bid)
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_bid)),
+                        "depth_best_ask": depth_ref
+                            .and_then(|book_depth| book_depth.best_ask)
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_ask)),
+                        "depth_best_bid_size": depth_ref
+                            .and_then(|book_depth| book_depth.best_bid_size)
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_bid_size)),
+                        "depth_best_ask_size": depth_ref
+                            .and_then(|book_depth| book_depth.best_ask_size)
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_ask_size)),
+                        "depth_best_bid_size_delta": depth_ref.and_then(|book_depth| book_depth.best_bid_size_delta),
+                        "depth_best_ask_size_delta": depth_ref.and_then(|book_depth| book_depth.best_ask_size_delta),
+                        "depth_best_bid_drop_qty": depth_ref
+                            .and_then(|book_depth| book_depth.best_bid_drop_qty)
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_bid_drop_qty)),
+                        "depth_best_ask_drop_qty": depth_ref
+                            .and_then(|book_depth| book_depth.best_ask_drop_qty)
+                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_ask_drop_qty)),
+                    }),
+                );
             }
         }
     }
@@ -3416,6 +3456,7 @@ mod tests {
         BidReason, CancelReason, FillEvent, FillSource, FillStatus, MarketDataMsg, OrderSlot,
         TakerSide, TradeDirection, TradePurpose,
     };
+    use crate::polymarket::recorder::MarketBookDepthEvidence;
     use crate::polymarket::types::Side;
 
     fn test_executor() -> Executor {
@@ -3746,6 +3787,7 @@ mod tests {
             yes_ask: 0.50,
             no_bid: 0.45,
             no_ask: 0.55,
+            depth: None,
             ts: Instant::now(),
         };
         let _ = md_tx.send(touch_msg.clone());
@@ -3823,6 +3865,7 @@ mod tests {
             yes_ask: 0.50,
             no_bid: 0.45,
             no_ask: 0.55,
+            depth: None,
             ts: Instant::now(),
         })
         .await;
@@ -3841,6 +3884,59 @@ mod tests {
             .values()
             .any(|remaining| (*remaining - 3.75).abs() < 1e-9));
         assert!(result_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn dry_run_book_touch_preserves_depth_evidence_on_pending_fill() {
+        let mut exec = test_executor();
+        let order_id = "dry-depth-chain".to_string();
+        exec.track_dry_run_live_order(
+            order_id.clone(),
+            OrderSlot::YES_BUY,
+            Side::Yes,
+            TradeDirection::Buy,
+            BidReason::Provide,
+            0.50,
+            5.0,
+        );
+        let depth = MarketBookDepthEvidence {
+            market_side: Some("YES".to_string()),
+            asset_id: Some("yes-asset".to_string()),
+            event_time_ms: Some(1_746_000_000_001),
+            source_sequence_id: Some("seq-depth-1".to_string()),
+            best_bid: Some(0.49),
+            best_ask: Some(0.50),
+            best_bid_size: Some(12.0),
+            best_ask_size: Some(7.0),
+            best_bid_size_delta: Some(-2.0),
+            best_ask_size_delta: Some(0.0),
+            best_bid_drop_qty: Some(2.0),
+            best_ask_drop_qty: Some(0.0),
+        };
+
+        exec.handle_dry_run_market_data(MarketDataMsg::BookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.50,
+            no_bid: 0.45,
+            no_ask: 0.55,
+            depth: Some(depth),
+            ts: Instant::now(),
+        })
+        .await;
+
+        let pending = exec
+            .dry_run_pending_touch_fills
+            .get(&order_id)
+            .expect("book touch should create pending fill");
+        let pending_depth = pending
+            .depth
+            .as_ref()
+            .expect("pending fill should carry depth");
+        assert_eq!(
+            pending_depth.source_sequence_id.as_deref(),
+            Some("seq-depth-1")
+        );
+        assert_eq!(pending_depth.best_bid_drop_qty, Some(2.0));
     }
 
     #[tokio::test]
@@ -4001,6 +4097,7 @@ mod tests {
             yes_ask: 0.50,
             no_bid: 0.45,
             no_ask: 0.55,
+            depth: None,
             ts: Instant::now(),
         })
         .await;
@@ -4075,6 +4172,7 @@ mod tests {
             yes_ask: 0.50,
             no_bid: 0.45,
             no_ask: 0.55,
+            depth: None,
             ts: Instant::now(),
         };
         let _ = md_tx.send(touch_msg.clone());
@@ -4152,6 +4250,7 @@ mod tests {
             yes_ask: 0.50,
             no_bid: 0.45,
             no_ask: 0.55,
+            depth: None,
             ts: Instant::now(),
         };
         let _ = md_tx.send(touch_msg.clone());
@@ -4226,6 +4325,7 @@ mod tests {
             yes_ask: f64::NAN,
             no_bid: 0.47,
             no_ask: 0.48,
+            depth: None,
             ts: Instant::now(),
         };
         let _ = md_tx.send(no_touch_msg.clone());
@@ -4239,6 +4339,7 @@ mod tests {
             yes_ask: 0.51,
             no_bid: f64::NAN,
             no_ask: f64::NAN,
+            depth: None,
             ts: Instant::now(),
         };
         let _ = md_tx.send(yes_only_partial.clone());

@@ -756,6 +756,7 @@ mod tests {
             yes_ask: 0.0,
             no_bid: 0.0,
             no_ask: 0.0,
+            depth: None,
             ts: std::time::Instant::now(),
         });
         let (_glft_tx, glft_rx) =
