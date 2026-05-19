@@ -1,0 +1,612 @@
+{
+  "artifact": "xuan_symmetric_admission_probe",
+  "assets": [
+    "BTC"
+  ],
+  "assumption": "passive maker fills at max(0.01, public_trade_price-edge); no queue/private truth",
+  "auth_network_started": false,
+  "can_support_strategy_promotion": false,
+  "cancels_sent": false,
+  "collector_scanned": false,
+  "config": {
+    "clip": 5.0,
+    "edges": [
+      0.055,
+      0.06,
+      0.065,
+      0.07
+    ],
+    "fee_rate": 0.0283,
+    "fill_haircut": 0.25,
+    "min_covered_pair_actions": 1000,
+    "min_holdout_pair_actions": 200,
+    "offset_max_s": 300.0,
+    "offset_min_s": 0.0,
+    "price_max": 0.9,
+    "price_min": 0.05,
+    "strict_l1_pair_cap": 1.02,
+    "window_s": 10.0
+  },
+  "created_utc": "2026-05-19T11:05:42.139177Z",
+  "data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+  "dataset_type": "strict_cache_symmetric_admission_probe",
+  "days": {
+    "covered": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13"
+    ],
+    "holdout": [
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ]
+  },
+  "elapsed_s": 0.556,
+  "excluded_20260514_20260515": true,
+  "filtered_row_count": 113220,
+  "labels": {
+    "covered": [
+      "20260502_20260507",
+      "20260508",
+      "20260509",
+      "20260510",
+      "20260511",
+      "20260512",
+      "20260513"
+    ],
+    "holdout": [
+      "20260516",
+      "20260517",
+      "20260518"
+    ]
+  },
+  "market_prefix": "btc-updown-5m-",
+  "orders_sent": false,
+  "outputs": {
+    "results_jsonl": "results.jsonl"
+  },
+  "public_account_execution_truth_v1_included": false,
+  "public_audit_coverage_note": "covered bucket uses 2026-05-02..13 where public audit exists; holdout 05-16/17/18 lacks public audit truth",
+  "qualified_edges": [
+    {
+      "covered_net_fee_after": 835.921955,
+      "covered_pair_actions": 8473,
+      "covered_worst_day_net_fee_after": 29.951365,
+      "edge": 0.06,
+      "holdout_net_fee_after": 210.92555,
+      "holdout_pair_actions": 1696,
+      "holdout_worst_day_net_fee_after": 41.13139
+    },
+    {
+      "covered_net_fee_after": 1271.56125,
+      "covered_pair_actions": 8473,
+      "covered_worst_day_net_fee_after": 63.0317,
+      "edge": 0.065,
+      "holdout_net_fee_after": 298.12539,
+      "holdout_pair_actions": 1696,
+      "holdout_worst_day_net_fee_after": 53.57382
+    },
+    {
+      "covered_net_fee_after": 1707.200545,
+      "covered_pair_actions": 8473,
+      "covered_worst_day_net_fee_after": 82.723645,
+      "edge": 0.07,
+      "holdout_net_fee_after": 385.32523,
+      "holdout_pair_actions": 1696,
+      "holdout_worst_day_net_fee_after": 66.01625
+    }
+  ],
+  "raw_replay_scanned": false,
+  "redeems_sent": false,
+  "results": [
+    {
+      "active_markets": 2280,
+      "bucket": "covered",
+      "daily": [
+        {
+          "day": "2026-05-02",
+          "net_fee_after": 33.50544,
+          "pair_actions": 394,
+          "pair_qty": 1970.0
+        },
+        {
+          "day": "2026-05-03",
+          "net_fee_after": 23.64781,
+          "pair_actions": 383,
+          "pair_qty": 1915.0
+        },
+        {
+          "day": "2026-05-04",
+          "net_fee_after": -17.658925,
+          "pair_actions": 926,
+          "pair_qty": 4630.0
+        },
+        {
+          "day": "2026-05-05",
+          "net_fee_after": -6.809185,
+          "pair_actions": 797,
+          "pair_qty": 3985.0
+        },
+        {
+          "day": "2026-05-06",
+          "net_fee_after": 36.0818,
+          "pair_actions": 697,
+          "pair_qty": 3485.0
+        },
+        {
+          "day": "2026-05-07",
+          "net_fee_after": 9.568145,
+          "pair_actions": 900,
+          "pair_qty": 4500.0
+        },
+        {
+          "day": "2026-05-08",
+          "net_fee_after": 37.19666,
+          "pair_actions": 1083,
+          "pair_qty": 5415.0
+        },
+        {
+          "day": "2026-05-09",
+          "net_fee_after": 60.628635,
+          "pair_actions": 614,
+          "pair_qty": 3070.0
+        },
+        {
+          "day": "2026-05-10",
+          "net_fee_after": 117.23507,
+          "pair_actions": 864,
+          "pair_qty": 4320.0
+        },
+        {
+          "day": "2026-05-11",
+          "net_fee_after": 16.21547,
+          "pair_actions": 764,
+          "pair_qty": 3820.0
+        },
+        {
+          "day": "2026-05-12",
+          "net_fee_after": 27.347645,
+          "pair_actions": 520,
+          "pair_qty": 2600.0
+        },
+        {
+          "day": "2026-05-13",
+          "net_fee_after": 63.324095,
+          "pair_actions": 531,
+          "pair_qty": 2655.0
+        }
+      ],
+      "day_count": 12,
+      "edge": 0.055,
+      "fee": 1154.91734,
+      "gross_pnl": 1555.2,
+      "net_fee_after": 400.28266,
+      "pair_actions": 8473,
+      "pair_qty": 42365.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.96329,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": -17.658925
+    },
+    {
+      "active_markets": 2280,
+      "bucket": "covered",
+      "daily": [
+        {
+          "day": "2026-05-02",
+          "net_fee_after": 53.76295,
+          "pair_actions": 394,
+          "pair_qty": 1970.0
+        },
+        {
+          "day": "2026-05-03",
+          "net_fee_after": 43.339755,
+          "pair_actions": 383,
+          "pair_qty": 1915.0
+        },
+        {
+          "day": "2026-05-04",
+          "net_fee_after": 29.951365,
+          "pair_actions": 926,
+          "pair_qty": 4630.0
+        },
+        {
+          "day": "2026-05-05",
+          "net_fee_after": 34.16857,
+          "pair_actions": 797,
+          "pair_qty": 3985.0
+        },
+        {
+          "day": "2026-05-06",
+          "net_fee_after": 71.918055,
+          "pair_actions": 697,
+          "pair_qty": 3485.0
+        },
+        {
+          "day": "2026-05-07",
+          "net_fee_after": 55.841645,
+          "pair_actions": 900,
+          "pair_qty": 4500.0
+        },
+        {
+          "day": "2026-05-08",
+          "net_fee_after": 92.879105,
+          "pair_actions": 1083,
+          "pair_qty": 5415.0
+        },
+        {
+          "day": "2026-05-09",
+          "net_fee_after": 92.197445,
+          "pair_actions": 614,
+          "pair_qty": 3070.0
+        },
+        {
+          "day": "2026-05-10",
+          "net_fee_after": 161.65763,
+          "pair_actions": 864,
+          "pair_qty": 4320.0
+        },
+        {
+          "day": "2026-05-11",
+          "net_fee_after": 55.49653,
+          "pair_actions": 764,
+          "pair_qty": 3820.0
+        },
+        {
+          "day": "2026-05-12",
+          "net_fee_after": 54.083445,
+          "pair_actions": 520,
+          "pair_qty": 2600.0
+        },
+        {
+          "day": "2026-05-13",
+          "net_fee_after": 90.62546,
+          "pair_actions": 531,
+          "pair_qty": 2655.0
+        }
+      ],
+      "day_count": 12,
+      "edge": 0.06,
+      "fee": 1142.928045,
+      "gross_pnl": 1978.85,
+      "net_fee_after": 835.921955,
+      "pair_actions": 8473,
+      "pair_qty": 42365.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.95329,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 29.951365
+    },
+    {
+      "active_markets": 2280,
+      "bucket": "covered",
+      "daily": [
+        {
+          "day": "2026-05-02",
+          "net_fee_after": 74.02046,
+          "pair_actions": 394,
+          "pair_qty": 1970.0
+        },
+        {
+          "day": "2026-05-03",
+          "net_fee_after": 63.0317,
+          "pair_actions": 383,
+          "pair_qty": 1915.0
+        },
+        {
+          "day": "2026-05-04",
+          "net_fee_after": 77.561655,
+          "pair_actions": 926,
+          "pair_qty": 4630.0
+        },
+        {
+          "day": "2026-05-05",
+          "net_fee_after": 75.146325,
+          "pair_actions": 797,
+          "pair_qty": 3985.0
+        },
+        {
+          "day": "2026-05-06",
+          "net_fee_after": 107.75431,
+          "pair_actions": 697,
+          "pair_qty": 3485.0
+        },
+        {
+          "day": "2026-05-07",
+          "net_fee_after": 102.115145,
+          "pair_actions": 900,
+          "pair_qty": 4500.0
+        },
+        {
+          "day": "2026-05-08",
+          "net_fee_after": 148.56155,
+          "pair_actions": 1083,
+          "pair_qty": 5415.0
+        },
+        {
+          "day": "2026-05-09",
+          "net_fee_after": 123.766255,
+          "pair_actions": 614,
+          "pair_qty": 3070.0
+        },
+        {
+          "day": "2026-05-10",
+          "net_fee_after": 206.08019,
+          "pair_actions": 864,
+          "pair_qty": 4320.0
+        },
+        {
+          "day": "2026-05-11",
+          "net_fee_after": 94.77759,
+          "pair_actions": 764,
+          "pair_qty": 3820.0
+        },
+        {
+          "day": "2026-05-12",
+          "net_fee_after": 80.819245,
+          "pair_actions": 520,
+          "pair_qty": 2600.0
+        },
+        {
+          "day": "2026-05-13",
+          "net_fee_after": 117.926825,
+          "pair_actions": 531,
+          "pair_qty": 2655.0
+        }
+      ],
+      "day_count": 12,
+      "edge": 0.065,
+      "fee": 1130.93875,
+      "gross_pnl": 2402.5,
+      "net_fee_after": 1271.56125,
+      "pair_actions": 8473,
+      "pair_qty": 42365.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.94329,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 63.0317
+    },
+    {
+      "active_markets": 2280,
+      "bucket": "covered",
+      "daily": [
+        {
+          "day": "2026-05-02",
+          "net_fee_after": 94.27797,
+          "pair_actions": 394,
+          "pair_qty": 1970.0
+        },
+        {
+          "day": "2026-05-03",
+          "net_fee_after": 82.723645,
+          "pair_actions": 383,
+          "pair_qty": 1915.0
+        },
+        {
+          "day": "2026-05-04",
+          "net_fee_after": 125.171945,
+          "pair_actions": 926,
+          "pair_qty": 4630.0
+        },
+        {
+          "day": "2026-05-05",
+          "net_fee_after": 116.12408,
+          "pair_actions": 797,
+          "pair_qty": 3985.0
+        },
+        {
+          "day": "2026-05-06",
+          "net_fee_after": 143.590565,
+          "pair_actions": 697,
+          "pair_qty": 3485.0
+        },
+        {
+          "day": "2026-05-07",
+          "net_fee_after": 148.388645,
+          "pair_actions": 900,
+          "pair_qty": 4500.0
+        },
+        {
+          "day": "2026-05-08",
+          "net_fee_after": 204.243995,
+          "pair_actions": 1083,
+          "pair_qty": 5415.0
+        },
+        {
+          "day": "2026-05-09",
+          "net_fee_after": 155.335065,
+          "pair_actions": 614,
+          "pair_qty": 3070.0
+        },
+        {
+          "day": "2026-05-10",
+          "net_fee_after": 250.50275,
+          "pair_actions": 864,
+          "pair_qty": 4320.0
+        },
+        {
+          "day": "2026-05-11",
+          "net_fee_after": 134.05865,
+          "pair_actions": 764,
+          "pair_qty": 3820.0
+        },
+        {
+          "day": "2026-05-12",
+          "net_fee_after": 107.555045,
+          "pair_actions": 520,
+          "pair_qty": 2600.0
+        },
+        {
+          "day": "2026-05-13",
+          "net_fee_after": 145.22819,
+          "pair_actions": 531,
+          "pair_qty": 2655.0
+        }
+      ],
+      "day_count": 12,
+      "edge": 0.07,
+      "fee": 1118.949455,
+      "gross_pnl": 2826.15,
+      "net_fee_after": 1707.200545,
+      "pair_actions": 8473,
+      "pair_qty": 42365.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.93329,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 82.723645
+    },
+    {
+      "active_markets": 484,
+      "bucket": "holdout",
+      "daily": [
+        {
+          "day": "2026-05-16",
+          "net_fee_after": 67.84644,
+          "pair_actions": 551,
+          "pair_qty": 2755.0
+        },
+        {
+          "day": "2026-05-17",
+          "net_fee_after": 28.68896,
+          "pair_actions": 242,
+          "pair_qty": 1210.0
+        },
+        {
+          "day": "2026-05-18",
+          "net_fee_after": 27.19031,
+          "pair_actions": 903,
+          "pair_qty": 4515.0
+        }
+      ],
+      "day_count": 3,
+      "edge": 0.055,
+      "fee": 229.97429,
+      "gross_pnl": 353.7,
+      "net_fee_after": 123.72571,
+      "pair_actions": 1696,
+      "pair_qty": 8480.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.95829,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 27.19031
+    },
+    {
+      "active_markets": 484,
+      "bucket": "holdout",
+      "daily": [
+        {
+          "day": "2026-05-16",
+          "net_fee_after": 96.176105,
+          "pair_actions": 551,
+          "pair_qty": 2755.0
+        },
+        {
+          "day": "2026-05-17",
+          "net_fee_after": 41.13139,
+          "pair_actions": 242,
+          "pair_qty": 1210.0
+        },
+        {
+          "day": "2026-05-18",
+          "net_fee_after": 73.618055,
+          "pair_actions": 903,
+          "pair_qty": 4515.0
+        }
+      ],
+      "day_count": 3,
+      "edge": 0.06,
+      "fee": 227.57445,
+      "gross_pnl": 438.5,
+      "net_fee_after": 210.92555,
+      "pair_actions": 1696,
+      "pair_qty": 8480.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.94829,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 41.13139
+    },
+    {
+      "active_markets": 484,
+      "bucket": "holdout",
+      "daily": [
+        {
+          "day": "2026-05-16",
+          "net_fee_after": 124.50577,
+          "pair_actions": 551,
+          "pair_qty": 2755.0
+        },
+        {
+          "day": "2026-05-17",
+          "net_fee_after": 53.57382,
+          "pair_actions": 242,
+          "pair_qty": 1210.0
+        },
+        {
+          "day": "2026-05-18",
+          "net_fee_after": 120.0458,
+          "pair_actions": 903,
+          "pair_qty": 4515.0
+        }
+      ],
+      "day_count": 3,
+      "edge": 0.065,
+      "fee": 225.17461,
+      "gross_pnl": 523.3,
+      "net_fee_after": 298.12539,
+      "pair_actions": 1696,
+      "pair_qty": 8480.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.93829,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 53.57382
+    },
+    {
+      "active_markets": 484,
+      "bucket": "holdout",
+      "daily": [
+        {
+          "day": "2026-05-16",
+          "net_fee_after": 152.835435,
+          "pair_actions": 551,
+          "pair_qty": 2755.0
+        },
+        {
+          "day": "2026-05-17",
+          "net_fee_after": 66.01625,
+          "pair_actions": 242,
+          "pair_qty": 1210.0
+        },
+        {
+          "day": "2026-05-18",
+          "net_fee_after": 166.473545,
+          "pair_actions": 903,
+          "pair_qty": 4515.0
+        }
+      ],
+      "day_count": 3,
+      "edge": 0.07,
+      "fee": 222.77477,
+      "gross_pnl": 608.1,
+      "net_fee_after": 385.32523,
+      "pair_actions": 1696,
+      "pair_qty": 8480.0,
+      "residual_qty_rate": 0.0,
+      "weighted_pair_cost": 0.92829,
+      "window_s": 10.0,
+      "worst_day_net_fee_after": 66.01625
+    }
+  ],
+  "row_count": 185342,
+  "schema_version": 1,
+  "status": "UNKNOWN_PROMISING_MECHANISM_CLUE"
+}
