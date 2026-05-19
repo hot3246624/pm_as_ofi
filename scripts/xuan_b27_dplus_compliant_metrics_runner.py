@@ -316,7 +316,6 @@ def run_config_for_pair(
                 slug,
                 condition_id,
                 trigger_ts_ms,
-                -trigger_ts_ms as neg_trigger_ts_ms,
                 first_side,
                 case when first_side = 'YES' then 'NO' else 'YES' end as completion_side,
                 cast(first_l2_vwap as double) as first_price,
@@ -336,7 +335,6 @@ def run_config_for_pair(
                 day,
                 condition_id,
                 ts_ms,
-                -ts_ms as neg_ts_ms,
                 side,
                 cast({buy_vwap_col} as double) as completion_price,
                 cast({buy_filled_col} as double) as completion_qty,
@@ -348,30 +346,51 @@ def run_config_for_pair(
               and {buy_vwap_col} is not null
               and {buy_vwap_col} > 0
               and {buy_filled_col} >= {clip}
-        )
-        select
-            sc.candidate_id,
-            sc.day,
-            sc.slug,
-            sc.condition_id,
-            sc.trigger_ts_ms,
-            sc.first_side,
-            sc.completion_side,
-            sc.first_price,
-            sc.first_qty,
-            cc.ts_ms as completion_ts_ms,
-            cc.completion_price,
-            cc.completion_qty,
-            cc.completion_worst_price
-        from strict_candidates sc
-        asof left join completion_candidates cc
+        ),
+        joined as (
+            select
+                sc.candidate_id,
+                sc.day,
+                sc.slug,
+                sc.condition_id,
+                sc.trigger_ts_ms,
+                sc.first_side,
+                sc.completion_side,
+                sc.first_price,
+                sc.first_qty,
+                cc.ts_ms as completion_ts_ms,
+                cc.completion_price,
+                cc.completion_qty,
+                cc.completion_worst_price,
+                row_number() over (
+                    partition by sc.candidate_id
+                    order by cc.ts_ms asc nulls last
+                ) as completion_rank
+            from strict_candidates sc
+            left join completion_candidates cc
               on cc.day = sc.day
              and cc.condition_id = sc.condition_id
              and cc.side = sc.completion_side
+             and cc.ts_ms >= sc.trigger_ts_ms
+             and cc.ts_ms <= sc.trigger_ts_ms + cast({completion_window_s * 1000.0} as bigint)
              and sc.first_price + cc.completion_price <= {pair_cap}
-             and sc.neg_trigger_ts_ms >= cc.neg_ts_ms
-        where cc.ts_ms is null
-           or cc.ts_ms <= sc.trigger_ts_ms + cast({completion_window_s * 1000.0} as bigint)
+        )
+        select
+            candidate_id,
+            day,
+            slug,
+            condition_id,
+            trigger_ts_ms,
+            first_side,
+            completion_side,
+            first_price,
+            first_qty,
+            completion_ts_ms,
+            completion_price,
+            completion_qty,
+            completion_worst_price
+        from joined
+        where completion_rank = 1
         """
         columns = [str(item[0]) for item in con.execute(query + " limit 0").description]
         return [dict(zip(columns, row)) for row in con.execute(query).fetchall()]
