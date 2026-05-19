@@ -159,13 +159,14 @@ import sys
 
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
 ok = (
-    data.get("status") == "BLOCKED_COMPLIANT_BACKTEST_RUNNER_NOT_IMPLEMENTED"
+    data.get("status") == "BLOCKED_COMPLIANT_METRICS_REQUIRES_KEEP_CANDIDATE"
     and data.get("inputs_available") is True
     and data.get("ready_to_run_compliant_backtest") is False
     and data.get("existing_runner_input_type") == "local_sqlite_snapshot_btc5m_market_ticks"
     and data.get("required_dataset_type") == "declared_strict_cache_plus_completion_store"
     and data.get("requires_compliant_store_adapter") is True
     and data.get("compliant_store_adapter_ready") is True
+    and data.get("compliant_metrics_runner_implemented") is True
     and data.get("adapter_join_probe_passed") is True
     and data.get("adapter_join_probe_safe") is True
     and data.get("adapter_join_row_count", 0) > 0

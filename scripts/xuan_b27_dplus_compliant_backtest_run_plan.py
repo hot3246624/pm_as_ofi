@@ -20,6 +20,7 @@ from typing import Any
 ARTIFACT = "xuan_b27_dplus_compliant_backtest_run_plan"
 PREFLIGHT_ARTIFACT = "xuan_b27_dplus_compliant_backtest_input_preflight"
 ADAPTER_JOIN_ARTIFACT = "xuan_b27_dplus_compliant_adapter_join_probe"
+METRICS_RUNNER = "scripts/xuan_b27_dplus_compliant_metrics_runner.py"
 
 
 def utc_label() -> str:
@@ -84,11 +85,13 @@ def build_plan(
     preflight_path: Path | None,
     adapter_join: dict[str, Any],
     adapter_join_path: Path | None,
+    metrics_runner_path: Path,
 ) -> dict[str, Any]:
     safe = safe_preflight(preflight)
     inputs_available = preflight.get("preflight_passed") is True and safe
     adapter_join_safe = safe_adapter_join_probe(adapter_join)
     adapter_ready = inputs_available and adapter_join_safe
+    metrics_runner_implemented = metrics_runner_path.exists()
     existing_runner_input_type = "local_sqlite_snapshot_btc5m_market_ticks"
     required_dataset_type = "declared_strict_cache_plus_completion_store"
     status = (
@@ -97,6 +100,26 @@ def build_plan(
         else "BLOCKED_COMPLIANT_BACKTEST_ADAPTER_JOIN_NOT_VERIFIED"
         if not adapter_ready
         else "BLOCKED_COMPLIANT_BACKTEST_RUNNER_NOT_IMPLEMENTED"
+        if not metrics_runner_implemented
+        else "BLOCKED_COMPLIANT_METRICS_REQUIRES_KEEP_CANDIDATE"
+    )
+    blocked_reason = (
+        "compliant strict/cache/completion/public-truth inputs unavailable locally"
+        if not inputs_available
+        else "compliant strict-cache/completion/public-audit adapter join has not been verified"
+        if not adapter_ready
+        else "adapter join is verified, but no compliant metrics runner is implemented"
+        if not metrics_runner_implemented
+        else "compliant metrics runner is implemented, but no fee-after positive low-residual candidate has cleared validation"
+    )
+    next_gate = (
+        "make compliant stores available locally or use an approved read-only metadata discovery path"
+        if not inputs_available
+        else "run or repair xuan_b27_dplus_compliant_adapter_join_probe before planning a promotion backtest"
+        if not adapter_ready
+        else "implement a no-network compliant metrics runner over declared strict-cache/completion/public-audit inputs; do not reuse SQLite snapshot backtest for promotion"
+        if not metrics_runner_implemented
+        else "run compliant metrics runner smoke and bounded materialized metrics; require fee-after positive PnL, low residual, bounded worst day, and no public-audit scope gap before any shadow decision"
     )
     return {
         "status": status,
@@ -133,6 +156,9 @@ def build_plan(
         "required_dataset_type": required_dataset_type,
         "requires_compliant_store_adapter": True,
         "compliant_store_adapter_ready": adapter_ready,
+        "compliant_metrics_runner": METRICS_RUNNER,
+        "compliant_metrics_runner_path": str(metrics_runner_path),
+        "compliant_metrics_runner_implemented": metrics_runner_implemented,
         "adapter_requirement": (
             "Build or verify a local adapter that reads only declared strict/cache and "
             "completion-store inputs, emits pair-arb candidate/fill/residual metrics, "
@@ -176,20 +202,8 @@ def build_plan(
                 ],
             },
         ],
-        "blocked_reason": (
-            "compliant strict/cache/completion/public-truth inputs unavailable locally"
-            if not inputs_available
-            else "compliant strict-cache/completion/public-audit adapter join has not been verified"
-            if not adapter_ready
-            else "adapter join is verified, but existing pair_arb_backtest still consumes local SQLite snapshots and no compliant metrics runner is implemented"
-        ),
-        "next_gate": (
-            "make compliant stores available locally or use an approved read-only metadata discovery path"
-            if not inputs_available
-            else "run or repair xuan_b27_dplus_compliant_adapter_join_probe before planning a promotion backtest"
-            if not adapter_ready
-            else "implement a no-network compliant metrics runner over declared strict-cache/completion/public-audit inputs; do not reuse SQLite snapshot backtest for promotion"
-        ),
+        "blocked_reason": blocked_reason,
+        "next_gate": next_gate,
     }
 
 
@@ -218,7 +232,8 @@ def main() -> int:
     )
     preflight = read_json(preflight_path)
     adapter_join = read_json(adapter_join_path)
-    plan = build_plan(preflight, preflight_path, adapter_join, adapter_join_path)
+    metrics_runner_path = root / METRICS_RUNNER
+    plan = build_plan(preflight, preflight_path, adapter_join, adapter_join_path, metrics_runner_path)
     output_dir = Path(args.output_dir or f"xuan_research_artifacts/{ARTIFACT}_{label}")
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest = {

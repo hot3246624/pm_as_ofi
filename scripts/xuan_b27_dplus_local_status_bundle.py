@@ -963,6 +963,16 @@ def main() -> int:
         "xuan_b27_dplus_compliant_backtest_run_plan_smoke_*",
         artifact="xuan_b27_dplus_compliant_backtest_run_plan_smoke",
     )
+    compliant_metrics_runner_path = latest_manifest(
+        root,
+        "xuan_b27_dplus_compliant_metrics_runner_*",
+        artifact="xuan_b27_dplus_compliant_metrics_runner",
+    )
+    compliant_metrics_runner_smoke_path = latest_manifest(
+        root,
+        "xuan_b27_dplus_compliant_metrics_runner_smoke_*",
+        artifact="xuan_b27_dplus_compliant_metrics_runner_smoke",
+    )
     backtest_report_scope_audit_path = latest_manifest(
         root,
         "xuan_b27_dplus_backtest_report_scope_audit_*",
@@ -1170,6 +1180,8 @@ def main() -> int:
     compliant_adapter_join_probe = read_json(compliant_adapter_join_probe_path)
     compliant_backtest_run_plan = read_json(compliant_backtest_run_plan_path)
     compliant_backtest_run_plan_smoke = read_json(compliant_backtest_run_plan_smoke_path)
+    compliant_metrics_runner = read_json(compliant_metrics_runner_path)
+    compliant_metrics_runner_smoke = read_json(compliant_metrics_runner_smoke_path)
     backtest_report_scope_audit = read_json(backtest_report_scope_audit_path)
     backtest_report_scope_audit_smoke = read_json(backtest_report_scope_audit_smoke_path)
     completion_store_schema_probe = read_json(completion_store_schema_probe_path)
@@ -1524,6 +1536,18 @@ def main() -> int:
         "compliant_backtest_required_dataset_type": compliant_backtest_run_plan.get(
             "required_dataset_type"
         ),
+        "compliant_metrics_runner_status": compliant_metrics_runner.get("status"),
+        "compliant_metrics_runner_smoke_status": compliant_metrics_runner_smoke.get("status"),
+        "compliant_metrics_runner_run_count": compliant_metrics_runner.get("run_count"),
+        "compliant_metrics_runner_positive_fee_worst_case_run_count": (
+            compliant_metrics_runner.get("positive_fee_worst_case_run_count")
+        ),
+        "compliant_metrics_runner_low_residual_positive_run_count": (
+            compliant_metrics_runner.get("low_residual_positive_run_count")
+        ),
+        "compliant_metrics_runner_candidate_sample_limited": (
+            compliant_metrics_runner.get("candidate_sample_limited")
+        ),
         "compliant_adapter_join_status": compliant_adapter_join_probe.get("status"),
         "compliant_adapter_join_probe_passed": compliant_adapter_join_probe.get("probe_passed"),
         "compliant_adapter_join_safe": safe_adapter_join_probe(compliant_adapter_join_probe),
@@ -1742,6 +1766,7 @@ def main() -> int:
                 "adapter_join_probe_safe",
                 "adapter_join_row_count",
                 "adapter_join_strict_completion_overlap_rate",
+                "compliant_metrics_runner_implemented",
                 "existing_runner_input_type",
                 "required_dataset_type",
                 "raw_replay_scanned",
@@ -1782,6 +1807,43 @@ def main() -> int:
                 "orders_sent",
                 "auth_network_started",
                 "raw_replay_scanned",
+            ),
+        ),
+        "compliant_metrics_runner": summarize_manifest(
+            compliant_metrics_runner_path,
+            compliant_metrics_runner,
+            (
+                "artifact",
+                "status",
+                "scope",
+                "dataset_type",
+                "days",
+                "row_count",
+                "run_count",
+                "positive_fee_worst_case_run_count",
+                "low_residual_positive_run_count",
+                "candidate_sample_limited",
+                "excluded_20260514_20260515",
+                "contains_20260518",
+                "includes_public_account_execution_truth_v1",
+                "raw_replay_scanned",
+                "orders_sent",
+                "auth_network_started",
+                "next_gate",
+            ),
+        ),
+        "compliant_metrics_runner_smoke": summarize_manifest(
+            compliant_metrics_runner_smoke_path,
+            compliant_metrics_runner_smoke,
+            (
+                "artifact",
+                "status",
+                "scope",
+                "pass_manifest",
+                "blocked_manifest",
+                "raw_replay_scanned",
+                "orders_sent",
+                "auth_network_started",
             ),
         ),
         "backtest_report_scope_audit": summarize_manifest(
