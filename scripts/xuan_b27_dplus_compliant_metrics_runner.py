@@ -272,6 +272,7 @@ def run_config_for_pair(
     pair_cap: float,
     completion_window_s: float,
     first_max_price: float,
+    public_trade_size_max: float,
     max_candidates: int,
 ) -> list[dict[str, Any]]:
     buy_full_col = f"buy_full_{clip}"
@@ -293,6 +294,8 @@ def run_config_for_pair(
             "first_l2_vwap",
             "first_l2_filled",
         }
+        if public_trade_size_max > 0:
+            required_strict.add("public_trade_size")
         required_completion = {
             "day",
             "condition_id",
@@ -307,6 +310,11 @@ def run_config_for_pair(
         if missing:
             raise RuntimeError(f"missing required columns: {missing}")
         limit_clause = f"limit {int(max_candidates)}" if max_candidates > 0 else ""
+        public_trade_size_clause = (
+            f"and public_trade_size is not null and public_trade_size <= {public_trade_size_max}"
+            if public_trade_size_max > 0
+            else ""
+        )
         days_sql = sql_list(common_days)
         query = f"""
         with strict_candidates as (
@@ -327,6 +335,7 @@ def run_config_for_pair(
               and first_l2_vwap > 0
               and first_l2_vwap <= {first_max_price}
               and coalesce(first_l2_filled, 0) >= {clip}
+              {public_trade_size_clause}
             order by day, condition_id, trigger_ts_ms, first_side
             {limit_clause}
         ),
@@ -539,6 +548,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pair-caps", default="0.94,0.96,0.98")
     parser.add_argument("--completion-window-s", type=float, default=30.0)
     parser.add_argument("--first-max-price", type=float, default=0.60)
+    parser.add_argument(
+        "--public-trade-size-max",
+        type=float,
+        default=0.0,
+        help="Optional trigger-time public trade size cap. <=0 disables the filter.",
+    )
     parser.add_argument("--fee-rate", type=float, default=0.0283)
     parser.add_argument(
         "--max-candidates",
@@ -602,6 +617,7 @@ def main() -> int:
                                 pair_cap,
                                 args.completion_window_s,
                                 args.first_max_price,
+                                args.public_trade_size_max,
                                 args.max_candidates,
                             )
                         )
@@ -615,9 +631,10 @@ def main() -> int:
                         "pair_cap": pair_cap,
                         "completion_window_s": args.completion_window_s,
                         "first_max_price": args.first_max_price,
+                        "public_trade_size_max": args.public_trade_size_max,
                         "fee_rate": args.fee_rate,
                         "max_candidates_per_label_pair": args.max_candidates,
-                        "candidate_model": "strict_first_leg_then_future_opposite_completion_event",
+                        "candidate_model": "strict_first_leg_then_candidate_stable_future_opposite_completion_event",
                     },
                     "metrics": summary,
                 }
@@ -682,6 +699,7 @@ def main() -> int:
         "requires_compliant_backtest_dataset_for_promotion": True,
         "run_count": len(rows_by_config),
         "max_candidates_per_label_pair": args.max_candidates,
+        "public_trade_size_max": args.public_trade_size_max,
         "full_scan": args.max_candidates == 0,
         "candidate_sample_limited": args.max_candidates > 0,
         "nonzero_candidate_run_count": len(nonzero),

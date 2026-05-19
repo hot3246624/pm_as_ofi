@@ -1,0 +1,567 @@
+{
+  "adapter_join_probe_path": "xuan_research_artifacts/xuan_b27_dplus_compliant_adapter_join_probe_20260519T024125Z/manifest.json",
+  "adapter_join_probe_safe": true,
+  "adapter_join_probe_status": "PASS_STRICT_COMPLETION_JOIN_FEASIBLE_PUBLIC_AUDIT_PARTIAL",
+  "artifact": "xuan_b27_dplus_compliant_metrics_runner",
+  "assets": [
+    "BTC"
+  ],
+  "auth_network_started": false,
+  "backtest_data_declaration": {
+    "assets": [
+      "BTC"
+    ],
+    "can_support_strategy_promotion": false,
+    "conclusion_scope": "local read-only strict/cache plus completion-store event metrics; public-account audit is proxy truth and may be partial, so this is not deployable or source-of-truth replay validation",
+    "contains_20260514_20260515": false,
+    "contains_20260518": false,
+    "data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+    "dataset_type": "local_poly_backtest_strict_cache_plus_completion_store_plus_public_audit_metrics",
+    "days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-16",
+      "2026-05-17"
+    ],
+    "excluded_20260514_20260515": true,
+    "includes_public_account_execution_truth_v1": true,
+    "labels": {
+      "completion": [
+        "20260502_20260508",
+        "20260509",
+        "20260510",
+        "20260511",
+        "20260512",
+        "20260513",
+        "20260516",
+        "20260517"
+      ],
+      "public_audit": "20260502_20260513",
+      "strict": [
+        "20260502_20260507",
+        "20260508",
+        "20260509",
+        "20260510",
+        "20260511",
+        "20260512",
+        "20260513",
+        "20260516",
+        "20260517"
+      ]
+    },
+    "market_prefix": "btc-updown-5m",
+    "public_account_truth_level": "public_account_audit_proxy_truth_not_private_owner_trade_truth",
+    "public_account_truth_missing_days": [
+      "2026-05-16",
+      "2026-05-17"
+    ],
+    "required_report_declaration_fields": [
+      "data_root",
+      "dataset_type",
+      "labels",
+      "days",
+      "market_prefix",
+      "assets",
+      "row_count",
+      "excluded_20260514_20260515",
+      "contains_20260518",
+      "includes_public_account_execution_truth_v1"
+    ],
+    "requires_compliant_backtest_dataset_for_promotion": true,
+    "row_count": 25843313
+  },
+  "best_run": {
+    "config": {
+      "candidate_model": "strict_first_leg_then_candidate_stable_future_opposite_completion_event",
+      "clip": 10,
+      "completion_window_s": 30.0,
+      "fee_rate": 0.0283,
+      "first_max_price": 0.45,
+      "max_candidates_per_label_pair": 1000,
+      "pair_cap": 0.98,
+      "public_trade_size_max": 200.0,
+      "runner": "xuan_b27_dplus_compliant_metrics_runner"
+    },
+    "kind": "pair_arb_backtest_run",
+    "metrics": {
+      "candidate_count": 145,
+      "completion_cost": 696.9859,
+      "completion_rate": 0.875862,
+      "daily": {
+        "2026-05-02": {
+          "candidate_count": 9.0,
+          "completion_cost": 41.04,
+          "fee": 2.257029,
+          "fee_worst_case_pnl": -2.010719,
+          "first_cost": 38.71369,
+          "pair_gross_pnl": 4.44631,
+          "pair_qty": 80.0,
+          "paired_count": 8.0,
+          "residual_cost": 4.2,
+          "residual_qty": 10.0
+        },
+        "2026-05-03": {
+          "candidate_count": 15.0,
+          "completion_cost": 71.1922,
+          "fee": 3.760577,
+          "fee_worst_case_pnl": -6.643157,
+          "first_cost": 61.69038,
+          "pair_gross_pnl": 5.75866,
+          "pair_qty": 130.0,
+          "paired_count": 13.0,
+          "residual_cost": 8.64124,
+          "residual_qty": 20.0
+        },
+        "2026-05-04": {
+          "candidate_count": 9.0,
+          "completion_cost": 47.7,
+          "fee": 2.307954,
+          "fee_worst_case_pnl": -3.861084,
+          "first_cost": 33.85313,
+          "pair_gross_pnl": 2.64687,
+          "pair_qty": 80.0,
+          "paired_count": 8.0,
+          "residual_cost": 4.2,
+          "residual_qty": 10.0
+        },
+        "2026-05-05": {
+          "candidate_count": 3.0,
+          "completion_cost": 16.2,
+          "fee": 0.783674,
+          "fee_worst_case_pnl": 1.524656,
+          "first_cost": 11.49167,
+          "pair_gross_pnl": 2.30833,
+          "pair_qty": 30.0,
+          "paired_count": 3.0,
+          "residual_cost": 0.0,
+          "residual_qty": 0.0
+        },
+        "2026-05-06": {
+          "candidate_count": 8.0,
+          "completion_cost": 33.2,
+          "fee": 1.898865,
+          "fee_worst_case_pnl": -8.996565,
+          "first_cost": 33.8977,
+          "pair_gross_pnl": 1.26897,
+          "pair_qty": 60.0,
+          "paired_count": 6.0,
+          "residual_cost": 8.36667,
+          "residual_qty": 20.0
+        },
+        "2026-05-07": {
+          "candidate_count": 8.0,
+          "completion_cost": 39.4,
+          "fee": 2.035187,
+          "fee_worst_case_pnl": -3.949917,
+          "first_cost": 32.51473,
+          "pair_gross_pnl": 2.28527,
+          "pair_qty": 70.0,
+          "paired_count": 7.0,
+          "residual_cost": 4.2,
+          "residual_qty": 10.0
+        },
+        "2026-05-08": {
+          "candidate_count": 13.0,
+          "completion_cost": 58.15,
+          "fee": 3.215264,
+          "fee_worst_case_pnl": -6.828824,
+          "first_cost": 55.46356,
+          "pair_gross_pnl": 4.98644,
+          "pair_qty": 110.0,
+          "paired_count": 11.0,
+          "residual_cost": 8.6,
+          "residual_qty": 20.0
+        },
+        "2026-05-09": {
+          "candidate_count": 19.0,
+          "completion_cost": 105.08,
+          "fee": 5.045523,
+          "fee_worst_case_pnl": -3.332563,
+          "first_cost": 73.20704,
+          "pair_gross_pnl": 6.21296,
+          "pair_qty": 180.0,
+          "paired_count": 18.0,
+          "residual_cost": 4.5,
+          "residual_qty": 10.0
+        },
+        "2026-05-10": {
+          "candidate_count": 27.0,
+          "completion_cost": 124.6992,
+          "fee": 6.695114,
+          "fee_worst_case_pnl": -13.271584,
+          "first_cost": 111.87727,
+          "pair_gross_pnl": 9.33186,
+          "pair_qty": 230.0,
+          "paired_count": 23.0,
+          "residual_cost": 15.90833,
+          "residual_qty": 40.0
+        },
+        "2026-05-11": {
+          "candidate_count": 9.0,
+          "completion_cost": 41.5082,
+          "fee": 2.20438,
+          "fee_worst_case_pnl": -0.09767,
+          "first_cost": 36.38509,
+          "pair_gross_pnl": 6.28891,
+          "pair_qty": 80.0,
+          "paired_count": 8.0,
+          "residual_cost": 4.1822,
+          "residual_qty": 10.0
+        },
+        "2026-05-12": {
+          "candidate_count": 3.0,
+          "completion_cost": 10.1,
+          "fee": 0.647504,
+          "fee_worst_case_pnl": -3.527504,
+          "first_cost": 12.78,
+          "pair_gross_pnl": 1.5,
+          "pair_qty": 20.0,
+          "paired_count": 2.0,
+          "residual_cost": 4.38,
+          "residual_qty": 10.0
+        },
+        "2026-05-13": {
+          "candidate_count": 1.0,
+          "completion_cost": 6.5,
+          "fee": 0.277312,
+          "fee_worst_case_pnl": -0.076312,
+          "first_cost": 3.299,
+          "pair_gross_pnl": 0.201,
+          "pair_qty": 10.0,
+          "paired_count": 1.0,
+          "residual_cost": 0.0,
+          "residual_qty": 0.0
+        },
+        "2026-05-16": {
+          "candidate_count": 12.0,
+          "completion_cost": 61.3163,
+          "fee": 3.005862,
+          "fee_worst_case_pnl": 0.779928,
+          "first_cost": 44.89791,
+          "pair_gross_pnl": 7.98579,
+          "pair_qty": 110.0,
+          "paired_count": 11.0,
+          "residual_cost": 4.2,
+          "residual_qty": 10.0
+        },
+        "2026-05-17": {
+          "candidate_count": 9.0,
+          "completion_cost": 40.9,
+          "fee": 2.236145,
+          "fee_worst_case_pnl": -1.251865,
+          "first_cost": 38.11572,
+          "pair_gross_pnl": 5.48428,
+          "pair_qty": 80.0,
+          "paired_count": 8.0,
+          "residual_cost": 4.5,
+          "residual_qty": 10.0
+        }
+      },
+      "day_count": 14,
+      "fee": 36.37039,
+      "fee_worst_case_pnl": -51.54318,
+      "fee_worst_case_roi": -0.040106,
+      "first_cost": 588.18689,
+      "market_count": 120,
+      "net_pair_cost_wavg": 0.9522,
+      "pair_gross_pnl": 60.70565,
+      "pair_qty": 1270.0,
+      "paired_candidate_count": 127,
+      "positive_daily_count": 2,
+      "qty_residual_rate": 0.124138,
+      "residual_cost": 75.87844,
+      "residual_qty": 180.0,
+      "stress100_worst_pnl": -28.024518,
+      "unpaired_candidate_count": 18,
+      "worst_day_fee_worst_case_pnl": -13.271584
+    },
+    "run": 4
+  },
+  "can_support_strategy_promotion": false,
+  "cancels_sent": false,
+  "candidate_sample_limited": true,
+  "completion_inputs": [
+    {
+      "days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260502_20260508/event_store.duckdb",
+      "label": "20260502_20260508",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260502_20260508/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260502_20260508"
+    },
+    {
+      "days": [
+        "2026-05-09"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260509/event_store.duckdb",
+      "label": "20260509",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260509/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260509"
+    },
+    {
+      "days": [
+        "2026-05-10"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260510/event_store.duckdb",
+      "label": "20260510",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260510/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260510"
+    },
+    {
+      "days": [
+        "2026-05-11"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260511/event_store.duckdb",
+      "label": "20260511",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260511/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260511"
+    },
+    {
+      "days": [
+        "2026-05-12"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260512/event_store.duckdb",
+      "label": "20260512",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260512/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260512"
+    },
+    {
+      "days": [
+        "2026-05-13"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260513/event_store.duckdb",
+      "label": "20260513",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260513/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260513"
+    },
+    {
+      "days": [
+        "2026-05-16"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260516/event_store.duckdb",
+      "label": "20260516",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260516/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260516"
+    },
+    {
+      "days": [
+        "2026-05-17"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260517/event_store.duckdb",
+      "label": "20260517",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260517/EVENT_STORE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/completion_unwind_event_store_v2/20260517"
+    }
+  ],
+  "contains_20260518": false,
+  "created_utc": "20260519T064058Z",
+  "data_root": "/Users/hot/web3Scientist/poly_backtest_data",
+  "dataset_type": "local_poly_backtest_strict_cache_plus_completion_store_plus_public_audit_metrics",
+  "days": [
+    "2026-05-02",
+    "2026-05-03",
+    "2026-05-04",
+    "2026-05-05",
+    "2026-05-06",
+    "2026-05-07",
+    "2026-05-08",
+    "2026-05-09",
+    "2026-05-10",
+    "2026-05-11",
+    "2026-05-12",
+    "2026-05-13",
+    "2026-05-16",
+    "2026-05-17"
+  ],
+  "duckdb_tables_read": true,
+  "excluded_20260514_20260515": true,
+  "full_scan": false,
+  "includes_public_account_execution_truth_v1": true,
+  "input_preflight_path": "xuan_research_artifacts/xuan_b27_dplus_compliant_backtest_input_preflight_20260519T022043Z/manifest.json",
+  "input_preflight_status": "PASS_COMPLIANT_BACKTEST_INPUTS_AVAILABLE",
+  "input_safe": true,
+  "labels": {
+    "completion": [
+      "20260502_20260508",
+      "20260509",
+      "20260510",
+      "20260511",
+      "20260512",
+      "20260513",
+      "20260516",
+      "20260517"
+    ],
+    "public_audit": "20260502_20260513",
+    "strict": [
+      "20260502_20260507",
+      "20260508",
+      "20260509",
+      "20260510",
+      "20260511",
+      "20260512",
+      "20260513",
+      "20260516",
+      "20260517"
+    ]
+  },
+  "low_residual_positive_run_count": 0,
+  "market_prefix": "btc-updown-5m",
+  "max_candidates_per_label_pair": 1000,
+  "metrics_jsonl": "xuan_research_artifacts/xuan_b27_dplus_compliant_metrics_runner_candidate_stable_pubsize200_20260519T064058Z/metrics.jsonl",
+  "next_gate": "use this compliant runner as the metrics substrate; do not promote until residual/worst-day and public-audit scope clear",
+  "nonzero_candidate_run_count": 5,
+  "orders_sent": false,
+  "positive_fee_worst_case_run_count": 0,
+  "public_account_truth_level": "public_account_audit_proxy_truth_not_private_owner_trade_truth",
+  "public_audit": {
+    "days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13"
+    ],
+    "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/public_account_execution_truth_v1/20260502_20260513/event_store.duckdb",
+    "failures": [],
+    "label": "20260502_20260513",
+    "market_day_key_count": 2202,
+    "ready": true,
+    "row_count": 562087,
+    "truth_level": "public_account_audit_proxy_truth_not_private_owner_trade_truth"
+  },
+  "public_trade_size_max": 200.0,
+  "raw_replay_scanned": false,
+  "redeems_sent": false,
+  "requires_compliant_backtest_dataset_for_promotion": true,
+  "row_count": 25843313,
+  "run_count": 5,
+  "schema_version": 1,
+  "scope": "local_no_network_declared_cache_store_compliant_metrics",
+  "side_effects": {
+    "auth_network_started": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "orders_sent": false,
+    "raw_replay_scanned": false,
+    "raw_replay_written": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "started_canary": false
+  },
+  "started_canary": false,
+  "status": "DISCARD_NO_FEE_POSITIVE_COMPLIANT_METRICS",
+  "strategy": "xuan_b27_dplus",
+  "strict_inputs": [
+    {
+      "days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260502_20260507/cache.duckdb",
+      "label": "20260502_20260507",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260502_20260507/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260502_20260507"
+    },
+    {
+      "days": [
+        "2026-05-08"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260508/cache.duckdb",
+      "label": "20260508",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260508/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260508"
+    },
+    {
+      "days": [
+        "2026-05-09"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260509/cache.duckdb",
+      "label": "20260509",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260509/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260509"
+    },
+    {
+      "days": [
+        "2026-05-10"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260510/cache.duckdb",
+      "label": "20260510",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260510/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260510"
+    },
+    {
+      "days": [
+        "2026-05-11"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260511/cache.duckdb",
+      "label": "20260511",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260511/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260511"
+    },
+    {
+      "days": [
+        "2026-05-12"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260512/cache.duckdb",
+      "label": "20260512",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260512/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260512"
+    },
+    {
+      "days": [
+        "2026-05-13"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260513/cache.duckdb",
+      "label": "20260513",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260513/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260513"
+    },
+    {
+      "days": [
+        "2026-05-16"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260516/cache.duckdb",
+      "label": "20260516",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260516/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260516"
+    },
+    {
+      "days": [
+        "2026-05-17"
+      ],
+      "duckdb": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260517/cache.duckdb",
+      "label": "20260517",
+      "manifest": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260517/CACHE_MANIFEST.json",
+      "path": "/Users/hot/web3Scientist/poly_backtest_data/backtest_cache/taker_buy_signal_core_v2_strict_l1/20260517"
+    }
+  ]
+}
