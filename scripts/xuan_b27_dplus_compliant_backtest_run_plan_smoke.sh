@@ -114,9 +114,43 @@ cat > "$pass_preflight" <<'JSON'
 }
 JSON
 
+pass_adapter="$out_dir/pass_adapter_join_probe.json"
+cat > "$pass_adapter" <<'JSON'
+{
+  "artifact": "xuan_b27_dplus_compliant_adapter_join_probe",
+  "status": "PASS_STRICT_COMPLETION_JOIN_FEASIBLE_PUBLIC_AUDIT_PARTIAL",
+  "scope": "local_read_only_fixture",
+  "probe_passed": true,
+  "dataset_type": "local_poly_backtest_strict_cache_plus_completion_store_plus_public_audit_probe",
+  "row_count": 123,
+  "strict_completion_overlap_rate": 1.0,
+  "strict_days_missing_completion": [],
+  "strict_days_missing_public_audit": ["2026-05-16", "2026-05-17"],
+  "excluded_20260514_20260515": true,
+  "public_account_execution_truth_v1_included": true,
+  "raw_replay_scanned": false,
+  "orders_sent": false,
+  "cancels_sent": false,
+  "redeems_sent": false,
+  "auth_network_started": false,
+  "side_effects": {
+    "raw_replay_scanned": false,
+    "raw_replay_written": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "auth_network_started": false,
+    "shared_ingress_modified": false,
+    "broker_modified": false,
+    "service_control_used": false
+  }
+}
+JSON
+
 adapter_dir="$out_dir/adapter_plan"
 run_check "adapter_plan_run" python3 "$script" \
   --input-preflight "$pass_preflight" \
+  --adapter-join-probe "$pass_adapter" \
   --output-dir "$adapter_dir"
 run_check "adapter_plan_manifest" python3 - "$adapter_dir/manifest.json" <<'PY'
 import json
@@ -125,13 +159,16 @@ import sys
 
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
 ok = (
-    data.get("status") == "BLOCKED_COMPLIANT_BACKTEST_ADAPTER_NOT_IMPLEMENTED"
+    data.get("status") == "BLOCKED_COMPLIANT_BACKTEST_RUNNER_NOT_IMPLEMENTED"
     and data.get("inputs_available") is True
     and data.get("ready_to_run_compliant_backtest") is False
     and data.get("existing_runner_input_type") == "local_sqlite_snapshot_btc5m_market_ticks"
     and data.get("required_dataset_type") == "declared_strict_cache_plus_completion_store"
     and data.get("requires_compliant_store_adapter") is True
-    and data.get("compliant_store_adapter_ready") is False
+    and data.get("compliant_store_adapter_ready") is True
+    and data.get("adapter_join_probe_passed") is True
+    and data.get("adapter_join_probe_safe") is True
+    and data.get("adapter_join_row_count", 0) > 0
     and data.get("raw_replay_scanned") is False
     and data.get("duckdb_tables_read") is False
 )
