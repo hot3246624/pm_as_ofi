@@ -1,0 +1,36 @@
+Traceback (most recent call last):
+  File "/usr/lib/python3.14/asyncio/runners.py", line 127, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/asyncio/base_events.py", line 719, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/srv/pm_as_ofi/repo/tools/xuan_dplus_passive_passive_shadow_runner.py", line 711, in main
+    await asyncio.gather(*(run_market(m, socket_path, out, args.duration_s, cfg) for m in markets))
+  File "/srv/pm_as_ofi/repo/tools/xuan_dplus_passive_passive_shadow_runner.py", line 529, in run_market
+    raw = await asyncio.wait_for(reader.readline(), timeout=1.0)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/asyncio/tasks.py", line 488, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "/usr/lib/python3.14/asyncio/streams.py", line 562, in readline
+    line = await self.readuntil(sep)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.14/asyncio/streams.py", line 677, in readuntil
+    await self._wait_for_data('readuntil')
+  File "/usr/lib/python3.14/asyncio/streams.py", line 539, in _wait_for_data
+    await self._waiter
+asyncio.exceptions.CancelledError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/srv/pm_as_ofi/repo/tools/xuan_dplus_passive_passive_shadow_runner.py", line 716, in <module>
+    asyncio.run(main())
+    ~~~~~~~~~~~^^^^^^^^
+  File "/usr/lib/python3.14/asyncio/runners.py", line 204, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "/usr/lib/python3.14/asyncio/runners.py", line 132, in run
+    raise KeyboardInterrupt()
+KeyboardInterrupt

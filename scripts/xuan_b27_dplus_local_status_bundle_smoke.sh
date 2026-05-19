@@ -627,7 +627,11 @@ ok = (
     and data.get("backtest_report_scope_limited_report_count", 0) >= 1
     and data.get("backtest_report_scope_promotion_supported_report_count") == 0
     and data.get("backtest_report_scope_requires_compliant_dataset") is True
-    and data.get("completion_store_schema_probe_status") == "PASS_SCOPE_LIMITED_COMPLETION_STORE_SCHEMA_PROBE"
+    and data.get("completion_store_schema_probe_status")
+    in {
+        "PASS_SCOPE_LIMITED_COMPLETION_STORE_SCHEMA_PROBE",
+        "PASS_LOCAL_COMPLETION_STORE_SCHEMA_PROBE",
+    }
     and data.get("completion_store_schema_probe_passed") is True
     and data.get("completion_store_schema_probe_row_count", 0) > 0
     and data.get("completion_store_schema_probe_market_count_sum_by_day", 0) > 0
@@ -721,7 +725,11 @@ ok = (
     and data.get("backtest_report_scope_audit_smoke", {}).get("status") == "PASS"
     and data.get("completion_store_schema_probe", {}).get("exists") is True
     and data.get("completion_store_schema_probe", {}).get("artifact") == "xuan_b27_dplus_completion_store_schema_probe"
-    and data.get("completion_store_schema_probe", {}).get("status") == "PASS_SCOPE_LIMITED_COMPLETION_STORE_SCHEMA_PROBE"
+    and data.get("completion_store_schema_probe", {}).get("status")
+    in {
+        "PASS_SCOPE_LIMITED_COMPLETION_STORE_SCHEMA_PROBE",
+        "PASS_LOCAL_COMPLETION_STORE_SCHEMA_PROBE",
+    }
     and data.get("completion_store_schema_probe", {}).get("probe_passed") is True
     and data.get("completion_store_schema_probe_smoke", {}).get("exists") is True
     and data.get("completion_store_schema_probe_smoke", {}).get("artifact") == "xuan_b27_dplus_completion_store_schema_probe_smoke"

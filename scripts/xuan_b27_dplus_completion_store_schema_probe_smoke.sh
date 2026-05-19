@@ -77,7 +77,10 @@ import sys
 
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
 ok = (
-    data.get("status") == "PASS_SCOPE_LIMITED_COMPLETION_STORE_SCHEMA_PROBE"
+    data.get("status") in {
+        "PASS_SCOPE_LIMITED_COMPLETION_STORE_SCHEMA_PROBE",
+        "PASS_LOCAL_COMPLETION_STORE_SCHEMA_PROBE",
+    }
     and data.get("probe_passed") is True
     and data.get("row_count") == 2
     and data.get("can_support_strategy_promotion") is False
