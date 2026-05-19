@@ -17059,6 +17059,9 @@ impl LocalAggUncertaintyGateModel {
         {
             return LocalAggUncertaintyGateDecision::gated("above_max_source_spread");
         }
+        if local_agg_uncertainty_gate_residual_family_quarantined(candidate) {
+            return LocalAggUncertaintyGateDecision::gated("residual_family_quarantine");
+        }
         let Some((level, stats)) = self.choose_stats(candidate) else {
             return LocalAggUncertaintyGateDecision::gated("insufficient_history");
         };
@@ -17299,6 +17302,55 @@ fn local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(
     candidate.source_count == 2
         && candidate.sources == "binance;bybit"
         && candidate.close_abs_delta_ms >= 1_000
+}
+
+fn local_agg_uncertainty_gate_residual_family_quarantined(
+    candidate: &LocalAggUncertaintyGateCandidate,
+) -> bool {
+    matches!(
+        (
+            candidate.symbol.as_str(),
+            candidate.source_subset.as_str(),
+            candidate.sources.as_str(),
+            candidate.rule.as_str(),
+        ),
+        ("bnb/usd", "bnb_okx_no_fallback", "okx", "after_then_before")
+            | ("bnb/usd", "drop_okx", "binance;bybit", "after_then_before")
+            | (
+                "doge/usd",
+                "doge_binance_fallback",
+                "binance",
+                "after_then_before"
+            )
+            | ("doge/usd", "drop_binance", "bybit", "last_before")
+            | (
+                "doge/usd",
+                "drop_binance",
+                "bybit;coinbase;okx",
+                "last_before"
+            )
+            | ("doge/usd", "drop_binance", "bybit;okx", "last_before")
+            | ("doge/usd", "drop_binance", "okx", "last_before")
+            | (
+                "eth/usd",
+                "eth_binance_missing_fallback",
+                "binance",
+                "after_then_before"
+            )
+            | (
+                "sol/usd",
+                "sol_binance_fallback",
+                "binance",
+                "after_then_before"
+            )
+            | (
+                "sol/usd",
+                "sol_okx_missing_fallback",
+                "okx",
+                "after_then_before"
+            )
+            | ("xrp/usd", "only_binance_coinbase", "binance", "nearest_abs")
+    )
 }
 
 fn local_agg_uncertainty_gate_key_levels(

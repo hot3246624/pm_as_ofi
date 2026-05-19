@@ -178,6 +178,33 @@ def exact_bucket(row: dict) -> str:
     return "exact" if n is not None and n > 0 else "no_exact"
 
 
+RESIDUAL_FAMILY_QUARANTINE = {
+    ("bnb/usd", "bnb_okx_no_fallback", "okx", "after_then_before"),
+    ("bnb/usd", "drop_okx", "binance;bybit", "after_then_before"),
+    ("doge/usd", "doge_binance_fallback", "binance", "after_then_before"),
+    ("doge/usd", "drop_binance", "bybit", "last_before"),
+    ("doge/usd", "drop_binance", "bybit;coinbase;okx", "last_before"),
+    ("doge/usd", "drop_binance", "bybit;okx", "last_before"),
+    ("doge/usd", "drop_binance", "okx", "last_before"),
+    ("eth/usd", "eth_binance_missing_fallback", "binance", "after_then_before"),
+    ("sol/usd", "sol_binance_fallback", "binance", "after_then_before"),
+    ("sol/usd", "sol_okx_missing_fallback", "okx", "after_then_before"),
+    ("xrp/usd", "only_binance_coinbase", "binance", "nearest_abs"),
+}
+
+
+def residual_family_quarantine_reason(row: dict) -> str | None:
+    key = (
+        str(row.get("symbol", "")),
+        str(row.get("source_subset", "")),
+        str(row.get("sources", "")),
+        str(row.get("rule", "")),
+    )
+    if key in RESIDUAL_FAMILY_QUARANTINE:
+        return "residual_family_quarantine"
+    return None
+
+
 def pred_side(row: dict) -> str:
     return "yes" if parse_bool(row.get("pred_yes")) else "no"
 
@@ -374,6 +401,8 @@ def gate_row(
             "gate_status": row.get("status", "not_ok"),
             "gate_reason": row.get("filter_reason") or row.get("status", "not_ok"),
         }
+    if reason := residual_family_quarantine_reason(row):
+        return False, {"gate_status": "gated", "gate_reason": reason}
     round_meta = round_features.get(str(row.get("round_end_ts", "")), {})
     round_max_margin = to_float(round_meta.get("round_max_margin_bps"))
     if (
