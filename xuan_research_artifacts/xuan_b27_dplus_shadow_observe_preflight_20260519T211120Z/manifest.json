@@ -1,0 +1,35 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_observe_preflight",
+  "created_utc": "20260519T211120Z",
+  "decision_label": "BLOCKED",
+  "hypothesis": "same-window multi-profile no-order shadow A/B can run only when no overlapping D+ runner is using the shared-ingress market stream",
+  "next_action": "Repeat the bounded xuan-research preflight on the next heartbeat; if no xuan_frontier or other runner is alive, run the queued no-order multi-profile shadow A/B with --profile-late-repair-after-s 45,60,75.",
+  "preflight": {
+    "checked_shared_ingress_metadata": true,
+    "checked_process_list": true,
+    "ec2_target": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+  },
+  "runner_conflict": {
+    "command_root": "/srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_repair30_sample_retry_20260519T202247Z/repo/tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "namespace": "xuan-frontier",
+    "pid": 80199,
+    "started_before_preflight_elapsed": "48:17",
+    "user": "pmofi"
+  },
+  "safety": {
+    "broker_or_shared_ingress_modified": false,
+    "cancels_sent": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "repo_sync_or_build_started": false,
+    "service_control_used": false,
+    "ssh_preflight_started": true,
+    "started_canary": false,
+    "xuan_frontier_runner_signalled_or_modified": false
+  },
+  "schema_version": 1,
+  "scope": "bounded_ec2_preflight_only",
+  "status": "BLOCKED_NON_XUAN_RESEARCH_RUNNER_ACTIVE",
+  "strategy": "xuan_b27_dplus"
+}
