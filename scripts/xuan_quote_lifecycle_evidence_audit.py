@@ -27,7 +27,11 @@ EVENT_LOG_NAMES = {
     "order_events.jsonl",
     "shadow_events.jsonl",
 }
+EVENT_LOG_SUFFIXES = (".events.jsonl",)
 LIFECYCLE_EVENTS = {
+    "activation_block",
+    "candidate",
+    "cancel",
     "quote_plan",
     "quote_intent",
     "order_plan",
@@ -39,9 +43,13 @@ LIFECYCLE_EVENTS = {
     "quote_expired",
     "order_fill",
     "fill",
+    "queue_supported_fill",
     "dry_run_touch_fill_confirmed",
 }
 QUOTE_STAGE_EVENTS = {
+    "activation_block",
+    "candidate",
+    "cancel",
     "quote_plan",
     "quote_intent",
     "order_plan",
@@ -53,7 +61,7 @@ QUOTE_STAGE_EVENTS = {
     "quote_expired",
     "dry_run_touch_fill_confirmed",
 }
-FILL_EVENTS = {"order_fill", "fill", "dry_run_touch_fill_confirmed"}
+FILL_EVENTS = {"order_fill", "fill", "queue_supported_fill", "dry_run_touch_fill_confirmed"}
 CORE_QUOTE_FIELDS = ("quote_intent_id", "condition_id", "side", "price", "size")
 PAIR_LINK_FIELDS = ("matched_pair_id", "opposite_trigger_ts_ms")
 FILL_PROVENANCE_FIELDS = (
@@ -114,7 +122,7 @@ def nested_get(record: dict[str, Any], key: str) -> Any:
 
 
 def event_name(record: dict[str, Any]) -> str:
-    for key in ("event", "event_type", "type", "name"):
+    for key in ("event", "event_type", "kind", "type", "name"):
         value = nested_get(record, key)
         if value is not None:
             return str(value)
@@ -135,7 +143,11 @@ def discover_event_logs(root: Path) -> list[Path]:
     return sorted(
         path
         for path in root.rglob("*.jsonl")
-        if path.name in EVENT_LOG_NAMES and path.is_file()
+        if (
+            path.name in EVENT_LOG_NAMES
+            or any(path.name.endswith(suffix) for suffix in EVENT_LOG_SUFFIXES)
+        )
+        and path.is_file()
     )
 
 
