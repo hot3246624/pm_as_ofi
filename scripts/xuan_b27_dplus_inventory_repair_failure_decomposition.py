@@ -47,6 +47,8 @@ def make_profile(args: argparse.Namespace) -> repair.RepairProfile:
             args.repair_budget_mode,
             args.pair_select,
             args.edge,
+            activation_mode=args.activation_mode,
+            activation_window_s=args.activation_window_s,
         ),
         edge=args.edge,
         target_qty=args.target_qty,
@@ -57,6 +59,8 @@ def make_profile(args: argparse.Namespace) -> repair.RepairProfile:
         repair_budget_fraction=args.repair_budget_fraction,
         min_edge_per_pair=args.min_edge_per_pair,
         pair_select=args.pair_select,
+        activation_mode=args.activation_mode,
+        activation_window_s=args.activation_window_s,
         block_risk_increasing_after_repair_threshold=True,
     )
 
@@ -272,6 +276,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repair-budget-fraction", type=float, default=0.50)
     parser.add_argument("--min-edge-per-pair", type=float, default=0.005)
     parser.add_argument("--pair-select", default="fifo")
+    parser.add_argument("--activation-mode", default="none")
+    parser.add_argument("--activation-window-s", type=float, default=60.0)
     parser.add_argument("--completion-window-ms", type=int, default=30_000)
     parser.add_argument("--max-strict-candidates-per-plan", type=int, default=0)
     parser.add_argument("--output-dir")

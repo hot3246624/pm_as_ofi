@@ -57,6 +57,8 @@ class RepairProfile:
     repair_budget_mode: str = "none"
     repair_budget_fraction: float = 0.50
     min_edge_per_pair: float = 0.005
+    activation_mode: str = "none"
+    activation_window_s: float = 60.0
     block_risk_increasing_after_repair_threshold: bool = True
 
 
@@ -97,6 +99,8 @@ def profile_name(
     pair_select: str = "fifo",
     edge: float = 0.055,
     seed_l1_pair_cap: float = 1.02,
+    activation_mode: str = "none",
+    activation_window_s: float = 60.0,
 ) -> str:
     if repair_qty <= 0:
         base_name = f"baseline_t{target_qty:g}"
@@ -108,6 +112,8 @@ def profile_name(
         base_name += f"_e{edge:g}"
     if abs(seed_l1_pair_cap - 1.02) > 1e-12:
         base_name += f"_seedl1{seed_l1_pair_cap:g}"
+    if activation_mode != "none":
+        base_name += f"_act{activation_mode}{activation_window_s:g}"
     if pair_select != "fifo":
         base_name += f"_pair{pair_select}"
     return base_name.replace(".", "p")
@@ -116,6 +122,22 @@ def profile_name(
 def build_profiles(args: argparse.Namespace) -> list[RepairProfile]:
     pair_selects = parse_csv_strings(args.pair_selects)
     repair_budget_modes = parse_csv_strings(args.repair_budget_modes)
+    activation_modes = parse_csv_strings(args.activation_modes)
+    activation_window_values = parse_csv_floats(args.activation_windows_s)
+    if not activation_modes:
+        activation_modes = ["none"]
+    if not activation_window_values:
+        activation_window_values = [60.0]
+    invalid_activation_modes = sorted(set(activation_modes) - {"none", "opp_seen"})
+    if invalid_activation_modes:
+        raise ValueError(f"unsupported activation modes: {invalid_activation_modes}")
+    if any(window_s <= 0 for window_s in activation_window_values):
+        raise ValueError("activation windows must be positive")
+    activation_configs = [
+        (mode, window_s)
+        for mode in activation_modes
+        for window_s in (activation_window_values if mode != "none" else [activation_window_values[0]])
+    ]
     edges = parse_csv_floats(args.edges)
     seed_l1_pair_caps = parse_csv_floats(args.seed_l1_pair_caps)
     profiles = [
@@ -128,51 +150,61 @@ def build_profiles(args: argparse.Namespace) -> list[RepairProfile]:
                 pair_select=pair_select,
                 edge=edge,
                 seed_l1_pair_cap=seed_l1_pair_cap,
+                activation_mode=activation_mode,
+                activation_window_s=activation_window_s,
             ),
             edge=edge,
             target_qty=target,
             seed_l1_pair_cap=seed_l1_pair_cap,
             pair_select=pair_select,
+            activation_mode=activation_mode,
+            activation_window_s=activation_window_s,
             repair_max_qty=0.0,
             block_risk_increasing_after_repair_threshold=False,
         )
         for edge in edges
         for seed_l1_pair_cap in seed_l1_pair_caps
+        for activation_mode, activation_window_s in activation_configs
         for target in parse_csv_floats(args.target_qtys)
         for pair_select in pair_selects
     ]
     for edge in edges:
         for seed_l1_pair_cap in seed_l1_pair_caps:
-            for target in parse_csv_floats(args.target_qtys):
-                for after_s in parse_csv_floats(args.repair_after_s):
-                    for repair_qty in parse_csv_floats(args.repair_max_qtys):
-                        for pair_cap in parse_csv_floats(args.repair_pair_caps):
-                            for budget_mode in repair_budget_modes:
-                                for pair_select in pair_selects:
-                                    profiles.append(
-                                        RepairProfile(
-                                            name=profile_name(
-                                                target,
-                                                after_s,
-                                                repair_qty,
-                                                pair_cap,
-                                                budget_mode,
-                                                pair_select,
-                                                edge,
-                                                seed_l1_pair_cap,
-                                            ),
-                                            edge=edge,
-                                            target_qty=target,
-                                            seed_l1_pair_cap=seed_l1_pair_cap,
-                                            pair_select=pair_select,
-                                            repair_after_s=after_s,
-                                            repair_max_qty=repair_qty,
-                                            repair_pair_cap=pair_cap,
-                                            repair_budget_mode=budget_mode,
-                                            repair_budget_fraction=args.repair_budget_fraction,
-                                            min_edge_per_pair=args.min_edge_per_pair,
-                                        )
-                                )
+            for activation_mode, activation_window_s in activation_configs:
+                for target in parse_csv_floats(args.target_qtys):
+                    for after_s in parse_csv_floats(args.repair_after_s):
+                        for repair_qty in parse_csv_floats(args.repair_max_qtys):
+                            for pair_cap in parse_csv_floats(args.repair_pair_caps):
+                                for budget_mode in repair_budget_modes:
+                                    for pair_select in pair_selects:
+                                        profiles.append(
+                                            RepairProfile(
+                                                name=profile_name(
+                                                    target,
+                                                    after_s,
+                                                    repair_qty,
+                                                    pair_cap,
+                                                    budget_mode,
+                                                    pair_select,
+                                                    edge,
+                                                    seed_l1_pair_cap,
+                                                    activation_mode,
+                                                    activation_window_s,
+                                                ),
+                                                edge=edge,
+                                                target_qty=target,
+                                                seed_l1_pair_cap=seed_l1_pair_cap,
+                                                pair_select=pair_select,
+                                                repair_after_s=after_s,
+                                                repair_max_qty=repair_qty,
+                                                repair_pair_cap=pair_cap,
+                                                repair_budget_mode=budget_mode,
+                                                repair_budget_fraction=args.repair_budget_fraction,
+                                                min_edge_per_pair=args.min_edge_per_pair,
+                                                activation_mode=activation_mode,
+                                                activation_window_s=activation_window_s,
+                                            )
+                                    )
     return profiles
 
 
@@ -340,6 +372,12 @@ def maybe_seed_with_repair(
 ) -> None:
     side = str(row.get("first_side") or "")
     ts_ms = int(row.get("trigger_ts_ms") or 0)
+    last_seen = getattr(state, "activation_last_seen", None)
+    if last_seen is None:
+        last_seen = {"YES": None, "NO": None}
+        setattr(state, "activation_last_seen", last_seen)
+    opp = base.other(side) if side in {"YES", "NO"} else ""
+    opp_seen_ts = last_seen.get(opp)
     dom_side, _, _, imbalance_qty = dominant_side(state)
     at_repair_threshold = (
         dom_side is not None
@@ -355,8 +393,18 @@ def maybe_seed_with_repair(
         metrics["seed_block_risk_increasing_repair_mode"] += 1
         if not repaired:
             metrics["risk_block_without_repair"] += 1
+        if side in {"YES", "NO"}:
+            last_seen[side] = ts_ms
         return
+    if profile.activation_mode == "opp_seen":
+        if opp_seen_ts is None or (ts_ms - int(opp_seen_ts)) / 1000.0 > profile.activation_window_s:
+            metrics["seed_block_activation"] += 1
+            if side in {"YES", "NO"}:
+                last_seen[side] = ts_ms
+            return
     maybe_seed_budgeted(row, profile, state, metrics)
+    if side in {"YES", "NO"}:
+        last_seen[side] = ts_ms
 
 
 def run_metrics(
@@ -430,6 +478,7 @@ def finish(profile: RepairProfile, metrics: defaultdict[str, float]) -> dict[str
             ),
             "seed_block_risk_increasing_repair_mode": int(metrics["seed_block_risk_increasing_repair_mode"]),
             "risk_block_without_repair": int(metrics["risk_block_without_repair"]),
+            "seed_block_activation": int(metrics["seed_block_activation"]),
         }
     )
     return out
@@ -479,6 +528,7 @@ def aggregate_results(profiles: list[RepairProfile], combined: list[dict[str, An
         "pair_qty_budget_observed",
         "seed_block_risk_increasing_repair_mode",
         "risk_block_without_repair",
+        "seed_block_activation",
         "resid_cost_gt6_markets",
     }
     by_profile: dict[str, defaultdict[str, float]] = {}
@@ -559,6 +609,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--repair-budget-modes", default="none")
     parser.add_argument("--repair-budget-fraction", type=float, default=0.50)
     parser.add_argument("--min-edge-per-pair", type=float, default=0.005)
+    parser.add_argument("--activation-modes", default="none")
+    parser.add_argument("--activation-windows-s", default="60")
     parser.add_argument("--pair-selects", default="fifo")
     parser.add_argument("--completion-window-ms", type=int, default=30_000)
     parser.add_argument("--max-strict-candidates-per-plan", type=int, default=0)
