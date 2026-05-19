@@ -19,6 +19,7 @@ from typing import Any
 
 ARTIFACT = "xuan_b27_dplus_compliant_backtest_run_plan"
 PREFLIGHT_ARTIFACT = "xuan_b27_dplus_compliant_backtest_input_preflight"
+ADAPTER_JOIN_ARTIFACT = "xuan_b27_dplus_compliant_adapter_join_probe"
 
 
 def utc_label() -> str:
@@ -64,16 +65,38 @@ def public_truth_ready(preflight: dict[str, Any]) -> bool:
     return (preflight.get("public_account_execution_truth_v1") or {}).get("ready") is True
 
 
-def build_plan(preflight: dict[str, Any], preflight_path: Path | None) -> dict[str, Any]:
+def safe_adapter_join_probe(adapter: dict[str, Any]) -> bool:
+    side_effects = adapter.get("side_effects") or {}
+    return (
+        adapter.get("artifact") == ADAPTER_JOIN_ARTIFACT
+        and adapter.get("probe_passed") is True
+        and adapter.get("raw_replay_scanned") is False
+        and adapter.get("orders_sent") is False
+        and adapter.get("cancels_sent") is False
+        and adapter.get("redeems_sent") is False
+        and adapter.get("auth_network_started") is False
+        and all(value is False for value in side_effects.values())
+    )
+
+
+def build_plan(
+    preflight: dict[str, Any],
+    preflight_path: Path | None,
+    adapter_join: dict[str, Any],
+    adapter_join_path: Path | None,
+) -> dict[str, Any]:
     safe = safe_preflight(preflight)
     inputs_available = preflight.get("preflight_passed") is True and safe
-    adapter_ready = False
+    adapter_join_safe = safe_adapter_join_probe(adapter_join)
+    adapter_ready = inputs_available and adapter_join_safe
     existing_runner_input_type = "local_sqlite_snapshot_btc5m_market_ticks"
     required_dataset_type = "declared_strict_cache_plus_completion_store"
     status = (
         "BLOCKED_COMPLIANT_BACKTEST_INPUTS_UNAVAILABLE"
         if not inputs_available
-        else "BLOCKED_COMPLIANT_BACKTEST_ADAPTER_NOT_IMPLEMENTED"
+        else "BLOCKED_COMPLIANT_BACKTEST_ADAPTER_JOIN_NOT_VERIFIED"
+        if not adapter_ready
+        else "BLOCKED_COMPLIANT_BACKTEST_RUNNER_NOT_IMPLEMENTED"
     )
     return {
         "status": status,
@@ -83,6 +106,21 @@ def build_plan(preflight: dict[str, Any], preflight_path: Path | None) -> dict[s
         "input_preflight_status": preflight.get("status"),
         "input_preflight_passed": preflight.get("preflight_passed"),
         "input_preflight_safe": safe,
+        "adapter_join_probe_path": str(adapter_join_path) if adapter_join_path else None,
+        "adapter_join_probe_status": adapter_join.get("status"),
+        "adapter_join_probe_passed": adapter_join.get("probe_passed"),
+        "adapter_join_probe_safe": adapter_join_safe,
+        "adapter_join_dataset_type": adapter_join.get("dataset_type"),
+        "adapter_join_row_count": adapter_join.get("row_count"),
+        "adapter_join_strict_completion_overlap_rate": adapter_join.get(
+            "strict_completion_overlap_rate"
+        ),
+        "adapter_join_strict_days_missing_completion": adapter_join.get(
+            "strict_days_missing_completion"
+        ),
+        "adapter_join_strict_days_missing_public_audit": adapter_join.get(
+            "strict_days_missing_public_audit"
+        ),
         "missing_roots": preflight.get("missing_roots") or [],
         "strict_root": preflight.get("strict_root"),
         "completion_root": preflight.get("completion_root"),
@@ -124,7 +162,7 @@ def build_plan(preflight: dict[str, Any], preflight_path: Path | None) -> dict[s
             },
             {
                 "phase": "schema_adapter_review",
-                "status": "PENDING",
+                "status": "PASS" if adapter_ready else "PENDING",
                 "side_effects": "local_read_only_allowed_stores_only",
             },
             {
@@ -141,12 +179,16 @@ def build_plan(preflight: dict[str, Any], preflight_path: Path | None) -> dict[s
         "blocked_reason": (
             "compliant strict/cache/completion/public-truth inputs unavailable locally"
             if not inputs_available
-            else "existing pair_arb_backtest consumes local SQLite snapshots; compliant store adapter is not implemented"
+            else "compliant strict-cache/completion/public-audit adapter join has not been verified"
+            if not adapter_ready
+            else "adapter join is verified, but existing pair_arb_backtest still consumes local SQLite snapshots and no compliant metrics runner is implemented"
         ),
         "next_gate": (
             "make compliant stores available locally or use an approved read-only metadata discovery path"
             if not inputs_available
-            else "implement/review compliant strict-cache/completion-store adapter before running promotion backtest"
+            else "run or repair xuan_b27_dplus_compliant_adapter_join_probe before planning a promotion backtest"
+            if not adapter_ready
+            else "implement a no-network compliant metrics runner over declared strict-cache/completion/public-audit inputs; do not reuse SQLite snapshot backtest for promotion"
         ),
     }
 
@@ -154,6 +196,7 @@ def build_plan(preflight: dict[str, Any], preflight_path: Path | None) -> dict[s
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input-preflight")
+    parser.add_argument("--adapter-join-probe")
     parser.add_argument("--output-dir")
     args = parser.parse_args()
 
@@ -164,8 +207,18 @@ def main() -> int:
         if args.input_preflight
         else latest_manifest(root, "xuan_b27_dplus_compliant_backtest_input_preflight_*", PREFLIGHT_ARTIFACT)
     )
+    adapter_join_path = (
+        Path(args.adapter_join_probe)
+        if args.adapter_join_probe
+        else latest_manifest(
+            root,
+            "xuan_b27_dplus_compliant_adapter_join_probe_*",
+            ADAPTER_JOIN_ARTIFACT,
+        )
+    )
     preflight = read_json(preflight_path)
-    plan = build_plan(preflight, preflight_path)
+    adapter_join = read_json(adapter_join_path)
+    plan = build_plan(preflight, preflight_path, adapter_join, adapter_join_path)
     output_dir = Path(args.output_dir or f"xuan_research_artifacts/{ARTIFACT}_{label}")
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest = {

@@ -16,6 +16,7 @@ from pathlib import Path
 
 
 AUTOMATION_PATH = Path.home() / ".codex" / "automations" / "xuan-research-dplus-implementation-heartbeat" / "automation.toml"
+ADAPTER_JOIN_ARTIFACT = "xuan_b27_dplus_compliant_adapter_join_probe"
 FORBIDDEN_EC2_READONLY_SIDE_EFFECT_FIELDS = (
     "systemd_called",
     "service_control_called",
@@ -97,6 +98,20 @@ def summarize_manifest(path: Path | None, value: dict, fields: tuple[str, ...]) 
     for field in fields:
         out[field] = value.get(field)
     return out
+
+
+def safe_adapter_join_probe(value: dict) -> bool:
+    side_effects = value.get("side_effects") or {}
+    return (
+        value.get("artifact") == ADAPTER_JOIN_ARTIFACT
+        and value.get("probe_passed") is True
+        and value.get("raw_replay_scanned") is False
+        and value.get("orders_sent") is False
+        and value.get("cancels_sent") is False
+        and value.get("redeems_sent") is False
+        and value.get("auth_network_started") is False
+        and all(item is False for item in side_effects.values())
+    )
 
 
 def summarize_remote_shared_ingress_probe(path: Path | None, value: dict) -> dict:
@@ -933,6 +948,11 @@ def main() -> int:
         "xuan_b27_dplus_compliant_backtest_input_preflight_smoke_*",
         artifact="xuan_b27_dplus_compliant_backtest_input_preflight_smoke",
     )
+    compliant_adapter_join_probe_path = latest_manifest(
+        root,
+        "xuan_b27_dplus_compliant_adapter_join_probe_*",
+        artifact=ADAPTER_JOIN_ARTIFACT,
+    )
     compliant_backtest_run_plan_path = latest_manifest(
         root,
         "xuan_b27_dplus_compliant_backtest_run_plan_*",
@@ -1147,6 +1167,7 @@ def main() -> int:
     compliant_backtest_input_preflight_smoke = read_json(
         compliant_backtest_input_preflight_smoke_path
     )
+    compliant_adapter_join_probe = read_json(compliant_adapter_join_probe_path)
     compliant_backtest_run_plan = read_json(compliant_backtest_run_plan_path)
     compliant_backtest_run_plan_smoke = read_json(compliant_backtest_run_plan_smoke_path)
     backtest_report_scope_audit = read_json(backtest_report_scope_audit_path)
@@ -1503,6 +1524,19 @@ def main() -> int:
         "compliant_backtest_required_dataset_type": compliant_backtest_run_plan.get(
             "required_dataset_type"
         ),
+        "compliant_adapter_join_status": compliant_adapter_join_probe.get("status"),
+        "compliant_adapter_join_probe_passed": compliant_adapter_join_probe.get("probe_passed"),
+        "compliant_adapter_join_safe": safe_adapter_join_probe(compliant_adapter_join_probe),
+        "compliant_adapter_join_row_count": compliant_adapter_join_probe.get("row_count"),
+        "compliant_adapter_join_strict_completion_overlap_rate": (
+            compliant_adapter_join_probe.get("strict_completion_overlap_rate")
+        ),
+        "compliant_adapter_join_strict_days_missing_completion": (
+            compliant_adapter_join_probe.get("strict_days_missing_completion")
+        ),
+        "compliant_adapter_join_strict_days_missing_public_audit": (
+            compliant_adapter_join_probe.get("strict_days_missing_public_audit")
+        ),
         "backtest_report_scope_audit_status": backtest_report_scope_audit.get("status"),
         "backtest_report_scope_audit_passed": backtest_report_scope_audit.get("audit_passed"),
         "backtest_report_scope_audit_manifest_count": backtest_report_scope_audit.get(
@@ -1703,6 +1737,11 @@ def main() -> int:
                 "input_preflight_status",
                 "requires_compliant_store_adapter",
                 "compliant_store_adapter_ready",
+                "adapter_join_probe_status",
+                "adapter_join_probe_passed",
+                "adapter_join_probe_safe",
+                "adapter_join_row_count",
+                "adapter_join_strict_completion_overlap_rate",
                 "existing_runner_input_type",
                 "required_dataset_type",
                 "raw_replay_scanned",
@@ -1712,6 +1751,27 @@ def main() -> int:
                 "next_gate",
             ),
         ),
+        "compliant_adapter_join_probe": summarize_manifest(
+            compliant_adapter_join_probe_path,
+            compliant_adapter_join_probe,
+            (
+                "artifact",
+                "status",
+                "scope",
+                "probe_passed",
+                "dataset_type",
+                "row_count",
+                "strict_completion_overlap_rate",
+                "strict_days_missing_completion",
+                "strict_days_missing_public_audit",
+                "excluded_20260514_20260515",
+                "public_account_execution_truth_v1_included",
+                "raw_replay_scanned",
+                "orders_sent",
+                "auth_network_started",
+            ),
+        )
+        | {"safe": safe_adapter_join_probe(compliant_adapter_join_probe)},
         "compliant_backtest_run_plan_smoke": summarize_manifest(
             compliant_backtest_run_plan_smoke_path,
             compliant_backtest_run_plan_smoke,
