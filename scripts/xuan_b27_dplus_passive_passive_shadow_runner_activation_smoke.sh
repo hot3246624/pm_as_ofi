@@ -39,13 +39,14 @@ def book(ts_ms: int) -> dict[str, object]:
     }
 
 
-def sell(ts_ms: int, side: str) -> dict[str, object]:
+def sell(ts_ms: int, side: str, price: float = 0.40) -> dict[str, object]:
     return {
         "kind": "market_trade_tick",
         "ts_ms": ts_ms,
+        "source_sequence_id": f"seq-{side}-{ts_ms}",
         "market_side": side,
         "taker_side": "SELL",
-        "price": 0.40,
+        "price": price,
         "size": 20.0,
     }
 
@@ -82,9 +83,15 @@ activation_blocks = [event for event in events if event.get("kind") == "activati
 candidates = [event for event in events if event.get("kind") == "candidate"]
 assert len(activation_blocks) == 1
 assert len(candidates) == 1
+assert candidates[0]["quote_intent_id"].startswith("btc-updown-5m-1900000300:quote:")
+assert candidates[0]["condition_id"] == "btc-updown-5m-1900000300"
+assert candidates[0]["price"] == candidates[0]["seed_px"]
+assert candidates[0]["size"] == candidates[0]["qty"]
+assert candidates[0]["source_sequence_id"] == "seq-NO-1900000320000"
 assert candidates[0]["activation_required"] is True
 assert candidates[0]["risk_increasing_seed"] is True
 assert candidates[0]["activation_opp_age_ms"] == 10000
+assert activation_blocks[0]["quote_intent_id"].startswith("btc-updown-5m-1900000300:blocked:YES:")
 
 repair_runner = mod.DPlusRunner(
     "btc-updown-5m-1900000600",
@@ -93,7 +100,7 @@ repair_runner = mod.DPlusRunner(
 )
 repair_runner.on_book(book(base_ts + 601_000))
 repair_runner.lots["NO"].append(
-    mod.Lot(id=1, side="NO", qty=3.0, px=0.40, fill_ms=base_ts + 601_000, source_order_id=1)
+    mod.Lot(id=1, quote_intent_id="fixture-no-lot", side="NO", qty=3.0, px=0.40, fill_ms=base_ts + 601_000, source_order_id=1)
 )
 repair_runner.on_trade(sell(base_ts + 610_000, "YES"))
 assert repair_runner.metrics.candidates == 1
@@ -101,6 +108,26 @@ repair_events = load_events(repair_runner.events_path)
 repair_candidates = [event for event in repair_events if event.get("kind") == "candidate"]
 assert repair_candidates[0]["activation_required"] is False
 assert repair_candidates[0]["risk_increasing_seed"] is False
+
+fill_runner = mod.DPlusRunner(
+    "btc-updown-5m-1900000900",
+    out_dir,
+    mod.RunnerConfig(edge=0.07, activation_mode="none"),
+)
+fill_runner.on_book(book(base_ts + 901_000))
+fill_runner.on_trade(sell(base_ts + 910_000, "YES", price=0.40))
+fill_runner.on_trade(sell(base_ts + 920_000, "YES", price=0.30))
+fill_events = [
+    event
+    for event in load_events(fill_runner.events_path)
+    if event.get("kind") == "queue_supported_fill"
+]
+assert len(fill_events) == 1
+assert fill_events[0]["quote_intent_id"].startswith("btc-updown-5m-1900000900:quote:")
+assert fill_events[0]["condition_id"] == "btc-updown-5m-1900000900"
+assert fill_events[0]["source"] == "no_order_public_trade_queue_proxy"
+assert fill_events[0]["source_sequence_id"] == "seq-YES-1900000920000"
+assert fill_events[0]["market_md_source_sequence_id"] == "seq-YES-1900000920000"
 
 manifest = {
     "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_activation_smoke",
@@ -112,6 +139,7 @@ manifest = {
         "opp_seen_blocks_first_risk_increasing_seed": True,
         "opp_seen_allows_recent_opposite_side_seed": True,
         "risk_reducing_seed_bypasses_activation": True,
+        "queue_supported_fill_has_lifecycle_provenance": True,
     },
     "side_effects": {
         "network_started": False,
@@ -127,6 +155,7 @@ manifest = {
         "default_events": str(default_runner.events_path),
         "activation_events": str(activation_runner.events_path),
         "repair_events": str(repair_runner.events_path),
+        "fill_events": str(fill_runner.events_path),
     },
 }
 (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
