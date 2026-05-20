@@ -147,6 +147,22 @@ def pair_cost_bucket(cost: float | None) -> str:
     return "pair_cost_gt_1p05"
 
 
+def qty_bucket(prefix: str, qty: float | None) -> str:
+    if qty is None:
+        return f"{prefix}_unknown"
+    if qty <= DUST:
+        return f"{prefix}_zero"
+    if qty <= 1.0:
+        return f"{prefix}_le_1"
+    if qty <= 2.0:
+        return f"{prefix}_1_2"
+    if qty < 5.0:
+        return f"{prefix}_2_5"
+    if abs(qty - 5.0) <= 1e-9:
+        return f"{prefix}_eq_5"
+    return f"{prefix}_gt_5"
+
+
 def add_count(hist: dict[str, float], key: str, amount: float = 1.0) -> None:
     hist[key] = round(hist.get(key, 0.0) + amount, 6)
 
@@ -212,6 +228,7 @@ class RunnerConfig:
     max_salvage_qty: float = 250.0
     event_lite_summary: bool = False
     pair_source_event_lite_summary: bool = False
+    fill_to_balance_diagnostic_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -358,6 +375,21 @@ class DPlusRunner:
         self.event_lite_pair_cost_by_source_offset_bucket: dict[str, dict[str, float]] = {}
         self.event_lite_pair_cost_by_source_side: dict[str, dict[str, float]] = {}
         self.event_lite_top_high_cost_pair_sources: list[dict[str, Any]] = []
+        self.event_lite_f2b_diagnostics: dict[str, Any] = {
+            "candidate_count_by_side": {},
+            "candidate_count_by_offset_bucket": {},
+            "candidate_count_by_side_offset": {},
+            "status_count_by_side": {},
+            "status_count_by_offset_bucket": {},
+            "status_count_by_side_offset": {},
+            "deficit_bucket_by_side_offset": {},
+            "base_seed_qty_bucket_by_side_offset": {},
+            "capped_qty_bucket_by_side_offset": {},
+            "qty_reduction_bucket_by_side_offset": {},
+            "qty_reduction_amount_by_side": {},
+            "qty_reduction_amount_by_offset_bucket": {},
+            "qty_reduction_amount_by_side_offset": {},
+        }
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -400,6 +432,37 @@ class DPlusRunner:
             return
         add_count(self.event_lite_fill_seed_px_buckets, px_bucket(seed_px))
         add_count(self.event_lite_fill_side_counts, side)
+
+    def record_fill_to_balance_diagnostic(
+        self,
+        *,
+        side: str,
+        offset_s: float | None,
+        deficit: float | None,
+        base_seed_qty: float,
+        capped_qty: float,
+        qty_reduction: float,
+        status: str,
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.fill_to_balance_diagnostic_event_lite_summary):
+            return
+        offset_key = offset_bucket(offset_s)
+        side_offset_key = f"{side}|{offset_key}"
+        diag = self.event_lite_f2b_diagnostics
+        add_count(diag["candidate_count_by_side"], side)
+        add_count(diag["candidate_count_by_offset_bucket"], offset_key)
+        add_count(diag["candidate_count_by_side_offset"], side_offset_key)
+        add_nested_count(diag["status_count_by_side"], status, side)
+        add_nested_count(diag["status_count_by_offset_bucket"], status, offset_key)
+        add_nested_count(diag["status_count_by_side_offset"], side_offset_key, status)
+        add_nested_count(diag["deficit_bucket_by_side_offset"], side_offset_key, qty_bucket("deficit", deficit))
+        add_nested_count(diag["base_seed_qty_bucket_by_side_offset"], side_offset_key, qty_bucket("base_seed_qty", base_seed_qty))
+        add_nested_count(diag["capped_qty_bucket_by_side_offset"], side_offset_key, qty_bucket("capped_qty", capped_qty))
+        add_nested_count(diag["qty_reduction_bucket_by_side_offset"], side_offset_key, qty_bucket("qty_reduction", qty_reduction))
+        if qty_reduction > DUST:
+            add_count(diag["qty_reduction_amount_by_side"], side, qty_reduction)
+            add_count(diag["qty_reduction_amount_by_offset_bucket"], offset_key, qty_reduction)
+            add_count(diag["qty_reduction_amount_by_side_offset"], side_offset_key, qty_reduction)
 
     def record_pair_source_event_lite(
         self,
@@ -764,9 +827,20 @@ class DPlusRunner:
         if fill_to_balance_active:
             self.metrics.late_repair_fill_to_balance_candidates += 1
             capped_qty = min(qty, fill_to_balance_deficit or 0.0)
-            if capped_qty < qty - DUST:
+            qty_reduction = max(0.0, qty - capped_qty)
+            if qty_reduction > DUST:
                 self.metrics.late_repair_fill_to_balance_caps += 1
-                self.metrics.late_repair_fill_to_balance_qty_reduction += qty - capped_qty
+                self.metrics.late_repair_fill_to_balance_qty_reduction += qty_reduction
+            f2b_status = "block" if capped_qty <= self.cfg.dust_qty else ("cap" if qty_reduction > DUST else "uncapped")
+            self.record_fill_to_balance_diagnostic(
+                side=side,
+                offset_s=offset,
+                deficit=fill_to_balance_deficit,
+                base_seed_qty=base_qty,
+                capped_qty=capped_qty,
+                qty_reduction=qty_reduction,
+                status=f2b_status,
+            )
             qty = capped_qty
         if qty <= self.cfg.dust_qty:
             if fill_to_balance_active:
@@ -912,6 +986,8 @@ class DPlusRunner:
                         )[:20],
                     }
                 )
+            if self.cfg.fill_to_balance_diagnostic_event_lite_summary:
+                summary["event_lite"]["late_repair_fill_to_balance_diagnostics"] = self.event_lite_f2b_diagnostics
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -1122,6 +1198,32 @@ def aggregate(out: Path) -> dict[str, Any]:
                 value = lite.get(key)
                 if isinstance(value, (int, float)):
                     event_lite[key] = round(float(event_lite.get(key, 0.0)) + float(value), 6)
+            f2b_diag = lite.get("late_repair_fill_to_balance_diagnostics")
+            if isinstance(f2b_diag, dict):
+                dest_diag = event_lite.setdefault("late_repair_fill_to_balance_diagnostics", {})
+                for key in (
+                    "candidate_count_by_side",
+                    "candidate_count_by_offset_bucket",
+                    "candidate_count_by_side_offset",
+                    "qty_reduction_amount_by_side",
+                    "qty_reduction_amount_by_offset_bucket",
+                    "qty_reduction_amount_by_side_offset",
+                ):
+                    source = f2b_diag.get(key)
+                    if isinstance(source, dict):
+                        merge_count_hist(dest_diag.setdefault(key, {}), source)
+                for key in (
+                    "status_count_by_side",
+                    "status_count_by_offset_bucket",
+                    "status_count_by_side_offset",
+                    "deficit_bucket_by_side_offset",
+                    "base_seed_qty_bucket_by_side_offset",
+                    "capped_qty_bucket_by_side_offset",
+                    "qty_reduction_bucket_by_side_offset",
+                ):
+                    source = f2b_diag.get(key)
+                    if isinstance(source, dict):
+                        merge_nested_count_hist(dest_diag.setdefault(key, {}), source)
             source_contexts = lite.get("top_high_cost_pair_sources")
             if isinstance(source_contexts, list):
                 top_sources = event_lite.setdefault("top_high_cost_pair_sources", [])
@@ -1233,6 +1335,7 @@ async def main() -> None:
     ap.add_argument("--activation-window-s", type=float, default=60.0)
     ap.add_argument("--event-lite-summary", action="store_true", help="emit summary-only candidate/fill/block/residual attribution buckets without pulling events JSONL")
     ap.add_argument("--pair-source-event-lite-summary", action="store_true", help="with --event-lite-summary, attribute pair-cost buckets back to source seed/public price, offset, side, and quote ids")
+    ap.add_argument("--fill-to-balance-diagnostic-event-lite-summary", action="store_true", help="with --event-lite-summary and --late-repair-fill-to-balance-after-s, emit fill-to-balance deficit/base/capped/reduction diagnostic buckets")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -1267,6 +1370,7 @@ async def main() -> None:
         activation_window_s=args.activation_window_s,
         event_lite_summary=args.event_lite_summary,
         pair_source_event_lite_summary=args.pair_source_event_lite_summary,
+        fill_to_balance_diagnostic_event_lite_summary=args.fill_to_balance_diagnostic_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -1286,6 +1390,11 @@ async def main() -> None:
         raise SystemExit("--activation-window-s must be positive")
     if cfg.pair_source_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--pair-source-event-lite-summary requires --event-lite-summary")
+    if cfg.fill_to_balance_diagnostic_event_lite_summary:
+        if not cfg.event_lite_summary:
+            raise SystemExit("--fill-to-balance-diagnostic-event-lite-summary requires --event-lite-summary")
+        if cfg.late_repair_fill_to_balance_after_s is None:
+            raise SystemExit("--fill-to-balance-diagnostic-event-lite-summary requires --late-repair-fill-to-balance-after-s")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

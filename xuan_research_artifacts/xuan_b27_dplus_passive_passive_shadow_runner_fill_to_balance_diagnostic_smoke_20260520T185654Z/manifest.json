@@ -1,0 +1,39 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke",
+  "checks": {
+    "aggregate_matches_summary_totals": true,
+    "base_seed_qty_buckets_by_side_offset_exposed": true,
+    "capped_qty_buckets_by_side_offset_exposed": true,
+    "cli_requires_event_lite": true,
+    "cli_requires_fill_to_balance": true,
+    "default_event_lite_diagnostics_absent": true,
+    "deficit_buckets_by_side_offset_exposed": true,
+    "dust_deficit_block_counted": true,
+    "larger_repair_seed_uncapped_counted": true,
+    "qty_reduction_buckets_and_amounts_by_side_offset_exposed": true,
+    "tiny_deficit_cap_counted": true
+  },
+  "decision_label": "KEEP",
+  "hypothesis": "default-off fill-to-balance diagnostic event-lite buckets explain cap/block/uncapped repair paths without pulling events JSONL",
+  "next_action": "After regression smokes pass, use the diagnostic flag only in a bounded no-order shadow to explain the fill-to-balance transfer gap; do not treat diagnostics as promotion evidence.",
+  "outputs": {
+    "block_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260520T185654Z/diagnostic_enabled/btc-updown-5m-1900000600.summary.json",
+    "cap_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260520T185654Z/diagnostic_enabled/btc-updown-5m-1900000300.summary.json",
+    "default_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260520T185654Z/diagnostic_default_off/aggregate_report.json",
+    "default_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260520T185654Z/diagnostic_default_off/btc-updown-5m-1900000000.summary.json",
+    "diagnostic_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260520T185654Z/diagnostic_enabled/aggregate_report.json",
+    "uncapped_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260520T185654Z/diagnostic_enabled/btc-updown-5m-1900000900.summary.json"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "tool": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/tools/xuan_dplus_passive_passive_shadow_runner.py"
+}
