@@ -1,0 +1,2440 @@
+{
+  "artifact": "xuan_b27_dplus_public_profile_pairing_verifier",
+  "best_rule": "portfolio_risk_adjusted_nonnegative",
+  "best_rule_delta_vs_control": {
+    "active_market_retention": 0.9479433,
+    "active_markets": {
+      "absolute_delta": -224.0,
+      "control": 4303.0,
+      "relative_delta": -0.0520567,
+      "variant": 4079.0
+    },
+    "fee_after_pnl": {
+      "absolute_delta": -90.947861,
+      "control": 2894.880674,
+      "relative_delta": -0.03141679,
+      "variant": 2803.932813
+    },
+    "pair_actions": {
+      "absolute_delta": -1270.0,
+      "control": 23362.0,
+      "relative_delta": -0.05436178,
+      "variant": 22092.0
+    },
+    "pair_pnl": {
+      "absolute_delta": -117.483425,
+      "control": 3639.389925,
+      "relative_delta": -0.03228108,
+      "variant": 3521.9065
+    },
+    "pair_qty": {
+      "absolute_delta": -1135.9,
+      "control": 25510.275,
+      "relative_delta": -0.04452716,
+      "variant": 24374.375
+    },
+    "pair_qty_retention": 0.95547284,
+    "residual_cost_rate": {
+      "absolute_delta": -0.004416,
+      "control": 0.00947,
+      "relative_delta": -0.46631468,
+      "variant": 0.005054
+    },
+    "residual_cost_rate_reduction": 0.466315,
+    "residual_qty_rate": {
+      "absolute_delta": -0.003317,
+      "control": 0.012097,
+      "relative_delta": -0.27420021,
+      "variant": 0.00878
+    },
+    "residual_qty_rate_reduction": 0.2742,
+    "seed_action_retention": 0.95189995,
+    "seed_actions": {
+      "absolute_delta": -2000.0,
+      "control": 41580.0,
+      "relative_delta": -0.04810005,
+      "variant": 39580.0
+    },
+    "stress100_worst_pnl": {
+      "absolute_delta": 10.34035,
+      "control": 2913.845075,
+      "relative_delta": 0.0035487,
+      "variant": 2924.185425
+    },
+    "weighted_pair_cost": {
+      "absolute_delta": -0.001828,
+      "control": 0.857336,
+      "relative_delta": -0.00213219,
+      "variant": 0.855508
+    },
+    "worst_day_fee_after_pnl": {
+      "absolute_delta": -8.56015,
+      "control": 161.917289,
+      "relative_delta": -0.05286742,
+      "variant": 153.357139
+    },
+    "worst_residual_net_pnl": {
+      "absolute_delta": -14.3073,
+      "control": 3430.29805,
+      "relative_delta": -0.00417086,
+      "variant": 3415.99075
+    }
+  },
+  "can_support_strategy_promotion": false,
+  "condition_ledger_control": {
+    "active_markets": 4303,
+    "actual_settle_pnl": 3667.11055,
+    "fee_after_pnl": 2894.880674,
+    "gross_buy_cost": 22079.97695,
+    "gross_buy_qty": 51645.2975,
+    "gross_pnl": 3667.11055,
+    "name": "late_repair90_control_condition_ledger",
+    "official_taker_fee": 772.229876,
+    "pair_actions": 23362,
+    "pair_pnl": 3639.389925,
+    "pair_qty": 25510.275,
+    "residual_cost": 209.091875,
+    "residual_cost_rate": 0.00947,
+    "residual_qty": 624.7475,
+    "residual_qty_rate": 0.012097,
+    "residual_settle_pnl": 27.720625,
+    "seed_actions": 41580,
+    "stress100_worst_pnl": 2913.845075,
+    "summary_by_day": [
+      {
+        "active_markets": 288,
+        "day": "2026-05-02",
+        "fee_after_pnl": 166.363379,
+        "official_taker_fee": 42.527321,
+        "pair_actions": 1303,
+        "pair_cost_wavg": 0.852204,
+        "pair_pnl": 207.75805,
+        "pair_qty": 1405.71,
+        "residual_cost": 17.57735,
+        "residual_qty": 44.1075,
+        "seed_actions": 2303,
+        "stress100_worst_pnl": 161.625425
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-03",
+        "fee_after_pnl": 174.667664,
+        "official_taker_fee": 45.314661,
+        "pair_actions": 1382,
+        "pair_cost_wavg": 0.856368,
+        "pair_pnl": 218.99925,
+        "pair_qty": 1524.725,
+        "residual_cost": 10.209425,
+        "residual_qty": 33.7925,
+        "seed_actions": 2485,
+        "stress100_worst_pnl": 177.9574
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-04",
+        "fee_after_pnl": 216.720066,
+        "official_taker_fee": 59.470609,
+        "pair_actions": 1772,
+        "pair_cost_wavg": 0.860638,
+        "pair_pnl": 273.6114,
+        "pair_qty": 1963.3075,
+        "residual_cost": 8.998225,
+        "residual_qty": 33.6925,
+        "seed_actions": 3186,
+        "stress100_worst_pnl": 225.0101
+      },
+      {
+        "active_markets": 287,
+        "day": "2026-05-05",
+        "fee_after_pnl": 213.616245,
+        "official_taker_fee": 59.13903,
+        "pair_actions": 1763,
+        "pair_cost_wavg": 0.859323,
+        "pair_pnl": 271.686825,
+        "pair_qty": 1931.285,
+        "residual_cost": 14.15405,
+        "residual_qty": 33.83,
+        "seed_actions": 3135,
+        "stress100_worst_pnl": 218.568775
+      },
+      {
+        "active_markets": 284,
+        "day": "2026-05-06",
+        "fee_after_pnl": 196.361782,
+        "official_taker_fee": 56.498968,
+        "pair_actions": 1662,
+        "pair_cost_wavg": 0.862618,
+        "pair_pnl": 249.5658,
+        "pair_qty": 1816.5875,
+        "residual_cost": 18.01755,
+        "residual_qty": 53.795,
+        "seed_actions": 2967,
+        "stress100_worst_pnl": 194.67855
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-07",
+        "fee_after_pnl": 215.470083,
+        "official_taker_fee": 59.094492,
+        "pair_actions": 1763,
+        "pair_cost_wavg": 0.859801,
+        "pair_pnl": 271.6406,
+        "pair_qty": 1937.5375,
+        "residual_cost": 14.471025,
+        "residual_qty": 38.9425,
+        "seed_actions": 3149,
+        "stress100_worst_pnl": 218.0294
+      },
+      {
+        "active_markets": 287,
+        "day": "2026-05-08",
+        "fee_after_pnl": 195.057343,
+        "official_taker_fee": 53.306082,
+        "pair_actions": 1670,
+        "pair_cost_wavg": 0.860837,
+        "pair_pnl": 247.957975,
+        "pair_qty": 1781.78,
+        "residual_cost": 15.36705,
+        "residual_qty": 40.7225,
+        "seed_actions": 2906,
+        "stress100_worst_pnl": 196.5481
+      },
+      {
+        "active_markets": 286,
+        "day": "2026-05-09",
+        "fee_after_pnl": 174.574333,
+        "official_taker_fee": 46.635092,
+        "pair_actions": 1405,
+        "pair_cost_wavg": 0.859249,
+        "pair_pnl": 217.320925,
+        "pair_qty": 1544.01,
+        "residual_cost": 16.2465,
+        "residual_qty": 43.6375,
+        "seed_actions": 2521,
+        "stress100_worst_pnl": 169.75785
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-10",
+        "fee_after_pnl": 190.617426,
+        "official_taker_fee": 48.919099,
+        "pair_actions": 1448,
+        "pair_cost_wavg": 0.854248,
+        "pair_pnl": 240.102425,
+        "pair_qty": 1647.34,
+        "residual_cost": 10.0134,
+        "residual_qty": 40.655,
+        "seed_actions": 2681,
+        "stress100_worst_pnl": 196.735675
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-11",
+        "fee_after_pnl": 216.8222,
+        "official_taker_fee": 57.03655,
+        "pair_actions": 1681,
+        "pair_cost_wavg": 0.85446,
+        "pair_pnl": 271.189125,
+        "pair_qty": 1863.3325,
+        "residual_cost": 16.272875,
+        "residual_qty": 40.335,
+        "seed_actions": 3027,
+        "stress100_worst_pnl": 217.24625
+      },
+      {
+        "active_markets": 279,
+        "day": "2026-05-12",
+        "fee_after_pnl": 198.845014,
+        "official_taker_fee": 51.357461,
+        "pair_actions": 1545,
+        "pair_cost_wavg": 0.854034,
+        "pair_pnl": 248.383375,
+        "pair_qty": 1701.655,
+        "residual_cost": 9.6659,
+        "residual_qty": 39.0575,
+        "seed_actions": 2771,
+        "stress100_worst_pnl": 204.2938
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-13",
+        "fee_after_pnl": 186.382942,
+        "official_taker_fee": 48.962683,
+        "pair_actions": 1484,
+        "pair_cost_wavg": 0.854964,
+        "pair_pnl": 233.877175,
+        "pair_qty": 1612.55,
+        "residual_cost": 12.41405,
+        "residual_qty": 37.68,
+        "seed_actions": 2626,
+        "stress100_worst_pnl": 188.835325
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-16",
+        "fee_after_pnl": 161.917289,
+        "official_taker_fee": 42.172711,
+        "pair_actions": 1232,
+        "pair_cost_wavg": 0.854153,
+        "pair_pnl": 202.008375,
+        "pair_qty": 1385.07,
+        "residual_cost": 13.648375,
+        "residual_qty": 35.5875,
+        "seed_actions": 2258,
+        "stress100_worst_pnl": 160.302725
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-17",
+        "fee_after_pnl": 168.499939,
+        "official_taker_fee": 43.619961,
+        "pair_actions": 1395,
+        "pair_cost_wavg": 0.855568,
+        "pair_pnl": 211.1714,
+        "pair_qty": 1462.0775,
+        "residual_cost": 15.9865,
+        "residual_qty": 55.73,
+        "seed_actions": 2402,
+        "stress100_worst_pnl": 165.38605
+      },
+      {
+        "active_markets": 288,
+        "day": "2026-05-18",
+        "fee_after_pnl": 218.964969,
+        "official_taker_fee": 58.175156,
+        "pair_actions": 1857,
+        "pair_cost_wavg": 0.858213,
+        "pair_pnl": 274.117225,
+        "pair_qty": 1933.3075,
+        "residual_cost": 16.0496,
+        "residual_qty": 53.1825,
+        "seed_actions": 3163,
+        "stress100_worst_pnl": 218.86965
+      }
+    ],
+    "weighted_pair_cost": 0.857336,
+    "worst_day_fee_after_pnl": 161.917289,
+    "worst_residual_net_pnl": 3430.29805
+  },
+  "config": {
+    "control_profile": {
+      "cooldown_or_admission_cap_added": false,
+      "edge": 0.07,
+      "fill_to_balance": false,
+      "imbalance_qty_cap": 1.25,
+      "late_repair_only_after_s": 90.0,
+      "max_open_cost": 80.0,
+      "name": "shadow_aligned_late_repair90_control",
+      "public_source_price_caps": false,
+      "static_target_or_cap_sweep": false,
+      "target_qty": 5.0
+    },
+    "note": "Rules are local research ranking over condition ledgers, not runner/trading behavior.",
+    "portfolio_rules": {
+      "portfolio_pair_cost_lt_1": "condition avg_pair_cost < 1.0 and pair_qty > 0",
+      "portfolio_pair_cost_lt_1_and_risk_adjusted_nonnegative": "intersection of both rules",
+      "portfolio_risk_adjusted_nonnegative": "condition conservative pair_pnl - fee - residual_cost - stress >= 0"
+    }
+  },
+  "control_profile_metrics": {
+    "active_markets": 4303,
+    "actual_settle_pnl": 3667.11055,
+    "candidate_count": 1425196,
+    "cooldown_s": 5.0,
+    "dust_qty": 1.0,
+    "edge": 0.07,
+    "fee_after_pnl": 2894.880674,
+    "fill_haircut": 0.25,
+    "gross_buy_cost": 22079.97695,
+    "gross_buy_qty": 51645.2975,
+    "gross_pnl": 3667.11055,
+    "imbalance_cost_cap": 1000000000.0,
+    "imbalance_qty_cap": 1.25,
+    "late_repair_fill_to_balance_after_s": null,
+    "late_repair_only_after_s": 90.0,
+    "max_open_cost": 80.0,
+    "max_seed_qty": 60.0,
+    "name": "shadow_aligned_late_repair90_control",
+    "official_fee_rate": 0.07,
+    "official_taker_fee": 772.229876,
+    "pair_actions": 23362,
+    "pair_pnl": 3639.389925,
+    "pair_qty": 25510.275,
+    "public_trade_px_hi": null,
+    "residual_cooldown_age_s": 30.0,
+    "residual_cooldown_cost_cap": 0.5,
+    "residual_cost": 209.091875,
+    "residual_cost_rate": 0.00947,
+    "residual_qty": 624.7475,
+    "residual_qty_rate": 0.012097,
+    "residual_settle_pnl": 27.720625,
+    "risk_increasing_imbalance_qty_cap": null,
+    "risk_increasing_public_trade_px_hi": null,
+    "risk_increasing_public_trade_px_hi_side": null,
+    "seed_actions": 41580,
+    "seed_block_cooldown": 193346,
+    "seed_block_dynamic_imbalance_qty": 0,
+    "seed_block_imbalance_cost": 0,
+    "seed_block_imbalance_qty": 38851,
+    "seed_block_l1_pair_cap": 0,
+    "seed_block_late_fill_to_balance_qty": 0,
+    "seed_block_late_repair_only": 85680,
+    "seed_block_offset": 1030507,
+    "seed_block_price_band": 11154,
+    "seed_block_public_trade_px_hi": 0,
+    "seed_block_residual_cooldown": 814,
+    "seed_block_risk_increasing_public_trade_px_hi": 0,
+    "seed_block_target": 0,
+    "seed_l1_pair_cap": 1.02,
+    "seed_late_fill_to_balance_candidate": 0,
+    "seed_late_fill_to_balance_qty_reduction": 0.0,
+    "seed_offset_max_s": 120.0,
+    "seed_offset_min_s": 0.0,
+    "seed_px_hi": 0.9,
+    "seed_px_lo": 0.05,
+    "seed_qty_cap_late_fill_to_balance": 0,
+    "stress100_worst_pnl": 2913.845075,
+    "summary_by_day": [
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 208.8907,
+        "candidate_count": 206349,
+        "cost_residual_rate": 0.014461,
+        "day": "2026-05-02",
+        "fee_after_pnl": 166.363379,
+        "gross_buy_cost": 1215.5293,
+        "gross_buy_qty": 2855.5275,
+        "official_taker_fee": 42.527321,
+        "pair_actions": 1303,
+        "pair_cost_wavg": 0.852204,
+        "pair_pnl": 207.75805,
+        "pair_qty": 1405.71,
+        "public_sell_candidate_count": 69781,
+        "qty_residual_rate": 0.015446,
+        "residual_cost": 17.57735,
+        "residual_qty": 44.1075,
+        "seed_actions": 2303,
+        "stress100_worst_pnl": 161.625425,
+        "worst_residual_net_pnl": 190.1807
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 219.982325,
+        "candidate_count": 238257,
+        "cost_residual_rate": 0.007758,
+        "day": "2026-05-03",
+        "fee_after_pnl": 174.667664,
+        "gross_buy_cost": 1315.935175,
+        "gross_buy_qty": 3083.2425,
+        "official_taker_fee": 45.314661,
+        "pair_actions": 1382,
+        "pair_cost_wavg": 0.856368,
+        "pair_pnl": 218.99925,
+        "pair_qty": 1524.725,
+        "public_sell_candidate_count": 87645,
+        "qty_residual_rate": 0.01096,
+        "residual_cost": 10.209425,
+        "residual_qty": 33.7925,
+        "seed_actions": 2485,
+        "stress100_worst_pnl": 177.9574,
+        "worst_residual_net_pnl": 208.789825
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 276.190675,
+        "candidate_count": 329242,
+        "cost_residual_rate": 0.005297,
+        "day": "2026-05-04",
+        "fee_after_pnl": 216.720066,
+        "gross_buy_cost": 1698.694325,
+        "gross_buy_qty": 3960.3075,
+        "official_taker_fee": 59.470609,
+        "pair_actions": 1772,
+        "pair_cost_wavg": 0.860638,
+        "pair_pnl": 273.6114,
+        "pair_qty": 1963.3075,
+        "public_sell_candidate_count": 125004,
+        "qty_residual_rate": 0.008508,
+        "residual_cost": 8.998225,
+        "residual_qty": 33.6925,
+        "seed_actions": 3186,
+        "stress100_worst_pnl": 225.0101,
+        "worst_residual_net_pnl": 264.613175
+      },
+      {
+        "active_markets": 287,
+        "actual_settle_pnl": 272.755275,
+        "candidate_count": 265277,
+        "cost_residual_rate": 0.008456,
+        "day": "2026-05-05",
+        "fee_after_pnl": 213.616245,
+        "gross_buy_cost": 1673.752225,
+        "gross_buy_qty": 3896.4,
+        "official_taker_fee": 59.13903,
+        "pair_actions": 1763,
+        "pair_cost_wavg": 0.859323,
+        "pair_pnl": 271.686825,
+        "pair_qty": 1931.285,
+        "public_sell_candidate_count": 108156,
+        "qty_residual_rate": 0.008682,
+        "residual_cost": 14.15405,
+        "residual_qty": 33.83,
+        "seed_actions": 3135,
+        "stress100_worst_pnl": 218.568775,
+        "worst_residual_net_pnl": 257.532775
+      },
+      {
+        "active_markets": 284,
+        "actual_settle_pnl": 252.86075,
+        "candidate_count": 258804,
+        "cost_residual_rate": 0.011367,
+        "day": "2026-05-06",
+        "fee_after_pnl": 196.361782,
+        "gross_buy_cost": 1585.03925,
+        "gross_buy_qty": 3686.97,
+        "official_taker_fee": 56.498968,
+        "pair_actions": 1662,
+        "pair_cost_wavg": 0.862618,
+        "pair_pnl": 249.5658,
+        "pair_qty": 1816.5875,
+        "public_sell_candidate_count": 103738,
+        "qty_residual_rate": 0.014591,
+        "residual_cost": 18.01755,
+        "residual_qty": 53.795,
+        "seed_actions": 2967,
+        "stress100_worst_pnl": 194.67855,
+        "worst_residual_net_pnl": 231.54825
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 274.564575,
+        "candidate_count": 274942,
+        "cost_residual_rate": 0.008612,
+        "day": "2026-05-07",
+        "fee_after_pnl": 215.470083,
+        "gross_buy_cost": 1680.367925,
+        "gross_buy_qty": 3914.0175,
+        "official_taker_fee": 59.094492,
+        "pair_actions": 1763,
+        "pair_cost_wavg": 0.859801,
+        "pair_pnl": 271.6406,
+        "pair_qty": 1937.5375,
+        "public_sell_candidate_count": 113847,
+        "qty_residual_rate": 0.009949,
+        "residual_cost": 14.471025,
+        "residual_qty": 38.9425,
+        "seed_actions": 3149,
+        "stress100_worst_pnl": 218.0294,
+        "worst_residual_net_pnl": 257.169575
+      },
+      {
+        "active_markets": 287,
+        "actual_settle_pnl": 248.363425,
+        "candidate_count": 264433,
+        "cost_residual_rate": 0.009919,
+        "day": "2026-05-08",
+        "fee_after_pnl": 195.057343,
+        "gross_buy_cost": 1549.189075,
+        "gross_buy_qty": 3604.2825,
+        "official_taker_fee": 53.306082,
+        "pair_actions": 1670,
+        "pair_cost_wavg": 0.860837,
+        "pair_pnl": 247.957975,
+        "pair_qty": 1781.78,
+        "public_sell_candidate_count": 107473,
+        "qty_residual_rate": 0.011298,
+        "residual_cost": 15.36705,
+        "residual_qty": 40.7225,
+        "seed_actions": 2906,
+        "stress100_worst_pnl": 196.5481,
+        "worst_residual_net_pnl": 232.590925
+      },
+      {
+        "active_markets": 286,
+        "actual_settle_pnl": 221.209425,
+        "candidate_count": 230450,
+        "cost_residual_rate": 0.012098,
+        "day": "2026-05-09",
+        "fee_after_pnl": 174.574333,
+        "gross_buy_cost": 1342.935575,
+        "gross_buy_qty": 3131.6575,
+        "official_taker_fee": 46.635092,
+        "pair_actions": 1405,
+        "pair_cost_wavg": 0.859249,
+        "pair_pnl": 217.320925,
+        "pair_qty": 1544.01,
+        "public_sell_candidate_count": 84242,
+        "qty_residual_rate": 0.013934,
+        "residual_cost": 16.2465,
+        "residual_qty": 43.6375,
+        "seed_actions": 2521,
+        "stress100_worst_pnl": 169.75785,
+        "worst_residual_net_pnl": 201.074425
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 239.536525,
+        "candidate_count": 233856,
+        "cost_residual_rate": 0.007065,
+        "day": "2026-05-10",
+        "fee_after_pnl": 190.617426,
+        "gross_buy_cost": 1417.250975,
+        "gross_buy_qty": 3335.335,
+        "official_taker_fee": 48.919099,
+        "pair_actions": 1448,
+        "pair_cost_wavg": 0.854248,
+        "pair_pnl": 240.102425,
+        "pair_qty": 1647.34,
+        "public_sell_candidate_count": 85318,
+        "qty_residual_rate": 0.012189,
+        "residual_cost": 10.0134,
+        "residual_qty": 40.655,
+        "seed_actions": 2681,
+        "stress100_worst_pnl": 196.735675,
+        "worst_residual_net_pnl": 230.089025
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 273.85875,
+        "candidate_count": 253142,
+        "cost_residual_rate": 0.010117,
+        "day": "2026-05-11",
+        "fee_after_pnl": 216.8222,
+        "gross_buy_cost": 1608.41625,
+        "gross_buy_qty": 3767.0,
+        "official_taker_fee": 57.03655,
+        "pair_actions": 1681,
+        "pair_cost_wavg": 0.85446,
+        "pair_pnl": 271.189125,
+        "pair_qty": 1863.3325,
+        "public_sell_candidate_count": 102431,
+        "qty_residual_rate": 0.010707,
+        "residual_cost": 16.272875,
+        "residual_qty": 40.335,
+        "seed_actions": 3027,
+        "stress100_worst_pnl": 217.24625,
+        "worst_residual_net_pnl": 254.91625
+      },
+      {
+        "active_markets": 279,
+        "actual_settle_pnl": 250.202475,
+        "candidate_count": 226353,
+        "cost_residual_rate": 0.006607,
+        "day": "2026-05-12",
+        "fee_after_pnl": 198.845014,
+        "gross_buy_cost": 1462.937525,
+        "gross_buy_qty": 3442.3675,
+        "official_taker_fee": 51.357461,
+        "pair_actions": 1545,
+        "pair_cost_wavg": 0.854034,
+        "pair_pnl": 248.383375,
+        "pair_qty": 1701.655,
+        "public_sell_candidate_count": 85210,
+        "qty_residual_rate": 0.011346,
+        "residual_cost": 9.6659,
+        "residual_qty": 39.0575,
+        "seed_actions": 2771,
+        "stress100_worst_pnl": 204.2938,
+        "worst_residual_net_pnl": 238.717475
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 235.345625,
+        "candidate_count": 220504,
+        "cost_residual_rate": 0.008924,
+        "day": "2026-05-13",
+        "fee_after_pnl": 186.382942,
+        "gross_buy_cost": 1391.086875,
+        "gross_buy_qty": 3262.78,
+        "official_taker_fee": 48.962683,
+        "pair_actions": 1484,
+        "pair_cost_wavg": 0.854964,
+        "pair_pnl": 233.877175,
+        "pair_qty": 1612.55,
+        "public_sell_candidate_count": 86243,
+        "qty_residual_rate": 0.011548,
+        "residual_cost": 12.41405,
+        "residual_qty": 37.68,
+        "seed_actions": 2626,
+        "stress100_worst_pnl": 188.835325,
+        "worst_residual_net_pnl": 221.463125
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 204.09,
+        "candidate_count": 227309,
+        "cost_residual_rate": 0.011405,
+        "day": "2026-05-16",
+        "fee_after_pnl": 161.917289,
+        "gross_buy_cost": 1196.71,
+        "gross_buy_qty": 2805.7275,
+        "official_taker_fee": 42.172711,
+        "pair_actions": 1232,
+        "pair_cost_wavg": 0.854153,
+        "pair_pnl": 202.008375,
+        "pair_qty": 1385.07,
+        "public_sell_candidate_count": 74155,
+        "qty_residual_rate": 0.012684,
+        "residual_cost": 13.648375,
+        "residual_qty": 35.5875,
+        "seed_actions": 2258,
+        "stress100_worst_pnl": 160.302725,
+        "worst_residual_net_pnl": 188.36
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 212.1199,
+        "candidate_count": 218319,
+        "cost_residual_rate": 0.012619,
+        "day": "2026-05-17",
+        "fee_after_pnl": 168.499939,
+        "gross_buy_cost": 1266.8926,
+        "gross_buy_qty": 2979.885,
+        "official_taker_fee": 43.619961,
+        "pair_actions": 1395,
+        "pair_cost_wavg": 0.855568,
+        "pair_pnl": 211.1714,
+        "pair_qty": 1462.0775,
+        "public_sell_candidate_count": 74215,
+        "qty_residual_rate": 0.018702,
+        "residual_cost": 15.9865,
+        "residual_qty": 55.73,
+        "seed_actions": 2402,
+        "stress100_worst_pnl": 165.38605,
+        "worst_residual_net_pnl": 195.1849
+      },
+      {
+        "active_markets": 288,
+        "actual_settle_pnl": 277.140125,
+        "candidate_count": 293174,
+        "cost_residual_rate": 0.00958,
+        "day": "2026-05-18",
+        "fee_after_pnl": 218.964969,
+        "gross_buy_cost": 1675.239875,
+        "gross_buy_qty": 3919.7975,
+        "official_taker_fee": 58.175156,
+        "pair_actions": 1857,
+        "pair_cost_wavg": 0.858213,
+        "pair_pnl": 274.117225,
+        "pair_qty": 1933.3075,
+        "public_sell_candidate_count": 117738,
+        "qty_residual_rate": 0.013568,
+        "residual_cost": 16.0496,
+        "residual_qty": 53.1825,
+        "seed_actions": 3163,
+        "stress100_worst_pnl": 218.86965,
+        "worst_residual_net_pnl": 258.067625
+      }
+    ],
+    "target_qty": 5.0,
+    "weighted_pair_cost": 0.857336,
+    "worst_day_fee_after_pnl": 161.917289,
+    "worst_residual_net_pnl": 3430.29805
+  },
+  "coverage": {
+    "candidate_base_days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ],
+    "candidate_base_excluded_labels_or_days": [
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-19",
+      "20260514",
+      "20260515",
+      "20260519"
+    ],
+    "candidate_base_labels": [
+      "20260502_20260508",
+      "20260509",
+      "20260510",
+      "20260511",
+      "20260512",
+      "20260513",
+      "20260516",
+      "20260517",
+      "20260518"
+    ],
+    "candidate_base_row_count": 3740411,
+    "public_account_audit": {
+      "coverage_pass": true,
+      "covered_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13",
+        "2026-05-16",
+        "2026-05-17",
+        "2026-05-18"
+      ],
+      "dataset_type": "public_account_execution_truth_v1",
+      "day_to_labels": {
+        "2026-05-02": [
+          "20260502_20260513"
+        ],
+        "2026-05-03": [
+          "20260502_20260513"
+        ],
+        "2026-05-04": [
+          "20260502_20260513"
+        ],
+        "2026-05-05": [
+          "20260502_20260513"
+        ],
+        "2026-05-06": [
+          "20260502_20260513"
+        ],
+        "2026-05-07": [
+          "20260502_20260513"
+        ],
+        "2026-05-08": [
+          "20260502_20260513"
+        ],
+        "2026-05-09": [
+          "20260502_20260513"
+        ],
+        "2026-05-10": [
+          "20260502_20260513"
+        ],
+        "2026-05-11": [
+          "20260502_20260513"
+        ],
+        "2026-05-12": [
+          "20260502_20260513"
+        ],
+        "2026-05-13": [
+          "20260502_20260513"
+        ],
+        "2026-05-16": [
+          "20260516_20260518"
+        ],
+        "2026-05-17": [
+          "20260516_20260518"
+        ],
+        "2026-05-18": [
+          "20260516_20260518"
+        ]
+      },
+      "event_kind_counts_by_label": {
+        "20260502_20260513": {
+          "fill": 556908,
+          "merge": 199,
+          "redeem": 2510,
+          "settlement": 2470
+        },
+        "20260516_20260518": {
+          "fill": 4528,
+          "merge": 20,
+          "redeem": 211,
+          "settlement": 171
+        }
+      },
+      "is_private_truth": false,
+      "missing_days": [],
+      "pass": true,
+      "root": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/public_account_execution_truth_v1",
+      "row_counts_by_label": {
+        "20260502_20260513": 562087,
+        "20260516_20260518": 4930
+      }
+    },
+    "result_labels": [
+      "20260502_20260508",
+      "20260509",
+      "20260510",
+      "20260511",
+      "20260512",
+      "20260513",
+      "20260516",
+      "20260517",
+      "20260518"
+    ]
+  },
+  "created_utc": "20260520T232251Z",
+  "decision_label": "KEEP",
+  "deployable": false,
+  "g2_canary_ready": false,
+  "hypothesis": {
+    "description": "Review whether D+ should rank variants by account-level paired inventory value: allow larger participation when the overlapped YES/NO book has avg_pair_cost < 1.0 and residual is covered by mark/stress budget, rather than rejecting solely on action-level p90 or fixed residual qty.",
+    "local_verifier_outline": [
+      "Use candidate_base/candidate_registry only; no shadow or raw/replay scan.",
+      "Build per-condition paired-inventory ledger with avg_pair_cost, pair_qty, residual_qty/cost, and marked residual proxy.",
+      "Compare late_repair90 control versus a portfolio-level risk-budget ranking rule.",
+      "Do not reuse fill-to-balance90, source-public-price caps, static target/cap sweeps, or cooldown/admission caps."
+    ],
+    "name": "public_profile_two_sided_inventory_pairing",
+    "public_observable_support": {
+      "both_side_condition_share": 0.533333,
+      "public_position_pair_pnl_proxy_before_fees": 288.556287,
+      "top_recent_slugs_with_both_outcomes_traded": 25
+    }
+  },
+  "inputs": {
+    "baseline_result_manifest": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/RESULT_SUMMARY_MANIFEST.json",
+    "candidate_base_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/candidate_base.duckdb",
+    "candidate_base_manifest": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/CANDIDATE_BASE_MANIFEST.json",
+    "compliance_manifest": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/COMPLIANCE_MANIFEST.json",
+    "public_profile_review": "xuan_research_artifacts/xuan_b27_dplus_public_profile_strategy_review_20260520T225109Z/manifest.json"
+  },
+  "lane": "causal_verifier",
+  "next_executable_action": "Run implementability_review only: add no trading-path change yet; draft a default-off portfolio-ledger diagnostic/summary spec for the shadow runner and local-smoke it before any EC2 shadow.",
+  "portfolio_rule_deltas_vs_control": {
+    "portfolio_pair_cost_lt_1": {
+      "active_market_retention": 0.99744364,
+      "active_markets": {
+        "absolute_delta": -11.0,
+        "control": 4303.0,
+        "relative_delta": -0.00255636,
+        "variant": 4292.0
+      },
+      "fee_after_pnl": {
+        "absolute_delta": 2.024724,
+        "control": 2894.880674,
+        "relative_delta": 0.00069942,
+        "variant": 2896.905398
+      },
+      "pair_actions": {
+        "absolute_delta": -28.0,
+        "control": 23362.0,
+        "relative_delta": -0.00119853,
+        "variant": 23334.0
+      },
+      "pair_pnl": {
+        "absolute_delta": 0.840025,
+        "control": 3639.389925,
+        "relative_delta": 0.00023081,
+        "variant": 3640.22995
+      },
+      "pair_qty": {
+        "absolute_delta": -31.0225,
+        "control": 25510.275,
+        "relative_delta": -0.00121608,
+        "variant": 25479.2525
+      },
+      "pair_qty_retention": 0.99878392,
+      "residual_cost_rate": {
+        "absolute_delta": -4e-05,
+        "control": 0.00947,
+        "relative_delta": -0.00422386,
+        "variant": 0.00943
+      },
+      "residual_cost_rate_reduction": 0.004224,
+      "residual_qty_rate": {
+        "absolute_delta": -7.3e-05,
+        "control": 0.012097,
+        "relative_delta": -0.00603455,
+        "variant": 0.012024
+      },
+      "residual_qty_rate_reduction": 0.006035,
+      "seed_action_retention": 0.9987013,
+      "seed_actions": {
+        "absolute_delta": -54.0,
+        "control": 41580.0,
+        "relative_delta": -0.0012987,
+        "variant": 41526.0
+      },
+      "stress100_worst_pnl": {
+        "absolute_delta": 2.70185,
+        "control": 2913.845075,
+        "relative_delta": 0.00092725,
+        "variant": 2916.546925
+      },
+      "weighted_pair_cost": {
+        "absolute_delta": -0.000206,
+        "control": 0.857336,
+        "relative_delta": -0.00024028,
+        "variant": 0.85713
+      },
+      "worst_day_fee_after_pnl": {
+        "absolute_delta": 0.124492,
+        "control": 161.917289,
+        "relative_delta": 0.00076886,
+        "variant": 162.041781
+      },
+      "worst_residual_net_pnl": {
+        "absolute_delta": 2.0356,
+        "control": 3430.29805,
+        "relative_delta": 0.00059342,
+        "variant": 3432.33365
+      }
+    },
+    "portfolio_pair_cost_lt_1_and_risk_adjusted_nonnegative": {
+      "active_market_retention": 0.9479433,
+      "active_markets": {
+        "absolute_delta": -224.0,
+        "control": 4303.0,
+        "relative_delta": -0.0520567,
+        "variant": 4079.0
+      },
+      "fee_after_pnl": {
+        "absolute_delta": -90.947861,
+        "control": 2894.880674,
+        "relative_delta": -0.03141679,
+        "variant": 2803.932813
+      },
+      "pair_actions": {
+        "absolute_delta": -1270.0,
+        "control": 23362.0,
+        "relative_delta": -0.05436178,
+        "variant": 22092.0
+      },
+      "pair_pnl": {
+        "absolute_delta": -117.483425,
+        "control": 3639.389925,
+        "relative_delta": -0.03228108,
+        "variant": 3521.9065
+      },
+      "pair_qty": {
+        "absolute_delta": -1135.9,
+        "control": 25510.275,
+        "relative_delta": -0.04452716,
+        "variant": 24374.375
+      },
+      "pair_qty_retention": 0.95547284,
+      "residual_cost_rate": {
+        "absolute_delta": -0.004416,
+        "control": 0.00947,
+        "relative_delta": -0.46631468,
+        "variant": 0.005054
+      },
+      "residual_cost_rate_reduction": 0.466315,
+      "residual_qty_rate": {
+        "absolute_delta": -0.003317,
+        "control": 0.012097,
+        "relative_delta": -0.27420021,
+        "variant": 0.00878
+      },
+      "residual_qty_rate_reduction": 0.2742,
+      "seed_action_retention": 0.95189995,
+      "seed_actions": {
+        "absolute_delta": -2000.0,
+        "control": 41580.0,
+        "relative_delta": -0.04810005,
+        "variant": 39580.0
+      },
+      "stress100_worst_pnl": {
+        "absolute_delta": 10.34035,
+        "control": 2913.845075,
+        "relative_delta": 0.0035487,
+        "variant": 2924.185425
+      },
+      "weighted_pair_cost": {
+        "absolute_delta": -0.001828,
+        "control": 0.857336,
+        "relative_delta": -0.00213219,
+        "variant": 0.855508
+      },
+      "worst_day_fee_after_pnl": {
+        "absolute_delta": -8.56015,
+        "control": 161.917289,
+        "relative_delta": -0.05286742,
+        "variant": 153.357139
+      },
+      "worst_residual_net_pnl": {
+        "absolute_delta": -14.3073,
+        "control": 3430.29805,
+        "relative_delta": -0.00417086,
+        "variant": 3415.99075
+      }
+    },
+    "portfolio_risk_adjusted_nonnegative": {
+      "active_market_retention": 0.9479433,
+      "active_markets": {
+        "absolute_delta": -224.0,
+        "control": 4303.0,
+        "relative_delta": -0.0520567,
+        "variant": 4079.0
+      },
+      "fee_after_pnl": {
+        "absolute_delta": -90.947861,
+        "control": 2894.880674,
+        "relative_delta": -0.03141679,
+        "variant": 2803.932813
+      },
+      "pair_actions": {
+        "absolute_delta": -1270.0,
+        "control": 23362.0,
+        "relative_delta": -0.05436178,
+        "variant": 22092.0
+      },
+      "pair_pnl": {
+        "absolute_delta": -117.483425,
+        "control": 3639.389925,
+        "relative_delta": -0.03228108,
+        "variant": 3521.9065
+      },
+      "pair_qty": {
+        "absolute_delta": -1135.9,
+        "control": 25510.275,
+        "relative_delta": -0.04452716,
+        "variant": 24374.375
+      },
+      "pair_qty_retention": 0.95547284,
+      "residual_cost_rate": {
+        "absolute_delta": -0.004416,
+        "control": 0.00947,
+        "relative_delta": -0.46631468,
+        "variant": 0.005054
+      },
+      "residual_cost_rate_reduction": 0.466315,
+      "residual_qty_rate": {
+        "absolute_delta": -0.003317,
+        "control": 0.012097,
+        "relative_delta": -0.27420021,
+        "variant": 0.00878
+      },
+      "residual_qty_rate_reduction": 0.2742,
+      "seed_action_retention": 0.95189995,
+      "seed_actions": {
+        "absolute_delta": -2000.0,
+        "control": 41580.0,
+        "relative_delta": -0.04810005,
+        "variant": 39580.0
+      },
+      "stress100_worst_pnl": {
+        "absolute_delta": 10.34035,
+        "control": 2913.845075,
+        "relative_delta": 0.0035487,
+        "variant": 2924.185425
+      },
+      "weighted_pair_cost": {
+        "absolute_delta": -0.001828,
+        "control": 0.857336,
+        "relative_delta": -0.00213219,
+        "variant": 0.855508
+      },
+      "worst_day_fee_after_pnl": {
+        "absolute_delta": -8.56015,
+        "control": 161.917289,
+        "relative_delta": -0.05286742,
+        "variant": 153.357139
+      },
+      "worst_residual_net_pnl": {
+        "absolute_delta": -14.3073,
+        "control": 3430.29805,
+        "relative_delta": -0.00417086,
+        "variant": 3415.99075
+      }
+    }
+  },
+  "portfolio_rule_variants": {
+    "portfolio_pair_cost_lt_1": {
+      "active_markets": 4292,
+      "actual_settle_pnl": 3668.13365,
+      "fee_after_pnl": 2896.905398,
+      "gross_buy_cost": 22046.91885,
+      "gross_buy_qty": 51578.6725,
+      "gross_pnl": 3668.13365,
+      "name": "portfolio_pair_cost_lt_1",
+      "official_taker_fee": 771.228252,
+      "pair_actions": 23334,
+      "pair_pnl": 3640.22995,
+      "pair_qty": 25479.2525,
+      "residual_cost": 207.8963,
+      "residual_cost_rate": 0.00943,
+      "residual_qty": 620.1675,
+      "residual_qty_rate": 0.012024,
+      "residual_settle_pnl": 27.9037,
+      "seed_actions": 41526,
+      "stress100_worst_pnl": 2916.546925,
+      "summary_by_day": [
+        {
+          "active_markets": 287,
+          "day": "2026-05-02",
+          "fee_after_pnl": 166.679339,
+          "official_taker_fee": 42.511361,
+          "pair_actions": 1303,
+          "pair_cost_wavg": 0.852204,
+          "pair_pnl": 207.75805,
+          "pair_qty": 1405.71,
+          "residual_cost": 17.27735,
+          "residual_qty": 42.8575,
+          "seed_actions": 2302,
+          "stress100_worst_pnl": 161.937925
+        },
+        {
+          "active_markets": 287,
+          "day": "2026-05-03",
+          "fee_after_pnl": 174.989945,
+          "official_taker_fee": 45.27988,
+          "pair_actions": 1381,
+          "pair_cost_wavg": 0.85607,
+          "pair_pnl": 219.27425,
+          "pair_qty": 1523.475,
+          "residual_cost": 10.196925,
+          "residual_qty": 32.5425,
+          "seed_actions": 2482,
+          "stress100_worst_pnl": 178.2824
+        },
+        {
+          "active_markets": 287,
+          "day": "2026-05-04",
+          "fee_after_pnl": 217.223241,
+          "official_taker_fee": 59.267434,
+          "pair_actions": 1767,
+          "pair_cost_wavg": 0.860039,
+          "pair_pnl": 273.9114,
+          "pair_qty": 1957.0575,
+          "residual_cost": 8.998225,
+          "residual_qty": 33.6925,
+          "seed_actions": 3176,
+          "stress100_worst_pnl": 225.4351
+        },
+        {
+          "active_markets": 287,
+          "day": "2026-05-05",
+          "fee_after_pnl": 213.616245,
+          "official_taker_fee": 59.13903,
+          "pair_actions": 1763,
+          "pair_cost_wavg": 0.859323,
+          "pair_pnl": 271.686825,
+          "pair_qty": 1931.285,
+          "residual_cost": 14.15405,
+          "residual_qty": 33.83,
+          "seed_actions": 3135,
+          "stress100_worst_pnl": 218.568775
+        },
+        {
+          "active_markets": 283,
+          "day": "2026-05-06",
+          "fee_after_pnl": 196.459704,
+          "official_taker_fee": 56.426046,
+          "pair_actions": 1660,
+          "pair_cost_wavg": 0.862415,
+          "pair_pnl": 249.5908,
+          "pair_qty": 1814.0875,
+          "residual_cost": 18.01755,
+          "residual_qty": 53.795,
+          "seed_actions": 2963,
+          "stress100_worst_pnl": 194.75355
+        },
+        {
+          "active_markets": 287,
+          "day": "2026-05-07",
+          "fee_after_pnl": 215.648656,
+          "official_taker_fee": 58.935219,
+          "pair_actions": 1758,
+          "pair_cost_wavg": 0.859445,
+          "pair_pnl": 271.6599,
+          "pair_qty": 1932.765,
+          "residual_cost": 14.471025,
+          "residual_qty": 38.9425,
+          "seed_actions": 3141,
+          "stress100_worst_pnl": 218.14415
+        },
+        {
+          "active_markets": 285,
+          "day": "2026-05-08",
+          "fee_after_pnl": 195.080857,
+          "official_taker_fee": 53.222318,
+          "pair_actions": 1667,
+          "pair_cost_wavg": 0.860579,
+          "pair_pnl": 248.06985,
+          "pair_qty": 1779.28,
+          "residual_cost": 14.526675,
+          "residual_qty": 39.71,
+          "seed_actions": 2901,
+          "stress100_worst_pnl": 197.560475
+        },
+        {
+          "active_markets": 285,
+          "day": "2026-05-09",
+          "fee_after_pnl": 174.776838,
+          "official_taker_fee": 46.507587,
+          "pair_actions": 1402,
+          "pair_cost_wavg": 0.858858,
+          "pair_pnl": 217.395925,
+          "pair_qty": 1540.26,
+          "residual_cost": 16.2465,
+          "residual_qty": 43.6375,
+          "seed_actions": 2515,
+          "stress100_worst_pnl": 169.90785
+        },
+        {
+          "active_markets": 288,
+          "day": "2026-05-10",
+          "fee_after_pnl": 190.617426,
+          "official_taker_fee": 48.919099,
+          "pair_actions": 1448,
+          "pair_cost_wavg": 0.854248,
+          "pair_pnl": 240.102425,
+          "pair_qty": 1647.34,
+          "residual_cost": 10.0134,
+          "residual_qty": 40.655,
+          "seed_actions": 2681,
+          "stress100_worst_pnl": 196.735675
+        },
+        {
+          "active_markets": 288,
+          "day": "2026-05-11",
+          "fee_after_pnl": 216.8222,
+          "official_taker_fee": 57.03655,
+          "pair_actions": 1681,
+          "pair_cost_wavg": 0.85446,
+          "pair_pnl": 271.189125,
+          "pair_qty": 1863.3325,
+          "residual_cost": 16.272875,
+          "residual_qty": 40.335,
+          "seed_actions": 3027,
+          "stress100_worst_pnl": 217.24625
+        },
+        {
+          "active_markets": 278,
+          "day": "2026-05-12",
+          "fee_after_pnl": 199.009286,
+          "official_taker_fee": 51.193189,
+          "pair_actions": 1541,
+          "pair_cost_wavg": 0.853604,
+          "pair_pnl": 248.383375,
+          "pair_qty": 1696.655,
+          "residual_cost": 9.6659,
+          "residual_qty": 39.0575,
+          "seed_actions": 2763,
+          "stress100_worst_pnl": 204.3938
+        },
+        {
+          "active_markets": 288,
+          "day": "2026-05-13",
+          "fee_after_pnl": 186.382942,
+          "official_taker_fee": 48.962683,
+          "pair_actions": 1484,
+          "pair_cost_wavg": 0.854964,
+          "pair_pnl": 233.877175,
+          "pair_qty": 1612.55,
+          "residual_cost": 12.41405,
+          "residual_qty": 37.68,
+          "seed_actions": 2626,
+          "stress100_worst_pnl": 188.835325
+        },
+        {
+          "active_markets": 287,
+          "day": "2026-05-16",
+          "fee_after_pnl": 162.041781,
+          "official_taker_fee": 42.112269,
+          "pair_actions": 1229,
+          "pair_cost_wavg": 0.853874,
+          "pair_pnl": 202.029725,
+          "pair_qty": 1382.57,
+          "residual_cost": 13.605675,
+          "residual_qty": 34.52,
+          "seed_actions": 2253,
+          "stress100_worst_pnl": 160.42745
+        },
+        {
+          "active_markets": 287,
+          "day": "2026-05-17",
+          "fee_after_pnl": 168.591968,
+          "official_taker_fee": 43.540432,
+          "pair_actions": 1393,
+          "pair_cost_wavg": 0.855312,
+          "pair_pnl": 211.1839,
+          "pair_qty": 1459.5775,
+          "residual_cost": 15.9865,
+          "residual_qty": 55.73,
+          "seed_actions": 2398,
+          "stress100_worst_pnl": 165.44855
+        },
+        {
+          "active_markets": 288,
+          "day": "2026-05-18",
+          "fee_after_pnl": 218.964969,
+          "official_taker_fee": 58.175156,
+          "pair_actions": 1857,
+          "pair_cost_wavg": 0.858213,
+          "pair_pnl": 274.117225,
+          "pair_qty": 1933.3075,
+          "residual_cost": 16.0496,
+          "residual_qty": 53.1825,
+          "seed_actions": 3163,
+          "stress100_worst_pnl": 218.86965
+        }
+      ],
+      "weighted_pair_cost": 0.85713,
+      "worst_day_fee_after_pnl": 162.041781,
+      "worst_residual_net_pnl": 3432.33365
+    },
+    "portfolio_pair_cost_lt_1_and_risk_adjusted_nonnegative": {
+      "active_markets": 4079,
+      "actual_settle_pnl": 3538.32825,
+      "fee_after_pnl": 2803.932813,
+      "gross_buy_cost": 20958.38425,
+      "gross_buy_qty": 49180.5325,
+      "gross_pnl": 3538.32825,
+      "name": "portfolio_pair_cost_lt_1_and_risk_adjusted_nonnegative",
+      "official_taker_fee": 734.395437,
+      "pair_actions": 22092,
+      "pair_pnl": 3521.9065,
+      "pair_qty": 24374.375,
+      "residual_cost": 105.91575,
+      "residual_cost_rate": 0.005054,
+      "residual_qty": 431.7825,
+      "residual_qty_rate": 0.00878,
+      "residual_settle_pnl": 16.42175,
+      "seed_actions": 39580,
+      "stress100_worst_pnl": 2924.185425,
+      "summary_by_day": [
+        {
+          "active_markets": 269,
+          "day": "2026-05-02",
+          "fee_after_pnl": 158.365117,
+          "official_taker_fee": 39.959358,
+          "pair_actions": 1220,
+          "pair_cost_wavg": 0.851902,
+          "pair_pnl": 197.319325,
+          "pair_qty": 1332.3575,
+          "residual_cost": 6.34735,
+          "residual_qty": 21.925,
+          "seed_actions": 2166,
+          "stress100_worst_pnl": 164.105575
+        },
+        {
+          "active_markets": 269,
+          "day": "2026-05-03",
+          "fee_after_pnl": 168.828227,
+          "official_taker_fee": 42.747423,
+          "pair_actions": 1301,
+          "pair_cost_wavg": 0.853159,
+          "pair_pnl": 212.1113,
+          "pair_qty": 1444.5,
+          "residual_cost": 4.54565,
+          "residual_qty": 23.07,
+          "seed_actions": 2346,
+          "stress100_worst_pnl": 178.44495
+        },
+        {
+          "active_markets": 275,
+          "day": "2026-05-04",
+          "fee_after_pnl": 212.528925,
+          "official_taker_fee": 56.7508,
+          "pair_actions": 1686,
+          "pair_cost_wavg": 0.857673,
+          "pair_pnl": 268.04925,
+          "pair_qty": 1883.3375,
+          "residual_cost": 4.932025,
+          "residual_qty": 24.7375,
+          "seed_actions": 3050,
+          "stress100_worst_pnl": 225.2031
+        },
+        {
+          "active_markets": 277,
+          "day": "2026-05-05",
+          "fee_after_pnl": 208.311597,
+          "official_taker_fee": 56.980703,
+          "pair_actions": 1691,
+          "pair_cost_wavg": 0.858107,
+          "pair_pnl": 264.48495,
+          "pair_qty": 1863.98,
+          "residual_cost": 8.71265,
+          "residual_qty": 24.7275,
+          "seed_actions": 3019,
+          "stress100_worst_pnl": 218.245425
+        },
+        {
+          "active_markets": 266,
+          "day": "2026-05-06",
+          "fee_after_pnl": 185.760105,
+          "official_taker_fee": 52.937745,
+          "pair_actions": 1541,
+          "pair_cost_wavg": 0.861008,
+          "pair_pnl": 238.549625,
+          "pair_qty": 1716.2875,
+          "residual_cost": 8.634275,
+          "residual_qty": 35.82,
+          "seed_actions": 2789,
+          "stress100_worst_pnl": 195.2314
+        },
+        {
+          "active_markets": 277,
+          "day": "2026-05-07",
+          "fee_after_pnl": 210.742154,
+          "official_taker_fee": 56.403521,
+          "pair_actions": 1676,
+          "pair_cost_wavg": 0.857802,
+          "pair_pnl": 263.925,
+          "pair_qty": 1856.04,
+          "residual_cost": 8.796825,
+          "residual_qty": 30.21,
+          "seed_actions": 3009,
+          "stress100_worst_pnl": 217.705275
+        },
+        {
+          "active_markets": 272,
+          "day": "2026-05-08",
+          "fee_after_pnl": 190.323312,
+          "official_taker_fee": 50.785438,
+          "pair_actions": 1574,
+          "pair_cost_wavg": 0.859319,
+          "pair_pnl": 239.65195,
+          "pair_qty": 1703.515,
+          "residual_cost": 7.8582,
+          "residual_qty": 27.48,
+          "seed_actions": 2768,
+          "stress100_worst_pnl": 197.44865
+        },
+        {
+          "active_markets": 267,
+          "day": "2026-05-09",
+          "fee_after_pnl": 167.524531,
+          "official_taker_fee": 43.803044,
+          "pair_actions": 1316,
+          "pair_cost_wavg": 0.857757,
+          "pair_pnl": 207.84355,
+          "pair_qty": 1461.19,
+          "residual_cost": 6.985975,
+          "residual_qty": 27.11,
+          "seed_actions": 2373,
+          "stress100_worst_pnl": 171.362675
+        },
+        {
+          "active_markets": 276,
+          "day": "2026-05-10",
+          "fee_after_pnl": 186.823062,
+          "official_taker_fee": 47.463138,
+          "pair_actions": 1401,
+          "pair_cost_wavg": 0.853506,
+          "pair_pnl": 234.815975,
+          "pair_qty": 1602.905,
+          "residual_cost": 4.582275,
+          "residual_qty": 29.01,
+          "seed_actions": 2599,
+          "stress100_worst_pnl": 197.8855
+        },
+        {
+          "active_markets": 270,
+          "day": "2026-05-11",
+          "fee_after_pnl": 207.222146,
+          "official_taker_fee": 53.337129,
+          "pair_actions": 1559,
+          "pair_cost_wavg": 0.852427,
+          "pair_pnl": 258.488725,
+          "pair_qty": 1751.6025,
+          "residual_cost": 6.40445,
+          "residual_qty": 24.2975,
+          "seed_actions": 2833,
+          "stress100_worst_pnl": 216.80925
+        },
+        {
+          "active_markets": 270,
+          "day": "2026-05-12",
+          "fee_after_pnl": 196.226733,
+          "official_taker_fee": 49.666292,
+          "pair_actions": 1487,
+          "pair_cost_wavg": 0.852036,
+          "pair_pnl": 244.28125,
+          "pair_qty": 1650.9525,
+          "residual_cost": 6.428225,
+          "residual_qty": 33.2075,
+          "seed_actions": 2684,
+          "stress100_worst_pnl": 204.5019
+        },
+        {
+          "active_markets": 277,
+          "day": "2026-05-13",
+          "fee_after_pnl": 184.626644,
+          "official_taker_fee": 47.314556,
+          "pair_actions": 1431,
+          "pair_cost_wavg": 0.853069,
+          "pair_pnl": 229.725275,
+          "pair_qty": 1563.4925,
+          "residual_cost": 7.979075,
+          "residual_qty": 29.225,
+          "seed_actions": 2539,
+          "stress100_worst_pnl": 190.1841
+        },
+        {
+          "active_markets": 267,
+          "day": "2026-05-16",
+          "fee_after_pnl": 153.357139,
+          "official_taker_fee": 39.240361,
+          "pair_actions": 1140,
+          "pair_cost_wavg": 0.850852,
+          "pair_pnl": 193.5461,
+          "pair_qty": 1297.675,
+          "residual_cost": 6.1936,
+          "residual_qty": 19.8575,
+          "seed_actions": 2104,
+          "stress100_worst_pnl": 161.200425
+        },
+        {
+          "active_markets": 269,
+          "day": "2026-05-17",
+          "fee_after_pnl": 160.058101,
+          "official_taker_fee": 40.777574,
+          "pair_actions": 1293,
+          "pair_cost_wavg": 0.853493,
+          "pair_pnl": 202.16155,
+          "pair_qty": 1379.8775,
+          "residual_cost": 7.893375,
+          "residual_qty": 37.1,
+          "seed_actions": 2254,
+          "stress100_worst_pnl": 166.299625
+        },
+        {
+          "active_markets": 278,
+          "day": "2026-05-18",
+          "fee_after_pnl": 213.235019,
+          "official_taker_fee": 56.228356,
+          "pair_actions": 1776,
+          "pair_cost_wavg": 0.856989,
+          "pair_pnl": 266.952675,
+          "pair_qty": 1866.6625,
+          "residual_cost": 9.6218,
+          "residual_qty": 44.005,
+          "seed_actions": 3047,
+          "stress100_worst_pnl": 219.557575
+        }
+      ],
+      "weighted_pair_cost": 0.855508,
+      "worst_day_fee_after_pnl": 153.357139,
+      "worst_residual_net_pnl": 3415.99075
+    },
+    "portfolio_risk_adjusted_nonnegative": {
+      "active_markets": 4079,
+      "actual_settle_pnl": 3538.32825,
+      "fee_after_pnl": 2803.932813,
+      "gross_buy_cost": 20958.38425,
+      "gross_buy_qty": 49180.5325,
+      "gross_pnl": 3538.32825,
+      "name": "portfolio_risk_adjusted_nonnegative",
+      "official_taker_fee": 734.395437,
+      "pair_actions": 22092,
+      "pair_pnl": 3521.9065,
+      "pair_qty": 24374.375,
+      "residual_cost": 105.91575,
+      "residual_cost_rate": 0.005054,
+      "residual_qty": 431.7825,
+      "residual_qty_rate": 0.00878,
+      "residual_settle_pnl": 16.42175,
+      "seed_actions": 39580,
+      "stress100_worst_pnl": 2924.185425,
+      "summary_by_day": [
+        {
+          "active_markets": 269,
+          "day": "2026-05-02",
+          "fee_after_pnl": 158.365117,
+          "official_taker_fee": 39.959358,
+          "pair_actions": 1220,
+          "pair_cost_wavg": 0.851902,
+          "pair_pnl": 197.319325,
+          "pair_qty": 1332.3575,
+          "residual_cost": 6.34735,
+          "residual_qty": 21.925,
+          "seed_actions": 2166,
+          "stress100_worst_pnl": 164.105575
+        },
+        {
+          "active_markets": 269,
+          "day": "2026-05-03",
+          "fee_after_pnl": 168.828227,
+          "official_taker_fee": 42.747423,
+          "pair_actions": 1301,
+          "pair_cost_wavg": 0.853159,
+          "pair_pnl": 212.1113,
+          "pair_qty": 1444.5,
+          "residual_cost": 4.54565,
+          "residual_qty": 23.07,
+          "seed_actions": 2346,
+          "stress100_worst_pnl": 178.44495
+        },
+        {
+          "active_markets": 275,
+          "day": "2026-05-04",
+          "fee_after_pnl": 212.528925,
+          "official_taker_fee": 56.7508,
+          "pair_actions": 1686,
+          "pair_cost_wavg": 0.857673,
+          "pair_pnl": 268.04925,
+          "pair_qty": 1883.3375,
+          "residual_cost": 4.932025,
+          "residual_qty": 24.7375,
+          "seed_actions": 3050,
+          "stress100_worst_pnl": 225.2031
+        },
+        {
+          "active_markets": 277,
+          "day": "2026-05-05",
+          "fee_after_pnl": 208.311597,
+          "official_taker_fee": 56.980703,
+          "pair_actions": 1691,
+          "pair_cost_wavg": 0.858107,
+          "pair_pnl": 264.48495,
+          "pair_qty": 1863.98,
+          "residual_cost": 8.71265,
+          "residual_qty": 24.7275,
+          "seed_actions": 3019,
+          "stress100_worst_pnl": 218.245425
+        },
+        {
+          "active_markets": 266,
+          "day": "2026-05-06",
+          "fee_after_pnl": 185.760105,
+          "official_taker_fee": 52.937745,
+          "pair_actions": 1541,
+          "pair_cost_wavg": 0.861008,
+          "pair_pnl": 238.549625,
+          "pair_qty": 1716.2875,
+          "residual_cost": 8.634275,
+          "residual_qty": 35.82,
+          "seed_actions": 2789,
+          "stress100_worst_pnl": 195.2314
+        },
+        {
+          "active_markets": 277,
+          "day": "2026-05-07",
+          "fee_after_pnl": 210.742154,
+          "official_taker_fee": 56.403521,
+          "pair_actions": 1676,
+          "pair_cost_wavg": 0.857802,
+          "pair_pnl": 263.925,
+          "pair_qty": 1856.04,
+          "residual_cost": 8.796825,
+          "residual_qty": 30.21,
+          "seed_actions": 3009,
+          "stress100_worst_pnl": 217.705275
+        },
+        {
+          "active_markets": 272,
+          "day": "2026-05-08",
+          "fee_after_pnl": 190.323312,
+          "official_taker_fee": 50.785438,
+          "pair_actions": 1574,
+          "pair_cost_wavg": 0.859319,
+          "pair_pnl": 239.65195,
+          "pair_qty": 1703.515,
+          "residual_cost": 7.8582,
+          "residual_qty": 27.48,
+          "seed_actions": 2768,
+          "stress100_worst_pnl": 197.44865
+        },
+        {
+          "active_markets": 267,
+          "day": "2026-05-09",
+          "fee_after_pnl": 167.524531,
+          "official_taker_fee": 43.803044,
+          "pair_actions": 1316,
+          "pair_cost_wavg": 0.857757,
+          "pair_pnl": 207.84355,
+          "pair_qty": 1461.19,
+          "residual_cost": 6.985975,
+          "residual_qty": 27.11,
+          "seed_actions": 2373,
+          "stress100_worst_pnl": 171.362675
+        },
+        {
+          "active_markets": 276,
+          "day": "2026-05-10",
+          "fee_after_pnl": 186.823062,
+          "official_taker_fee": 47.463138,
+          "pair_actions": 1401,
+          "pair_cost_wavg": 0.853506,
+          "pair_pnl": 234.815975,
+          "pair_qty": 1602.905,
+          "residual_cost": 4.582275,
+          "residual_qty": 29.01,
+          "seed_actions": 2599,
+          "stress100_worst_pnl": 197.8855
+        },
+        {
+          "active_markets": 270,
+          "day": "2026-05-11",
+          "fee_after_pnl": 207.222146,
+          "official_taker_fee": 53.337129,
+          "pair_actions": 1559,
+          "pair_cost_wavg": 0.852427,
+          "pair_pnl": 258.488725,
+          "pair_qty": 1751.6025,
+          "residual_cost": 6.40445,
+          "residual_qty": 24.2975,
+          "seed_actions": 2833,
+          "stress100_worst_pnl": 216.80925
+        },
+        {
+          "active_markets": 270,
+          "day": "2026-05-12",
+          "fee_after_pnl": 196.226733,
+          "official_taker_fee": 49.666292,
+          "pair_actions": 1487,
+          "pair_cost_wavg": 0.852036,
+          "pair_pnl": 244.28125,
+          "pair_qty": 1650.9525,
+          "residual_cost": 6.428225,
+          "residual_qty": 33.2075,
+          "seed_actions": 2684,
+          "stress100_worst_pnl": 204.5019
+        },
+        {
+          "active_markets": 277,
+          "day": "2026-05-13",
+          "fee_after_pnl": 184.626644,
+          "official_taker_fee": 47.314556,
+          "pair_actions": 1431,
+          "pair_cost_wavg": 0.853069,
+          "pair_pnl": 229.725275,
+          "pair_qty": 1563.4925,
+          "residual_cost": 7.979075,
+          "residual_qty": 29.225,
+          "seed_actions": 2539,
+          "stress100_worst_pnl": 190.1841
+        },
+        {
+          "active_markets": 267,
+          "day": "2026-05-16",
+          "fee_after_pnl": 153.357139,
+          "official_taker_fee": 39.240361,
+          "pair_actions": 1140,
+          "pair_cost_wavg": 0.850852,
+          "pair_pnl": 193.5461,
+          "pair_qty": 1297.675,
+          "residual_cost": 6.1936,
+          "residual_qty": 19.8575,
+          "seed_actions": 2104,
+          "stress100_worst_pnl": 161.200425
+        },
+        {
+          "active_markets": 269,
+          "day": "2026-05-17",
+          "fee_after_pnl": 160.058101,
+          "official_taker_fee": 40.777574,
+          "pair_actions": 1293,
+          "pair_cost_wavg": 0.853493,
+          "pair_pnl": 202.16155,
+          "pair_qty": 1379.8775,
+          "residual_cost": 7.893375,
+          "residual_qty": 37.1,
+          "seed_actions": 2254,
+          "stress100_worst_pnl": 166.299625
+        },
+        {
+          "active_markets": 278,
+          "day": "2026-05-18",
+          "fee_after_pnl": 213.235019,
+          "official_taker_fee": 56.228356,
+          "pair_actions": 1776,
+          "pair_cost_wavg": 0.856989,
+          "pair_pnl": 266.952675,
+          "pair_qty": 1866.6625,
+          "residual_cost": 9.6218,
+          "residual_qty": 44.005,
+          "seed_actions": 3047,
+          "stress100_worst_pnl": 219.557575
+        }
+      ],
+      "weighted_pair_cost": 0.855508,
+      "worst_day_fee_after_pnl": 153.357139,
+      "worst_residual_net_pnl": 3415.99075
+    }
+  },
+  "processed_public_sell_rows": 1425196,
+  "promotion_gate": {
+    "notes": [
+      "No EC2 shadow/canary or source-of-truth replay was run.",
+      "Any KEEP result requires a separate default-off implementability review and later no-order/source-of-truth validation."
+    ],
+    "passed": false,
+    "status": "LOCAL_CANDIDATE_PIPELINE_RANKING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "best_rule": "portfolio_risk_adjusted_nonnegative",
+    "best_rule_delta_vs_control": {
+      "active_market_retention": 0.9479433,
+      "active_markets": {
+        "absolute_delta": -224.0,
+        "control": 4303.0,
+        "relative_delta": -0.0520567,
+        "variant": 4079.0
+      },
+      "fee_after_pnl": {
+        "absolute_delta": -90.947861,
+        "control": 2894.880674,
+        "relative_delta": -0.03141679,
+        "variant": 2803.932813
+      },
+      "pair_actions": {
+        "absolute_delta": -1270.0,
+        "control": 23362.0,
+        "relative_delta": -0.05436178,
+        "variant": 22092.0
+      },
+      "pair_pnl": {
+        "absolute_delta": -117.483425,
+        "control": 3639.389925,
+        "relative_delta": -0.03228108,
+        "variant": 3521.9065
+      },
+      "pair_qty": {
+        "absolute_delta": -1135.9,
+        "control": 25510.275,
+        "relative_delta": -0.04452716,
+        "variant": 24374.375
+      },
+      "pair_qty_retention": 0.95547284,
+      "residual_cost_rate": {
+        "absolute_delta": -0.004416,
+        "control": 0.00947,
+        "relative_delta": -0.46631468,
+        "variant": 0.005054
+      },
+      "residual_cost_rate_reduction": 0.466315,
+      "residual_qty_rate": {
+        "absolute_delta": -0.003317,
+        "control": 0.012097,
+        "relative_delta": -0.27420021,
+        "variant": 0.00878
+      },
+      "residual_qty_rate_reduction": 0.2742,
+      "seed_action_retention": 0.95189995,
+      "seed_actions": {
+        "absolute_delta": -2000.0,
+        "control": 41580.0,
+        "relative_delta": -0.04810005,
+        "variant": 39580.0
+      },
+      "stress100_worst_pnl": {
+        "absolute_delta": 10.34035,
+        "control": 2913.845075,
+        "relative_delta": 0.0035487,
+        "variant": 2924.185425
+      },
+      "weighted_pair_cost": {
+        "absolute_delta": -0.001828,
+        "control": 0.857336,
+        "relative_delta": -0.00213219,
+        "variant": 0.855508
+      },
+      "worst_day_fee_after_pnl": {
+        "absolute_delta": -8.56015,
+        "control": 161.917289,
+        "relative_delta": -0.05286742,
+        "variant": 153.357139
+      },
+      "worst_residual_net_pnl": {
+        "absolute_delta": -14.3073,
+        "control": 3430.29805,
+        "relative_delta": -0.00417086,
+        "variant": 3415.99075
+      }
+    },
+    "decision": "KEEP",
+    "label": "KEEP_PUBLIC_PROFILE_PAIRED_INVENTORY_LOCAL_RANKER",
+    "notes": [
+      "This is a local condition-ledger ranking verifier, not a trading-path implementation.",
+      "It does not use fill-to-balance90, public/source price caps, static target/cap sweeps, or cooldown/admission caps.",
+      "The public profile supports the account-level paired inventory hypothesis only as proxy research input."
+    ]
+  },
+  "schema_version": 1,
+  "scope": {
+    "candidate_base_duckdb_read_only": true,
+    "candidate_registry_compatible": true,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_only": true,
+    "orders_cancels_redeems_sent": false,
+    "private_owner_trade_truth_used": false,
+    "public_profile_proxy_used": true,
+    "raw_replay_collector_scanned": false,
+    "runner_or_trading_paths_modified": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_used": false
+  },
+  "status": "KEEP_PUBLIC_PROFILE_PAIRED_INVENTORY_LOCAL_RANKER",
+  "top_abs_risk_ledgers": [
+    {
+      "avg_pair_cost": 0.761429,
+      "condition_id": "0xdb3e84232e87c8a71a08e6f2135a56a2e12e8a66d8c1a3fd0a55822c4da46b72",
+      "conservative_risk_adjusted": 1.659809,
+      "day": "2026-05-04",
+      "fee_after_pnl": 1.834809,
+      "official_taker_fee": 0.252691,
+      "pair_pnl": 2.0875,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1777874400"
+    },
+    {
+      "avg_pair_cost": 0.79625,
+      "condition_id": "0x56392efb6d837802f003bcb3c809962758ed0b84c290ca367250d22a7abaccc6",
+      "conservative_risk_adjusted": 1.524819,
+      "day": "2026-05-18",
+      "fee_after_pnl": 1.724819,
+      "official_taker_fee": 0.312681,
+      "pair_pnl": 2.0375,
+      "pair_qty": 10.0,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 16,
+      "slug": "btc-updown-5m-1779128400"
+    },
+    {
+      "avg_pair_cost": 0.746678,
+      "condition_id": "0x0f29de731cd22b9c1b0a5fc753965ab8e4ed690c081e61a6c9491b09e286c5a5",
+      "conservative_risk_adjusted": 1.522156,
+      "day": "2026-05-09",
+      "fee_after_pnl": 1.668906,
+      "official_taker_fee": 0.189844,
+      "pair_pnl": 1.85875,
+      "pair_qty": 7.3375,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1778347200"
+    },
+    {
+      "avg_pair_cost": 0.794286,
+      "condition_id": "0xc2f00b936b86df7a2c195f26246e388644c6f49b0c13a41b7eda72e4a5fe7701",
+      "conservative_risk_adjusted": 1.46295,
+      "day": "2026-05-10",
+      "fee_after_pnl": 1.63795,
+      "official_taker_fee": 0.16205,
+      "pair_pnl": 1.8,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778451000"
+    },
+    {
+      "avg_pair_cost": 0.751495,
+      "condition_id": "0xcf7e3568952742579ab7fa0f19be29fe0dfb264cfb25fd12ba8ee729b3df8b37",
+      "conservative_risk_adjusted": 1.441518,
+      "day": "2026-05-12",
+      "fee_after_pnl": 1.589418,
+      "official_taker_fee": 0.205382,
+      "pair_pnl": 1.8116,
+      "pair_qty": 7.29,
+      "residual_by_side": {
+        "NO": 0.21,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0168,
+      "residual_qty": 0.21,
+      "residual_settle_pnl": -0.0168,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1778565600"
+    },
+    {
+      "avg_pair_cost": 0.788571,
+      "condition_id": "0x0cfa4e0858bfce896f61f174c55b31635b3fba8f457623ce062ac45043999db4",
+      "conservative_risk_adjusted": 1.42657,
+      "day": "2026-05-10",
+      "fee_after_pnl": 1.60157,
+      "official_taker_fee": 0.24843,
+      "pair_pnl": 1.85,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778453700"
+    },
+    {
+      "avg_pair_cost": 0.79,
+      "condition_id": "0xa5c6d0c4cef71fe53c0235790b5568574343551fe67c62db39e9ebf3387b415a",
+      "conservative_risk_adjusted": 1.415304,
+      "day": "2026-05-12",
+      "fee_after_pnl": 1.590304,
+      "official_taker_fee": 0.247196,
+      "pair_pnl": 1.8375,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778584200"
+    },
+    {
+      "avg_pair_cost": 0.807534,
+      "condition_id": "0xaa7a82ef4d3c261b9ee705f62cd79deb414fa4b376cb4ea3575ece9610f876c9",
+      "conservative_risk_adjusted": 1.403974,
+      "day": "2026-05-07",
+      "fee_after_pnl": 1.603949,
+      "official_taker_fee": 0.319151,
+      "pair_pnl": 1.924175,
+      "pair_qty": 9.9975,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0025
+      },
+      "residual_cost": 0.001075,
+      "residual_qty": 0.0025,
+      "residual_settle_pnl": -0.001075,
+      "seed_actions": 16,
+      "slug": "btc-updown-5m-1778120400"
+    },
+    {
+      "avg_pair_cost": 0.766667,
+      "condition_id": "0x0f4c98035a336e532922baa55fe6baa167a11b8399a476c4e4d781b5e1f5d621",
+      "conservative_risk_adjusted": 1.393815,
+      "day": "2026-05-03",
+      "fee_after_pnl": 1.543815,
+      "official_taker_fee": 0.206185,
+      "pair_pnl": 1.75,
+      "pair_qty": 7.5,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1777851600"
+    },
+    {
+      "avg_pair_cost": 0.79865,
+      "condition_id": "0x798fa8c5f8c92c42e45104f0fa4f43fe658cd4a4e30caf2d15a0e553cc68a3ba",
+      "conservative_risk_adjusted": 1.390322,
+      "day": "2026-05-07",
+      "fee_after_pnl": 1.587172,
+      "official_taker_fee": 0.315653,
+      "pair_pnl": 1.950075,
+      "pair_qty": 9.685,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.315
+      },
+      "residual_cost": 0.04725,
+      "residual_qty": 0.315,
+      "residual_settle_pnl": -0.04725,
+      "seed_actions": 16,
+      "slug": "btc-updown-5m-1778137200"
+    },
+    {
+      "avg_pair_cost": 0.81125,
+      "condition_id": "0x2483cfb4d4b5e64b5c2634e420fa7d12861e62ccf822be6de6c806c21a32e4cd",
+      "conservative_risk_adjusted": 1.389781,
+      "day": "2026-05-10",
+      "fee_after_pnl": 1.589781,
+      "official_taker_fee": 0.297719,
+      "pair_pnl": 1.8875,
+      "pair_qty": 10.0,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 16,
+      "slug": "btc-updown-5m-1778452500"
+    },
+    {
+      "avg_pair_cost": 0.793817,
+      "condition_id": "0x7b168c855cfc427a45caba0bb015957785807be1164f2f94907e082d895d9807",
+      "conservative_risk_adjusted": 1.377958,
+      "day": "2026-05-08",
+      "fee_after_pnl": 1.552308,
+      "official_taker_fee": 0.245092,
+      "pair_pnl": 1.7974,
+      "pair_qty": 8.7175,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778238000"
+    },
+    {
+      "avg_pair_cost": 0.793719,
+      "condition_id": "0xf3bfeee38647c940a540185ac8112d673893f50323a433889ff369fa9cf27da2",
+      "conservative_risk_adjusted": 1.369784,
+      "day": "2026-05-07",
+      "fee_after_pnl": 1.544259,
+      "official_taker_fee": 0.245666,
+      "pair_pnl": 1.794125,
+      "pair_qty": 8.6975,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0525
+      },
+      "residual_cost": 0.0042,
+      "residual_qty": 0.0525,
+      "residual_settle_pnl": -0.0042,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778174100"
+    },
+    {
+      "avg_pair_cost": 0.77,
+      "condition_id": "0x9b27e6efea77201d2f9583e6512d13db04bcf9dd27f640a1cdcea516e1e8f91b",
+      "conservative_risk_adjusted": 1.368185,
+      "day": "2026-05-09",
+      "fee_after_pnl": 1.518185,
+      "official_taker_fee": 0.206815,
+      "pair_pnl": 1.725,
+      "pair_qty": 7.5,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1778367600"
+    },
+    {
+      "avg_pair_cost": 0.81875,
+      "condition_id": "0x57a71b16713c53182ee736c2ecddc2a6677caac5ac695c126b9434db2692a360",
+      "conservative_risk_adjusted": 1.355766,
+      "day": "2026-05-03",
+      "fee_after_pnl": 1.555766,
+      "official_taker_fee": 0.256734,
+      "pair_pnl": 1.8125,
+      "pair_qty": 10.0,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 16,
+      "slug": "btc-updown-5m-1777846500"
+    },
+    {
+      "avg_pair_cost": 0.776984,
+      "condition_id": "0x9c3fd364a9c2982dfef9407551f53349484106c680000b3dc4c8228e427d4672",
+      "conservative_risk_adjusted": 1.323849,
+      "day": "2026-05-18",
+      "fee_after_pnl": 1.467099,
+      "official_taker_fee": 0.130251,
+      "pair_pnl": 1.59735,
+      "pair_qty": 7.1625,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1779073200"
+    },
+    {
+      "avg_pair_cost": 0.8,
+      "condition_id": "0xc75dadab4beb981bb06c5603733d5006b1681bba40dd9aeb7e239b538a862a30",
+      "conservative_risk_adjusted": 1.321845,
+      "day": "2026-05-06",
+      "fee_after_pnl": 1.496845,
+      "official_taker_fee": 0.253155,
+      "pair_pnl": 1.75,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778037900"
+    },
+    {
+      "avg_pair_cost": 0.74,
+      "condition_id": "0xd38835e58873d92e5689c23b04a2c5ea7e9a0b3fc6b1d60b86aad0fa320f4959",
+      "conservative_risk_adjusted": 1.311245,
+      "day": "2026-05-10",
+      "fee_after_pnl": 1.436245,
+      "official_taker_fee": 0.188755,
+      "pair_pnl": 1.625,
+      "pair_qty": 6.25,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 10,
+      "slug": "btc-updown-5m-1778372100"
+    },
+    {
+      "avg_pair_cost": 0.8,
+      "condition_id": "0x6a9ff2dd51a539412c1ec7ad30242d28f259af787e2159bd46a615a82b5cee92",
+      "conservative_risk_adjusted": 1.303855,
+      "day": "2026-05-06",
+      "fee_after_pnl": 1.478855,
+      "official_taker_fee": 0.271145,
+      "pair_pnl": 1.75,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1778080800"
+    },
+    {
+      "avg_pair_cost": 0.835496,
+      "condition_id": "0xa8a848be7f0c44125d1a6a51355047c750d016ceaab7cd20da2eaa51dcff7fa6",
+      "conservative_risk_adjusted": 1.294429,
+      "day": "2026-05-08",
+      "fee_after_pnl": 1.529304,
+      "official_taker_fee": 0.271471,
+      "pair_pnl": 1.843675,
+      "pair_qty": 11.2075,
+      "residual_by_side": {
+        "NO": 1.0725,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0429,
+      "residual_qty": 1.0725,
+      "residual_settle_pnl": -0.0429,
+      "seed_actions": 19,
+      "slug": "btc-updown-5m-1778248800"
+    },
+    {
+      "avg_pair_cost": 0.802857,
+      "condition_id": "0x22571636cab65ce9bd0725ff8269bb02d7347a962c0da3cf37b96b59b5b0c1e8",
+      "conservative_risk_adjusted": 1.288358,
+      "day": "2026-05-18",
+      "fee_after_pnl": 1.463358,
+      "official_taker_fee": 0.261642,
+      "pair_pnl": 1.725,
+      "pair_qty": 8.75,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 14,
+      "slug": "btc-updown-5m-1779071400"
+    },
+    {
+      "avg_pair_cost": 0.765349,
+      "condition_id": "0x125b02d355bec4a008125b78f4b5a6173c497ca7db10f85f4f8a1169cf21f36a",
+      "conservative_risk_adjusted": 1.288279,
+      "day": "2026-05-05",
+      "fee_after_pnl": 1.436704,
+      "official_taker_fee": 0.221646,
+      "pair_pnl": 1.722925,
+      "pair_qty": 7.3425,
+      "residual_by_side": {
+        "NO": 0.1575,
+        "YES": 0.0
+      },
+      "residual_cost": 0.064575,
+      "residual_qty": 0.1575,
+      "residual_settle_pnl": -0.064575,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1777958400"
+    },
+    {
+      "avg_pair_cost": 0.783333,
+      "condition_id": "0xd990e9ae6f6d39b5c9df56d1124921d3da72819180d94caabf928212cfba0a16",
+      "conservative_risk_adjusted": 1.286402,
+      "day": "2026-05-10",
+      "fee_after_pnl": 1.436402,
+      "official_taker_fee": 0.188598,
+      "pair_pnl": 1.625,
+      "pair_qty": 7.5,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1778394900"
+    },
+    {
+      "avg_pair_cost": 0.778333,
+      "condition_id": "0x8fc27b7f703fbde70c0e0a0f362eaae860be7920275182568efb48cc11251f45",
+      "conservative_risk_adjusted": 1.283661,
+      "day": "2026-05-04",
+      "fee_after_pnl": 1.433661,
+      "official_taker_fee": 0.228839,
+      "pair_pnl": 1.6625,
+      "pair_qty": 7.5,
+      "residual_by_side": {
+        "NO": 0.0,
+        "YES": 0.0
+      },
+      "residual_cost": 0.0,
+      "residual_qty": 0.0,
+      "residual_settle_pnl": 0.0,
+      "seed_actions": 12,
+      "slug": "btc-updown-5m-1777854000"
+    },
+    {
+      "avg_pair_cost": 0.82279,
+      "condition_id": "0xf635b135c0affb13ec77b0c273df231c581c32fd895323481f7a3e34aabb91f2",
+      "conservative_risk_adjusted": 1.27903,
+      "day": "2026-05-04",
+      "fee_after_pnl": 1.49723,
+      "official_taker_fee": 0.35452,
+      "pair_pnl": 1.91475,
+      "pair_qty": 10.805,
+      "residual_by_side": {
+        "NO": 0.21,
+        "YES": 0.0
+      },
+      "residual_cost": 0.063,
+      "residual_qty": 0.21,
+      "residual_settle_pnl": -0.063,
+      "seed_actions": 18,
+      "slug": "btc-updown-5m-1777890300"
+    }
+  ]
+}
