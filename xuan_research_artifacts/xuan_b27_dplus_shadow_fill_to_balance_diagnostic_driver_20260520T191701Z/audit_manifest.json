@@ -1,0 +1,327 @@
+{
+  "acceptance": {
+    "acceptance_passed": false,
+    "promotion_gate": {
+      "economic_pnl_ok": true,
+      "hard_blockers": [
+        "shadow_trading_promotion_risk_budget_failed"
+      ],
+      "legacy_absolute_reference": {
+        "breaches": [
+          {
+            "actual": 20.0,
+            "legacy_reference_max": 10.0,
+            "metric": "residual_qty"
+          },
+          {
+            "actual": 6.225,
+            "legacy_reference_max": 5.0,
+            "metric": "residual_cost"
+          },
+          {
+            "actual": 1.0899999999999999,
+            "legacy_reference_max": 1.0,
+            "metric": "net_pair_cost_p90"
+          }
+        ],
+        "used_as_primary_promotion_gate": false
+      },
+      "normalized_risk_budget": {
+        "material_residual_lots": 0,
+        "max_material_residual_lots": 0,
+        "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+        "max_residual_cost_share_of_filled_cost": 0.2,
+        "max_residual_qty_share_of_filled": 0.15,
+        "pair_tail_loss_share_of_pair_pnl": 0.13786282,
+        "residual_cost_share_of_filled_cost": 0.12799701,
+        "residual_qty_share_of_filled": 0.1805543
+      },
+      "passed": false,
+      "promotion_risk_budget_ok": false,
+      "required_before_g2_canary": true,
+      "sample_size_ok": true,
+      "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
+    },
+    "research_ranking": {
+      "conservative_stress_proxy_positive": false,
+      "economic_pnl_positive": true,
+      "fee_adjusted_pair_pnl_proxy": 3.888376,
+      "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE",
+      "legacy_absolute_reference_breaches": [
+        {
+          "actual": 20.0,
+          "legacy_reference_max": 10.0,
+          "metric": "residual_qty"
+        },
+        {
+          "actual": 6.225,
+          "legacy_reference_max": 5.0,
+          "metric": "residual_cost"
+        },
+        {
+          "actual": 1.0899999999999999,
+          "legacy_reference_max": 1.0,
+          "metric": "net_pair_cost_p90"
+        }
+      ],
+      "notes": [
+        "research ranking uses economic proxies first; sample and risk gates are reported separately",
+        "residual or pair-cost tail budget failures are TRADEOFF/BLOCKER evidence unless economic PnL turns negative",
+        "conservative stress proxy subtracts full residual_cost and pair-tail-loss proxy; source-of-truth settlement may differ"
+      ],
+      "pair_tail_loss_proxy": 0.536062,
+      "promotion_risk_budget_ok": false,
+      "residual_loss_proxy": 6.225,
+      "risk_adjusted_pnl_proxy": -2.872686,
+      "sample_size_ok": true
+    },
+    "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
+  },
+  "artifact": "xuan_b27_dplus_shadow_fill_to_balance_diagnostic_audit",
+  "conclusion": {
+    "reason": "sample passed and pair PnL is positive, but normalized residual qty and pair-tail risk budgets fail; diagnostics show the live no-order path lacks the tiny-deficit full-target cap opportunities that made the local state-machine lead look strong.",
+    "shadow_promotion_candidate": "DISCARD",
+    "underlying_local_candidate_pipeline_lead": "RESEARCH_ONLY_NOT_PROMOTED"
+  },
+  "created_utc": "2026-05-20T20:22:07Z",
+  "decision_label": "DISCARD_FILL_TO_BALANCE_DIAGNOSTIC_CAPS_ABSENT_RISK_BUDGET_FAIL",
+  "derived_metrics": {
+    "fee_adjusted_pair_pnl_proxy": 3.888376,
+    "fill_to_balance_cap_share": 0.08333333,
+    "fill_to_balance_qty_reduction_per_candidate": 0.00354167,
+    "pair_tail_loss_proxy": 0.536062,
+    "residual_cost_share_of_filled_cost": 0.12799701,
+    "residual_qty_share_of_filled": 0.1805543,
+    "risk_adjusted_pnl_proxy": -2.872686
+  },
+  "diagnostic_findings": {
+    "candidate_offset_buckets": {
+      "offset_0_30": 23.0,
+      "offset_30_60": 46.0,
+      "offset_60_90": 41.0,
+      "offset_90_120": 6.0
+    },
+    "candidate_side_counts": {
+      "NO": 57.0,
+      "YES": 59.0
+    },
+    "fill_to_balance_diagnostics": {
+      "base_seed_qty_bucket_by_side_offset": {
+        "NO|offset_90_120": {
+          "base_seed_qty_1_2": 4.0,
+          "base_seed_qty_le_1": 5.0
+        },
+        "YES|offset_90_120": {
+          "base_seed_qty_1_2": 2.0,
+          "base_seed_qty_le_1": 1.0
+        }
+      },
+      "candidate_count_by_offset_bucket": {
+        "offset_90_120": 12.0
+      },
+      "candidate_count_by_side": {
+        "NO": 9.0,
+        "YES": 3.0
+      },
+      "candidate_count_by_side_offset": {
+        "NO|offset_90_120": 9.0,
+        "YES|offset_90_120": 3.0
+      },
+      "capped_qty_bucket_by_side_offset": {
+        "NO|offset_90_120": {
+          "capped_qty_1_2": 4.0,
+          "capped_qty_le_1": 5.0
+        },
+        "YES|offset_90_120": {
+          "capped_qty_1_2": 2.0,
+          "capped_qty_le_1": 1.0
+        }
+      },
+      "deficit_bucket_by_side_offset": {
+        "NO|offset_90_120": {
+          "deficit_1_2": 9.0
+        },
+        "YES|offset_90_120": {
+          "deficit_1_2": 3.0
+        }
+      },
+      "qty_reduction_amount_by_offset_bucket": {
+        "offset_90_120": 0.0425
+      },
+      "qty_reduction_amount_by_side": {
+        "NO": 0.0425
+      },
+      "qty_reduction_amount_by_side_offset": {
+        "NO|offset_90_120": 0.0425
+      },
+      "qty_reduction_bucket_by_side_offset": {
+        "NO|offset_90_120": {
+          "qty_reduction_le_1": 1.0,
+          "qty_reduction_zero": 8.0
+        },
+        "YES|offset_90_120": {
+          "qty_reduction_zero": 3.0
+        }
+      },
+      "status_count_by_offset_bucket": {
+        "block": {
+          "offset_90_120": 6.0
+        },
+        "cap": {
+          "offset_90_120": 1.0
+        },
+        "uncapped": {
+          "offset_90_120": 5.0
+        }
+      },
+      "status_count_by_side": {
+        "block": {
+          "NO": 5.0,
+          "YES": 1.0
+        },
+        "cap": {
+          "NO": 1.0
+        },
+        "uncapped": {
+          "NO": 3.0,
+          "YES": 2.0
+        }
+      },
+      "status_count_by_side_offset": {
+        "NO|offset_90_120": {
+          "block": 5.0,
+          "cap": 1.0,
+          "uncapped": 3.0
+        },
+        "YES|offset_90_120": {
+          "block": 1.0,
+          "uncapped": 2.0
+        }
+      }
+    },
+    "interpretation": [
+      "diagnostic buckets are present and sufficient to explain the transfer gap without events JSONL",
+      "live/no-order path did not reproduce local tiny-deficit full-target caps: only 1 cap and 0.0425 qty reduction across 12 fill-to-balance candidates",
+      "all diagnostic F2B candidates are offset_90_120 with deficit_1_2, but base_seed_qty is already <=2, so fill-to-balance has almost no sizing work left to do",
+      "residual remains broad across both sides and multiple price buckets, while pair-tail budget also fails"
+    ],
+    "net_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 4.0,
+      "pair_cost_1p00_1p05": 1.0,
+      "pair_cost_gt_1p05": 3.0,
+      "pair_cost_lt_0p95": 46.0
+    },
+    "residual_lot_px_qty_buckets": {
+      "px_0p30_0p45": 11.25,
+      "px_ge_0p55": 1.25,
+      "px_lt_0p30": 7.5
+    },
+    "residual_lot_side_cost": {
+      "NO": 3.475,
+      "YES": 2.75
+    },
+    "residual_lot_side_qty": {
+      "NO": 11.25,
+      "YES": 8.75
+    }
+  },
+  "local_artifact_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_diagnostic_driver_20260520T191701Z",
+  "metrics": {
+    "candidates": 116.0,
+    "filled_cost": 48.63395,
+    "filled_qty": 110.77,
+    "late_repair_fill_to_balance_blocks": 6.0,
+    "late_repair_fill_to_balance_candidates": 12.0,
+    "late_repair_fill_to_balance_caps": 1.0,
+    "late_repair_fill_to_balance_qty_reduction": 0.0425,
+    "material_residual_lots": 0.0,
+    "net_pair_cost_proxy_p90": 1.0899999999999999,
+    "pair_actions": 54.0,
+    "pair_pnl": 4.593913,
+    "pair_qty": 59.5625,
+    "queue_supported_fills": 89.0,
+    "residual_cost": 6.225,
+    "residual_qty": 20.0,
+    "taker_fee": 0.705537
+  },
+  "next_action": "Run a local no-network candidate-pipeline transfer verifier that aligns state-machine seed sizing with shadow base_seed_qty constraints (public_trade_size*fill_haircut/imbalance/target room) before any further shadow; do not repeat fill-to-balance90 diagnostic shadow.",
+  "prior_sample_scale_delta": {
+    "candidates": {
+      "current": 116.0,
+      "delta": 14.0,
+      "prior": 102.0
+    },
+    "late_repair_fill_to_balance_candidates": {
+      "current": 12.0,
+      "delta": 3.0,
+      "prior": 9.0
+    },
+    "late_repair_fill_to_balance_caps": {
+      "current": 1.0,
+      "delta": 1.0,
+      "prior": 0.0
+    },
+    "late_repair_fill_to_balance_qty_reduction": {
+      "current": 0.0425,
+      "delta": 0.0425,
+      "prior": 0.0
+    },
+    "net_pair_cost_proxy_p90": {
+      "current": 1.0899999999999999,
+      "delta": 0.07,
+      "prior": 1.02
+    },
+    "pair_actions": {
+      "current": 54.0,
+      "delta": 26.0,
+      "prior": 28.0
+    },
+    "pair_pnl": {
+      "current": 4.593913,
+      "delta": 2.052036,
+      "prior": 2.541877
+    },
+    "pair_qty": {
+      "current": 59.5625,
+      "delta": 24.7975,
+      "prior": 34.765
+    },
+    "queue_supported_fills": {
+      "current": 89.0,
+      "delta": 21.0,
+      "prior": 68.0
+    },
+    "residual_cost": {
+      "current": 6.225,
+      "delta": -2.05485,
+      "prior": 8.27985
+    },
+    "residual_qty": {
+      "current": 20.0,
+      "delta": -8.705,
+      "prior": 28.705
+    }
+  },
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_fill_to_balance90_diagnostic_edge007_20260520T191701Z",
+  "safety": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "orders_sent": false,
+    "pm_dry_run": "true",
+    "raw_replay_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false
+  },
+  "schema_version": 1,
+  "scope": "local_audit_of_pulled_no_order_diagnostic_shadow_small_files",
+  "source_files_read": {
+    "acceptance_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_fill_to_balance_diagnostic_20260520T191701Z/manifest.json",
+    "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_diagnostic_driver_20260520T191701Z/remote/output/aggregate_report.json",
+    "events_jsonl_read": false,
+    "prior_sample_scale_aggregate": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_sample_scale_driver_20260520T145943Z/remote/output/aggregate_report.json",
+    "runner_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_diagnostic_driver_20260520T191701Z/remote/output/manifest.json"
+  },
+  "status": "DISCARD_FILL_TO_BALANCE_DIAGNOSTIC_CAPS_ABSENT_RISK_BUDGET_FAIL"
+}
