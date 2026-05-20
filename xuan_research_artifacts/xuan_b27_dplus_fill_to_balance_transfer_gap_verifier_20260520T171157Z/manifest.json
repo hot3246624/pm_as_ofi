@@ -1,0 +1,336 @@
+{
+  "candidate_pipeline_trace": {
+    "metrics": {
+      "fee_after_pnl": 2763.31592,
+      "pair_actions": 21680,
+      "pair_qty": 24632.495,
+      "residual_cost": 56.244825,
+      "residual_cost_rate": 0.002656,
+      "residual_qty": 258.4525,
+      "residual_qty_rate": 0.005219,
+      "seed_actions": 39898,
+      "seed_block_late_fill_to_balance_qty": 6805,
+      "seed_late_fill_to_balance_candidate": 9196,
+      "seed_late_fill_to_balance_qty_reduction": 4479.1775,
+      "seed_qty_cap_late_fill_to_balance": 5217,
+      "stress100_worst_pnl": 2960.238325
+    },
+    "processed_public_sell_rows": 1425196,
+    "trace": {
+      "f2b_blocks_by_deficit": {
+        "deficit_1_2": 1455.0,
+        "deficit_le_1": 5350.0
+      },
+      "f2b_blocks_by_offset_side": {
+        "offset_90_120": {
+          "NO": 3599.0,
+          "YES": 3206.0
+        }
+      },
+      "f2b_by_base_qty": {
+        "base_qty_1_5": 5903.0,
+        "base_qty_le_1": 3293.0
+      },
+      "f2b_by_deficit": {
+        "deficit_1_2": 3846.0,
+        "deficit_le_1": 5350.0
+      },
+      "f2b_by_offset": {
+        "offset_90_120": 9196.0
+      },
+      "f2b_by_side": {
+        "NO": 4856.0,
+        "YES": 4340.0
+      },
+      "f2b_caps_by_deficit": {
+        "deficit_1_2": 277.0,
+        "deficit_le_1": 4940.0
+      },
+      "f2b_caps_by_offset_side": {
+        "offset_90_120": {
+          "NO": 2684.0,
+          "YES": 2533.0
+        }
+      },
+      "f2b_qty_reduction_by_deficit": {
+        "deficit_1_2": 32.24,
+        "deficit_le_1": 4446.9375
+      },
+      "late_underweight_blocked_before_f2b": {},
+      "late_underweight_pre_target_by_offset": {
+        "offset_90_120": 9200.0
+      }
+    }
+  },
+  "comparison": {
+    "local_f2b_blocks": 6805,
+    "local_f2b_candidate_share_of_seed_actions": 0.230488,
+    "local_f2b_candidates": 9196.0,
+    "local_f2b_cap_share": 0.567312,
+    "local_f2b_caps": 5217,
+    "local_qty_reduction": 4479.1775,
+    "local_residual_qty": 258.4525,
+    "shadow_f2b_blocks": 5.0,
+    "shadow_f2b_candidate_share_of_candidates": 0.088235,
+    "shadow_f2b_candidates": 9.0,
+    "shadow_f2b_cap_share": 0.0,
+    "shadow_f2b_caps": 0.0,
+    "shadow_qty_reduction": 0.0,
+    "shadow_residual_qty": 28.705,
+    "shadow_risk_adjusted_pnl_proxy": -6.152176
+  },
+  "created_utc": "2026-05-20T17:12:03Z",
+  "decision": "UNKNOWN",
+  "inputs": {
+    "candidate_base_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/candidate_base.duckdb",
+    "candidate_base_manifest": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/CANDIDATE_BASE_MANIFEST.json",
+    "local_lead_manifest": "xuan_research_artifacts/xuan_b27_dplus_candidate_pipeline_shadow_aligned_fill_rerun_20260520T143629Z/manifest.json",
+    "shadow_artifact": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_sample_scale_driver_20260520T145943Z"
+  },
+  "interpretation": [
+    "The local state-machine KEEP relies on many late underweight repair seeds being capped; the shadow window had almost no cap opportunities under the current summary evidence.",
+    "This is a transfer-gap result, not a bare PnL failure: pair PnL is positive, but residual budget failed.",
+    "Do not run another EC2 shadow until the shadow runner can summarize the missing deficit/cap buckets or a new local mechanism returns KEEP."
+  ],
+  "lane": "causal_verifier",
+  "local_lead_scoreboard_delta": {
+    "control_fee_after_pnl": 2894.880674,
+    "control_pair_actions": 23362,
+    "control_pair_qty": 25510.275,
+    "control_residual_cost_rate": 0.00947,
+    "control_residual_qty_rate": 0.012097,
+    "control_seed_actions": 41580,
+    "control_stress100_worst_pnl": 2913.845075,
+    "control_worst_day_fee_after_pnl": 161.917289,
+    "fee_after_pnl_retention": 0.9545526158706188,
+    "fill_to_balance_block_count": 6805,
+    "fill_to_balance_qty_cap_count": 5217,
+    "fill_to_balance_qty_reduction": 4479.1775,
+    "pair_qty_retention": 0.9655911196566873,
+    "residual_cost_rate_reduction": 0.7195353748680042,
+    "residual_qty_rate_reduction": 0.5685707200132264,
+    "seed_action_retention": 0.9595478595478596,
+    "stress100_worst_pnl_retention": 1.01592165980204,
+    "variant_fee_after_pnl": 2763.31592,
+    "variant_pair_actions": 21680,
+    "variant_pair_qty": 24632.495,
+    "variant_residual_cost_rate": 0.002656,
+    "variant_residual_qty_rate": 0.005219,
+    "variant_seed_actions": 39898,
+    "variant_stress100_worst_pnl": 2960.238325,
+    "variant_worst_day_fee_after_pnl": 155.145633
+  },
+  "missing_shadow_fields": [
+    "late_repair_fill_to_balance_deficit bucket by side/offset/slug",
+    "base_seed_qty and capped_seed_qty bucket by side/offset/slug",
+    "late_repair_fill_to_balance_qty_reduction bucket by side/offset/slug",
+    "residual lot source link to fill_to_balance_active/capped seed",
+    "pair action source link to fill_to_balance_active/capped seed"
+  ],
+  "next_executable_action": "Implement default-off event-lite fill-to-balance diagnostic buckets in the shadow runner and local smoke them: deficit/base_qty/capped_qty/qty_reduction by side, offset, and slug; do not start EC2 shadow/canary in that heartbeat.",
+  "promotion_gate": {
+    "can_support_strategy_promotion": false,
+    "deployable": false,
+    "passed": false,
+    "reason": "no-order shadow risk budget failed and transfer gap is not resolved",
+    "required_before_g2_canary": true
+  },
+  "research_ranking": {
+    "economic_pnl_positive_in_shadow": true,
+    "label": "UNKNOWN_TRANSFER_GAP_SOURCE_FIELDS_INSUFFICIENT",
+    "notes": [
+      "Candidate-pipeline fill-to-balance caps are common in the historical state machine.",
+      "The same no-order shadow surface reached sample size but produced zero fill-to-balance caps and zero qty reduction.",
+      "Pulled summaries do not expose per-candidate deficit/base_qty/capped_qty for the shadow, so the exact absence of cap opportunities cannot be proven without new summary buckets or events JSONL."
+    ],
+    "risk_adjusted_proxy_positive_in_shadow": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "candidate_base_duckdb_read_only": true,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_only": true,
+    "orders_cancels_redeems_sent": false,
+    "pulled_shadow_summary_json_only": true,
+    "raw_replay_collector_scanned": false,
+    "runner_modified": false,
+    "shadow_started": false,
+    "ssh_used": false
+  },
+  "shadow_summary_trace": {
+    "aggregate_metrics": {
+      "candidates": 102.0,
+      "late_repair_fill_to_balance_blocks": 5.0,
+      "late_repair_fill_to_balance_candidates": 9.0,
+      "late_repair_fill_to_balance_caps": 0.0,
+      "late_repair_fill_to_balance_qty_reduction": 0.0,
+      "net_pair_cost_p90": 1.02,
+      "pair_actions": 28.0,
+      "pair_pnl": 2.541877,
+      "pair_qty": 34.765,
+      "queue_supported_fills": 68.0,
+      "residual_cost": 8.27985,
+      "residual_qty": 28.705
+    },
+    "event_lite": {
+      "f2b_block_by_offset": {
+        "offset_90_120": 5.0
+      },
+      "f2b_block_by_public_px": {
+        "px_0p30_0p45": 1.0,
+        "px_ge_0p55": 4.0
+      },
+      "f2b_block_by_side": {
+        "NO": 4.0,
+        "YES": 1.0
+      },
+      "residual_lot_px_qty_buckets": {
+        "px_0p30_0p45": 7.5,
+        "px_ge_0p55": 3.75,
+        "px_lt_0p30": 17.455
+      },
+      "residual_lot_side_qty": {
+        "NO": 16.25,
+        "YES": 12.455
+      }
+    },
+    "f2b_slug_rows": [
+      {
+        "candidates": 6,
+        "late_repair_fill_to_balance_blocks": 3,
+        "late_repair_fill_to_balance_candidates": 4,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 1,
+        "pair_pnl": 0.05,
+        "queue_supported_fills": 4,
+        "residual_cost": 0.525,
+        "residual_qty": 2.5,
+        "slug": "btc-updown-5m-1779289800"
+      },
+      {
+        "candidates": 10,
+        "late_repair_fill_to_balance_blocks": 1,
+        "late_repair_fill_to_balance_candidates": 2,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 5,
+        "pair_pnl": 0.628375,
+        "queue_supported_fills": 9,
+        "residual_cost": 0,
+        "residual_qty": 0,
+        "slug": "btc-updown-5m-1779291300"
+      },
+      {
+        "candidates": 10,
+        "late_repair_fill_to_balance_blocks": 1,
+        "late_repair_fill_to_balance_candidates": 2,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 3,
+        "pair_pnl": 0.498,
+        "queue_supported_fills": 7,
+        "residual_cost": 2.3875,
+        "residual_qty": 3.75,
+        "slug": "btc-updown-5m-1779292500"
+      },
+      {
+        "candidates": 10,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 1,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 2,
+        "pair_pnl": 0.2625,
+        "queue_supported_fills": 7,
+        "residual_cost": 1.225,
+        "residual_qty": 3.75,
+        "slug": "btc-updown-5m-1779293100"
+      }
+    ],
+    "residual_without_f2b_top": [
+      {
+        "candidates": 10,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 0,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 2,
+        "pair_pnl": 0.0625,
+        "queue_supported_fills": 7,
+        "residual_cost": 1.3125,
+        "residual_qty": 3.75,
+        "slug": "btc-updown-5m-1779291000"
+      },
+      {
+        "candidates": 10,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 0,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 1,
+        "pair_pnl": 0.0625,
+        "queue_supported_fills": 6,
+        "residual_cost": 1.1125,
+        "residual_qty": 5.0,
+        "slug": "btc-updown-5m-1779290400"
+      },
+      {
+        "candidates": 8,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 0,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 0,
+        "pair_pnl": 0.0,
+        "queue_supported_fills": 4,
+        "residual_cost": 1.02985,
+        "residual_qty": 4.955,
+        "slug": "btc-updown-5m-1779290700"
+      },
+      {
+        "candidates": 6,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 0,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 2,
+        "pair_pnl": 0.0125,
+        "queue_supported_fills": 5,
+        "residual_cost": 0.2875,
+        "residual_qty": 1.25,
+        "slug": "btc-updown-5m-1779291900"
+      },
+      {
+        "candidates": 4,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 0,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 0,
+        "pair_pnl": 0.0,
+        "queue_supported_fills": 2,
+        "residual_cost": 0.2625,
+        "residual_qty": 2.5,
+        "slug": "btc-updown-5m-1779290100"
+      },
+      {
+        "candidates": 10,
+        "late_repair_fill_to_balance_blocks": 0,
+        "late_repair_fill_to_balance_candidates": 0,
+        "late_repair_fill_to_balance_caps": 0,
+        "late_repair_fill_to_balance_qty_reduction": 0.0,
+        "pair_actions": 4,
+        "pair_pnl": 0.30075,
+        "queue_supported_fills": 6,
+        "residual_cost": 0.1375,
+        "residual_qty": 1.25,
+        "slug": "btc-updown-5m-1779291600"
+      }
+    ],
+    "risk_adjusted_pnl_proxy": -6.152176,
+    "summary_file_count": 26
+  },
+  "status": "UNKNOWN_FILL_TO_BALANCE_TRANSFER_GAP_SHADOW_CAPS_ABSENT"
+}
