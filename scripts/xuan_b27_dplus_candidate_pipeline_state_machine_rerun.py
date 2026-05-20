@@ -30,7 +30,7 @@ DEFAULT_BASELINE_RESULT_DIR = Path(
     "pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_"
     "20260502_20260518_publicfull_v2"
 )
-ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_side_risk_px_cap_rerun"
+ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_dynamic_imbalance_rerun"
 FORBIDDEN_PATH_FRAGMENTS = (
     "/mnt/poly-replay",
     "replay_published",
@@ -54,6 +54,7 @@ class Profile:
     public_trade_px_hi: float | None = None
     risk_increasing_public_trade_px_hi: float | None = None
     risk_increasing_public_trade_px_hi_side: str | None = None
+    risk_increasing_imbalance_qty_cap: float | None = None
     fill_haircut: float = 0.25
     max_seed_qty: float = 60.0
     max_open_cost: float = 250.0
@@ -228,6 +229,7 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
 
     same_qty = lot_qty(state.lots[side])
     opp_qty = lot_qty(state.lots[other(side)])
+    risk_increasing_seed = same_qty >= opp_qty
     if (
         profile.risk_increasing_public_trade_px_hi is not None
         and trade_px > profile.risk_increasing_public_trade_px_hi
@@ -235,7 +237,7 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
             profile.risk_increasing_public_trade_px_hi_side is None
             or side == profile.risk_increasing_public_trade_px_hi_side
         )
-        and same_qty >= opp_qty
+        and risk_increasing_seed
     ):
         add_count(metrics, day, "seed_block_risk_increasing_public_trade_px_hi")
         return
@@ -263,9 +265,17 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
 
     seed_px = max(0.01, trade_px - profile.edge)
     open_cost = lot_cost(state.lots["YES"]) + lot_cost(state.lots["NO"])
-    imbalance_room = profile.imbalance_qty_cap - max(0.0, same_qty - opp_qty)
+    effective_imbalance_qty_cap = (
+        profile.risk_increasing_imbalance_qty_cap
+        if risk_increasing_seed and profile.risk_increasing_imbalance_qty_cap is not None
+        else profile.imbalance_qty_cap
+    )
+    imbalance_room = effective_imbalance_qty_cap - max(0.0, same_qty - opp_qty)
     if imbalance_room <= profile.dust_qty:
-        add_count(metrics, day, "seed_block_imbalance_qty")
+        if risk_increasing_seed and profile.risk_increasing_imbalance_qty_cap is not None:
+            add_count(metrics, day, "seed_block_dynamic_imbalance_qty")
+        else:
+            add_count(metrics, day, "seed_block_imbalance_qty")
         return
     qty = min(
         profile.max_seed_qty,
@@ -392,6 +402,7 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_block_late_repair_only": int(metrics["seed_block_late_repair_only"]),
         "seed_block_target": int(metrics["seed_block_target"]),
         "seed_block_imbalance_qty": int(metrics["seed_block_imbalance_qty"]),
+        "seed_block_dynamic_imbalance_qty": int(metrics["seed_block_dynamic_imbalance_qty"]),
         "seed_block_imbalance_cost": int(metrics["seed_block_imbalance_cost"]),
         "summary_by_day": summary_by_day,
     }
@@ -656,6 +667,69 @@ def decision_side_risk_px_cap(control: dict[str, Any], variant: dict[str, Any], 
     return "UNKNOWN", "UNKNOWN_SIDE_RISK_PUBLIC_PX_CAP_MIXED_STATE_MACHINE_RESULT"
 
 
+def research_ranking_from(control: dict[str, Any], variant: dict[str, Any], delta: dict[str, Any]) -> dict[str, Any]:
+    fee_positive = float(variant["fee_after_pnl"]) > 0.0
+    stress_positive = float(variant["stress100_worst_pnl"]) > 0.0
+    worst_day_positive = float(variant["worst_day_fee_after_pnl"]) > 0.0
+    retention = float(delta["seed_action_retention"] or 0.0)
+    pair_retention = float(delta["pair_qty_retention"] or 0.0)
+    fee_delta = float(delta["fee_after_pnl"]["absolute_delta"])
+    stress_delta = float(delta["stress100_worst_pnl"]["absolute_delta"])
+    worst_day_delta = float(delta["worst_day_fee_after_pnl"]["absolute_delta"])
+    residual_reduction = float(delta["residual_qty_rate_reduction"] or 0.0)
+    residual_cost_reduction = float(delta["residual_cost_rate_reduction"] or 0.0)
+    pair_cost_reduction = float(delta["weighted_pair_cost_reduction"] or 0.0)
+    risk_adjusted_score_delta = (
+        fee_delta
+        + stress_delta
+        + worst_day_delta
+        + 1000.0 * residual_reduction
+        + 1000.0 * residual_cost_reduction
+    )
+
+    if not (fee_positive and stress_positive and worst_day_positive):
+        label = "DISCARD_ECONOMIC_NEGATIVE"
+        decision = "DISCARD"
+    elif (
+        retention >= 0.75
+        and pair_retention >= 0.75
+        and risk_adjusted_score_delta > 0.0
+        and (
+            residual_reduction > 0.0
+            or residual_cost_reduction > 0.0
+            or pair_cost_reduction > 0.0
+        )
+    ):
+        label = "KEEP_ECONOMIC_RESEARCH_ONLY"
+        decision = "KEEP"
+    elif retention < 0.65 or pair_retention < 0.65:
+        label = "TRADEOFF_ECON_POSITIVE_CAPACITY_DROP"
+        decision = "UNKNOWN"
+    elif residual_reduction < 0.0 or residual_cost_reduction < 0.0:
+        label = "TRADEOFF_ECON_POSITIVE_RISK_WORSE"
+        decision = "UNKNOWN"
+    else:
+        label = "TRADEOFF_ECON_POSITIVE_WEAK_INCREMENT"
+        decision = "UNKNOWN"
+
+    return {
+        "decision_label": decision,
+        "label": label,
+        "fee_after_pnl_positive": fee_positive,
+        "stress100_worst_pnl_positive": stress_positive,
+        "worst_day_fee_after_pnl_positive": worst_day_positive,
+        "seed_action_retention": retention,
+        "pair_qty_retention": pair_retention,
+        "fee_after_pnl_delta": round(fee_delta, 6),
+        "stress100_worst_pnl_delta": round(stress_delta, 6),
+        "worst_day_fee_after_pnl_delta": round(worst_day_delta, 6),
+        "residual_qty_rate_reduction": residual_reduction,
+        "residual_cost_rate_reduction": residual_cost_reduction,
+        "weighted_pair_cost_reduction": pair_cost_reduction,
+        "risk_adjusted_score_delta_proxy": round(risk_adjusted_score_delta, 6),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate-base-dir", default=str(DEFAULT_CANDIDATE_BASE_DIR))
@@ -721,6 +795,12 @@ def main() -> int:
             risk_increasing_public_trade_px_hi=0.55,
             risk_increasing_public_trade_px_hi_side="NO",
         ),
+        Profile(
+            name="variant_late_repair90_dynamic_risk_imbalance_cap_1p10",
+            seed_offset_max_s=120.0,
+            late_repair_only_after_s=90.0,
+            risk_increasing_imbalance_qty_cap=1.10,
+        ),
     ]
     run_result = run_profiles(candidate_db_path, profiles, base_day_counts)
     control = run_result["profiles"]["control_seed_offset_max_120"]
@@ -729,6 +809,7 @@ def main() -> int:
     public_px_variant = run_result["profiles"]["variant_late_repair90_public_trade_px_hi_0p55"]
     risk_px_variant = run_result["profiles"]["variant_late_repair90_risk_public_trade_px_hi_0p55"]
     no_side_risk_px_variant = run_result["profiles"]["variant_late_repair90_no_side_risk_public_trade_px_hi_0p55"]
+    dynamic_imbalance_variant = run_result["profiles"]["variant_late_repair90_dynamic_risk_imbalance_cap_1p10"]
     baseline = {
         "seed_actions": core.get("seed_actions"),
         "active_markets": core.get("active_markets"),
@@ -749,11 +830,17 @@ def main() -> int:
     public_px_delta = build_direct_delta(variant, public_px_variant)
     risk_px_delta = build_direct_delta(variant, risk_px_variant)
     no_side_risk_px_delta = build_direct_delta(variant, no_side_risk_px_variant)
+    dynamic_imbalance_delta = build_direct_delta(variant, dynamic_imbalance_variant)
     hard_cap_decision_label, hard_cap_status = decision_public_px_cap(variant, public_px_variant, public_px_delta)
     all_side_risk_decision_label, all_side_risk_status = decision_risk_px_cap(
         variant, risk_px_variant, risk_px_delta
     )
-    decision_label, status = decision_side_risk_px_cap(variant, no_side_risk_px_variant, no_side_risk_px_delta)
+    side_risk_decision_label, side_risk_status = decision_side_risk_px_cap(
+        variant, no_side_risk_px_variant, no_side_risk_px_delta
+    )
+    research_ranking = research_ranking_from(variant, dynamic_imbalance_variant, dynamic_imbalance_delta)
+    decision_label = research_ranking["decision_label"]
+    status = research_ranking["label"]
     manifest = {
         "artifact": ARTIFACT,
         "created_utc": label,
@@ -761,9 +848,9 @@ def main() -> int:
         "decision_label": decision_label,
         "status": status,
         "hypothesis": (
-            "If the no-order pair-source p90 tail is driven by high source public_trade_px, then adding a bounded "
-            "NO-side-only risk-increasing public_trade_px_hi cap to late-repair90 should reduce pair-cost risk while "
-            "preserving repair seeds, material sample, and positive fee/stress/worst-day."
+            "If risk-increasing seeds are the inventory path that creates residual, then applying a smaller post-seed "
+            "imbalance budget only to risk-increasing seeds on top of late-repair90 should improve risk-adjusted "
+            "economics while preserving repair/underweight seeds at full target_qty."
         ),
         "inputs": {
             "candidate_base_manifest": str(candidate_manifest_path),
@@ -790,6 +877,7 @@ def main() -> int:
             "discarded_public_px_cap_variant": asdict(profiles[3]),
             "discarded_all_side_risk_public_px_cap_variant": asdict(profiles[4]),
             "no_side_risk_public_px_cap_variant": asdict(profiles[5]),
+            "dynamic_risk_imbalance_cap_variant": asdict(profiles[6]),
             "candidate_source": "candidate_base table, public_sell rows with 0 <= offset_s < 300",
             "official_fee_formula": "fee = shares * fee_rate * price * (1 - price)",
             "official_fee_rate": profiles[0].official_fee_rate,
@@ -802,6 +890,7 @@ def main() -> int:
         "variant_late_repair90_public_trade_px_hi_0p55_rerun": public_px_variant,
         "variant_late_repair90_risk_public_trade_px_hi_0p55_rerun": risk_px_variant,
         "variant_late_repair90_no_side_risk_public_trade_px_hi_0p55_rerun": no_side_risk_px_variant,
+        "variant_late_repair90_dynamic_risk_imbalance_cap_1p10_rerun": dynamic_imbalance_variant,
         "hard_offset90_comparison": hard_offset90_comparison,
         "late_repair90_comparison": comparison,
         "late_repair90_decision_label": late_repair_decision_label,
@@ -810,40 +899,53 @@ def main() -> int:
         "hard_public_px_cap_status": hard_cap_status,
         "all_side_risk_public_px_cap_decision_label": all_side_risk_decision_label,
         "all_side_risk_public_px_cap_status": all_side_risk_status,
+        "no_side_risk_public_px_cap_decision_label": side_risk_decision_label,
+        "no_side_risk_public_px_cap_status": side_risk_status,
         "public_px_cap_delta_vs_late_repair90": public_px_delta,
         "risk_public_px_cap_delta_vs_late_repair90": risk_px_delta,
         "no_side_risk_public_px_cap_delta_vs_late_repair90": no_side_risk_px_delta,
+        "dynamic_imbalance_delta_vs_late_repair90": dynamic_imbalance_delta,
+        "research_ranking": research_ranking,
+        "promotion_gate": {
+            "passed": False,
+            "required_before_g2_canary": True,
+            "reason": "local completion candidate-pipeline state-machine research only",
+            "deployable": False,
+            "can_support_strategy_promotion": False,
+            "requires_no_order_shadow": decision_label == "KEEP",
+            "requires_source_of_truth_replay": True,
+        },
         "scoreboard_delta": {
             "control_seed_actions": control["seed_actions"],
             "late_repair90_seed_actions": variant["seed_actions"],
-            "no_side_risk_public_px_cap_seed_actions": no_side_risk_px_variant["seed_actions"],
-            "no_side_risk_public_px_cap_seed_action_retention_vs_late_repair90": no_side_risk_px_delta[
+            "dynamic_imbalance_seed_actions": dynamic_imbalance_variant["seed_actions"],
+            "dynamic_imbalance_seed_action_retention_vs_late_repair90": dynamic_imbalance_delta[
                 "seed_action_retention"
             ],
             "late_repair90_fee_after_pnl": variant["fee_after_pnl"],
-            "no_side_risk_public_px_cap_fee_after_pnl": no_side_risk_px_variant["fee_after_pnl"],
+            "dynamic_imbalance_fee_after_pnl": dynamic_imbalance_variant["fee_after_pnl"],
             "late_repair90_stress100_worst_pnl": variant["stress100_worst_pnl"],
-            "no_side_risk_public_px_cap_stress100_worst_pnl": no_side_risk_px_variant["stress100_worst_pnl"],
+            "dynamic_imbalance_stress100_worst_pnl": dynamic_imbalance_variant["stress100_worst_pnl"],
             "late_repair90_worst_day_fee_after_pnl": variant["worst_day_fee_after_pnl"],
-            "no_side_risk_public_px_cap_worst_day_fee_after_pnl": no_side_risk_px_variant[
+            "dynamic_imbalance_worst_day_fee_after_pnl": dynamic_imbalance_variant[
                 "worst_day_fee_after_pnl"
             ],
             "late_repair90_weighted_pair_cost": variant["weighted_pair_cost"],
-            "no_side_risk_public_px_cap_weighted_pair_cost": no_side_risk_px_variant["weighted_pair_cost"],
-            "weighted_pair_cost_reduction": no_side_risk_px_delta["weighted_pair_cost_reduction"],
+            "dynamic_imbalance_weighted_pair_cost": dynamic_imbalance_variant["weighted_pair_cost"],
+            "weighted_pair_cost_reduction": dynamic_imbalance_delta["weighted_pair_cost_reduction"],
             "late_repair90_residual_qty_rate": variant["residual_qty_rate"],
-            "no_side_risk_public_px_cap_residual_qty_rate": no_side_risk_px_variant["residual_qty_rate"],
-            "residual_qty_rate_reduction": no_side_risk_px_delta["residual_qty_rate_reduction"],
+            "dynamic_imbalance_residual_qty_rate": dynamic_imbalance_variant["residual_qty_rate"],
+            "residual_qty_rate_reduction": dynamic_imbalance_delta["residual_qty_rate_reduction"],
             "late_repair90_residual_cost_rate": variant["residual_cost_rate"],
-            "no_side_risk_public_px_cap_residual_cost_rate": no_side_risk_px_variant["residual_cost_rate"],
-            "residual_cost_rate_reduction": no_side_risk_px_delta["residual_cost_rate_reduction"],
-            "no_side_risk_public_px_cap_block_count": no_side_risk_px_variant[
-                "seed_block_risk_increasing_public_trade_px_hi"
-            ],
+            "dynamic_imbalance_residual_cost_rate": dynamic_imbalance_variant["residual_cost_rate"],
+            "residual_cost_rate_reduction": dynamic_imbalance_delta["residual_cost_rate_reduction"],
+            "dynamic_imbalance_block_count": dynamic_imbalance_variant["seed_block_dynamic_imbalance_qty"],
             "discarded_all_side_risk_public_px_cap_seed_actions": risk_px_variant["seed_actions"],
             "discarded_all_side_risk_public_px_cap_residual_qty_rate": risk_px_variant["residual_qty_rate"],
             "discarded_hard_public_px_cap_seed_actions": public_px_variant["seed_actions"],
             "discarded_hard_public_px_cap_residual_qty_rate": public_px_variant["residual_qty_rate"],
+            "discarded_no_side_risk_public_px_cap_seed_actions": no_side_risk_px_variant["seed_actions"],
+            "discarded_no_side_risk_public_px_cap_residual_qty_rate": no_side_risk_px_variant["residual_qty_rate"],
         },
         "interpretation": [
             "This is a local candidate-base state-machine rerun, not source-of-truth replay and not deployable evidence.",
@@ -852,12 +954,13 @@ def main() -> int:
             "The late-repair90 variant is retained as the control for the new source-public-price cap.",
             "The hard public price cap is retained only as a discarded contrast.",
             "The all-side risk-increasing public price cap is retained only as a discarded contrast.",
-            "The NO-side-only risk-increasing public price cap is a local candidate-base proxy for the no-order pair-source attribution and is not source-of-truth replay.",
+            "The NO-side-only risk-increasing public price cap is retained only as a discarded contrast.",
+            "The dynamic imbalance variant caps only risk-increasing seed qty; underweight/repair seeds still use full target_qty=5.",
         ],
         "next_action": (
-            "If KEEP, implement/smoke the bounded NO-side-only risk-increasing public_trade_px_hi admission cap in the "
-            "no-order shadow runner before spending another EC2 shadow; if DISCARD, freeze source-public-price cap "
-            "families and choose a new non-price mechanism."
+            "If KEEP, implement/smoke the dynamic risk-increasing imbalance cap in the no-order shadow runner before "
+            "spending another EC2 shadow; if TRADEOFF/UNKNOWN, inspect which day/side buckets lost economics before "
+            "testing another non-price inventory mechanism."
         ),
         "side_effects": {
             "candidate_base_duckdb_read_only": True,
