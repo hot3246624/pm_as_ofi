@@ -210,6 +210,7 @@ class RunnerConfig:
     salvage_min_lot_cost: float = 0.25
     max_salvage_qty: float = 250.0
     event_lite_summary: bool = False
+    pair_source_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -269,6 +270,11 @@ class Lot:
     px: float
     fill_ms: int
     source_order_id: int
+    trigger_px: float | None = None
+    trigger_size: float | None = None
+    offset_s: float | None = None
+    trigger_ts_ms: int | None = None
+    trigger_source_sequence_id: Any | None = None
 
     @property
     def cost(self) -> float:
@@ -333,6 +339,13 @@ class DPlusRunner:
         self.event_lite_block_by_reason_side: dict[str, dict[str, float]] = {}
         self.event_lite_block_by_reason_public_px_bucket: dict[str, dict[str, float]] = {}
         self.event_lite_block_by_reason_offset_bucket: dict[str, dict[str, float]] = {}
+        self.event_lite_pair_source_action_count = 0
+        self.event_lite_pair_source_record_count = 0
+        self.event_lite_pair_cost_by_source_seed_px_bucket: dict[str, dict[str, float]] = {}
+        self.event_lite_pair_cost_by_source_public_px_bucket: dict[str, dict[str, float]] = {}
+        self.event_lite_pair_cost_by_source_offset_bucket: dict[str, dict[str, float]] = {}
+        self.event_lite_pair_cost_by_source_side: dict[str, dict[str, float]] = {}
+        self.event_lite_top_high_cost_pair_sources: list[dict[str, Any]] = []
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -375,6 +388,57 @@ class DPlusRunner:
             return
         add_count(self.event_lite_fill_seed_px_buckets, px_bucket(seed_px))
         add_count(self.event_lite_fill_side_counts, side)
+
+    def record_pair_source_event_lite(
+        self,
+        *,
+        matched_pair_id: str,
+        ts_ms: int,
+        qty: float,
+        pair_cost: float,
+        net_pair_cost: float,
+        sources: list[Lot],
+        action_kind: str,
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.pair_source_event_lite_summary):
+            return
+        cost_bucket = pair_cost_bucket(net_pair_cost)
+        self.event_lite_pair_source_action_count += 1
+        source_contexts: list[dict[str, Any]] = []
+        for lot in sources:
+            self.event_lite_pair_source_record_count += 1
+            add_nested_count(self.event_lite_pair_cost_by_source_seed_px_bucket, cost_bucket, px_bucket(lot.px))
+            add_nested_count(self.event_lite_pair_cost_by_source_public_px_bucket, cost_bucket, px_bucket(lot.trigger_px))
+            add_nested_count(self.event_lite_pair_cost_by_source_offset_bucket, cost_bucket, offset_bucket(lot.offset_s))
+            add_nested_count(self.event_lite_pair_cost_by_source_side, cost_bucket, lot.side)
+            source_contexts.append(
+                {
+                    "quote_intent_id": lot.quote_intent_id,
+                    "source_order_id": lot.source_order_id,
+                    "side": lot.side,
+                    "seed_px": lot.px,
+                    "public_trade_px": lot.trigger_px,
+                    "public_trade_size": lot.trigger_size,
+                    "offset_s": lot.offset_s,
+                    "trigger_ts_ms": lot.trigger_ts_ms,
+                    "trigger_source_sequence_id": lot.trigger_source_sequence_id,
+                }
+            )
+        if cost_bucket in {"pair_cost_1p00_1p05", "pair_cost_gt_1p05"}:
+            self.event_lite_top_high_cost_pair_sources.append(
+                {
+                    "matched_pair_id": matched_pair_id,
+                    "kind": action_kind,
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "ts_ms": ts_ms,
+                    "qty": round(qty, 6),
+                    "pair_cost": round(pair_cost, 6),
+                    "net_pair_cost": round(net_pair_cost, 6),
+                    "pair_cost_bucket": cost_bucket,
+                    "sources": source_contexts,
+                }
+            )
 
     def record_activation_seen(self, side: str, ts_ms: int) -> None:
         if side in self.activation_last_seen_ms:
@@ -448,7 +512,20 @@ class DPlusRunner:
         self.metrics.filled_qty += order.qty
         self.metrics.filled_cost += order.qty * order.px
         self.metrics.fill_wait_ms.append(ts_ms - order.created_ms)
-        lot = Lot(id=self.next_lot_id, quote_intent_id=order.quote_intent_id, side=order.side, qty=order.qty, px=order.px, fill_ms=ts_ms, source_order_id=order.id)
+        lot = Lot(
+            id=self.next_lot_id,
+            quote_intent_id=order.quote_intent_id,
+            side=order.side,
+            qty=order.qty,
+            px=order.px,
+            fill_ms=ts_ms,
+            source_order_id=order.id,
+            trigger_px=order.trigger_px,
+            trigger_size=order.trigger_size,
+            offset_s=order.offset_s,
+            trigger_ts_ms=order.trigger_ts_ms,
+            trigger_source_sequence_id=order.trigger_source_sequence_id,
+        )
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
         self.record_event_lite_fill(order.side, order.px)
@@ -473,6 +550,15 @@ class DPlusRunner:
             a.qty -= take
             b.qty -= take
             matched_pair_id = f"{self.slug}:pair:{self.metrics.pair_actions}"
+            self.record_pair_source_event_lite(
+                matched_pair_id=matched_pair_id,
+                ts_ms=ts_ms,
+                qty=take,
+                pair_cost=pair_cost,
+                net_pair_cost=pair_cost,
+                sources=[a, b],
+                action_kind="internal_pair",
+            )
             self.emit({"kind": "internal_pair", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "yes_quote_intent_id": a.quote_intent_id, "no_quote_intent_id": b.quote_intent_id, "quote_intent_ids": [a.quote_intent_id, b.quote_intent_id], "qty": take, "yes_px": a.px, "no_px": b.px, "pair_cost": pair_cost, "delay_ms": ts_ms - older})
             if a.qty <= DUST:
                 yes.pop(0)
@@ -515,6 +601,15 @@ class DPlusRunner:
                 self.metrics.salvage_wait_ms.append(age)
                 self.metrics.pair_wait_ms.append(age)
                 matched_pair_id = f"{self.slug}:salvage:{self.metrics.salvage_actions}"
+                self.record_pair_source_event_lite(
+                    matched_pair_id=matched_pair_id,
+                    ts_ms=ts_ms,
+                    qty=take,
+                    pair_cost=gross_pair,
+                    net_pair_cost=net_pair,
+                    sources=[lot],
+                    action_kind="fak_salvage",
+                )
                 self.emit({"kind": "fak_salvage", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "quote_intent_id": lot.quote_intent_id, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age})
                 lot.qty -= take
                 if lot.qty <= DUST:
@@ -771,6 +866,22 @@ class DPlusRunner:
                 "pair_cost_buckets": pair_cost_buckets,
                 "net_pair_cost_buckets": net_pair_cost_buckets,
             }
+            if self.cfg.pair_source_event_lite_summary:
+                summary["event_lite"].update(
+                    {
+                        "pair_source_action_count": self.event_lite_pair_source_action_count,
+                        "pair_source_record_count": self.event_lite_pair_source_record_count,
+                        "pair_cost_by_source_seed_px_bucket": self.event_lite_pair_cost_by_source_seed_px_bucket,
+                        "pair_cost_by_source_public_px_bucket": self.event_lite_pair_cost_by_source_public_px_bucket,
+                        "pair_cost_by_source_offset_bucket": self.event_lite_pair_cost_by_source_offset_bucket,
+                        "pair_cost_by_source_side": self.event_lite_pair_cost_by_source_side,
+                        "top_high_cost_pair_sources": sorted(
+                            self.event_lite_top_high_cost_pair_sources,
+                            key=lambda item: item.get("net_pair_cost", 0.0),
+                            reverse=True,
+                        )[:20],
+                    }
+                )
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -968,6 +1079,27 @@ def aggregate(out: Path) -> dict[str, Any]:
                 source = lite.get(key)
                 if isinstance(source, dict):
                     merge_nested_count_hist(event_lite[key], source)
+            for key in (
+                "pair_cost_by_source_seed_px_bucket",
+                "pair_cost_by_source_public_px_bucket",
+                "pair_cost_by_source_offset_bucket",
+                "pair_cost_by_source_side",
+            ):
+                source = lite.get(key)
+                if isinstance(source, dict):
+                    merge_nested_count_hist(event_lite.setdefault(key, {}), source)
+            for key in ("pair_source_action_count", "pair_source_record_count"):
+                value = lite.get(key)
+                if isinstance(value, (int, float)):
+                    event_lite[key] = round(float(event_lite.get(key, 0.0)) + float(value), 6)
+            source_contexts = lite.get("top_high_cost_pair_sources")
+            if isinstance(source_contexts, list):
+                top_sources = event_lite.setdefault("top_high_cost_pair_sources", [])
+                for item in source_contexts:
+                    if isinstance(item, dict):
+                        if "slug" not in item:
+                            item = {**item, "slug": s.get("slug")}
+                        top_sources.append(item)
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -999,6 +1131,13 @@ def aggregate(out: Path) -> dict[str, Any]:
         "top_residual_lots": sorted(top_residual, key=lambda x: x.get("cost", 0), reverse=True)[:20],
     }
     if event_lite_seen:
+        top_sources = event_lite.get("top_high_cost_pair_sources")
+        if isinstance(top_sources, list):
+            event_lite["top_high_cost_pair_sources"] = sorted(
+                top_sources,
+                key=lambda item: item.get("net_pair_cost", 0.0) if isinstance(item, dict) else 0.0,
+                reverse=True,
+            )[:50]
         aggregate_report["event_lite"] = event_lite
     (out / "aggregate_report.json").write_text(json.dumps(aggregate_report, indent=2, sort_keys=True) + "\n")
     return aggregate_report
@@ -1062,6 +1201,7 @@ async def main() -> None:
     ap.add_argument("--activation-mode", choices=["none", "opp_seen"], default="none")
     ap.add_argument("--activation-window-s", type=float, default=60.0)
     ap.add_argument("--event-lite-summary", action="store_true", help="emit summary-only candidate/fill/block/residual attribution buckets without pulling events JSONL")
+    ap.add_argument("--pair-source-event-lite-summary", action="store_true", help="with --event-lite-summary, attribute pair-cost buckets back to source seed/public price, offset, side, and quote ids")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -1094,6 +1234,7 @@ async def main() -> None:
         activation_mode=args.activation_mode,
         activation_window_s=args.activation_window_s,
         event_lite_summary=args.event_lite_summary,
+        pair_source_event_lite_summary=args.pair_source_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -1106,6 +1247,8 @@ async def main() -> None:
         raise SystemExit("--late-repair-only-after-s must be non-negative")
     if cfg.activation_window_s <= 0:
         raise SystemExit("--activation-window-s must be positive")
+    if cfg.pair_source_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--pair-source-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

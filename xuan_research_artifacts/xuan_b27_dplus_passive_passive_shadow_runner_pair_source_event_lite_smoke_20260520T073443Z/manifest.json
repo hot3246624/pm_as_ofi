@@ -1,0 +1,37 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke",
+  "checks": {
+    "aggregate_merges_pair_source_counts": true,
+    "default_event_lite_pair_source_fields_absent": true,
+    "enabled_pair_source_action_count_matches_pair_actions": true,
+    "enabled_pair_source_record_count_matches_two_internal_pair_lots_per_pair": true,
+    "high_cost_pair_source_offset_bucket_exposed": true,
+    "high_cost_pair_source_public_px_bucket_exposed": true,
+    "high_cost_pair_source_seed_px_bucket_exposed": true,
+    "high_cost_pair_source_side_exposed": true,
+    "pair_source_without_event_lite_is_quiet": true,
+    "top_high_cost_pair_context_has_quote_intent_ids": true
+  },
+  "decision_label": "KEEP",
+  "hypothesis": "default-off pair-source event-lite can attribute high pair-cost buckets to source seed/public/offset/side without changing default event-lite behavior",
+  "next_action": "Run regression smokes, then queue one bounded no-order shadow with --event-lite-summary --pair-source-event-lite-summary only after local checks pass and EC2 preflight has no hard blocker.",
+  "outputs": {
+    "default_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260520T073443Z/event_lite_default/aggregate_report.json",
+    "default_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260520T073443Z/event_lite_default/btc-updown-5m-1900000000.summary.json",
+    "disabled_cfg_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260520T073443Z/pair_source_without_event_lite/btc-updown-5m-1900000000.summary.json",
+    "enabled_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260520T073443Z/pair_source_enabled/aggregate_report.json",
+    "enabled_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260520T073443Z/pair_source_enabled/btc-updown-5m-1900000000.summary.json"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "tool": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/tools/xuan_dplus_passive_passive_shadow_runner.py"
+}
