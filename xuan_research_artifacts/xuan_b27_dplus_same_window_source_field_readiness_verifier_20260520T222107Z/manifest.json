@@ -1,0 +1,491 @@
+{
+  "adapter_readiness": {
+    "can_build_historical_candidate_pipeline_adapter": true,
+    "can_build_same_window_no_order_parity_adapter_from_allowed_local_data": false,
+    "default_off_instrumentation_path_exists": true,
+    "historical_adapter_is_same_window_live_evidence": false,
+    "instrumentation_path": [
+      "Keep fill-to-balance90 frozen for shadow/canary.",
+      "If a future local KEEP requires transfer evidence, add default-off summary buckets for source_sequence_id/order/quote_intent/touch/fill timing joins and smoke locally before any shadow.",
+      "Do not retroactively pull events JSONL for prior shadows."
+    ]
+  },
+  "artifact": "xuan_b27_dplus_same_window_source_field_readiness_verifier",
+  "can_support_strategy_promotion": false,
+  "coverage": {
+    "candidate_base_candidate_reason_counts": {
+      "ask_level_lift": 871916,
+      "bid_level_drop": 1443297,
+      "public_sell": 1425198
+    },
+    "candidate_base_days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ],
+    "candidate_base_row_count": 3740411,
+    "diagnostic_shadow_decision": "DISCARD_FILL_TO_BALANCE_DIAGNOSTIC_CAPS_ABSENT_RISK_BUDGET_FAIL",
+    "diagnostic_shadow_metrics": {
+      "cancelled_orders": 27.0,
+      "candidates": 116.0,
+      "completion_cost": 11.8541,
+      "completion_per_fill": 0.6067415730337079,
+      "fill_rate": 0.7672413793103449,
+      "fill_wait_p50_ms": 265192.0,
+      "fill_wait_p90_ms": 768984.0,
+      "fill_wait_proxy_p50_ms": 32795.0,
+      "fill_wait_proxy_p90_ms": 93969.0,
+      "filled_cost": 48.63395,
+      "filled_qty": 110.77,
+      "late_repair_fill_to_balance_blocks": 6.0,
+      "late_repair_fill_to_balance_candidates": 12.0,
+      "late_repair_fill_to_balance_caps": 1.0,
+      "late_repair_fill_to_balance_qty_reduction": 0.0425,
+      "material_residual_lots": 0.0,
+      "net_pair_cost_proxy_p50": 0.93,
+      "net_pair_cost_proxy_p90": 1.0899999999999999,
+      "pair_actions": 54.0,
+      "pair_cost_proxy_p50": 0.92,
+      "pair_cost_proxy_p90": 1.0899999999999999,
+      "pair_pnl": 4.593913,
+      "pair_qty": 59.5625,
+      "pair_wait_p50_ms": 543558.0,
+      "pair_wait_p90_ms": 761210.0,
+      "pair_wait_proxy_p50_ms": 40949.0,
+      "pair_wait_proxy_p90_ms": 134606.0,
+      "qty_pair_share_of_filled": 1.075426559537781,
+      "queue_supported_fills": 89.0,
+      "residual_cost": 6.225,
+      "residual_qty": 20.0,
+      "roi_on_filled_cost": 0.09445897361822347,
+      "roi_on_seed_cost": 0.0744073417498042,
+      "salvage_actions": 23.0,
+      "salvage_wait_p50_ms": 671312.0,
+      "salvage_wait_p90_ms": 712320.0,
+      "seed_cost": 61.74005,
+      "seed_qty": 144.125,
+      "taker_fee": 0.705537,
+      "touch_only_orders": 27.0
+    },
+    "freeze_status": "KEEP_FILL_TO_BALANCE_FREEZE_AND_SOURCE_FIELD_READINESS_SELECTED",
+    "prior_gate_parity_status": "UNKNOWN_NO_ORDER_GATE_PARITY_MIXED_OR_FIELD_GAP",
+    "same_window_day_present": false,
+    "same_window_day_required": "2026-05-20"
+  },
+  "created_utc": "20260520T222107Z",
+  "decision_label": "UNKNOWN",
+  "deployable": false,
+  "exact_missing_fields": [
+    "2026-05-20 same-window candidate_base/candidate_registry rows",
+    "per-candidate live source_sequence_id ordering across book and trade events",
+    "summary-wide quote_intent_id/source_order_id links from candidates to fills, pair actions, and residual lots",
+    "per-candidate pending-order queue_credit accumulation",
+    "per-candidate first_bid_touch_ms and first_trade_touch_ms timing buckets tied to quote_intent/source_order",
+    "true shared-ingress book/trade interleaving for the diagnostic shadow window"
+  ],
+  "field_availability_matrix": [
+    {
+      "acceptable_sources": [
+        "candidate_base",
+        "candidate_registry",
+        "pulled_shadow_summary"
+      ],
+      "field": "condition_id",
+      "missing_or_insufficient_reason": null,
+      "present": true,
+      "required_for": "market identity join",
+      "sources": [
+        "candidate_base",
+        "candidate_registry"
+      ],
+      "sufficient_for_same_window_adapter": true
+    },
+    {
+      "acceptable_sources": [
+        "candidate_base",
+        "candidate_registry",
+        "pulled_shadow_summary"
+      ],
+      "field": "slug",
+      "missing_or_insufficient_reason": null,
+      "present": true,
+      "required_for": "slug/window aggregation",
+      "sources": [
+        "candidate_base",
+        "candidate_registry",
+        "pulled_shadow_summary"
+      ],
+      "sufficient_for_same_window_adapter": true
+    },
+    {
+      "acceptable_sources": [
+        "candidate_base",
+        "candidate_registry",
+        "pulled_shadow_summary"
+      ],
+      "field": "ts_ms",
+      "missing_or_insufficient_reason": "timestamp is present historically but cannot reconstruct 2026-05-20 live interleaving",
+      "present": true,
+      "required_for": "candidate event ordering",
+      "sources": [
+        "candidate_base",
+        "candidate_registry",
+        "pulled_shadow_summary"
+      ],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "candidate_base"
+      ],
+      "field": "public_trade_row_id",
+      "missing_or_insufficient_reason": "historical public_trade_row_id exists, but no same-window 2026-05-20 candidate_base is available",
+      "present": true,
+      "required_for": "public trade source link",
+      "sources": [
+        "candidate_base"
+      ],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "candidate_base"
+      ],
+      "field": "strict_l1_row_id",
+      "missing_or_insufficient_reason": "historical strict_l1_row_id exists, but no same-window 2026-05-20 candidate_base is available",
+      "present": true,
+      "required_for": "book snapshot source link",
+      "sources": [
+        "candidate_base"
+      ],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "same-window candidate registry",
+        "default-off runner summary diagnostics"
+      ],
+      "field": "source_sequence_id",
+      "missing_or_insufficient_reason": "not present in candidate_base/candidate_registry or pulled summary in a usable per-candidate matrix",
+      "present": false,
+      "required_for": "book/trade total ordering parity",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "default-off runner summary diagnostics"
+      ],
+      "field": "market_md_source_sequence_id",
+      "missing_or_insufficient_reason": "runner events can emit it, but pulled summary/aggregate do not expose per-candidate ordering",
+      "present": false,
+      "required_for": "runner event source ordering parity",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "default-off runner summary diagnostics"
+      ],
+      "field": "quote_intent_id",
+      "missing_or_insufficient_reason": "available only in limited top_high_cost_pair_sources or events, not summary-wide candidate/residual links",
+      "present": false,
+      "required_for": "seed to fill/pair/residual source link",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "default-off runner summary diagnostics"
+      ],
+      "field": "source_order_id",
+      "missing_or_insufficient_reason": "available only in limited high-cost pair contexts or events, not all pair/residual lots",
+      "present": false,
+      "required_for": "pair/residual source link",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "default-off runner summary diagnostics"
+      ],
+      "field": "first_bid_touch_ms",
+      "missing_or_insufficient_reason": "summary has aggregate fill/touch metrics, but no per-candidate touch timing buckets or source links",
+      "present": false,
+      "required_for": "pending-order touch timing",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "default-off runner summary diagnostics"
+      ],
+      "field": "first_trade_touch_ms",
+      "missing_or_insufficient_reason": "summary has aggregate fill/touch metrics, but no per-candidate trade-through timing buckets or source links",
+      "present": false,
+      "required_for": "pending-order trade-through timing",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "default-off runner summary diagnostics"
+      ],
+      "field": "queue_credit",
+      "missing_or_insufficient_reason": "summary has queue_supported_fills totals but no per-candidate queue-credit accumulation path",
+      "present": false,
+      "required_for": "queue-supported fill parity",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    },
+    {
+      "acceptable_sources": [
+        "pulled_shadow_summary"
+      ],
+      "field": "late_repair_fill_to_balance_diagnostics",
+      "missing_or_insufficient_reason": "diagnostic buckets are present but not enough to reconstruct ordering or source links",
+      "present": false,
+      "required_for": "fill-to-balance cap/block attribution",
+      "sources": [],
+      "sufficient_for_same_window_adapter": false
+    }
+  ],
+  "g2_canary_ready": false,
+  "inputs": {
+    "candidate_base_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/candidate_base.duckdb",
+    "candidate_base_manifest": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/CANDIDATE_BASE_MANIFEST.json",
+    "candidate_registry": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/candidate_registry.parquet",
+    "diagnostic_shadow_aggregate": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_diagnostic_driver_20260520T191701Z/remote/output/aggregate_report.json",
+    "diagnostic_shadow_audit": "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_diagnostic_driver_20260520T191701Z/audit_manifest.json",
+    "gate_parity_manifest": "xuan_research_artifacts/xuan_b27_dplus_no_order_gate_parity_verifier_20260520T212620Z/manifest.json",
+    "status_freeze_manifest": "xuan_research_artifacts/xuan_b27_dplus_status_hygiene_fill_to_balance_freeze_20260520T214753Z/manifest.json",
+    "summary_json_count": 26
+  },
+  "lane": "data_adapter",
+  "next_executable_action": "Do not run EC2 shadow/canary. Keep fill-to-balance90 frozen. Either implement a local-only default-off source-link diagnostic smoke/spec, or switch to the explicitly requested public Polymarket profile review using public web/API only and no private truth.",
+  "promotion_gate": {
+    "notes": [
+      "No shadow/canary can use this artifact as promotion evidence.",
+      "No further fill-to-balance90 shadow is allowed until same-window source fields exist and a local verifier returns KEEP."
+    ],
+    "passed": false,
+    "status": "LOCAL_DATA_ADAPTER_READINESS_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "economic_quality_inferred": false,
+    "label": "UNKNOWN_SAME_WINDOW_SOURCE_FIELDS_INSUFFICIENT",
+    "notes": [
+      "This verifier evaluates data adapter readiness, not strategy economics.",
+      "Local historical fill-to-balance positives remain research-only.",
+      "The exact diagnostic and sample-scale fill-to-balance shadows remain discarded for promotion risk budget."
+    ]
+  },
+  "schema_inventory": {
+    "candidate_base_columns": {
+      "asset": "VARCHAR",
+      "book_update_reason": "VARCHAR",
+      "buy_available_qty": "DOUBLE",
+      "buy_best_px": "DOUBLE",
+      "buy_best_sz": "DOUBLE",
+      "buy_filled_10": "DOUBLE",
+      "buy_filled_25": "DOUBLE",
+      "buy_filled_60": "DOUBLE",
+      "buy_full_10": "BOOLEAN",
+      "buy_full_25": "BOOLEAN",
+      "buy_full_60": "BOOLEAN",
+      "buy_vwap_10": "DOUBLE",
+      "buy_vwap_25": "DOUBLE",
+      "buy_vwap_60": "DOUBLE",
+      "candidate_reason": "VARCHAR",
+      "candidate_row_id": "BIGINT",
+      "condition_id": "VARCHAR",
+      "dataset_type": "VARCHAR",
+      "day": "VARCHAR",
+      "event_id": "BIGINT",
+      "event_kind": "VARCHAR",
+      "high_side": "VARCHAR",
+      "l1_pair_ask": "DOUBLE",
+      "l1_pair_available_qty": "DOUBLE",
+      "l1_pair_bid": "DOUBLE",
+      "offset_s": "DOUBLE",
+      "opp_ask": "DOUBLE",
+      "opp_ask_sz": "DOUBLE",
+      "opp_bid": "DOUBLE",
+      "opp_bid_sz": "DOUBLE",
+      "opposite_side": "VARCHAR",
+      "public_trade_price": "DOUBLE",
+      "public_trade_recv_ms": "BIGINT",
+      "public_trade_row_id": "BIGINT",
+      "public_trade_size": "DOUBLE",
+      "public_trade_taker_side": "VARCHAR",
+      "sell_available_qty": "DOUBLE",
+      "sell_best_px": "DOUBLE",
+      "sell_best_sz": "DOUBLE",
+      "side": "VARCHAR",
+      "side_alignment": "VARCHAR",
+      "side_ask": "DOUBLE",
+      "side_ask_delta_qty": "DOUBLE",
+      "side_ask_level_lift_qty": "DOUBLE",
+      "side_ask_sz": "DOUBLE",
+      "side_bid": "DOUBLE",
+      "side_bid_delta_qty": "DOUBLE",
+      "side_bid_level_drop_qty": "DOUBLE",
+      "side_bid_sz": "DOUBLE",
+      "side_is_winner": "BOOLEAN",
+      "slug": "VARCHAR",
+      "source_label": "VARCHAR",
+      "strict_l1_age_ms": "BIGINT",
+      "strict_l1_recv_ms": "BIGINT",
+      "strict_l1_row_id": "BIGINT",
+      "strict_l2_age_ms": "BIGINT",
+      "strict_l2_recv_ms": "BIGINT",
+      "strict_l2_row_id": "BIGINT",
+      "ts_iso": "VARCHAR",
+      "ts_ms": "BIGINT",
+      "winner_side": "VARCHAR"
+    },
+    "candidate_registry_columns": {
+      "action_id": "BIGINT",
+      "blocked_by": "VARCHAR",
+      "candidate_id": "VARCHAR",
+      "candidate_reason": "VARCHAR",
+      "candidate_row_id": "VARCHAR",
+      "condition_id": "VARCHAR",
+      "config_name": "VARCHAR",
+      "day": "VARCHAR",
+      "decision_scope": "VARCHAR",
+      "deployable": "BOOLEAN",
+      "edge": "DOUBLE",
+      "fee": "DOUBLE",
+      "fee_model": "VARCHAR",
+      "inventory_no_cost_after": "DOUBLE",
+      "inventory_no_qty_after": "DOUBLE",
+      "inventory_yes_cost_after": "BIGINT",
+      "inventory_yes_qty_after": "BIGINT",
+      "l1_pair_ask": "DOUBLE",
+      "official_taker_fee": "DOUBLE",
+      "offset_s": "DOUBLE",
+      "opposite_side": "VARCHAR",
+      "pair_actions_after_seed": "BIGINT",
+      "pair_cost_wavg_after_seed": "DOUBLE",
+      "pair_qty_after_seed": "DOUBLE",
+      "public_audit_day_covered": "BOOLEAN",
+      "public_audit_nearby_fill_count": "BIGINT",
+      "public_trade_price": "DOUBLE",
+      "public_trade_size": "DOUBLE",
+      "seed_cost": "DOUBLE",
+      "seed_px": "DOUBLE",
+      "seed_qty": "DOUBLE",
+      "side": "VARCHAR",
+      "side_alignment": "VARCHAR",
+      "slug": "VARCHAR",
+      "source_label": "VARCHAR",
+      "strict_cache_day_covered": "BOOLEAN",
+      "ts_iso": "VARCHAR",
+      "ts_ms": "BIGINT",
+      "winner_side": "VARCHAR"
+    },
+    "f2b_diagnostic_keys": [
+      "base_seed_qty_bucket_by_side_offset",
+      "candidate_count_by_offset_bucket",
+      "candidate_count_by_side",
+      "candidate_count_by_side_offset",
+      "capped_qty_bucket_by_side_offset",
+      "deficit_bucket_by_side_offset",
+      "qty_reduction_amount_by_offset_bucket",
+      "qty_reduction_amount_by_side",
+      "qty_reduction_amount_by_side_offset",
+      "qty_reduction_bucket_by_side_offset",
+      "status_count_by_offset_bucket",
+      "status_count_by_side",
+      "status_count_by_side_offset"
+    ],
+    "shadow_event_lite_keys": [
+      "block_by_reason_offset_bucket",
+      "block_by_reason_public_px_bucket",
+      "block_by_reason_side",
+      "candidate_offset_buckets",
+      "candidate_public_trade_px_buckets",
+      "candidate_qty_by_seed_px_bucket",
+      "candidate_seed_px_buckets",
+      "candidate_side_counts",
+      "fill_seed_px_buckets",
+      "fill_side_counts",
+      "late_repair_fill_to_balance_diagnostics",
+      "net_pair_cost_buckets",
+      "pair_cost_buckets",
+      "pair_cost_by_source_offset_bucket",
+      "pair_cost_by_source_public_px_bucket",
+      "pair_cost_by_source_seed_px_bucket",
+      "pair_cost_by_source_side",
+      "pair_source_action_count",
+      "pair_source_record_count",
+      "residual_lot_px_qty_buckets",
+      "residual_lot_side_cost",
+      "residual_lot_side_count",
+      "residual_lot_side_qty",
+      "top_high_cost_pair_sources"
+    ],
+    "shadow_summary_top_level_keys": [
+      "acceptance",
+      "artifact",
+      "blocked",
+      "book_ticks",
+      "conclusion",
+      "config",
+      "created_utc",
+      "decision_label",
+      "derived_metrics",
+      "diagnostic_findings",
+      "event_lite",
+      "final",
+      "kind",
+      "local_artifact_dir",
+      "metrics",
+      "next_action",
+      "prior_sample_scale_delta",
+      "remote_run_dir",
+      "safety",
+      "schema_version",
+      "scope",
+      "script",
+      "sell_triggers",
+      "slug",
+      "slugs",
+      "source_files_read",
+      "status",
+      "top_residual_lots",
+      "trade_ticks",
+      "ts_ms"
+    ]
+  },
+  "schema_version": 1,
+  "scope": {
+    "candidate_base_schema_read_only": true,
+    "candidate_registry_schema_read_only": true,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_only": true,
+    "orders_cancels_redeems_sent": false,
+    "pulled_summary_json_read_only": true,
+    "raw_replay_collector_scanned": false,
+    "runner_or_trading_paths_modified": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_used": false
+  },
+  "status": "UNKNOWN_SAME_WINDOW_SOURCE_FIELDS_INSUFFICIENT"
+}
