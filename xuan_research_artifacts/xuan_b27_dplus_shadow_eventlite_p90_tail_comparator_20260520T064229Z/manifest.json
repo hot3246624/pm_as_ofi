@@ -1,0 +1,2859 @@
+{
+  "bounded_artifact": "xuan_research_artifacts/xuan_b27_dplus_shadow_eventlite_p90_tail_comparator_20260520T064229Z/manifest.json",
+  "created_at_utc": "2026-05-20T06:42:29.005407+00:00",
+  "decision": {
+    "decision_label": "UNKNOWN",
+    "missing_fields": [
+      "pair action net_pair_cost bucket joined to the seed quote_intent/source_order id",
+      "pair action source seed_px bucket",
+      "pair action source public_trade_price bucket",
+      "pair action source offset bucket",
+      "pair action source side",
+      "aggregate pair_cost_by_source_bucket tables for summary-only audit without events JSONL"
+    ],
+    "next_action": "Implement a default-off pair-source event-lite attribution path in the no-order runner and smoke it locally: for each pair action, summarize net_pair_cost bucket by source seed_px bucket, public_trade_px bucket, offset bucket, side, and quote_intent/source_order id. Then rerun one bounded event-lite shadow only after the local smoke proves default behavior is unchanged.",
+    "positive_context": [
+      "eventlite_1800s_offsets0_25:repair60"
+    ],
+    "reason": "No profile reaches sample>=100 with p90<=1.0 and residual<=10. Summary/event-lite bucket removal either leaves sample below the gate or cannot join pair-cost tail back to source seed/public/offset fields, so a deployable p90-tail admission rule is not identifiable yet.",
+    "status": "UNKNOWN_P90_TAIL_SOURCE_FIELDS_INSUFFICIENT"
+  },
+  "decision_label": "UNKNOWN",
+  "hypothesis": "If the late-repair-only90 p90 miss is concentrated in deployable seed/public-price, offset, or side buckets, then a bounded p90-tail gate should preserve residual_qty<=10 and positive PnL without destroying sample.",
+  "input_safety": {
+    "full_completion_store_scan": false,
+    "network": false,
+    "orders_cancels_redeems": false,
+    "raw_replay_collector_scan": false,
+    "read_events_jsonl": false,
+    "read_only_local_json": true,
+    "shared_ingress_socket": false,
+    "ssh": false
+  },
+  "inputs": {
+    "eventlite_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_eventlite_driver_20260520T022345Z",
+    "late_repair_only_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_late_repair_only_driver_20260520T055412Z",
+    "sample_scale_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_sample_scale_multprofile_driver_20260519T232703Z"
+  },
+  "lane": "causal_verifier",
+  "next_action": "Implement a default-off pair-source event-lite attribution path in the no-order runner and smoke it locally: for each pair action, summarize net_pair_cost bucket by source seed_px bucket, public_trade_px bucket, offset bucket, side, and quote_intent/source_order id. Then rerun one bounded event-lite shadow only after the local smoke proves default behavior is unchanged.",
+  "profiles": [
+    {
+      "block_by_reason_offset_bucket": {
+        "activation_opp_seen": {
+          "offset_0_30": 14.0,
+          "offset_60_90": 1.0,
+          "offset_90_120": 2.0
+        },
+        "cooldown": {
+          "offset_0_30": 40.0,
+          "offset_30_60": 50.0,
+          "offset_60_90": 100.0,
+          "offset_90_120": 38.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "offset_0_30": 7.0,
+          "offset_30_60": 2.0,
+          "offset_60_90": 20.0,
+          "offset_90_120": 16.0
+        },
+        "late_repair_only": {
+          "offset_90_120": 90.0
+        },
+        "offset": {
+          "offset_0_30": 1.0,
+          "offset_ge_120": 1628.0
+        },
+        "pairing_only_when_residual": {
+          "offset_0_30": 24.0,
+          "offset_30_60": 23.0,
+          "offset_60_90": 24.0,
+          "offset_90_120": 7.0
+        },
+        "qty_zero": {
+          "offset_0_30": 4.0,
+          "offset_30_60": 9.0,
+          "offset_60_90": 10.0,
+          "offset_90_120": 2.0
+        }
+      },
+      "block_by_reason_public_px_bucket": {
+        "activation_opp_seen": {
+          "px_0p30_0p45": 1.0,
+          "px_0p48_0p55": 5.0,
+          "px_ge_0p55": 7.0,
+          "px_lt_0p30": 4.0
+        },
+        "cooldown": {
+          "px_0p30_0p45": 74.0,
+          "px_0p45_0p48": 2.0,
+          "px_0p48_0p55": 20.0,
+          "px_ge_0p55": 97.0,
+          "px_lt_0p30": 35.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "px_0p30_0p45": 14.0,
+          "px_0p45_0p48": 1.0,
+          "px_0p48_0p55": 6.0,
+          "px_ge_0p55": 12.0,
+          "px_lt_0p30": 12.0
+        },
+        "late_repair_only": {
+          "px_0p30_0p45": 35.0,
+          "px_0p48_0p55": 3.0,
+          "px_ge_0p55": 38.0,
+          "px_lt_0p30": 14.0
+        },
+        "offset": {
+          "px_0p30_0p45": 184.0,
+          "px_0p45_0p48": 48.0,
+          "px_0p48_0p55": 81.0,
+          "px_ge_0p55": 870.0,
+          "px_lt_0p30": 446.0
+        },
+        "pairing_only_when_residual": {
+          "px_0p30_0p45": 39.0,
+          "px_0p45_0p48": 2.0,
+          "px_0p48_0p55": 9.0,
+          "px_ge_0p55": 11.0,
+          "px_lt_0p30": 17.0
+        },
+        "qty_zero": {
+          "px_0p30_0p45": 7.0,
+          "px_0p45_0p48": 1.0,
+          "px_0p48_0p55": 1.0,
+          "px_ge_0p55": 13.0,
+          "px_lt_0p30": 3.0
+        }
+      },
+      "block_by_reason_side": {
+        "activation_opp_seen": {
+          "NO": 8.0,
+          "YES": 9.0
+        },
+        "cooldown": {
+          "NO": 127.0,
+          "YES": 101.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "NO": 21.0,
+          "YES": 24.0
+        },
+        "late_repair_only": {
+          "NO": 50.0,
+          "YES": 40.0
+        },
+        "offset": {
+          "NO": 687.0,
+          "YES": 942.0
+        },
+        "pairing_only_when_residual": {
+          "NO": 45.0,
+          "YES": 33.0
+        },
+        "qty_zero": {
+          "NO": 8.0,
+          "YES": 17.0
+        }
+      },
+      "blocked": {
+        "activation_opp_seen": 17.0,
+        "cooldown": 228.0,
+        "l1_pair_ask_gt_cap": 45.0,
+        "late_repair_only": 90.0,
+        "offset": 1629.0,
+        "pairing_only_when_residual": 78.0,
+        "qty_zero": 25.0
+      },
+      "candidate_offset_buckets": {
+        "offset_0_30": 12.0,
+        "offset_30_60": 17.0,
+        "offset_60_90": 22.0,
+        "offset_90_120": 5.0
+      },
+      "candidate_public_trade_px_buckets": {
+        "px_0p30_0p45": 14.0,
+        "px_0p45_0p48": 2.0,
+        "px_0p48_0p55": 6.0,
+        "px_ge_0p55": 24.0,
+        "px_lt_0p30": 10.0
+      },
+      "candidate_seed_px_buckets": {
+        "px_0p30_0p45": 12.0,
+        "px_0p45_0p48": 3.0,
+        "px_0p48_0p55": 5.0,
+        "px_ge_0p55": 19.0,
+        "px_lt_0p30": 17.0
+      },
+      "candidate_side_counts": {
+        "NO": 29.0,
+        "YES": 27.0
+      },
+      "group": "late_repair_only90_1800s_offsets0_25",
+      "high_pair_cost_count": 3.0,
+      "high_pair_cost_share": 0.10344827586206896,
+      "metrics": {
+        "candidates": 56.0,
+        "fill_rate": 0.7857142857142857,
+        "filled_qty": 54.4525,
+        "material_residual_lots": 0.0,
+        "net_pair_cost_proxy_p90": 1.02,
+        "pair_actions": 29.0,
+        "pair_pnl": 1.976288,
+        "pair_qty": 25.7675,
+        "queue_supported_fills": 44.0,
+        "residual_cost": 2.31105,
+        "residual_qty": 7.4975,
+        "roi_on_filled_cost": 0.08217345385901158,
+        "seed_qty": 69.06
+      },
+      "name": "late_repair_only90_1800s_offsets0_25:late_repair_only90",
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 7.0,
+        "pair_cost_1p00_1p05": 3.0,
+        "pair_cost_lt_0p95": 19.0
+      },
+      "p90_bucket_proxy": {
+        "bucket": "pair_cost_1p00_1p05",
+        "high_cost_count": 3.0,
+        "high_cost_share": 0.10344827586206896,
+        "pass_proxy": false,
+        "total": 29.0
+      },
+      "profile": "late_repair_only90",
+      "removal_proxy": [
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_0p95_1p00",
+            "high_cost_count": 0.0,
+            "high_cost_share": 0.0,
+            "pass_proxy": true,
+            "total": 18.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 2,
+          "removed_slugs": [
+            "btc-updown-5m-1779256500",
+            "btc-updown-5m-1779257700"
+          ],
+          "retained_candidate_ratio": 0.6428571428571429,
+          "retained_candidates": 36.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 18.0,
+          "retained_pair_pnl": 1.18215,
+          "retained_residual_cost": 1.8360499999999997,
+          "retained_residual_qty": 4.9975,
+          "rule": "drop_slugs_with_pair_cost_gt_1p00"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_0p95_1p00",
+            "high_cost_count": 2.0,
+            "high_cost_share": 0.07692307692307693,
+            "pass_proxy": true,
+            "total": 26.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 1,
+          "removed_slugs": [
+            "btc-updown-5m-1779257700"
+          ],
+          "retained_candidate_ratio": 0.8214285714285714,
+          "retained_candidates": 46.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 26.0,
+          "retained_pair_pnl": 1.838288,
+          "retained_residual_cost": 1.8360499999999997,
+          "retained_residual_qty": 4.9975,
+          "rule": "drop_slugs_with_residual_qty_ge_2p5"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_0p95_1p00",
+            "high_cost_count": 2.0,
+            "high_cost_share": 0.09090909090909091,
+            "pass_proxy": true,
+            "total": 22.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 3,
+          "removed_slugs": [
+            "btc-updown-5m-1779257100",
+            "btc-updown-5m-1779257400",
+            "btc-updown-5m-1779257700"
+          ],
+          "retained_candidate_ratio": 0.5535714285714286,
+          "retained_candidates": 31.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 22.0,
+          "retained_pair_pnl": 1.413288,
+          "retained_residual_cost": 1.28605,
+          "retained_residual_qty": 2.4974999999999996,
+          "rule": "drop_slugs_with_no_residual_px_lt_0p30"
+        }
+      ],
+      "residual_lot_px_qty_buckets": {
+        "px_0p45_0p48": 1.25,
+        "px_ge_0p55": 1.2475,
+        "px_lt_0p30": 5.0
+      },
+      "residual_lot_side_qty": {
+        "NO": 7.4975
+      },
+      "summary_count": 26,
+      "top_p90_cost_slugs": [
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 1.0,
+            "offset_30_60": 4.0,
+            "offset_60_90": 4.0,
+            "offset_90_120": 1.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 3.0,
+            "px_0p45_0p48": 2.0,
+            "px_0p48_0p55": 2.0,
+            "px_ge_0p55": 3.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 5.0,
+            "px_0p45_0p48": 1.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 2.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidates": 10.0,
+          "high_pair_cost_count": 2.0,
+          "high_pair_cost_share": 0.25,
+          "net_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_1p00_1p05": 2.0,
+            "pair_cost_lt_0p95": 5.0
+          },
+          "net_pair_cost_p90": 1.05,
+          "pair_actions": 8.0,
+          "pair_pnl": 0.656138,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779256500"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 4.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 4.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 5.0,
+            "px_lt_0p30": 4.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 5.0,
+            "px_lt_0p30": 4.0
+          },
+          "candidates": 10.0,
+          "high_pair_cost_count": 1.0,
+          "high_pair_cost_share": 0.3333333333333333,
+          "net_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_lt_0p95": 2.0
+          },
+          "net_pair_cost_p90": 1.02,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.138,
+          "residual_cost": 0.475,
+          "residual_lot_px_qty_buckets": {
+            "px_lt_0p30": 2.5
+          },
+          "residual_lot_side_qty": {
+            "NO": 2.5
+          },
+          "residual_qty": 2.5,
+          "slug": "btc-updown-5m-1779257700"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 3.0,
+            "offset_60_90": 5.0,
+            "offset_90_120": 3.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 3.0,
+            "px_0p48_0p55": 3.0,
+            "px_ge_0p55": 6.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 4.0,
+            "px_0p45_0p48": 1.0,
+            "px_0p48_0p55": 2.0,
+            "px_ge_0p55": 4.0,
+            "px_lt_0p30": 2.0
+          },
+          "candidates": 13.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 4.0,
+            "pair_cost_lt_0p95": 5.0
+          },
+          "net_pair_cost_p90": 0.99,
+          "pair_actions": 9.0,
+          "pair_pnl": 0.31315,
+          "residual_cost": 1.28605,
+          "residual_lot_px_qty_buckets": {
+            "px_0p45_0p48": 1.25,
+            "px_ge_0p55": 1.2475
+          },
+          "residual_lot_side_qty": {
+            "NO": 2.4975
+          },
+          "residual_qty": 2.4975,
+          "slug": "btc-updown-5m-1779258000"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 1.0,
+            "offset_30_60": 4.0,
+            "offset_60_90": 3.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 3.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_0p45_0p48": 1.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 2.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidates": 8.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_lt_0p95": 4.0
+          },
+          "net_pair_cost_p90": 0.9800000000000001,
+          "pair_actions": 5.0,
+          "pair_pnl": 0.444,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779256800"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 1.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 5.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 3.0,
+            "px_ge_0p55": 4.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidates": 8.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_lt_0p95": 2.0
+          },
+          "net_pair_cost_p90": 0.96,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.275,
+          "residual_cost": 0.2375,
+          "residual_lot_px_qty_buckets": {
+            "px_lt_0p30": 1.25
+          },
+          "residual_lot_side_qty": {
+            "NO": 1.25
+          },
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779257400"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 3.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 1.0,
+            "offset_90_120": 1.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 4.0
+          },
+          "candidates": 7.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 1.0
+          },
+          "net_pair_cost_p90": 0.8799999999999999,
+          "pair_actions": 1.0,
+          "pair_pnl": 0.15,
+          "residual_cost": 0.3125,
+          "residual_lot_px_qty_buckets": {
+            "px_lt_0p30": 1.25
+          },
+          "residual_lot_side_qty": {
+            "NO": 1.25
+          },
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779257100"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 0.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": null,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.0,
+          "pair_actions": 0.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779256200"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 0.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": null,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.0,
+          "pair_actions": 0.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779258300"
+        }
+      ],
+      "top_residual_lots": [
+        {
+          "age_ms": 119772,
+          "cost": 0.72355,
+          "lot_id": 11,
+          "px": 0.5800000000000001,
+          "qty": 1.2475,
+          "quote_intent_id": "btc-updown-5m-1779258000:quote:13",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779258000",
+          "source_order_id": 13
+        },
+        {
+          "age_ms": 116457,
+          "cost": 0.5625,
+          "lot_id": 12,
+          "px": 0.45,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779258000:quote:6",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779258000",
+          "source_order_id": 6
+        },
+        {
+          "age_ms": 996851,
+          "cost": 0.3125,
+          "lot_id": 3,
+          "px": 0.25,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779257100:quote:7",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779257100",
+          "source_order_id": 7
+        },
+        {
+          "age_ms": 438863,
+          "cost": 0.25,
+          "lot_id": 7,
+          "px": 0.2,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779257700:quote:7",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779257700",
+          "source_order_id": 7
+        },
+        {
+          "age_ms": 730791,
+          "cost": 0.2375,
+          "lot_id": 7,
+          "px": 0.19,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779257400:quote:5",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779257400",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 438863,
+          "cost": 0.225,
+          "lot_id": 6,
+          "px": 0.18,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779257700:quote:5",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779257700",
+          "source_order_id": 5
+        }
+      ]
+    },
+    {
+      "block_by_reason_offset_bucket": {
+        "activation_opp_seen": {
+          "offset_0_30": 9.0,
+          "offset_30_60": 3.0
+        },
+        "cooldown": {
+          "offset_0_30": 22.0,
+          "offset_30_60": 34.0,
+          "offset_60_90": 16.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "offset_0_30": 5.0,
+          "offset_30_60": 12.0,
+          "offset_60_90": 15.0,
+          "offset_90_120": 7.0
+        },
+        "late_repair_only": {
+          "offset_60_90": 110.0,
+          "offset_90_120": 130.0
+        },
+        "offset": {
+          "offset_0_30": 4.0,
+          "offset_ge_120": 1124.0
+        },
+        "pairing_only_when_residual": {
+          "offset_0_30": 9.0,
+          "offset_30_60": 12.0,
+          "offset_60_90": 8.0
+        },
+        "price": {
+          "offset_60_90": 5.0,
+          "offset_90_120": 12.0
+        },
+        "qty_zero": {
+          "offset_0_30": 12.0,
+          "offset_30_60": 4.0,
+          "offset_60_90": 3.0
+        }
+      },
+      "block_by_reason_public_px_bucket": {
+        "activation_opp_seen": {
+          "px_0p30_0p45": 7.0,
+          "px_0p48_0p55": 2.0,
+          "px_ge_0p55": 3.0
+        },
+        "cooldown": {
+          "px_0p30_0p45": 16.0,
+          "px_0p45_0p48": 7.0,
+          "px_0p48_0p55": 13.0,
+          "px_ge_0p55": 25.0,
+          "px_lt_0p30": 11.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "px_0p30_0p45": 12.0,
+          "px_0p45_0p48": 2.0,
+          "px_0p48_0p55": 6.0,
+          "px_ge_0p55": 14.0,
+          "px_lt_0p30": 5.0
+        },
+        "late_repair_only": {
+          "px_0p30_0p45": 52.0,
+          "px_0p45_0p48": 5.0,
+          "px_0p48_0p55": 8.0,
+          "px_ge_0p55": 112.0,
+          "px_lt_0p30": 63.0
+        },
+        "offset": {
+          "px_0p30_0p45": 129.0,
+          "px_0p45_0p48": 4.0,
+          "px_0p48_0p55": 25.0,
+          "px_ge_0p55": 676.0,
+          "px_lt_0p30": 294.0
+        },
+        "pairing_only_when_residual": {
+          "px_0p30_0p45": 5.0,
+          "px_0p45_0p48": 3.0,
+          "px_0p48_0p55": 4.0,
+          "px_ge_0p55": 13.0,
+          "px_lt_0p30": 4.0
+        },
+        "price": {
+          "px_ge_0p55": 17.0
+        },
+        "qty_zero": {
+          "px_0p30_0p45": 5.0,
+          "px_0p45_0p48": 2.0,
+          "px_0p48_0p55": 2.0,
+          "px_ge_0p55": 6.0,
+          "px_lt_0p30": 4.0
+        }
+      },
+      "block_by_reason_side": {
+        "activation_opp_seen": {
+          "NO": 11.0,
+          "YES": 1.0
+        },
+        "cooldown": {
+          "NO": 34.0,
+          "YES": 38.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "NO": 21.0,
+          "YES": 18.0
+        },
+        "late_repair_only": {
+          "NO": 119.0,
+          "YES": 121.0
+        },
+        "offset": {
+          "NO": 514.0,
+          "YES": 614.0
+        },
+        "pairing_only_when_residual": {
+          "NO": 9.0,
+          "YES": 20.0
+        },
+        "price": {
+          "NO": 17.0
+        },
+        "qty_zero": {
+          "NO": 8.0,
+          "YES": 11.0
+        }
+      },
+      "blocked": {
+        "activation_opp_seen": 12.0,
+        "cooldown": 72.0,
+        "l1_pair_ask_gt_cap": 39.0,
+        "late_repair_only": 240.0,
+        "offset": 1128.0,
+        "pairing_only_when_residual": 29.0,
+        "price": 17.0,
+        "qty_zero": 19.0
+      },
+      "candidate_offset_buckets": {
+        "offset_0_30": 13.0,
+        "offset_30_60": 15.0,
+        "offset_60_90": 2.0
+      },
+      "candidate_public_trade_px_buckets": {
+        "px_0p30_0p45": 9.0,
+        "px_0p45_0p48": 1.0,
+        "px_0p48_0p55": 6.0,
+        "px_ge_0p55": 11.0,
+        "px_lt_0p30": 3.0
+      },
+      "candidate_seed_px_buckets": {
+        "px_0p30_0p45": 7.0,
+        "px_0p45_0p48": 3.0,
+        "px_0p48_0p55": 1.0,
+        "px_ge_0p55": 10.0,
+        "px_lt_0p30": 9.0
+      },
+      "candidate_side_counts": {
+        "NO": 15.0,
+        "YES": 15.0
+      },
+      "group": "eventlite_1800s_offsets0_25",
+      "high_pair_cost_count": 1.0,
+      "high_pair_cost_share": 0.09090909090909091,
+      "metrics": {
+        "candidates": 30.0,
+        "fill_rate": 0.7666666666666667,
+        "filled_qty": 28.575,
+        "material_residual_lots": 0.0,
+        "net_pair_cost_proxy_p90": 1.0,
+        "pair_actions": 11.0,
+        "pair_pnl": 1.12975,
+        "pair_qty": 13.6625,
+        "queue_supported_fills": 23.0,
+        "residual_cost": 2.2625,
+        "residual_qty": 6.25,
+        "roi_on_filled_cost": 0.09379118541348858,
+        "seed_qty": 37.325
+      },
+      "name": "eventlite_1800s_offsets0_25:repair60",
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 9.0
+      },
+      "p90_bucket_proxy": {
+        "bucket": "pair_cost_0p95_1p00",
+        "high_cost_count": 1.0,
+        "high_cost_share": 0.09090909090909091,
+        "pass_proxy": true,
+        "total": 11.0
+      },
+      "profile": "repair60",
+      "removal_proxy": [
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_0p95_1p00",
+            "high_cost_count": 0.0,
+            "high_cost_share": 0.0,
+            "pass_proxy": true,
+            "total": 9.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 1,
+          "removed_slugs": [
+            "btc-updown-5m-1779245400"
+          ],
+          "retained_candidate_ratio": 0.8,
+          "retained_candidates": 24.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 9.0,
+          "retained_pair_pnl": 0.91725,
+          "retained_residual_cost": 1.8625000000000003,
+          "retained_residual_qty": 5.0,
+          "rule": "drop_slugs_with_pair_cost_gt_1p00"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_1p00_1p05",
+            "high_cost_count": 1.0,
+            "high_cost_share": 0.1111111111111111,
+            "pass_proxy": false,
+            "total": 9.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 2,
+          "removed_slugs": [
+            "btc-updown-5m-1779244500",
+            "btc-updown-5m-1779244800"
+          ],
+          "retained_candidate_ratio": 0.6,
+          "retained_candidates": 18.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 9.0,
+          "retained_pair_pnl": 1.02975,
+          "retained_residual_cost": 0.40000000000000013,
+          "retained_residual_qty": 1.25,
+          "rule": "drop_slugs_with_residual_qty_ge_2p5"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_0p95_1p00",
+            "high_cost_count": 1.0,
+            "high_cost_share": 0.09090909090909091,
+            "pass_proxy": true,
+            "total": 11.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 0,
+          "removed_slugs": [],
+          "retained_candidate_ratio": 1.0,
+          "retained_candidates": 30.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 11.0,
+          "retained_pair_pnl": 1.12975,
+          "retained_residual_cost": 2.2625,
+          "retained_residual_qty": 6.25,
+          "rule": "drop_slugs_with_no_residual_px_lt_0p30"
+        }
+      ],
+      "residual_lot_px_qty_buckets": {
+        "px_0p30_0p45": 1.25,
+        "px_ge_0p55": 2.5,
+        "px_lt_0p30": 2.5
+      },
+      "residual_lot_side_qty": {
+        "NO": 1.25,
+        "YES": 5.0
+      },
+      "summary_count": 26,
+      "top_p90_cost_slugs": [
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 1.0,
+            "offset_30_60": 4.0,
+            "offset_60_90": 1.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_0p45_0p48": 1.0,
+            "px_0p48_0p55": 2.0,
+            "px_ge_0p55": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 4.0,
+            "px_0p45_0p48": 1.0,
+            "px_ge_0p55": 1.0
+          },
+          "candidates": 6.0,
+          "high_pair_cost_count": 1.0,
+          "high_pair_cost_share": 0.5,
+          "net_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "net_pair_cost_p90": 1.01,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.2125,
+          "residual_cost": 0.4,
+          "residual_lot_px_qty_buckets": {
+            "px_0p30_0p45": 1.25
+          },
+          "residual_lot_side_qty": {
+            "NO": 1.25
+          },
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779245400"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 3.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 1.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 2.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0
+          },
+          "net_pair_cost_p90": 1.0,
+          "pair_actions": 1.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.325,
+          "residual_lot_px_qty_buckets": {
+            "px_lt_0p30": 2.5
+          },
+          "residual_lot_side_qty": {
+            "YES": 2.5
+          },
+          "residual_qty": 2.5,
+          "slug": "btc-updown-5m-1779244500"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 2.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_ge_0p55": 2.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 1.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidates": 4.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 3.0
+          },
+          "net_pair_cost_p90": 0.9422,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.390625,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779245700"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 2.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 2.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_ge_0p55": 2.0,
+            "px_lt_0p30": 2.0
+          },
+          "candidates": 4.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 2.0
+          },
+          "net_pair_cost_p90": 0.94,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.172,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779246000"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 3.0,
+            "offset_30_60": 3.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 3.0,
+            "px_ge_0p55": 3.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 1.0
+          },
+          "net_pair_cost_p90": 0.9199999999999999,
+          "pair_actions": 1.0,
+          "pair_pnl": 0.1,
+          "residual_cost": 1.5375,
+          "residual_lot_px_qty_buckets": {
+            "px_ge_0p55": 2.5
+          },
+          "residual_lot_side_qty": {
+            "YES": 2.5
+          },
+          "residual_qty": 2.5,
+          "slug": "btc-updown-5m-1779244800"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 2.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p48_0p55": 4.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_0p45_0p48": 2.0
+          },
+          "candidates": 4.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 2.0
+          },
+          "net_pair_cost_p90": 0.91,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.254625,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779245100"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 0.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": null,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.0,
+          "pair_actions": 0.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779244200"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 0.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": null,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.0,
+          "pair_actions": 0.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779246300"
+        }
+      ],
+      "top_residual_lots": [
+        {
+          "age_ms": 1322803,
+          "cost": 0.825,
+          "lot_id": 3,
+          "px": 0.6599999999999999,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244800:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244800",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 1311768,
+          "cost": 0.7125,
+          "lot_id": 4,
+          "px": 0.5700000000000001,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244800:quote:1",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244800",
+          "source_order_id": 1
+        },
+        {
+          "age_ms": 675013,
+          "cost": 0.4,
+          "lot_id": 5,
+          "px": 0.32,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779245400:quote:6",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779245400",
+          "source_order_id": 6
+        },
+        {
+          "age_ms": 1606981,
+          "cost": 0.175,
+          "lot_id": 3,
+          "px": 0.13999999999999999,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244500:quote:4",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244500",
+          "source_order_id": 4
+        },
+        {
+          "age_ms": 1580813,
+          "cost": 0.15,
+          "lot_id": 4,
+          "px": 0.12,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244500:quote:6",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244500",
+          "source_order_id": 6
+        }
+      ]
+    },
+    {
+      "block_by_reason_offset_bucket": {
+        "activation_opp_seen": {
+          "offset_0_30": 9.0,
+          "offset_30_60": 3.0,
+          "offset_60_90": 1.0
+        },
+        "cooldown": {
+          "offset_0_30": 22.0,
+          "offset_30_60": 34.0,
+          "offset_60_90": 63.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "offset_0_30": 5.0,
+          "offset_30_60": 12.0,
+          "offset_60_90": 15.0,
+          "offset_90_120": 7.0
+        },
+        "late_repair_only": {
+          "offset_60_90": 44.0,
+          "offset_90_120": 130.0
+        },
+        "offset": {
+          "offset_0_30": 4.0,
+          "offset_ge_120": 1124.0
+        },
+        "pairing_only_when_residual": {
+          "offset_0_30": 9.0,
+          "offset_30_60": 12.0,
+          "offset_60_90": 11.0
+        },
+        "price": {
+          "offset_60_90": 5.0,
+          "offset_90_120": 12.0
+        },
+        "qty_zero": {
+          "offset_0_30": 12.0,
+          "offset_30_60": 4.0,
+          "offset_60_90": 8.0
+        }
+      },
+      "block_by_reason_public_px_bucket": {
+        "activation_opp_seen": {
+          "px_0p30_0p45": 7.0,
+          "px_0p48_0p55": 2.0,
+          "px_ge_0p55": 3.0,
+          "px_lt_0p30": 1.0
+        },
+        "cooldown": {
+          "px_0p30_0p45": 32.0,
+          "px_0p45_0p48": 7.0,
+          "px_0p48_0p55": 15.0,
+          "px_ge_0p55": 43.0,
+          "px_lt_0p30": 22.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "px_0p30_0p45": 12.0,
+          "px_0p45_0p48": 2.0,
+          "px_0p48_0p55": 6.0,
+          "px_ge_0p55": 14.0,
+          "px_lt_0p30": 5.0
+        },
+        "late_repair_only": {
+          "px_0p30_0p45": 31.0,
+          "px_0p45_0p48": 3.0,
+          "px_0p48_0p55": 4.0,
+          "px_ge_0p55": 88.0,
+          "px_lt_0p30": 48.0
+        },
+        "offset": {
+          "px_0p30_0p45": 129.0,
+          "px_0p45_0p48": 4.0,
+          "px_0p48_0p55": 25.0,
+          "px_ge_0p55": 676.0,
+          "px_lt_0p30": 294.0
+        },
+        "pairing_only_when_residual": {
+          "px_0p30_0p45": 5.0,
+          "px_0p45_0p48": 4.0,
+          "px_0p48_0p55": 4.0,
+          "px_ge_0p55": 14.0,
+          "px_lt_0p30": 5.0
+        },
+        "price": {
+          "px_ge_0p55": 17.0
+        },
+        "qty_zero": {
+          "px_0p30_0p45": 7.0,
+          "px_0p45_0p48": 3.0,
+          "px_0p48_0p55": 3.0,
+          "px_ge_0p55": 7.0,
+          "px_lt_0p30": 4.0
+        }
+      },
+      "block_by_reason_side": {
+        "activation_opp_seen": {
+          "NO": 11.0,
+          "YES": 2.0
+        },
+        "cooldown": {
+          "NO": 61.0,
+          "YES": 58.0
+        },
+        "l1_pair_ask_gt_cap": {
+          "NO": 21.0,
+          "YES": 18.0
+        },
+        "late_repair_only": {
+          "NO": 84.0,
+          "YES": 90.0
+        },
+        "offset": {
+          "NO": 514.0,
+          "YES": 614.0
+        },
+        "pairing_only_when_residual": {
+          "NO": 11.0,
+          "YES": 21.0
+        },
+        "price": {
+          "NO": 17.0
+        },
+        "qty_zero": {
+          "NO": 9.0,
+          "YES": 15.0
+        }
+      },
+      "blocked": {
+        "activation_opp_seen": 13.0,
+        "cooldown": 119.0,
+        "l1_pair_ask_gt_cap": 39.0,
+        "late_repair_only": 174.0,
+        "offset": 1128.0,
+        "pairing_only_when_residual": 32.0,
+        "price": 17.0,
+        "qty_zero": 24.0
+      },
+      "candidate_offset_buckets": {
+        "offset_0_30": 13.0,
+        "offset_30_60": 15.0,
+        "offset_60_90": 12.0
+      },
+      "candidate_public_trade_px_buckets": {
+        "px_0p30_0p45": 12.0,
+        "px_0p45_0p48": 1.0,
+        "px_0p48_0p55": 7.0,
+        "px_ge_0p55": 15.0,
+        "px_lt_0p30": 5.0
+      },
+      "candidate_seed_px_buckets": {
+        "px_0p30_0p45": 9.0,
+        "px_0p45_0p48": 3.0,
+        "px_0p48_0p55": 2.0,
+        "px_ge_0p55": 13.0,
+        "px_lt_0p30": 13.0
+      },
+      "candidate_side_counts": {
+        "NO": 20.0,
+        "YES": 20.0
+      },
+      "group": "eventlite_1800s_offsets0_25",
+      "high_pair_cost_count": 2.0,
+      "high_pair_cost_share": 0.15384615384615385,
+      "metrics": {
+        "candidates": 40.0,
+        "fill_rate": 0.75,
+        "filled_qty": 37.13,
+        "material_residual_lots": 0.0,
+        "net_pair_cost_proxy_p90": 1.01,
+        "pair_actions": 13.0,
+        "pair_pnl": 1.319,
+        "pair_qty": 16.1625,
+        "queue_supported_fills": 30.0,
+        "residual_cost": 3.965,
+        "residual_qty": 9.805,
+        "roi_on_filled_cost": 0.08225563792552402,
+        "seed_qty": 49.435
+      },
+      "name": "eventlite_1800s_offsets0_25:repair75",
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_gt_1p05": 1.0,
+        "pair_cost_lt_0p95": 10.0
+      },
+      "p90_bucket_proxy": {
+        "bucket": "pair_cost_1p00_1p05",
+        "high_cost_count": 2.0,
+        "high_cost_share": 0.15384615384615385,
+        "pass_proxy": false,
+        "total": 13.0
+      },
+      "profile": "repair75",
+      "removal_proxy": [
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_0p95_1p00",
+            "high_cost_count": 0.0,
+            "high_cost_share": 0.0,
+            "pass_proxy": true,
+            "total": 8.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 2,
+          "removed_slugs": [
+            "btc-updown-5m-1779245400",
+            "btc-updown-5m-1779246000"
+          ],
+          "retained_candidate_ratio": 0.7,
+          "retained_candidates": 28.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 8.0,
+          "retained_pair_pnl": 0.8327500000000001,
+          "retained_residual_cost": 3.565,
+          "retained_residual_qty": 8.555,
+          "rule": "drop_slugs_with_pair_cost_gt_1p00"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_1p00_1p05",
+            "high_cost_count": 2.0,
+            "high_cost_share": 0.2,
+            "pass_proxy": false,
+            "total": 10.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 2,
+          "removed_slugs": [
+            "btc-updown-5m-1779244500",
+            "btc-updown-5m-1779244800"
+          ],
+          "retained_candidate_ratio": 0.55,
+          "retained_candidates": 22.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 10.0,
+          "retained_pair_pnl": 1.1315,
+          "retained_residual_cost": 1.0875,
+          "retained_residual_qty": 2.5,
+          "rule": "drop_slugs_with_residual_qty_ge_2p5"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": "pair_cost_1p00_1p05",
+            "high_cost_count": 2.0,
+            "high_cost_share": 0.15384615384615385,
+            "pass_proxy": false,
+            "total": 13.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 0,
+          "removed_slugs": [],
+          "retained_candidate_ratio": 1.0,
+          "retained_candidates": 40.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 13.0,
+          "retained_pair_pnl": 1.319,
+          "retained_residual_cost": 3.965,
+          "retained_residual_qty": 9.805,
+          "rule": "drop_slugs_with_no_residual_px_lt_0p30"
+        }
+      ],
+      "residual_lot_px_qty_buckets": {
+        "px_0p30_0p45": 2.5,
+        "px_0p48_0p55": 1.055,
+        "px_ge_0p55": 3.75,
+        "px_lt_0p30": 2.5
+      },
+      "residual_lot_side_qty": {
+        "NO": 2.5,
+        "YES": 7.305
+      },
+      "summary_count": 26,
+      "top_p90_cost_slugs": [
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 2.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 2.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidates": 6.0,
+          "high_pair_cost_count": 1.0,
+          "high_pair_cost_share": 0.3333333333333333,
+          "net_pair_cost_buckets": {
+            "pair_cost_gt_1p05": 1.0,
+            "pair_cost_lt_0p95": 2.0
+          },
+          "net_pair_cost_p90": 1.07,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.27375,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779246000"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 1.0,
+            "offset_30_60": 4.0,
+            "offset_60_90": 1.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_0p45_0p48": 1.0,
+            "px_0p48_0p55": 2.0,
+            "px_ge_0p55": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 4.0,
+            "px_0p45_0p48": 1.0,
+            "px_ge_0p55": 1.0
+          },
+          "candidates": 6.0,
+          "high_pair_cost_count": 1.0,
+          "high_pair_cost_share": 0.5,
+          "net_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "net_pair_cost_p90": 1.01,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.2125,
+          "residual_cost": 0.4,
+          "residual_lot_px_qty_buckets": {
+            "px_0p30_0p45": 1.25
+          },
+          "residual_lot_side_qty": {
+            "NO": 1.25
+          },
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779245400"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 3.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 3.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_ge_0p55": 4.0,
+            "px_lt_0p30": 3.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_ge_0p55": 4.0,
+            "px_lt_0p30": 4.0
+          },
+          "candidates": 8.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "net_pair_cost_p90": 1.0,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.0875,
+          "residual_cost": 0.275,
+          "residual_lot_px_qty_buckets": {
+            "px_lt_0p30": 2.5
+          },
+          "residual_lot_side_qty": {
+            "YES": 2.5
+          },
+          "residual_qty": 2.5,
+          "slug": "btc-updown-5m-1779244500"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 2.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_ge_0p55": 2.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 1.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidates": 4.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 3.0
+          },
+          "net_pair_cost_p90": 0.9422,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.390625,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779245700"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 3.0,
+            "offset_30_60": 3.0,
+            "offset_60_90": 4.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 5.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 4.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_0p48_0p55": 1.0,
+            "px_ge_0p55": 3.0,
+            "px_lt_0p30": 4.0
+          },
+          "candidates": 10.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 1.0
+          },
+          "net_pair_cost_p90": 0.9199999999999999,
+          "pair_actions": 1.0,
+          "pair_pnl": 0.1,
+          "residual_cost": 2.6025,
+          "residual_lot_px_qty_buckets": {
+            "px_0p30_0p45": 1.25,
+            "px_0p48_0p55": 1.055,
+            "px_ge_0p55": 2.5
+          },
+          "residual_lot_side_qty": {
+            "YES": 4.805
+          },
+          "residual_qty": 4.805,
+          "slug": "btc-updown-5m-1779244800"
+        },
+        {
+          "candidate_offset_buckets": {
+            "offset_0_30": 2.0,
+            "offset_30_60": 2.0,
+            "offset_60_90": 2.0
+          },
+          "candidate_public_trade_px_buckets": {
+            "px_0p30_0p45": 1.0,
+            "px_0p48_0p55": 4.0,
+            "px_ge_0p55": 1.0
+          },
+          "candidate_seed_px_buckets": {
+            "px_0p30_0p45": 2.0,
+            "px_0p45_0p48": 2.0,
+            "px_ge_0p55": 1.0,
+            "px_lt_0p30": 1.0
+          },
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 2.0
+          },
+          "net_pair_cost_p90": 0.91,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.254625,
+          "residual_cost": 0.6875,
+          "residual_lot_px_qty_buckets": {
+            "px_ge_0p55": 1.25
+          },
+          "residual_lot_side_qty": {
+            "NO": 1.25
+          },
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779245100"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 0.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": null,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.0,
+          "pair_actions": 0.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779244200"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 0.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": null,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.0,
+          "pair_actions": 0.0,
+          "pair_pnl": 0.0,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779246300"
+        }
+      ],
+      "top_residual_lots": [
+        {
+          "age_ms": 1322803,
+          "cost": 0.825,
+          "lot_id": 3,
+          "px": 0.6599999999999999,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244800:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244800",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 1311768,
+          "cost": 0.7125,
+          "lot_id": 4,
+          "px": 0.5700000000000001,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244800:quote:1",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244800",
+          "source_order_id": 1
+        },
+        {
+          "age_ms": 988030,
+          "cost": 0.6875,
+          "lot_id": 5,
+          "px": 0.55,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779245100:quote:5",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779245100",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 1257154,
+          "cost": 0.5375,
+          "lot_id": 6,
+          "px": 0.43,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244800:quote:10",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244800",
+          "source_order_id": 10
+        },
+        {
+          "age_ms": 1290245,
+          "cost": 0.5275,
+          "lot_id": 5,
+          "px": 0.49999999999999994,
+          "qty": 1.055,
+          "quote_intent_id": "btc-updown-5m-1779244800:quote:7",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244800",
+          "source_order_id": 7
+        },
+        {
+          "age_ms": 675013,
+          "cost": 0.4,
+          "lot_id": 5,
+          "px": 0.32,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779245400:quote:6",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779245400",
+          "source_order_id": 6
+        },
+        {
+          "age_ms": 1580813,
+          "cost": 0.15,
+          "lot_id": 5,
+          "px": 0.12,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244500:quote:6",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244500",
+          "source_order_id": 6
+        },
+        {
+          "age_ms": 1580813,
+          "cost": 0.125,
+          "lot_id": 6,
+          "px": 0.1,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779244500:quote:8",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779244500",
+          "source_order_id": 8
+        }
+      ]
+    },
+    {
+      "block_by_reason_offset_bucket": {},
+      "block_by_reason_public_px_bucket": {},
+      "block_by_reason_side": {},
+      "blocked": {
+        "activation_opp_seen": 44.0,
+        "cooldown": 272.0,
+        "l1_pair_ask_gt_cap": 147.0,
+        "late_repair_only": 420.0,
+        "offset": 2500.0,
+        "pairing_only_when_residual": 101.0,
+        "price": 57.0,
+        "qty_zero": 58.0
+      },
+      "candidate_offset_buckets": {},
+      "candidate_public_trade_px_buckets": {},
+      "candidate_seed_px_buckets": {},
+      "candidate_side_counts": {},
+      "group": "sample_scale_3600s_offsets0_25",
+      "high_pair_cost_count": 0.0,
+      "high_pair_cost_share": 0.0,
+      "metrics": {
+        "candidates": 69.0,
+        "fill_rate": 0.782608695652174,
+        "filled_qty": 67.5,
+        "material_residual_lots": 0.0,
+        "net_pair_cost_proxy_p90": 1.0299999999999998,
+        "pair_actions": 25.0,
+        "pair_pnl": 2.01225,
+        "pair_qty": 31.25,
+        "queue_supported_fills": 54.0,
+        "residual_cost": 4.6,
+        "residual_qty": 15.0,
+        "roi_on_filled_cost": 0.06744030163385004,
+        "seed_qty": 86.25
+      },
+      "name": "sample_scale_3600s_offsets0_25:repair60",
+      "net_pair_cost_buckets": {},
+      "p90_bucket_proxy": {
+        "bucket": null,
+        "high_cost_count": 0.0,
+        "high_cost_share": null,
+        "pass_proxy": null,
+        "total": 0.0
+      },
+      "profile": "repair60",
+      "removal_proxy": [
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": null,
+            "high_cost_count": 0.0,
+            "high_cost_share": null,
+            "pass_proxy": null,
+            "total": 0.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 5,
+          "removed_slugs": [
+            "btc-updown-5m-1779233400",
+            "btc-updown-5m-1779233700",
+            "btc-updown-5m-1779235500",
+            "btc-updown-5m-1779236100",
+            "btc-updown-5m-1779236700"
+          ],
+          "retained_candidate_ratio": 0.5797101449275363,
+          "retained_candidates": 40.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 14.0,
+          "retained_pair_pnl": 1.3818749999999995,
+          "retained_residual_cost": 3.5374999999999996,
+          "retained_residual_qty": 10.0,
+          "rule": "drop_slugs_with_pair_cost_gt_1p00"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": null,
+            "high_cost_count": 0.0,
+            "high_cost_share": null,
+            "pass_proxy": null,
+            "total": 0.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 4,
+          "removed_slugs": [
+            "btc-updown-5m-1779234300",
+            "btc-updown-5m-1779234600",
+            "btc-updown-5m-1779235500",
+            "btc-updown-5m-1779235800"
+          ],
+          "retained_candidate_ratio": 0.6376811594202898,
+          "retained_candidates": 44.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 22.0,
+          "retained_pair_pnl": 1.8876249999999999,
+          "retained_residual_cost": 0.6374999999999995,
+          "retained_residual_qty": 2.5,
+          "rule": "drop_slugs_with_residual_qty_ge_2p5"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": null,
+            "high_cost_count": 0.0,
+            "high_cost_share": null,
+            "pass_proxy": null,
+            "total": 0.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 0,
+          "removed_slugs": [],
+          "retained_candidate_ratio": 1.0,
+          "retained_candidates": 69.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 25.0,
+          "retained_pair_pnl": 2.01225,
+          "retained_residual_cost": 4.6,
+          "retained_residual_qty": 15.0,
+          "rule": "drop_slugs_with_no_residual_px_lt_0p30"
+        }
+      ],
+      "residual_lot_px_qty_buckets": {},
+      "residual_lot_side_qty": {},
+      "summary_count": 26,
+      "top_p90_cost_slugs": [
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.1600000000000001,
+          "pair_actions": 2.0,
+          "pair_pnl": -0.15,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779236700"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.07,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.55425,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779233400"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 5.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.0299999999999998,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.10225,
+          "residual_cost": 0.25,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779233700"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 8.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.02,
+          "pair_actions": 1.0,
+          "pair_pnl": -0.025,
+          "residual_cost": 0.8125,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 3.75,
+          "slug": "btc-updown-5m-1779235500"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 4.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.01,
+          "pair_actions": 3.0,
+          "pair_pnl": 0.148875,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779236100"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 10.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.98,
+          "pair_actions": 6.0,
+          "pair_pnl": 0.46925,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779235200"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.95,
+          "pair_actions": 1.0,
+          "pair_pnl": 0.0625,
+          "residual_cost": 1.075,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 2.5,
+          "slug": "btc-updown-5m-1779235800"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 5.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.9495999999999999,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.138,
+          "residual_cost": 0.3875,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779234900"
+        }
+      ],
+      "top_residual_lots": [
+        {
+          "age_ms": 2229181,
+          "cost": 0.5875,
+          "lot_id": 1,
+          "px": 0.47000000000000003,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234600:quote:2",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234600",
+          "source_order_id": 2
+        },
+        {
+          "age_ms": 2229181,
+          "cost": 0.575,
+          "lot_id": 2,
+          "px": 0.46,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234600:quote:3",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234600",
+          "source_order_id": 3
+        },
+        {
+          "age_ms": 992321,
+          "cost": 0.5375,
+          "lot_id": 3,
+          "px": 0.43,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235800:quote:1",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235800",
+          "source_order_id": 1
+        },
+        {
+          "age_ms": 992321,
+          "cost": 0.5375,
+          "lot_id": 4,
+          "px": 0.43,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235800:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235800",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 2464356,
+          "cost": 0.4125,
+          "lot_id": 2,
+          "px": 0.33,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234300:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234300",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 1860339,
+          "cost": 0.3875,
+          "lot_id": 4,
+          "px": 0.31,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234900:quote:4",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234900",
+          "source_order_id": 4
+        },
+        {
+          "age_ms": 1325823,
+          "cost": 0.3875,
+          "lot_id": 3,
+          "px": 0.31,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235500:quote:4",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235500",
+          "source_order_id": 4
+        },
+        {
+          "age_ms": 1321033,
+          "cost": 0.325,
+          "lot_id": 4,
+          "px": 0.26,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235500:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235500",
+          "source_order_id": 5
+        }
+      ]
+    },
+    {
+      "block_by_reason_offset_bucket": {},
+      "block_by_reason_public_px_bucket": {},
+      "block_by_reason_side": {},
+      "blocked": {
+        "activation_opp_seen": 44.0,
+        "cooldown": 314.0,
+        "l1_pair_ask_gt_cap": 147.0,
+        "late_repair_only": 339.0,
+        "offset": 2500.0,
+        "pairing_only_when_residual": 115.0,
+        "price": 57.0,
+        "qty_zero": 65.0
+      },
+      "candidate_offset_buckets": {},
+      "candidate_public_trade_px_buckets": {},
+      "candidate_seed_px_buckets": {},
+      "candidate_side_counts": {},
+      "group": "sample_scale_3600s_offsets0_25",
+      "high_pair_cost_count": 0.0,
+      "high_pair_cost_share": 0.0,
+      "metrics": {
+        "candidates": 87.0,
+        "fill_rate": 0.7701149425287356,
+        "filled_qty": 83.75,
+        "material_residual_lots": 0.0,
+        "net_pair_cost_proxy_p90": 1.0899999999999999,
+        "pair_actions": 29.0,
+        "pair_pnl": 2.0875,
+        "pair_qty": 36.25,
+        "queue_supported_fills": 67.0,
+        "residual_cost": 6.2875,
+        "residual_qty": 21.25,
+        "roi_on_filled_cost": 0.05784551437478351,
+        "seed_qty": 108.75
+      },
+      "name": "sample_scale_3600s_offsets0_25:repair75",
+      "net_pair_cost_buckets": {},
+      "p90_bucket_proxy": {
+        "bucket": null,
+        "high_cost_count": 0.0,
+        "high_cost_share": null,
+        "pass_proxy": null,
+        "total": 0.0
+      },
+      "profile": "repair75",
+      "removal_proxy": [
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": null,
+            "high_cost_count": 0.0,
+            "high_cost_share": null,
+            "pass_proxy": null,
+            "total": 0.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 7,
+          "removed_slugs": [
+            "btc-updown-5m-1779233400",
+            "btc-updown-5m-1779233700",
+            "btc-updown-5m-1779234600",
+            "btc-updown-5m-1779235200",
+            "btc-updown-5m-1779235500",
+            "btc-updown-5m-1779236100",
+            "btc-updown-5m-1779236700"
+          ],
+          "retained_candidate_ratio": 0.39080459770114945,
+          "retained_candidates": 34.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 9.0,
+          "retained_pair_pnl": 1.112625,
+          "retained_residual_cost": 3.812499999999999,
+          "retained_residual_qty": 11.25,
+          "rule": "drop_slugs_with_pair_cost_gt_1p00"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": null,
+            "high_cost_count": 0.0,
+            "high_cost_share": null,
+            "pass_proxy": null,
+            "total": 0.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 5,
+          "removed_slugs": [
+            "btc-updown-5m-1779234300",
+            "btc-updown-5m-1779234600",
+            "btc-updown-5m-1779234900",
+            "btc-updown-5m-1779235500",
+            "btc-updown-5m-1779235800"
+          ],
+          "retained_candidate_ratio": 0.5632183908045977,
+          "retained_candidates": 49.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 23.0,
+          "retained_pair_pnl": 1.9373749999999998,
+          "retained_residual_cost": 1.3749999999999996,
+          "retained_residual_qty": 3.75,
+          "rule": "drop_slugs_with_residual_qty_ge_2p5"
+        },
+        {
+          "p90_bucket_proxy_after": {
+            "bucket": null,
+            "high_cost_count": 0.0,
+            "high_cost_share": null,
+            "pass_proxy": null,
+            "total": 0.0
+          },
+          "passes_core_proxy": false,
+          "removed_slug_count": 0,
+          "removed_slugs": [],
+          "retained_candidate_ratio": 1.0,
+          "retained_candidates": 87.0,
+          "retained_material_residual_lots": 0.0,
+          "retained_pair_actions": 29.0,
+          "retained_pair_pnl": 2.0875,
+          "retained_residual_cost": 6.2875,
+          "retained_residual_qty": 21.25,
+          "rule": "drop_slugs_with_no_residual_px_lt_0p30"
+        }
+      ],
+      "residual_lot_px_qty_buckets": {},
+      "residual_lot_side_qty": {},
+      "summary_count": 26,
+      "top_p90_cost_slugs": [
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 11.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.1600000000000001,
+          "pair_actions": 5.0,
+          "pair_pnl": 0.153375,
+          "residual_cost": 0.4,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779235200"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.1600000000000001,
+          "pair_actions": 2.0,
+          "pair_pnl": -0.15,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779236700"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.0899999999999999,
+          "pair_actions": 1.0,
+          "pair_pnl": -0.1125,
+          "residual_cost": 1.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 2.5,
+          "slug": "btc-updown-5m-1779234600"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 8.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.07,
+          "pair_actions": 4.0,
+          "pair_pnl": 0.72925,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779233400"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.05,
+          "pair_actions": 5.0,
+          "pair_pnl": 0.29225,
+          "residual_cost": 0.0,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 0.0,
+          "slug": "btc-updown-5m-1779236100"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 6.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.0299999999999998,
+          "pair_actions": 2.0,
+          "pair_pnl": 0.0875,
+          "residual_cost": 0.25,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 1.25,
+          "slug": "btc-updown-5m-1779233700"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 10.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 1.02,
+          "pair_actions": 1.0,
+          "pair_pnl": -0.025,
+          "residual_cost": 0.825,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 5.0,
+          "slug": "btc-updown-5m-1779235500"
+        },
+        {
+          "candidate_offset_buckets": {},
+          "candidate_public_trade_px_buckets": {},
+          "candidate_seed_px_buckets": {},
+          "candidates": 8.0,
+          "high_pair_cost_count": 0.0,
+          "high_pair_cost_share": 0.0,
+          "net_pair_cost_buckets": {},
+          "net_pair_cost_p90": 0.95,
+          "pair_actions": 1.0,
+          "pair_pnl": 0.0625,
+          "residual_cost": 1.475,
+          "residual_lot_px_qty_buckets": {},
+          "residual_lot_side_qty": {},
+          "residual_qty": 3.75,
+          "slug": "btc-updown-5m-1779235800"
+        }
+      ],
+      "top_residual_lots": [
+        {
+          "age_ms": 387859,
+          "cost": 0.725,
+          "lot_id": 3,
+          "px": 0.5800000000000001,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779236400:quote:3",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779236400",
+          "source_order_id": 3
+        },
+        {
+          "age_ms": 2229181,
+          "cost": 0.575,
+          "lot_id": 2,
+          "px": 0.46,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234600:quote:3",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234600",
+          "source_order_id": 3
+        },
+        {
+          "age_ms": 992322,
+          "cost": 0.5375,
+          "lot_id": 3,
+          "px": 0.43,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235800:quote:1",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235800",
+          "source_order_id": 1
+        },
+        {
+          "age_ms": 992322,
+          "cost": 0.5375,
+          "lot_id": 4,
+          "px": 0.43,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235800:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235800",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 2183136,
+          "cost": 0.425,
+          "lot_id": 4,
+          "px": 0.33999999999999997,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234600:quote:6",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234600",
+          "source_order_id": 6
+        },
+        {
+          "age_ms": 2464356,
+          "cost": 0.4125,
+          "lot_id": 2,
+          "px": 0.33,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779234300:quote:5",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779234300",
+          "source_order_id": 5
+        },
+        {
+          "age_ms": 1540563,
+          "cost": 0.4,
+          "lot_id": 10,
+          "px": 0.32,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235200:quote:4",
+          "side": "NO",
+          "slug": "btc-updown-5m-1779235200",
+          "source_order_id": 4
+        },
+        {
+          "age_ms": 989947,
+          "cost": 0.4,
+          "lot_id": 5,
+          "px": 0.32,
+          "qty": 1.25,
+          "quote_intent_id": "btc-updown-5m-1779235800:quote:8",
+          "side": "YES",
+          "slug": "btc-updown-5m-1779235800",
+          "source_order_id": 8
+        }
+      ]
+    }
+  ],
+  "promotion": {
+    "can_support_strategy_promotion": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "reason": "Summary/event-lite comparator is research-only and does not meet shadow acceptance gates."
+  },
+  "schema_version": 1,
+  "scoreboard_delta": [
+    {
+      "high_pair_cost_delta": {
+        "delta": 2.0,
+        "new": 3.0,
+        "old": 1.0
+      },
+      "metric_delta": {
+        "candidates": {
+          "delta": 26.0,
+          "new": 56.0,
+          "old": 30.0,
+          "ratio": 1.8666666666666667
+        },
+        "fill_rate": {
+          "delta": 0.01904761904761898,
+          "new": 0.7857142857142857,
+          "old": 0.7666666666666667,
+          "ratio": 1.0248447204968942
+        },
+        "filled_qty": {
+          "delta": 25.8775,
+          "new": 54.4525,
+          "old": 28.575,
+          "ratio": 1.9055993000874891
+        },
+        "material_residual_lots": {
+          "delta": 0.0,
+          "new": 0.0,
+          "old": 0.0,
+          "ratio": null
+        },
+        "net_pair_cost_proxy_p90": {
+          "delta": 0.020000000000000018,
+          "new": 1.02,
+          "old": 1.0,
+          "ratio": 1.02
+        },
+        "pair_actions": {
+          "delta": 18.0,
+          "new": 29.0,
+          "old": 11.0,
+          "ratio": 2.6363636363636362
+        },
+        "pair_pnl": {
+          "delta": 0.846538,
+          "new": 1.976288,
+          "old": 1.12975,
+          "ratio": 1.7493144500995796
+        },
+        "pair_qty": {
+          "delta": 12.104999999999999,
+          "new": 25.7675,
+          "old": 13.6625,
+          "ratio": 1.8860018298261665
+        },
+        "queue_supported_fills": {
+          "delta": 21.0,
+          "new": 44.0,
+          "old": 23.0,
+          "ratio": 1.9130434782608696
+        },
+        "residual_cost": {
+          "delta": 0.04854999999999965,
+          "new": 2.31105,
+          "old": 2.2625,
+          "ratio": 1.0214585635359115
+        },
+        "residual_qty": {
+          "delta": 1.2474999999999996,
+          "new": 7.4975,
+          "old": 6.25,
+          "ratio": 1.1996
+        },
+        "roi_on_filled_cost": {
+          "delta": -0.011617731554476998,
+          "new": 0.08217345385901158,
+          "old": 0.09379118541348858,
+          "ratio": 0.8761319466935088
+        },
+        "seed_qty": {
+          "delta": 31.735,
+          "new": 69.06,
+          "old": 37.325,
+          "ratio": 1.8502344273275284
+        }
+      },
+      "new": "late_repair_only90_1800s_offsets0_25:late_repair_only90",
+      "old": "eventlite_1800s_offsets0_25:repair60"
+    },
+    {
+      "high_pair_cost_delta": {
+        "delta": 1.0,
+        "new": 3.0,
+        "old": 2.0
+      },
+      "metric_delta": {
+        "candidates": {
+          "delta": 16.0,
+          "new": 56.0,
+          "old": 40.0,
+          "ratio": 1.4
+        },
+        "fill_rate": {
+          "delta": 0.0357142857142857,
+          "new": 0.7857142857142857,
+          "old": 0.75,
+          "ratio": 1.0476190476190477
+        },
+        "filled_qty": {
+          "delta": 17.322499999999998,
+          "new": 54.4525,
+          "old": 37.13,
+          "ratio": 1.466536493401562
+        },
+        "material_residual_lots": {
+          "delta": 0.0,
+          "new": 0.0,
+          "old": 0.0,
+          "ratio": null
+        },
+        "net_pair_cost_proxy_p90": {
+          "delta": 0.010000000000000009,
+          "new": 1.02,
+          "old": 1.01,
+          "ratio": 1.00990099009901
+        },
+        "pair_actions": {
+          "delta": 16.0,
+          "new": 29.0,
+          "old": 13.0,
+          "ratio": 2.230769230769231
+        },
+        "pair_pnl": {
+          "delta": 0.6572880000000001,
+          "new": 1.976288,
+          "old": 1.319,
+          "ratio": 1.4983229719484459
+        },
+        "pair_qty": {
+          "delta": 9.604999999999997,
+          "new": 25.7675,
+          "old": 16.1625,
+          "ratio": 1.5942768754833718
+        },
+        "queue_supported_fills": {
+          "delta": 14.0,
+          "new": 44.0,
+          "old": 30.0,
+          "ratio": 1.4666666666666666
+        },
+        "residual_cost": {
+          "delta": -1.65395,
+          "new": 2.31105,
+          "old": 3.965,
+          "ratio": 0.5828625472887767
+        },
+        "residual_qty": {
+          "delta": -2.3075,
+          "new": 7.4975,
+          "old": 9.805,
+          "ratio": 0.7646608873023967
+        },
+        "roi_on_filled_cost": {
+          "delta": -8.218406651244736e-05,
+          "new": 0.08217345385901158,
+          "old": 0.08225563792552402,
+          "ratio": 0.9990008701095132
+        },
+        "seed_qty": {
+          "delta": 19.625,
+          "new": 69.06,
+          "old": 49.435,
+          "ratio": 1.3969859411348236
+        }
+      },
+      "new": "late_repair_only90_1800s_offsets0_25:late_repair_only90",
+      "old": "eventlite_1800s_offsets0_25:repair75"
+    },
+    {
+      "high_pair_cost_delta": {
+        "delta": 3.0,
+        "new": 3.0,
+        "old": 0.0
+      },
+      "metric_delta": {
+        "candidates": {
+          "delta": -13.0,
+          "new": 56.0,
+          "old": 69.0,
+          "ratio": 0.8115942028985508
+        },
+        "fill_rate": {
+          "delta": 0.0031055900621117516,
+          "new": 0.7857142857142857,
+          "old": 0.782608695652174,
+          "ratio": 1.003968253968254
+        },
+        "filled_qty": {
+          "delta": -13.0475,
+          "new": 54.4525,
+          "old": 67.5,
+          "ratio": 0.8067037037037037
+        },
+        "material_residual_lots": {
+          "delta": 0.0,
+          "new": 0.0,
+          "old": 0.0,
+          "ratio": null
+        },
+        "net_pair_cost_proxy_p90": {
+          "delta": -0.009999999999999787,
+          "new": 1.02,
+          "old": 1.0299999999999998,
+          "ratio": 0.9902912621359226
+        },
+        "pair_actions": {
+          "delta": 4.0,
+          "new": 29.0,
+          "old": 25.0,
+          "ratio": 1.16
+        },
+        "pair_pnl": {
+          "delta": -0.03596199999999983,
+          "new": 1.976288,
+          "old": 2.01225,
+          "ratio": 0.982128463163126
+        },
+        "pair_qty": {
+          "delta": -5.482500000000002,
+          "new": 25.7675,
+          "old": 31.25,
+          "ratio": 0.82456
+        },
+        "queue_supported_fills": {
+          "delta": -10.0,
+          "new": 44.0,
+          "old": 54.0,
+          "ratio": 0.8148148148148148
+        },
+        "residual_cost": {
+          "delta": -2.28895,
+          "new": 2.31105,
+          "old": 4.6,
+          "ratio": 0.5024021739130434
+        },
+        "residual_qty": {
+          "delta": -7.5025,
+          "new": 7.4975,
+          "old": 15.0,
+          "ratio": 0.4998333333333333
+        },
+        "roi_on_filled_cost": {
+          "delta": 0.014733152225161542,
+          "new": 0.08217345385901158,
+          "old": 0.06744030163385004,
+          "ratio": 1.218462134187232
+        },
+        "seed_qty": {
+          "delta": -17.189999999999998,
+          "new": 69.06,
+          "old": 86.25,
+          "ratio": 0.800695652173913
+        }
+      },
+      "new": "late_repair_only90_1800s_offsets0_25:late_repair_only90",
+      "old": "sample_scale_3600s_offsets0_25:repair60"
+    },
+    {
+      "high_pair_cost_delta": {
+        "delta": 3.0,
+        "new": 3.0,
+        "old": 0.0
+      },
+      "metric_delta": {
+        "candidates": {
+          "delta": -31.0,
+          "new": 56.0,
+          "old": 87.0,
+          "ratio": 0.6436781609195402
+        },
+        "fill_rate": {
+          "delta": 0.015599343185550119,
+          "new": 0.7857142857142857,
+          "old": 0.7701149425287356,
+          "ratio": 1.0202558635394456
+        },
+        "filled_qty": {
+          "delta": -29.2975,
+          "new": 54.4525,
+          "old": 83.75,
+          "ratio": 0.650179104477612
+        },
+        "material_residual_lots": {
+          "delta": 0.0,
+          "new": 0.0,
+          "old": 0.0,
+          "ratio": null
+        },
+        "net_pair_cost_proxy_p90": {
+          "delta": -0.06999999999999984,
+          "new": 1.02,
+          "old": 1.0899999999999999,
+          "ratio": 0.9357798165137616
+        },
+        "pair_actions": {
+          "delta": 0.0,
+          "new": 29.0,
+          "old": 29.0,
+          "ratio": 1.0
+        },
+        "pair_pnl": {
+          "delta": -0.11121199999999987,
+          "new": 1.976288,
+          "old": 2.0875,
+          "ratio": 0.9467247904191617
+        },
+        "pair_qty": {
+          "delta": -10.482500000000002,
+          "new": 25.7675,
+          "old": 36.25,
+          "ratio": 0.7108275862068965
+        },
+        "queue_supported_fills": {
+          "delta": -23.0,
+          "new": 44.0,
+          "old": 67.0,
+          "ratio": 0.6567164179104478
+        },
+        "residual_cost": {
+          "delta": -3.97645,
+          "new": 2.31105,
+          "old": 6.2875,
+          "ratio": 0.36756262425447317
+        },
+        "residual_qty": {
+          "delta": -13.752500000000001,
+          "new": 7.4975,
+          "old": 21.25,
+          "ratio": 0.3528235294117647
+        },
+        "roi_on_filled_cost": {
+          "delta": 0.024327939484228067,
+          "new": 0.08217345385901158,
+          "old": 0.05784551437478351,
+          "ratio": 1.4205674328800386
+        },
+        "seed_qty": {
+          "delta": -39.69,
+          "new": 69.06,
+          "old": 108.75,
+          "ratio": 0.6350344827586207
+        }
+      },
+      "new": "late_repair_only90_1800s_offsets0_25:late_repair_only90",
+      "old": "sample_scale_3600s_offsets0_25:repair75"
+    }
+  ],
+  "scoreboard_interpretation": "late-repair-only90 improves residual against sample-scale repair60/75 and keeps PnL positive, but sample remains below 100 and p90 remains above 1.0. Event-lite repair60 is the only p90-pass profile, yet it has only 30 candidates.",
+  "status": "UNKNOWN_P90_TAIL_SOURCE_FIELDS_INSUFFICIENT"
+}
