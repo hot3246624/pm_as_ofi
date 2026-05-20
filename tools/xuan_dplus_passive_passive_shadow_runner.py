@@ -107,6 +107,70 @@ def profile_name_for_late_repair(value: float) -> str:
     return f"repair{text}"
 
 
+def px_bucket(px: float | None) -> str:
+    if px is None or px <= 0:
+        return "none"
+    if px < 0.30:
+        return "px_lt_0p30"
+    if px < 0.45:
+        return "px_0p30_0p45"
+    if px < 0.48:
+        return "px_0p45_0p48"
+    if px < 0.55:
+        return "px_0p48_0p55"
+    return "px_ge_0p55"
+
+
+def offset_bucket(offset_s: float | None) -> str:
+    if offset_s is None:
+        return "unknown"
+    if offset_s < 30:
+        return "offset_0_30"
+    if offset_s < 60:
+        return "offset_30_60"
+    if offset_s < 90:
+        return "offset_60_90"
+    if offset_s < 120:
+        return "offset_90_120"
+    return "offset_ge_120"
+
+
+def pair_cost_bucket(cost: float | None) -> str:
+    if cost is None or cost <= 0:
+        return "none"
+    if cost < 0.95:
+        return "pair_cost_lt_0p95"
+    if cost <= 1.00:
+        return "pair_cost_0p95_1p00"
+    if cost <= 1.05:
+        return "pair_cost_1p00_1p05"
+    return "pair_cost_gt_1p05"
+
+
+def add_count(hist: dict[str, float], key: str, amount: float = 1.0) -> None:
+    hist[key] = round(hist.get(key, 0.0) + amount, 6)
+
+
+def add_nested_count(hist: dict[str, dict[str, float]], key: str, subkey: str, amount: float = 1.0) -> None:
+    bucket = hist.setdefault(key, {})
+    bucket[subkey] = round(bucket.get(subkey, 0.0) + amount, 6)
+
+
+def merge_count_hist(dest: dict[str, float], src: dict[str, Any]) -> None:
+    for key, value in src.items():
+        if isinstance(value, (int, float)):
+            add_count(dest, str(key), float(value))
+
+
+def merge_nested_count_hist(dest: dict[str, dict[str, float]], src: dict[str, Any]) -> None:
+    for key, bucket in src.items():
+        if not isinstance(bucket, dict):
+            continue
+        for subkey, value in bucket.items():
+            if isinstance(value, (int, float)):
+                add_nested_count(dest, str(key), str(subkey), float(value))
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -144,6 +208,7 @@ class RunnerConfig:
     salvage_age_ms: int = 30_000
     salvage_min_lot_cost: float = 0.25
     max_salvage_qty: float = 250.0
+    event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -254,6 +319,16 @@ class DPlusRunner:
         self.activation_last_seen_ms: dict[str, int | None] = {"YES": None, "NO": None}
         self.events_path = out_dir / f"{slug}.events.jsonl"
         self.summary_path = out_dir / f"{slug}.summary.json"
+        self.event_lite_candidate_seed_px_buckets: dict[str, float] = {}
+        self.event_lite_candidate_public_trade_px_buckets: dict[str, float] = {}
+        self.event_lite_candidate_side_counts: dict[str, float] = {}
+        self.event_lite_candidate_offset_buckets: dict[str, float] = {}
+        self.event_lite_candidate_qty_by_seed_px_bucket: dict[str, float] = {}
+        self.event_lite_fill_seed_px_buckets: dict[str, float] = {}
+        self.event_lite_fill_side_counts: dict[str, float] = {}
+        self.event_lite_block_by_reason_side: dict[str, dict[str, float]] = {}
+        self.event_lite_block_by_reason_public_px_bucket: dict[str, dict[str, float]] = {}
+        self.event_lite_block_by_reason_offset_bucket: dict[str, dict[str, float]] = {}
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -268,8 +343,34 @@ class DPlusRunner:
         with self.events_path.open("a") as f:
             f.write(json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n")
 
-    def block(self, reason: str) -> None:
+    def block(
+        self,
+        reason: str,
+        *,
+        side: str | None = None,
+        public_trade_px: float | None = None,
+        offset_s: float | None = None,
+    ) -> None:
         self.blocked[reason] = self.blocked.get(reason, 0) + 1
+        if self.cfg.event_lite_summary:
+            add_nested_count(self.event_lite_block_by_reason_side, reason, side or "unknown")
+            add_nested_count(self.event_lite_block_by_reason_public_px_bucket, reason, px_bucket(public_trade_px))
+            add_nested_count(self.event_lite_block_by_reason_offset_bucket, reason, offset_bucket(offset_s))
+
+    def record_event_lite_candidate(self, side: str, seed_px: float, public_trade_px: float, offset_s: float | None, qty: float) -> None:
+        if not self.cfg.event_lite_summary:
+            return
+        add_count(self.event_lite_candidate_seed_px_buckets, px_bucket(seed_px))
+        add_count(self.event_lite_candidate_public_trade_px_buckets, px_bucket(public_trade_px))
+        add_count(self.event_lite_candidate_side_counts, side)
+        add_count(self.event_lite_candidate_offset_buckets, offset_bucket(offset_s))
+        add_count(self.event_lite_candidate_qty_by_seed_px_bucket, px_bucket(seed_px), qty)
+
+    def record_event_lite_fill(self, side: str, seed_px: float) -> None:
+        if not self.cfg.event_lite_summary:
+            return
+        add_count(self.event_lite_fill_seed_px_buckets, px_bucket(seed_px))
+        add_count(self.event_lite_fill_side_counts, side)
 
     def record_activation_seen(self, side: str, ts_ms: int) -> None:
         if side in self.activation_last_seen_ms:
@@ -346,6 +447,7 @@ class DPlusRunner:
         lot = Lot(id=self.next_lot_id, quote_intent_id=order.quote_intent_id, side=order.side, qty=order.qty, px=order.px, fill_ms=ts_ms, source_order_id=order.id)
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
+        self.record_event_lite_fill(order.side, order.px)
         self.emit({"kind": "queue_supported_fill", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "fill_ts_ms": ts_ms, "event_time_ms": trigger_event_time_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "lot_id": lot.id, "side": order.side, "source": "no_order_public_trade_queue_proxy", "seed_px": order.px, "price": order.px, "size": order.qty, "qty": order.qty, "queue_share": self.cfg.queue_share, "queue_credit": order.queue_credit, "trade_px": trade_px, "trade_size": trade_size, "trigger_ts_ms": ts_ms, "trigger_source_sequence_id": trigger_source_sequence_id, "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "placed_ts_ms": order.created_ms, "accepted_ts_ms": order.accepted_ms, "opposite_trigger_ts_ms": order.opposite_trigger_ts_ms, "fill_wait_ms": ts_ms - order.created_ms})
 
     def pair_inventory(self, ts_ms: int) -> None:
@@ -459,22 +561,22 @@ class DPlusRunner:
         self.sell_triggers += 1
         self.cancel_expired(ts_ms)
         if offset is None or offset < self.cfg.seed_offset_min_s or offset >= self.cfg.seed_offset_max_s:
-            self.block("offset")
+            self.block("offset", side=side, public_trade_px=px, offset_s=offset)
             return
         if not (self.cfg.seed_px_lo <= px <= self.cfg.seed_px_hi):
-            self.block("price")
+            self.block("price", side=side, public_trade_px=px, offset_s=offset)
             return
         yes_ask = side_ask(self.book, "YES")
         no_ask = side_ask(self.book, "NO")
         if yes_ask <= 0 or no_ask <= 0:
-            self.block("missing_pair_ask")
+            self.block("missing_pair_ask", side=side, public_trade_px=px, offset_s=offset)
             return
         l1_pair = yes_ask + no_ask
         if l1_pair > self.cfg.seed_l1_cap + 1e-12:
-            self.block("l1_pair_ask_gt_cap")
+            self.block("l1_pair_ask_gt_cap", side=side, public_trade_px=px, offset_s=offset)
             return
         if ts_ms - self.last_seed_ms < self.cfg.cooldown_ms:
-            self.block("cooldown")
+            self.block("cooldown", side=side, public_trade_px=px, offset_s=offset)
             return
 
         same_qty = self.exposure_qty(side)
@@ -483,17 +585,17 @@ class DPlusRunner:
         seed_px = max(0.01, px - self.cfg.edge)
         opposite_seen_ms = self.activation_last_seen_ms.get(opp(side))
         if self.cfg.pairing_only_when_residual and same_qty > opp_qty + self.cfg.dust_qty:
-            self.block("pairing_only_when_residual")
+            self.block("pairing_only_when_residual", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
         if self.cfg.late_repair_active(offset) and same_qty + self.cfg.dust_qty >= opp_qty:
-            self.block("late_repair_only")
+            self.block("late_repair_only", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
         risk_increasing_seed = same_qty + self.cfg.dust_qty >= opp_qty
         activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
         if risk_increasing_seed and not activation_ok:
-            self.block("activation_opp_seen")
+            self.block("activation_opp_seen", side=side, public_trade_px=px, offset_s=offset)
             blocked_quote_intent_id = self.blocked_quote_intent_id(side, ts_ms)
             self.emit(
                 {
@@ -526,23 +628,23 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
         if same_qty >= target_qty - self.cfg.dust_qty:
-            self.block("target")
+            self.block("target", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
         if max(0.0, self.exposure_cost(side) - self.exposure_cost(opp(side))) > self.cfg.imbalance_cost_cap + 1e-12:
-            self.block("imbalance_cost")
+            self.block("imbalance_cost", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
         imbalance_room = self.cfg.imbalance_qty_cap - max(0.0, same_qty - opp_qty)
         if imbalance_room <= self.cfg.dust_qty:
-            self.block("imbalance_qty")
+            self.block("imbalance_qty", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
 
         room_cost = self.cfg.max_open_cost - self.total_open_cost()
         qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
         if qty <= self.cfg.dust_qty:
-            self.block("qty_zero")
+            self.block("qty_zero", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
 
@@ -557,6 +659,7 @@ class DPlusRunner:
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
+        self.record_event_lite_candidate(side, seed_px, px, offset, qty)
         self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
         self.record_activation_seen(side, ts_ms)
 
@@ -626,6 +729,40 @@ class DPlusRunner:
                 for lot in sorted(residual_lots, key=lambda x: x.cost, reverse=True)[:10]
             ],
         }
+        if self.cfg.event_lite_summary:
+            residual_lot_px_buckets: dict[str, float] = {}
+            residual_lot_side_qty: dict[str, float] = {}
+            residual_lot_side_cost: dict[str, float] = {}
+            residual_lot_side_count: dict[str, float] = {}
+            for lot in residual_lots:
+                add_count(residual_lot_px_buckets, px_bucket(lot.px), lot.qty)
+                add_count(residual_lot_side_qty, lot.side, lot.qty)
+                add_count(residual_lot_side_cost, lot.side, lot.cost)
+                add_count(residual_lot_side_count, lot.side)
+            pair_cost_buckets: dict[str, float] = {}
+            net_pair_cost_buckets: dict[str, float] = {}
+            for cost in m.pair_costs:
+                add_count(pair_cost_buckets, pair_cost_bucket(cost))
+            for cost in m.net_pair_costs:
+                add_count(net_pair_cost_buckets, pair_cost_bucket(cost))
+            summary["event_lite"] = {
+                "candidate_seed_px_buckets": self.event_lite_candidate_seed_px_buckets,
+                "candidate_public_trade_px_buckets": self.event_lite_candidate_public_trade_px_buckets,
+                "candidate_side_counts": self.event_lite_candidate_side_counts,
+                "candidate_offset_buckets": self.event_lite_candidate_offset_buckets,
+                "candidate_qty_by_seed_px_bucket": self.event_lite_candidate_qty_by_seed_px_bucket,
+                "fill_seed_px_buckets": self.event_lite_fill_seed_px_buckets,
+                "fill_side_counts": self.event_lite_fill_side_counts,
+                "block_by_reason_side": self.event_lite_block_by_reason_side,
+                "block_by_reason_public_px_bucket": self.event_lite_block_by_reason_public_px_bucket,
+                "block_by_reason_offset_bucket": self.event_lite_block_by_reason_offset_bucket,
+                "residual_lot_px_qty_buckets": residual_lot_px_buckets,
+                "residual_lot_side_qty": residual_lot_side_qty,
+                "residual_lot_side_cost": residual_lot_side_cost,
+                "residual_lot_side_count": residual_lot_side_count,
+                "pair_cost_buckets": pair_cost_buckets,
+                "net_pair_cost_buckets": net_pair_cost_buckets,
+            }
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -762,6 +899,25 @@ def aggregate(out: Path) -> dict[str, Any]:
     fill_waits: list[float] = []
     pair_waits: list[float] = []
     top_residual: list[dict[str, Any]] = []
+    event_lite: dict[str, Any] = {
+        "candidate_seed_px_buckets": {},
+        "candidate_public_trade_px_buckets": {},
+        "candidate_side_counts": {},
+        "candidate_offset_buckets": {},
+        "candidate_qty_by_seed_px_bucket": {},
+        "fill_seed_px_buckets": {},
+        "fill_side_counts": {},
+        "residual_lot_px_qty_buckets": {},
+        "residual_lot_side_qty": {},
+        "residual_lot_side_cost": {},
+        "residual_lot_side_count": {},
+        "pair_cost_buckets": {},
+        "net_pair_cost_buckets": {},
+        "block_by_reason_side": {},
+        "block_by_reason_public_px_bucket": {},
+        "block_by_reason_offset_bucket": {},
+    }
+    event_lite_seen = False
     for s in summaries:
         for k, v in s.get("blocked", {}).items():
             blocked[k] = blocked.get(k, 0) + int(v)
@@ -775,6 +931,35 @@ def aggregate(out: Path) -> dict[str, Any]:
         for lot in s.get("top_residual_lots", []):
             lot["slug"] = s.get("slug")
             top_residual.append(lot)
+        lite = s.get("event_lite")
+        if isinstance(lite, dict):
+            event_lite_seen = True
+            for key in (
+                "candidate_seed_px_buckets",
+                "candidate_public_trade_px_buckets",
+                "candidate_side_counts",
+                "candidate_offset_buckets",
+                "candidate_qty_by_seed_px_bucket",
+                "fill_seed_px_buckets",
+                "fill_side_counts",
+                "residual_lot_px_qty_buckets",
+                "residual_lot_side_qty",
+                "residual_lot_side_cost",
+                "residual_lot_side_count",
+                "pair_cost_buckets",
+                "net_pair_cost_buckets",
+            ):
+                source = lite.get(key)
+                if isinstance(source, dict):
+                    merge_count_hist(event_lite[key], source)
+            for key in (
+                "block_by_reason_side",
+                "block_by_reason_public_px_bucket",
+                "block_by_reason_offset_bucket",
+            ):
+                source = lite.get(key)
+                if isinstance(source, dict):
+                    merge_nested_count_hist(event_lite[key], source)
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -805,6 +990,8 @@ def aggregate(out: Path) -> dict[str, Any]:
         },
         "top_residual_lots": sorted(top_residual, key=lambda x: x.get("cost", 0), reverse=True)[:20],
     }
+    if event_lite_seen:
+        aggregate_report["event_lite"] = event_lite
     (out / "aggregate_report.json").write_text(json.dumps(aggregate_report, indent=2, sort_keys=True) + "\n")
     return aggregate_report
 
@@ -865,6 +1052,7 @@ async def main() -> None:
     ap.add_argument("--pairing-only-when-residual", action="store_true")
     ap.add_argument("--activation-mode", choices=["none", "opp_seen"], default="none")
     ap.add_argument("--activation-window-s", type=float, default=60.0)
+    ap.add_argument("--event-lite-summary", action="store_true", help="emit summary-only candidate/fill/block/residual attribution buckets without pulling events JSONL")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -895,6 +1083,7 @@ async def main() -> None:
         pairing_only_when_residual=args.pairing_only_when_residual,
         activation_mode=args.activation_mode,
         activation_window_s=args.activation_window_s,
+        event_lite_summary=args.event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,

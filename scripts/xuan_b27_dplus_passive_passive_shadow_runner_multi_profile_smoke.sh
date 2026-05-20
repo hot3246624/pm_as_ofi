@@ -108,6 +108,24 @@ selected_metric_keys = [
 for key in selected_metric_keys:
     assert single_summary["metrics"][key] == single_profile_summary["metrics"][key], key
 assert single_summary["blocked"] == single_profile_summary["blocked"]
+assert "event_lite" not in single_summary
+assert "event_lite" not in single_profile_summary
+
+event_lite_out = out_dir / "event_lite_direct"
+event_lite_out.mkdir(parents=True, exist_ok=True)
+event_lite = mod.DPlusRunner(slug, event_lite_out, replace(base_cfg, event_lite_summary=True))
+feed(event_lite, events)
+event_lite_summary = summary(event_lite.summary_path)
+event_lite_report = mod.aggregate(event_lite_out)
+lite = event_lite_summary["event_lite"]
+assert event_lite_summary["config"]["event_lite_summary"] is True
+assert sum(lite["candidate_seed_px_buckets"].values()) == event_lite_summary["metrics"]["candidates"]
+assert sum(lite["candidate_public_trade_px_buckets"].values()) == event_lite_summary["metrics"]["candidates"]
+assert sum(lite["candidate_side_counts"].values()) == event_lite_summary["metrics"]["candidates"]
+assert sum(lite["fill_seed_px_buckets"].values()) == event_lite_summary["metrics"]["queue_supported_fills"]
+assert sum(lite["fill_side_counts"].values()) == event_lite_summary["metrics"]["queue_supported_fills"]
+assert "pairing_only_when_residual" in lite["block_by_reason_side"]
+assert event_lite_report["event_lite"]["candidate_seed_px_buckets"] == lite["candidate_seed_px_buckets"]
 
 profile_cfgs = {
     "repair45": replace(base_cfg, late_repair_after_s=45.0),
@@ -154,6 +172,9 @@ manifest = {
     "hypothesis": "same-window multi-profile runner can compare repair_after_s profiles over identical fixture events without changing default single-profile metrics",
     "checks": {
         "default_single_profile_metrics_preserved": True,
+        "event_lite_default_off": True,
+        "event_lite_summary_counts_match_metrics": True,
+        "event_lite_aggregate_counts_match_summary": True,
         "multi_profile_outputs_separate_aggregates": True,
         "profiles_share_identical_fixture_stream": True,
         "profile_state_is_independent": True,
@@ -162,6 +183,8 @@ manifest = {
     "outputs": {
         "single_direct_summary": str(single.summary_path),
         "single_profile_summary": str(single_profile.summary_path),
+        "event_lite_summary": str(event_lite.summary_path),
+        "event_lite_aggregate_report": str(event_lite_out / "aggregate_report.json"),
         "multi_profile_report": str(multi_out / "multi_profile_aggregate_report.json"),
         "multi_profile_dir": str(multi_out),
     },
@@ -175,7 +198,7 @@ manifest = {
         "broker_modified": False,
         "service_control_used": False,
     },
-    "next_action": "Run one bounded EC2 same-host no-order multi-profile shadow A/B only after preflight confirms no overlapping runner.",
+    "next_action": "Run local no-network event-lite causal verifier first; only add --event-lite-summary to a bounded EC2 no-order shadow after a deployable filter hypothesis and EC2 preflight clearance.",
 }
 (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 print(out_dir / "manifest.json")
