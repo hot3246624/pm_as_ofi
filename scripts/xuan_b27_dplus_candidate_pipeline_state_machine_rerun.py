@@ -30,7 +30,7 @@ DEFAULT_BASELINE_RESULT_DIR = Path(
     "pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_"
     "20260502_20260518_publicfull_v2"
 )
-ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_offset90_rerun"
+ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_late_repair90_rerun"
 FORBIDDEN_PATH_FRAGMENTS = (
     "/mnt/poly-replay",
     "replay_published",
@@ -46,6 +46,7 @@ DUST = 1e-9
 class Profile:
     name: str
     seed_offset_max_s: float
+    late_repair_only_after_s: float | None = None
     edge: float = 0.055
     target_qty: float = 5.0
     seed_px_lo: float = 0.05
@@ -227,6 +228,13 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
     if aged_cost > profile.residual_cooldown_cost_cap + 1e-12 and same_qty + profile.dust_qty >= opp_qty:
         add_count(metrics, day, "seed_block_residual_cooldown")
         return
+    if (
+        profile.late_repair_only_after_s is not None
+        and offset_s >= profile.late_repair_only_after_s
+        and same_qty >= opp_qty
+    ):
+        add_count(metrics, day, "seed_block_late_repair_only")
+        return
     if same_qty >= profile.target_qty - profile.dust_qty:
         add_count(metrics, day, "seed_block_target")
         return
@@ -360,6 +368,7 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_block_l1_pair_cap": int(metrics["seed_block_l1_pair_cap"]),
         "seed_block_cooldown": int(metrics["seed_block_cooldown"]),
         "seed_block_residual_cooldown": int(metrics["seed_block_residual_cooldown"]),
+        "seed_block_late_repair_only": int(metrics["seed_block_late_repair_only"]),
         "seed_block_target": int(metrics["seed_block_target"]),
         "seed_block_imbalance_qty": int(metrics["seed_block_imbalance_qty"]),
         "seed_block_imbalance_cost": int(metrics["seed_block_imbalance_cost"]),
@@ -489,7 +498,7 @@ def decision_from(control: dict[str, Any], variant: dict[str, Any], comparison: 
     residual_reduction = comparison["variant_delta"]["residual_qty_rate_reduction"] or 0.0
     residual_cost_reduction = comparison["variant_delta"]["residual_cost_rate_reduction"] or 0.0
     if residual_reduction <= 0.0 or residual_cost_reduction <= 0.0:
-        return "DISCARD", "DISCARD_OFFSET90_STATE_MACHINE_RESIDUAL_WORSE"
+        return "DISCARD", "DISCARD_LATE_REPAIR90_STATE_MACHINE_RESIDUAL_NOT_IMPROVED"
     if (
         retention >= 0.65
         and residual_reduction >= 0.50
@@ -498,10 +507,10 @@ def decision_from(control: dict[str, Any], variant: dict[str, Any], comparison: 
         and float(variant["stress100_worst_pnl"]) > 0.0
         and float(variant["worst_day_fee_after_pnl"]) > 0.0
     ):
-        return "KEEP", "KEEP_OFFSET90_STATE_MACHINE_RESEARCH_ONLY"
+        return "KEEP", "KEEP_LATE_REPAIR90_STATE_MACHINE_RESEARCH_ONLY"
     if retention < 0.50 or float(variant["fee_after_pnl"]) <= 0.0 or float(variant["stress100_worst_pnl"]) <= 0.0:
-        return "DISCARD", "DISCARD_OFFSET90_SAMPLE_OR_STRESS_COLLAPSE"
-    return "UNKNOWN", "UNKNOWN_OFFSET90_MIXED_STATE_MACHINE_RESULT"
+        return "DISCARD", "DISCARD_LATE_REPAIR90_SAMPLE_OR_STRESS_COLLAPSE"
+    return "UNKNOWN", "UNKNOWN_LATE_REPAIR90_MIXED_STATE_MACHINE_RESULT"
 
 
 def main() -> int:
@@ -531,7 +540,7 @@ def main() -> int:
             "status": "BLOCKED_CANDIDATE_PIPELINE_INPUT_UNAVAILABLE",
             "missing": missing,
             "unsafe": unsafe,
-            "next_action": "Restore required local candidate pipeline V1 artifacts and rerun the offset90 state-machine verifier.",
+            "next_action": "Restore required local candidate pipeline V1 artifacts and rerun the late-repair90 state-machine verifier.",
         }
         write_json(output_dir / "manifest.json", manifest)
         print(json.dumps(manifest, indent=2, sort_keys=True))
@@ -544,11 +553,17 @@ def main() -> int:
     core = result_manifest.get("core_metrics") or {}
     profiles = [
         Profile(name="control_seed_offset_max_120", seed_offset_max_s=120.0),
-        Profile(name="variant_seed_offset_max_90", seed_offset_max_s=90.0),
+        Profile(name="discarded_hard_seed_offset_max_90", seed_offset_max_s=90.0),
+        Profile(
+            name="variant_late_repair_only_after_90",
+            seed_offset_max_s=120.0,
+            late_repair_only_after_s=90.0,
+        ),
     ]
     run_result = run_profiles(candidate_db_path, profiles, base_day_counts)
     control = run_result["profiles"]["control_seed_offset_max_120"]
-    variant = run_result["profiles"]["variant_seed_offset_max_90"]
+    hard_offset90 = run_result["profiles"]["discarded_hard_seed_offset_max_90"]
+    variant = run_result["profiles"]["variant_late_repair_only_after_90"]
     baseline = {
         "seed_actions": core.get("seed_actions"),
         "active_markets": core.get("active_markets"),
@@ -563,6 +578,7 @@ def main() -> int:
         "residual_qty_rate": core.get("residual_qty_rate"),
         "residual_cost_rate": core.get("residual_cost_rate"),
     }
+    hard_offset90_comparison = build_comparison(baseline, control, hard_offset90)
     comparison = build_comparison(baseline, control, variant)
     decision_label, status = decision_from(control, variant, comparison)
     manifest = {
@@ -572,9 +588,9 @@ def main() -> int:
         "decision_label": decision_label,
         "status": status,
         "hypothesis": (
-            "If late offset 90-120s is the causal residual source, rerunning the candidate-base "
-            "state machine with seed_offset_max_s=90 should preserve material sample and positive "
-            "fee/stress/worst-day while reducing residual rates."
+            "If late offset 90-120s residual comes from risk-increasing seeds but repair seeds are still useful, "
+            "a late-offset repair-only gate should preserve material sample and positive fee/stress/worst-day "
+            "while reducing residual rates versus the control."
         ),
         "inputs": {
             "candidate_base_manifest": str(candidate_manifest_path),
@@ -596,7 +612,8 @@ def main() -> int:
         },
         "config": {
             "control": asdict(profiles[0]),
-            "variant": asdict(profiles[1]),
+            "discarded_hard_offset90": asdict(profiles[1]),
+            "variant": asdict(profiles[2]),
             "candidate_source": "candidate_base table, public_sell rows with 0 <= offset_s < 300",
             "official_fee_formula": "fee = shares * fee_rate * price * (1 - price)",
             "official_fee_rate": profiles[0].official_fee_rate,
@@ -604,7 +621,9 @@ def main() -> int:
         "processed_public_sell_rows": run_result["processed_public_sell_rows"],
         "baseline_reported": baseline,
         "control_rerun": control,
-        "variant_offset90_rerun": variant,
+        "discarded_hard_offset90_rerun": hard_offset90,
+        "variant_late_repair90_rerun": variant,
+        "hard_offset90_comparison": hard_offset90_comparison,
         "comparison": comparison,
         "scoreboard_delta": {
             "control_seed_actions": control["seed_actions"],
@@ -626,12 +645,13 @@ def main() -> int:
         "interpretation": [
             "This is a local candidate-base state-machine rerun, not source-of-truth replay and not deployable evidence.",
             "The control profile is included to expose implementation drift against the official pipeline result.",
-            "The offset90 variant is a research admission proxy until confirmed by a separate no-order shadow and later replay truth.",
+            "The discarded hard offset90 profile is retained only as a contrast against the repair-only late gate.",
+            "The late-repair90 variant is a research admission proxy until confirmed by no-order shadow and later replay truth.",
         ],
         "next_action": (
-            "If KEEP, run one bounded same-host no-order shadow with seed_offset_max_s=90 only after EC2 preflight "
-            "confirms no overlapping xuan-research runner and no no-order safety risk; otherwise inspect the named "
-            "state-machine reproduction gap before spending another shadow window."
+            "If KEEP, add the default-off late-offset repair-only gate to the no-order shadow runner and smoke it "
+            "locally before any EC2 shadow; otherwise inspect the named state-machine miss before spending another "
+            "shadow window."
         ),
         "side_effects": {
             "candidate_base_duckdb_read_only": True,
