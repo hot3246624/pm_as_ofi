@@ -1,0 +1,142 @@
+{
+  "acceptance": {
+    "artifact": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_late_repair_only90_20260520T055412Z/manifest.json",
+    "checks": {
+      "market_scope_ok": true,
+      "no_order_safety_ok": true,
+      "paths_safe": true,
+      "pnl_metrics_ok": false,
+      "report_present": true,
+      "report_shape_ok": true,
+      "residual_risk_ok": true,
+      "sample_size_ok": false
+    },
+    "failures": [
+      "shadow_trading_sample_size_failed",
+      "shadow_trading_pnl_metrics_failed"
+    ],
+    "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
+  },
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_late_repair_only_driver",
+  "blocked": {
+    "activation_opp_seen": 17,
+    "cooldown": 228,
+    "l1_pair_ask_gt_cap": 45,
+    "late_repair_only": 90,
+    "offset": 1629,
+    "pairing_only_when_residual": 78,
+    "qty_zero": 25
+  },
+  "checks": {
+    "candidates_ge_100": false,
+    "material_residual_lots_zero": true,
+    "net_pair_cost_p90_le_1": false,
+    "no_order_safety": true,
+    "positive_pair_pnl": true,
+    "post_run_no_xuan_research_runner": true,
+    "residual_qty_le_10": true
+  },
+  "config": {
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "duration_s": 1800,
+    "edge": 0.07,
+    "event_lite_summary": true,
+    "imbalance_qty_cap": 1.25,
+    "late_repair_only_after_s": 90,
+    "pairing_only_when_residual": true,
+    "round_offsets": "0..25",
+    "target_qty": 5
+  },
+  "created_utc": "2026-05-20T06:29:19Z",
+  "decision_label": "UNKNOWN",
+  "event_lite": {
+    "candidate_offset_buckets": {
+      "offset_0_30": 12.0,
+      "offset_30_60": 17.0,
+      "offset_60_90": 22.0,
+      "offset_90_120": 5.0
+    },
+    "candidate_public_trade_px_buckets": {
+      "px_0p30_0p45": 14.0,
+      "px_0p45_0p48": 2.0,
+      "px_0p48_0p55": 6.0,
+      "px_ge_0p55": 24.0,
+      "px_lt_0p30": 10.0
+    },
+    "candidate_seed_px_buckets": {
+      "px_0p30_0p45": 12.0,
+      "px_0p45_0p48": 3.0,
+      "px_0p48_0p55": 5.0,
+      "px_ge_0p55": 19.0,
+      "px_lt_0p30": 17.0
+    },
+    "candidate_side_counts": {
+      "NO": 29.0,
+      "YES": 27.0
+    },
+    "late_repair_only_blocks_by_offset": {
+      "offset_90_120": 90.0
+    },
+    "late_repair_only_blocks_by_side": {
+      "NO": 50.0,
+      "YES": 40.0
+    },
+    "net_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 7.0,
+      "pair_cost_1p00_1p05": 3.0,
+      "pair_cost_lt_0p95": 19.0
+    },
+    "residual_lot_px_qty_buckets": {
+      "px_0p45_0p48": 1.25,
+      "px_ge_0p55": 1.2475,
+      "px_lt_0p30": 5.0
+    },
+    "residual_lot_side_qty": {
+      "NO": 7.4975
+    }
+  },
+  "freeze_update": [
+    "Do not promote late-repair-only90 to G2 canary.",
+    "Do not repeat the same late-repair-only90 1800s shadow without a new p90-tail mechanism.",
+    "Do not re-run late-offset hard cutoffs; state-machine rerun already discarded them."
+  ],
+  "hypothesis": "late-offset repair-only gate at 90s preserves sample and PnL while reducing residual tail enough for no-order shadow acceptance",
+  "interpretation": [
+    "The late-repair-only90 gate improved residual control versus discarded sample-scale repair60/75, with residual_qty=7.4975 and material_residual_lots=0.",
+    "The same run failed acceptance because candidates=56<100 and net_pair_cost_p90=1.02>1.0, so it is not promotion or G2 canary evidence.",
+    "Event-lite shows residual is now entirely NO side and mostly px_lt_0p30, while p90 failure is pair-cost tail rather than residual tail.",
+    "Do not repeat this exact 1800s shadow; the next step should isolate whether p90 tail is localized enough for a bounded deployable mechanism without destroying sample."
+  ],
+  "lane": "shadow_observe",
+  "metrics": {
+    "candidates": 56.0,
+    "markets": 26,
+    "material_residual_lots": 0.0,
+    "net_pair_cost_p90": 1.02,
+    "pair_actions": 29.0,
+    "pair_pnl": 1.976288,
+    "pair_qty": 25.7675,
+    "qty_pair_share_of_filled": 0.9464211927827004,
+    "queue_supported_fills": 44.0,
+    "residual_cost": 2.31105,
+    "residual_qty": 7.4975,
+    "roi_on_filled_cost": 0.08217345385901158
+  },
+  "next_action": "causal_verifier: run a local no-network summary/event-lite comparator over this late-repair-only90 shadow and prior repair60/75 event-lite/sample-scale artifacts to isolate net_pair_cost_1p00_1p05 sources by slug/offset/seed/public-price bucket; KEEP only if one bounded p90-tail mechanism preserves sample/residual/PnL, otherwise DISCARD this branch.",
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_late_repair_only90_edge007_20260520T055412Z",
+  "safety": {
+    "cancels_sent": false,
+    "orders_sent": false,
+    "pm_dry_run": "true",
+    "post_run_xuan_research_runner_rows": [],
+    "preflight_non_xuan_research_runner_rows": [
+      "97342 pmofi       3985 /usr/bin/python3 /srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_highclose_seedpx065_20260520T0445Z/repo/tools/xuan_dplus_passive_passive_shadow_runner.py --repo /srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_highclose_seedpx065_20260520T0445Z/repo --shared-ingress-root /srv/pm_as_ofi/shared-ingress-main --prefix btc-updown-5m --round-offsets 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25 --duration-s 7800 --output-dir /srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_highclose_seedpx065_20260520T0445Z/output --edge 0.07 --target-qty 5 --fill-haircut 0.25 --max-seed-qty 60 --max-open-cost 80 --seed-l1-cap 1.02 --seed-px-lo 0.05 --seed-px-hi 0.90 --high-price-mode close_only --high-price-normal-px-hi 0.72 --activation-mode opp_seen --activation-window-s 15 --late-repair-after-s 45 --imbalance-qty-cap 1.25 --imbalance-cost-cap 1000000000 --pairing-only-when-residual"
+    ],
+    "redeems_sent": false,
+    "shared_ingress_role": "client",
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+  },
+  "schema_version": 1,
+  "status": "UNKNOWN_LATE_REPAIR_ONLY90_RESIDUAL_PASS_P90_SAMPLE_FAIL"
+}

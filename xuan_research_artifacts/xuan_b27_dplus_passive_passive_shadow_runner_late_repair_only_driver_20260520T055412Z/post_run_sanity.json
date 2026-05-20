@@ -1,0 +1,7 @@
+{
+  "checked_at": 1779258454.2542012,
+  "runner_rows": [
+    "97342 pmofi       5983 /usr/bin/python3 /srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_highclose_seedpx065_20260520T0445Z/repo/tools/xuan_dplus_passive_passive_shadow_runner.py --repo /srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_highclose_seedpx065_20260520T0445Z/repo --shared-ingress-root /srv/pm_as_ofi/shared-ingress-main --prefix btc-updown-5m --round-offsets 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25 --duration-s 7800 --output-dir /srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_highclose_seedpx065_20260520T0445Z/output --edge 0.07 --target-qty 5 --fill-haircut 0.25 --max-seed-qty 60 --max-open-cost 80 --seed-l1-cap 1.02 --seed-px-lo 0.05 --seed-px-hi 0.90 --high-price-mode close_only --high-price-normal-px-hi 0.72 --activation-mode opp_seen --activation-window-s 15 --late-repair-after-s 45 --imbalance-qty-cap 1.25 --imbalance-cost-cap 1000000000 --pairing-only-when-residual"
+  ],
+  "xuan_research_runner_rows": []
+}
