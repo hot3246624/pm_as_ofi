@@ -1,0 +1,482 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_sample_scale_multprofile_audit_20260519T232703Z",
+  "kind": "shadow_observe_audit",
+  "generated_at_utc": "2026-05-20T00:32:47.893Z",
+  "decision_label": "DISCARD",
+  "status": "DISCARD_SAMPLE_SCALE_REPAIR6075_P90_RESIDUAL_FAIL",
+  "lane": "shadow_observe",
+  "hypothesis": "Increasing sample scale with offsets 0..25 and repair profiles 60/75 should reach candidates>=100 while preserving p90<=1.0, residual_qty<=10, positive PnL, and no-order safety.",
+  "local_artifact_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_sample_scale_multprofile_driver_20260519T232703Z",
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_sample_scale_multprofile_repair6075_edge007_20260519T232703Z",
+  "remote_manifest": "remote/output/manifest.json",
+  "aggregate_report": "remote/output/multi_profile_aggregate_report.json",
+  "run_config": {
+    "duration_s": 3600,
+    "offsets": "0..25",
+    "edge": 0.07,
+    "target_qty": 5,
+    "imbalance_qty_cap": 1.25,
+    "pairing_only_when_residual": true,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "profile_late_repair_after_s": [
+      60,
+      75
+    ],
+    "dry_run": "true",
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+  },
+  "scoreboard_delta": {
+    "profile_metrics": {
+      "repair60": {
+        "late_repair_after_s": 60,
+        "candidates": 69,
+        "queue_supported_fills": 54,
+        "pair_actions": 25,
+        "pair_qty": 31.25,
+        "pair_pnl": 2.01225,
+        "roi_on_filled_cost": 0.06744030163385004,
+        "net_pair_cost_proxy_p90": 1.0299999999999998,
+        "residual_qty": 15,
+        "residual_cost": 4.6,
+        "material_residual_lots": 0,
+        "fill_rate": 0.782608695652174,
+        "filled_qty": 67.5,
+        "seed_qty": 86.25,
+        "blocked": {
+          "activation_opp_seen": 44,
+          "cooldown": 272,
+          "l1_pair_ask_gt_cap": 147,
+          "late_repair_only": 420,
+          "offset": 2500,
+          "pairing_only_when_residual": 101,
+          "price": 57,
+          "qty_zero": 58
+        },
+        "top_residual_lots": [
+          {
+            "age_ms": 2229181,
+            "cost": 0.5875,
+            "lot_id": 1,
+            "px": 0.47000000000000003,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234600:quote:2",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234600",
+            "source_order_id": 2
+          },
+          {
+            "age_ms": 2229181,
+            "cost": 0.575,
+            "lot_id": 2,
+            "px": 0.46,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234600:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234600",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 992321,
+            "cost": 0.5375,
+            "lot_id": 3,
+            "px": 0.43,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235800:quote:1",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235800",
+            "source_order_id": 1
+          },
+          {
+            "age_ms": 992321,
+            "cost": 0.5375,
+            "lot_id": 4,
+            "px": 0.43,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235800:quote:5",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235800",
+            "source_order_id": 5
+          },
+          {
+            "age_ms": 2464356,
+            "cost": 0.4125,
+            "lot_id": 2,
+            "px": 0.33,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234300:quote:5",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234300",
+            "source_order_id": 5
+          },
+          {
+            "age_ms": 1860339,
+            "cost": 0.3875,
+            "lot_id": 4,
+            "px": 0.31,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234900:quote:4",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234900",
+            "source_order_id": 4
+          },
+          {
+            "age_ms": 1325823,
+            "cost": 0.3875,
+            "lot_id": 3,
+            "px": 0.31,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:4",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 4
+          },
+          {
+            "age_ms": 1321033,
+            "cost": 0.325,
+            "lot_id": 4,
+            "px": 0.26,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:5",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 5
+          },
+          {
+            "age_ms": 3044215,
+            "cost": 0.25,
+            "lot_id": 4,
+            "px": 0.2,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779233700:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779233700",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 2460315,
+            "cost": 0.25,
+            "lot_id": 3,
+            "px": 0.2,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234300:quote:2",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234300",
+            "source_order_id": 2
+          },
+          {
+            "age_ms": 2460315,
+            "cost": 0.25,
+            "lot_id": 4,
+            "px": 0.2,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234300:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234300",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 1301816,
+            "cost": 0.1,
+            "lot_id": 5,
+            "px": 0.07999999999999999,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:7",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 7
+          }
+        ],
+        "gates": {
+          "candidates_ge_100": false,
+          "p90_le_1": false,
+          "residual_qty_le_10": false,
+          "positive_pair_pnl": true,
+          "material_residual_lots_zero": true
+        },
+        "delta_vs_prior_1800_same_window": {
+          "candidates_delta": 36,
+          "pair_pnl_delta": 0.538635,
+          "p90_delta": 0.05999999999999983,
+          "residual_qty_delta": 12.5,
+          "candidates_vs_2x_prior_ratio": 1.0454545454545454,
+          "pair_pnl_vs_2x_prior_ratio": 0.6827597438951151
+        }
+      },
+      "repair75": {
+        "late_repair_after_s": 75,
+        "candidates": 87,
+        "queue_supported_fills": 67,
+        "pair_actions": 29,
+        "pair_qty": 36.25,
+        "pair_pnl": 2.0875,
+        "roi_on_filled_cost": 0.05784551437478351,
+        "net_pair_cost_proxy_p90": 1.0899999999999999,
+        "residual_qty": 21.25,
+        "residual_cost": 6.2875,
+        "material_residual_lots": 0,
+        "fill_rate": 0.7701149425287356,
+        "filled_qty": 83.75,
+        "seed_qty": 108.75,
+        "blocked": {
+          "activation_opp_seen": 44,
+          "cooldown": 314,
+          "l1_pair_ask_gt_cap": 147,
+          "late_repair_only": 339,
+          "offset": 2500,
+          "pairing_only_when_residual": 115,
+          "price": 57,
+          "qty_zero": 65
+        },
+        "top_residual_lots": [
+          {
+            "age_ms": 387859,
+            "cost": 0.725,
+            "lot_id": 3,
+            "px": 0.5800000000000001,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779236400:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779236400",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 2229181,
+            "cost": 0.575,
+            "lot_id": 2,
+            "px": 0.46,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234600:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234600",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 992322,
+            "cost": 0.5375,
+            "lot_id": 3,
+            "px": 0.43,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235800:quote:1",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235800",
+            "source_order_id": 1
+          },
+          {
+            "age_ms": 992322,
+            "cost": 0.5375,
+            "lot_id": 4,
+            "px": 0.43,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235800:quote:5",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235800",
+            "source_order_id": 5
+          },
+          {
+            "age_ms": 2183136,
+            "cost": 0.425,
+            "lot_id": 4,
+            "px": 0.33999999999999997,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234600:quote:6",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234600",
+            "source_order_id": 6
+          },
+          {
+            "age_ms": 2464356,
+            "cost": 0.4125,
+            "lot_id": 2,
+            "px": 0.33,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234300:quote:5",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234300",
+            "source_order_id": 5
+          },
+          {
+            "age_ms": 1540563,
+            "cost": 0.4,
+            "lot_id": 10,
+            "px": 0.32,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235200:quote:4",
+            "side": "NO",
+            "slug": "btc-updown-5m-1779235200",
+            "source_order_id": 4
+          },
+          {
+            "age_ms": 989947,
+            "cost": 0.4,
+            "lot_id": 5,
+            "px": 0.32,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235800:quote:8",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235800",
+            "source_order_id": 8
+          },
+          {
+            "age_ms": 1860339,
+            "cost": 0.3875,
+            "lot_id": 4,
+            "px": 0.31,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234900:quote:4",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234900",
+            "source_order_id": 4
+          },
+          {
+            "age_ms": 1325823,
+            "cost": 0.3875,
+            "lot_id": 3,
+            "px": 0.31,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:4",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 4
+          },
+          {
+            "age_ms": 1321033,
+            "cost": 0.325,
+            "lot_id": 4,
+            "px": 0.26,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:5",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 5
+          },
+          {
+            "age_ms": 1856385,
+            "cost": 0.3125,
+            "lot_id": 5,
+            "px": 0.25,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234900:quote:6",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234900",
+            "source_order_id": 6
+          },
+          {
+            "age_ms": 3044215,
+            "cost": 0.25,
+            "lot_id": 5,
+            "px": 0.2,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779233700:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779233700",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 2460315,
+            "cost": 0.25,
+            "lot_id": 3,
+            "px": 0.2,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234300:quote:2",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234300",
+            "source_order_id": 2
+          },
+          {
+            "age_ms": 2460315,
+            "cost": 0.25,
+            "lot_id": 4,
+            "px": 0.2,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779234300:quote:3",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779234300",
+            "source_order_id": 3
+          },
+          {
+            "age_ms": 1301816,
+            "cost": 0.1,
+            "lot_id": 5,
+            "px": 0.07999999999999999,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:7",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 7
+          },
+          {
+            "age_ms": 1222423,
+            "cost": 0.0125,
+            "lot_id": 6,
+            "px": 0.01,
+            "qty": 1.25,
+            "quote_intent_id": "btc-updown-5m-1779235500:quote:9",
+            "side": "YES",
+            "slug": "btc-updown-5m-1779235500",
+            "source_order_id": 9
+          }
+        ],
+        "gates": {
+          "candidates_ge_100": false,
+          "p90_le_1": false,
+          "residual_qty_le_10": false,
+          "positive_pair_pnl": true,
+          "material_residual_lots_zero": true
+        },
+        "delta_vs_prior_1800_same_window": {
+          "candidates_delta": 50,
+          "pair_pnl_delta": 0.33638499999999993,
+          "p90_delta": 0.11999999999999988,
+          "residual_qty_delta": 18.75,
+          "candidates_vs_2x_prior_ratio": 1.1756756756756757,
+          "pair_pnl_vs_2x_prior_ratio": 0.5960488031911096
+        }
+      }
+    },
+    "ranking": {
+      "best_by_candidates": "repair75",
+      "best_by_pair_pnl": "repair75",
+      "best_by_p90": "repair60",
+      "best_by_residual_qty": "repair60"
+    },
+    "global_gates": {
+      "any_candidates_ge_100": false,
+      "any_p90_le_1": false,
+      "any_residual_qty_le_10": false,
+      "all_pair_pnl_positive": true,
+      "all_material_residual_lots_zero": true,
+      "any_profile_acceptance_shape_pass": false
+    }
+  },
+  "safety": {
+    "no_order": true,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "broker_modified": false,
+    "shared_ingress_modified": false,
+    "service_control_used": false,
+    "pulled_events_jsonl": false,
+    "pulled_files_count": 59,
+    "xuan_research_runner_alive_post_run": false,
+    "non_xuan_research_runner_alive_post_run": {
+      "namespace": "xuan_frontier",
+      "pid": 87799,
+      "path": "/srv/pm_as_ofi/xuan_frontier_runs/xuan_frontier_dplus_shadow_price_tail_pxhi048_20260520T002928Z/repo/tools/xuan_dplus_passive_passive_shadow_runner.py"
+    },
+    "repo_sync_or_build_used": false
+  },
+  "interpretation": "Both profiles kept PnL positive and material residual lots at zero, but neither reached candidates>=100 and both failed p90/residual risk gates. Wider offsets/sample scaling degraded p90 and residual versus the 1800s same-window lead, so this specific repair60/75 sample-scale shadow is discarded rather than promoted.",
+  "next_executable_action": {
+    "lane": "causal_verifier",
+    "action": "Run a local no-network summary-only failure attribution comparing the 1800s 0..11 multi-profile run against this 3600s 0..25 sample-scale run.",
+    "inputs": [
+      "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multprofile_driver_20260519T224043Z",
+      "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_sample_scale_multprofile_driver_20260519T232703Z"
+    ],
+    "requirements": "Use only aggregate_report.json, multi_profile_aggregate_report.json, manifest.json, and *.summary.json. Do not SSH, read events JSONL, raw/replay, or sockets.",
+    "output_expectation": "Report candidate, p90, residual, PnL, blocked reason, offset, slug, side, and price-tail deltas; decide whether a bounded deployable mechanism exists, such as price-tail/seed_px_hi or offset subset, before any further shadow.",
+    "blocked_context": "A non-xuan-research xuan_frontier runner was seen after pullback, so no additional xuan-research shadow should run until preflight clears."
+  }
+}
