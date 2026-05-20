@@ -62,18 +62,18 @@ stress_pnl =
 
 用途：防止把研究结果误推到 G2 canary 或 live。
 
-当前 no-order shadow acceptance 的硬 gate 可以继续保守使用：
+no-order shadow acceptance 的硬 gate 继续保守，但主风险阈值不应再是固定 `residual_qty` 或 action-level `net_pair_cost_p90` 一票否决，而应转成归一化风险预算：
 
 - no-order safety 必须通过。
 - market scope / path safety 必须通过。
 - candidates 必须足够大，当前默认 `>=100`。
-- `net_pair_cost_p90 <= 1.0`。
-- `residual_qty <= 10`。
-- `residual_cost <= 5`。
+- residual qty budget：`residual_qty / filled_qty`。
+- residual cost budget：`residual_cost / filled_cost`。
+- pair-tail budget：`max(net_pair_cost_p90 - 1, 0) * pair_qty * tail_fraction / fee_adjusted_pair_pnl`，直到 runner 有 qty-weighted pair-tail distribution 前作为保守 proxy。
 - `material_residual_lots = 0`。
 - pair PnL / ROI 非负。
 
-这些是 promotion blockers，不是最终经济目标函数。一个 run 因 residual 或 p90 未过 hard gate，可以写 `BLOCKED_PROMOTION_RISK_BUDGET` 或 `UNKNOWN_SHADOW_RISK_BUDGET_FAIL`；如果它仍有正 PnL，不应写成经济失败。
+旧的 `residual_qty <= 10`、`residual_cost <= 5`、`net_pair_cost_p90 <= 1.0` 只能保留为 legacy reference，帮助和历史 artifact 对齐；promotion/canary 结论以归一化 budget 为准。这些是 promotion blockers，不是最终经济目标函数。一个 run 因 residual 或 p90 tail 未过 hard gate，可以写 `BLOCKED_PROMOTION_RISK_BUDGET` 或 `UNKNOWN_SHADOW_RISK_BUDGET_FAIL`；如果它仍有正 PnL，不应写成经济失败。
 
 ### 3. Final economic objective
 
@@ -110,6 +110,15 @@ stress_pnl =
 - `DISCARD_ECONOMIC_NEGATIVE`：fee-after / stress / worst-day 经济指标为负。
 - `BLOCKED_PROMOTION_RISK_BUDGET`：经济可能为正，但 shadow/canary 风控硬 gate 未过。
 - `BLOCKED_SAMPLE_THIN`：样本不足，不允许 promotion，但不评价经济性。
+
+## Gate Manifest Contract
+
+`scripts/xuan_b27_dplus_shadow_trading_acceptance.py` 必须同时输出两套结果：
+
+- `research_ranking`：服务研究排序，核心字段是 `label`、`fee_adjusted_pair_pnl_proxy`、`risk_adjusted_pnl_proxy`、`sample_size_ok`、`promotion_risk_budget_ok`。正经济但风险 budget 未过时，应标为 `TRADEOFF_*`，不是经济失败。
+- `promotion_gate`：服务 shadow/canary 阻断，核心字段是 `passed`、`hard_blockers`、`normalized_risk_budget` 和 `required_before_g2_canary=true`。只有 `promotion_gate.passed=true` 才允许进入 canary 讨论。
+
+顶层 `acceptance_passed` 仍只代表 promotion gate 通过，不代表 research ranking；顶层 `status=FAIL_*` 也只代表 promotion blocker。后续自动化和 subagent 必须读这两个子对象，不能只看 `status` 推断策略经济质量。
 
 ## 当前应用
 

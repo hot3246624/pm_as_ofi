@@ -1,0 +1,71 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_acceptance_scoring_split",
+  "status": "KEEP_SCORING_SPLIT_IMPLEMENTED",
+  "created_utc": "20260520T105144Z",
+  "strategy": "xuan_b27_dplus",
+  "scope": "local_no_network_status_hygiene_and_gate_contract",
+  "decision": "KEEP",
+  "changed_files": [
+    "scripts/xuan_b27_dplus_shadow_trading_acceptance.py",
+    "scripts/xuan_b27_dplus_shadow_trading_acceptance_smoke.sh",
+    "scripts/xuan_b27_dplus_canary_readiness_plan_smoke.sh",
+    "docs/research/xuan/DPLUS_SCORING_CONTRACT_ZH.md",
+    "docs/research/xuan/DPLUS_AUTORESEARCH_LOOP_ZH.md",
+    "docs/research/xuan/DPLUS_RUNTIME_MODULE_READINESS_ZH.md"
+  ],
+  "contract": {
+    "research_ranking": {
+      "purpose": "rank mechanisms by economic and risk-adjusted proxies",
+      "positive_pnl_with_risk_worse_label": "TRADEOFF_ECON_POSITIVE_RISK_BUDGET",
+      "economic_negative_label": "DISCARD_ECONOMIC_NEGATIVE"
+    },
+    "promotion_gate": {
+      "purpose": "block shadow/canary promotion until conservative safety and normalized risk budgets pass",
+      "acceptance_passed_means": "promotion_gate_passed",
+      "new_status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
+      "normalized_budget_metrics": [
+        "residual_qty_share_of_filled",
+        "residual_cost_share_of_filled_cost",
+        "pair_tail_loss_share_of_pair_pnl",
+        "material_residual_lots"
+      ],
+      "legacy_absolute_thresholds_used_as_primary_gate": false
+    }
+  },
+  "validation": {
+    "py_compile": "PASS",
+    "shadow_trading_acceptance_smoke": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_smoke_20260520T105333Z/manifest.json",
+    "canary_readiness_plan_smoke": "xuan_research_artifacts/xuan_b27_dplus_canary_readiness_plan_smoke_20260520T105454Z/manifest.json",
+    "smoke_status": "PASS"
+  },
+  "observed_fixture_semantics": {
+    "pass_fixture": {
+      "status": "PASS_SHADOW_TRADING_ACCEPTANCE",
+      "research_label": "KEEP_ECONOMIC_RESEARCH_ONLY"
+    },
+    "residual_budget_fixture": {
+      "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
+      "research_label": "TRADEOFF_ECON_POSITIVE_RISK_BUDGET"
+    },
+    "low_sample_high_cost_fixture": {
+      "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+      "research_label": "TRADEOFF_ECON_POSITIVE_RISK_BUDGET"
+    },
+    "negative_pnl_fixture": {
+      "status": "FAIL_SHADOW_TRADING_PNL_METRICS",
+      "research_label": "DISCARD_ECONOMIC_NEGATIVE"
+    }
+  },
+  "safety": {
+    "ssh_used": false,
+    "shared_ingress_connected": false,
+    "shadow_runner_started": false,
+    "raw_replay_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "started_canary": false
+  },
+  "next_action": "Update xuan-research automation to require future artifacts/subagents to report both research_ranking and promotion_gate; then return to one local causal_verifier mechanism that optimizes risk-adjusted net PnL rather than residual or p90 alone."
+}

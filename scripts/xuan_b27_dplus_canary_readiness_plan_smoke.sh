@@ -283,6 +283,7 @@ ok = (
         "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
         "FAIL_SHADOW_TRADING_PNL_METRICS",
         "FAIL_SHADOW_TRADING_RESIDUAL_RISK",
+        "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
     }
     and evidence.get("shadow_trading_acceptance", {}).get("acceptance_passed") is False
     and evidence.get("shadow_trading_acceptance", {}).get("orders_sent") is False
@@ -334,6 +335,7 @@ ok = (
         "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
         "FAIL_SHADOW_TRADING_PNL_METRICS",
         "FAIL_SHADOW_TRADING_RESIDUAL_RISK",
+        "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
     }
     and data.get("shadow_trading_evidence", {}).get("required_before_g2_canary") is True
     and data.get("shadow_trading_evidence", {}).get("orders_sent") is False

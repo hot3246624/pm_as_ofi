@@ -88,7 +88,7 @@ pass_aggregate='{
 }'
 
 negative_pnl_aggregate="${pass_aggregate/\"pair_pnl\": 15.25/\"pair_pnl\": -0.25}"
-residual_bad_aggregate="${pass_aggregate/\"residual_qty\": 2.0/\"residual_qty\": 20.0}"
+residual_bad_aggregate="${pass_aggregate/\"residual_qty\": 2.0/\"residual_qty\": 80.0}"
 low_sample_aggregate="${pass_aggregate/\"candidates\": 140/\"candidates\": 2}"
 low_sample_high_cost_aggregate="${low_sample_aggregate/\"net_pair_cost_proxy_p90\": 0.96/\"net_pair_cost_proxy_p90\": 1.07}"
 
@@ -166,7 +166,7 @@ expect_status "pass_fixture_acceptance" "PASS_SHADOW_TRADING_ACCEPTANCE" "$pass_
   "$script" --shadow-run-dir "$pass_run" --output-dir "$pass_dir"
 expect_status "negative_pnl_rejected" "FAIL_SHADOW_TRADING_PNL_METRICS" "$negative_dir/manifest.json" \
   "$script" --shadow-run-dir "$negative_run" --output-dir "$negative_dir"
-expect_status "residual_risk_rejected" "FAIL_SHADOW_TRADING_RESIDUAL_RISK" "$residual_dir/manifest.json" \
+expect_status "residual_risk_rejected" "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET" "$residual_dir/manifest.json" \
   "$script" --shadow-run-dir "$residual_run" --output-dir "$residual_dir"
 expect_status "low_sample_rejected" "FAIL_SHADOW_TRADING_SAMPLE_SIZE" "$low_sample_dir/manifest.json" \
   "$script" --shadow-run-dir "$low_sample_run" --output-dir "$low_sample_dir"
@@ -186,6 +186,8 @@ import sys
 data = json.loads(pathlib.Path(sys.argv[1]).read_text())
 metrics = data.get("trading_metrics") or {}
 checks = data.get("checks") or {}
+research = data.get("research_ranking") or {}
+promotion = data.get("promotion_gate") or {}
 ok = (
     data.get("artifact") == "xuan_b27_dplus_shadow_trading_acceptance"
     and data.get("status") == "PASS_SHADOW_TRADING_ACCEPTANCE"
@@ -195,6 +197,12 @@ ok = (
     and checks.get("sample_size_ok") is True
     and checks.get("pnl_metrics_ok") is True
     and checks.get("residual_risk_ok") is True
+    and checks.get("promotion_risk_budget_ok") is True
+    and research.get("label") == "KEEP_ECONOMIC_RESEARCH_ONLY"
+    and research.get("economic_pnl_positive") is True
+    and promotion.get("passed") is True
+    and promotion.get("promotion_risk_budget_ok") is True
+    and promotion.get("normalized_risk_budget", {}).get("residual_qty_share_of_filled") < 0.01
     and metrics.get("candidates") == 140
     and metrics.get("queue_supported_fills") == 84
     and metrics.get("pair_actions") == 80
@@ -218,15 +226,17 @@ data = json.loads(pathlib.Path(sys.argv[1]).read_text())
 failures = data.get("failures") or []
 metric_failures = data.get("metric_failures") or {}
 sample_metrics = {item.get("metric") for item in metric_failures.get("sample_size") or []}
-pnl_metrics = {item.get("metric") for item in metric_failures.get("pnl_metrics") or []}
+promotion_metrics = {item.get("metric") for item in metric_failures.get("promotion_risk_budget") or []}
 does_not_prove = data.get("evidence_interpretation", {}).get("does_not_prove") or []
 ok = (
     data.get("status") == "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
     and data.get("acceptance_passed") is False
     and "shadow_trading_sample_size_failed" in failures
-    and "shadow_trading_pnl_metrics_failed" in failures
+    and "shadow_trading_promotion_risk_budget_failed" in failures
     and "candidates" in sample_metrics
-    and "net_pair_cost_p90" in pnl_metrics
+    and "pair_tail_loss_share_of_pair_pnl" in promotion_metrics
+    and data.get("promotion_gate", {}).get("promotion_risk_budget_ok") is False
+    and str(data.get("research_ranking", {}).get("label", "")).startswith("TRADEOFF_")
     and "shadow trading acceptance" in does_not_prove
 )
 raise SystemExit(0 if ok else 1)

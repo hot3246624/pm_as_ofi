@@ -17,6 +17,7 @@ from typing import Any
 
 
 PASS_STATUS = "PASS_SHADOW_TRADING_ACCEPTANCE"
+PROMOTION_RISK_STATUS = "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
 RUNNER_SCRIPT = "xuan_dplus_passive_passive_shadow_runner.py"
 FORBIDDEN_PATH_FRAGMENTS = (
     "/mnt/poly-replay",
@@ -61,6 +62,12 @@ def as_int(value: Any, default: int = 0) -> int:
     return int(as_float(value, default))
 
 
+def safe_ratio(numerator: float, denominator: float) -> float:
+    if denominator <= 0.0:
+        return 0.0
+    return numerator / denominator
+
+
 def path_is_safe(path: Path) -> bool:
     text = str(path.resolve())
     return not any(fragment in text for fragment in FORBIDDEN_PATH_FRAGMENTS)
@@ -96,6 +103,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-qty-pair-share-of-filled", type=float, default=0.5)
     parser.add_argument("--min-pair-pnl", type=float, default=0.0)
     parser.add_argument("--min-roi-on-filled-cost", type=float, default=0.0)
+    parser.add_argument("--max-residual-qty-share-of-filled", type=float, default=0.15)
+    parser.add_argument("--max-residual-cost-share-of-filled-cost", type=float, default=0.20)
+    parser.add_argument("--max-pair-tail-loss-share-of-pair-pnl", type=float, default=0.05)
+    parser.add_argument("--pair-tail-loss-fraction", type=float, default=0.10)
     parser.add_argument("--max-residual-qty", type=float, default=10.0)
     parser.add_argument("--max-residual-cost", type=float, default=5.0)
     parser.add_argument("--max-material-residual-lots", type=int, default=0)
@@ -143,7 +154,9 @@ def main() -> int:
     pair_actions = as_int(metrics.get("pair_actions"))
     pair_qty = as_float(metrics.get("pair_qty"))
     filled_qty = as_float(metrics.get("filled_qty"))
+    filled_cost = as_float(metrics.get("filled_cost"))
     pair_pnl = as_float(metrics.get("pair_pnl"))
+    taker_fee = as_float(metrics.get("taker_fee"))
     residual_qty = as_float(metrics.get("residual_qty"))
     residual_cost = as_float(metrics.get("residual_cost"))
     material_residual_lots = as_int(metrics.get("material_residual_lots"))
@@ -153,6 +166,15 @@ def main() -> int:
         metrics.get("net_pair_cost_proxy_p90", metrics.get("net_pair_cost_p90")),
         default=0.0,
     )
+    residual_qty_share_of_filled = safe_ratio(residual_qty, filled_qty)
+    residual_cost_share_of_filled_cost = safe_ratio(residual_cost, filled_cost)
+    fee_adjusted_pair_pnl_proxy = pair_pnl - taker_fee
+    pair_tail_loss_proxy = max(net_pair_cost_p90 - 1.0, 0.0) * max(pair_qty, 0.0) * args.pair_tail_loss_fraction
+    pair_tail_loss_share_of_pair_pnl = (
+        float("inf") if pair_tail_loss_proxy > 0.0 and fee_adjusted_pair_pnl_proxy <= 0.0
+        else safe_ratio(pair_tail_loss_proxy, fee_adjusted_pair_pnl_proxy)
+    )
+    conservative_risk_adjusted_pnl_proxy = fee_adjusted_pair_pnl_proxy - residual_cost - pair_tail_loss_proxy
 
     sample_metric_failures: list[dict[str, Any]] = []
     if candidates < args.min_candidates:
@@ -179,37 +201,92 @@ def main() -> int:
         pnl_metric_failures.append(
             {"metric": "roi_on_filled_cost", "actual": roi_on_filled_cost, "required_min": args.min_roi_on_filled_cost}
         )
-    if qty_pair_share < args.min_qty_pair_share_of_filled:
+    if taker_fee > 0.0 and fee_adjusted_pair_pnl_proxy < args.min_pair_pnl:
         pnl_metric_failures.append(
+            {
+                "metric": "fee_adjusted_pair_pnl_proxy",
+                "actual": round(fee_adjusted_pair_pnl_proxy, 6),
+                "required_min": args.min_pair_pnl,
+            }
+        )
+
+    promotion_risk_budget_failures: list[dict[str, Any]] = []
+    residual_metric_failures: list[dict[str, Any]] = []
+    if qty_pair_share < args.min_qty_pair_share_of_filled:
+        promotion_risk_budget_failures.append(
             {
                 "metric": "qty_pair_share_of_filled",
                 "actual": qty_pair_share,
                 "required_min": args.min_qty_pair_share_of_filled,
+                "budget_type": "normalized_inventory_conversion",
             }
         )
-    if net_pair_cost_p90 != 0.0 and net_pair_cost_p90 > args.max_net_pair_cost_p90:
-        pnl_metric_failures.append(
-            {"metric": "net_pair_cost_p90", "actual": net_pair_cost_p90, "required_max": args.max_net_pair_cost_p90}
-        )
-
-    residual_metric_failures: list[dict[str, Any]] = []
-    if residual_qty > args.max_residual_qty:
-        residual_metric_failures.append({"metric": "residual_qty", "actual": residual_qty, "required_max": args.max_residual_qty})
-    if residual_cost > args.max_residual_cost:
-        residual_metric_failures.append(
-            {"metric": "residual_cost", "actual": residual_cost, "required_max": args.max_residual_cost}
+    if residual_qty_share_of_filled > args.max_residual_qty_share_of_filled:
+        failure = {
+            "metric": "residual_qty_share_of_filled",
+            "actual": round(residual_qty_share_of_filled, 8),
+            "required_max": args.max_residual_qty_share_of_filled,
+            "numerator": round(residual_qty, 6),
+            "denominator": round(filled_qty, 6),
+            "budget_type": "normalized_residual_qty",
+        }
+        promotion_risk_budget_failures.append(failure)
+        residual_metric_failures.append(failure)
+    if residual_cost_share_of_filled_cost > args.max_residual_cost_share_of_filled_cost:
+        failure = {
+            "metric": "residual_cost_share_of_filled_cost",
+            "actual": round(residual_cost_share_of_filled_cost, 8),
+            "required_max": args.max_residual_cost_share_of_filled_cost,
+            "numerator": round(residual_cost, 6),
+            "denominator": round(filled_cost, 6),
+            "budget_type": "normalized_residual_cost",
+        }
+        promotion_risk_budget_failures.append(failure)
+        residual_metric_failures.append(failure)
+    if pair_tail_loss_share_of_pair_pnl > args.max_pair_tail_loss_share_of_pair_pnl:
+        promotion_risk_budget_failures.append(
+            {
+                "metric": "pair_tail_loss_share_of_pair_pnl",
+                "actual": (
+                    "inf"
+                    if pair_tail_loss_share_of_pair_pnl == float("inf")
+                    else round(pair_tail_loss_share_of_pair_pnl, 8)
+                ),
+                "required_max": args.max_pair_tail_loss_share_of_pair_pnl,
+                "pair_tail_loss_proxy": round(pair_tail_loss_proxy, 6),
+                "fee_adjusted_pair_pnl_proxy": round(fee_adjusted_pair_pnl_proxy, 6),
+                "net_pair_cost_p90": net_pair_cost_p90,
+                "tail_fraction_assumption": args.pair_tail_loss_fraction,
+                "budget_type": "normalized_pair_tail_loss",
+            }
         )
     if material_residual_lots > args.max_material_residual_lots:
-        residual_metric_failures.append(
-            {
-                "metric": "material_residual_lots",
-                "actual": material_residual_lots,
-                "required_max": args.max_material_residual_lots,
-            }
+        failure = {
+            "metric": "material_residual_lots",
+            "actual": material_residual_lots,
+            "required_max": args.max_material_residual_lots,
+            "budget_type": "hard_material_lot_limit",
+        }
+        promotion_risk_budget_failures.append(failure)
+        residual_metric_failures.append(failure)
+
+    legacy_absolute_reference_breaches: list[dict[str, Any]] = []
+    if residual_qty > args.max_residual_qty:
+        legacy_absolute_reference_breaches.append(
+            {"metric": "residual_qty", "actual": residual_qty, "legacy_reference_max": args.max_residual_qty}
+        )
+    if residual_cost > args.max_residual_cost:
+        legacy_absolute_reference_breaches.append(
+            {"metric": "residual_cost", "actual": residual_cost, "legacy_reference_max": args.max_residual_cost}
+        )
+    if net_pair_cost_p90 != 0.0 and net_pair_cost_p90 > args.max_net_pair_cost_p90:
+        legacy_absolute_reference_breaches.append(
+            {"metric": "net_pair_cost_p90", "actual": net_pair_cost_p90, "legacy_reference_max": args.max_net_pair_cost_p90}
         )
 
     sample_size_ok = not sample_metric_failures
     pnl_metrics_ok = not pnl_metric_failures
+    promotion_risk_budget_ok = not promotion_risk_budget_failures
     residual_risk_ok = not residual_metric_failures
 
     failure_statuses: list[tuple[str, str]] = []
@@ -227,8 +304,8 @@ def main() -> int:
         failure_statuses.append(("shadow_trading_sample_size_failed", "FAIL_SHADOW_TRADING_SAMPLE_SIZE"))
     if not pnl_metrics_ok:
         failure_statuses.append(("shadow_trading_pnl_metrics_failed", "FAIL_SHADOW_TRADING_PNL_METRICS"))
-    if not residual_risk_ok:
-        failure_statuses.append(("shadow_trading_residual_risk_failed", "FAIL_SHADOW_TRADING_RESIDUAL_RISK"))
+    if not promotion_risk_budget_ok:
+        failure_statuses.append(("shadow_trading_promotion_risk_budget_failed", PROMOTION_RISK_STATUS))
 
     failures = [name for name, _ in failure_statuses]
     status = failure_statuses[0][1] if failure_statuses else PASS_STATUS
@@ -243,12 +320,50 @@ def main() -> int:
         "min_qty_pair_share_of_filled": args.min_qty_pair_share_of_filled,
         "min_pair_pnl": args.min_pair_pnl,
         "min_roi_on_filled_cost": args.min_roi_on_filled_cost,
+        "max_residual_qty_share_of_filled": args.max_residual_qty_share_of_filled,
+        "max_residual_cost_share_of_filled_cost": args.max_residual_cost_share_of_filled_cost,
+        "max_pair_tail_loss_share_of_pair_pnl": args.max_pair_tail_loss_share_of_pair_pnl,
+        "pair_tail_loss_fraction": args.pair_tail_loss_fraction,
         "max_residual_qty": args.max_residual_qty,
         "max_residual_cost": args.max_residual_cost,
         "max_material_residual_lots": args.max_material_residual_lots,
         "max_net_pair_cost_p90": args.max_net_pair_cost_p90,
+        "promotion_risk_budget": {
+            "max_residual_qty_share_of_filled": args.max_residual_qty_share_of_filled,
+            "max_residual_cost_share_of_filled_cost": args.max_residual_cost_share_of_filled_cost,
+            "max_pair_tail_loss_share_of_pair_pnl": args.max_pair_tail_loss_share_of_pair_pnl,
+            "max_material_residual_lots": args.max_material_residual_lots,
+            "min_qty_pair_share_of_filled": args.min_qty_pair_share_of_filled,
+            "pair_tail_loss_fraction": args.pair_tail_loss_fraction,
+        },
+        "legacy_absolute_reference": {
+            "max_residual_qty": args.max_residual_qty,
+            "max_residual_cost": args.max_residual_cost,
+            "max_net_pair_cost_p90": args.max_net_pair_cost_p90,
+            "used_as_primary_promotion_gate": False,
+        },
     }
     acceptance_passed = status == PASS_STATUS
+    economic_pnl_positive = pnl_metrics_ok
+    conservative_stress_proxy_positive = conservative_risk_adjusted_pnl_proxy >= args.min_pair_pnl
+    if not report_present or not report_shape_ok or not no_order_safety_ok:
+        research_label = "UNKNOWN_REPORT_OR_SAFETY_INVALID"
+    elif not economic_pnl_positive:
+        research_label = "DISCARD_ECONOMIC_NEGATIVE"
+    elif not conservative_stress_proxy_positive:
+        research_label = "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE"
+    elif not promotion_risk_budget_ok:
+        research_label = "TRADEOFF_ECON_POSITIVE_RISK_BUDGET"
+    elif not sample_size_ok:
+        research_label = "UNKNOWN_SAMPLE_THIN_ECON_POSITIVE"
+    else:
+        research_label = "KEEP_ECONOMIC_RESEARCH_ONLY"
+    research_notes = [
+        "research ranking uses economic proxies first; sample and risk gates are reported separately",
+        "residual or pair-cost tail budget failures are TRADEOFF/BLOCKER evidence unless economic PnL turns negative",
+    ]
+    if conservative_risk_adjusted_pnl_proxy < 0.0:
+        research_notes.append("conservative stress proxy subtracts full residual_cost and pair-tail-loss proxy; source-of-truth settlement may differ")
     proves = [
         "existing D+ passive/passive shadow runner produced simulated trading metrics",
         "virtual fills/pairing were evaluated without sending orders",
@@ -284,13 +399,16 @@ def main() -> int:
             "market_scope_ok": market_ok,
             "sample_size_ok": sample_size_ok,
             "pnl_metrics_ok": pnl_metrics_ok,
+            "promotion_risk_budget_ok": promotion_risk_budget_ok,
             "residual_risk_ok": residual_risk_ok,
         },
         "thresholds": thresholds,
         "metric_failures": {
             "sample_size": sample_metric_failures,
             "pnl_metrics": pnl_metric_failures,
+            "promotion_risk_budget": promotion_risk_budget_failures,
             "residual_risk": residual_metric_failures,
+            "legacy_absolute_reference": legacy_absolute_reference_breaches,
         },
         "trading_metrics": {
             "markets": as_int(aggregate.get("slugs")),
@@ -299,15 +417,26 @@ def main() -> int:
             "fill_rate": as_float(metrics.get("fill_rate")),
             "pair_actions": pair_actions,
             "filled_qty": round(filled_qty, 6),
-            "filled_cost": as_float(metrics.get("filled_cost")),
+            "filled_cost": filled_cost,
             "pair_qty": round(pair_qty, 6),
             "qty_pair_share_of_filled": qty_pair_share,
             "pair_pnl": round(pair_pnl, 6),
+            "taker_fee": round(taker_fee, 6),
+            "fee_adjusted_pair_pnl_proxy": round(fee_adjusted_pair_pnl_proxy, 6),
             "roi_on_seed_cost": as_float(metrics.get("roi_on_seed_cost")),
             "roi_on_filled_cost": roi_on_filled_cost,
             "residual_qty": round(residual_qty, 6),
             "residual_cost": round(residual_cost, 6),
+            "residual_qty_share_of_filled": round(residual_qty_share_of_filled, 8),
+            "residual_cost_share_of_filled_cost": round(residual_cost_share_of_filled_cost, 8),
             "material_residual_lots": material_residual_lots,
+            "pair_tail_loss_proxy": round(pair_tail_loss_proxy, 6),
+            "pair_tail_loss_share_of_pair_pnl": (
+                "inf"
+                if pair_tail_loss_share_of_pair_pnl == float("inf")
+                else round(pair_tail_loss_share_of_pair_pnl, 8)
+            ),
+            "conservative_risk_adjusted_pnl_proxy": round(conservative_risk_adjusted_pnl_proxy, 6),
             "pair_cost_p50": metrics.get("pair_cost_proxy_p50", metrics.get("pair_cost_p50")),
             "pair_cost_p90": metrics.get("pair_cost_proxy_p90", metrics.get("pair_cost_p90")),
             "net_pair_cost_p50": metrics.get("net_pair_cost_proxy_p50", metrics.get("net_pair_cost_p50")),
@@ -316,6 +445,46 @@ def main() -> int:
             "fill_wait_p90_ms": metrics.get("fill_wait_proxy_p90_ms", metrics.get("fill_wait_p90_ms")),
             "pair_wait_p50_ms": metrics.get("pair_wait_proxy_p50_ms", metrics.get("pair_wait_p50_ms")),
             "pair_wait_p90_ms": metrics.get("pair_wait_proxy_p90_ms", metrics.get("pair_wait_p90_ms")),
+        },
+        "research_ranking": {
+            "label": research_label,
+            "economic_pnl_positive": economic_pnl_positive,
+            "conservative_stress_proxy_positive": conservative_stress_proxy_positive,
+            "risk_adjusted_pnl_proxy": round(conservative_risk_adjusted_pnl_proxy, 6),
+            "fee_adjusted_pair_pnl_proxy": round(fee_adjusted_pair_pnl_proxy, 6),
+            "pair_tail_loss_proxy": round(pair_tail_loss_proxy, 6),
+            "residual_loss_proxy": round(residual_cost, 6),
+            "sample_size_ok": sample_size_ok,
+            "promotion_risk_budget_ok": promotion_risk_budget_ok,
+            "legacy_absolute_reference_breaches": legacy_absolute_reference_breaches,
+            "notes": research_notes,
+        },
+        "promotion_gate": {
+            "passed": acceptance_passed,
+            "status": status,
+            "required_before_g2_canary": True,
+            "hard_blockers": failures,
+            "sample_size_ok": sample_size_ok,
+            "economic_pnl_ok": pnl_metrics_ok,
+            "promotion_risk_budget_ok": promotion_risk_budget_ok,
+            "normalized_risk_budget": {
+                "residual_qty_share_of_filled": round(residual_qty_share_of_filled, 8),
+                "max_residual_qty_share_of_filled": args.max_residual_qty_share_of_filled,
+                "residual_cost_share_of_filled_cost": round(residual_cost_share_of_filled_cost, 8),
+                "max_residual_cost_share_of_filled_cost": args.max_residual_cost_share_of_filled_cost,
+                "pair_tail_loss_share_of_pair_pnl": (
+                    "inf"
+                    if pair_tail_loss_share_of_pair_pnl == float("inf")
+                    else round(pair_tail_loss_share_of_pair_pnl, 8)
+                ),
+                "max_pair_tail_loss_share_of_pair_pnl": args.max_pair_tail_loss_share_of_pair_pnl,
+                "material_residual_lots": material_residual_lots,
+                "max_material_residual_lots": args.max_material_residual_lots,
+            },
+            "legacy_absolute_reference": {
+                "breaches": legacy_absolute_reference_breaches,
+                "used_as_primary_promotion_gate": False,
+            },
         },
         "report_safety": {
             "orders_sent": safety.get("orders_sent"),
@@ -344,7 +513,15 @@ def main() -> int:
         "next_gate": (
             "review effectful G2 executor and obtain explicit exact G2 canary approval"
             if acceptance_passed
-            else "run or locate a real D+ passive/passive shadow trading report with pair/PnL/residual metrics before any G2 canary"
+            else (
+                "do not promote; choose a new economic mechanism because PnL/ROI are negative"
+                if not economic_pnl_positive
+                else (
+                    "do not promote; gather enough no-order shadow sample while preserving normalized risk budget"
+                    if not sample_size_ok
+                    else "do not promote; resolve normalized promotion risk budget before any G2 canary"
+                )
+            )
         ),
     }
     write_json(out_dir / "manifest.json", manifest)

@@ -53,7 +53,7 @@
 D+ 后续评分必须按 `DPLUS_SCORING_CONTRACT_ZH.md` 分三层写清楚：
 
 1. Research mechanism ranking：比较机制相对 control 是否更好。若 `fee_after_pnl` / `stress100_worst_pnl` / `worst_day_fee_after_pnl` 仍为正，但 residual 或 p90 相对 control 恶化，只能写成 `TRADEOFF`、`MECHANISM_WEAKER` 或 research-only DISCARD，不能写成策略经济失败。
-2. Shadow / canary hard gate：用于防止错误 promotion。`candidates>=100`、`net_pair_cost_p90<=1.0`、`residual_qty<=10`、`residual_cost<=5`、`material_residual_lots=0` 和 no-order safety 是 promotion blockers，不是最终收益函数。
+2. Shadow / canary hard gate：用于防止错误 promotion。`candidates>=100`、no-order safety、`material_residual_lots=0` 继续是硬 blocker；residual 和 pair-cost tail 必须看归一化 budget，例如 `residual_qty / filled_qty`、`residual_cost / filled_cost`、以及 pair-tail-loss share of PnL。旧的固定 `residual_qty<=10`、`residual_cost<=5`、`net_pair_cost_p90<=1.0` 只能作为 legacy reference，不再作为 research ranking 的一票否决。
 3. Final economic objective：最终看 `pair_pnl + residual_settle_or_mark_pnl - official_fee - stress_or_impact_budget` 是否稳定为正，并通过 OOS / walk-forward / source-of-truth replay。
 
 因此，后续 artifact 必须区分 `DISCARD_MECHANISM_WEAKER`、`BLOCKED_PROMOTION_RISK_BUDGET` 和 `DISCARD_ECONOMIC_NEGATIVE`。不要再把 residual 单项恶化直接等同于策略净 PnL 失败。
@@ -135,9 +135,9 @@ Mission:
 
 Kill criteria:
 
-- candidates < 100。
-- `net_pair_cost_p90 > 1.0`。
-- residual lots 或 residual cost 超过 acceptance。
+- candidates < 100 时不能 promotion，但 research ranking 仍看风险调整 PnL。
+- 归一化 pair-tail-loss budget 或 residual budget 超过 acceptance 时不能 promotion。
+- `material_residual_lots > 0` 或 no-order safety 不通过。
 
 ### Lane D: Compliant Data Adapter
 
