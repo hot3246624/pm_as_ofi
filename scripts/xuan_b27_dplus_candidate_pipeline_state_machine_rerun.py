@@ -30,7 +30,7 @@ DEFAULT_BASELINE_RESULT_DIR = Path(
     "pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_"
     "20260502_20260518_publicfull_v2"
 )
-ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_public_px_cap_rerun"
+ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_risk_px_cap_rerun"
 FORBIDDEN_PATH_FRAGMENTS = (
     "/mnt/poly-replay",
     "replay_published",
@@ -52,6 +52,7 @@ class Profile:
     seed_px_lo: float = 0.05
     seed_px_hi: float = 0.90
     public_trade_px_hi: float | None = None
+    risk_increasing_public_trade_px_hi: float | None = None
     fill_haircut: float = 0.25
     max_seed_qty: float = 60.0
     max_open_cost: float = 250.0
@@ -226,6 +227,13 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
 
     same_qty = lot_qty(state.lots[side])
     opp_qty = lot_qty(state.lots[other(side)])
+    if (
+        profile.risk_increasing_public_trade_px_hi is not None
+        and trade_px > profile.risk_increasing_public_trade_px_hi
+        and same_qty >= opp_qty
+    ):
+        add_count(metrics, day, "seed_block_risk_increasing_public_trade_px_hi")
+        return
     aged_cost = aged_lot_cost(state.lots["YES"], ts_ms, profile.residual_cooldown_age_s) + aged_lot_cost(
         state.lots["NO"], ts_ms, profile.residual_cooldown_age_s
     )
@@ -370,6 +378,9 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_block_offset": int(metrics["seed_block_offset"]),
         "seed_block_price_band": int(metrics["seed_block_price_band"]),
         "seed_block_public_trade_px_hi": int(metrics["seed_block_public_trade_px_hi"]),
+        "seed_block_risk_increasing_public_trade_px_hi": int(
+            metrics["seed_block_risk_increasing_public_trade_px_hi"]
+        ),
         "seed_block_l1_pair_cap": int(metrics["seed_block_l1_pair_cap"]),
         "seed_block_cooldown": int(metrics["seed_block_cooldown"]),
         "seed_block_residual_cooldown": int(metrics["seed_block_residual_cooldown"]),
@@ -594,6 +605,29 @@ def decision_public_px_cap(control: dict[str, Any], variant: dict[str, Any], del
     return "UNKNOWN", "UNKNOWN_PUBLIC_PX_CAP_MIXED_STATE_MACHINE_RESULT"
 
 
+def decision_risk_px_cap(control: dict[str, Any], variant: dict[str, Any], delta: dict[str, Any]) -> tuple[str, str]:
+    retention = delta["seed_action_retention"] or 0.0
+    pair_retention = delta["pair_qty_retention"] or 0.0
+    residual_reduction = delta["residual_qty_rate_reduction"] or 0.0
+    residual_cost_reduction = delta["residual_cost_rate_reduction"] or 0.0
+    pair_cost_reduction = delta["weighted_pair_cost_reduction"] or 0.0
+    if retention < 0.50 or float(variant["fee_after_pnl"]) <= 0.0 or float(variant["stress100_worst_pnl"]) <= 0.0:
+        return "DISCARD", "DISCARD_RISK_PUBLIC_PX_CAP_SAMPLE_OR_STRESS_COLLAPSE"
+    if residual_reduction < -1e-9 or residual_cost_reduction < -1e-9:
+        return "DISCARD", "DISCARD_RISK_PUBLIC_PX_CAP_RESIDUAL_WORSE"
+    if pair_cost_reduction <= 0.0:
+        return "UNKNOWN", "UNKNOWN_RISK_PUBLIC_PX_CAP_NO_PAIR_COST_IMPROVEMENT"
+    if (
+        retention >= 0.65
+        and pair_retention >= 0.65
+        and float(variant["fee_after_pnl"]) > 0.0
+        and float(variant["stress100_worst_pnl"]) > 0.0
+        and float(variant["worst_day_fee_after_pnl"]) > 0.0
+    ):
+        return "KEEP", "KEEP_RISK_PUBLIC_PX_CAP_RESEARCH_ONLY"
+    return "UNKNOWN", "UNKNOWN_RISK_PUBLIC_PX_CAP_MIXED_STATE_MACHINE_RESULT"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate-base-dir", default=str(DEFAULT_CANDIDATE_BASE_DIR))
@@ -646,12 +680,19 @@ def main() -> int:
             late_repair_only_after_s=90.0,
             public_trade_px_hi=0.55,
         ),
+        Profile(
+            name="variant_late_repair90_risk_public_trade_px_hi_0p55",
+            seed_offset_max_s=120.0,
+            late_repair_only_after_s=90.0,
+            risk_increasing_public_trade_px_hi=0.55,
+        ),
     ]
     run_result = run_profiles(candidate_db_path, profiles, base_day_counts)
     control = run_result["profiles"]["control_seed_offset_max_120"]
     hard_offset90 = run_result["profiles"]["discarded_hard_seed_offset_max_90"]
     variant = run_result["profiles"]["variant_late_repair_only_after_90"]
     public_px_variant = run_result["profiles"]["variant_late_repair90_public_trade_px_hi_0p55"]
+    risk_px_variant = run_result["profiles"]["variant_late_repair90_risk_public_trade_px_hi_0p55"]
     baseline = {
         "seed_actions": core.get("seed_actions"),
         "active_markets": core.get("active_markets"),
@@ -670,7 +711,9 @@ def main() -> int:
     comparison = build_comparison(baseline, control, variant)
     late_repair_decision_label, late_repair_status = decision_from(control, variant, comparison)
     public_px_delta = build_direct_delta(variant, public_px_variant)
-    decision_label, status = decision_public_px_cap(variant, public_px_variant, public_px_delta)
+    risk_px_delta = build_direct_delta(variant, risk_px_variant)
+    hard_cap_decision_label, hard_cap_status = decision_public_px_cap(variant, public_px_variant, public_px_delta)
+    decision_label, status = decision_risk_px_cap(variant, risk_px_variant, risk_px_delta)
     manifest = {
         "artifact": ARTIFACT,
         "created_utc": label,
@@ -679,8 +722,8 @@ def main() -> int:
         "status": status,
         "hypothesis": (
             "If the no-order pair-source p90 tail is driven by high source public_trade_px, then adding a bounded "
-            "public_trade_px_hi cap to late-repair90 should reduce pair-cost/residual risk while preserving material "
-            "sample and positive fee/stress/worst-day."
+            "risk-increasing-only public_trade_px_hi cap to late-repair90 should reduce pair-cost risk while preserving "
+            "repair seeds, material sample, and positive fee/stress/worst-day."
         ),
         "inputs": {
             "candidate_base_manifest": str(candidate_manifest_path),
@@ -704,7 +747,8 @@ def main() -> int:
             "control": asdict(profiles[0]),
             "discarded_hard_offset90": asdict(profiles[1]),
             "late_repair90_variant": asdict(profiles[2]),
-            "public_px_cap_variant": asdict(profiles[3]),
+            "discarded_public_px_cap_variant": asdict(profiles[3]),
+            "risk_public_px_cap_variant": asdict(profiles[4]),
             "candidate_source": "candidate_base table, public_sell rows with 0 <= offset_s < 300",
             "official_fee_formula": "fee = shares * fee_rate * price * (1 - price)",
             "official_fee_rate": profiles[0].official_fee_rate,
@@ -715,43 +759,51 @@ def main() -> int:
         "discarded_hard_offset90_rerun": hard_offset90,
         "variant_late_repair90_rerun": variant,
         "variant_late_repair90_public_trade_px_hi_0p55_rerun": public_px_variant,
+        "variant_late_repair90_risk_public_trade_px_hi_0p55_rerun": risk_px_variant,
         "hard_offset90_comparison": hard_offset90_comparison,
         "late_repair90_comparison": comparison,
         "late_repair90_decision_label": late_repair_decision_label,
         "late_repair90_status": late_repair_status,
+        "hard_public_px_cap_decision_label": hard_cap_decision_label,
+        "hard_public_px_cap_status": hard_cap_status,
         "public_px_cap_delta_vs_late_repair90": public_px_delta,
+        "risk_public_px_cap_delta_vs_late_repair90": risk_px_delta,
         "scoreboard_delta": {
             "control_seed_actions": control["seed_actions"],
             "late_repair90_seed_actions": variant["seed_actions"],
-            "public_px_cap_seed_actions": public_px_variant["seed_actions"],
-            "public_px_cap_seed_action_retention_vs_late_repair90": public_px_delta["seed_action_retention"],
+            "risk_public_px_cap_seed_actions": risk_px_variant["seed_actions"],
+            "risk_public_px_cap_seed_action_retention_vs_late_repair90": risk_px_delta["seed_action_retention"],
             "late_repair90_fee_after_pnl": variant["fee_after_pnl"],
-            "public_px_cap_fee_after_pnl": public_px_variant["fee_after_pnl"],
+            "risk_public_px_cap_fee_after_pnl": risk_px_variant["fee_after_pnl"],
             "late_repair90_stress100_worst_pnl": variant["stress100_worst_pnl"],
-            "public_px_cap_stress100_worst_pnl": public_px_variant["stress100_worst_pnl"],
+            "risk_public_px_cap_stress100_worst_pnl": risk_px_variant["stress100_worst_pnl"],
             "late_repair90_worst_day_fee_after_pnl": variant["worst_day_fee_after_pnl"],
-            "public_px_cap_worst_day_fee_after_pnl": public_px_variant["worst_day_fee_after_pnl"],
+            "risk_public_px_cap_worst_day_fee_after_pnl": risk_px_variant["worst_day_fee_after_pnl"],
             "late_repair90_weighted_pair_cost": variant["weighted_pair_cost"],
-            "public_px_cap_weighted_pair_cost": public_px_variant["weighted_pair_cost"],
-            "weighted_pair_cost_reduction": public_px_delta["weighted_pair_cost_reduction"],
+            "risk_public_px_cap_weighted_pair_cost": risk_px_variant["weighted_pair_cost"],
+            "weighted_pair_cost_reduction": risk_px_delta["weighted_pair_cost_reduction"],
             "late_repair90_residual_qty_rate": variant["residual_qty_rate"],
-            "public_px_cap_residual_qty_rate": public_px_variant["residual_qty_rate"],
-            "residual_qty_rate_reduction": public_px_delta["residual_qty_rate_reduction"],
+            "risk_public_px_cap_residual_qty_rate": risk_px_variant["residual_qty_rate"],
+            "residual_qty_rate_reduction": risk_px_delta["residual_qty_rate_reduction"],
             "late_repair90_residual_cost_rate": variant["residual_cost_rate"],
-            "public_px_cap_residual_cost_rate": public_px_variant["residual_cost_rate"],
-            "residual_cost_rate_reduction": public_px_delta["residual_cost_rate_reduction"],
-            "public_px_cap_block_count": public_px_variant["seed_block_public_trade_px_hi"],
+            "risk_public_px_cap_residual_cost_rate": risk_px_variant["residual_cost_rate"],
+            "residual_cost_rate_reduction": risk_px_delta["residual_cost_rate_reduction"],
+            "risk_public_px_cap_block_count": risk_px_variant["seed_block_risk_increasing_public_trade_px_hi"],
+            "discarded_hard_public_px_cap_seed_actions": public_px_variant["seed_actions"],
+            "discarded_hard_public_px_cap_residual_qty_rate": public_px_variant["residual_qty_rate"],
         },
         "interpretation": [
             "This is a local candidate-base state-machine rerun, not source-of-truth replay and not deployable evidence.",
             "The control profile is included to expose implementation drift against the official pipeline result.",
             "The discarded hard offset90 profile is retained only as a contrast against the repair-only late gate.",
             "The late-repair90 variant is retained as the control for the new source-public-price cap.",
-            "The public price cap is a local candidate-base proxy for the no-order pair-source attribution and is not source-of-truth replay.",
+            "The hard public price cap is retained only as a discarded contrast.",
+            "The risk-increasing-only public price cap is a local candidate-base proxy for the no-order pair-source attribution and is not source-of-truth replay.",
         ],
         "next_action": (
-            "If KEEP, implement/smoke the bounded public_trade_px_hi admission cap in the no-order shadow runner before "
-            "spending another EC2 shadow; if DISCARD/UNKNOWN, do not rerun the same EC2 shadow and inspect the named miss."
+            "If KEEP, implement/smoke the bounded risk-increasing-only public_trade_px_hi admission cap in the no-order "
+            "shadow runner before spending another EC2 shadow; if DISCARD/UNKNOWN, do not rerun the same EC2 shadow "
+            "and inspect the named miss."
         ),
         "side_effects": {
             "candidate_base_duckdb_read_only": True,
