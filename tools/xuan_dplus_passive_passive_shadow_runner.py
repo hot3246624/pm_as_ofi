@@ -195,6 +195,7 @@ class RunnerConfig:
     late_target_after_s: float | None = None
     late_target_qty: float | None = None
     late_repair_after_s: float | None = None
+    late_repair_only_after_s: float | None = None
     cooldown_ms: int = 5_000
     order_ttl_ms: int = 120_000
     imbalance_qty_cap: float = 2.0
@@ -230,6 +231,9 @@ class RunnerConfig:
 
     def late_repair_active(self, offset_s: float | None) -> bool:
         return offset_s is not None and self.late_repair_after_s is not None and offset_s >= self.late_repair_after_s
+
+    def late_repair_only_active(self, offset_s: float | None) -> bool:
+        return offset_s is not None and self.late_repair_only_after_s is not None and offset_s >= self.late_repair_only_after_s
 
 
 @dataclass
@@ -588,6 +592,10 @@ class DPlusRunner:
             self.block("pairing_only_when_residual", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
             return
+        if self.cfg.late_repair_only_active(offset) and same_qty >= opp_qty:
+            self.block("late_repair_only", side=side, public_trade_px=px, offset_s=offset)
+            self.record_activation_seen(side, ts_ms)
+            return
         if self.cfg.late_repair_active(offset) and same_qty + self.cfg.dust_qty >= opp_qty:
             self.block("late_repair_only", side=side, public_trade_px=px, offset_s=offset)
             self.record_activation_seen(side, ts_ms)
@@ -660,7 +668,7 @@ class DPlusRunner:
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
         self.record_event_lite_candidate(side, seed_px, px, offset, qty)
-        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
+        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "late_repair_only_active": self.cfg.late_repair_only_active(offset), "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
         self.record_activation_seen(side, ts_ms)
 
     def write_summary(self, final: bool = False) -> None:
@@ -1045,6 +1053,7 @@ async def main() -> None:
     ap.add_argument("--late-target-after-s", type=float, default=None)
     ap.add_argument("--late-target-qty", type=float, default=None)
     ap.add_argument("--late-repair-after-s", type=float, default=None)
+    ap.add_argument("--late-repair-only-after-s", type=float, default=None, help="after this offset, allow only imbalance-reducing seeds")
     ap.add_argument("--profile-late-repair-after-s", default="", help="CSV repair_after_s values for same-window multi-profile causal verification")
     ap.add_argument("--order-ttl-s", type=float, default=120.0)
     ap.add_argument("--imbalance-qty-cap", type=float, default=2.0)
@@ -1077,6 +1086,7 @@ async def main() -> None:
         late_target_after_s=args.late_target_after_s,
         late_target_qty=args.late_target_qty,
         late_repair_after_s=args.late_repair_after_s,
+        late_repair_only_after_s=args.late_repair_only_after_s,
         order_ttl_ms=int(args.order_ttl_s * 1000),
         imbalance_qty_cap=args.imbalance_qty_cap,
         imbalance_cost_cap=args.imbalance_cost_cap,
@@ -1092,6 +1102,8 @@ async def main() -> None:
         raise SystemExit(f"--imbalance-qty-cap must exceed dust_qty={cfg.dust_qty}; otherwise every seed is blocked")
     if cfg.late_target_qty is not None and cfg.late_target_qty <= cfg.dust_qty:
         raise SystemExit(f"--late-target-qty must exceed dust_qty={cfg.dust_qty}; otherwise the late window cannot seed")
+    if cfg.late_repair_only_after_s is not None and cfg.late_repair_only_after_s < 0:
+        raise SystemExit("--late-repair-only-after-s must be non-negative")
     if cfg.activation_window_s <= 0:
         raise SystemExit("--activation-window-s must be positive")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
