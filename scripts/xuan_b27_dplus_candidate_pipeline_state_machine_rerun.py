@@ -30,7 +30,7 @@ DEFAULT_BASELINE_RESULT_DIR = Path(
     "pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_"
     "20260502_20260518_publicfull_v2"
 )
-ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_dynamic_imbalance_rerun"
+ARTIFACT = "xuan_b27_dplus_candidate_pipeline_state_machine_fill_to_balance_rerun"
 FORBIDDEN_PATH_FRAGMENTS = (
     "/mnt/poly-replay",
     "replay_published",
@@ -55,6 +55,7 @@ class Profile:
     risk_increasing_public_trade_px_hi: float | None = None
     risk_increasing_public_trade_px_hi_side: str | None = None
     risk_increasing_imbalance_qty_cap: float | None = None
+    late_repair_fill_to_balance_after_s: float | None = None
     fill_haircut: float = 0.25
     max_seed_qty: float = 60.0
     max_open_cost: float = 250.0
@@ -277,14 +278,30 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
         else:
             add_count(metrics, day, "seed_block_imbalance_qty")
         return
-    qty = min(
+    base_qty = min(
         profile.max_seed_qty,
         trade_size * profile.fill_haircut,
         profile.target_qty - same_qty,
         (profile.max_open_cost - open_cost) / max(seed_px, 1e-9),
         imbalance_room,
     )
+    late_fill_to_balance_active = (
+        profile.late_repair_fill_to_balance_after_s is not None
+        and offset_s >= profile.late_repair_fill_to_balance_after_s
+        and same_qty < opp_qty
+    )
+    qty = base_qty
+    if late_fill_to_balance_active:
+        deficit_qty = max(0.0, opp_qty - same_qty)
+        capped_qty = min(qty, deficit_qty)
+        add_count(metrics, day, "seed_late_fill_to_balance_candidate")
+        if capped_qty < qty - DUST:
+            add_count(metrics, day, "seed_qty_cap_late_fill_to_balance")
+            add_metric(metrics, day, "seed_late_fill_to_balance_qty_reduction", qty - capped_qty)
+        qty = capped_qty
     if qty <= profile.dust_qty:
+        if late_fill_to_balance_active:
+            add_count(metrics, day, "seed_block_late_fill_to_balance_qty")
         return
 
     state.lots[side].append(
@@ -403,6 +420,12 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_block_target": int(metrics["seed_block_target"]),
         "seed_block_imbalance_qty": int(metrics["seed_block_imbalance_qty"]),
         "seed_block_dynamic_imbalance_qty": int(metrics["seed_block_dynamic_imbalance_qty"]),
+        "seed_late_fill_to_balance_candidate": int(metrics["seed_late_fill_to_balance_candidate"]),
+        "seed_qty_cap_late_fill_to_balance": int(metrics["seed_qty_cap_late_fill_to_balance"]),
+        "seed_block_late_fill_to_balance_qty": int(metrics["seed_block_late_fill_to_balance_qty"]),
+        "seed_late_fill_to_balance_qty_reduction": round(
+            float(metrics["seed_late_fill_to_balance_qty_reduction"]), 6
+        ),
         "seed_block_imbalance_cost": int(metrics["seed_block_imbalance_cost"]),
         "summary_by_day": summary_by_day,
     }
@@ -730,6 +753,86 @@ def research_ranking_from(control: dict[str, Any], variant: dict[str, Any], delt
     }
 
 
+def fill_to_balance_ranking(
+    late_repair: dict[str, Any],
+    dynamic: dict[str, Any],
+    fill: dict[str, Any],
+    fill_vs_late: dict[str, Any],
+    fill_vs_dynamic: dict[str, Any],
+) -> dict[str, Any]:
+    fee_positive = float(fill["fee_after_pnl"]) > 0.0
+    stress_positive = float(fill["stress100_worst_pnl"]) > 0.0
+    worst_day_positive = float(fill["worst_day_fee_after_pnl"]) > 0.0
+    added_seed_total = float(dynamic["seed_actions"]) - float(late_repair["seed_actions"])
+    added_pair_total = float(dynamic["pair_qty"]) - float(late_repair["pair_qty"])
+    added_fee_total = float(dynamic["fee_after_pnl"]) - float(late_repair["fee_after_pnl"])
+    added_seed_kept = float(fill["seed_actions"]) - float(late_repair["seed_actions"])
+    added_pair_kept = float(fill["pair_qty"]) - float(late_repair["pair_qty"])
+    added_fee_kept = float(fill["fee_after_pnl"]) - float(late_repair["fee_after_pnl"])
+    seed_added_retention = added_seed_kept / added_seed_total if added_seed_total > 0.0 else None
+    pair_added_retention = added_pair_kept / added_pair_total if added_pair_total > 0.0 else None
+    fee_added_retention = added_fee_kept / added_fee_total if added_fee_total > 0.0 else None
+    dynamic_qty_excess = float(dynamic["residual_qty_rate"]) - float(late_repair["residual_qty_rate"])
+    fill_qty_excess = float(fill["residual_qty_rate"]) - float(late_repair["residual_qty_rate"])
+    dynamic_cost_excess = float(dynamic["residual_cost_rate"]) - float(late_repair["residual_cost_rate"])
+    fill_cost_excess = float(fill["residual_cost_rate"]) - float(late_repair["residual_cost_rate"])
+    residual_excess_reduction = (
+        1.0 - fill_qty_excess / dynamic_qty_excess if dynamic_qty_excess > 0.0 else None
+    )
+    residual_cost_excess_reduction = (
+        1.0 - fill_cost_excess / dynamic_cost_excess if dynamic_cost_excess > 0.0 else None
+    )
+    dynamic_stress_gap = float(late_repair["stress100_worst_pnl"]) - float(dynamic["stress100_worst_pnl"])
+    fill_stress_gap = float(late_repair["stress100_worst_pnl"]) - float(fill["stress100_worst_pnl"])
+    stress_gap_reduction = 1.0 - fill_stress_gap / dynamic_stress_gap if dynamic_stress_gap > 0.0 else None
+
+    if not (fee_positive and stress_positive and worst_day_positive):
+        decision = "DISCARD"
+        label = "DISCARD_ECONOMIC_NEGATIVE"
+    elif (
+        (seed_added_retention is not None and seed_added_retention >= 0.50)
+        and (pair_added_retention is not None and pair_added_retention >= 0.50)
+        and (fee_added_retention is not None and fee_added_retention >= 0.50)
+        and (residual_excess_reduction is not None and residual_excess_reduction >= 0.50)
+        and (residual_cost_excess_reduction is not None and residual_cost_excess_reduction >= 0.50)
+        and (stress_gap_reduction is not None and stress_gap_reduction >= 0.25)
+    ):
+        decision = "KEEP"
+        label = "KEEP_FILL_TO_BALANCE_RESEARCH_ONLY"
+    elif (
+        float(fill["fee_after_pnl"]) > float(late_repair["fee_after_pnl"])
+        and float(fill["residual_qty_rate"]) <= float(dynamic["residual_qty_rate"])
+        and float(fill["residual_cost_rate"]) <= float(dynamic["residual_cost_rate"])
+    ):
+        decision = "UNKNOWN"
+        label = "TRADEOFF_ECON_POSITIVE_RISK_IMPROVED_BUT_NOT_KEEP"
+    else:
+        decision = "UNKNOWN"
+        label = "TRADEOFF_ECON_POSITIVE_WEAK_OR_RISK_WORSE"
+
+    return {
+        "decision_label": decision,
+        "label": label,
+        "fee_after_pnl_positive": fee_positive,
+        "stress100_worst_pnl_positive": stress_positive,
+        "worst_day_fee_after_pnl_positive": worst_day_positive,
+        "seed_added_retention_vs_dynamic": seed_added_retention,
+        "pair_qty_added_retention_vs_dynamic": pair_added_retention,
+        "fee_after_pnl_added_retention_vs_dynamic": fee_added_retention,
+        "residual_qty_excess_reduction_vs_dynamic": residual_excess_reduction,
+        "residual_cost_excess_reduction_vs_dynamic": residual_cost_excess_reduction,
+        "stress_gap_reduction_vs_dynamic": stress_gap_reduction,
+        "fill_vs_late_seed_action_retention": fill_vs_late.get("seed_action_retention"),
+        "fill_vs_late_pair_qty_retention": fill_vs_late.get("pair_qty_retention"),
+        "fill_vs_late_residual_qty_rate_reduction": fill_vs_late.get("residual_qty_rate_reduction"),
+        "fill_vs_late_residual_cost_rate_reduction": fill_vs_late.get("residual_cost_rate_reduction"),
+        "fill_vs_dynamic_seed_action_retention": fill_vs_dynamic.get("seed_action_retention"),
+        "fill_vs_dynamic_pair_qty_retention": fill_vs_dynamic.get("pair_qty_retention"),
+        "fill_vs_dynamic_residual_qty_rate_reduction": fill_vs_dynamic.get("residual_qty_rate_reduction"),
+        "fill_vs_dynamic_residual_cost_rate_reduction": fill_vs_dynamic.get("residual_cost_rate_reduction"),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--candidate-base-dir", default=str(DEFAULT_CANDIDATE_BASE_DIR))
@@ -801,6 +904,19 @@ def main() -> int:
             late_repair_only_after_s=90.0,
             risk_increasing_imbalance_qty_cap=1.10,
         ),
+        Profile(
+            name="variant_late_repair90_fill_to_balance_after_90",
+            seed_offset_max_s=120.0,
+            late_repair_only_after_s=90.0,
+            late_repair_fill_to_balance_after_s=90.0,
+        ),
+        Profile(
+            name="variant_late_repair90_dynamic_imbalance_fill_to_balance_after_90",
+            seed_offset_max_s=120.0,
+            late_repair_only_after_s=90.0,
+            risk_increasing_imbalance_qty_cap=1.10,
+            late_repair_fill_to_balance_after_s=90.0,
+        ),
     ]
     run_result = run_profiles(candidate_db_path, profiles, base_day_counts)
     control = run_result["profiles"]["control_seed_offset_max_120"]
@@ -810,6 +926,10 @@ def main() -> int:
     risk_px_variant = run_result["profiles"]["variant_late_repair90_risk_public_trade_px_hi_0p55"]
     no_side_risk_px_variant = run_result["profiles"]["variant_late_repair90_no_side_risk_public_trade_px_hi_0p55"]
     dynamic_imbalance_variant = run_result["profiles"]["variant_late_repair90_dynamic_risk_imbalance_cap_1p10"]
+    fill_to_balance_variant = run_result["profiles"]["variant_late_repair90_fill_to_balance_after_90"]
+    dynamic_fill_to_balance_variant = run_result["profiles"][
+        "variant_late_repair90_dynamic_imbalance_fill_to_balance_after_90"
+    ]
     baseline = {
         "seed_actions": core.get("seed_actions"),
         "active_markets": core.get("active_markets"),
@@ -831,6 +951,9 @@ def main() -> int:
     risk_px_delta = build_direct_delta(variant, risk_px_variant)
     no_side_risk_px_delta = build_direct_delta(variant, no_side_risk_px_variant)
     dynamic_imbalance_delta = build_direct_delta(variant, dynamic_imbalance_variant)
+    fill_to_balance_delta = build_direct_delta(variant, fill_to_balance_variant)
+    dynamic_fill_to_balance_delta = build_direct_delta(variant, dynamic_fill_to_balance_variant)
+    dynamic_fill_vs_dynamic_delta = build_direct_delta(dynamic_imbalance_variant, dynamic_fill_to_balance_variant)
     hard_cap_decision_label, hard_cap_status = decision_public_px_cap(variant, public_px_variant, public_px_delta)
     all_side_risk_decision_label, all_side_risk_status = decision_risk_px_cap(
         variant, risk_px_variant, risk_px_delta
@@ -838,7 +961,18 @@ def main() -> int:
     side_risk_decision_label, side_risk_status = decision_side_risk_px_cap(
         variant, no_side_risk_px_variant, no_side_risk_px_delta
     )
-    research_ranking = research_ranking_from(variant, dynamic_imbalance_variant, dynamic_imbalance_delta)
+    dynamic_imbalance_research_ranking = research_ranking_from(
+        variant, dynamic_imbalance_variant, dynamic_imbalance_delta
+    )
+    fill_to_balance_research_ranking = research_ranking_from(variant, fill_to_balance_variant, fill_to_balance_delta)
+    dynamic_fill_to_balance_research_ranking = fill_to_balance_ranking(
+        variant,
+        dynamic_imbalance_variant,
+        dynamic_fill_to_balance_variant,
+        dynamic_fill_to_balance_delta,
+        dynamic_fill_vs_dynamic_delta,
+    )
+    research_ranking = fill_to_balance_research_ranking
     decision_label = research_ranking["decision_label"]
     status = research_ranking["label"]
     manifest = {
@@ -848,9 +982,10 @@ def main() -> int:
         "decision_label": decision_label,
         "status": status,
         "hypothesis": (
-            "If risk-increasing seeds are the inventory path that creates residual, then applying a smaller post-seed "
-            "imbalance budget only to risk-increasing seeds on top of late-repair90 should improve risk-adjusted "
-            "economics while preserving repair/underweight seeds at full target_qty."
+            "Dynamic imbalance added sample and fee-after PnL but attributed residual to late small-deficit repair "
+            "seeds overfilling at full size. A fill-to-balance rule should cap late repair seed qty to the current "
+            "opposite_qty-same_qty deficit; the primary test applies it to late_repair90, with dynamic+fill kept as "
+            "a contrast for whether the earlier dynamic capacity can be salvaged."
         ),
         "inputs": {
             "candidate_base_manifest": str(candidate_manifest_path),
@@ -878,6 +1013,8 @@ def main() -> int:
             "discarded_all_side_risk_public_px_cap_variant": asdict(profiles[4]),
             "no_side_risk_public_px_cap_variant": asdict(profiles[5]),
             "dynamic_risk_imbalance_cap_variant": asdict(profiles[6]),
+            "late_repair90_fill_to_balance_variant": asdict(profiles[7]),
+            "dynamic_imbalance_fill_to_balance_variant": asdict(profiles[8]),
             "candidate_source": "candidate_base table, public_sell rows with 0 <= offset_s < 300",
             "official_fee_formula": "fee = shares * fee_rate * price * (1 - price)",
             "official_fee_rate": profiles[0].official_fee_rate,
@@ -891,6 +1028,8 @@ def main() -> int:
         "variant_late_repair90_risk_public_trade_px_hi_0p55_rerun": risk_px_variant,
         "variant_late_repair90_no_side_risk_public_trade_px_hi_0p55_rerun": no_side_risk_px_variant,
         "variant_late_repair90_dynamic_risk_imbalance_cap_1p10_rerun": dynamic_imbalance_variant,
+        "variant_late_repair90_fill_to_balance_after_90_rerun": fill_to_balance_variant,
+        "variant_late_repair90_dynamic_imbalance_fill_to_balance_after_90_rerun": dynamic_fill_to_balance_variant,
         "hard_offset90_comparison": hard_offset90_comparison,
         "late_repair90_comparison": comparison,
         "late_repair90_decision_label": late_repair_decision_label,
@@ -905,6 +1044,12 @@ def main() -> int:
         "risk_public_px_cap_delta_vs_late_repair90": risk_px_delta,
         "no_side_risk_public_px_cap_delta_vs_late_repair90": no_side_risk_px_delta,
         "dynamic_imbalance_delta_vs_late_repair90": dynamic_imbalance_delta,
+        "fill_to_balance_delta_vs_late_repair90": fill_to_balance_delta,
+        "dynamic_imbalance_fill_to_balance_delta_vs_late_repair90": dynamic_fill_to_balance_delta,
+        "dynamic_imbalance_fill_to_balance_delta_vs_dynamic_imbalance": dynamic_fill_vs_dynamic_delta,
+        "dynamic_imbalance_research_ranking": dynamic_imbalance_research_ranking,
+        "fill_to_balance_research_ranking": fill_to_balance_research_ranking,
+        "dynamic_imbalance_fill_to_balance_research_ranking": dynamic_fill_to_balance_research_ranking,
         "research_ranking": research_ranking,
         "promotion_gate": {
             "passed": False,
@@ -919,27 +1064,56 @@ def main() -> int:
             "control_seed_actions": control["seed_actions"],
             "late_repair90_seed_actions": variant["seed_actions"],
             "dynamic_imbalance_seed_actions": dynamic_imbalance_variant["seed_actions"],
+            "fill_to_balance_seed_actions": fill_to_balance_variant["seed_actions"],
+            "dynamic_fill_to_balance_seed_actions": dynamic_fill_to_balance_variant["seed_actions"],
             "dynamic_imbalance_seed_action_retention_vs_late_repair90": dynamic_imbalance_delta[
                 "seed_action_retention"
             ],
             "late_repair90_fee_after_pnl": variant["fee_after_pnl"],
             "dynamic_imbalance_fee_after_pnl": dynamic_imbalance_variant["fee_after_pnl"],
+            "fill_to_balance_fee_after_pnl": fill_to_balance_variant["fee_after_pnl"],
+            "dynamic_fill_to_balance_fee_after_pnl": dynamic_fill_to_balance_variant["fee_after_pnl"],
             "late_repair90_stress100_worst_pnl": variant["stress100_worst_pnl"],
             "dynamic_imbalance_stress100_worst_pnl": dynamic_imbalance_variant["stress100_worst_pnl"],
+            "fill_to_balance_stress100_worst_pnl": fill_to_balance_variant["stress100_worst_pnl"],
+            "dynamic_fill_to_balance_stress100_worst_pnl": dynamic_fill_to_balance_variant[
+                "stress100_worst_pnl"
+            ],
             "late_repair90_worst_day_fee_after_pnl": variant["worst_day_fee_after_pnl"],
             "dynamic_imbalance_worst_day_fee_after_pnl": dynamic_imbalance_variant[
                 "worst_day_fee_after_pnl"
             ],
+            "fill_to_balance_worst_day_fee_after_pnl": fill_to_balance_variant["worst_day_fee_after_pnl"],
+            "dynamic_fill_to_balance_worst_day_fee_after_pnl": dynamic_fill_to_balance_variant[
+                "worst_day_fee_after_pnl"
+            ],
             "late_repair90_weighted_pair_cost": variant["weighted_pair_cost"],
             "dynamic_imbalance_weighted_pair_cost": dynamic_imbalance_variant["weighted_pair_cost"],
+            "dynamic_fill_to_balance_weighted_pair_cost": dynamic_fill_to_balance_variant["weighted_pair_cost"],
             "weighted_pair_cost_reduction": dynamic_imbalance_delta["weighted_pair_cost_reduction"],
             "late_repair90_residual_qty_rate": variant["residual_qty_rate"],
             "dynamic_imbalance_residual_qty_rate": dynamic_imbalance_variant["residual_qty_rate"],
+            "fill_to_balance_residual_qty_rate": fill_to_balance_variant["residual_qty_rate"],
+            "dynamic_fill_to_balance_residual_qty_rate": dynamic_fill_to_balance_variant["residual_qty_rate"],
             "residual_qty_rate_reduction": dynamic_imbalance_delta["residual_qty_rate_reduction"],
             "late_repair90_residual_cost_rate": variant["residual_cost_rate"],
             "dynamic_imbalance_residual_cost_rate": dynamic_imbalance_variant["residual_cost_rate"],
+            "fill_to_balance_residual_cost_rate": fill_to_balance_variant["residual_cost_rate"],
+            "dynamic_fill_to_balance_residual_cost_rate": dynamic_fill_to_balance_variant["residual_cost_rate"],
             "residual_cost_rate_reduction": dynamic_imbalance_delta["residual_cost_rate_reduction"],
             "dynamic_imbalance_block_count": dynamic_imbalance_variant["seed_block_dynamic_imbalance_qty"],
+            "fill_to_balance_qty_cap_count": fill_to_balance_variant["seed_qty_cap_late_fill_to_balance"],
+            "fill_to_balance_block_count": fill_to_balance_variant["seed_block_late_fill_to_balance_qty"],
+            "fill_to_balance_qty_reduction": fill_to_balance_variant["seed_late_fill_to_balance_qty_reduction"],
+            "dynamic_fill_to_balance_qty_cap_count": dynamic_fill_to_balance_variant[
+                "seed_qty_cap_late_fill_to_balance"
+            ],
+            "dynamic_fill_to_balance_block_count": dynamic_fill_to_balance_variant[
+                "seed_block_late_fill_to_balance_qty"
+            ],
+            "dynamic_fill_to_balance_qty_reduction": dynamic_fill_to_balance_variant[
+                "seed_late_fill_to_balance_qty_reduction"
+            ],
             "discarded_all_side_risk_public_px_cap_seed_actions": risk_px_variant["seed_actions"],
             "discarded_all_side_risk_public_px_cap_residual_qty_rate": risk_px_variant["residual_qty_rate"],
             "discarded_hard_public_px_cap_seed_actions": public_px_variant["seed_actions"],
@@ -956,11 +1130,13 @@ def main() -> int:
             "The all-side risk-increasing public price cap is retained only as a discarded contrast.",
             "The NO-side-only risk-increasing public price cap is retained only as a discarded contrast.",
             "The dynamic imbalance variant caps only risk-increasing seed qty; underweight/repair seeds still use full target_qty=5.",
+            "The primary fill-to-balance variant leaves late_repair90 otherwise unchanged and caps late underweight repair seed qty to the live deficit.",
+            "The dynamic+fill variant tests whether the prior dynamic imbalance capacity gain can be salvaged; it is a contrast, not the primary decision.",
         ],
         "next_action": (
-            "If KEEP, implement/smoke the dynamic risk-increasing imbalance cap in the no-order shadow runner before "
-            "spending another EC2 shadow; if TRADEOFF/UNKNOWN, inspect which day/side buckets lost economics before "
-            "testing another non-price inventory mechanism."
+            "If KEEP, add default-off fill-to-balance support to the no-order shadow runner and local smoke it before "
+            "spending another EC2 shadow; if TRADEOFF/UNKNOWN, inspect whether the retained extra sample is too small "
+            "or whether another non-price inventory mechanism is needed."
         ),
         "side_effects": {
             "candidate_base_duckdb_read_only": True,
