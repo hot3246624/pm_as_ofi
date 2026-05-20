@@ -1,0 +1,125 @@
+{
+  "acceptance_passed": false,
+  "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_eventlite_driver_20260520T080809Z/remote/output/aggregate_report.json",
+  "artifact": "xuan_b27_dplus_shadow_trading_acceptance",
+  "auth_network_started": false,
+  "cancels_sent": false,
+  "checks": {
+    "market_scope_ok": true,
+    "no_order_safety_ok": true,
+    "paths_safe": true,
+    "pnl_metrics_ok": false,
+    "report_present": true,
+    "report_shape_ok": true,
+    "residual_risk_ok": false,
+    "sample_size_ok": false
+  },
+  "created_utc": "20260520T084334Z",
+  "evidence_interpretation": {
+    "does_not_prove": [
+      "shadow trading acceptance",
+      "live authenticated exchange fills",
+      "actual exchange queue position",
+      "real wallet/cashflow PnL",
+      "maker fee/rebate settlement"
+    ],
+    "proves": [
+      "existing D+ passive/passive shadow runner produced simulated trading metrics",
+      "virtual fills/pairing were evaluated without sending orders"
+    ]
+  },
+  "failures": [
+    "shadow_trading_sample_size_failed",
+    "shadow_trading_pnl_metrics_failed",
+    "shadow_trading_residual_risk_failed"
+  ],
+  "metric_failures": {
+    "pnl_metrics": [
+      {
+        "actual": 1.23,
+        "metric": "net_pair_cost_p90",
+        "required_max": 1.0
+      }
+    ],
+    "residual_risk": [
+      {
+        "actual": 11.0625,
+        "metric": "residual_qty",
+        "required_max": 10.0
+      }
+    ],
+    "sample_size": [
+      {
+        "actual": 42,
+        "metric": "candidates",
+        "required_min": 100
+      }
+    ]
+  },
+  "next_gate": "run or locate a real D+ passive/passive shadow trading report with pair/PnL/residual metrics before any G2 canary",
+  "orders_sent": false,
+  "redeems_sent": false,
+  "report_safety": {
+    "dry_run": "true",
+    "orders_sent": false,
+    "shared_ingress_role": "readonly",
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+  },
+  "runner_manifest": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_eventlite_driver_20260520T080809Z/remote/output/manifest.json",
+  "schema_version": 1,
+  "scope": "local_no_network_shadow_trading_acceptance",
+  "shadow_run_dir": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_eventlite_driver_20260520T080809Z/remote/output",
+  "side_effects": {
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_scanned": false,
+    "redeems_sent": false,
+    "shadow_runner_started": false,
+    "started_canary": false
+  },
+  "source_tool": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+  "started_canary": false,
+  "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+  "strategy": "xuan_b27_dplus",
+  "thresholds": {
+    "market_prefix": "btc-updown-5m",
+    "max_material_residual_lots": 0,
+    "max_net_pair_cost_p90": 1.0,
+    "max_residual_cost": 5.0,
+    "max_residual_qty": 10.0,
+    "min_candidates": 100,
+    "min_markets": 1,
+    "min_pair_actions": 1,
+    "min_pair_pnl": 0.0,
+    "min_pair_qty": 1.0,
+    "min_qty_pair_share_of_filled": 0.5,
+    "min_queue_supported_fills": 1,
+    "min_roi_on_filled_cost": 0.0
+  },
+  "trading_metrics": {
+    "candidates": 42,
+    "fill_rate": 0.6190476190476191,
+    "fill_wait_p50_ms": 54392.0,
+    "fill_wait_p90_ms": 97312.0,
+    "filled_cost": 13.019375,
+    "filled_qty": 32.3125,
+    "markets": 26,
+    "material_residual_lots": 0,
+    "net_pair_cost_p50": 0.9480000000000001,
+    "net_pair_cost_p90": 1.23,
+    "pair_actions": 11,
+    "pair_cost_p50": 0.92,
+    "pair_cost_p90": 1.23,
+    "pair_pnl": 0.55,
+    "pair_qty": 13.75,
+    "pair_wait_p50_ms": 71798.0,
+    "pair_wait_p90_ms": 164940.0,
+    "qty_pair_share_of_filled": 0.851063829787234,
+    "queue_supported_fills": 26,
+    "residual_cost": 2.494375,
+    "residual_qty": 11.0625,
+    "roi_on_filled_cost": 0.04224473140991791,
+    "roi_on_seed_cost": 0.02390459891886019
+  }
+}
