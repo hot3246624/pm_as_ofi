@@ -1,0 +1,31 @@
+{
+  "artifact": "xuan_b27_dplus_scoring_contract",
+  "created_utc": "20260520T102624Z",
+  "decision_label": "KEEP",
+  "docs_updated": [
+    "docs/research/xuan/DPLUS_SCORING_CONTRACT_ZH.md",
+    "docs/research/xuan/DPLUS_AUTORESEARCH_LOOP_ZH.md",
+    "docs/research/xuan/DPLUS_RUNTIME_MODULE_READINESS_ZH.md"
+  ],
+  "lane": "status_hygiene",
+  "next_action": "Return to causal_verifier with a non-source-public-price inventory-path mechanism; do not run EC2 shadow/canary until a local verifier returns KEEP under the scoring contract.",
+  "scoring_contract": {
+    "final_economic_objective": "pair_pnl + residual_settle_or_mark_pnl - official_fee - stress_or_impact_budget must be positive and stable before deployment evidence can be claimed.",
+    "research_mechanism_ranking": "Positive economic PnL with worse residual/p90 versus a stronger control is a tradeoff or weaker mechanism, not an economic strategy failure.",
+    "shadow_canary_hard_gate": "Sample, p90, residual, material residual, path, scope, and no-order safety remain promotion blockers but are not the final objective function."
+  },
+  "side_effects": {
+    "broker_or_shared_ingress_modified": false,
+    "cancels_sent": false,
+    "collector_scanned": false,
+    "ec2_shadow_started": false,
+    "full_completion_store_scanned": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_scanned": false,
+    "redeems_sent": false,
+    "replay_scanned": false,
+    "ssh_started": false
+  },
+  "status": "KEEP_SCORING_CONTRACT_READY"
+}
