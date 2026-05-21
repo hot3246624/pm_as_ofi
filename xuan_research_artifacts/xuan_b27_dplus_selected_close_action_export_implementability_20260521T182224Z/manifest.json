@@ -1,0 +1,156 @@
+{
+  "active_lane": "implementability_review",
+  "artifact": "xuan_b27_dplus_selected_close_action_export_implementability",
+  "created_utc": "2026-05-21T18:22:24Z",
+  "decision": "KEEP",
+  "label": "KEEP_SELECTED_CLOSE_ACTION_EXPORT_DEFAULT_OFF_READY",
+  "scope": {
+    "worktree": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research",
+    "state_machine_script": "scripts/xuan_b27_dplus_candidate_pipeline_state_machine_rerun.py",
+    "smoke_script": "scripts/xuan_b27_dplus_selected_close_actions_export_smoke.sh",
+    "smoke_manifest": "xuan_research_artifacts/xuan_b27_dplus_selected_close_actions_export_smoke_20260521T182224Z/manifest.json"
+  },
+  "implementation": {
+    "default_off": true,
+    "cli": {
+      "selected_close_actions_output": "--selected-close-actions-output",
+      "selected_close_actions_profile": "--selected-close-actions-profile",
+      "selected_close_actions_sample_cap": "--selected-close-actions-sample-cap",
+      "selected_close_actions_per_day_cap": "--selected-close-actions-per-day-cap",
+      "selected_close_actions_fee_rate_source": "--selected-close-actions-fee-rate-source"
+    },
+    "hook": "maybe_seed appends the newly accepted seed Lot, then calls pair_inventory with trigger_lot when export is enabled. pair_inventory records a close row only when that trigger lot participates in a pair before inventory mutation.",
+    "behavior_preservation": "When --selected-close-actions-output is unset, close_recorder is None and the existing pair_inventory metrics/mutation path is unchanged.",
+    "state_fields_added": {
+      "Lot.lot_id": "default-empty optional stable residual lot id",
+      "Lot.original_qty": "default-zero optional accepted seed quantity so multi-pair close rows do not confuse remaining qty with original action qty",
+      "State.condition_id": "default-empty optional condition id for stable close_action_id and lookup keys"
+    },
+    "sample_policy": {
+      "sample_cap_default": 30,
+      "per_day_cap_default": 2,
+      "profile_default": "variant_late_repair_only_after_90"
+    }
+  },
+  "selected_close_action_export_v1_fields": [
+    "schema_version",
+    "profile_name",
+    "validation_request_id",
+    "day",
+    "condition_id",
+    "slug",
+    "close_action_id",
+    "close_sequence",
+    "source_seed_action_id",
+    "source_seed_candidate_row_id",
+    "source_seed_ts_ms",
+    "source_seed_side",
+    "source_seed_qty",
+    "source_seed_px",
+    "residual_lot_id",
+    "residual_lot_source_seed_action_id",
+    "residual_lot_source_candidate_row_id",
+    "residual_lot_side",
+    "residual_lot_remaining_qty_before_close",
+    "residual_lot_remaining_cost_before_close",
+    "close_ts_ms",
+    "close_side",
+    "close_qty",
+    "close_px",
+    "close_cost",
+    "close_fee_rate",
+    "close_fee_rate_source",
+    "close_official_fee",
+    "expected_close_decision",
+    "expected_close_status",
+    "close_reason",
+    "paired_qty",
+    "paired_yes_source_action_id",
+    "paired_no_source_action_id",
+    "paired_yes_px",
+    "paired_no_px",
+    "paired_cost",
+    "pair_pnl_delta",
+    "lookup_day",
+    "lookup_condition_id",
+    "lookup_close_ts_ms",
+    "lookup_close_side",
+    "close_book_l1_ref",
+    "close_book_l2_ref",
+    "close_trade_before_ref",
+    "close_trade_after_ref"
+  ],
+  "validation": {
+    "py_compile": [
+      "scripts/xuan_b27_dplus_candidate_pipeline_state_machine_rerun.py",
+      "scripts/xuan_b27_dplus_fill_to_balance_transfer_gap_verifier.py",
+      "scripts/xuan_b27_dplus_size_aware_fill_to_balance_transfer_verifier.py",
+      "scripts/xuan_b27_dplus_no_order_gate_parity_verifier.py",
+      "scripts/xuan_b27_dplus_dynamic_condition_ledger_risk_state_verifier.py"
+    ],
+    "bash_n": "scripts/xuan_b27_dplus_selected_close_actions_export_smoke.sh",
+    "smoke": {
+      "decision": "KEEP",
+      "label": "KEEP_SELECTED_CLOSE_ACTION_EXPORT_SMOKE_PASS",
+      "checks": {
+        "default_export_disabled": true,
+        "export_enabled": true,
+        "default_behavior_metrics_unchanged": true,
+        "one_selected_close_action": true,
+        "profile_name": true,
+        "close_side_is_new_seed": true,
+        "residual_lot_side_is_prior_inventory": true,
+        "source_seed_candidate_row_id": true,
+        "residual_source_candidate_row_id": true,
+        "fee_rate_source_present": true,
+        "lookup_keys_present": true,
+        "close_refs_blank_until_replay_validation": true
+      }
+    },
+    "git_diff_check": "PASS"
+  },
+  "source_truth_boundary": {
+    "replay_store_v2_used_for_broad_strategy_search": false,
+    "replay_store_v2_queried_in_smoke": false,
+    "selected_close_actions_are_source_truth": false,
+    "interpretation": "The export provides selected close-action rows for a later bounded replay_store_v2 validation response. It is not private truth, strategy economics, deployable evidence, shadow-ready evidence, canary evidence, or promotion evidence."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SELECTED_CLOSE_ACTION_EXPORT_DEFAULT_OFF_READY",
+    "interpretation": "Current pair_inventory/Lot state is sufficient to identify the newly accepted seed and paired opposite residual lot before mutation, so selected close-action export is implementable."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "EXPORT_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "side_effects": {
+    "network_started": false,
+    "ssh_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "broad_strategy_search": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_action": {
+    "lane": "implementability_review",
+    "description": "Extend the replay_store_v2 truth validation response builder/scorer or add a small adapter so selected_close_action_export_v1 rows can become strict_rescue_closes.csv rows through bounded selected source-row lookups only.",
+    "remote_or_canary_allowed": false
+  },
+  "pass_fail_criteria_for_next": {
+    "KEEP": "Builder/scorer adapter accepts selected_close_action_export_v1 rows, performs bounded replay_store_v2 lookups by day/condition/close_ts/side, writes strict_rescue_closes.csv with refs/fee checks, and preserves private/deployable/promotion guards false.",
+    "UNKNOWN": "Builder/scorer cannot map export fields to truth_validation_response_v1 strict_rescue_closes without exact missing fields named.",
+    "DISCARD": "Adapter would require broad replay discovery, hard-coded fee rates, external private truth, frozen mechanisms, or promotion claims.",
+    "BLOCKED": "Local file/artifact corruption only."
+  }
+}

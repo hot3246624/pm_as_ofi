@@ -10,6 +10,7 @@ event JSONL.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 from collections import defaultdict, deque
@@ -77,6 +78,8 @@ class Lot:
     ts_ms: int
     side: str
     source_candidate_row_id: str
+    lot_id: str = ""
+    original_qty: float = 0.0
 
 
 @dataclass
@@ -85,9 +88,184 @@ class State:
     slug: str
     winner_side: str | None
     lots: dict[str, deque[Lot]]
+    condition_id: str = ""
     last_seed_ts_ms: int = -(10**18)
     last_ts_ms: int = 0
     active: bool = False
+
+
+SELECTED_CLOSE_ACTION_FIELDS = [
+    "schema_version",
+    "profile_name",
+    "validation_request_id",
+    "day",
+    "condition_id",
+    "slug",
+    "close_action_id",
+    "close_sequence",
+    "source_seed_action_id",
+    "source_seed_candidate_row_id",
+    "source_seed_ts_ms",
+    "source_seed_side",
+    "source_seed_qty",
+    "source_seed_px",
+    "residual_lot_id",
+    "residual_lot_source_seed_action_id",
+    "residual_lot_source_candidate_row_id",
+    "residual_lot_side",
+    "residual_lot_remaining_qty_before_close",
+    "residual_lot_remaining_cost_before_close",
+    "close_ts_ms",
+    "close_side",
+    "close_qty",
+    "close_px",
+    "close_cost",
+    "close_fee_rate",
+    "close_fee_rate_source",
+    "close_official_fee",
+    "expected_close_decision",
+    "expected_close_status",
+    "close_reason",
+    "paired_qty",
+    "paired_yes_source_action_id",
+    "paired_no_source_action_id",
+    "paired_yes_px",
+    "paired_no_px",
+    "paired_cost",
+    "pair_pnl_delta",
+    "lookup_day",
+    "lookup_condition_id",
+    "lookup_close_ts_ms",
+    "lookup_close_side",
+    "close_book_l1_ref",
+    "close_book_l2_ref",
+    "close_trade_before_ref",
+    "close_trade_after_ref",
+]
+
+
+@dataclass
+class SelectedCloseActionRecorder:
+    profile_name: str
+    fee_rate_source: str
+    sample_cap: int = 30
+    per_day_cap: int = 2
+    rows: list[dict[str, Any]] | None = None
+    sequence_by_key: dict[tuple[str, str, str], int] | None = None
+    selected_by_day: dict[str, int] | None = None
+    eligible_count: int = 0
+    skipped_by_cap: int = 0
+
+    def __post_init__(self) -> None:
+        if self.rows is None:
+            self.rows = []
+        if self.sequence_by_key is None:
+            self.sequence_by_key = {}
+        if self.selected_by_day is None:
+            self.selected_by_day = defaultdict(int)
+
+    def should_record_profile(self, profile: Profile) -> bool:
+        return self.profile_name == "all" or profile.name == self.profile_name
+
+    def record(
+        self,
+        *,
+        profile: Profile,
+        state: State,
+        ts_ms: int,
+        trigger_lot: Lot,
+        residual_lot: Lot,
+        yes_lot: Lot,
+        no_lot: Lot,
+        take: float,
+        pair_cost: float,
+    ) -> None:
+        if not self.should_record_profile(profile):
+            return
+        self.eligible_count += 1
+        condition_id = state.condition_id or "unknown_condition"
+        key = (profile.name, state.day, condition_id)
+        assert self.sequence_by_key is not None
+        close_sequence = self.sequence_by_key.get(key, 0) + 1
+        self.sequence_by_key[key] = close_sequence
+        assert self.rows is not None
+        assert self.selected_by_day is not None
+        if len(self.rows) >= self.sample_cap or self.selected_by_day[state.day] >= self.per_day_cap:
+            self.skipped_by_cap += 1
+            return
+
+        trigger_qty_before = trigger_lot.qty
+        residual_qty_before = residual_lot.qty
+        residual_cost_before = residual_lot.qty * residual_lot.px
+        close_cost = take * trigger_lot.px
+        close_fee = official_taker_fee(take, trigger_lot.px, profile.official_fee_rate)
+        yes_source = yes_lot.source_candidate_row_id
+        no_source = no_lot.source_candidate_row_id
+        row = {
+            "schema_version": "selected_close_action_export_v1",
+            "profile_name": profile.name,
+            "validation_request_id": f"strict_rescue_close_selected_request_v1:{profile.name}",
+            "day": state.day,
+            "condition_id": condition_id,
+            "slug": state.slug,
+            "close_action_id": f"close:{profile.name}:{state.day}:{condition_id}:{close_sequence}",
+            "close_sequence": close_sequence,
+            "source_seed_action_id": trigger_lot.source_candidate_row_id,
+            "source_seed_candidate_row_id": trigger_lot.source_candidate_row_id,
+            "source_seed_ts_ms": trigger_lot.ts_ms,
+            "source_seed_side": trigger_lot.side,
+            "source_seed_qty": round(trigger_lot.original_qty or trigger_qty_before, 12),
+            "source_seed_px": round(trigger_lot.px, 12),
+            "residual_lot_id": residual_lot.lot_id or f"residual_lot:{state.day}:{residual_lot.source_candidate_row_id}",
+            "residual_lot_source_seed_action_id": residual_lot.source_candidate_row_id,
+            "residual_lot_source_candidate_row_id": residual_lot.source_candidate_row_id,
+            "residual_lot_side": residual_lot.side,
+            "residual_lot_remaining_qty_before_close": round(residual_qty_before, 12),
+            "residual_lot_remaining_cost_before_close": round(residual_cost_before, 12),
+            "close_ts_ms": ts_ms,
+            "close_side": trigger_lot.side,
+            "close_qty": round(take, 12),
+            "close_px": round(trigger_lot.px, 12),
+            "close_cost": round(close_cost, 12),
+            "close_fee_rate": profile.official_fee_rate,
+            "close_fee_rate_source": self.fee_rate_source,
+            "close_official_fee": round(close_fee, 12),
+            "expected_close_decision": "ACCEPTED_SELECTED_CLOSE_ACTION",
+            "expected_close_status": "SOURCE_TRUTH_RESEARCH_ONLY_PENDING",
+            "close_reason": "pair_inventory_new_seed_offsets_residual",
+            "paired_qty": round(take, 12),
+            "paired_yes_source_action_id": yes_source,
+            "paired_no_source_action_id": no_source,
+            "paired_yes_px": round(yes_lot.px, 12),
+            "paired_no_px": round(no_lot.px, 12),
+            "paired_cost": round(pair_cost, 12),
+            "pair_pnl_delta": round(take * (1.0 - pair_cost), 12),
+            "lookup_day": state.day,
+            "lookup_condition_id": condition_id,
+            "lookup_close_ts_ms": ts_ms,
+            "lookup_close_side": trigger_lot.side,
+            "close_book_l1_ref": "",
+            "close_book_l2_ref": "",
+            "close_trade_before_ref": "",
+            "close_trade_after_ref": "",
+        }
+        self.rows.append(row)
+        self.selected_by_day[state.day] += 1
+
+    def summary(self) -> dict[str, Any]:
+        assert self.rows is not None
+        assert self.selected_by_day is not None
+        return {
+            "schema_version": "selected_close_action_export_v1",
+            "profile_name": self.profile_name,
+            "eligible_close_actions": self.eligible_count,
+            "selected_close_actions": len(self.rows),
+            "skipped_by_sample_or_day_cap": self.skipped_by_cap,
+            "sample_cap": self.sample_cap,
+            "per_day_cap": self.per_day_cap,
+            "selected_by_day": dict(sorted(self.selected_by_day.items())),
+            "fee_rate_source": self.fee_rate_source,
+        }
 
 
 def utc_label() -> str:
@@ -101,6 +279,15 @@ def read_json(path: Path) -> dict[str, Any]:
 def write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
+
+
+def write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in fields})
 
 
 def path_safe(path: Path) -> bool:
@@ -156,7 +343,14 @@ def pop_lot(lots: deque[Lot], idx: int) -> Lot:
     return lot
 
 
-def pair_inventory(profile: Profile, state: State, metrics: defaultdict[str, float], ts_ms: int) -> None:
+def pair_inventory(
+    profile: Profile,
+    state: State,
+    metrics: defaultdict[str, float],
+    ts_ms: int,
+    close_recorder: SelectedCloseActionRecorder | None = None,
+    trigger_lot: Lot | None = None,
+) -> None:
     yes = state.lots["YES"]
     no = state.lots["NO"]
     while yes and no:
@@ -169,6 +363,31 @@ def pair_inventory(profile: Profile, state: State, metrics: defaultdict[str, flo
             break
         pair_cost = yes_lot.px + no_lot.px
         older_ts = min(yes_lot.ts_ms, no_lot.ts_ms)
+        if close_recorder is not None and trigger_lot is not None:
+            if yes_lot is trigger_lot:
+                close_recorder.record(
+                    profile=profile,
+                    state=state,
+                    ts_ms=ts_ms,
+                    trigger_lot=yes_lot,
+                    residual_lot=no_lot,
+                    yes_lot=yes_lot,
+                    no_lot=no_lot,
+                    take=take,
+                    pair_cost=pair_cost,
+                )
+            elif no_lot is trigger_lot:
+                close_recorder.record(
+                    profile=profile,
+                    state=state,
+                    ts_ms=ts_ms,
+                    trigger_lot=no_lot,
+                    residual_lot=yes_lot,
+                    yes_lot=yes_lot,
+                    no_lot=no_lot,
+                    take=take,
+                    pair_cost=pair_cost,
+                )
         add_count(metrics, state.day, "pair_actions")
         add_metric(metrics, state.day, "pair_qty", take)
         add_metric(metrics, state.day, "pair_cost_sum", take * pair_cost)
@@ -191,6 +410,7 @@ def state_for(states: dict[str, State], row: dict[str, Any]) -> State:
             slug=str(row["slug"]),
             winner_side=str(row["winner_side"]) if row.get("winner_side") else None,
             lots={"YES": deque(), "NO": deque()},
+            condition_id=condition_id,
         )
         states[condition_id] = state
     elif state.winner_side is None and row.get("winner_side"):
@@ -199,7 +419,13 @@ def state_for(states: dict[str, State], row: dict[str, Any]) -> State:
     return state
 
 
-def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: defaultdict[str, float]) -> None:
+def maybe_seed(
+    row: dict[str, Any],
+    profile: Profile,
+    state: State,
+    metrics: defaultdict[str, float],
+    close_recorder: SelectedCloseActionRecorder | None = None,
+) -> None:
     day = str(row["day"])
     add_count(metrics, day, "candidate_count")
     side = str(row["side"])
@@ -304,15 +530,16 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
             add_count(metrics, day, "seed_block_late_fill_to_balance_qty")
         return
 
-    state.lots[side].append(
-        Lot(
-            qty=qty,
-            px=seed_px,
-            ts_ms=ts_ms,
-            side=side,
-            source_candidate_row_id=str(row["candidate_row_id"]),
-        )
+    seed_lot = Lot(
+        qty=qty,
+        px=seed_px,
+        ts_ms=ts_ms,
+        side=side,
+        source_candidate_row_id=str(row["candidate_row_id"]),
+        lot_id=f"residual_lot:{day}:{row['candidate_row_id']}",
+        original_qty=qty,
     )
+    state.lots[side].append(seed_lot)
     state.last_seed_ts_ms = ts_ms
     state.active = True
     fee = official_taker_fee(qty, seed_px, profile.official_fee_rate)
@@ -320,7 +547,7 @@ def maybe_seed(row: dict[str, Any], profile: Profile, state: State, metrics: def
     add_metric(metrics, day, "gross_buy_qty", qty)
     add_metric(metrics, day, "gross_buy_cost", qty * seed_px)
     add_metric(metrics, day, "official_taker_fee", fee)
-    pair_inventory(profile, state, metrics, ts_ms)
+    pair_inventory(profile, state, metrics, ts_ms, close_recorder=close_recorder, trigger_lot=seed_lot)
 
 
 def settle(states: dict[str, State], profile: Profile, metrics: defaultdict[str, float]) -> None:
@@ -431,7 +658,12 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
     }
 
 
-def run_profiles(candidate_base_db: Path, profiles: list[Profile], base_day_counts: dict[str, int]) -> dict[str, Any]:
+def run_profiles(
+    candidate_base_db: Path,
+    profiles: list[Profile],
+    base_day_counts: dict[str, int],
+    close_recorder: SelectedCloseActionRecorder | None = None,
+) -> dict[str, Any]:
     con = duckdb.connect(str(candidate_base_db), read_only=True)
     select_cols = [
         "candidate_row_id",
@@ -474,7 +706,13 @@ def run_profiles(candidate_base_db: Path, profiles: list[Profile], base_day_coun
             row_count += 1
             for profile in profiles:
                 state = state_for(states_by_profile[profile.name], row)
-                maybe_seed(row, profile, state, metrics_by_profile[profile.name])
+                maybe_seed(
+                    row,
+                    profile,
+                    state,
+                    metrics_by_profile[profile.name],
+                    close_recorder=close_recorder,
+                )
     for profile in profiles:
         settle(states_by_profile[profile.name], profile, metrics_by_profile[profile.name])
     con.close()
@@ -484,6 +722,7 @@ def run_profiles(candidate_base_db: Path, profiles: list[Profile], base_day_coun
             profile.name: finish_metrics(profile, metrics_by_profile[profile.name], base_day_counts)
             for profile in profiles
         },
+        "selected_close_actions": close_recorder.summary() if close_recorder is not None else None,
     }
 
 
@@ -838,6 +1077,25 @@ def main() -> int:
     parser.add_argument("--candidate-base-dir", default=str(DEFAULT_CANDIDATE_BASE_DIR))
     parser.add_argument("--baseline-result-dir", default=str(DEFAULT_BASELINE_RESULT_DIR))
     parser.add_argument("--output-dir")
+    parser.add_argument(
+        "--selected-close-actions-output",
+        help="Default-off CSV export path for selected_close_action_export_v1 rows.",
+    )
+    parser.add_argument(
+        "--selected-close-actions-profile",
+        default="variant_late_repair_only_after_90",
+        help="Profile to sample for selected close-action export, or 'all'.",
+    )
+    parser.add_argument("--selected-close-actions-sample-cap", type=int, default=30)
+    parser.add_argument("--selected-close-actions-per-day-cap", type=int, default=2)
+    parser.add_argument(
+        "--selected-close-actions-fee-rate-source",
+        default=(
+            "state_machine_result_config:"
+            "pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_"
+            "20260502_20260518_publicfull_v2:official_fee_rate=0.07"
+        ),
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -865,6 +1123,18 @@ def main() -> int:
         write_json(output_dir / "manifest.json", manifest)
         print(json.dumps(manifest, indent=2, sort_keys=True))
         return 0
+
+    selected_close_actions_path = Path(args.selected_close_actions_output) if args.selected_close_actions_output else None
+    close_recorder = (
+        SelectedCloseActionRecorder(
+            profile_name=args.selected_close_actions_profile,
+            fee_rate_source=args.selected_close_actions_fee_rate_source,
+            sample_cap=max(0, int(args.selected_close_actions_sample_cap)),
+            per_day_cap=max(0, int(args.selected_close_actions_per_day_cap)),
+        )
+        if selected_close_actions_path is not None
+        else None
+    )
 
     candidate_manifest = read_json(candidate_manifest_path)
     result_manifest = read_json(result_manifest_path)
@@ -918,7 +1188,10 @@ def main() -> int:
             late_repair_fill_to_balance_after_s=90.0,
         ),
     ]
-    run_result = run_profiles(candidate_db_path, profiles, base_day_counts)
+    run_result = run_profiles(candidate_db_path, profiles, base_day_counts, close_recorder=close_recorder)
+    if selected_close_actions_path is not None:
+        assert close_recorder is not None
+        write_csv(selected_close_actions_path, close_recorder.rows or [], SELECTED_CLOSE_ACTION_FIELDS)
     control = run_result["profiles"]["control_seed_offset_max_120"]
     hard_offset90 = run_result["profiles"]["discarded_hard_seed_offset_max_90"]
     variant = run_result["profiles"]["variant_late_repair_only_after_90"]
@@ -1018,6 +1291,23 @@ def main() -> int:
             "candidate_source": "candidate_base table, public_sell rows with 0 <= offset_s < 300",
             "official_fee_formula": "fee = shares * fee_rate * price * (1 - price)",
             "official_fee_rate": profiles[0].official_fee_rate,
+            "selected_close_actions_export_enabled": selected_close_actions_path is not None,
+            "selected_close_actions_profile": args.selected_close_actions_profile,
+            "selected_close_actions_sample_cap": int(args.selected_close_actions_sample_cap),
+            "selected_close_actions_per_day_cap": int(args.selected_close_actions_per_day_cap),
+            "selected_close_actions_fee_rate_source": args.selected_close_actions_fee_rate_source,
+        },
+        "selected_close_actions_export": {
+            "enabled": selected_close_actions_path is not None,
+            "path": str(selected_close_actions_path) if selected_close_actions_path is not None else None,
+            "fields": SELECTED_CLOSE_ACTION_FIELDS if selected_close_actions_path is not None else [],
+            "summary": run_result.get("selected_close_actions"),
+            "default_behavior_unchanged_when_unset": True,
+            "source_truth_boundary": (
+                "selected_close_actions rows are only selected candidate close actions for future bounded "
+                "replay_store_v2 lookup; this export is not replay discovery, private truth, deployable, "
+                "shadow-ready, canary, or promotion evidence."
+            ),
         },
         "processed_public_sell_rows": run_result["processed_public_sell_rows"],
         "baseline_reported": baseline,
