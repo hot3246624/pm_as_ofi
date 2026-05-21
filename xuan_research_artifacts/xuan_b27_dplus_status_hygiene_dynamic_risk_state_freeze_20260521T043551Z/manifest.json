@@ -1,0 +1,123 @@
+{
+  "artifact": "xuan_b27_dplus_status_hygiene_dynamic_risk_state_freeze",
+  "created_utc": "20260521T043551Z",
+  "decision_label": "KEEP",
+  "status": "KEEP_DYNAMIC_RISK_STATE_FREEZE_AND_SOURCE_LINK_TRANSITION_SPEC_SELECTED",
+  "lane": "status_hygiene",
+  "scope": {
+    "local_only": true,
+    "candidate_base_duckdb_read": false,
+    "private_owner_trade_truth_used": false,
+    "ssh_used": false,
+    "shared_ingress_connected": false,
+    "shadow_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "runner_or_trading_paths_modified": false,
+    "orders_cancels_redeems_sent": false
+  },
+  "frozen_or_blocked_families": {
+    "fill_to_balance90": {
+      "status": "FROZEN_RESEARCH_ONLY",
+      "evidence": [
+        "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_sample_scale_driver_20260520T145943Z/audit_manifest.json",
+        "xuan_research_artifacts/xuan_b27_dplus_shadow_fill_to_balance_diagnostic_driver_20260520T191701Z/audit_manifest.json",
+        "xuan_research_artifacts/xuan_b27_dplus_no_order_gate_parity_verifier_20260520T212620Z/manifest.json",
+        "xuan_research_artifacts/xuan_b27_dplus_same_window_source_field_readiness_verifier_20260520T222107Z/manifest.json"
+      ],
+      "reason": "Local historical candidate-pipeline positives did not transfer to same-host no-order shadows; same-window source fields are insufficient."
+    },
+    "portfolio_ledger_diagnostic_3600s_shadow": {
+      "status": "FROZEN_PROMOTION_CANDIDATE",
+      "evidence": [
+        "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z/audit_manifest.json",
+        "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_portfolio_ledger_diagnostic_20260521T001843Z/manifest.json",
+        "xuan_research_artifacts/xuan_b27_dplus_portfolio_ledger_transfer_attribution_20260521T031327Z/manifest.json"
+      ],
+      "reason": "Live/no-order residual risk was broad and retrospective positive-only filtering destroyed sample."
+    },
+    "dynamic_condition_ledger_risk_state_gate": {
+      "status": "UNKNOWN_MIXED_NOT_SHADOW_CANDIDATE",
+      "evidence": [
+        "xuan_research_artifacts/xuan_b27_dplus_dynamic_condition_ledger_risk_state_verifier_20260521T041929Z/manifest.json"
+      ],
+      "reason": "Online gate blocked 65208 risk-increasing seeds but only improved residual_qty_rate 1.2097% to 1.2013%, worsened residual_cost_rate 0.9470% to 0.9799%, and reduced fee/stress materially."
+    }
+  },
+  "selected_next_spec": {
+    "name": "default_off_source_link_transition_event_lite_summary",
+    "type": "source-field/default-off instrumentation spec",
+    "purpose": "Expose enough per-candidate transition linkage to explain why historical candidate-pipeline mechanisms fail to transfer to same-window no-order summaries without pulling events JSONL.",
+    "default_behavior": "No existing single-profile, multi-profile, event-lite, pair-source, portfolio-ledger, late-repair-only, fill-to-balance, or diagnostic summary shape changes when the new flag is unset.",
+    "required_cli_shape": [
+      "--event-lite-summary",
+      "--source-link-transition-event-lite-summary"
+    ],
+    "required_summary_fields": [
+      "candidate transition counts by condition/slug/day/side/offset bucket",
+      "admission/block reason buckets with source quote_intent_id/source_order_id presence counts",
+      "pre_seed_same_qty and pre_seed_opposite_qty buckets",
+      "pre_seed_same_cost and pre_seed_opposite_cost buckets",
+      "risk_increasing, underweight_repair, and pairing_improving buckets",
+      "online condition ledger proxy before and after seed buckets",
+      "immediate_pair_qty and immediate_pair_cost buckets",
+      "queue_supported_fill and queue_credit proxy buckets when available",
+      "residual source-link buckets from admitted seed to final residual side/cost bucket",
+      "aggregate parity totals matching per-summary totals"
+    ],
+    "why_not_a_trading_mechanism": "This is diagnostic source linkage only. It does not block, size, price, route, order, cancel, redeem, or modify runner trading behavior.",
+    "why_compliant": [
+      "It is not fill-to-balance90.",
+      "It is not a public/source price cap.",
+      "It is not a static target/cap sweep.",
+      "It is not residual cooldown/admission cap.",
+      "It is not activation window widening.",
+      "It is not summary-only removal."
+    ]
+  },
+  "required_local_fields": {
+    "already_available_in_runner_state": [
+      "condition_id",
+      "slug",
+      "day",
+      "side",
+      "offset_s",
+      "candidate decision reason",
+      "virtual inventory lots by side before and after seed",
+      "source_candidate_row_id on lots",
+      "pair source records from existing pair-source event-lite path",
+      "portfolio ledger diagnostics when enabled"
+    ],
+    "optional_if_available": [
+      "quote_intent_id",
+      "source_order_id",
+      "trigger metadata",
+      "queue_credit proxy",
+      "first touch timing"
+    ],
+    "known_missing_without_future_shadow_or_same_window_data": [
+      "historical 2026-05-20 same-window candidate_base/candidate_registry",
+      "true shared-ingress book/trade source_sequence_id interleaving"
+    ]
+  },
+  "pass_fail_criteria": {
+    "KEEP": "Implementability review produces a default-off source-link transition diagnostic, local smoke proves default path unchanged and enabled summaries link admitted/blocked candidates to pair/residual transitions with aggregate parity.",
+    "UNKNOWN": "Runner state cannot expose required transition links without events JSONL or same-window source fields; exact missing fields are named.",
+    "DISCARD": "The diagnostic can only be built by changing trading behavior, pulling events JSONL, or adding summary-only filters that destroy sample.",
+    "BLOCKED": "Local runner/tests/artifacts are missing or corrupt."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_DYNAMIC_RISK_STATE_FREEZE_AND_SOURCE_LINK_TRANSITION_SPEC_SELECTED",
+    "interpretation": "The prior dynamic risk-state gate remains mixed and should not proceed to shadow. The selected next step is concrete local instrumentation that can answer transfer-gap questions before more mechanism search."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "STATUS_HYGIENE_AND_INSTRUMENTATION_SPEC_ONLY_NOT_PROMOTION_EVIDENCE",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "next_executable_action": "Implementability_review only: add default-off source-link transition event-lite diagnostics to tools/xuan_dplus_passive_passive_shadow_runner.py plus a local no-network smoke; do not SSH or start EC2 shadow/canary."
+}
