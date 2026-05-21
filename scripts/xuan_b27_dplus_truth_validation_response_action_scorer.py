@@ -34,6 +34,7 @@ STRICT_CLOSE_FIELDS = (
     "trade_after_ref",
 )
 PRIVATE_FALSE_FIELDS = ("private_truth_ready", "deployable", "promotion_gate_pass")
+RESIDUAL_FLOAT_TOLERANCE = 1e-9
 
 
 def utc_label() -> str:
@@ -187,15 +188,153 @@ def residual_metrics(residual_rows: list[dict[str, str]], selected_actions: list
     selected_ids = {str(action.get("candidate_action_id")) for action in selected_actions if action.get("candidate_action_id") not in (None, "")}
     source_ids = {str(row.get("source_seed_action_id")) for row in residual_rows if row.get("source_seed_action_id")}
     covered_ids = selected_ids & source_ids
+    consistency = residual_selected_metadata_consistency(residual_rows, selected_actions)
     return {
         "selected_action_count": len(selected_ids),
         "residual_fifo_row_count": len(residual_rows),
         "selected_actions_with_response_residual_lots": len(covered_ids),
         "selected_residual_coverage": (len(covered_ids) / len(selected_ids)) if selected_ids else None,
+        "selected_metadata_consistency": consistency,
         "coverage_interpretation": (
             "No residual rows in response output; this may be expected for action-decision-only source-truth responses."
             if not residual_rows
             else "Residual rows are present in response output."
+        ),
+    }
+
+
+def has_selected_residual_metadata(action: dict[str, Any]) -> bool:
+    return any(
+        action.get(field) not in (None, "")
+        for field in ("lot_id", "source_seed_action_id", "residual_target_qty", "residual_target_cost")
+    )
+
+
+def residual_selected_metadata_consistency(
+    residual_rows: list[dict[str, str]],
+    selected_actions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    expected_actions = [
+        action
+        for action in selected_actions
+        if action.get("candidate_action_id") not in (None, "") and has_selected_residual_metadata(action)
+    ]
+    rows_by_candidate: dict[str, list[dict[str, str]]] = {}
+    rows_by_source_seed: dict[str, list[dict[str, str]]] = {}
+    for row in residual_rows:
+        candidate_action_id = str(row.get("candidate_action_id", ""))
+        source_seed_action_id = str(row.get("source_seed_action_id", ""))
+        if candidate_action_id:
+            rows_by_candidate.setdefault(candidate_action_id, []).append(row)
+        if source_seed_action_id:
+            rows_by_source_seed.setdefault(source_seed_action_id, []).append(row)
+
+    missing: list[dict[str, Any]] = []
+    mismatch_examples: list[dict[str, Any]] = []
+    lot_id_match_count = 0
+    source_seed_match_count = 0
+    qty_match_count = 0
+    cost_match_count = 0
+    status_validated_count = 0
+    max_qty_delta: float | None = None
+    max_cost_delta: float | None = None
+
+    for action in expected_actions:
+        candidate_action_id = str(action.get("candidate_action_id"))
+        expected_source_seed = str(action.get("source_seed_action_id", candidate_action_id))
+        matches = rows_by_source_seed.get(expected_source_seed) or rows_by_candidate.get(candidate_action_id) or []
+        if not matches:
+            missing.append(
+                {
+                    "candidate_action_id": candidate_action_id,
+                    "source_seed_action_id": expected_source_seed,
+                    "lot_id": action.get("lot_id", ""),
+                }
+            )
+            continue
+        row = matches[0]
+        mismatches: dict[str, Any] = {}
+
+        expected_lot_id = action.get("lot_id")
+        if expected_lot_id not in (None, ""):
+            if str(row.get("lot_id", "")) == str(expected_lot_id):
+                lot_id_match_count += 1
+            else:
+                mismatches["lot_id"] = {"expected": expected_lot_id, "actual": row.get("lot_id", "")}
+
+        if str(row.get("source_seed_action_id", "")) == expected_source_seed:
+            source_seed_match_count += 1
+        else:
+            mismatches["source_seed_action_id"] = {
+                "expected": expected_source_seed,
+                "actual": row.get("source_seed_action_id", ""),
+            }
+
+        if action.get("residual_target_qty") not in (None, ""):
+            expected_qty = as_float(action.get("residual_target_qty"), None)
+            actual_qty = as_float(row.get("remaining_qty"), None)
+            if expected_qty is None or actual_qty is None:
+                mismatches["remaining_qty"] = {"expected": action.get("residual_target_qty"), "actual": row.get("remaining_qty", "")}
+            else:
+                delta = abs(actual_qty - expected_qty)
+                max_qty_delta = delta if max_qty_delta is None else max(max_qty_delta, delta)
+                if delta <= RESIDUAL_FLOAT_TOLERANCE:
+                    qty_match_count += 1
+                else:
+                    mismatches["remaining_qty"] = {"expected": expected_qty, "actual": actual_qty, "delta": delta}
+
+        if action.get("residual_target_cost") not in (None, ""):
+            expected_cost = as_float(action.get("residual_target_cost"), None)
+            actual_cost = as_float(row.get("remaining_cost"), None)
+            if expected_cost is None or actual_cost is None:
+                mismatches["remaining_cost"] = {
+                    "expected": action.get("residual_target_cost"),
+                    "actual": row.get("remaining_cost", ""),
+                }
+            else:
+                delta = abs(actual_cost - expected_cost)
+                max_cost_delta = delta if max_cost_delta is None else max(max_cost_delta, delta)
+                if delta <= RESIDUAL_FLOAT_TOLERANCE:
+                    cost_match_count += 1
+                else:
+                    mismatches["remaining_cost"] = {"expected": expected_cost, "actual": actual_cost, "delta": delta}
+
+        if row.get("validation_status", "") == VALIDATED_STATUS:
+            status_validated_count += 1
+        else:
+            mismatches["validation_status"] = {"expected": VALIDATED_STATUS, "actual": row.get("validation_status", "")}
+
+        if mismatches:
+            mismatch_examples.append(
+                {
+                    "candidate_action_id": candidate_action_id,
+                    "source_seed_action_id": expected_source_seed,
+                    "mismatches": mismatches,
+                }
+            )
+
+    expected_count = len(expected_actions)
+    matched_count = expected_count - len(missing)
+    return {
+        "expected_residual_action_count": expected_count,
+        "response_residual_row_count": len(residual_rows),
+        "matched_residual_action_count": matched_count,
+        "missing_residual_action_count": len(missing),
+        "lot_id_match_count": lot_id_match_count,
+        "source_seed_action_id_match_count": source_seed_match_count,
+        "remaining_qty_match_count": qty_match_count,
+        "remaining_cost_match_count": cost_match_count,
+        "validation_status_validated_count": status_validated_count,
+        "match_coverage": (matched_count / expected_count) if expected_count else None,
+        "all_expected_residual_actions_matched": len(missing) == 0 and len(mismatch_examples) == 0,
+        "max_abs_remaining_qty_delta": max_qty_delta,
+        "max_abs_remaining_cost_delta": max_cost_delta,
+        "missing_examples": missing[:10],
+        "mismatch_examples": mismatch_examples[:10],
+        "interpretation": (
+            "No selected residual metadata was supplied; residual FIFO consistency check is not applicable."
+            if expected_count == 0
+            else "Selected residual metadata was compared to response residual_fifo_lots.csv rows."
         ),
     }
 
@@ -307,10 +446,15 @@ def main() -> int:
     fee_source_complete = fees["fee_rate_source_coverage"] == 1.0
     decision_consistent = decisions["inconsistent_count"] == 0
     private_guard_ok = private_guard["all_false"]
+    residual_consistency = residual["selected_metadata_consistency"]
+    residual_consistent = (
+        residual_consistency["expected_residual_action_count"] == 0
+        or residual_consistency["all_expected_residual_actions_matched"]
+    )
     if not action_rows:
         decision = "UNKNOWN"
         label = "UNKNOWN_TRUTH_VALIDATION_RESPONSE_EMPTY"
-    elif required_ref_complete and fee_source_complete and decision_consistent and private_guard_ok:
+    elif required_ref_complete and fee_source_complete and decision_consistent and private_guard_ok and residual_consistent:
         decision = "KEEP"
         label = "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY"
     else:
@@ -367,6 +511,7 @@ def main() -> int:
         },
         "named_gaps": {
             "residual_fifo_response_rows_absent": len(residual_rows) == 0,
+            "residual_fifo_selected_metadata_mismatch": not residual_consistent,
             "strict_rescue_close_missing_fields": closes["missing_fields"],
         },
     }

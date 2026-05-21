@@ -9,8 +9,9 @@ ARTIFACT="${ARTIFACT:-$ROOT/xuan_research_artifacts/xuan_b27_dplus_truth_validat
 STATE_MACHINE="/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/state_machine_results.duckdb"
 SINGLE_DIR="$ROOT/xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z"
 MULTI_DIR="$ROOT/xuan_research_artifacts/xuan_b27_dplus_replay_store_multiday_selected_candidate_truth_response_20260521T141153Z"
+RESIDUAL_DIR="$ROOT/xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z"
 
-mkdir -p "$ARTIFACT/single" "$ARTIFACT/multiday"
+mkdir -p "$ARTIFACT/single" "$ARTIFACT/multiday" "$ARTIFACT/residual_lot_backed"
 
 python3 -m py_compile scripts/xuan_b27_dplus_truth_validation_response_action_scorer.py
 
@@ -26,6 +27,12 @@ python3 scripts/xuan_b27_dplus_truth_validation_response_action_scorer.py \
   --state-machine-duckdb "$STATE_MACHINE" \
   --output-dir "$ARTIFACT/multiday"
 
+python3 scripts/xuan_b27_dplus_truth_validation_response_action_scorer.py \
+  --response-manifest "$RESIDUAL_DIR/response/VALIDATION_RESPONSE_MANIFEST.json" \
+  --selected-actions "$RESIDUAL_DIR/selected_actions.json" \
+  --state-machine-duckdb "$STATE_MACHINE" \
+  --output-dir "$ARTIFACT/residual_lot_backed"
+
 python3 - "$ARTIFACT" <<'PY'
 import json
 import sys
@@ -34,6 +41,7 @@ from pathlib import Path
 artifact = Path(sys.argv[1])
 single = json.loads((artifact / "single" / "score.json").read_text())
 multi = json.loads((artifact / "multiday" / "score.json").read_text())
+residual = json.loads((artifact / "residual_lot_backed" / "score.json").read_text())
 
 
 def all_required_refs(score):
@@ -60,22 +68,49 @@ def close_gap_named(score):
     }.issubset(missing)
 
 
+def residual_consistency_ok(score):
+    consistency = score["residual_fifo"]["selected_metadata_consistency"]
+    return (
+        consistency["expected_residual_action_count"] == 30
+        and consistency["matched_residual_action_count"] == 30
+        and consistency["missing_residual_action_count"] == 0
+        and consistency["all_expected_residual_actions_matched"]
+        and consistency["remaining_qty_match_count"] == 30
+        and consistency["remaining_cost_match_count"] == 30
+        and consistency["source_seed_action_id_match_count"] == 30
+    )
+
+
 checks = {
     "py_compile_passed": True,
     "single_score_keep": single["label"] == "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
     "multiday_score_keep": multi["label"] == "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
+    "residual_lot_backed_score_keep": residual["label"] == "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
     "single_required_refs_100pct": all_required_refs(single),
     "multiday_required_refs_100pct": all_required_refs(multi),
+    "residual_lot_backed_required_refs_100pct": all_required_refs(residual),
     "single_fee_source_100pct": single["fee_metrics"]["fee_rate_source_coverage"] == 1.0,
     "multiday_fee_source_100pct": multi["fee_metrics"]["fee_rate_source_coverage"] == 1.0,
+    "residual_lot_backed_fee_source_100pct": residual["fee_metrics"]["fee_rate_source_coverage"] == 1.0,
     "single_fee_delta_joined": single["fee_metrics"]["expected_fee_join_count"] == 10,
     "multiday_fee_delta_joined": multi["fee_metrics"]["expected_fee_join_count"] == 30,
+    "residual_lot_backed_fee_delta_joined": residual["fee_metrics"]["expected_fee_join_count"] == 30,
     "single_private_promotion_guards_false": guards_false(single),
     "multiday_private_promotion_guards_false": guards_false(multi),
+    "residual_lot_backed_private_promotion_guards_false": guards_false(residual),
     "single_close_gap_named": close_gap_named(single),
     "multiday_close_gap_named": close_gap_named(multi),
+    "residual_lot_backed_close_gap_named": close_gap_named(residual),
     "multiday_breadth_preserved": multi["row_count"] == 30 and multi["day_count"] == 15 and multi["condition_count"] == 30,
-    "no_side_effect_flags": not any(multi["side_effects"].values()) and not any(single["side_effects"].values()),
+    "residual_lot_backed_breadth_preserved": residual["row_count"] == 30 and residual["day_count"] == 15 and residual["condition_count"] == 30,
+    "residual_lot_backed_fifo_response_coverage": residual["residual_fifo"]["selected_residual_coverage"] == 1.0,
+    "residual_lot_backed_state_machine_residual_coverage": residual["state_machine_residual_lots_join"]["selected_residual_coverage"] == 1.0,
+    "residual_lot_backed_selected_metadata_consistency": residual_consistency_ok(residual),
+    "no_side_effect_flags": (
+        not any(multi["side_effects"].values())
+        and not any(single["side_effects"].values())
+        and not any(residual["side_effects"].values())
+    ),
 }
 failed = [name for name, ok in checks.items() if not ok]
 if failed:
@@ -91,6 +126,7 @@ manifest = {
     "scores": {
         "single": str(artifact / "single" / "score.json"),
         "multiday": str(artifact / "multiday" / "score.json"),
+        "residual_lot_backed": str(artifact / "residual_lot_backed" / "score.json"),
     },
     "summary": {
         "single": {
@@ -106,6 +142,15 @@ manifest = {
             "condition_count": multi["condition_count"],
             "label": multi["label"],
             "max_fee_delta": multi["fee_metrics"]["max_abs_delta_vs_selected_expected_official_taker_fee"],
+        },
+        "residual_lot_backed": {
+            "row_count": residual["row_count"],
+            "day_count": residual["day_count"],
+            "condition_count": residual["condition_count"],
+            "label": residual["label"],
+            "max_fee_delta": residual["fee_metrics"]["max_abs_delta_vs_selected_expected_official_taker_fee"],
+            "residual_fifo_row_count": residual["residual_fifo"]["residual_fifo_row_count"],
+            "selected_metadata_consistency": residual["residual_fifo"]["selected_metadata_consistency"],
         },
     },
     "research_ranking": {
@@ -141,4 +186,5 @@ PY
 python3 -m json.tool "$ARTIFACT/manifest.json" >/dev/null
 python3 -m json.tool "$ARTIFACT/single/score.json" >/dev/null
 python3 -m json.tool "$ARTIFACT/multiday/score.json" >/dev/null
+python3 -m json.tool "$ARTIFACT/residual_lot_backed/score.json" >/dev/null
 echo "PASS $ARTIFACT/manifest.json"
