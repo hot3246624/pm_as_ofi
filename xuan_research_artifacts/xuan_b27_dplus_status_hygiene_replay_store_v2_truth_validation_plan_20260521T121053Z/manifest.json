@@ -1,0 +1,268 @@
+{
+  "artifact": "xuan_b27_dplus_status_hygiene_replay_store_v2_truth_validation_plan",
+  "status": "KEEP_REPLAY_STORE_V2_SOURCE_TRUTH_VALIDATION_PLAN_SELECTED",
+  "created_at": "2026-05-21T12:10:53Z",
+  "lane": "status_hygiene",
+  "scope": "local_only_replay_source_truth_validation_plan",
+  "latest_frozen_family": {
+    "label": "DISCARD_SOURCE_LINK_CROSS_BUCKET_BROAD_RESIDUAL_RISK",
+    "frozen_as_promotion_candidate": true,
+    "evidence_paths": [
+      "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver_20260521T101931Z/manifest.json",
+      "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver_20260521T101931Z/source_link_bucket_score.json",
+      "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_result_20260521T101931Z/manifest.json",
+      "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_source_link_cross_bucket_diagnostic_20260521T101931Z/manifest.json",
+      "docs/research/xuan/DPLUS_RUNTIME_MODULE_READINESS_ZH.md"
+    ],
+    "reason": "Cross-bucket diagnostics showed broad residual risk. The target NO|offset_60_90|risk_increasing bucket explained only 14.2373% residual cost versus the 35% KEEP target, while normalized residual and pair-tail budgets failed. Repeating the exact 3600s diagnostic would not create a new mechanism."
+  },
+  "replay_store_v2": {
+    "path": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/replay_store_v2/20260502_20260518",
+    "manifest": "REPLAY_STORE_V2_MANIFEST.json",
+    "duckdb": "store.duckdb",
+    "schema_version": "replay_store_v2",
+    "source_truth_ready": true,
+    "private_truth_ready": false,
+    "public_or_proxy_truth_only": true,
+    "valid_days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ],
+    "forbidden_days": [
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-19"
+    ],
+    "private_table_counts": {
+      "own_order_events": 0,
+      "own_fill_events": 0,
+      "own_inventory_events": 0,
+      "user_ws_log": 0
+    },
+    "schema_introspection_only": true,
+    "row_scan_performed": false
+  },
+  "selected_plan": {
+    "name": "replay_store_v2_truth_validation_response_v1_builder",
+    "type": "implementation_spec",
+    "purpose": "Build a local validator that consumes selected candidate action validation requests and emits truth_validation_response_v1 artifacts using replay_store_v2 source rows. It is not a strategy searcher and must not scan replay/raw/full stores for candidate discovery.",
+    "source_kind": "replay_store_v2",
+    "is_private_truth": false,
+    "max_allowed_conclusion_without_private_truth": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+    "input_contract": {
+      "format": "JSONL/CSV/DuckDB table of selected candidate actions",
+      "required_fields": [
+        "validation_request_id",
+        "day",
+        "condition_id",
+        "slug",
+        "candidate_action_id",
+        "action_ts_ms",
+        "side",
+        "seed_qty",
+        "seed_px",
+        "expected_decision",
+        "decision_reason",
+        "fee_rate",
+        "fee_rate_source"
+      ],
+      "optional_but_required_for_budget_validation": [
+        "pre_inventory_yes_qty",
+        "pre_inventory_no_qty",
+        "pre_inventory_yes_cost",
+        "pre_inventory_no_cost",
+        "pre_paired_qty",
+        "pre_residual_qty",
+        "pre_residual_cost",
+        "budget_state_json"
+      ],
+      "optional_but_required_for_fifo_validation": [
+        "residual_target_qty",
+        "residual_target_cost",
+        "source_seed_action_id",
+        "lot_id",
+        "parent_action_id"
+      ],
+      "optional_but_required_for_strict_rescue_validation": [
+        "close_action_id",
+        "close_ts_ms",
+        "close_side",
+        "close_qty",
+        "close_px",
+        "close_reason",
+        "expected_close_fee"
+      ]
+    },
+    "output_contract": {
+      "directory_files": [
+        "VALIDATION_RESPONSE_MANIFEST.json",
+        "action_decisions.csv",
+        "residual_fifo_lots.csv",
+        "strict_rescue_closes.csv"
+      ],
+      "manifest_required_fields": [
+        "schema_version=truth_validation_response_v1",
+        "days",
+        "source_kind=replay_store_v2",
+        "is_private_truth=false",
+        "private_truth_ready=false",
+        "row_count",
+        "promotion_gate_pass=false",
+        "research_ranking",
+        "promotion_gate"
+      ],
+      "status_values": [
+        "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+        "UNKNOWN_SOURCE_TRUTH_INSUFFICIENT",
+        "DISCARD_SOURCE_TRUTH_MISMATCH"
+      ]
+    },
+    "replay_store_tables": {
+      "market_meta": [
+        "condition_id",
+        "slug",
+        "start_ms",
+        "end_ms",
+        "yes_token_id",
+        "no_token_id",
+        "tick_size",
+        "day",
+        "source_row_id"
+      ],
+      "md_book_l1": [
+        "condition_id",
+        "recv_ms",
+        "source_ts_ms",
+        "yes_bid_px",
+        "yes_ask_px",
+        "no_bid_px",
+        "no_ask_px",
+        "yes_bid_sz",
+        "yes_ask_sz",
+        "no_bid_sz",
+        "no_ask_sz",
+        "day",
+        "source_row_id"
+      ],
+      "md_book_l2": [
+        "condition_id",
+        "recv_ms",
+        "source_ts_ms",
+        "market_side",
+        "bid1_px",
+        "bid1_sz",
+        "ask1_px",
+        "ask1_sz",
+        "depth",
+        "day",
+        "source_row_id"
+      ],
+      "md_trades": [
+        "condition_id",
+        "trade_ts_ms",
+        "recv_ms",
+        "trade_id",
+        "market_side",
+        "taker_side",
+        "price",
+        "size",
+        "day",
+        "source_row_id"
+      ],
+      "settlement_records": [
+        "condition_id",
+        "official_outcome",
+        "winner_side",
+        "settle_ms",
+        "day",
+        "source_row_id"
+      ],
+      "public_proxy_only": [
+        "xuan_trades",
+        "xuan_activity",
+        "xuan_poll_log"
+      ],
+      "private_tables_present_but_empty": [
+        "own_order_events",
+        "own_fill_events",
+        "own_inventory_events",
+        "user_ws_log"
+      ]
+    },
+    "validation_checks": [
+      {
+        "name": "selected_action_scope_guard",
+        "description": "Reject requests with forbidden days, missing condition_id/action_ts_ms, or request sizes that imply broad strategy search rather than selected action validation."
+      },
+      {
+        "name": "pre_action_book_state_replay",
+        "description": "For each action, use md_book_l1/md_book_l2 source rows nearest before action_ts_ms for the same day/condition/side and emit stable refs such as replay_store_v2:md_book_l2:<day>:<source_row_id>."
+      },
+      {
+        "name": "trade_timing_source_linkage",
+        "description": "Use md_trades around the action/close window to link observed public market trades and timing, while keeping them separate from private owner fills."
+      },
+      {
+        "name": "decision_consistency",
+        "description": "Recompute accept/block inputs from request-provided pre-inventory/budget fields plus replay book rows and compare to expected_decision."
+      },
+      {
+        "name": "budgeted_residual_fifo_reconstruction",
+        "description": "Emit lot-level residual_fifo_lots rows with source action, source row refs, remaining qty/cost, close/redeem/settle linkage when request fields are sufficient."
+      },
+      {
+        "name": "strict_rescue_close_validation",
+        "description": "Validate close timing, side, qty, cost, official fee, L1/L2 source rows, and trade source rows for strict second-leg rescue candidates."
+      },
+      {
+        "name": "fee_formula_guard",
+        "description": "Compute fee as shares * fee_rate * price * (1 - price); fee_rate must be supplied by config/API/explicit experiment and recorded as fee_rate_source."
+      },
+      {
+        "name": "private_truth_guard",
+        "description": "Never set private_truth_ready=true or promotion_gate_pass=true while own_* and user_ws_log row counts remain zero."
+      }
+    ],
+    "guardrails": [
+      "Do not use replay_store_v2 to discover candidate strategies or scan broad replay state.",
+      "Do not use 2026-05-14, 2026-05-15, or 2026-05-19.",
+      "Do not mix public/proxy xuan_trades or xuan_activity with private owner-trade truth.",
+      "Do not hard-code account-average fee rates.",
+      "Do not output deployable=true, private_truth_ready=true, shadow_ready=true, canary_ready=true, or promotion_gate_pass=true from replay_store_v2 alone."
+    ],
+    "local_test_plan": [
+      "Create a tiny synthetic validation_request fixture using one allowed day and a known condition_id/source-row window.",
+      "Run schema-only checks against replay_store_v2 and bounded source-row lookups for selected actions only.",
+      "Assert forbidden days are rejected.",
+      "Assert missing fee_rate_source is UNKNOWN_SOURCE_TRUTH_INSUFFICIENT.",
+      "Assert output manifest separates research_ranking from promotion_gate and remains deployable=false/private_truth_ready=false."
+    ]
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_REPLAY_STORE_V2_SOURCE_TRUTH_VALIDATION_PLAN_SELECTED",
+    "interpretation": "The selected plan is concrete, local-only, and compatible with the new replay_store_v2 source-truth layer. It advances future candidate validation without claiming private truth or reviving frozen strategy mechanisms."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "SOURCE_TRUTH_PLAN_ONLY_NOT_PROMOTION_EVIDENCE",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false,
+    "private_truth_ready": false
+  },
+  "next_action": "Implement a local no-network replay_store_v2 truth_validation_response_v1 builder/smoke that consumes selected candidate action fixtures, validates schema/day/fee/source-row guards, and emits SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY or UNKNOWN/DISCARD without scanning broad replay or claiming private truth."
+}
