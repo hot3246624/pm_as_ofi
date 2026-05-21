@@ -1,0 +1,166 @@
+{
+  "artifact": "xuan_b27_dplus_status_hygiene_replay_store_action_scorer_plan",
+  "created_utc": "20260521T144223Z",
+  "decision_label": "KEEP_REPLAY_STORE_V2_ACTION_LEVEL_SCORER_PLAN_SELECTED",
+  "status": "KEEP",
+  "lane": "status_hygiene",
+  "inputs_reviewed": {
+    "multiday_response": "xuan_research_artifacts/xuan_b27_dplus_replay_store_multiday_selected_candidate_truth_response_20260521T141153Z/manifest.json",
+    "single_day_response": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/manifest.json",
+    "multiday_plan": "xuan_research_artifacts/xuan_b27_dplus_status_hygiene_replay_store_multiday_truth_plan_20260521T134053Z/manifest.json",
+    "state_machine_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/state_machine_results.duckdb",
+    "replay_store_v2": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/replay_store_v2/20260502_20260518"
+  },
+  "latest_evidence": {
+    "multiday_response_status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+    "multiday_action_count": 30,
+    "multiday_condition_count": 30,
+    "multiday_allowed_days_covered": 15,
+    "source_refs_present": [
+      "market_meta",
+      "md_book_l1",
+      "md_book_l2"
+    ],
+    "private_truth_ready": false,
+    "deployable": false,
+    "promotion_gate_pass": false,
+    "max_fee_delta_vs_candidate_registry_rounded_fee": 0.0000003125
+  },
+  "schema_boundary": {
+    "candidate_registry_fields_available": [
+      "candidate_id",
+      "action_id",
+      "candidate_row_id",
+      "source_label",
+      "day",
+      "condition_id",
+      "slug",
+      "ts_ms",
+      "ts_iso",
+      "offset_s",
+      "side",
+      "opposite_side",
+      "candidate_reason",
+      "public_trade_price",
+      "public_trade_size",
+      "l1_pair_ask",
+      "edge",
+      "seed_px",
+      "seed_qty",
+      "seed_cost",
+      "fee_model",
+      "official_taker_fee",
+      "pair_qty_after_seed",
+      "pair_actions_after_seed",
+      "pair_cost_wavg_after_seed",
+      "inventory_yes_qty_after",
+      "inventory_no_qty_after",
+      "inventory_yes_cost_after",
+      "inventory_no_cost_after",
+      "blocked_by",
+      "decision_scope",
+      "deployable",
+      "strict_cache_day_covered",
+      "public_audit_day_covered",
+      "public_audit_nearby_fill_count"
+    ],
+    "residual_lots_fields_available": [
+      "condition_id",
+      "day",
+      "slug",
+      "winner_side",
+      "side",
+      "qty",
+      "px",
+      "cost",
+      "payout",
+      "pnl",
+      "source_seed_action_id",
+      "candidate_row_id",
+      "age_s"
+    ],
+    "strict_rescue_close_fields_missing_for_full_verifier": [
+      "close_action_id",
+      "close_ts_ms",
+      "close_side",
+      "close_qty",
+      "close_px",
+      "close_fee_rate_source",
+      "close_book_l1_source_ref",
+      "close_book_l2_source_ref",
+      "close_trade_source_ref"
+    ]
+  },
+  "selected_next_step": {
+    "choice": "B",
+    "name": "truth_validation_response_action_level_scorer_v1",
+    "reason": "The replay source-row reproducibility layer now validates across allowed days and distinct conditions. The immediate gap is not another source lookup, but a scorer that turns truth_validation_response_v1 outputs into an auditable quality score and names residual/FIFO/close gaps before more complex verifier work.",
+    "implementation_target": "scripts/xuan_b27_dplus_truth_validation_response_action_scorer.py",
+    "smoke_target": "scripts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke.sh",
+    "input_contract": [
+      "VALIDATION_RESPONSE_MANIFEST.json",
+      "action_decisions.csv",
+      "optional residual_fifo_lots.csv",
+      "optional strict_rescue_closes.csv",
+      "optional selected_actions.json",
+      "optional candidate_registry/state_machine_results.duckdb for selected action joins only",
+      "optional residual_lots table for selected action residual coverage joins only"
+    ],
+    "required_metrics": [
+      "row_count",
+      "status_counts",
+      "day_count",
+      "condition_count",
+      "source_row_ref_completeness for market_meta/md_book_l1/md_book_l2/md_trades/settlement_records",
+      "required fee_rate_source coverage",
+      "official fee formula delta versus selected_actions expected_official_taker_fee when present",
+      "candidate decision consistency for expected_decision/status",
+      "private_truth_ready/deployable/promotion_gate guard verification",
+      "residual_lots coverage by selected action when residual_lots is provided",
+      "strict_rescue_close coverage and missing-close-field list when close rows are absent or incomplete"
+    ],
+    "output_contract": [
+      "score.json",
+      "manifest.json",
+      "optional scored_action_decisions.csv"
+    ],
+    "decision_rules": {
+      "KEEP": "source ref completeness for market/L1/L2 is 100%, fee_rate_source coverage is 100%, private/deployable/promotion guards are false, and missing FIFO/close fields are explicitly named without claiming promotion evidence",
+      "UNKNOWN": "required scorer inputs or selected-action joins are missing; name exact missing files/columns",
+      "DISCARD": "scorer would require replay_store_v2 broad strategy search, hard-code fee rates, claim external private truth, or upgrade promotion from source-truth-only evidence",
+      "BLOCKED": "local file/artifact corruption only"
+    }
+  },
+  "deferred_option": {
+    "choice": "A",
+    "name": "residual_fifo_plus_strict_rescue_close_verifier",
+    "reason_deferred": "Residual lot fields are present, but strict rescue close validation cannot be honestly implemented until selected close action ids, close timing, close side/qty/cost, fee source, and close source refs are available or explicitly modeled in a selected action request.",
+    "allowed_future_scope": "After the scorer names residual/FIFO/close coverage gaps, implement a selected-action-only residual FIFO verifier. Do not start from replay_store_v2 as broad strategy search."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_REPLAY_STORE_V2_ACTION_LEVEL_SCORER_PLAN_SELECTED",
+    "interpretation": "A concrete local action-level scorer is selected to grade replay-derived truth_validation_response_v1 outputs. This remains research-only tooling."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "SOURCE_TRUTH_SCORER_PLAN_ONLY_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "side_effects": {
+    "ssh_started": false,
+    "network_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "broad_strategy_search": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_action": "Implement a local no-network truth_validation_response_action_level_scorer_v1 and smoke it against the existing single-day and multi-day response artifacts; keep all private/deployable/promotion guards false."
+}
