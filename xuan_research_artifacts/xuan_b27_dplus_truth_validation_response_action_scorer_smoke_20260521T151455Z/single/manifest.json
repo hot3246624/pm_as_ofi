@@ -1,0 +1,34 @@
+{
+  "artifact": "xuan_b27_dplus_truth_validation_response_action_scorer",
+  "created_utc": "20260521T151455Z",
+  "decision": "KEEP",
+  "promotion_gate": {
+    "can_support_strategy_promotion": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SOURCE_TRUTH_SCORER_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Action-level scorer grades replay-derived source-truth response quality only. It is not private-truth or promotion evidence.",
+    "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY"
+  },
+  "schema_version": "truth_validation_response_action_scorer_v1",
+  "score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke_20260521T151455Z/single/score.json",
+  "scored_action_decisions": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke_20260521T151455Z/single/scored_action_decisions.csv",
+  "side_effects": {
+    "broad_strategy_search": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY"
+}
