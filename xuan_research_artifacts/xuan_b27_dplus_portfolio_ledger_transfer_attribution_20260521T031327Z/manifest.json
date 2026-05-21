@@ -1,0 +1,773 @@
+{
+  "artifact": "xuan_b27_dplus_portfolio_ledger_transfer_attribution",
+  "can_support_strategy_promotion": false,
+  "created_utc": "2026-05-21T03:13:27Z",
+  "decision_label": "DISCARD_PORTFOLIO_LEDGER_TRANSFER_BROAD_LIVE_RISK_SAMPLE_DESTROYED",
+  "deployable": false,
+  "g2_canary_ready": false,
+  "inputs": {
+    "events_jsonl_read": false,
+    "local_public_profile_pairing_verifier": "xuan_research_artifacts/xuan_b27_dplus_public_profile_pairing_verifier_20260520T232251Z/manifest.json",
+    "portfolio_ledger_shadow_acceptance": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_portfolio_ledger_diagnostic_20260521T001843Z/manifest.json",
+    "portfolio_ledger_shadow_aggregate": "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z/remote/output/aggregate_report.json",
+    "portfolio_ledger_shadow_driver_audit": "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z/audit_manifest.json",
+    "raw_replay_collector_full_store_scanned": false,
+    "shadow_summary_json_count": 26,
+    "shared_ingress_connected": false,
+    "ssh_used": false
+  },
+  "interpretation": [
+    "The public-profile paired-inventory hypothesis remains useful as research input, but the local ranker did not transfer to this live/no-order diagnostic window.",
+    "The live diagnostic was positive on bare pair PnL but failed normalized residual risk budget and conservative risk-adjusted proxies.",
+    "The only summary-observable fix is dropping risk-adjusted-negative conditions after the fact; that destroys live sample/pair_qty and is explicitly not a deployable mechanism.",
+    "Negative residual risk is broad across active conditions, both sides, and multiple residual price buckets, so no bounded non-price source bucket was identified."
+  ],
+  "lane": "causal_verifier",
+  "live_bucket_splits": {
+    "negative_net_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 5.0,
+      "pair_cost_1p00_1p05": 2.0,
+      "pair_cost_gt_1p05": 2.0,
+      "pair_cost_lt_0p95": 13.0
+    },
+    "negative_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 5.0,
+      "pair_cost_1p00_1p05": 2.0,
+      "pair_cost_gt_1p05": 2.0,
+      "pair_cost_lt_0p95": 13.0
+    },
+    "negative_residual_cost_by_side": {
+      "NO": 5.162375,
+      "YES": 4.612625
+    },
+    "negative_residual_px_qty_buckets": {
+      "px_0p30_0p45": 8.885,
+      "px_0p45_0p48": 1.25,
+      "px_0p48_0p55": 3.7625,
+      "px_ge_0p55": 2.5,
+      "px_lt_0p30": 12.2025
+    },
+    "negative_residual_qty_by_side": {
+      "NO": 14.91,
+      "YES": 13.69
+    },
+    "positive_net_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 2.0,
+      "pair_cost_1p00_1p05": 1.0,
+      "pair_cost_lt_0p95": 17.0
+    },
+    "positive_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 2.0,
+      "pair_cost_1p00_1p05": 1.0,
+      "pair_cost_lt_0p95": 17.0
+    },
+    "positive_residual_cost_by_side": {
+      "NO": 0.06615
+    },
+    "positive_residual_px_qty_buckets": {
+      "px_0p48_0p55": 0.135
+    },
+    "positive_residual_qty_by_side": {
+      "NO": 0.135
+    }
+  },
+  "live_portfolio_ledger_aggregate": {
+    "avg_net_pair_cost": 0.921086,
+    "avg_pair_cost": 0.909142,
+    "condition_count": 26,
+    "condition_count_by_risk_adjusted_bucket": {
+      "risk_adjusted_negative": 8.0,
+      "risk_adjusted_nonnegative": 18.0
+    },
+    "conservative_risk_adjusted_proxy": -8.236069,
+    "net_pair_cost_sum": 37.110547,
+    "official_taker_fee_proxy": 0.481222,
+    "pair_actions": 42.0,
+    "pair_cost_sum": 36.629325,
+    "pair_pnl": 3.179453,
+    "pair_qty": 40.29,
+    "queue_supported_fills": 76.0,
+    "residual_cost": 9.84115,
+    "residual_cost_by_side": {
+      "NO": 5.228525,
+      "YES": 4.612625
+    },
+    "residual_lot_count_by_side": {
+      "NO": 13.0,
+      "YES": 15.0
+    },
+    "residual_qty": 28.735,
+    "residual_qty_by_side": {
+      "NO": 15.045,
+      "YES": 13.69
+    },
+    "risk_adjusted_bucket": "risk_adjusted_negative",
+    "risk_adjusted_nonnegative": false,
+    "seed_actions": 101.0,
+    "stress_cost_proxy": 1.09315
+  },
+  "live_positive_only_summary_proxy": {
+    "dropped_risk_adjusted_negative_conditions": {
+      "avg_net_pair_cost": 0.941487,
+      "avg_pair_cost": 0.934225,
+      "condition_count": 8,
+      "conservative_risk_adjusted_proxy": -9.405825,
+      "net_pair_cost_sum": 19.738275,
+      "official_taker_fee_proxy": 0.15225,
+      "pair_actions": 22.0,
+      "pair_cost_sum": 19.586025,
+      "pair_pnl": 1.226725,
+      "pair_qty": 20.965,
+      "queue_supported_fills": 53.0,
+      "residual_cost": 9.775,
+      "residual_qty": 28.6,
+      "seed_actions": 75.0,
+      "stress_cost_proxy": 0.7053
+    },
+    "interpretation": "Retrospective positive-only condition selection would reduce residual, but it retains far too little live sample and is a summary-only removal proxy, not a deployable mechanism.",
+    "kept_risk_adjusted_nonnegative_conditions": {
+      "avg_net_pair_cost": 0.898953,
+      "avg_pair_cost": 0.88193,
+      "condition_count": 5,
+      "conservative_risk_adjusted_proxy": 1.169756,
+      "net_pair_cost_sum": 17.372272,
+      "official_taker_fee_proxy": 0.328972,
+      "pair_actions": 20.0,
+      "pair_cost_sum": 17.0433,
+      "pair_pnl": 1.952728,
+      "pair_qty": 19.325,
+      "queue_supported_fills": 23.0,
+      "residual_cost": 0.06615,
+      "residual_qty": 0.135,
+      "seed_actions": 26.0,
+      "stress_cost_proxy": 0.38785
+    },
+    "residual_budget_if_kept_positive_only": {
+      "conservative_risk_adjusted_proxy": 1.169756,
+      "residual_cost_share_of_filled_cost": 0.00169235,
+      "residual_qty_share_of_filled_qty": 0.00144412
+    },
+    "retention_vs_shadow": {
+      "condition_retention_active": 0.38461538,
+      "pair_action_retention": 0.47619048,
+      "pair_pnl_retention": 0.61417105,
+      "pair_qty_retention": 0.47964756,
+      "queue_supported_fill_retention": 0.30263158,
+      "seed_action_retention": 0.25742574
+    }
+  },
+  "local_vs_live_transfer": {
+    "interpretation": [
+      "Historical candidate-pipeline ranker retained about 95% of seed/pair_qty and improved residual/stress.",
+      "The live diagnostic window shows the same condition-ledger score is negative across most active conditions.",
+      "A retrospective live positive-only proxy would only retain a small minority of seed actions/pair actions/pair_qty, so it is not a deployable transfer."
+    ],
+    "key_local_delta_vs_control": {
+      "active_market_retention": 0.9479433,
+      "fee_after_pnl_delta": {
+        "absolute_delta": -90.947861,
+        "control": 2894.880674,
+        "relative_delta": -0.03141679,
+        "variant": 2803.932813
+      },
+      "pair_qty_retention": 0.95547284,
+      "residual_cost_rate_reduction": 0.466315,
+      "residual_qty_rate_reduction": 0.2742,
+      "seed_action_retention": 0.95189995,
+      "stress100_delta": {
+        "absolute_delta": 10.34035,
+        "control": 2913.845075,
+        "relative_delta": 0.0035487,
+        "variant": 2924.185425
+      }
+    },
+    "live_transfer_delta": {
+      "live_positive_only_residual_qty_share_of_filled": 0.00144412,
+      "live_positive_only_retained_pair_qty_pct": 0.47964756,
+      "live_positive_only_retained_seed_actions_pct": 0.25742574,
+      "local_ranker_residual_qty_rate_reduction_pct": 0.2742,
+      "local_ranker_retained_pair_qty_pct": 0.95547284,
+      "local_ranker_retained_seed_actions_pct": 0.95189995
+    },
+    "local_best_rule": "portfolio_risk_adjusted_nonnegative",
+    "local_promotion_gate": {
+      "notes": [
+        "No EC2 shadow/canary or source-of-truth replay was run.",
+        "Any KEEP result requires a separate default-off implementability review and later no-order/source-of-truth validation."
+      ],
+      "passed": false,
+      "status": "LOCAL_CANDIDATE_PIPELINE_RANKING_ONLY_NOT_PROMOTION_EVIDENCE"
+    },
+    "local_research_ranking": {
+      "best_rule": "portfolio_risk_adjusted_nonnegative",
+      "best_rule_delta_vs_control": {
+        "active_market_retention": 0.9479433,
+        "active_markets": {
+          "absolute_delta": -224.0,
+          "control": 4303.0,
+          "relative_delta": -0.0520567,
+          "variant": 4079.0
+        },
+        "fee_after_pnl": {
+          "absolute_delta": -90.947861,
+          "control": 2894.880674,
+          "relative_delta": -0.03141679,
+          "variant": 2803.932813
+        },
+        "pair_actions": {
+          "absolute_delta": -1270.0,
+          "control": 23362.0,
+          "relative_delta": -0.05436178,
+          "variant": 22092.0
+        },
+        "pair_pnl": {
+          "absolute_delta": -117.483425,
+          "control": 3639.389925,
+          "relative_delta": -0.03228108,
+          "variant": 3521.9065
+        },
+        "pair_qty": {
+          "absolute_delta": -1135.9,
+          "control": 25510.275,
+          "relative_delta": -0.04452716,
+          "variant": 24374.375
+        },
+        "pair_qty_retention": 0.95547284,
+        "residual_cost_rate": {
+          "absolute_delta": -0.004416,
+          "control": 0.00947,
+          "relative_delta": -0.46631468,
+          "variant": 0.005054
+        },
+        "residual_cost_rate_reduction": 0.466315,
+        "residual_qty_rate": {
+          "absolute_delta": -0.003317,
+          "control": 0.012097,
+          "relative_delta": -0.27420021,
+          "variant": 0.00878
+        },
+        "residual_qty_rate_reduction": 0.2742,
+        "seed_action_retention": 0.95189995,
+        "seed_actions": {
+          "absolute_delta": -2000.0,
+          "control": 41580.0,
+          "relative_delta": -0.04810005,
+          "variant": 39580.0
+        },
+        "stress100_worst_pnl": {
+          "absolute_delta": 10.34035,
+          "control": 2913.845075,
+          "relative_delta": 0.0035487,
+          "variant": 2924.185425
+        },
+        "weighted_pair_cost": {
+          "absolute_delta": -0.001828,
+          "control": 0.857336,
+          "relative_delta": -0.00213219,
+          "variant": 0.855508
+        },
+        "worst_day_fee_after_pnl": {
+          "absolute_delta": -8.56015,
+          "control": 161.917289,
+          "relative_delta": -0.05286742,
+          "variant": 153.357139
+        },
+        "worst_residual_net_pnl": {
+          "absolute_delta": -14.3073,
+          "control": 3430.29805,
+          "relative_delta": -0.00417086,
+          "variant": 3415.99075
+        }
+      },
+      "decision": "KEEP",
+      "label": "KEEP_PUBLIC_PROFILE_PAIRED_INVENTORY_LOCAL_RANKER",
+      "notes": [
+        "This is a local condition-ledger ranking verifier, not a trading-path implementation.",
+        "It does not use fill-to-balance90, public/source price caps, static target/cap sweeps, or cooldown/admission caps.",
+        "The public profile supports the account-level paired inventory hypothesis only as proxy research input."
+      ]
+    },
+    "local_status": "KEEP_PUBLIC_PROFILE_PAIRED_INVENTORY_LOCAL_RANKER"
+  },
+  "next_executable_action": "Local-only status/mechanism selection: freeze exact portfolio-ledger diagnostic 3600s shadow as promotion candidate, then choose/test a different non-price local verifier mechanism such as a dynamic condition-ledger risk-state gate that blocks only new risk-increasing seeds after a condition turns risk-adjusted negative while preserving repair/pairing paths; do not SSH or start EC2 shadow/canary before a new local verifier returns KEEP.",
+  "promotion_gate": {
+    "hard_blockers": [
+      "prior_portfolio_ledger_shadow_failed_promotion_risk_budget",
+      "transfer_attribution_found_only_summary_removal_proxy_that_destroys_sample",
+      "no_new_local_KEEP_mechanism"
+    ],
+    "passed": false,
+    "required_before_g2_canary": true,
+    "status": "NOT_PROMOTION_EVIDENCE_LOCAL_ATTRIBUTION_AND_PRIOR_SHADOW_RISK_BUDGET_FAIL"
+  },
+  "research_ranking": {
+    "conservative_stress_proxy_positive": false,
+    "economic_pnl_positive": true,
+    "label": "DISCARD_PORTFOLIO_LEDGER_TRANSFER_BROAD_LIVE_RISK_SAMPLE_DESTROYED",
+    "notes": [
+      "This is a local attribution result, not a new shadow or canary.",
+      "It discards the exact live/no-order transfer of the portfolio-ledger ranker, not the public profile as research inspiration.",
+      "Do not infer economic failure from bare pair PnL; pair_pnl was positive, but residual risk budget and conservative proxies failed."
+    ],
+    "promotion_risk_budget_ok": false,
+    "sample_destroyed_by_positive_only_proxy": true
+  },
+  "schema_version": 1,
+  "scope": "local_no_network_transfer_attribution_from_pulled_shadow_summaries_and_candidate_pipeline_manifests",
+  "shadow_overall_metrics": {
+    "candidates": 101.0,
+    "filled_cost": 39.087575,
+    "filled_qty": 93.4825,
+    "material_residual_lots": 0.0,
+    "net_pair_cost_p90": 1.01,
+    "pair_actions": 42.0,
+    "pair_pnl": 3.179453,
+    "pair_qty": 40.29,
+    "queue_supported_fills": 76.0,
+    "residual_cost": 9.84115,
+    "residual_qty": 28.735,
+    "taker_fee": 0.481222
+  },
+  "status": "DISCARD_PORTFOLIO_LEDGER_TRANSFER_BROAD_LIVE_RISK_SAMPLE_DESTROYED",
+  "top_negative_live_conditions": [
+    {
+      "avg_pair_cost": 0.96,
+      "condition_id": "0x438ea9c0f4899452d5cc57a7c4e3c42271937ccbc2e4eeafbb5c94d964f15147",
+      "conservative_risk_adjusted_proxy": -2.910975,
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0
+      },
+      "net_pair_cost_sum": 1.2,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 1.0,
+      "pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0
+      },
+      "pair_cost_sum": 1.2,
+      "pair_pnl": 0.05,
+      "pair_qty": 1.25,
+      "queue_supported_fills": 6.0,
+      "residual_cost": 2.886,
+      "residual_cost_by_side": {
+        "NO": 2.886
+      },
+      "residual_px_qty_buckets": {
+        "px_0p48_0p55": 2.5,
+        "px_ge_0p55": 2.4975
+      },
+      "residual_qty": 4.9975,
+      "residual_qty_by_side": {
+        "NO": 4.9975
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 9.0,
+      "slug": "btc-updown-5m-1779325500",
+      "stress_cost_proxy": 0.074975
+    },
+    {
+      "avg_pair_cost": 0.94,
+      "condition_id": "0x50f98ac819968d2d0391e01cbc0b030b925f7e613abd4a806a3f793e148629fa",
+      "conservative_risk_adjusted_proxy": -1.92575,
+      "net_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "net_pair_cost_sum": 1.17265,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 1.0,
+      "pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "pair_cost_sum": 1.17265,
+      "pair_pnl": 0.07485,
+      "pair_qty": 1.2475,
+      "queue_supported_fills": 6.0,
+      "residual_cost": 1.92565,
+      "residual_cost_by_side": {
+        "YES": 1.92565
+      },
+      "residual_px_qty_buckets": {
+        "px_0p30_0p45": 3.7475,
+        "px_0p48_0p55": 1.25,
+        "px_ge_0p55": 0.0025
+      },
+      "residual_qty": 5.0,
+      "residual_qty_by_side": {
+        "YES": 5.0
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 10.0,
+      "slug": "btc-updown-5m-1779326100",
+      "stress_cost_proxy": 0.07495
+    },
+    {
+      "avg_pair_cost": 0.0,
+      "condition_id": "0xaa2eca58135b363092fc10b091f61e571a2902c390c45c07f7af0c61f7a0205d",
+      "conservative_risk_adjusted_proxy": -1.0755,
+      "net_pair_cost_buckets": {},
+      "net_pair_cost_sum": 0.0,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 0.0,
+      "pair_cost_buckets": {},
+      "pair_cost_sum": 0.0,
+      "pair_pnl": 0.0,
+      "pair_qty": 0.0,
+      "queue_supported_fills": 4.0,
+      "residual_cost": 1.026375,
+      "residual_cost_by_side": {
+        "NO": 1.026375
+      },
+      "residual_px_qty_buckets": {
+        "px_lt_0p30": 4.9125
+      },
+      "residual_qty": 4.9125,
+      "residual_qty_by_side": {
+        "NO": 4.9125
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 8.0,
+      "slug": "btc-updown-5m-1779324300",
+      "stress_cost_proxy": 0.049125
+    },
+    {
+      "avg_pair_cost": 0.92,
+      "condition_id": "0xa14c169c2a5b4d6621c942ff0979fbcb66e17a13192d377c6f9d7fc0c934bf13",
+      "conservative_risk_adjusted_proxy": -0.9445,
+      "net_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 3.0
+      },
+      "net_pair_cost_sum": 2.2885,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 3.0,
+      "pair_cost_buckets": {
+        "pair_cost_lt_0p95": 3.0
+      },
+      "pair_cost_sum": 2.2885,
+      "pair_pnl": 0.199,
+      "pair_qty": 2.4875,
+      "queue_supported_fills": 6.0,
+      "residual_cost": 1.068625,
+      "residual_cost_by_side": {
+        "YES": 1.068625
+      },
+      "residual_px_qty_buckets": {
+        "px_0p30_0p45": 2.5,
+        "px_0p48_0p55": 0.0125
+      },
+      "residual_qty": 2.5125,
+      "residual_qty_by_side": {
+        "YES": 2.5125
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 8.0,
+      "slug": "btc-updown-5m-1779324600",
+      "stress_cost_proxy": 0.074875
+    },
+    {
+      "avg_pair_cost": 0.995569,
+      "condition_id": "0x2a1464e6a93d58b08da3dd92e14057aba25e87a9c1221033011267ce2868c0b3",
+      "conservative_risk_adjusted_proxy": -0.9047,
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 3.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_gt_1p05": 2.0,
+        "pair_cost_lt_0p95": 1.0
+      },
+      "net_pair_cost_sum": 4.768775,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 7.0,
+      "pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 3.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_gt_1p05": 2.0,
+        "pair_cost_lt_0p95": 1.0
+      },
+      "pair_cost_sum": 4.768775,
+      "pair_pnl": 0.021225,
+      "pair_qty": 4.79,
+      "queue_supported_fills": 10.0,
+      "residual_cost": 0.80375,
+      "residual_cost_by_side": {
+        "YES": 0.80375
+      },
+      "residual_px_qty_buckets": {
+        "px_0p30_0p45": 2.6375
+      },
+      "residual_qty": 2.6375,
+      "residual_qty_by_side": {
+        "YES": 2.6375
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 12.0,
+      "slug": "btc-updown-5m-1779324000",
+      "stress_cost_proxy": 0.122175
+    },
+    {
+      "avg_pair_cost": 0.960325,
+      "condition_id": "0x0a3655a9962ae3d793f5a87809d3612ba3e4bec90345bf7803840da0ee72c169",
+      "conservative_risk_adjusted_proxy": -0.7774,
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 2.0
+      },
+      "net_pair_cost_sum": 3.5436,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 4.0,
+      "pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 2.0
+      },
+      "pair_cost_sum": 3.5436,
+      "pair_pnl": 0.1464,
+      "pair_qty": 3.69,
+      "queue_supported_fills": 9.0,
+      "residual_cost": 0.8146,
+      "residual_cost_by_side": {
+        "YES": 0.8146
+      },
+      "residual_px_qty_buckets": {
+        "px_lt_0p30": 3.54
+      },
+      "residual_qty": 3.54,
+      "residual_qty_by_side": {
+        "YES": 3.54
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 11.0,
+      "slug": "btc-updown-5m-1779324900",
+      "stress_cost_proxy": 0.1092
+    },
+    {
+      "avg_pair_cost": 0.9,
+      "condition_id": "0x8ec1fcb00f17f55c53c991729d2fe3e30e2098a0ef585c53a5a889969f44a88d",
+      "conservative_risk_adjusted_proxy": -0.625,
+      "net_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "net_pair_cost_sum": 1.125,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 1.0,
+      "pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "pair_cost_sum": 1.125,
+      "pair_pnl": 0.125,
+      "pair_qty": 1.25,
+      "queue_supported_fills": 5.0,
+      "residual_cost": 0.6875,
+      "residual_cost_by_side": {
+        "NO": 0.6875
+      },
+      "residual_px_qty_buckets": {
+        "px_lt_0p30": 3.75
+      },
+      "residual_qty": 3.75,
+      "residual_qty_by_side": {
+        "NO": 3.75
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 8.0,
+      "slug": "btc-updown-5m-1779325800",
+      "stress_cost_proxy": 0.0625
+    },
+    {
+      "avg_pair_cost": 0.878,
+      "condition_id": "0xa8df1c8cda3214d3cc5d9d02968d0a6040bdc9e780724d42b21414a53bd7350f",
+      "conservative_risk_adjusted_proxy": -0.242,
+      "net_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 5.0
+      },
+      "net_pair_cost_sum": 5.63975,
+      "official_taker_fee_proxy": 0.15225,
+      "pair_actions": 5.0,
+      "pair_cost_buckets": {
+        "pair_cost_lt_0p95": 5.0
+      },
+      "pair_cost_sum": 5.4875,
+      "pair_pnl": 0.61025,
+      "pair_qty": 6.25,
+      "queue_supported_fills": 7.0,
+      "residual_cost": 0.5625,
+      "residual_cost_by_side": {
+        "NO": 0.5625
+      },
+      "residual_px_qty_buckets": {
+        "px_0p45_0p48": 1.25
+      },
+      "residual_qty": 1.25,
+      "residual_qty_by_side": {
+        "NO": 1.25
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 9.0,
+      "slug": "btc-updown-5m-1779323100",
+      "stress_cost_proxy": 0.1375
+    }
+  ],
+  "top_positive_live_conditions": [
+    {
+      "avg_pair_cost": 0.8575,
+      "condition_id": "0x148929f6e7f33a79d326941629dd3da451207f84d2db9ac0b9d710b99c868b97",
+      "conservative_risk_adjusted_proxy": 0.6825,
+      "net_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 8.0
+      },
+      "net_pair_cost_sum": 8.84625,
+      "official_taker_fee_proxy": 0.27125,
+      "pair_actions": 8.0,
+      "pair_cost_buckets": {
+        "pair_cost_lt_0p95": 8.0
+      },
+      "pair_cost_sum": 8.575,
+      "pair_pnl": 1.15375,
+      "pair_qty": 10.0,
+      "queue_supported_fills": 9.0,
+      "residual_cost": 0.0,
+      "residual_cost_by_side": {},
+      "residual_px_qty_buckets": {},
+      "residual_qty": 0.0,
+      "residual_qty_by_side": {},
+      "risk_adjusted_bucket": "risk_adjusted_nonnegative",
+      "risk_adjusted_nonnegative": true,
+      "seed_actions": 9.0,
+      "slug": "btc-updown-5m-1779325200",
+      "stress_cost_proxy": 0.2
+    },
+    {
+      "avg_pair_cost": 0.90102,
+      "condition_id": "0xa9c36c89188779ad4648a1d9cdfce0e7179b1451219ea293e4c7ca5eaa6f8d7d",
+      "conservative_risk_adjusted_proxy": 0.305981,
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_lt_0p95": 5.0
+      },
+      "net_pair_cost_sum": 4.156897,
+      "official_taker_fee_proxy": 0.027972,
+      "pair_actions": 6.0,
+      "pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_lt_0p95": 5.0
+      },
+      "pair_cost_sum": 4.128925,
+      "pair_pnl": 0.425603,
+      "pair_qty": 4.5825,
+      "queue_supported_fills": 7.0,
+      "residual_cost": 0.0,
+      "residual_cost_by_side": {},
+      "residual_px_qty_buckets": {},
+      "residual_qty": 0.0,
+      "residual_qty_by_side": {},
+      "risk_adjusted_bucket": "risk_adjusted_nonnegative",
+      "risk_adjusted_nonnegative": true,
+      "seed_actions": 7.0,
+      "slug": "btc-updown-5m-1779322800",
+      "stress_cost_proxy": 0.09165
+    },
+    {
+      "avg_pair_cost": 0.916786,
+      "condition_id": "0x012eece7c94a4aba9e800013e4971bd057b5ec88c1f267c5a81f10320447ea0e",
+      "conservative_risk_adjusted_proxy": 0.153275,
+      "net_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 3.0
+      },
+      "net_pair_cost_sum": 3.201875,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 5.0,
+      "pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 3.0
+      },
+      "pair_cost_sum": 3.201875,
+      "pair_pnl": 0.290625,
+      "pair_qty": 3.4925,
+      "queue_supported_fills": 6.0,
+      "residual_cost": 0.06615,
+      "residual_cost_by_side": {
+        "NO": 0.06615
+      },
+      "residual_px_qty_buckets": {
+        "px_0p48_0p55": 0.135
+      },
+      "residual_qty": 0.135,
+      "residual_qty_by_side": {
+        "NO": 0.135
+      },
+      "risk_adjusted_bucket": "risk_adjusted_nonnegative",
+      "risk_adjusted_nonnegative": true,
+      "seed_actions": 7.0,
+      "slug": "btc-updown-5m-1779323400",
+      "stress_cost_proxy": 0.0712
+    },
+    {
+      "avg_pair_cost": 0.91,
+      "condition_id": "0x996ba97ac00636d4bc17c74be0050ba04fa44b68452f672c02a820ffe6f028e9",
+      "conservative_risk_adjusted_proxy": 0.028,
+      "net_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "net_pair_cost_sum": 1.16725,
+      "official_taker_fee_proxy": 0.02975,
+      "pair_actions": 1.0,
+      "pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "pair_cost_sum": 1.1375,
+      "pair_pnl": 0.08275,
+      "pair_qty": 1.25,
+      "queue_supported_fills": 1.0,
+      "residual_cost": 0.0,
+      "residual_cost_by_side": {},
+      "residual_px_qty_buckets": {},
+      "residual_qty": 0.0,
+      "residual_qty_by_side": {},
+      "risk_adjusted_bucket": "risk_adjusted_nonnegative",
+      "risk_adjusted_nonnegative": true,
+      "seed_actions": 2.0,
+      "slug": "btc-updown-5m-1779323700",
+      "stress_cost_proxy": 0.025
+    },
+    {
+      "avg_pair_cost": 0.0,
+      "condition_id": "0x7efc10d2ac7bfdac9591f8730297c28eea0c8baa680a683a21fbb36b1f016eb4",
+      "conservative_risk_adjusted_proxy": 0.0,
+      "net_pair_cost_buckets": {},
+      "net_pair_cost_sum": 0.0,
+      "official_taker_fee_proxy": 0.0,
+      "pair_actions": 0.0,
+      "pair_cost_buckets": {},
+      "pair_cost_sum": 0.0,
+      "pair_pnl": 0.0,
+      "pair_qty": 0.0,
+      "queue_supported_fills": 0.0,
+      "residual_cost": 0.0,
+      "residual_cost_by_side": {},
+      "residual_px_qty_buckets": {},
+      "residual_qty": 0.0,
+      "residual_qty_by_side": {},
+      "risk_adjusted_bucket": "risk_adjusted_nonnegative",
+      "risk_adjusted_nonnegative": true,
+      "seed_actions": 1.0,
+      "slug": "btc-updown-5m-1779326400",
+      "stress_cost_proxy": 0.0
+    }
+  ],
+  "transfer_gap_reasons": [
+    "summary_positive_only_proxy_destroys_live_seed_sample",
+    "summary_positive_only_proxy_destroys_live_pair_qty",
+    "risk_adjusted_negative_conditions_are_majority_of_active_live_window",
+    "negative_residual_cost_spans_both_sides",
+    "negative_residual_qty_spans_multiple_price_buckets"
+  ]
+}
