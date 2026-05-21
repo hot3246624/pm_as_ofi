@@ -1,0 +1,196 @@
+{
+  "status": "KEEP_SOURCE_LINK_TRANSITION_ATTRIBUTION_PLAN_SELECTED",
+  "created_at": "2026-05-21T05:35:51Z",
+  "lane": "causal_verifier",
+  "scope": "local_only_source_link_transition_attribution_plan",
+  "inputs_used": [
+    "xuan_research_artifacts/xuan_b27_dplus_source_link_transition_implementability_20260521T052300Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_same_window_source_field_readiness_verifier_20260520T222107Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_portfolio_ledger_transfer_attribution_20260521T031327Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_status_hygiene_dynamic_risk_state_freeze_20260521T043551Z/manifest.json"
+  ],
+  "prohibited_inputs_not_used": [
+    "ssh",
+    "ec2_shadow",
+    "events_jsonl",
+    "shared_ingress_connection",
+    "broker_or_service_state",
+    "raw_replay_or_collector_scans",
+    "full_completion_store",
+    "orders_cancels_redeems"
+  ],
+  "source_link_diagnostic_fields": [
+    "transition_count_by_status",
+    "transition_count_by_reason",
+    "transition_count_by_status_reason",
+    "transition_count_by_side",
+    "transition_count_by_offset_bucket",
+    "transition_count_by_risk_direction",
+    "quote_intent_presence_by_status",
+    "source_order_presence_by_status",
+    "source_sequence_presence_by_status",
+    "pre_seed_same_qty_bucket_by_status_reason",
+    "pre_seed_opp_qty_bucket_by_status_reason",
+    "pre_seed_same_cost_bucket_by_status_reason",
+    "pre_seed_opp_cost_bucket_by_status_reason",
+    "ledger_proxy_before_bucket_by_status_reason",
+    "ledger_proxy_after_bucket_by_status_reason",
+    "candidate_qty_bucket_by_status_reason",
+    "immediate_pair_action_count_by_source_side_offset",
+    "immediate_pair_qty_bucket_by_source_side_offset",
+    "immediate_pair_cost_bucket_by_source_side_offset",
+    "immediate_pair_source_quote_presence_by_side_offset",
+    "immediate_pair_source_order_presence_by_side_offset",
+    "residual_qty_by_source_side_offset",
+    "residual_cost_by_source_side_offset",
+    "residual_count_by_source_side_offset",
+    "residual_cost_bucket_by_source_side_offset",
+    "residual_source_quote_presence_by_side_offset",
+    "residual_source_order_presence_by_side_offset"
+  ],
+  "failed_family_attribution_map": {
+    "fill_to_balance90_transfer_gap": {
+      "explainable_with_new_fields": "future_diagnostic_windows_only",
+      "useful_fields": [
+        "pre_seed_same_qty_bucket_by_status_reason",
+        "pre_seed_opp_qty_bucket_by_status_reason",
+        "candidate_qty_bucket_by_status_reason",
+        "ledger_proxy_before_bucket_by_status_reason",
+        "ledger_proxy_after_bucket_by_status_reason",
+        "immediate_pair_qty_bucket_by_source_side_offset",
+        "residual_qty_by_source_side_offset",
+        "residual_cost_bucket_by_source_side_offset"
+      ],
+      "expected_question_answered": "Whether live/no-order fill-to-balance candidates are absent, blocked, already size-limited, immediately paired, or admitted into residual-heavy buckets.",
+      "limits": [
+        "Prior fill-to-balance diagnostic shadows do not contain source-link transition diagnostics.",
+        "Events JSONL were intentionally not pulled and should not be pulled retroactively.",
+        "Same-window candidate_base/candidate_registry for 2026-05-20 is still absent."
+      ],
+      "shadow_status": "frozen_until_same_window_source_fields_and_local_KEEP"
+    },
+    "portfolio_ledger_transfer_gap": {
+      "explainable_with_new_fields": "future_diagnostic_windows_only",
+      "useful_fields": [
+        "ledger_proxy_before_bucket_by_status_reason",
+        "ledger_proxy_after_bucket_by_status_reason",
+        "transition_count_by_risk_direction",
+        "immediate_pair_cost_bucket_by_source_side_offset",
+        "residual_cost_by_source_side_offset",
+        "residual_cost_bucket_by_source_side_offset"
+      ],
+      "expected_question_answered": "Which admitted transitions make a condition ledger risk-adjusted negative, and whether they are concentrated enough for a deployable non-price rule.",
+      "limits": [
+        "The exact portfolio-ledger diagnostic 3600s shadow lacks source-link transition diagnostics.",
+        "The prior positive-only condition proxy destroyed sample and remains non-deployable."
+      ],
+      "shadow_status": "exact_3600s_diagnostic_shadow_frozen_as_promotion_candidate"
+    },
+    "dynamic_condition_ledger_risk_state_gate": {
+      "explainable_with_new_fields": "future_diagnostic_windows_or_local_scorer",
+      "useful_fields": [
+        "transition_count_by_status_reason",
+        "transition_count_by_risk_direction",
+        "ledger_proxy_before_bucket_by_status_reason",
+        "ledger_proxy_after_bucket_by_status_reason",
+        "immediate_pair_action_count_by_source_side_offset",
+        "residual_qty_by_source_side_offset"
+      ],
+      "expected_question_answered": "Whether risk-increasing seeds blocked by the local gate were actually future pairing-improving or residual-producing in no-order summaries.",
+      "limits": [
+        "The current dynamic risk-state verifier is mixed and should not be rerun as-is.",
+        "Any refinement must avoid summary-only removal and retain most sample."
+      ],
+      "shadow_status": "not_shadow_candidate_without_new_local_KEEP_refinement"
+    },
+    "late_repair90_pair_tail_and_residual_tail": {
+      "explainable_with_new_fields": "yes_for_future_summaries",
+      "useful_fields": [
+        "transition_count_by_offset_bucket",
+        "immediate_pair_cost_bucket_by_source_side_offset",
+        "residual_cost_bucket_by_source_side_offset",
+        "quote_intent_presence_by_status",
+        "source_order_presence_by_status"
+      ],
+      "expected_question_answered": "Whether tail-producing seeds are necessary repair transitions, source-link missing transitions, or a narrow offset/side bucket that can be handled without destroying sample.",
+      "limits": [
+        "Source-public-price cap variants are frozen and should not be revived from this attribution alone."
+      ],
+      "shadow_status": "needs_local_source_link_scorer_KEEP_before_any_new_diagnostic_shadow"
+    }
+  },
+  "selected_next_local_verifier": {
+    "name": "source_link_transition_bucket_scorer_smoke",
+    "lane": "implementability_review",
+    "description": "Implement a local no-network scorer that consumes future summary/aggregate JSON with event_lite.source_link_transition_diagnostics, validates aggregate parity, ranks transition buckets by sample retention, immediate pair contribution, residual cost contribution, and ledger-proxy movement, and refuses summary-only removal plans that destroy sample.",
+    "allowed_inputs": [
+      "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/manifest.json",
+      "future local *.summary.json containing event_lite.source_link_transition_diagnostics",
+      "future local aggregate_report.json containing event_lite.source_link_transition_diagnostics",
+      "local manifests and docs"
+    ],
+    "prohibited_inputs": [
+      "ssh",
+      "ec2_shadow",
+      "events_jsonl",
+      "shared_ingress",
+      "raw_or_replay_data",
+      "full_completion_store",
+      "broker_or_service_state",
+      "orders_cancels_redeems"
+    ],
+    "required_outputs": [
+      "aggregate parity check",
+      "top admitted transition buckets by immediate pair qty/cost",
+      "top admitted transition buckets by residual qty/cost",
+      "blocked transition buckets by reason and risk direction",
+      "ledger proxy before/after bucket movement",
+      "sample retention guardrail",
+      "research_ranking and promotion_gate separation"
+    ],
+    "keep_criteria": [
+      "The scorer runs locally on source-link diagnostic summary/aggregate shape with no prohibited data.",
+      "The scorer can identify bounded transition buckets without recommending summary-only removal.",
+      "The scorer names explicit thresholds for sample retention, residual cost share, and immediate-pair contribution before any future diagnostic shadow."
+    ],
+    "unknown_criteria": [
+      "No real no-order source-link diagnostic summaries exist yet, and synthetic/smoke shape is insufficient to define scorer semantics.",
+      "Required source-link fields are absent from aggregate or per-summary output."
+    ],
+    "discard_criteria": [
+      "The scorer can only recommend removing risk-negative summaries or conditions after the fact.",
+      "The scorer cannot connect admitted transitions to immediate pair and residual buckets."
+    ]
+  },
+  "diagnostic_shadow_policy": {
+    "current_decision": "not_justified_now",
+    "reason": "Source-link diagnostics are instrumentation-ready, but instrumentation readiness is not a strategy KEEP and not promotion evidence.",
+    "future_minimum_conditions": [
+      "source_link_transition_bucket_scorer_smoke returns KEEP locally",
+      "a concrete diagnostic question is selected with explicit bucket criteria",
+      "bounded EC2 preflight finds no xuan-research overlap and no resource or no-order safety blocker",
+      "the run is diagnostic-only with PM_DRY_RUN=true, no fill-to-balance90 unless separately re-justified, no promotion/canary interpretation, and no events JSONL pullback"
+    ],
+    "heartbeat_cadence": "Keep 30 minute cadence for this local verifier phase. If a bounded remote/no-order diagnostic shadow is later active or expected to finish within one hour, temporarily use 15 minute cadence and restore 30 minutes after completion, block, or discard."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SOURCE_LINK_TRANSITION_ATTRIBUTION_PLAN_SELECTED",
+    "interpretation": "The source-link diagnostics now have a concrete local scorer/verifier path and can explain prior transfer-gap families only in future summaries that include the new default-off fields. This is attribution-plan readiness, not economic strategy evidence."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "ATTRIBUTION_PLAN_ONLY_NOT_PROMOTION_EVIDENCE",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false,
+    "hard_blockers": [
+      "no_local_source_link_scorer_KEEP_yet",
+      "no_no_order_source_link_diagnostic_shadow_yet",
+      "prior_fill_to_balance_and_portfolio_ledger_shadows_failed_promotion_risk_budget",
+      "dynamic_condition_ledger_risk_state_gate_mixed"
+    ]
+  },
+  "next_executable_action": "Implement and run a local no-network source_link_transition_bucket_scorer_smoke under scripts/ against source-link diagnostic summary/aggregate shape; do not SSH or start EC2 shadow/canary before that local scorer returns KEEP."
+}
