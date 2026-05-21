@@ -1,0 +1,243 @@
+{
+  "active_lane": "causal_verifier",
+  "artifact": "xuan_b27_dplus_replay_store_residual_lot_backed_truth_response",
+  "created_utc": "2026-05-21T16:12:23Z",
+  "decision": "KEEP",
+  "deployable": false,
+  "fee_policy": {
+    "fee_rate": 0.07,
+    "fee_rate_source": "state_machine_result_config:pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2:official_fee_rate=0.07",
+    "formula": "fee = shares * fee_rate * price * (1 - price)",
+    "hard_coded_account_average_fee_rate": false
+  },
+  "is_private_truth": false,
+  "label": "KEEP_RESIDUAL_LOT_BACKED_SOURCE_TRUTH_RESEARCH_ONLY",
+  "next_action": {
+    "description": "Choose exactly one local research-only follow-up: either implement a residual FIFO lot-level verifier/scorer expansion that checks remaining_qty/cost/source_seed_action_id consistency across selected residual lots, or define the strict rescue close selected-request schema with close_action_id, close_ts_ms, close_side, close_qty, close_px, fee_rate_source, and close book/trade refs before implementation.",
+    "lane": "status_hygiene",
+    "remote_or_canary_allowed": false
+  },
+  "outputs": {
+    "action_decisions": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/response/action_decisions.csv",
+    "residual_fifo_lots": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/response/residual_fifo_lots.csv",
+    "response_manifest": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/response/VALIDATION_RESPONSE_MANIFEST.json",
+    "score": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/score/score.json",
+    "score_manifest": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/score/manifest.json",
+    "scored_action_decisions": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/score/scored_action_decisions.csv",
+    "selected_actions": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/selected_actions.json",
+    "selection_manifest": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/selection_manifest.json",
+    "strict_rescue_closes": "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/response/strict_rescue_closes.csv"
+  },
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "can_support_strategy_promotion": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SOURCE_TRUTH_RESEARCH_ONLY_NOT_PRIVATE_TRUTH"
+  },
+  "promotion_gate_pass": false,
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Residual-lot-backed selected seed actions validated against replay_store_v2 source rows with response residual FIFO coverage. This remains replay-derived source-truth research-only.",
+    "label": "KEEP_RESIDUAL_LOT_BACKED_SOURCE_TRUTH_RESEARCH_ONLY"
+  },
+  "response_summary": {
+    "deployable": false,
+    "private_truth_ready": false,
+    "promotion_gate": {
+      "can_support_strategy_promotion": false,
+      "deployable": false,
+      "g2_canary_ready": false,
+      "passed": false,
+      "private_truth_ready": false,
+      "status": "SOURCE_TRUTH_RESEARCH_ONLY_NOT_PRIVATE_TRUTH"
+    },
+    "promotion_gate_pass": false,
+    "research_ranking": {
+      "decision": "KEEP",
+      "interpretation": "Selected candidate actions were validated only against replay-derived source rows. This is research-only source truth, not private owner-trade truth.",
+      "label": "KEEP_SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY"
+    },
+    "row_count": 30,
+    "status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+    "status_counts": {
+      "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY": 30
+    }
+  },
+  "schema_version": "xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_result_v1",
+  "score_summary": {
+    "condition_count": 30,
+    "day_count": 15,
+    "decision": "KEEP",
+    "fee_metrics": {
+      "avg_abs_delta_vs_selected_expected_official_taker_fee": 2.7322999999954135e-07,
+      "expected_fee_join_count": 30,
+      "fee_rate_source_coverage": 1.0,
+      "fee_rate_source_missing": 0,
+      "fee_rate_source_present": 30,
+      "formula": "fee = shares * fee_rate * price * (1 - price)",
+      "max_abs_delta_vs_selected_expected_official_taker_fee": 4.844000000003845e-07
+    },
+    "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
+    "private_guard": {
+      "all_false": true,
+      "field_checks": {
+        "deployable": true,
+        "private_truth_ready": true,
+        "promotion_gate.deployable": true,
+        "promotion_gate.g2_canary_ready": true,
+        "promotion_gate.passed": true,
+        "promotion_gate.private_truth_ready": true,
+        "promotion_gate_pass": true
+      },
+      "promotion_gate_status": "SOURCE_TRUTH_RESEARCH_ONLY_NOT_PRIVATE_TRUTH"
+    },
+    "promotion_gate": {
+      "can_support_strategy_promotion": false,
+      "deployable": false,
+      "g2_canary_ready": false,
+      "passed": false,
+      "private_truth_ready": false,
+      "status": "SOURCE_TRUTH_SCORER_NOT_PROMOTION_EVIDENCE"
+    },
+    "required_source_refs": {
+      "book_l1_ref": {
+        "coverage": 1.0,
+        "missing": 0,
+        "present": 30
+      },
+      "book_l2_ref": {
+        "coverage": 1.0,
+        "missing": 0,
+        "present": 30
+      },
+      "market_meta_ref": {
+        "coverage": 1.0,
+        "missing": 0,
+        "present": 30
+      }
+    },
+    "residual_fifo": {
+      "coverage_interpretation": "Residual rows are present in response output.",
+      "residual_fifo_row_count": 30,
+      "selected_action_count": 30,
+      "selected_actions_with_response_residual_lots": 30,
+      "selected_residual_coverage": 1.0
+    },
+    "row_count": 30,
+    "state_machine_residual_lots_join": {
+      "cost": 11.236613,
+      "covered_action_ids": [
+        "108",
+        "128",
+        "181",
+        "1984",
+        "23",
+        "230",
+        "239",
+        "246",
+        "259",
+        "303",
+        "324",
+        "338",
+        "347",
+        "35",
+        "382",
+        "398",
+        "43",
+        "442",
+        "467",
+        "482",
+        "53",
+        "560",
+        "620",
+        "647",
+        "732",
+        "77",
+        "801",
+        "847",
+        "862",
+        "92"
+      ],
+      "join_attempted": true,
+      "lot_count": 30,
+      "qty": 28.4025,
+      "selected_action_count": 30,
+      "selected_actions_with_state_machine_residual_lots": 30,
+      "selected_residual_coverage": 1.0
+    },
+    "strict_rescue_closes": {
+      "coverage_interpretation": "No strict rescue close rows were supplied; full close timing/cost/source-truth validation remains a named gap.",
+      "missing_by_field": {
+        "book_l1_ref": 0,
+        "book_l2_ref": 0,
+        "close_action_id": 0,
+        "close_px": 0,
+        "close_qty": 0,
+        "close_side": 0,
+        "close_ts_ms": 0,
+        "fee_rate_source": 0,
+        "trade_after_ref": 0,
+        "trade_before_ref": 0
+      },
+      "missing_fields": [
+        "close_action_id",
+        "close_ts_ms",
+        "close_side",
+        "close_qty",
+        "close_px",
+        "fee_rate_source",
+        "book_l1_ref",
+        "book_l2_ref",
+        "trade_before_ref",
+        "trade_after_ref"
+      ],
+      "strict_rescue_close_row_count": 0
+    }
+  },
+  "selection": {
+    "action_count": 30,
+    "condition_count": 30,
+    "day_count": 15,
+    "days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ],
+    "forbidden_days_used": [],
+    "per_day_target": 2,
+    "sample_cap": 30,
+    "selected_residual_cost": 11.236613000000002,
+    "selected_residual_pnl": 5.818387000000001,
+    "selected_residual_qty": 28.4025
+  },
+  "side_effects": {
+    "broad_strategy_search": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "source_kind": "replay_store_v2",
+  "source_truth_status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY"
+}
