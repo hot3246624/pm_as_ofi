@@ -1,0 +1,98 @@
+{
+  "artifact": "xuan_b27_dplus_source_link_transition_implementability",
+  "created_utc": "20260521T052300Z",
+  "decision_label": "KEEP",
+  "status": "KEEP_SOURCE_LINK_TRANSITION_EVENT_LITE_READY",
+  "lane": "implementability_review",
+  "scope": {
+    "local_only": true,
+    "private_owner_trade_truth_used": false,
+    "ssh_used": false,
+    "shared_ingress_connected": false,
+    "shadow_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "orders_cancels_redeems_sent": false
+  },
+  "implementation": {
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "new_flag": "--source-link-transition-event-lite-summary",
+    "required_pairing": "--event-lite-summary",
+    "default_behavior_unchanged": true,
+    "summary_path": "event_lite.source_link_transition_diagnostics",
+    "aggregate_path": "event_lite.source_link_transition_diagnostics",
+    "diagnostic_only": true,
+    "trading_behavior_changed": false
+  },
+  "diagnostic_fields": [
+    "transition_count_by_status",
+    "transition_count_by_reason",
+    "transition_count_by_status_reason",
+    "transition_count_by_side",
+    "transition_count_by_offset_bucket",
+    "transition_count_by_risk_direction",
+    "quote_intent_presence_by_status",
+    "source_order_presence_by_status",
+    "source_sequence_presence_by_status",
+    "pre_seed_same_qty_bucket_by_status_reason",
+    "pre_seed_opp_qty_bucket_by_status_reason",
+    "pre_seed_same_cost_bucket_by_status_reason",
+    "pre_seed_opp_cost_bucket_by_status_reason",
+    "ledger_proxy_before_bucket_by_status_reason",
+    "ledger_proxy_after_bucket_by_status_reason",
+    "candidate_qty_bucket_by_status_reason",
+    "immediate_pair_action_count_by_source_side_offset",
+    "immediate_pair_qty_bucket_by_source_side_offset",
+    "immediate_pair_cost_bucket_by_source_side_offset",
+    "immediate_pair_source_quote_presence_by_side_offset",
+    "immediate_pair_source_order_presence_by_side_offset",
+    "residual_qty_by_source_side_offset",
+    "residual_cost_by_source_side_offset",
+    "residual_count_by_source_side_offset",
+    "residual_cost_bucket_by_source_side_offset",
+    "residual_source_quote_presence_by_side_offset",
+    "residual_source_order_presence_by_side_offset"
+  ],
+  "validation": {
+    "py_compile": "PASS",
+    "source_link_transition_smoke": {
+      "status": "PASS",
+      "manifest": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/manifest.json",
+      "checks": {
+        "default_event_lite_source_link_absent": true,
+        "cli_requires_event_lite": true,
+        "admitted_and_blocked_transition_counts": true,
+        "quote_and_order_presence_counts": true,
+        "pre_seed_inventory_buckets": true,
+        "ledger_proxy_before_after_buckets": true,
+        "immediate_pair_source_link_buckets": true,
+        "residual_source_link_buckets": true,
+        "aggregate_matches_per_summary": true
+      }
+    },
+    "regression_smokes": {
+      "activation": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_activation_smoke_20260521T052250Z/manifest.json",
+      "multi_profile": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke_20260521T052250Z/manifest.json",
+      "late_repair_only": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_late_repair_only_smoke_20260521T052250Z/manifest.json",
+      "pair_source_event_lite": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260521T052300Z/manifest.json",
+      "fill_to_balance": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_smoke_20260521T052300Z/manifest.json",
+      "fill_to_balance_diagnostic": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260521T052300Z/manifest.json",
+      "portfolio_ledger": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260521T052300Z/manifest.json"
+    },
+    "git_diff_check": "PASS"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SOURCE_LINK_TRANSITION_EVENT_LITE_READY",
+    "interpretation": "Default-off source-link transition diagnostics are ready for future transfer-gap attribution. This is instrumentation readiness, not economic strategy evidence."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "DIAGNOSTIC_INSTRUMENTATION_ONLY_NOT_PROMOTION_EVIDENCE",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "next_executable_action": "Run local-only attribution/spec selection using the new diagnostic fields, or if a new local verifier returns KEEP, perform bounded preflight before any future no-order diagnostic shadow. Do not promote to canary."
+}

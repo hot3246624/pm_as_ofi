@@ -191,6 +191,18 @@ def risk_adjusted_bucket(value: float) -> str:
     return "risk_adjusted_nonnegative" if value >= 0.0 else "risk_adjusted_negative"
 
 
+def ledger_proxy_bucket(value: float | None) -> str:
+    if value is None:
+        return "ledger_proxy_unknown"
+    if value < -1.0:
+        return "ledger_proxy_lt_m1"
+    if value < 0.0:
+        return "ledger_proxy_m1_0"
+    if value < 1.0:
+        return "ledger_proxy_0_1"
+    return "ledger_proxy_ge_1"
+
+
 def merge_portfolio_ledger_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
     dest["condition_count"] = int(dest.get("condition_count", 0)) + 1
     numeric_keys = (
@@ -236,6 +248,50 @@ def finalize_portfolio_ledger_diagnostics(diag: dict[str, Any]) -> None:
     diag["risk_adjusted_bucket"] = risk_adjusted_bucket(risk_adjusted)
 
 
+def merge_source_link_transition_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    count_keys = (
+        "transition_count_by_status",
+        "transition_count_by_reason",
+        "transition_count_by_side",
+        "transition_count_by_offset_bucket",
+        "immediate_pair_action_count_by_source_side_offset",
+        "residual_qty_by_source_side_offset",
+        "residual_cost_by_source_side_offset",
+        "residual_count_by_source_side_offset",
+    )
+    nested_keys = (
+        "transition_count_by_status_reason",
+        "transition_count_by_status_side",
+        "transition_count_by_status_offset_bucket",
+        "transition_count_by_risk_direction",
+        "quote_intent_presence_by_status",
+        "source_order_presence_by_status",
+        "source_sequence_presence_by_status",
+        "pre_seed_same_qty_bucket_by_status_reason",
+        "pre_seed_opp_qty_bucket_by_status_reason",
+        "pre_seed_same_cost_bucket_by_status_reason",
+        "pre_seed_opp_cost_bucket_by_status_reason",
+        "ledger_proxy_before_bucket_by_status_reason",
+        "ledger_proxy_after_bucket_by_status_reason",
+        "candidate_qty_bucket_by_status_reason",
+        "immediate_pair_qty_bucket_by_source_side_offset",
+        "immediate_pair_cost_bucket_by_source_side_offset",
+        "immediate_pair_source_quote_presence_by_side_offset",
+        "immediate_pair_source_order_presence_by_side_offset",
+        "residual_cost_bucket_by_source_side_offset",
+        "residual_source_quote_presence_by_side_offset",
+        "residual_source_order_presence_by_side_offset",
+    )
+    for key in count_keys:
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    for key in nested_keys:
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -279,6 +335,7 @@ class RunnerConfig:
     pair_source_event_lite_summary: bool = False
     fill_to_balance_diagnostic_event_lite_summary: bool = False
     portfolio_ledger_event_lite_summary: bool = False
+    source_link_transition_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -442,6 +499,31 @@ class DPlusRunner:
             "qty_reduction_amount_by_offset_bucket": {},
             "qty_reduction_amount_by_side_offset": {},
         }
+        self.event_lite_source_link_transitions: dict[str, Any] = {
+            "transition_count_by_status": {},
+            "transition_count_by_reason": {},
+            "transition_count_by_status_reason": {},
+            "transition_count_by_side": {},
+            "transition_count_by_offset_bucket": {},
+            "transition_count_by_status_side": {},
+            "transition_count_by_status_offset_bucket": {},
+            "transition_count_by_risk_direction": {},
+            "quote_intent_presence_by_status": {},
+            "source_order_presence_by_status": {},
+            "source_sequence_presence_by_status": {},
+            "pre_seed_same_qty_bucket_by_status_reason": {},
+            "pre_seed_opp_qty_bucket_by_status_reason": {},
+            "pre_seed_same_cost_bucket_by_status_reason": {},
+            "pre_seed_opp_cost_bucket_by_status_reason": {},
+            "ledger_proxy_before_bucket_by_status_reason": {},
+            "ledger_proxy_after_bucket_by_status_reason": {},
+            "candidate_qty_bucket_by_status_reason": {},
+            "immediate_pair_action_count_by_source_side_offset": {},
+            "immediate_pair_qty_bucket_by_source_side_offset": {},
+            "immediate_pair_cost_bucket_by_source_side_offset": {},
+            "immediate_pair_source_quote_presence_by_side_offset": {},
+            "immediate_pair_source_order_presence_by_side_offset": {},
+        }
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -469,6 +551,26 @@ class DPlusRunner:
             add_nested_count(self.event_lite_block_by_reason_side, reason, side or "unknown")
             add_nested_count(self.event_lite_block_by_reason_public_px_bucket, reason, px_bucket(public_trade_px))
             add_nested_count(self.event_lite_block_by_reason_offset_bucket, reason, offset_bucket(offset_s))
+        if side in {"YES", "NO"}:
+            same_qty = self.exposure_qty(side)
+            opp_qty = self.exposure_qty(opp(side))
+            same_cost = self.exposure_cost(side)
+            opp_cost = self.exposure_cost(opp(side))
+        else:
+            same_qty = opp_qty = same_cost = opp_cost = None
+        self.record_source_link_transition(
+            status="blocked",
+            reason=reason,
+            side=side,
+            offset_s=offset_s,
+            qty=None,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost,
+            opp_cost=opp_cost,
+            ledger_proxy_before=self.online_ledger_proxy(),
+            source_sequence_id=None,
+        )
 
     def record_event_lite_candidate(self, side: str, seed_px: float, public_trade_px: float, offset_s: float | None, qty: float) -> None:
         if not self.cfg.event_lite_summary:
@@ -515,6 +617,123 @@ class DPlusRunner:
             add_count(diag["qty_reduction_amount_by_side"], side, qty_reduction)
             add_count(diag["qty_reduction_amount_by_offset_bucket"], offset_key, qty_reduction)
             add_count(diag["qty_reduction_amount_by_side_offset"], side_offset_key, qty_reduction)
+
+    def record_source_link_transition(
+        self,
+        *,
+        status: str,
+        reason: str,
+        side: str | None,
+        offset_s: float | None,
+        qty: float | None,
+        same_qty: float | None,
+        opp_qty: float | None,
+        same_cost: float | None,
+        opp_cost: float | None,
+        ledger_proxy_before: float | None,
+        ledger_proxy_after: float | None = None,
+        quote_intent_id: str | None = None,
+        source_order_id: int | None = None,
+        source_sequence_id: Any | None = None,
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.source_link_transition_event_lite_summary):
+            return
+        side_key = side or "unknown"
+        offset_key = offset_bucket(offset_s)
+        status_reason = f"{status}|{reason}"
+        risk_direction = "unknown"
+        if same_qty is not None and opp_qty is not None:
+            risk_direction = "risk_increasing" if same_qty + self.cfg.dust_qty >= opp_qty else "repair_or_pairing_improving"
+        diag = self.event_lite_source_link_transitions
+        add_count(diag["transition_count_by_status"], status)
+        add_count(diag["transition_count_by_reason"], reason)
+        add_nested_count(diag["transition_count_by_status_reason"], status, reason)
+        add_count(diag["transition_count_by_side"], side_key)
+        add_count(diag["transition_count_by_offset_bucket"], offset_key)
+        add_nested_count(diag["transition_count_by_status_side"], status, side_key)
+        add_nested_count(diag["transition_count_by_status_offset_bucket"], status, offset_key)
+        add_nested_count(diag["transition_count_by_risk_direction"], status, risk_direction)
+        add_nested_count(diag["quote_intent_presence_by_status"], status, "present" if quote_intent_id else "missing")
+        add_nested_count(diag["source_order_presence_by_status"], status, "present" if source_order_id is not None else "missing")
+        add_nested_count(diag["source_sequence_presence_by_status"], status, "present" if source_sequence_id is not None else "missing")
+        add_nested_count(diag["pre_seed_same_qty_bucket_by_status_reason"], status_reason, qty_bucket("same_qty", same_qty))
+        add_nested_count(diag["pre_seed_opp_qty_bucket_by_status_reason"], status_reason, qty_bucket("opp_qty", opp_qty))
+        add_nested_count(diag["pre_seed_same_cost_bucket_by_status_reason"], status_reason, qty_bucket("same_cost", same_cost))
+        add_nested_count(diag["pre_seed_opp_cost_bucket_by_status_reason"], status_reason, qty_bucket("opp_cost", opp_cost))
+        add_nested_count(
+            diag["ledger_proxy_before_bucket_by_status_reason"],
+            status_reason,
+            ledger_proxy_bucket(ledger_proxy_before),
+        )
+        add_nested_count(
+            diag["ledger_proxy_after_bucket_by_status_reason"],
+            status_reason,
+            ledger_proxy_bucket(ledger_proxy_after),
+        )
+        add_nested_count(diag["candidate_qty_bucket_by_status_reason"], status_reason, qty_bucket("candidate_qty", qty))
+
+    def record_source_link_pair_transition(
+        self,
+        *,
+        qty: float,
+        net_pair_cost: float,
+        sources: list[Lot],
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.source_link_transition_event_lite_summary):
+            return
+        cost_bucket = pair_cost_bucket(net_pair_cost)
+        diag = self.event_lite_source_link_transitions
+        for lot in sources:
+            side_offset = f"{lot.side}|{offset_bucket(lot.offset_s)}"
+            add_count(diag["immediate_pair_action_count_by_source_side_offset"], side_offset)
+            add_nested_count(diag["immediate_pair_qty_bucket_by_source_side_offset"], side_offset, qty_bucket("pair_qty", qty))
+            add_nested_count(diag["immediate_pair_cost_bucket_by_source_side_offset"], side_offset, cost_bucket)
+            add_nested_count(
+                diag["immediate_pair_source_quote_presence_by_side_offset"],
+                side_offset,
+                "present" if lot.quote_intent_id else "missing",
+            )
+            add_nested_count(
+                diag["immediate_pair_source_order_presence_by_side_offset"],
+                side_offset,
+                "present" if lot.source_order_id is not None else "missing",
+            )
+
+    def source_link_transition_diagnostics(self, residual_lots: list[Lot]) -> dict[str, Any]:
+        diag = json.loads(json.dumps(self.event_lite_source_link_transitions))
+        residual_qty_by_source_side_offset: dict[str, float] = {}
+        residual_cost_by_source_side_offset: dict[str, float] = {}
+        residual_count_by_source_side_offset: dict[str, float] = {}
+        residual_cost_bucket_by_source_side_offset: dict[str, dict[str, float]] = {}
+        residual_source_quote_presence_by_side_offset: dict[str, dict[str, float]] = {}
+        residual_source_order_presence_by_side_offset: dict[str, dict[str, float]] = {}
+        for lot in residual_lots:
+            side_offset = f"{lot.side}|{offset_bucket(lot.offset_s)}"
+            add_count(residual_qty_by_source_side_offset, side_offset, lot.qty)
+            add_count(residual_cost_by_source_side_offset, side_offset, lot.cost)
+            add_count(residual_count_by_source_side_offset, side_offset)
+            add_nested_count(residual_cost_bucket_by_source_side_offset, side_offset, qty_bucket("residual_cost", lot.cost))
+            add_nested_count(
+                residual_source_quote_presence_by_side_offset,
+                side_offset,
+                "present" if lot.quote_intent_id else "missing",
+            )
+            add_nested_count(
+                residual_source_order_presence_by_side_offset,
+                side_offset,
+                "present" if lot.source_order_id is not None else "missing",
+            )
+        diag.update(
+            {
+                "residual_qty_by_source_side_offset": residual_qty_by_source_side_offset,
+                "residual_cost_by_source_side_offset": residual_cost_by_source_side_offset,
+                "residual_count_by_source_side_offset": residual_count_by_source_side_offset,
+                "residual_cost_bucket_by_source_side_offset": residual_cost_bucket_by_source_side_offset,
+                "residual_source_quote_presence_by_side_offset": residual_source_quote_presence_by_side_offset,
+                "residual_source_order_presence_by_side_offset": residual_source_order_presence_by_side_offset,
+            }
+        )
+        return diag
 
     def record_pair_source_event_lite(
         self,
@@ -637,6 +856,12 @@ class DPlusRunner:
     def total_open_cost(self) -> float:
         return self.exposure_cost("YES") + self.exposure_cost("NO")
 
+    def online_ledger_proxy(self) -> float:
+        exposure_qty = self.exposure_qty("YES") + self.exposure_qty("NO")
+        return self.metrics.pair_pnl - self.metrics.taker_fee - self.total_open_cost() - 0.01 * (
+            2.0 * self.metrics.pair_qty + exposure_qty
+        )
+
     def mark_touches(self, ts_ms: int, trade_side: str | None = None, trade_px: float | None = None) -> None:
         for order in self.pending_orders():
             bid = side_bid(self.book, order.side)
@@ -715,6 +940,7 @@ class DPlusRunner:
             a.qty -= take
             b.qty -= take
             matched_pair_id = f"{self.slug}:pair:{self.metrics.pair_actions}"
+            self.record_source_link_pair_transition(qty=take, net_pair_cost=pair_cost, sources=[a, b])
             self.record_pair_source_event_lite(
                 matched_pair_id=matched_pair_id,
                 ts_ms=ts_ms,
@@ -768,6 +994,7 @@ class DPlusRunner:
                 self.metrics.salvage_wait_ms.append(age)
                 self.metrics.pair_wait_ms.append(age)
                 matched_pair_id = f"{self.slug}:salvage:{self.metrics.salvage_actions}"
+                self.record_source_link_pair_transition(qty=take, net_pair_cost=net_pair, sources=[lot])
                 self.record_pair_source_event_lite(
                     matched_pair_id=matched_pair_id,
                     ts_ms=ts_ms,
@@ -943,6 +1170,9 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
 
+        ledger_proxy_before = self.online_ledger_proxy()
+        same_cost_before = self.exposure_cost(side)
+        opp_cost_before = self.exposure_cost(opp(side))
         quote_intent_id = self.quote_intent_id(self.next_order_id)
         opposite_trigger_ts_ms = (
             ts_ms - activation_opp_age_ms if activation_opp_age_ms is not None else opposite_seen_ms
@@ -955,6 +1185,22 @@ class DPlusRunner:
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
         self.record_event_lite_candidate(side, seed_px, px, offset, qty)
+        self.record_source_link_transition(
+            status="admitted",
+            reason="candidate",
+            side=side,
+            offset_s=offset,
+            qty=qty,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost_before,
+            opp_cost=opp_cost_before,
+            ledger_proxy_before=ledger_proxy_before,
+            ledger_proxy_after=self.online_ledger_proxy(),
+            quote_intent_id=quote_intent_id,
+            source_order_id=order.id,
+            source_sequence_id=trigger_source_sequence_id,
+        )
         self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "base_seed_qty": base_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "late_repair_only_active": self.cfg.late_repair_only_active(offset), "late_repair_fill_to_balance_active": fill_to_balance_active, "late_repair_fill_to_balance_deficit": fill_to_balance_deficit, "late_repair_fill_to_balance_qty_reduction": round(base_qty - qty, 6) if fill_to_balance_active else 0.0, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
         self.record_activation_seen(side, ts_ms)
 
@@ -1082,6 +1328,8 @@ class DPlusRunner:
                 summary["event_lite"]["late_repair_fill_to_balance_diagnostics"] = self.event_lite_f2b_diagnostics
             if self.cfg.portfolio_ledger_event_lite_summary:
                 summary["event_lite"]["portfolio_ledger_diagnostics"] = self.portfolio_ledger_diagnostics(residual_lots)
+            if self.cfg.source_link_transition_event_lite_summary:
+                summary["event_lite"]["source_link_transition_diagnostics"] = self.source_link_transition_diagnostics(residual_lots)
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -1324,6 +1572,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                     event_lite.setdefault("portfolio_ledger_diagnostics", {}),
                     portfolio_diag,
                 )
+            source_link_diag = lite.get("source_link_transition_diagnostics")
+            if isinstance(source_link_diag, dict):
+                merge_source_link_transition_diagnostics(
+                    event_lite.setdefault("source_link_transition_diagnostics", {}),
+                    source_link_diag,
+                )
             source_contexts = lite.get("top_high_cost_pair_sources")
             if isinstance(source_contexts, list):
                 top_sources = event_lite.setdefault("top_high_cost_pair_sources", [])
@@ -1440,6 +1694,7 @@ async def main() -> None:
     ap.add_argument("--pair-source-event-lite-summary", action="store_true", help="with --event-lite-summary, attribute pair-cost buckets back to source seed/public price, offset, side, and quote ids")
     ap.add_argument("--fill-to-balance-diagnostic-event-lite-summary", action="store_true", help="with --event-lite-summary and --late-repair-fill-to-balance-after-s, emit fill-to-balance deficit/base/capped/reduction diagnostic buckets")
     ap.add_argument("--portfolio-ledger-event-lite-summary", action="store_true", help="with --event-lite-summary, emit per-condition paired-inventory and residual risk-adjusted ledger diagnostics")
+    ap.add_argument("--source-link-transition-event-lite-summary", action="store_true", help="with --event-lite-summary, emit candidate transition source-link diagnostics for admitted/blocked/pair/residual paths")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -1476,6 +1731,7 @@ async def main() -> None:
         pair_source_event_lite_summary=args.pair_source_event_lite_summary,
         fill_to_balance_diagnostic_event_lite_summary=args.fill_to_balance_diagnostic_event_lite_summary,
         portfolio_ledger_event_lite_summary=args.portfolio_ledger_event_lite_summary,
+        source_link_transition_event_lite_summary=args.source_link_transition_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -1502,6 +1758,8 @@ async def main() -> None:
             raise SystemExit("--fill-to-balance-diagnostic-event-lite-summary requires --late-repair-fill-to-balance-after-s")
     if cfg.portfolio_ledger_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--portfolio-ledger-event-lite-summary requires --event-lite-summary")
+    if cfg.source_link_transition_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--source-link-transition-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

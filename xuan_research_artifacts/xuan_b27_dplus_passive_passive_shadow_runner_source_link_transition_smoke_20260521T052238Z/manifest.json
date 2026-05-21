@@ -1,0 +1,36 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke",
+  "checks": {
+    "admitted_and_blocked_transition_counts": true,
+    "aggregate_matches_per_summary": true,
+    "cli_requires_event_lite": true,
+    "default_event_lite_source_link_absent": true,
+    "immediate_pair_source_link_buckets": true,
+    "ledger_proxy_before_after_buckets": true,
+    "pre_seed_inventory_buckets": true,
+    "quote_and_order_presence_counts": true,
+    "residual_source_link_buckets": true
+  },
+  "decision_label": "KEEP",
+  "hypothesis": "default-off source-link transition event-lite diagnostics expose admitted/blocked candidate transitions, immediate pair linkage, and residual source linkage without changing default behavior",
+  "next_action": "Run regression smokes, then keep this diagnostic default-off until a local verifier needs transfer-gap source linkage; do not treat diagnostics as promotion evidence.",
+  "outputs": {
+    "default_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/source_link_default_off/aggregate_report.json",
+    "default_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/source_link_default_off/btc-updown-5m-1900000000.summary.json",
+    "enabled_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/source_link_enabled/aggregate_report.json",
+    "enabled_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/source_link_enabled/btc-updown-5m-1900000000.summary.json",
+    "residual_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z/source_link_residual_enabled/btc-updown-5m-1900000000.summary.json"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "tool": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/tools/xuan_dplus_passive_passive_shadow_runner.py"
+}
