@@ -1,0 +1,196 @@
+{
+  "artifact": "xuan_b27_dplus_status_hygiene_replay_store_multiday_truth_plan",
+  "created_utc": "20260521T134053Z",
+  "decision_label": "KEEP_REPLAY_STORE_V2_MULTIDAY_SELECTED_ACTION_PLAN_SELECTED",
+  "status": "KEEP",
+  "lane": "status_hygiene",
+  "inputs": {
+    "candidate_registry_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/state_machine_results.duckdb",
+    "candidate_registry_table": "candidate_registry",
+    "residual_lots_table": "residual_lots",
+    "replay_store_v2": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/replay_store_v2/20260502_20260518",
+    "previous_selected_action_response": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/manifest.json",
+    "builder_smoke": "xuan_research_artifacts/xuan_b27_dplus_replay_store_truth_validation_response_builder_smoke_20260521T124832Z/manifest.json"
+  },
+  "latest_evidence": {
+    "single_day_response_status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+    "single_day_validated_actions": 10,
+    "single_day_days": [
+      "2026-05-18"
+    ],
+    "single_day_scope_limit": "same day and same condition; useful tooling proof but not enough breadth",
+    "selected_actions_available_by_allowed_day": {
+      "2026-05-02": 2850,
+      "2026-05-03": 3094,
+      "2026-05-04": 3975,
+      "2026-05-05": 3892,
+      "2026-05-06": 3651,
+      "2026-05-07": 3922,
+      "2026-05-08": 3622,
+      "2026-05-09": 3135,
+      "2026-05-10": 3356,
+      "2026-05-11": 3776,
+      "2026-05-12": 3406,
+      "2026-05-13": 3293,
+      "2026-05-16": 2860,
+      "2026-05-17": 2936,
+      "2026-05-18": 3850
+    },
+    "residual_lots_available_by_allowed_day": {
+      "2026-05-02": 189,
+      "2026-05-03": 208,
+      "2026-05-04": 187,
+      "2026-05-05": 202,
+      "2026-05-06": 216,
+      "2026-05-07": 194,
+      "2026-05-08": 214,
+      "2026-05-09": 214,
+      "2026-05-10": 205,
+      "2026-05-11": 208,
+      "2026-05-12": 206,
+      "2026-05-13": 196,
+      "2026-05-16": 213,
+      "2026-05-17": 223,
+      "2026-05-18": 207
+    }
+  },
+  "selected_next_step": {
+    "name": "bounded_multiday_selected_action_truth_response_v1",
+    "choice": "A",
+    "reason": "The first real response validated one day and one condition only. Before adding residual FIFO or strict rescue close logic, the source-row reproducibility layer should be proven across allowed days and distinct conditions.",
+    "sample_cap": 30,
+    "day_policy": {
+      "allowed_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13",
+        "2026-05-16",
+        "2026-05-17",
+        "2026-05-18"
+      ],
+      "forbidden_days": [
+        "2026-05-14",
+        "2026-05-15",
+        "2026-05-19"
+      ],
+      "target_distribution": "prefer 2 actions per allowed day, from distinct conditions when available, total <=30"
+    },
+    "candidate_source": {
+      "table": "candidate_registry",
+      "filters": [
+        "blocked_by = 'selected'",
+        "decision_scope = 'PASS_LOCAL_COMPLETION_RESEARCH_ONLY'",
+        "day in allowed_days",
+        "one or two actions per day with distinct condition_id where available"
+      ],
+      "required_fields": [
+        "candidate_id",
+        "action_id",
+        "candidate_row_id",
+        "source_label",
+        "day",
+        "condition_id",
+        "slug",
+        "ts_ms",
+        "side",
+        "opposite_side",
+        "candidate_reason",
+        "seed_px",
+        "seed_qty",
+        "seed_cost",
+        "fee_model",
+        "official_taker_fee",
+        "blocked_by",
+        "decision_scope",
+        "deployable"
+      ]
+    },
+    "replay_store_selected_lookups": [
+      "market_meta by day, condition_id",
+      "md_book_l1 by day, condition_id, recv_ms <= action_ts_ms within bounded lookback",
+      "md_book_l2 by day, condition_id, side, recv_ms <= action_ts_ms within bounded lookback",
+      "md_trades before/after by day, condition_id, bounded time window",
+      "settlement_records by day, condition_id"
+    ],
+    "fee_policy": {
+      "formula": "fee = shares * fee_rate * price * (1 - price)",
+      "fee_rate": 0.07,
+      "fee_rate_source": "state_machine_result_config:pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2:official_fee_rate=0.07",
+      "hard_code_account_average_fee_rate": false
+    },
+    "output_contract": [
+      "selected_actions.json",
+      "selection_manifest.json",
+      "response/VALIDATION_RESPONSE_MANIFEST.json",
+      "response/action_decisions.csv",
+      "response/residual_fifo_lots.csv",
+      "response/strict_rescue_closes.csv",
+      "manifest.json"
+    ],
+    "pass_fail_criteria": {
+      "KEEP": "all selected actions emit SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY, market/L1/L2 refs are present, private_truth_ready=false, deployable=false, promotion_gate.passed=false",
+      "UNKNOWN": "some selected actions lack required candidate fields or replay_store_v2 source rows; name missing fields/tables/conditions",
+      "DISCARD": "replay source rows contradict selected action day/condition/time/side/fee assumptions or the run becomes broad strategy search",
+      "BLOCKED": "local candidate_registry/replay_store_v2 artifact corruption only"
+    }
+  },
+  "deferred_option": {
+    "name": "residual_fifo_plus_strict_rescue_close_verifier",
+    "reason_deferred": "residual_lots is available, but strict rescue close validation needs explicit close-action timing/side/qty/cost/source linkage. The current status step should first broaden source-row validation across days and conditions.",
+    "known_available_fields": [
+      "residual_lots.condition_id",
+      "residual_lots.day",
+      "residual_lots.slug",
+      "residual_lots.side",
+      "residual_lots.qty",
+      "residual_lots.px",
+      "residual_lots.cost",
+      "residual_lots.source_seed_action_id",
+      "residual_lots.candidate_row_id"
+    ],
+    "likely_required_for_later": [
+      "close_action_id",
+      "close_ts_ms",
+      "close_side",
+      "close_qty",
+      "close_px",
+      "close fee_rate_source",
+      "close book/trade source refs"
+    ]
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_REPLAY_STORE_V2_MULTIDAY_SELECTED_ACTION_PLAN_SELECTED",
+    "interpretation": "A concrete local next target is selected: broaden replay-derived source-truth validation across allowed days and distinct selected candidate actions. This remains research-only."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "SOURCE_TRUTH_PLAN_ONLY_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "side_effects": {
+    "ssh_started": false,
+    "network_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "broad_strategy_search": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_action": "Run a local causal_verifier that builds <=30 selected candidate actions across allowed days/distinct conditions, runs scripts/xuan_b27_dplus_replay_store_truth_validation_response_builder.py, and records SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY or exact missing source-row gaps without using replay_store_v2 for strategy search."
+}
