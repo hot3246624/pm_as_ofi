@@ -1,0 +1,81 @@
+{
+  "action_decisions": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/response/action_decisions.csv",
+  "artifact": "xuan_b27_dplus_replay_store_selected_candidate_truth_response",
+  "days": [
+    "2026-05-18"
+  ],
+  "decision_label": "KEEP_REPLAY_STORE_V2_SELECTED_CANDIDATE_SOURCE_TRUTH_RESEARCH_ONLY",
+  "deployable": false,
+  "fee_check": {
+    "candidate_registry_fee_was_rounded": true,
+    "fee_rate_source_required": true,
+    "formula": "fee = shares * fee_rate * price * (1 - price)",
+    "max_abs_delta_vs_candidate_registry_official_taker_fee": 3.1250000000204725e-07
+  },
+  "guardrails": {
+    "broad_strategy_search": false,
+    "external_learning_account_private_truth_required": false,
+    "forbidden_days_not_used": [
+      "2026-05-14",
+      "2026-05-15",
+      "2026-05-19"
+    ],
+    "private_truth_can_only_mean_our_execution_system_truth": true,
+    "selected_action_lookup_only": true,
+    "valid_day_boundaries_preserved": true
+  },
+  "inputs": {
+    "candidate_registry_table": "candidate_registry",
+    "fee_rate_source": "state_machine_result_config:pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2:official_fee_rate=0.07",
+    "replay_store_v2": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/replay_store_v2/20260502_20260518",
+    "selection_query_scope": "bounded day=2026-05-18, blocked_by=selected, decision_scope=PASS_LOCAL_COMPLETION_RESEARCH_ONLY, limit=10",
+    "state_machine_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/state_machine_results.duckdb"
+  },
+  "next_action": "Local status_hygiene: decide the next research-only source-truth validation target or verifier using this response; do not start EC2 shadow/canary from replay_store_v2 alone.",
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "can_support_strategy_promotion": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SOURCE_TRUTH_RESEARCH_ONLY_NOT_PRIVATE_TRUTH"
+  },
+  "promotion_gate_pass": false,
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "A bounded set of real selected candidate_registry actions validated against replay_store_v2 source rows. This is source-truth research-only, not private owner-trade truth or deployable evidence.",
+    "label": "KEEP_REPLAY_STORE_V2_SELECTED_CANDIDATE_SOURCE_TRUTH_RESEARCH_ONLY"
+  },
+  "residual_fifo_lots": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/response/residual_fifo_lots.csv",
+  "response_status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+  "response_status_counts": {
+    "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY": 10
+  },
+  "schema_version": "xuan_research_result_manifest_v1",
+  "selected_action_count": 10,
+  "selected_actions": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/selected_actions.json",
+  "selection_manifest": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/selection_manifest.json",
+  "side_effects": {
+    "broad_strategy_search": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "source_ref_checks": {
+    "book_l1_refs_present": true,
+    "book_l2_refs_present": true,
+    "market_meta_refs_present": true,
+    "source_rows_present": true
+  },
+  "status": "KEEP",
+  "strict_rescue_closes": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/response/strict_rescue_closes.csv",
+  "validation_response_manifest": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/response/VALIDATION_RESPONSE_MANIFEST.json"
+}

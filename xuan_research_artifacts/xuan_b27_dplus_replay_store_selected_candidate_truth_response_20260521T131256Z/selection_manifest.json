@@ -1,0 +1,29 @@
+{
+  "action_count": 10,
+  "artifact": "xuan_b27_dplus_replay_store_selected_candidate_truth_response",
+  "candidate_registry_table": "candidate_registry",
+  "days": [
+    "2026-05-18"
+  ],
+  "fee_rate_source": "state_machine_result_config:pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2:official_fee_rate=0.07",
+  "outputs": {
+    "selected_actions": "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/selected_actions.json"
+  },
+  "schema_version": "xuan_research_selection_manifest_v1",
+  "selected_action_lookup_only": true,
+  "selection_query_scope": "bounded day=2026-05-18, blocked_by=selected, decision_scope=PASS_LOCAL_COMPLETION_RESEARCH_ONLY, limit=10",
+  "selection_status": "SELECTED_REAL_CANDIDATE_ACTIONS",
+  "side_effects": {
+    "broad_strategy_search": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "state_machine_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/state_machine_results.duckdb"
+}
