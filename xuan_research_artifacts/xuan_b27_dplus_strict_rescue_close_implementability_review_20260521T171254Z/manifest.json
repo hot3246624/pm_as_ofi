@@ -1,0 +1,130 @@
+{
+  "active_lane": "implementability_review",
+  "answer": "No. Current local selected-action, residual_lot, action, and candidate_registry artifacts do not contain action-level close fields. They contain seed action and aggregate pair-after-seed fields only.",
+  "artifact": "xuan_b27_dplus_strict_rescue_close_implementability_review",
+  "created_utc": "2026-05-21T17:12:54Z",
+  "decision": "UNKNOWN",
+  "inputs_reviewed": {
+    "replay_store_context": "manifest/schema boundary only; not used for broad strategy search",
+    "selected_actions": [
+      "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/selected_actions.json",
+      "xuan_research_artifacts/xuan_b27_dplus_replay_store_multiday_selected_candidate_truth_response_20260521T141153Z/selected_actions.json",
+      "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/selected_actions.json"
+    ],
+    "state_machine_duckdb": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/state_machine_results.duckdb",
+    "state_machine_tables": [
+      "actions",
+      "candidate_registry",
+      "residual_lots",
+      "summary_by_day"
+    ],
+    "strict_rescue_close_outputs": [
+      "xuan_research_artifacts/xuan_b27_dplus_replay_store_selected_candidate_truth_response_20260521T131256Z/response/strict_rescue_closes.csv",
+      "xuan_research_artifacts/xuan_b27_dplus_replay_store_multiday_selected_candidate_truth_response_20260521T141153Z/response/strict_rescue_closes.csv",
+      "xuan_research_artifacts/xuan_b27_dplus_replay_store_residual_lot_backed_truth_response_20260521T161223Z/response/strict_rescue_closes.csv"
+    ]
+  },
+  "label": "UNKNOWN_STRICT_RESCUE_CLOSE_SELECTED_FIXTURE_FIELDS_MISSING",
+  "missing_required_fields": [
+    "selected_actions.close_action_id",
+    "selected_actions.close_ts_ms",
+    "selected_actions.close_side",
+    "selected_actions.close_qty",
+    "selected_actions.close_px",
+    "selected_actions.close_fee_rate",
+    "selected_actions.close_fee_rate_source",
+    "selected_actions.expected_close_decision",
+    "selected_actions.expected_close_status",
+    "selected_actions.close_reason",
+    "selected_actions.close_book_l1_ref_or_lookup_instruction",
+    "selected_actions.close_book_l2_ref_or_lookup_instruction",
+    "selected_actions.close_trade_before_ref_or_lookup_instruction",
+    "selected_actions.close_trade_after_ref_or_lookup_instruction",
+    "state_machine.actions.close_action_id",
+    "state_machine.actions.close_ts_ms",
+    "state_machine.actions.close_side",
+    "state_machine.actions.close_qty",
+    "state_machine.actions.close_px",
+    "state_machine.actions.close_fee_rate_source"
+  ],
+  "observed_available_fields": {
+    "actions_close_like_columns": [],
+    "actions_with_pair_actions_after_seed_positive": 26122,
+    "available_pair_aggregate_columns": [
+      "l1_pair_ask",
+      "pair_qty_after_seed",
+      "pair_actions_after_seed",
+      "pair_cost_wavg_after_seed"
+    ],
+    "candidate_registry_close_like_columns": [],
+    "residual_lots_close_like_columns": [],
+    "selected_actions_close_or_rescue_keys": [],
+    "strict_rescue_closes_row_count_existing_responses": 0
+  },
+  "pass_fail_interpretation": {
+    "current_result": "UNKNOWN because selected close-action fields are absent in local artifacts.",
+    "not_blocked_reason": "No local file corruption was found.",
+    "not_discarded_reason": "The schema is valid, and the absence is a data/export gap rather than a contradiction in replay source rows.",
+    "not_keep_reason": "No selected close-action fixture can be generated without inventing close rows or doing prohibited replay discovery."
+  },
+  "promotion_gate": {
+    "can_support_strategy_promotion": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "UNKNOWN_CLOSE_FIELDS_MISSING_NOT_PROMOTION_EVIDENCE"
+  },
+  "recommended_next_action": {
+    "description": "Select one local source for close-action fields before implementation: either add/export selected close-action rows from a future state-machine/candidate action run, or defer strict rescue close validation and choose a different selected-action source-truth target that has explicit fields.",
+    "lane": "status_hygiene",
+    "remote_or_canary_allowed": false,
+    "required_fields_to_unlock_keep": [
+      "close_action_id",
+      "close_ts_ms",
+      "close_side",
+      "close_qty",
+      "close_px",
+      "close_fee_rate",
+      "close_fee_rate_source",
+      "expected_close_decision",
+      "expected_close_status",
+      "source_seed_action_id",
+      "residual_lot_id",
+      "close source-row refs or bounded lookup keys"
+    ]
+  },
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "interpretation": "Strict rescue close validation remains a named source-truth gap until selected close-action fields are exported.",
+    "label": "UNKNOWN_STRICT_RESCUE_CLOSE_SELECTED_FIXTURE_FIELDS_MISSING"
+  },
+  "review_question": "Can a selected close-action fixture be generated locally for strict_rescue_close_selected_request_v1 without broad replay search or prohibited data?",
+  "schema_version": "xuan_b27_dplus_implementability_review_v1",
+  "selected_schema_status": {
+    "can_emit_truth_validation_response_close_rows_now": false,
+    "can_implement_builder_extension_now": false,
+    "can_implement_scorer_extension_now": "only header/missing-field checks, not source-truth close validation",
+    "schema_version": "strict_rescue_close_selected_request_v1",
+    "status": "SPEC_SELECTED_BUT_FIXTURE_NOT_GENERATABLE_FROM_CURRENT_LOCAL_ARTIFACTS"
+  },
+  "side_effects": {
+    "broad_strategy_search": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "why_pair_aggregate_is_insufficient": [
+    "pair_actions_after_seed and pair_qty_after_seed are aggregate post-seed fields, not selected close actions.",
+    "They do not identify close_action_id, close_ts_ms, close_side, close_qty, close_px, close fee_rate_source, or source rows.",
+    "Using replay_store_v2 to discover close actions from book/trade rows would become broad replay strategy search and is disallowed for this lane."
+  ]
+}
