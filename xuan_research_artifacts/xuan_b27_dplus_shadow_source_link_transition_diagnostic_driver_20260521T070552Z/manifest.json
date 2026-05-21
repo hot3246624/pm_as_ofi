@@ -1,0 +1,162 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_source_link_transition_diagnostic_driver",
+  "status": "UNKNOWN_SOURCE_LINK_BUCKET_PRESENT_RISK_DIRECTION_CROSS_MISSING",
+  "created_at": "2026-05-21T07:05:52Z",
+  "run_id": "20260521T070552Z",
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_source_link_transition_diagnostic_edge007_20260521T070552Z",
+  "runner_pid": 163933,
+  "preflight": {
+    "time_utc": "2026-05-21T07:11:48Z",
+    "root_disk_use": "43%",
+    "root_disk_available": "83G",
+    "inode_use": "1%",
+    "xuan_research_runner_alive_before_start": false,
+    "shared_ingress_manifest_present": true,
+    "market_sock_present": true,
+    "chainlink_sock_present": true,
+    "local_price_sock_present": true,
+    "helper_present": true,
+    "sudo_pmofi_available": true,
+    "hard_blocker": false
+  },
+  "startup_check": {
+    "time_utc": "2026-05-21T07:14:04Z",
+    "runner_alive": true,
+    "runner_pid_file": 163933,
+    "summary_json_count": 26,
+    "manifest_json_present": true,
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "root_disk_use": "43%",
+    "inode_use": "1%"
+  },
+  "latest_live_check": {
+    "time_utc": "2026-05-21T08:04:44Z",
+    "runner_alive": true,
+    "runner_pid_file": 163933,
+    "elapsed_s": 3084,
+    "summary_json_count": 26,
+    "aggregate_report_present": false,
+    "manifest_json_present": true,
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "root_disk_use": "43%",
+    "inode_use": "1%",
+    "interpretation": "normal_mid_run_status"
+  },
+  "postrun_check": {
+    "time_utc": "2026-05-21T08:31:13Z",
+    "runner_alive": false,
+    "runner_pid_file": 163933,
+    "summary_json_count": 26,
+    "aggregate_report_present": true,
+    "manifest_json_present": true,
+    "stdout_bytes": 32436,
+    "stderr_bytes": 0,
+    "root_disk_use": "43%",
+    "inode_use": "1%",
+    "interpretation": "completed_without_remote_safety_blocker"
+  },
+  "run_config": {
+    "edge": 0.07,
+    "target_qty": 5,
+    "max_open_cost": 80,
+    "imbalance_qty_cap": 1.25,
+    "pairing_only_when_residual": true,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "round_offsets": "0..25",
+    "duration_s": 3600,
+    "late_repair_only_after_s": 90,
+    "event_lite_summary": true,
+    "pair_source_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "late_repair_fill_to_balance_after_s": null,
+    "portfolio_ledger_event_lite_summary": false
+  },
+  "side_effects": {
+    "repo_sync_or_build": false,
+    "service_control_used": false,
+    "broker_or_shared_ingress_write": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "events_jsonl_pulled": false
+  },
+  "pullback": {
+    "pulled_manifest_json": true,
+    "pulled_aggregate_report_json": true,
+    "pulled_summary_json_count": 26,
+    "pulled_stdout_stderr_runner_pid": true,
+    "pulled_small_sanity_files": true,
+    "events_jsonl_pulled": false
+  },
+  "source_link_bucket_scorer": {
+    "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_transition_diagnostic_driver_20260521T070552Z/source_link_bucket_score.json",
+    "aggregate_parity_passed": true,
+    "transition_totals": {
+      "admitted": 108.0,
+      "blocked": 3710.0,
+      "total": 3818.0
+    },
+    "top_residual_source_bucket": {
+      "source_side_offset": "NO|offset_60_90",
+      "residual_cost": 4.55805,
+      "residual_cost_share": 0.510286,
+      "residual_qty": 17.27,
+      "residual_count": 14.0,
+      "immediate_pair_qty_share": 0.090909
+    },
+    "secondary_residual_source_buckets": [
+      {
+        "source_side_offset": "NO|offset_30_60",
+        "residual_cost_share": 0.222506,
+        "immediate_pair_qty_share": 0.218182,
+        "summary_only_removal_refused": true
+      },
+      {
+        "source_side_offset": "NO|offset_90_120",
+        "residual_cost_share": 0.153935,
+        "immediate_pair_qty_share": 0.054545
+      }
+    ],
+    "field_gap": [
+      "transition_count_by_status_side_offset_risk_direction",
+      "residual_cost_by_source_side_offset_risk_direction",
+      "immediate_pair_qty_by_source_side_offset_risk_direction",
+      "pre_seed_ledger_bucket_by_status_side_offset_risk_direction"
+    ]
+  },
+  "acceptance": {
+    "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_source_link_transition_diagnostic_20260521T070552Z/manifest.json",
+    "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
+    "candidates": 108.0,
+    "queue_supported_fills": 80.0,
+    "pair_actions": 36.0,
+    "pair_qty": 44.815,
+    "pair_pnl": 3.153044,
+    "roi_on_filled_cost": 0.079444,
+    "net_pair_cost_p90": 1.0,
+    "residual_qty": 30.81,
+    "residual_cost": 8.93235,
+    "material_residual_lots": 0,
+    "fee_adjusted_pair_pnl_proxy": 2.570437,
+    "risk_adjusted_pnl_proxy": -6.361913,
+    "residual_qty_share_of_filled": 0.31003774,
+    "residual_cost_share_of_filled_cost": 0.22506,
+    "promotion_gate_passed": false
+  },
+  "research_ranking": {
+    "label": "UNKNOWN_SOURCE_LINK_BUCKET_PRESENT_RISK_DIRECTION_CROSS_MISSING",
+    "decision": "UNKNOWN",
+    "interpretation": "The source-link diagnostic found a strong NO offset_60_90 residual source bucket and passed aggregate parity, but the current summary schema cannot cross side/offset with risk_direction and pre-seed ledger state. This prevents converting the bucket into a deployable non-price inventory-path verifier without risking summary-only removal."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "next_action": "Restore the heartbeat cadence to 30 minutes. Run a local no-network implementability review for default-off source-link transition cross-bucket diagnostics/scorer support; do not start another EC2 shadow/canary before a local cross-bucket smoke or verifier returns KEEP."
+}
