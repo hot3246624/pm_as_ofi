@@ -123,21 +123,37 @@ assert diag["quote_intent_presence_by_status"]["admitted"]["present"] == 2
 assert diag["quote_intent_presence_by_status"]["blocked"]["missing"] == 3
 assert diag["source_order_presence_by_status"]["admitted"]["present"] == 2
 assert diag["source_sequence_presence_by_status"]["admitted"]["present"] == 2
+assert diag["transition_count_by_status_side_offset_risk_direction"]["admitted"]["YES|offset_0_30|risk_increasing"] == 1
+assert diag["transition_count_by_status_side_offset_risk_direction"]["admitted"]["NO|offset_30_60|repair_or_pairing_improving"] == 1
+assert diag["transition_count_by_status_side_offset_risk_direction"]["blocked"]["YES|offset_0_30|risk_increasing"] == 1
 assert diag["pre_seed_same_qty_bucket_by_status_reason"]["blocked|target"]["same_qty_eq_5"] == 1
 assert diag["candidate_qty_bucket_by_status_reason"]["admitted|candidate"]["candidate_qty_eq_5"] == 2
+assert diag["pre_seed_same_qty_bucket_by_status_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"]["same_qty_zero"] == 1
+assert diag["pre_seed_opp_qty_bucket_by_status_side_offset_risk_direction"]["NO|offset_30_60|repair_or_pairing_improving"]["opp_qty_eq_5"] == 1
+assert diag["candidate_qty_bucket_by_status_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"]["candidate_qty_eq_5"] == 1
+assert diag["candidate_qty_bucket_by_status_side_offset_risk_direction"]["NO|offset_30_60|repair_or_pairing_improving"]["candidate_qty_eq_5"] == 1
 assert diag["ledger_proxy_before_bucket_by_status_reason"]["admitted|candidate"]
 assert diag["ledger_proxy_after_bucket_by_status_reason"]["admitted|candidate"]
+assert diag["ledger_proxy_before_bucket_by_status_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"]
+assert diag["ledger_proxy_after_bucket_by_status_side_offset_risk_direction"]["NO|offset_30_60|repair_or_pairing_improving"]
 assert diag["transition_count_by_risk_direction"]["blocked"]["risk_increasing"] == 3
 assert diag["immediate_pair_action_count_by_source_side_offset"]["YES|offset_0_30"] == 1
 assert diag["immediate_pair_action_count_by_source_side_offset"]["NO|offset_30_60"] == 1
+assert diag["immediate_pair_action_count_by_source_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"] == 1
+assert diag["immediate_pair_action_count_by_source_side_offset_risk_direction"]["NO|offset_30_60|repair_or_pairing_improving"] == 1
 assert diag["immediate_pair_qty_bucket_by_source_side_offset"]["YES|offset_0_30"]["pair_qty_eq_5"] == 1
+assert diag["immediate_pair_qty_bucket_by_source_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"]["pair_qty_eq_5"] == 1
 assert diag["immediate_pair_cost_bucket_by_source_side_offset"]["YES|offset_0_30"]["pair_cost_lt_0p95"] == 1
+assert diag["immediate_pair_cost_bucket_by_source_side_offset_risk_direction"]["NO|offset_30_60|repair_or_pairing_improving"]["pair_cost_lt_0p95"] == 1
 assert diag["immediate_pair_source_quote_presence_by_side_offset"]["YES|offset_0_30"]["present"] == 1
 assert diag["immediate_pair_source_order_presence_by_side_offset"]["NO|offset_30_60"]["present"] == 1
 assert diag["residual_qty_by_source_side_offset"] == {}
+assert diag["residual_qty_by_source_side_offset_risk_direction"] == {}
 assert agg_diag["transition_count_by_status"] == diag["transition_count_by_status"]
 assert agg_diag["transition_count_by_reason"] == diag["transition_count_by_reason"]
 assert agg_diag["immediate_pair_action_count_by_source_side_offset"] == diag["immediate_pair_action_count_by_source_side_offset"]
+assert agg_diag["transition_count_by_status_side_offset_risk_direction"] == diag["transition_count_by_status_side_offset_risk_direction"]
+assert agg_diag["immediate_pair_action_count_by_source_side_offset_risk_direction"] == diag["immediate_pair_action_count_by_source_side_offset_risk_direction"]
 
 residual_out = out_dir / "source_link_residual_enabled"
 residual_out.mkdir(parents=True, exist_ok=True)
@@ -153,7 +169,11 @@ assert residual_summary["metrics"]["residual_qty"] == 5.0
 assert residual_diag["residual_qty_by_source_side_offset"]["YES|offset_0_30"] == 5.0
 assert residual_diag["residual_cost_by_source_side_offset"]["YES|offset_0_30"] == 1.65
 assert residual_diag["residual_count_by_source_side_offset"]["YES|offset_0_30"] == 1
+assert residual_diag["residual_qty_by_source_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"] == 5.0
+assert residual_diag["residual_cost_by_source_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"] == 1.65
+assert residual_diag["residual_count_by_source_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"] == 1
 assert residual_diag["residual_cost_bucket_by_source_side_offset"]["YES|offset_0_30"]["residual_cost_1_2"] == 1
+assert residual_diag["residual_cost_bucket_by_source_side_offset_risk_direction"]["YES|offset_0_30|risk_increasing"]["residual_cost_1_2"] == 1
 assert residual_diag["residual_source_quote_presence_by_side_offset"]["YES|offset_0_30"]["present"] == 1
 assert residual_diag["residual_source_order_presence_by_side_offset"]["YES|offset_0_30"]["present"] == 1
 
@@ -187,6 +207,10 @@ manifest = {
         "quote_and_order_presence_counts": True,
         "pre_seed_inventory_buckets": True,
         "ledger_proxy_before_after_buckets": True,
+        "cross_bucket_transition_counts": True,
+        "cross_bucket_pre_seed_inventory_buckets": True,
+        "cross_bucket_pair_source_buckets": True,
+        "cross_bucket_residual_source_buckets": True,
         "immediate_pair_source_link_buckets": True,
         "residual_source_link_buckets": True,
         "aggregate_matches_per_summary": True,

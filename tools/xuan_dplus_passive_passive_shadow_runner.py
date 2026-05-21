@@ -203,6 +203,16 @@ def ledger_proxy_bucket(value: float | None) -> str:
     return "ledger_proxy_ge_1"
 
 
+def inventory_risk_direction(same_qty: float | None, opp_qty: float | None) -> str:
+    if same_qty is None or opp_qty is None:
+        return "unknown"
+    return "risk_increasing" if same_qty + DUST >= opp_qty else "repair_or_pairing_improving"
+
+
+def side_offset_risk_key(side: str | None, offset_s: float | None, risk_direction: str) -> str:
+    return f"{side or 'unknown'}|{offset_bucket(offset_s)}|{risk_direction}"
+
+
 def merge_portfolio_ledger_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
     dest["condition_count"] = int(dest.get("condition_count", 0)) + 1
     numeric_keys = (
@@ -255,15 +265,20 @@ def merge_source_link_transition_diagnostics(dest: dict[str, Any], src: dict[str
         "transition_count_by_side",
         "transition_count_by_offset_bucket",
         "immediate_pair_action_count_by_source_side_offset",
+        "immediate_pair_action_count_by_source_side_offset_risk_direction",
         "residual_qty_by_source_side_offset",
         "residual_cost_by_source_side_offset",
         "residual_count_by_source_side_offset",
+        "residual_qty_by_source_side_offset_risk_direction",
+        "residual_cost_by_source_side_offset_risk_direction",
+        "residual_count_by_source_side_offset_risk_direction",
     )
     nested_keys = (
         "transition_count_by_status_reason",
         "transition_count_by_status_side",
         "transition_count_by_status_offset_bucket",
         "transition_count_by_risk_direction",
+        "transition_count_by_status_side_offset_risk_direction",
         "quote_intent_presence_by_status",
         "source_order_presence_by_status",
         "source_sequence_presence_by_status",
@@ -274,11 +289,21 @@ def merge_source_link_transition_diagnostics(dest: dict[str, Any], src: dict[str
         "ledger_proxy_before_bucket_by_status_reason",
         "ledger_proxy_after_bucket_by_status_reason",
         "candidate_qty_bucket_by_status_reason",
+        "pre_seed_same_qty_bucket_by_status_side_offset_risk_direction",
+        "pre_seed_opp_qty_bucket_by_status_side_offset_risk_direction",
+        "pre_seed_same_cost_bucket_by_status_side_offset_risk_direction",
+        "pre_seed_opp_cost_bucket_by_status_side_offset_risk_direction",
+        "ledger_proxy_before_bucket_by_status_side_offset_risk_direction",
+        "ledger_proxy_after_bucket_by_status_side_offset_risk_direction",
+        "candidate_qty_bucket_by_status_side_offset_risk_direction",
         "immediate_pair_qty_bucket_by_source_side_offset",
         "immediate_pair_cost_bucket_by_source_side_offset",
+        "immediate_pair_qty_bucket_by_source_side_offset_risk_direction",
+        "immediate_pair_cost_bucket_by_source_side_offset_risk_direction",
         "immediate_pair_source_quote_presence_by_side_offset",
         "immediate_pair_source_order_presence_by_side_offset",
         "residual_cost_bucket_by_source_side_offset",
+        "residual_cost_bucket_by_source_side_offset_risk_direction",
         "residual_source_quote_presence_by_side_offset",
         "residual_source_order_presence_by_side_offset",
     )
@@ -385,6 +410,7 @@ class VirtualOrder:
     trigger_ts_ms: int
     trigger_source_sequence_id: Any | None = None
     opposite_trigger_ts_ms: int | None = None
+    source_risk_direction: str = "unknown"
     queue_credit: float = 0.0
     first_bid_touch_ms: int | None = None
     first_trade_touch_ms: int | None = None
@@ -407,6 +433,7 @@ class Lot:
     offset_s: float | None = None
     trigger_ts_ms: int | None = None
     trigger_source_sequence_id: Any | None = None
+    source_risk_direction: str = "unknown"
 
     @property
     def cost(self) -> float:
@@ -508,6 +535,7 @@ class DPlusRunner:
             "transition_count_by_status_side": {},
             "transition_count_by_status_offset_bucket": {},
             "transition_count_by_risk_direction": {},
+            "transition_count_by_status_side_offset_risk_direction": {},
             "quote_intent_presence_by_status": {},
             "source_order_presence_by_status": {},
             "source_sequence_presence_by_status": {},
@@ -518,9 +546,19 @@ class DPlusRunner:
             "ledger_proxy_before_bucket_by_status_reason": {},
             "ledger_proxy_after_bucket_by_status_reason": {},
             "candidate_qty_bucket_by_status_reason": {},
+            "pre_seed_same_qty_bucket_by_status_side_offset_risk_direction": {},
+            "pre_seed_opp_qty_bucket_by_status_side_offset_risk_direction": {},
+            "pre_seed_same_cost_bucket_by_status_side_offset_risk_direction": {},
+            "pre_seed_opp_cost_bucket_by_status_side_offset_risk_direction": {},
+            "ledger_proxy_before_bucket_by_status_side_offset_risk_direction": {},
+            "ledger_proxy_after_bucket_by_status_side_offset_risk_direction": {},
+            "candidate_qty_bucket_by_status_side_offset_risk_direction": {},
             "immediate_pair_action_count_by_source_side_offset": {},
+            "immediate_pair_action_count_by_source_side_offset_risk_direction": {},
             "immediate_pair_qty_bucket_by_source_side_offset": {},
             "immediate_pair_cost_bucket_by_source_side_offset": {},
+            "immediate_pair_qty_bucket_by_source_side_offset_risk_direction": {},
+            "immediate_pair_cost_bucket_by_source_side_offset_risk_direction": {},
             "immediate_pair_source_quote_presence_by_side_offset": {},
             "immediate_pair_source_order_presence_by_side_offset": {},
         }
@@ -641,9 +679,8 @@ class DPlusRunner:
         side_key = side or "unknown"
         offset_key = offset_bucket(offset_s)
         status_reason = f"{status}|{reason}"
-        risk_direction = "unknown"
-        if same_qty is not None and opp_qty is not None:
-            risk_direction = "risk_increasing" if same_qty + self.cfg.dust_qty >= opp_qty else "repair_or_pairing_improving"
+        risk_direction = inventory_risk_direction(same_qty, opp_qty)
+        cross_key = side_offset_risk_key(side, offset_s, risk_direction)
         diag = self.event_lite_source_link_transitions
         add_count(diag["transition_count_by_status"], status)
         add_count(diag["transition_count_by_reason"], reason)
@@ -653,6 +690,7 @@ class DPlusRunner:
         add_nested_count(diag["transition_count_by_status_side"], status, side_key)
         add_nested_count(diag["transition_count_by_status_offset_bucket"], status, offset_key)
         add_nested_count(diag["transition_count_by_risk_direction"], status, risk_direction)
+        add_nested_count(diag["transition_count_by_status_side_offset_risk_direction"], status, cross_key)
         add_nested_count(diag["quote_intent_presence_by_status"], status, "present" if quote_intent_id else "missing")
         add_nested_count(diag["source_order_presence_by_status"], status, "present" if source_order_id is not None else "missing")
         add_nested_count(diag["source_sequence_presence_by_status"], status, "present" if source_sequence_id is not None else "missing")
@@ -671,6 +709,41 @@ class DPlusRunner:
             ledger_proxy_bucket(ledger_proxy_after),
         )
         add_nested_count(diag["candidate_qty_bucket_by_status_reason"], status_reason, qty_bucket("candidate_qty", qty))
+        add_nested_count(
+            diag["pre_seed_same_qty_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            qty_bucket("same_qty", same_qty),
+        )
+        add_nested_count(
+            diag["pre_seed_opp_qty_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            qty_bucket("opp_qty", opp_qty),
+        )
+        add_nested_count(
+            diag["pre_seed_same_cost_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            qty_bucket("same_cost", same_cost),
+        )
+        add_nested_count(
+            diag["pre_seed_opp_cost_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            qty_bucket("opp_cost", opp_cost),
+        )
+        add_nested_count(
+            diag["ledger_proxy_before_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            ledger_proxy_bucket(ledger_proxy_before),
+        )
+        add_nested_count(
+            diag["ledger_proxy_after_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            ledger_proxy_bucket(ledger_proxy_after),
+        )
+        add_nested_count(
+            diag["candidate_qty_bucket_by_status_side_offset_risk_direction"],
+            cross_key,
+            qty_bucket("candidate_qty", qty),
+        )
 
     def record_source_link_pair_transition(
         self,
@@ -685,9 +758,21 @@ class DPlusRunner:
         diag = self.event_lite_source_link_transitions
         for lot in sources:
             side_offset = f"{lot.side}|{offset_bucket(lot.offset_s)}"
+            side_offset_risk = side_offset_risk_key(lot.side, lot.offset_s, lot.source_risk_direction)
             add_count(diag["immediate_pair_action_count_by_source_side_offset"], side_offset)
+            add_count(diag["immediate_pair_action_count_by_source_side_offset_risk_direction"], side_offset_risk)
             add_nested_count(diag["immediate_pair_qty_bucket_by_source_side_offset"], side_offset, qty_bucket("pair_qty", qty))
             add_nested_count(diag["immediate_pair_cost_bucket_by_source_side_offset"], side_offset, cost_bucket)
+            add_nested_count(
+                diag["immediate_pair_qty_bucket_by_source_side_offset_risk_direction"],
+                side_offset_risk,
+                qty_bucket("pair_qty", qty),
+            )
+            add_nested_count(
+                diag["immediate_pair_cost_bucket_by_source_side_offset_risk_direction"],
+                side_offset_risk,
+                cost_bucket,
+            )
             add_nested_count(
                 diag["immediate_pair_source_quote_presence_by_side_offset"],
                 side_offset,
@@ -704,15 +789,28 @@ class DPlusRunner:
         residual_qty_by_source_side_offset: dict[str, float] = {}
         residual_cost_by_source_side_offset: dict[str, float] = {}
         residual_count_by_source_side_offset: dict[str, float] = {}
+        residual_qty_by_source_side_offset_risk_direction: dict[str, float] = {}
+        residual_cost_by_source_side_offset_risk_direction: dict[str, float] = {}
+        residual_count_by_source_side_offset_risk_direction: dict[str, float] = {}
         residual_cost_bucket_by_source_side_offset: dict[str, dict[str, float]] = {}
+        residual_cost_bucket_by_source_side_offset_risk_direction: dict[str, dict[str, float]] = {}
         residual_source_quote_presence_by_side_offset: dict[str, dict[str, float]] = {}
         residual_source_order_presence_by_side_offset: dict[str, dict[str, float]] = {}
         for lot in residual_lots:
             side_offset = f"{lot.side}|{offset_bucket(lot.offset_s)}"
+            side_offset_risk = side_offset_risk_key(lot.side, lot.offset_s, lot.source_risk_direction)
             add_count(residual_qty_by_source_side_offset, side_offset, lot.qty)
             add_count(residual_cost_by_source_side_offset, side_offset, lot.cost)
             add_count(residual_count_by_source_side_offset, side_offset)
+            add_count(residual_qty_by_source_side_offset_risk_direction, side_offset_risk, lot.qty)
+            add_count(residual_cost_by_source_side_offset_risk_direction, side_offset_risk, lot.cost)
+            add_count(residual_count_by_source_side_offset_risk_direction, side_offset_risk)
             add_nested_count(residual_cost_bucket_by_source_side_offset, side_offset, qty_bucket("residual_cost", lot.cost))
+            add_nested_count(
+                residual_cost_bucket_by_source_side_offset_risk_direction,
+                side_offset_risk,
+                qty_bucket("residual_cost", lot.cost),
+            )
             add_nested_count(
                 residual_source_quote_presence_by_side_offset,
                 side_offset,
@@ -728,7 +826,11 @@ class DPlusRunner:
                 "residual_qty_by_source_side_offset": residual_qty_by_source_side_offset,
                 "residual_cost_by_source_side_offset": residual_cost_by_source_side_offset,
                 "residual_count_by_source_side_offset": residual_count_by_source_side_offset,
+                "residual_qty_by_source_side_offset_risk_direction": residual_qty_by_source_side_offset_risk_direction,
+                "residual_cost_by_source_side_offset_risk_direction": residual_cost_by_source_side_offset_risk_direction,
+                "residual_count_by_source_side_offset_risk_direction": residual_count_by_source_side_offset_risk_direction,
                 "residual_cost_bucket_by_source_side_offset": residual_cost_bucket_by_source_side_offset,
+                "residual_cost_bucket_by_source_side_offset_risk_direction": residual_cost_bucket_by_source_side_offset_risk_direction,
                 "residual_source_quote_presence_by_side_offset": residual_source_quote_presence_by_side_offset,
                 "residual_source_order_presence_by_side_offset": residual_source_order_presence_by_side_offset,
             }
@@ -913,6 +1015,7 @@ class DPlusRunner:
             offset_s=order.offset_s,
             trigger_ts_ms=order.trigger_ts_ms,
             trigger_source_sequence_id=order.trigger_source_sequence_id,
+            source_risk_direction=order.source_risk_direction,
         )
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
@@ -1173,11 +1276,12 @@ class DPlusRunner:
         ledger_proxy_before = self.online_ledger_proxy()
         same_cost_before = self.exposure_cost(side)
         opp_cost_before = self.exposure_cost(opp(side))
+        source_risk_direction = inventory_risk_direction(same_qty, opp_qty)
         quote_intent_id = self.quote_intent_id(self.next_order_id)
         opposite_trigger_ts_ms = (
             ts_ms - activation_opp_age_ms if activation_opp_age_ms is not None else opposite_seen_ms
         )
-        order = VirtualOrder(id=self.next_order_id, quote_intent_id=quote_intent_id, condition_id=self.condition_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, accepted_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size, trigger_ts_ms=ts_ms, trigger_source_sequence_id=trigger_source_sequence_id, opposite_trigger_ts_ms=opposite_trigger_ts_ms)
+        order = VirtualOrder(id=self.next_order_id, quote_intent_id=quote_intent_id, condition_id=self.condition_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, accepted_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size, trigger_ts_ms=ts_ms, trigger_source_sequence_id=trigger_source_sequence_id, opposite_trigger_ts_ms=opposite_trigger_ts_ms, source_risk_direction=source_risk_direction)
         self.next_order_id += 1
         self.pending.append(order)
         self.last_seed_ms = ts_ms

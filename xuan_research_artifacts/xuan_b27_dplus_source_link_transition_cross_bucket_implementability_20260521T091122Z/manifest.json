@@ -1,0 +1,113 @@
+{
+  "artifact": "xuan_b27_dplus_source_link_transition_cross_bucket_implementability",
+  "created_at": "2026-05-21T09:11:22Z",
+  "decision_label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_READY",
+  "scope": "local_no_network_implementability_review",
+  "hypothesis": "Default-off source-link diagnostics can expose side+offset+risk-direction cross buckets so live/no-order residual source buckets can be evaluated without events JSONL or summary-only removal.",
+  "inputs": {
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "scorer": "scripts/xuan_b27_dplus_source_link_transition_bucket_scorer.py",
+    "prior_shadow_driver_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_transition_diagnostic_driver_20260521T070552Z/manifest.json",
+    "prior_shadow_acceptance": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_source_link_transition_diagnostic_20260521T070552Z/manifest.json"
+  },
+  "implementation": {
+    "default_off": true,
+    "enabled_only_with": [
+      "--event-lite-summary",
+      "--source-link-transition-event-lite-summary"
+    ],
+    "runner_fields_added": [
+      "transition_count_by_status_side_offset_risk_direction",
+      "pre_seed_same_qty_bucket_by_status_side_offset_risk_direction",
+      "pre_seed_opp_qty_bucket_by_status_side_offset_risk_direction",
+      "pre_seed_same_cost_bucket_by_status_side_offset_risk_direction",
+      "pre_seed_opp_cost_bucket_by_status_side_offset_risk_direction",
+      "ledger_proxy_before_bucket_by_status_side_offset_risk_direction",
+      "ledger_proxy_after_bucket_by_status_side_offset_risk_direction",
+      "candidate_qty_bucket_by_status_side_offset_risk_direction",
+      "immediate_pair_action_count_by_source_side_offset_risk_direction",
+      "immediate_pair_qty_bucket_by_source_side_offset_risk_direction",
+      "immediate_pair_cost_bucket_by_source_side_offset_risk_direction",
+      "residual_qty_by_source_side_offset_risk_direction",
+      "residual_cost_by_source_side_offset_risk_direction",
+      "residual_count_by_source_side_offset_risk_direction",
+      "residual_cost_bucket_by_source_side_offset_risk_direction"
+    ],
+    "state_carried_to_lots": [
+      "source_risk_direction"
+    ],
+    "scorer_fields_added": [
+      "top_immediate_pair_source_cross_buckets",
+      "top_residual_source_cross_buckets",
+      "risk_direction_by_status_side_offset",
+      "missing_cross_bucket_fields",
+      "cross_bucket_summary_only_removal_refusal_examples"
+    ],
+    "default_behavior_preserved": true
+  },
+  "validation": {
+    "py_compile": "PASS",
+    "git_diff_check": "PASS",
+    "json_tool": "PASS",
+    "source_link_runner_smoke": {
+      "status": "PASS",
+      "path": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T091122Z/manifest.json",
+      "checks": [
+        "default_event_lite_source_link_absent",
+        "cli_requires_event_lite",
+        "cross_bucket_transition_counts",
+        "cross_bucket_pre_seed_inventory_buckets",
+        "cross_bucket_pair_source_buckets",
+        "cross_bucket_residual_source_buckets",
+        "aggregate_matches_per_summary"
+      ]
+    },
+    "source_link_bucket_scorer_smoke": {
+      "status": "PASS",
+      "path": "xuan_research_artifacts/xuan_b27_dplus_source_link_transition_bucket_scorer_smoke_20260521T091122Z/manifest.json",
+      "decision_label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY",
+      "checks": [
+        "enabled_cross_pair_buckets_ranked",
+        "enabled_cross_risk_direction_available",
+        "residual_cross_buckets_ranked",
+        "summary_only_removal_refused",
+        "promotion_gate_separated"
+      ]
+    },
+    "regression_smokes": {
+      "activation": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_activation_smoke_20260521T091122Z/manifest.json",
+      "multi_profile": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_multi_profile_smoke_20260521T091122Z/manifest.json",
+      "late_repair_only": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_late_repair_only_smoke_20260521T091122Z/manifest.json",
+      "fill_to_balance": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_smoke_20260521T091122Z/manifest.json",
+      "fill_to_balance_diagnostic": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_fill_to_balance_diagnostic_smoke_20260521T091122Z/manifest.json",
+      "pair_source_event_lite": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_pair_source_event_lite_smoke_20260521T091122Z/manifest.json",
+      "portfolio_ledger": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260521T091122Z/manifest.json"
+    }
+  },
+  "side_effects": {
+    "network_started": false,
+    "ssh_started": false,
+    "ec2_shadow_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_READY",
+    "interpretation": "The local source-link diagnostic schema and scorer can now distinguish side+offset+risk-direction residual buckets, including risk-increasing versus repair/underweight transitions. This is diagnostic readiness, not strategy economics."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "DIAGNOSTIC_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "next_action": "Run local source-link cross-bucket attribution on the pulled 20260521T070552Z summaries if fields exist; otherwise select a bounded diagnostic question for a future no-order shadow only after status_hygiene. Do not start EC2 shadow/canary in this heartbeat."
+}

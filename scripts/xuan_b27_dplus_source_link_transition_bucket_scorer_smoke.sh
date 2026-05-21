@@ -10,7 +10,14 @@ mkdir -p "$out_dir"
 log="$out_dir/smoke.log"
 : > "$log"
 
-fixture_root="$ROOT/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_20260521T052238Z"
+fixture_root="${SOURCE_LINK_FIXTURE_ROOT:-}"
+if [[ -z "$fixture_root" ]]; then
+  fixture_root="$(find "$ROOT/xuan_research_artifacts" -maxdepth 1 -type d -name 'xuan_b27_dplus_passive_passive_shadow_runner_source_link_transition_smoke_*' | sort | tail -1)"
+fi
+if [[ -z "$fixture_root" || ! -d "$fixture_root" ]]; then
+  echo "missing source-link transition smoke fixture root" >&2
+  exit 2
+fi
 enabled_summary="$fixture_root/source_link_enabled/btc-updown-5m-1900000000.summary.json"
 enabled_aggregate="$fixture_root/source_link_enabled/aggregate_report.json"
 residual_summary="$fixture_root/source_link_residual_enabled/btc-updown-5m-1900000000.summary.json"
@@ -54,8 +61,11 @@ checks = {
     "enabled_score_keep": enabled["research_ranking"]["decision"] == "KEEP",
     "enabled_aggregate_parity_passed": enabled["aggregate_parity"]["checked"] is True and enabled["aggregate_parity"]["passed"] is True,
     "enabled_immediate_pair_buckets_ranked": bool(enabled["rankings"]["top_immediate_pair_source_buckets"]),
+    "enabled_cross_pair_buckets_ranked": bool(enabled["rankings"]["top_immediate_pair_source_cross_buckets"]),
+    "enabled_cross_risk_direction_available": bool(enabled["rankings"]["risk_direction_by_status_side_offset"]),
     "residual_score_keep_without_aggregate": residual["research_ranking"]["decision"] == "KEEP" and residual["aggregate_parity"]["checked"] is False,
     "residual_buckets_ranked": bool(residual["rankings"]["top_residual_source_buckets"]) and residual["rankings"]["top_residual_source_buckets"][0]["residual_cost"] > 0,
+    "residual_cross_buckets_ranked": bool(residual["rankings"]["top_residual_source_cross_buckets"]) and residual["rankings"]["top_residual_source_cross_buckets"][0]["residual_cost"] > 0,
     "summary_only_removal_refused": residual["guardrails"]["summary_only_removal_recommended"] is False,
     "missing_diagnostic_rejected": missing_diag_rc != 0,
     "promotion_gate_separated": enabled["promotion_gate"]["passed"] is False and residual["promotion_gate"]["passed"] is False,
@@ -68,8 +78,8 @@ if not all(checks.values()):
 manifest = {
     "artifact": "xuan_b27_dplus_source_link_transition_bucket_scorer_smoke",
     "status": "PASS",
-    "decision_label": "KEEP_SOURCE_LINK_TRANSITION_BUCKET_SCORER_READY",
-    "hypothesis": "A local no-network scorer can consume source-link transition summary/aggregate shape, validate aggregate parity, rank immediate-pair and residual source buckets, and refuse summary-only removal.",
+    "decision_label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY",
+    "hypothesis": "A local no-network scorer can consume source-link transition summary/aggregate shape, validate aggregate parity, rank immediate-pair and residual source buckets including side+offset+risk-direction cross buckets, and refuse summary-only removal.",
     "inputs": {
         "enabled_summary": enabled_summary,
         "enabled_aggregate": enabled_aggregate,
@@ -83,8 +93,8 @@ manifest = {
     "checks": checks,
     "research_ranking": {
         "decision": "KEEP",
-        "label": "KEEP_SOURCE_LINK_TRANSITION_BUCKET_SCORER_READY",
-        "interpretation": "The scorer is ready as local attribution tooling over source-link diagnostic summaries. It is not strategy economics."
+        "label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY",
+        "interpretation": "The scorer is ready as local attribution tooling over source-link diagnostic summaries, including side+offset+risk-direction cross buckets. It is not strategy economics."
     },
     "promotion_gate": {
         "passed": False,

@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Any
 
 
-REQUIRED_FIELDS = (
+BASE_REQUIRED_FIELDS = (
     "transition_count_by_status",
     "transition_count_by_reason",
     "transition_count_by_status_reason",
     "transition_count_by_side",
     "transition_count_by_offset_bucket",
+    "transition_count_by_status_side",
+    "transition_count_by_status_offset_bucket",
     "transition_count_by_risk_direction",
     "quote_intent_presence_by_status",
     "source_order_presence_by_status",
@@ -44,6 +46,25 @@ REQUIRED_FIELDS = (
     "residual_source_order_presence_by_side_offset",
 )
 
+CROSS_BUCKET_FIELDS = (
+    "transition_count_by_status_side_offset_risk_direction",
+    "pre_seed_same_qty_bucket_by_status_side_offset_risk_direction",
+    "pre_seed_opp_qty_bucket_by_status_side_offset_risk_direction",
+    "pre_seed_same_cost_bucket_by_status_side_offset_risk_direction",
+    "pre_seed_opp_cost_bucket_by_status_side_offset_risk_direction",
+    "ledger_proxy_before_bucket_by_status_side_offset_risk_direction",
+    "ledger_proxy_after_bucket_by_status_side_offset_risk_direction",
+    "candidate_qty_bucket_by_status_side_offset_risk_direction",
+    "immediate_pair_action_count_by_source_side_offset_risk_direction",
+    "immediate_pair_qty_bucket_by_source_side_offset_risk_direction",
+    "immediate_pair_cost_bucket_by_source_side_offset_risk_direction",
+    "residual_qty_by_source_side_offset_risk_direction",
+    "residual_cost_by_source_side_offset_risk_direction",
+    "residual_count_by_source_side_offset_risk_direction",
+    "residual_cost_bucket_by_source_side_offset_risk_direction",
+)
+
+ALL_FIELDS = BASE_REQUIRED_FIELDS + CROSS_BUCKET_FIELDS
 FLOAT_TOL = 1e-6
 
 
@@ -62,7 +83,7 @@ def source_link_diag(obj: dict[str, Any], path: Path) -> dict[str, Any]:
     diag = event_lite.get("source_link_transition_diagnostics")
     if not isinstance(diag, dict):
         raise ValueError(f"{path} has no event_lite.source_link_transition_diagnostics")
-    missing = [key for key in REQUIRED_FIELDS if key not in diag]
+    missing = [key for key in BASE_REQUIRED_FIELDS if key not in diag]
     if missing:
         raise ValueError(f"{path} is missing source-link fields: {', '.join(missing)}")
     return diag
@@ -95,7 +116,7 @@ def add_nested(dest: dict[str, Any], src: dict[str, Any]) -> None:
 
 
 def merge_diags(diags: list[dict[str, Any]]) -> dict[str, Any]:
-    merged: dict[str, Any] = {key: {} for key in REQUIRED_FIELDS}
+    merged: dict[str, Any] = {key: {} for key in ALL_FIELDS}
     for diag in diags:
         add_nested(merged, diag)
     return merged
@@ -219,6 +240,67 @@ def source_bucket_scores(diag: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def source_cross_bucket_scores(diag: dict[str, Any]) -> list[dict[str, Any]]:
+    pair_actions = diag.get("immediate_pair_action_count_by_source_side_offset_risk_direction", {})
+    pair_qty_buckets = diag.get("immediate_pair_qty_bucket_by_source_side_offset_risk_direction", {})
+    pair_cost_buckets = diag.get("immediate_pair_cost_bucket_by_source_side_offset_risk_direction", {})
+    residual_qty = diag.get("residual_qty_by_source_side_offset_risk_direction", {})
+    residual_cost = diag.get("residual_cost_by_source_side_offset_risk_direction", {})
+    residual_count = diag.get("residual_count_by_source_side_offset_risk_direction", {})
+    transition_counts = diag.get("transition_count_by_status_side_offset_risk_direction", {})
+    admitted_counts = transition_counts.get("admitted", {}) if isinstance(transition_counts, dict) else {}
+    keys = sorted(
+        set(pair_actions)
+        | set(pair_qty_buckets)
+        | set(pair_cost_buckets)
+        | set(residual_qty)
+        | set(residual_cost)
+        | (set(admitted_counts) if isinstance(admitted_counts, dict) else set())
+    )
+    total_pair_actions = sum_numbers(pair_actions)
+    total_pair_qty_proxy = sum(nested_bucket_proxy(pair_qty_buckets, key, "pair_qty") for key in keys)
+    total_residual_cost = sum_numbers(residual_cost)
+    total_admitted = sum_numbers(admitted_counts)
+    rows: list[dict[str, Any]] = []
+    for key in keys:
+        pair_action_count = float(pair_actions.get(key, 0.0)) if isinstance(pair_actions.get(key, 0.0), (int, float)) else 0.0
+        pair_qty_proxy = nested_bucket_proxy(pair_qty_buckets, key, "pair_qty")
+        resid_cost = float(residual_cost.get(key, 0.0)) if isinstance(residual_cost.get(key, 0.0), (int, float)) else 0.0
+        resid_qty = float(residual_qty.get(key, 0.0)) if isinstance(residual_qty.get(key, 0.0), (int, float)) else 0.0
+        admitted_count = float(admitted_counts.get(key, 0.0)) if isinstance(admitted_counts, dict) and isinstance(admitted_counts.get(key, 0.0), (int, float)) else 0.0
+        pair_action_share = pair_action_count / total_pair_actions if total_pair_actions > 0 else 0.0
+        pair_qty_share = pair_qty_proxy / total_pair_qty_proxy if total_pair_qty_proxy > 0 else 0.0
+        residual_cost_share = resid_cost / total_residual_cost if total_residual_cost > 0 else 0.0
+        admitted_share = admitted_count / total_admitted if total_admitted > 0 else 0.0
+        summary_removal_refused = residual_cost_share > 0 and (pair_action_share >= 0.20 or pair_qty_share >= 0.20)
+        rows.append(
+            {
+                "source_side_offset_risk_direction": key,
+                "admitted_transitions": round(admitted_count, 6),
+                "admitted_transition_share": round(admitted_share, 6),
+                "immediate_pair_actions": round(pair_action_count, 6),
+                "immediate_pair_action_share": round(pair_action_share, 6),
+                "immediate_pair_qty_proxy": round(pair_qty_proxy, 6),
+                "immediate_pair_qty_share": round(pair_qty_share, 6),
+                "immediate_pair_cost_buckets": pair_cost_buckets.get(key, {}),
+                "residual_qty": round(resid_qty, 6),
+                "residual_cost": round(resid_cost, 6),
+                "residual_cost_share": round(residual_cost_share, 6),
+                "residual_count": round(float(residual_count.get(key, 0.0)), 6) if isinstance(residual_count.get(key, 0.0), (int, float)) else 0.0,
+                "summary_only_removal_refused": bool(summary_removal_refused),
+            }
+        )
+    rows.sort(
+        key=lambda row: (
+            -row["residual_cost"],
+            -row["admitted_transitions"],
+            -row["immediate_pair_qty_proxy"],
+            row["source_side_offset_risk_direction"],
+        )
+    )
+    return rows
+
+
 def ledger_movement(diag: dict[str, Any]) -> dict[str, Any]:
     before = diag.get("ledger_proxy_before_bucket_by_status_reason", {})
     after = diag.get("ledger_proxy_after_bucket_by_status_reason", {})
@@ -267,20 +349,31 @@ def score(summary_paths: list[Path], aggregate_path: Path | None) -> dict[str, A
     total_transitions = admitted + blocked
     admitted_share = admitted / total_transitions if total_transitions > 0 else 0.0
     source_scores = source_bucket_scores(merged)
+    cross_source_scores = source_cross_bucket_scores(merged)
     summary_only_refusals = [row for row in source_scores if row["summary_only_removal_refused"]]
+    cross_summary_only_refusals = [row for row in cross_source_scores if row["summary_only_removal_refused"]]
     top_residual = sorted(
         [row for row in source_scores if row["residual_cost"] > 0 or row["residual_qty"] > 0],
         key=lambda row: (-row["residual_cost"], -row["residual_qty"], row["source_side_offset"]),
+    )[:8]
+    top_cross_residual = sorted(
+        [row for row in cross_source_scores if row["residual_cost"] > 0 or row["residual_qty"] > 0],
+        key=lambda row: (-row["residual_cost"], -row["residual_qty"], row["source_side_offset_risk_direction"]),
     )[:8]
     top_pair = sorted(
         [row for row in source_scores if row["immediate_pair_qty_proxy"] > 0 or row["immediate_pair_actions"] > 0],
         key=lambda row: (-row["immediate_pair_qty_proxy"], -row["immediate_pair_actions"], row["source_side_offset"]),
     )[:8]
+    top_cross_pair = sorted(
+        [row for row in cross_source_scores if row["immediate_pair_qty_proxy"] > 0 or row["immediate_pair_actions"] > 0],
+        key=lambda row: (-row["immediate_pair_qty_proxy"], -row["immediate_pair_actions"], row["source_side_offset_risk_direction"]),
+    )[:8]
 
-    field_checks = {key: key in merged for key in REQUIRED_FIELDS}
-    keep_ready = all(field_checks.values()) and (aggregate_parity["passed"] is not False)
+    field_checks = {key: any(key in diag for diag in summary_diags) for key in ALL_FIELDS}
+    missing_cross_fields = [key for key in CROSS_BUCKET_FIELDS if not field_checks.get(key)]
+    keep_ready = all(field_checks.get(key) for key in BASE_REQUIRED_FIELDS) and not missing_cross_fields and (aggregate_parity["passed"] is not False)
     return {
-        "status": "KEEP_SOURCE_LINK_TRANSITION_BUCKET_SCORER_READY" if keep_ready else "UNKNOWN_SOURCE_LINK_TRANSITION_BUCKET_SCORER_FIELD_OR_PARITY_GAP",
+        "status": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY" if keep_ready else "UNKNOWN_SOURCE_LINK_TRANSITION_BUCKET_SCORER_FIELD_OR_PARITY_GAP",
         "input_summaries": [str(path) for path in summary_paths],
         "input_aggregate": str(aggregate_path) if aggregate_path else None,
         "field_checks": field_checks,
@@ -295,8 +388,11 @@ def score(summary_paths: list[Path], aggregate_path: Path | None) -> dict[str, A
             "blocked_reason_buckets": top_items(merged.get("transition_count_by_status_reason", {}).get("blocked", {}) if isinstance(merged.get("transition_count_by_status_reason", {}), dict) else {}),
             "blocked_offset_buckets": top_items(merged.get("transition_count_by_status_offset_bucket", {}).get("blocked", {}) if isinstance(merged.get("transition_count_by_status_offset_bucket", {}), dict) else {}),
             "risk_direction_by_status": merged.get("transition_count_by_risk_direction", {}),
+            "risk_direction_by_status_side_offset": merged.get("transition_count_by_status_side_offset_risk_direction", {}),
             "top_immediate_pair_source_buckets": top_pair,
             "top_residual_source_buckets": top_residual,
+            "top_immediate_pair_source_cross_buckets": top_cross_pair,
+            "top_residual_source_cross_buckets": top_cross_residual,
             "quote_intent_presence": merged.get("quote_intent_presence_by_status", {}),
             "source_order_presence": merged.get("source_order_presence_by_status", {}),
             "source_sequence_presence": merged.get("source_sequence_presence_by_status", {}),
@@ -307,14 +403,16 @@ def score(summary_paths: list[Path], aggregate_path: Path | None) -> dict[str, A
             "future_bucket_rule_max_residual_cost_share": 0.20,
             "future_bucket_rule_min_immediate_pair_qty_share_for_context": 0.10,
             "summary_only_removal_recommended": False,
-            "summary_only_removal_refusal_count": len(summary_only_refusals),
+            "summary_only_removal_refusal_count": len(summary_only_refusals) + len(cross_summary_only_refusals),
             "summary_only_removal_refusal_examples": summary_only_refusals[:5],
+            "cross_bucket_summary_only_removal_refusal_examples": cross_summary_only_refusals[:5],
+            "missing_cross_bucket_fields": missing_cross_fields,
             "interpretation": "Use high residual or pair-tail buckets as diagnostic questions only. Do not convert bucket rankings into after-the-fact condition/summary removal unless a separate local verifier proves pre-trade sample retention and economics.",
         },
         "research_ranking": {
             "decision": "KEEP" if keep_ready else "UNKNOWN",
-            "label": "KEEP_SOURCE_LINK_TRANSITION_BUCKET_SCORER_READY" if keep_ready else "UNKNOWN_SOURCE_LINK_TRANSITION_BUCKET_SCORER_FIELD_OR_PARITY_GAP",
-            "interpretation": "This scorer validates and ranks source-link diagnostic buckets. It is attribution tooling, not strategy economics or promotion evidence.",
+            "label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY" if keep_ready else "UNKNOWN_SOURCE_LINK_TRANSITION_BUCKET_SCORER_FIELD_OR_PARITY_GAP",
+            "interpretation": "This scorer validates and ranks source-link diagnostic buckets, including side+offset+risk-direction cross buckets when present. It is attribution tooling, not strategy economics or promotion evidence.",
         },
         "promotion_gate": {
             "passed": False,
