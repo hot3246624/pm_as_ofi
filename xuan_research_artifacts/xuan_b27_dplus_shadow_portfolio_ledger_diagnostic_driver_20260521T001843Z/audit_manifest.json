@@ -1,0 +1,416 @@
+{
+  "acceptance": {
+    "acceptance_passed": false,
+    "promotion_gate": {
+      "economic_pnl_ok": true,
+      "hard_blockers": [
+        "shadow_trading_promotion_risk_budget_failed"
+      ],
+      "legacy_absolute_reference": {
+        "breaches": [
+          {
+            "actual": 28.735,
+            "legacy_reference_max": 10.0,
+            "metric": "residual_qty"
+          },
+          {
+            "actual": 9.84115,
+            "legacy_reference_max": 5.0,
+            "metric": "residual_cost"
+          },
+          {
+            "actual": 1.01,
+            "legacy_reference_max": 1.0,
+            "metric": "net_pair_cost_p90"
+          }
+        ],
+        "used_as_primary_promotion_gate": false
+      },
+      "normalized_risk_budget": {
+        "material_residual_lots": 0,
+        "max_material_residual_lots": 0,
+        "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+        "max_residual_cost_share_of_filled_cost": 0.2,
+        "max_residual_qty_share_of_filled": 0.15,
+        "pair_tail_loss_share_of_pair_pnl": 0.01493201,
+        "residual_cost_share_of_filled_cost": 0.25177182,
+        "residual_qty_share_of_filled": 0.30738373
+      },
+      "passed": false,
+      "promotion_risk_budget_ok": false,
+      "required_before_g2_canary": true,
+      "sample_size_ok": true,
+      "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
+    },
+    "research_ranking": {
+      "conservative_stress_proxy_positive": false,
+      "economic_pnl_positive": true,
+      "fee_adjusted_pair_pnl_proxy": 2.698231,
+      "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE",
+      "legacy_absolute_reference_breaches": [
+        {
+          "actual": 28.735,
+          "legacy_reference_max": 10.0,
+          "metric": "residual_qty"
+        },
+        {
+          "actual": 9.84115,
+          "legacy_reference_max": 5.0,
+          "metric": "residual_cost"
+        },
+        {
+          "actual": 1.01,
+          "legacy_reference_max": 1.0,
+          "metric": "net_pair_cost_p90"
+        }
+      ],
+      "notes": [
+        "research ranking uses economic proxies first; sample and risk gates are reported separately",
+        "residual or pair-cost tail budget failures are TRADEOFF/BLOCKER evidence unless economic PnL turns negative",
+        "conservative stress proxy subtracts full residual_cost and pair-tail-loss proxy; source-of-truth settlement may differ"
+      ],
+      "pair_tail_loss_proxy": 0.04029,
+      "promotion_risk_budget_ok": false,
+      "residual_loss_proxy": 9.84115,
+      "risk_adjusted_pnl_proxy": -7.183209,
+      "sample_size_ok": true
+    },
+    "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
+  },
+  "artifact": "xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_audit",
+  "conclusion": {
+    "reason": "sample and bare pair PnL passed, but normalized residual qty/cost budgets and conservative risk-adjusted proxies failed; portfolio ledger negatives are broad across active conditions rather than a bounded source bucket.",
+    "shadow_promotion_candidate": "DISCARD",
+    "underlying_local_candidate_pipeline_lead": "RESEARCH_ONLY_NOT_PROMOTED"
+  },
+  "created_utc": "2026-05-21T03:01:57Z",
+  "decision_label": "DISCARD_PORTFOLIO_LEDGER_DIAGNOSTIC_RISK_BUDGET_FAIL",
+  "derived_metrics": {
+    "active_condition_bucket_counts": {
+      "risk_adjusted_negative": 8,
+      "risk_adjusted_nonnegative": 5
+    },
+    "active_condition_count": 13,
+    "fee_adjusted_pair_pnl_proxy": 2.698231,
+    "pair_tail_loss_proxy": 0.040693,
+    "portfolio_ledger_conservative_risk_adjusted_proxy": -8.236069,
+    "portfolio_ledger_risk_adjusted_nonnegative": false,
+    "residual_cost_share_of_filled_cost": 0.25177182,
+    "residual_qty_share_of_filled": 0.30738373,
+    "risk_adjusted_pnl_proxy": -7.183612
+  },
+  "local_artifact_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z",
+  "metrics": {
+    "candidates": 101.0,
+    "filled_cost": 39.087575,
+    "filled_qty": 93.4825,
+    "late_repair_fill_to_balance_blocks": 0.0,
+    "late_repair_fill_to_balance_candidates": 0.0,
+    "late_repair_fill_to_balance_caps": 0.0,
+    "late_repair_fill_to_balance_qty_reduction": 0.0,
+    "material_residual_lots": 0.0,
+    "net_pair_cost_proxy_p90": 1.01,
+    "pair_actions": 42.0,
+    "pair_pnl": 3.179453,
+    "pair_qty": 40.29,
+    "qty_pair_share_of_filled": 0.86198,
+    "queue_supported_fills": 76.0,
+    "residual_cost": 9.84115,
+    "residual_qty": 28.735,
+    "roi_on_filled_cost": 0.081342,
+    "seed_cost": 51.7271,
+    "seed_qty": 124.5725,
+    "taker_fee": 0.481222
+  },
+  "next_action": "Run a local no-network portfolio-ledger transfer attribution from pulled summary/aggregate plus candidate-pipeline manifests; do not start EC2 shadow/canary before a new local verifier returns KEEP.",
+  "portfolio_ledger_diagnostics": {
+    "aggregate": {
+      "avg_net_pair_cost": 0.921086,
+      "avg_pair_cost": 0.909142,
+      "condition_count": 26,
+      "condition_count_by_risk_adjusted_bucket": {
+        "risk_adjusted_negative": 8.0,
+        "risk_adjusted_nonnegative": 18.0
+      },
+      "conservative_risk_adjusted_proxy": -8.236069,
+      "net_pair_cost_sum": 37.110547,
+      "official_taker_fee_proxy": 0.481222,
+      "pair_actions": 42.0,
+      "pair_cost_sum": 36.629325,
+      "pair_pnl": 3.179453,
+      "pair_qty": 40.29,
+      "queue_supported_fills": 76.0,
+      "residual_cost": 9.84115,
+      "residual_cost_by_side": {
+        "NO": 5.228525,
+        "YES": 4.612625
+      },
+      "residual_lot_count_by_side": {
+        "NO": 13.0,
+        "YES": 15.0
+      },
+      "residual_qty": 28.735,
+      "residual_qty_by_side": {
+        "NO": 15.045,
+        "YES": 13.69
+      },
+      "risk_adjusted_bucket": "risk_adjusted_negative",
+      "risk_adjusted_nonnegative": false,
+      "seed_actions": 101.0,
+      "stress_cost_proxy": 1.09315
+    },
+    "interpretation": [
+      "portfolio-ledger diagnostics are present and sufficient to score the public-profile paired-inventory rule without events JSONL",
+      "bare pair PnL is positive and sample size passes, but aggregate portfolio conservative risk-adjusted proxy is negative",
+      "active negative conditions are broad across 8 of 13 active BTC 5m conditions, with residual cost on both YES and NO sides",
+      "this does not identify a narrow non-price deployable mechanism; it argues against promoting this exact live/no-order shadow candidate"
+    ],
+    "net_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 7.0,
+      "pair_cost_1p00_1p05": 3.0,
+      "pair_cost_gt_1p05": 2.0,
+      "pair_cost_lt_0p95": 30.0
+    },
+    "pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 7.0,
+      "pair_cost_1p00_1p05": 3.0,
+      "pair_cost_gt_1p05": 2.0,
+      "pair_cost_lt_0p95": 30.0
+    },
+    "residual_lot_px_qty_buckets": {
+      "px_0p30_0p45": 8.885,
+      "px_0p45_0p48": 1.25,
+      "px_0p48_0p55": 3.8975,
+      "px_ge_0p55": 2.5,
+      "px_lt_0p30": 12.2025
+    },
+    "residual_lot_side_cost": {
+      "NO": 5.228525,
+      "YES": 4.612625
+    },
+    "residual_lot_side_qty": {
+      "NO": 15.045,
+      "YES": 13.69
+    },
+    "top_negative_conditions": [
+      {
+        "conservative_risk_adjusted_proxy": -2.910975,
+        "pair_actions": 1.0,
+        "pair_pnl": 0.05,
+        "pair_qty": 1.25,
+        "residual_cost": 2.886,
+        "residual_qty": 4.9975,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 9.0,
+        "slug": "btc-updown-5m-1779325500"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -1.92575,
+        "pair_actions": 1.0,
+        "pair_pnl": 0.07485,
+        "pair_qty": 1.2475,
+        "residual_cost": 1.92565,
+        "residual_qty": 5.0,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 10.0,
+        "slug": "btc-updown-5m-1779326100"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -1.0755,
+        "pair_actions": 0.0,
+        "pair_pnl": 0.0,
+        "pair_qty": 0.0,
+        "residual_cost": 1.026375,
+        "residual_qty": 4.9125,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 8.0,
+        "slug": "btc-updown-5m-1779324300"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.9445,
+        "pair_actions": 3.0,
+        "pair_pnl": 0.199,
+        "pair_qty": 2.4875,
+        "residual_cost": 1.068625,
+        "residual_qty": 2.5125,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 8.0,
+        "slug": "btc-updown-5m-1779324600"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.9047,
+        "pair_actions": 7.0,
+        "pair_pnl": 0.021225,
+        "pair_qty": 4.79,
+        "residual_cost": 0.80375,
+        "residual_qty": 2.6375,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 12.0,
+        "slug": "btc-updown-5m-1779324000"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.7774,
+        "pair_actions": 4.0,
+        "pair_pnl": 0.1464,
+        "pair_qty": 3.69,
+        "residual_cost": 0.8146,
+        "residual_qty": 3.54,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 11.0,
+        "slug": "btc-updown-5m-1779324900"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.625,
+        "pair_actions": 1.0,
+        "pair_pnl": 0.125,
+        "pair_qty": 1.25,
+        "residual_cost": 0.6875,
+        "residual_qty": 3.75,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 8.0,
+        "slug": "btc-updown-5m-1779325800"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.242,
+        "pair_actions": 5.0,
+        "pair_pnl": 0.61025,
+        "pair_qty": 6.25,
+        "residual_cost": 0.5625,
+        "residual_qty": 1.25,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 9.0,
+        "slug": "btc-updown-5m-1779323100"
+      }
+    ],
+    "top_residual_cost_conditions": [
+      {
+        "conservative_risk_adjusted_proxy": -2.910975,
+        "pair_actions": 1.0,
+        "pair_pnl": 0.05,
+        "pair_qty": 1.25,
+        "residual_cost": 2.886,
+        "residual_qty": 4.9975,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 9.0,
+        "slug": "btc-updown-5m-1779325500"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -1.92575,
+        "pair_actions": 1.0,
+        "pair_pnl": 0.07485,
+        "pair_qty": 1.2475,
+        "residual_cost": 1.92565,
+        "residual_qty": 5.0,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 10.0,
+        "slug": "btc-updown-5m-1779326100"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.9445,
+        "pair_actions": 3.0,
+        "pair_pnl": 0.199,
+        "pair_qty": 2.4875,
+        "residual_cost": 1.068625,
+        "residual_qty": 2.5125,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 8.0,
+        "slug": "btc-updown-5m-1779324600"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -1.0755,
+        "pair_actions": 0.0,
+        "pair_pnl": 0.0,
+        "pair_qty": 0.0,
+        "residual_cost": 1.026375,
+        "residual_qty": 4.9125,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 8.0,
+        "slug": "btc-updown-5m-1779324300"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.7774,
+        "pair_actions": 4.0,
+        "pair_pnl": 0.1464,
+        "pair_qty": 3.69,
+        "residual_cost": 0.8146,
+        "residual_qty": 3.54,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 11.0,
+        "slug": "btc-updown-5m-1779324900"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.9047,
+        "pair_actions": 7.0,
+        "pair_pnl": 0.021225,
+        "pair_qty": 4.79,
+        "residual_cost": 0.80375,
+        "residual_qty": 2.6375,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 12.0,
+        "slug": "btc-updown-5m-1779324000"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.625,
+        "pair_actions": 1.0,
+        "pair_pnl": 0.125,
+        "pair_qty": 1.25,
+        "residual_cost": 0.6875,
+        "residual_qty": 3.75,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 8.0,
+        "slug": "btc-updown-5m-1779325800"
+      },
+      {
+        "conservative_risk_adjusted_proxy": -0.242,
+        "pair_actions": 5.0,
+        "pair_pnl": 0.61025,
+        "pair_qty": 6.25,
+        "residual_cost": 0.5625,
+        "residual_qty": 1.25,
+        "risk_adjusted_bucket": "risk_adjusted_negative",
+        "seed_actions": 9.0,
+        "slug": "btc-updown-5m-1779323100"
+      }
+    ]
+  },
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_portfolio_ledger_diagnostic_edge007_20260521T001843Z",
+  "run_config": {
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "duration_s": 3600,
+    "edge": 0.07,
+    "event_lite_summary": true,
+    "fill_to_balance_enabled": false,
+    "imbalance_qty_cap": 1.25,
+    "late_repair_only_after_s": 90,
+    "max_open_cost": 80,
+    "pair_source_event_lite_summary": true,
+    "pairing_only_when_residual": true,
+    "portfolio_ledger_event_lite_summary": true,
+    "target_qty": 5
+  },
+  "safety": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "orders_sent": false,
+    "pm_dry_run": "true",
+    "post_run_no_xuan_runner_alive": true,
+    "raw_replay_collector_scanned": false,
+    "redeems_sent": false,
+    "repo_sync_build_service_control": false,
+    "shared_ingress_modified": false,
+    "shared_ingress_role": "client"
+  },
+  "schema_version": 1,
+  "scope": "local_audit_of_pulled_no_order_portfolio_ledger_shadow_small_files",
+  "source_files_read": {
+    "acceptance_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_portfolio_ledger_diagnostic_20260521T001843Z/manifest.json",
+    "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z/remote/output/aggregate_report.json",
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "runner_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z/remote/output/manifest.json",
+    "summary_json_count": 26
+  },
+  "status": "DISCARD_PORTFOLIO_LEDGER_DIAGNOSTIC_RISK_BUDGET_FAIL"
+}
