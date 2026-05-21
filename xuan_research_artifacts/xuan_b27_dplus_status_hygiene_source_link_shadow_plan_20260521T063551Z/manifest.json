@@ -1,0 +1,189 @@
+{
+  "status": "KEEP_SOURCE_LINK_DIAGNOSTIC_SHADOW_PLAN_SELECTED",
+  "created_at": "2026-05-21T06:35:51Z",
+  "lane": "status_hygiene",
+  "scope": "local_only_diagnostic_shadow_readiness_selection",
+  "inputs_used": [
+    "xuan_research_artifacts/xuan_b27_dplus_source_link_transition_bucket_scorer_smoke_20260521T060551Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_source_link_transition_attribution_plan_20260521T053551Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_source_link_transition_implementability_20260521T052300Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_same_window_source_field_readiness_verifier_20260520T222107Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_portfolio_ledger_transfer_attribution_20260521T031327Z/manifest.json",
+    "xuan_research_artifacts/xuan_b27_dplus_dynamic_condition_ledger_risk_state_verifier_20260521T041929Z/manifest.json"
+  ],
+  "prohibited_actions_not_performed": [
+    "ssh",
+    "ec2_shadow",
+    "events_jsonl_read_or_pull",
+    "shared_ingress_connection",
+    "broker_service_env_live_changes",
+    "raw_replay_or_collector_scan",
+    "full_completion_store_scan",
+    "orders_cancels_redeems",
+    "g2_canary"
+  ],
+  "decision_summary": {
+    "diagnostic_shadow_plan_selected": true,
+    "why_now": [
+      "Source-link transition diagnostics are default-off and smoke-tested.",
+      "The local bucket scorer can consume the new summary/aggregate shape, validate aggregate parity, rank immediate-pair and residual source buckets, and refuse summary-only removal.",
+      "Prior fill-to-balance, portfolio-ledger, and dynamic-risk lines all failed because historical candidate-pipeline positives could not be compared to live/no-order transition source links.",
+      "A future no-order run with source-link diagnostics is needed only to collect same-window attribution fields, not to support promotion."
+    ],
+    "why_not_more_local_first": [
+      "Allowed local candidate_base/candidate_registry does not include the 2026-05-20 or future live/no-order same-window source stream.",
+      "The missing evidence is per-candidate live transition linkage, which the new default-off summary fields are designed to expose without pulling events JSONL.",
+      "The scorer already defines local field/parity/summary-removal guardrails for consuming those fields after pullback."
+    ]
+  },
+  "selected_diagnostic_question": {
+    "label": "late_repair90_source_link_transition_tail_attribution",
+    "question": "In a fresh live/no-order diagnostic window, are residual cost and pair-tail costs caused by a narrow admitted transition bucket by side, offset, risk direction, or pre-seed ledger state, or are they broad/inherent across admitted late_repair90 transitions?",
+    "non_goals": [
+      "not a promotion or canary run",
+      "not a repeat acceptance test of frozen late-repair-only90",
+      "not a fill-to-balance90 rerun",
+      "not a public/source price cap revival",
+      "not a summary-only condition removal search"
+    ],
+    "required_source_link_fields": [
+      "transition_count_by_status",
+      "transition_count_by_status_reason",
+      "transition_count_by_status_side",
+      "transition_count_by_status_offset_bucket",
+      "transition_count_by_risk_direction",
+      "quote_intent_presence_by_status",
+      "source_order_presence_by_status",
+      "source_sequence_presence_by_status",
+      "pre_seed_same_qty_bucket_by_status_reason",
+      "pre_seed_opp_qty_bucket_by_status_reason",
+      "pre_seed_same_cost_bucket_by_status_reason",
+      "pre_seed_opp_cost_bucket_by_status_reason",
+      "ledger_proxy_before_bucket_by_status_reason",
+      "ledger_proxy_after_bucket_by_status_reason",
+      "candidate_qty_bucket_by_status_reason",
+      "immediate_pair_action_count_by_source_side_offset",
+      "immediate_pair_qty_bucket_by_source_side_offset",
+      "immediate_pair_cost_bucket_by_source_side_offset",
+      "residual_qty_by_source_side_offset",
+      "residual_cost_by_source_side_offset",
+      "residual_count_by_source_side_offset",
+      "residual_cost_bucket_by_source_side_offset"
+    ]
+  },
+  "future_shadow_plan": {
+    "allowed_next_lane": "shadow_observe",
+    "run_only_after_bounded_preflight": true,
+    "remote_host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "ssh_key": "~/.ssh/polymarket-aws.pem",
+    "remote_run_root": "/srv/pm_as_ofi/xuan_research_runs",
+    "run_dir_prefix": "xuan_research_dplus_shadow_source_link_transition_diagnostic_edge007",
+    "local_driver_artifact_prefix": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_transition_diagnostic_driver",
+    "execution_user": "pmofi",
+    "environment": {
+      "PM_DRY_RUN": "true",
+      "PM_SHARED_INGRESS_ROOT": "/srv/pm_as_ofi/shared-ingress-main"
+    },
+    "file_copy_policy": [
+      "copy only current tools/xuan_dplus_passive_passive_shadow_runner.py into the isolated xuan_research run dir",
+      "use remote helper /srv/pm_as_ofi/repo/scripts/resolve_market_ids.py if present",
+      "no repo sync",
+      "no build",
+      "no service control",
+      "no broker/shared-ingress/env/live writes"
+    ],
+    "candidate_command_config": {
+      "edge": 0.07,
+      "target_qty": 5,
+      "max_open_cost": 80,
+      "imbalance_qty_cap": 1.25,
+      "pairing_only_when_residual": true,
+      "activation_mode": "opp_seen",
+      "activation_window_s": 15,
+      "offsets": "0..25",
+      "duration_s": 3600,
+      "late_repair_only_after_s": 90,
+      "event_lite_summary": true,
+      "pair_source_event_lite_summary": true,
+      "source_link_transition_event_lite_summary": true,
+      "late_repair_fill_to_balance_after_s": null,
+      "portfolio_ledger_event_lite_summary": false
+    },
+    "pullback_policy": [
+      "pull only output/manifest.json",
+      "pull only output/aggregate_report.json",
+      "pull only output/*.summary.json",
+      "pull stdout.log, stderr.log, runner.pid",
+      "pull small preflight/startup/post-run sanity files",
+      "do not pull events JSONL"
+    ]
+  },
+  "bounded_preflight_requirements": [
+    "check df and df -i for root disk/inode capacity",
+    "check ps/pgrep for xuan_dplus_passive_passive_shadow_runner.py and ignore the command shell itself",
+    "confirm no active overlapping xuan-research runner",
+    "confirm shared-ingress broker_manifest.json, market.sock, chainlink.sock, and local_price.sock are present and fresh enough",
+    "confirm sudo -n -u pmofi is available",
+    "confirm helper /srv/pm_as_ofi/repo/scripts/resolve_market_ids.py exists",
+    "treat non-xuan-research read-only runners as context only unless resource/transport/no-order safety risk is present"
+  ],
+  "post_run_local_analysis": {
+    "required_tools": [
+      "scripts/xuan_b27_dplus_source_link_transition_bucket_scorer.py",
+      "scripts/xuan_b27_dplus_shadow_trading_acceptance.py if applicable to standard audit/acceptance"
+    ],
+    "required_outputs": [
+      "source-link scorer output on pulled summaries/aggregate",
+      "standard audit/acceptance if aggregate supports it",
+      "research_ranking and promotion_gate reported separately",
+      "explicit explanation of whether residual and pair-tail costs are narrow or broad"
+    ],
+    "keep_criteria": [
+      "sample is useful enough for attribution, preferably candidates >= 100 or a clear reason if thinner",
+      "material_residual_lots remains 0",
+      "source-link scorer identifies a bounded admitted transition bucket with high residual_cost_share or pair-tail contribution and low immediate_pair_qty_share",
+      "the candidate follow-up is a non-price inventory-path mechanism and not summary-only removal",
+      "no-order safety is preserved"
+    ],
+    "unknown_criteria": [
+      "sample is too thin for source-link attribution",
+      "required source-link fields are absent or aggregate parity fails",
+      "buckets are present but insufficient to distinguish repair/underweight from risk-increasing paths"
+    ],
+    "discard_criteria": [
+      "residual and pair-tail risk are broad across admitted source buckets",
+      "only after-the-fact condition/summary removal would improve metrics",
+      "diagnostics imply only frozen mechanisms such as fill-to-balance90, source/public price caps, static target/cap sweeps, cooldown/admission caps, or dynamic risk-state gate as previously tested"
+    ]
+  },
+  "heartbeat_cadence_policy": {
+    "current_cadence": "30_minutes",
+    "next_heartbeat": "keep_30_minutes_until_remote_run_starts",
+    "if_run_starts": "temporarily_update_this_xuan_research_heartbeat_to_15_minutes_for_completion_polling",
+    "after_run_finishes_or_blocks": "restore_30_minutes",
+    "minimum_cadence": "15_minutes",
+    "do_not_modify": [
+      "xuan-frontier-* automations",
+      "local-agg-* automations"
+    ]
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SOURCE_LINK_DIAGNOSTIC_SHADOW_PLAN_SELECTED",
+    "interpretation": "The source-link scorer and diagnostics are ready enough to queue one future diagnostic-only no-order shadow after bounded preflight. This is a data-attribution plan, not economic strategy evidence."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "DIAGNOSTIC_PLAN_ONLY_NOT_PROMOTION_EVIDENCE",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false,
+    "hard_blockers": [
+      "no fresh no-order source-link diagnostic summary yet",
+      "prior fill-to-balance and portfolio-ledger shadows failed promotion risk budget",
+      "dynamic condition-ledger risk-state gate remains mixed",
+      "final source-of-truth replay validation remains separate"
+    ]
+  },
+  "next_executable_action": "Run bounded EC2 preflight only; if clear, start exactly one diagnostic-only no-order source-link transition shadow with PM_DRY_RUN=true and pull back only manifest/aggregate/summary/stdout/stderr/runner.pid/sanity small files, never events JSONL."
+}
