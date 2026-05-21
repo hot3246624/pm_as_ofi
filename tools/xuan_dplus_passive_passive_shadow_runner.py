@@ -187,6 +187,55 @@ def merge_nested_count_hist(dest: dict[str, dict[str, float]], src: dict[str, An
                 add_nested_count(dest, str(key), str(subkey), float(value))
 
 
+def risk_adjusted_bucket(value: float) -> str:
+    return "risk_adjusted_nonnegative" if value >= 0.0 else "risk_adjusted_negative"
+
+
+def merge_portfolio_ledger_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    dest["condition_count"] = int(dest.get("condition_count", 0)) + 1
+    numeric_keys = (
+        "seed_actions",
+        "queue_supported_fills",
+        "pair_actions",
+        "pair_qty",
+        "pair_cost_sum",
+        "net_pair_cost_sum",
+        "pair_pnl",
+        "official_taker_fee_proxy",
+        "residual_qty",
+        "residual_cost",
+        "stress_cost_proxy",
+    )
+    for key in numeric_keys:
+        value = src.get(key)
+        if isinstance(value, (int, float)):
+            dest[key] = round(float(dest.get(key, 0.0)) + float(value), 6)
+    for key in ("residual_qty_by_side", "residual_cost_by_side", "residual_lot_count_by_side"):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    bucket = str(src.get("risk_adjusted_bucket") or risk_adjusted_bucket(float(src.get("conservative_risk_adjusted_proxy") or 0.0)))
+    add_count(dest.setdefault("condition_count_by_risk_adjusted_bucket", {}), bucket)
+
+
+def finalize_portfolio_ledger_diagnostics(diag: dict[str, Any]) -> None:
+    pair_qty = float(diag.get("pair_qty") or 0.0)
+    pair_cost_sum = float(diag.get("pair_cost_sum") or 0.0)
+    net_pair_cost_sum = float(diag.get("net_pair_cost_sum") or 0.0)
+    pair_pnl = float(diag.get("pair_pnl") or 0.0)
+    fee = float(diag.get("official_taker_fee_proxy") or 0.0)
+    residual_cost = float(diag.get("residual_cost") or 0.0)
+    residual_qty = float(diag.get("residual_qty") or 0.0)
+    stress = 0.01 * (2.0 * pair_qty + residual_qty)
+    risk_adjusted = pair_pnl - fee - residual_cost - stress
+    diag["avg_pair_cost"] = round(pair_cost_sum / pair_qty, 6) if pair_qty else 0.0
+    diag["avg_net_pair_cost"] = round(net_pair_cost_sum / pair_qty, 6) if pair_qty else 0.0
+    diag["stress_cost_proxy"] = round(stress, 6)
+    diag["conservative_risk_adjusted_proxy"] = round(risk_adjusted, 6)
+    diag["risk_adjusted_nonnegative"] = risk_adjusted >= 0.0
+    diag["risk_adjusted_bucket"] = risk_adjusted_bucket(risk_adjusted)
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -229,6 +278,7 @@ class RunnerConfig:
     event_lite_summary: bool = False
     pair_source_event_lite_summary: bool = False
     fill_to_balance_diagnostic_event_lite_summary: bool = False
+    portfolio_ledger_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -320,6 +370,8 @@ class Metrics:
     filled_qty: float = 0.0
     filled_cost: float = 0.0
     pair_qty: float = 0.0
+    pair_cost_sum: float = 0.0
+    net_pair_cost_sum: float = 0.0
     pair_pnl: float = 0.0
     taker_fee: float = 0.0
     completion_cost: float = 0.0
@@ -515,6 +567,42 @@ class DPlusRunner:
                 }
             )
 
+    def portfolio_ledger_diagnostics(self, residual_lots: list[Lot]) -> dict[str, Any]:
+        residual_qty_by_side: dict[str, float] = {}
+        residual_cost_by_side: dict[str, float] = {}
+        residual_lot_count_by_side: dict[str, float] = {}
+        for lot in residual_lots:
+            add_count(residual_qty_by_side, lot.side, lot.qty)
+            add_count(residual_cost_by_side, lot.side, lot.cost)
+            add_count(residual_lot_count_by_side, lot.side)
+        m = self.metrics
+        stress_cost_proxy = 0.01 * (2.0 * m.pair_qty + m.residual_qty)
+        risk_adjusted_proxy = m.pair_pnl - m.taker_fee - m.residual_cost - stress_cost_proxy
+        return {
+            "condition_id": self.condition_id,
+            "slug": self.slug,
+            "rule": "portfolio_risk_adjusted_nonnegative",
+            "seed_actions": m.candidates,
+            "queue_supported_fills": m.queue_supported_fills,
+            "pair_actions": m.pair_actions,
+            "pair_qty": round(m.pair_qty, 6),
+            "pair_cost_sum": round(m.pair_cost_sum, 6),
+            "avg_pair_cost": round(m.pair_cost_sum / m.pair_qty, 6) if m.pair_qty else 0.0,
+            "net_pair_cost_sum": round(m.net_pair_cost_sum, 6),
+            "avg_net_pair_cost": round(m.net_pair_cost_sum / m.pair_qty, 6) if m.pair_qty else 0.0,
+            "pair_pnl": round(m.pair_pnl, 6),
+            "official_taker_fee_proxy": round(m.taker_fee, 6),
+            "residual_qty": round(m.residual_qty, 6),
+            "residual_cost": round(m.residual_cost, 6),
+            "residual_qty_by_side": residual_qty_by_side,
+            "residual_cost_by_side": residual_cost_by_side,
+            "residual_lot_count_by_side": residual_lot_count_by_side,
+            "stress_cost_proxy": round(stress_cost_proxy, 6),
+            "conservative_risk_adjusted_proxy": round(risk_adjusted_proxy, 6),
+            "risk_adjusted_nonnegative": risk_adjusted_proxy >= 0.0,
+            "risk_adjusted_bucket": risk_adjusted_bucket(risk_adjusted_proxy),
+        }
+
     def record_activation_seen(self, side: str, ts_ms: int) -> None:
         if side in self.activation_last_seen_ms:
             self.activation_last_seen_ms[side] = ts_ms
@@ -618,6 +706,8 @@ class DPlusRunner:
             older = min(a.fill_ms, b.fill_ms)
             self.metrics.pair_actions += 1
             self.metrics.pair_qty += take
+            self.metrics.pair_cost_sum += take * pair_cost
+            self.metrics.net_pair_cost_sum += take * pair_cost
             self.metrics.pair_pnl += take * (1.0 - pair_cost)
             self.metrics.pair_costs.append(pair_cost)
             self.metrics.net_pair_costs.append(pair_cost)
@@ -670,6 +760,8 @@ class DPlusRunner:
                 self.metrics.completion_cost += take * ask
                 self.metrics.pair_actions += 1
                 self.metrics.pair_qty += take
+                self.metrics.pair_cost_sum += take * gross_pair
+                self.metrics.net_pair_cost_sum += take * net_pair
                 self.metrics.pair_pnl += take * (1.0 - net_pair)
                 self.metrics.pair_costs.append(gross_pair)
                 self.metrics.net_pair_costs.append(net_pair)
@@ -988,6 +1080,8 @@ class DPlusRunner:
                 )
             if self.cfg.fill_to_balance_diagnostic_event_lite_summary:
                 summary["event_lite"]["late_repair_fill_to_balance_diagnostics"] = self.event_lite_f2b_diagnostics
+            if self.cfg.portfolio_ledger_event_lite_summary:
+                summary["event_lite"]["portfolio_ledger_diagnostics"] = self.portfolio_ledger_diagnostics(residual_lots)
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -1224,6 +1318,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                     source = f2b_diag.get(key)
                     if isinstance(source, dict):
                         merge_nested_count_hist(dest_diag.setdefault(key, {}), source)
+            portfolio_diag = lite.get("portfolio_ledger_diagnostics")
+            if isinstance(portfolio_diag, dict):
+                merge_portfolio_ledger_diagnostics(
+                    event_lite.setdefault("portfolio_ledger_diagnostics", {}),
+                    portfolio_diag,
+                )
             source_contexts = lite.get("top_high_cost_pair_sources")
             if isinstance(source_contexts, list):
                 top_sources = event_lite.setdefault("top_high_cost_pair_sources", [])
@@ -1270,6 +1370,9 @@ def aggregate(out: Path) -> dict[str, Any]:
                 key=lambda item: item.get("net_pair_cost", 0.0) if isinstance(item, dict) else 0.0,
                 reverse=True,
             )[:50]
+        portfolio_diag = event_lite.get("portfolio_ledger_diagnostics")
+        if isinstance(portfolio_diag, dict):
+            finalize_portfolio_ledger_diagnostics(portfolio_diag)
         aggregate_report["event_lite"] = event_lite
     (out / "aggregate_report.json").write_text(json.dumps(aggregate_report, indent=2, sort_keys=True) + "\n")
     return aggregate_report
@@ -1336,6 +1439,7 @@ async def main() -> None:
     ap.add_argument("--event-lite-summary", action="store_true", help="emit summary-only candidate/fill/block/residual attribution buckets without pulling events JSONL")
     ap.add_argument("--pair-source-event-lite-summary", action="store_true", help="with --event-lite-summary, attribute pair-cost buckets back to source seed/public price, offset, side, and quote ids")
     ap.add_argument("--fill-to-balance-diagnostic-event-lite-summary", action="store_true", help="with --event-lite-summary and --late-repair-fill-to-balance-after-s, emit fill-to-balance deficit/base/capped/reduction diagnostic buckets")
+    ap.add_argument("--portfolio-ledger-event-lite-summary", action="store_true", help="with --event-lite-summary, emit per-condition paired-inventory and residual risk-adjusted ledger diagnostics")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -1371,6 +1475,7 @@ async def main() -> None:
         event_lite_summary=args.event_lite_summary,
         pair_source_event_lite_summary=args.pair_source_event_lite_summary,
         fill_to_balance_diagnostic_event_lite_summary=args.fill_to_balance_diagnostic_event_lite_summary,
+        portfolio_ledger_event_lite_summary=args.portfolio_ledger_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -1395,6 +1500,8 @@ async def main() -> None:
             raise SystemExit("--fill-to-balance-diagnostic-event-lite-summary requires --event-lite-summary")
         if cfg.late_repair_fill_to_balance_after_s is None:
             raise SystemExit("--fill-to-balance-diagnostic-event-lite-summary requires --late-repair-fill-to-balance-after-s")
+    if cfg.portfolio_ledger_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--portfolio-ledger-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

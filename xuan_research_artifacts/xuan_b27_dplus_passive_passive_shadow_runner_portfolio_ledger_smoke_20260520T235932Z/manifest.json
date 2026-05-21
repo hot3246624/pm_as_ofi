@@ -1,0 +1,33 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke",
+  "checks": {
+    "aggregate_merges_condition_ledgers": true,
+    "aggregate_reports_risk_adjusted_bucket_counts": true,
+    "cli_requires_event_lite": true,
+    "default_event_lite_portfolio_ledger_absent": true,
+    "paired_condition_ledger_positive": true,
+    "residual_heavy_condition_ledger_negative": true
+  },
+  "decision_label": "KEEP",
+  "hypothesis": "default-off portfolio ledger event-lite diagnostics expose condition-level paired inventory, residual risk, and risk-adjusted buckets without changing default behavior",
+  "next_action": "After regression smokes pass, use the diagnostic flag only to observe public-profile paired-inventory ledger quality in no-order shadows; do not treat diagnostics as promotion evidence.",
+  "outputs": {
+    "default_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260520T235932Z/portfolio_default_off/aggregate_report.json",
+    "default_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260520T235932Z/portfolio_default_off/btc-updown-5m-1900000000.summary.json",
+    "enabled_aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260520T235932Z/portfolio_enabled/aggregate_report.json",
+    "paired_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260520T235932Z/portfolio_enabled/btc-updown-5m-1900000000.summary.json",
+    "residual_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_portfolio_ledger_smoke_20260520T235932Z/portfolio_enabled/btc-updown-5m-1900000300.summary.json"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "tool": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/tools/xuan_dplus_passive_passive_shadow_runner.py"
+}
