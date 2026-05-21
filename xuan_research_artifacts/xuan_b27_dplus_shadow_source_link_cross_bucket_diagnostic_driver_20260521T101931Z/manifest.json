@@ -1,0 +1,168 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver",
+  "status": "DISCARD_SOURCE_LINK_CROSS_BUCKET_BROAD_RESIDUAL_RISK",
+  "created_at": "2026-05-21T10:19:31Z",
+  "run_id": "20260521T101931Z",
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_source_link_cross_bucket_diagnostic_edge007_20260521T101931Z",
+  "runner_pid": 170976,
+  "preflight": {
+    "time_utc": "2026-05-21T10:19:31Z",
+    "root_disk_use": "43%",
+    "root_disk_available": "83G",
+    "inode_use": "1%",
+    "xuan_research_runner_alive_before_start": false,
+    "shared_ingress_manifest_present": true,
+    "market_sock_present": true,
+    "chainlink_sock_present": true,
+    "local_price_sock_present": true,
+    "broker_manifest_mtime_utc": "2026-05-21T10:19:30Z",
+    "helper_present": true,
+    "sudo_pmofi_available": true,
+    "hard_blocker": false
+  },
+  "startup": {
+    "time_utc": "2026-05-21T10:20:00Z",
+    "created_remote_run_dir": true,
+    "copied_runner_only": true,
+    "used_remote_helper": "/srv/pm_as_ofi/repo/scripts/resolve_market_ids.py",
+    "repo_sync_or_build": false,
+    "service_control_used": false,
+    "broker_or_shared_ingress_write": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "startup_sanity": {
+    "time_utc": "2026-05-21T10:24:14Z",
+    "runner_alive": true,
+    "runner_pid_file": 170976,
+    "elapsed_s": 235,
+    "summary_json_count": 26,
+    "manifest_json_present": true,
+    "aggregate_report_present": false,
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "remote_events_jsonl_present": true,
+    "remote_events_jsonl_pulled": false,
+    "root_disk_use": "43%",
+    "inode_use": "1%",
+    "interpretation": "normal_early_run_status"
+  },
+  "latest_live_check": {
+    "time_utc": "2026-05-21T11:33:18Z",
+    "runner_alive": false,
+    "runner_pid_file": 170976,
+    "elapsed": null,
+    "matching_xuan_research_runners": 0,
+    "summary_json_count": 26,
+    "manifest_json_present": true,
+    "aggregate_report_present": true,
+    "stdout_bytes": 64909,
+    "stderr_bytes": 0,
+    "root_disk_use": "43%",
+    "inode_use": "1%",
+    "interpretation": "completed_normally"
+  },
+  "run_config": {
+    "edge": 0.07,
+    "target_qty": 5,
+    "max_open_cost": 80,
+    "imbalance_qty_cap": 1.25,
+    "pairing_only_when_residual": true,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "round_offsets": "0..25",
+    "duration_s": 3600,
+    "late_repair_only_after_s": 90,
+    "event_lite_summary": true,
+    "pair_source_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "late_repair_fill_to_balance_after_s": null,
+    "portfolio_ledger_event_lite_summary": false
+  },
+  "side_effects": {
+    "pm_dry_run": true,
+    "shared_ingress_role": "client",
+    "repo_sync_or_build": false,
+    "service_control_used": false,
+    "broker_or_shared_ingress_write": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "events_jsonl_pulled": false
+  },
+  "pullback_policy": {
+    "allowed": [
+      "output/manifest.json",
+      "output/aggregate_report.json",
+      "output/*.summary.json",
+      "stdout.log",
+      "stderr.log",
+      "runner.pid",
+      "small preflight/startup/post-run sanity files"
+    ],
+    "forbidden": [
+      "events JSONL",
+      "raw/replay/collector/full completion store data",
+      "shared-ingress/broker/service/env/live writes"
+    ]
+  },
+  "pullback": {
+    "completed": true,
+    "local_pullback_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver_20260521T101931Z/pullback",
+    "summary_json_count": 26,
+    "manifest_json_pulled": true,
+    "aggregate_report_pulled": true,
+    "stdout_pulled": true,
+    "stderr_pulled": true,
+    "runner_pid_pulled": true,
+    "events_jsonl_pulled": false,
+    "post_run_runner_alive": false,
+    "root_disk_use": "43%",
+    "inode_use": "1%"
+  },
+  "scoring": {
+    "source_link_bucket_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver_20260521T101931Z/source_link_bucket_score.json",
+    "acceptance_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_source_link_cross_bucket_diagnostic_20260521T101931Z/manifest.json",
+    "aggregate_parity_passed": true,
+    "cross_fields_present": true,
+    "candidates": 97,
+    "queue_supported_fills": 61,
+    "pair_actions": 24,
+    "pair_qty": 30.0,
+    "pair_pnl": 2.751,
+    "roi_on_filled_cost": 0.1034211498319077,
+    "net_pair_cost_p90": 1.0499999999999998,
+    "residual_qty": 32.4975,
+    "residual_cost": 7.374975,
+    "material_residual_lots": 0,
+    "fee_adjusted_pair_pnl_proxy": 2.352,
+    "conservative_risk_adjusted_pnl_proxy": -5.172975,
+    "residual_qty_share_of_filled": 0.4262107,
+    "residual_cost_share_of_filled_cost": 0.27725496,
+    "pair_tail_loss_share_of_pair_pnl": 0.06377551,
+    "top_residual_cross_bucket": {
+      "source_side_offset_risk_direction": "YES|offset_60_90|repair_or_pairing_improving",
+      "residual_cost_share": 0.215255,
+      "immediate_pair_qty_share": 0.057143
+    },
+    "target_cross_bucket": {
+      "source_side_offset_risk_direction": "NO|offset_60_90|risk_increasing",
+      "residual_cost_share": 0.142373,
+      "immediate_pair_qty_share": 0.057143
+    }
+  },
+  "research_ranking": {
+    "decision": "DISCARD",
+    "label": "DISCARD_SOURCE_LINK_CROSS_BUCKET_BROAD_RESIDUAL_RISK",
+    "interpretation": "The diagnostic answered the source-link question but did not find a narrow deployable cross bucket. Bare pair PnL was positive, but sample was thin, normalized residual and pair-tail budgets failed, conservative risk-adjusted proxy was negative, and residual cost was spread across multiple admitted cross buckets rather than concentrated in NO|offset_60_90|risk_increasing."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE_AND_PROMOTION_RISK_BUDGET",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "next_action": "Restore heartbeat cadence to 30 minutes. Do not repeat this source-link cross-bucket 3600s diagnostic shadow. Next lane should be local-only status_hygiene to freeze this exact diagnostic family and select a replay_store_v2 source-truth validation response plan for future selected candidate actions."
+}

@@ -1,0 +1,150 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_source_link_cross_bucket_result",
+  "status": "DISCARD_SOURCE_LINK_CROSS_BUCKET_BROAD_RESIDUAL_RISK",
+  "created_at": "2026-05-21T11:32:52Z",
+  "run_id": "20260521T101931Z",
+  "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_source_link_cross_bucket_diagnostic_edge007_20260521T101931Z",
+  "driver_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver_20260521T101931Z/manifest.json",
+  "source_link_bucket_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_source_link_cross_bucket_diagnostic_driver_20260521T101931Z/source_link_bucket_score.json",
+  "acceptance_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_trading_acceptance_source_link_cross_bucket_diagnostic_20260521T101931Z/manifest.json",
+  "scope": "diagnostic_only_no_order_source_link_cross_bucket_shadow",
+  "side_effects": {
+    "pm_dry_run": true,
+    "shared_ingress_role": "client",
+    "repo_sync_or_build": false,
+    "service_control_used": false,
+    "broker_or_shared_ingress_write": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false,
+    "events_jsonl_pulled": false,
+    "raw_replay_scanned": false
+  },
+  "post_run_sanity": {
+    "check_time_utc": "2026-05-21T11:33:18Z",
+    "runner_pid": 170976,
+    "runner_alive": false,
+    "matching_xuan_research_runners": 0,
+    "root_disk_use": "43%",
+    "inode_use": "1%",
+    "stdout_bytes": 64909,
+    "stderr_bytes": 0,
+    "manifest_json_present": true,
+    "aggregate_report_present": true,
+    "summary_json_count": 26
+  },
+  "run_config": {
+    "edge": 0.07,
+    "target_qty": 5,
+    "max_open_cost": 80,
+    "imbalance_qty_cap": 1.25,
+    "pairing_only_when_residual": true,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "round_offsets": "0..25",
+    "duration_s": 3600,
+    "late_repair_only_after_s": 90,
+    "event_lite_summary": true,
+    "pair_source_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "late_repair_fill_to_balance_after_s": null,
+    "portfolio_ledger_event_lite_summary": false
+  },
+  "shadow_metrics": {
+    "candidates": 97,
+    "queue_supported_fills": 61,
+    "pair_actions": 24,
+    "pair_qty": 30.0,
+    "filled_qty": 76.2475,
+    "filled_cost": 26.599975,
+    "pair_pnl": 2.751,
+    "taker_fee": 0.399,
+    "fee_adjusted_pair_pnl_proxy": 2.352,
+    "roi_on_filled_cost": 0.1034211498319077,
+    "net_pair_cost_p90": 1.0499999999999998,
+    "residual_qty": 32.4975,
+    "residual_cost": 7.374975,
+    "material_residual_lots": 0,
+    "residual_qty_share_of_filled": 0.4262107,
+    "residual_cost_share_of_filled_cost": 0.27725496,
+    "pair_tail_loss_share_of_pair_pnl": 0.06377551,
+    "conservative_risk_adjusted_pnl_proxy": -5.172975
+  },
+  "source_link_score": {
+    "aggregate_parity_passed": true,
+    "cross_fields_present": true,
+    "transition_totals": {
+      "admitted": 97.0,
+      "blocked": 5569.0,
+      "total": 5666.0
+    },
+    "admitted_risk_direction": {
+      "risk_increasing": 49.0,
+      "repair_or_pairing_improving": 48.0
+    },
+    "top_residual_cross_buckets": [
+      {
+        "source_side_offset_risk_direction": "YES|offset_60_90|repair_or_pairing_improving",
+        "admitted_transitions": 10.0,
+        "residual_cost_share": 0.215255,
+        "immediate_pair_qty_share": 0.057143
+      },
+      {
+        "source_side_offset_risk_direction": "NO|offset_30_60|repair_or_pairing_improving",
+        "admitted_transitions": 8.0,
+        "residual_cost_share": 0.145763,
+        "immediate_pair_qty_share": 0.028571
+      },
+      {
+        "source_side_offset_risk_direction": "NO|offset_60_90|risk_increasing",
+        "admitted_transitions": 10.0,
+        "residual_cost_share": 0.142373,
+        "immediate_pair_qty_share": 0.057143
+      },
+      {
+        "source_side_offset_risk_direction": "YES|offset_30_60|repair_or_pairing_improving",
+        "admitted_transitions": 13.0,
+        "residual_cost_share": 0.115255,
+        "immediate_pair_qty_share": 0.142857
+      },
+      {
+        "source_side_offset_risk_direction": "YES|offset_0_30|risk_increasing",
+        "admitted_transitions": 7.0,
+        "residual_cost_share": 0.09661,
+        "immediate_pair_qty_share": 0.085714
+      }
+    ],
+    "target_bucket_result": {
+      "source_side_offset_risk_direction": "NO|offset_60_90|risk_increasing",
+      "residual_cost_share": 0.142373,
+      "required_residual_cost_share_for_keep": 0.35,
+      "immediate_pair_qty_share": 0.057143,
+      "required_immediate_pair_qty_share_for_keep": 0.10,
+      "interpretation": "The target bucket has low immediate-pair contribution but does not explain enough residual cost to support a bounded non-price follow-up."
+    }
+  },
+  "decision_rationale": [
+    "source-link cross fields were present and aggregate parity passed",
+    "sample was slightly thin at candidates=97 versus preferred candidates>=100",
+    "bare pair economics were positive, but conservative risk-adjusted proxy was negative after residual and pair-tail budget",
+    "normalized residual qty, residual cost, and pair-tail budgets all failed",
+    "residual cost was broad across admitted cross buckets; the prior NO|offset_60_90 lead split into only 14.24% for NO|offset_60_90|risk_increasing",
+    "any improvement visible from this diagnostic would require summary-only bucket removal or a frozen mechanism, not a deployable inventory-path rule"
+  ],
+  "research_ranking": {
+    "decision": "DISCARD",
+    "label": "DISCARD_SOURCE_LINK_CROSS_BUCKET_BROAD_RESIDUAL_RISK",
+    "economic_pnl_positive": true,
+    "conservative_stress_proxy_positive": false,
+    "interpretation": "This is not a bare-PnL failure. It is a source-link attribution failure: the diagnostic found broad residual risk, not a narrow admitted cross bucket worth a local verifier."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE_AND_PROMOTION_RISK_BUDGET",
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false,
+    "private_truth_ready": false
+  },
+  "next_action": "Local-only status_hygiene: freeze exact source-link cross-bucket 3600s diagnostic shadow as a promotion candidate and select a replay_store_v2 source-truth validation response plan for future selected candidate actions. Do not start EC2 shadow/canary."
+}
