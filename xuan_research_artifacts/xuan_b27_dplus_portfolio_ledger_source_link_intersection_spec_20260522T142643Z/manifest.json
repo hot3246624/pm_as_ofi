@@ -1,0 +1,119 @@
+{
+  "artifact": "xuan_b27_dplus_portfolio_ledger_source_link_intersection_spec",
+  "created_utc": "2026-05-22T14:37:49Z",
+  "decision_label": "UNKNOWN",
+  "guardrails": {
+    "no_cooldown_or_admission_cap": true,
+    "no_events_jsonl_read": true,
+    "no_fill_to_balance_revival": true,
+    "no_portfolio_ledger_trading_rule": true,
+    "no_price_or_cap_family": true,
+    "no_raw_replay_or_full_store_scan": true,
+    "no_ssh_or_remote_start": true,
+    "no_static_side_offset_cutoff": true,
+    "no_summary_only_removal": true,
+    "public_profiles_are_proxy_only": true
+  },
+  "inputs": {
+    "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/aggregate_report.json",
+    "residual_tail_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/local_review_20260522T092012Z/residual_tail_exemplar_score/score.json",
+    "source_link_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/local_review_20260522T092012Z/source_link_transition_bucket_score.json",
+    "summary_count": 26
+  },
+  "intersection_metrics": {
+    "exemplar_rows_considered": 10,
+    "joined_exemplar_rows": 0,
+    "joined_exemplar_share": 0.0,
+    "portfolio_condition_count": 0,
+    "risk_adjusted_negative_joined_residual_cost": 0,
+    "risk_adjusted_negative_joined_residual_cost_share": 0.0,
+    "top_intersection_groups": [],
+    "top_joined_exemplars": [],
+    "total_exemplar_source_residual_cost": 5.704675
+  },
+  "missing_files_or_fields": [
+    "aggregate_report.event_lite.portfolio_ledger_diagnostics",
+    "summary.event_lite.portfolio_ledger_diagnostics for every supplied summary"
+  ],
+  "next_executable_action": "Run only the already selected exact diagnostic question after main-thread approval, with --portfolio-ledger-event-lite-summary, --source-link-transition-event-lite-summary, and --source-link-residual-tail-exemplars-event-lite-summary enabled together; then rescore this intersection.",
+  "promotion_gate": {
+    "canary_ready": false,
+    "deployable": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "schema_version": "portfolio_ledger_source_link_intersection_spec_v1",
+  "scope": "local_only_summary_scorer_spec",
+  "scoring_contract": {
+    "join_keys": [
+      "condition_id",
+      "slug as fallback label only",
+      "residual-tail exemplar source_sequence_id/quote_intent_id/source_order_id for action traceability"
+    ],
+    "keep_signal": {
+      "must_nominate_local_verifier_only": true,
+      "risk_adjusted_negative_joined_residual_cost_share_min": 0.2,
+      "top_intersection_group_residual_cost_share_min": 0.1
+    },
+    "required_surfaces": [
+      "aggregate_report.event_lite.portfolio_ledger_diagnostics",
+      "summary.event_lite.portfolio_ledger_diagnostics",
+      "source_link_transition_bucket_score.aggregate_parity.passed=true",
+      "source_link_transition_bucket_score.guardrails.missing_cross_bucket_fields=[]",
+      "residual_tail_exemplar_score.exemplar_metrics required/source_sequence/quote/order coverage=1.0"
+    ]
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "UNKNOWN_PORTFOLIO_LEDGER_SOURCE_LINK_INTERSECTION_INPUTS_MISSING",
+  "surface_checks": {
+    "aggregate_portfolio_ledger_present": false,
+    "residual_tail_exemplar_score_ok": true,
+    "residual_tail_failures": [],
+    "source_link_failures": [],
+    "source_link_score_ok": true,
+    "summary_portfolio_ledger_count": 0,
+    "summary_portfolio_ledger_failures_sample": [
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779438600.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779438900.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779439200.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779439500.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779439800.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779440100.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779440400.summary.json"
+      },
+      {
+        "missing": "event_lite.portfolio_ledger_diagnostics",
+        "path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean/output/btc-updown-5m-1779440700.summary.json"
+      }
+    ]
+  }
+}
