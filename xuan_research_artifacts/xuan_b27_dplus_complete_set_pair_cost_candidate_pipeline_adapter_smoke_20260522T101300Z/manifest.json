@@ -1,0 +1,44 @@
+{
+  "artifact": "xuan_b27_dplus_complete_set_pair_cost_candidate_pipeline_adapter_smoke",
+  "checks": {
+    "candidate_l1_coverage": true,
+    "context_rows_present": true,
+    "csv_outputs_present": true,
+    "decision_keep": true,
+    "no_side_effects": true,
+    "promotion_gate_false": true,
+    "realized_pair_context_present": true,
+    "seed_context_coverage": true
+  },
+  "decision_label": "KEEP_COMPLETE_SET_PAIR_COST_CANDIDATE_PIPELINE_ADAPTER_READY",
+  "hypothesis": "The adapter can quantify complete-set pair-cost context from candidate_base/state-machine fields without remote or live side effects.",
+  "next_action": "Run adapter on allowed local candidate_base and use output to select or reject a non-price sample-preserving mechanism.",
+  "outputs": {
+    "score": "xuan_research_artifacts/xuan_b27_dplus_complete_set_pair_cost_candidate_pipeline_adapter_smoke_20260522T101300Z/adapter/complete_set_pair_cost_candidate_pipeline_adapter_score.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "LOCAL_ADAPTER_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Adapter readiness only, not mechanism promotion.",
+    "label": "KEEP_COMPLETE_SET_PAIR_COST_CANDIDATE_PIPELINE_ADAPTER_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
