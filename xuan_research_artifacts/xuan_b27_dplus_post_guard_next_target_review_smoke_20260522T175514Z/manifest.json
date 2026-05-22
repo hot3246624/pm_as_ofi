@@ -1,0 +1,35 @@
+{
+  "artifact": "xuan_b27_dplus_post_guard_next_target_review_smoke",
+  "checks": {
+    "decision_unknown": true,
+    "future_attribution_rejected": true,
+    "label_expected": true,
+    "missing_fields_named": true,
+    "no_side_effects": true,
+    "no_target_selected": true,
+    "promotion_false": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_POST_GUARD_NEXT_TARGET_REVIEW_SMOKE_PASS",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "review": "xuan_research_artifacts/xuan_b27_dplus_post_guard_next_target_review_smoke_20260522T175514Z/review.json",
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
