@@ -162,7 +162,7 @@ def run_late_repair90(candidate_base_db: Path, base_day_counts: dict[str, int]) 
     states: dict[str, Any] = {}
     ledgers: dict[str, ConditionLedger] = {}
 
-    def traced_pair_inventory(profile: Any, state: Any, metrics: Any, ts_ms: int) -> None:
+    def traced_pair_inventory(profile: Any, state: Any, metrics: Any, ts_ms: int, **_: Any) -> None:
         yes = state.lots["YES"]
         no = state.lots["NO"]
         ledger = ledger_for(ledgers, state)
