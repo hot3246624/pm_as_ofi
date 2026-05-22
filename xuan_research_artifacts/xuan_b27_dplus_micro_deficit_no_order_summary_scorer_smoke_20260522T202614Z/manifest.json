@@ -1,0 +1,15 @@
+{
+  "artifact": "xuan_b27_dplus_micro_deficit_no_order_summary_scorer_smoke",
+  "checks": {
+    "no_events_raw_replay_or_network": true,
+    "positive_keep": true,
+    "post_action_labels_not_live_criteria": true,
+    "promotion_gate_false": true,
+    "weak_unknown": true
+  },
+  "created_utc": "20260522T202614Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_MICRO_DEFICIT_NO_ORDER_SUMMARY_SCORER_SMOKE_PASS",
+  "positive_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_micro_deficit_no_order_summary_scorer_smoke_20260522T202614Z/positive_score/manifest.json",
+  "weak_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_micro_deficit_no_order_summary_scorer_smoke_20260522T202614Z/weak_score/manifest.json"
+}
