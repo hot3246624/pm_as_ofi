@@ -1,0 +1,157 @@
+{
+  "artifact": "xuan_b27_dplus_status_hygiene_portfolio_ledger_source_link_question",
+  "created_utc": "20260522T132643Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_PORTFOLIO_LEDGER_SOURCE_LINK_DIAGNOSTIC_SHADOW_QUESTION_SELECTED",
+  "lane": "status_hygiene",
+  "scope": {
+    "local_only_question_selection": true,
+    "ssh_used": false,
+    "shadow_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "inputs": {
+    "portfolio_ledger_readiness": "xuan_research_artifacts/xuan_b27_dplus_portfolio_ledger_condition_diagnostic_readiness_20260522T125343Z/manifest.json",
+    "public_profile_pairing_revisit": "xuan_research_artifacts/xuan_b27_dplus_public_profile_pairing_verifier_revisit_20260522T113113Z/manifest.json",
+    "frozen_portfolio_ledger_shadow": "xuan_research_artifacts/xuan_b27_dplus_shadow_portfolio_ledger_diagnostic_driver_20260521T001843Z/manifest.json",
+    "residual_tail_exemplar_completion": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_completion_20260522T092012Z/manifest.json"
+  },
+  "selected_question": {
+    "name": "late_repair90_portfolio_ledger_source_link_exemplar_no_order_review",
+    "type": "diagnostic_only_no_order_shadow_review_question",
+    "requires_main_thread_exact_approval_before_remote_start": true,
+    "not_started_by_this_heartbeat": true,
+    "not_a_trading_rule": true,
+    "not_private_truth": true,
+    "not_deployable": true,
+    "not_canary": true,
+    "not_promotion": true,
+    "mechanism_question": "Can condition-level portfolio_risk_adjusted_nonnegative buckets, source-link transition fields, and residual-tail exemplars jointly identify a sample-preserving, non-price residual-risk control that was invisible to complete-set buffer/cap variants?"
+  },
+  "why_this_is_not_the_frozen_exact_shadow": {
+    "frozen_exact_shadow_decision": "DISCARD_PORTFOLIO_LEDGER_DIAGNOSTIC_RISK_BUDGET_FAIL",
+    "frozen_exact_shadow_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_portfolio_ledger_diagnostic_edge007_20260521T001843Z",
+    "frozen_exact_shadow_flags": [
+      "--event-lite-summary",
+      "--pair-source-event-lite-summary",
+      "--portfolio-ledger-event-lite-summary"
+    ],
+    "new_question_additional_required_flags": [
+      "--source-link-transition-event-lite-summary",
+      "--source-link-residual-tail-exemplars-event-lite-summary"
+    ],
+    "new_question_required_outputs": [
+      "portfolio_ledger_diagnostics",
+      "source_link_transition_diagnostics",
+      "source_link_residual_tail_exemplars"
+    ],
+    "new_question_intersection_not_old_promotion_claim": "The question is whether risk-adjusted-negative condition buckets intersect with action-level residual source exemplars in a way that can select a future local verifier. It does not re-run the old shadow as promotion evidence."
+  },
+  "proposed_runner_config_if_later_approved": {
+    "pm_dry_run": true,
+    "prefix": "btc-updown-5m",
+    "round_offsets": "0..25",
+    "duration_s": 3600,
+    "edge": 0.07,
+    "target_qty": 5,
+    "max_open_cost": 80,
+    "imbalance_qty_cap": 1.25,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "pairing_only_when_residual": true,
+    "late_repair_only_after_s": 90,
+    "event_lite_summary": true,
+    "pair_source_event_lite_summary": true,
+    "portfolio_ledger_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "source_link_residual_tail_exemplars_event_lite_summary": true,
+    "fill_to_balance_enabled": false,
+    "portfolio_ledger_trading_rule_enabled": false,
+    "price_caps_enabled": false,
+    "static_cap_or_target_sweeps_enabled": false,
+    "cooldown_or_admission_caps_enabled": false,
+    "live_orders_enabled": false,
+    "canary_enabled": false
+  },
+  "bounded_safety_preflight_if_later_approved": [
+    "Confirm no active xuan-research shadow runner before start.",
+    "Confirm shared-ingress read-only client prerequisites exist: broker manifest, market.sock, chainlink.sock, local_price.sock, and fresh heartbeat.",
+    "Confirm root disk and inode usage are safe.",
+    "Confirm sudo -n -u pmofi works.",
+    "Copy only current tools/xuan_dplus_passive_passive_shadow_runner.py into an isolated run directory.",
+    "Do not repo sync/build, do not run service/systemd controls, do not modify shared-ingress/broker/env/live paths, and do not send orders/cancels/redeems."
+  ],
+  "allowlisted_pullback_if_later_run_finishes": [
+    "output/manifest.json",
+    "output/aggregate_report.json",
+    "output/*.summary.json",
+    "stdout.log",
+    "stderr.log",
+    "runner.pid",
+    "small preflight/startup/post-run sanity files"
+  ],
+  "forbidden_pullback": [
+    "events JSONL",
+    "raw/replay data",
+    "collector data",
+    "full completion store"
+  ],
+  "pass_fail_criteria_if_later_run_finishes": {
+    "keep_requires": [
+      "no-order safety confirmed",
+      "candidates >= 100",
+      "net_pair_cost_p90 <= 1.0",
+      "residual_qty_share_of_filled <= 0.15",
+      "residual_cost_share_of_filled_cost <= 0.20",
+      "pair_tail_loss_share_of_pair_pnl <= 0.05",
+      "material_residual_lots == 0",
+      "source-link transition scorer aggregate parity pass",
+      "source-link cross fields present",
+      "portfolio-ledger per-condition required field coverage 100%",
+      "portfolio-ledger aggregate condition_count_by_risk_adjusted_bucket present",
+      "residual-tail exemplar required field/source_sequence/quote_intent/source_order coverage 100%",
+      "risk-adjusted-negative portfolio condition residual_cost share is concentrated enough to nominate one local verifier target without summary-only removal",
+      "research_ranking and promotion_gate reported separately"
+    ],
+    "unknown_or_tradeoff_if": [
+      "pair economics are positive but sample/risk budgets fail",
+      "portfolio risk buckets and residual-tail exemplars are complete but do not identify a sample-preserving non-price mechanism",
+      "risk-adjusted-negative conditions are broad or overlap profitable pair context too strongly"
+    ],
+    "discard_if": [
+      "residual risk remains broad across portfolio/source-link/exemplar intersections",
+      "the only apparent fix is summary-only removal, static side/offset cutoff, price/cap family, cooldown/admission cap, fill-to-balance revival, or broad replay search",
+      "any result is framed as private truth, canary, deployable, or promotion evidence"
+    ],
+    "blocked_only_if": [
+      "safety preflight fails",
+      "remote transport/resource failure",
+      "allowlisted artifacts are corrupt or missing"
+    ]
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_PORTFOLIO_LEDGER_SOURCE_LINK_DIAGNOSTIC_SHADOW_QUESTION_SELECTED",
+    "evidence_basis": [
+      "public-profile paired-inventory local verifier kept 95.19% seed actions and reduced residual cost rate 46.63%",
+      "default-off portfolio-ledger diagnostic fields and smoke are ready",
+      "previous exact portfolio-ledger shadow failed risk budget, so the next question must add source-link and residual-tail exemplar intersections before any new mechanism claim"
+    ]
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "QUESTION_SELECTION_ONLY_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "g2_canary_ready": false
+  },
+  "next_executable_action": "Wait for exact main-thread approval before any SSH/remote start. If not approved, continue local-only by drafting a scorer/spec for portfolio-ledger/source-link/exemplar intersection using existing pulled summaries; do not start another shadow from heartbeat alone."
+}
