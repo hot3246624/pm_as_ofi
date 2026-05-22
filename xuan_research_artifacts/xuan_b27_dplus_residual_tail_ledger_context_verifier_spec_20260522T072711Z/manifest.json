@@ -1,0 +1,254 @@
+{
+  "artifact": "xuan_b27_dplus_residual_tail_ledger_context_verifier_spec",
+  "created_utc": "20260522T074130Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_RESIDUAL_TAIL_LEDGER_CONTEXT_VERIFIER_SPEC_READY",
+  "guardrails": {
+    "frozen_mechanisms_not_allowed": [
+      "risk_increasing_pair_fill_cap_v1",
+      "summary_only_removal",
+      "static_side_offset_cutoff",
+      "source_public_price_cap",
+      "public_trade_px_cap",
+      "residual_cooldown",
+      "admission_cap",
+      "fill_to_balance90_shadow",
+      "portfolio_ledger_shadow"
+    ],
+    "promotion_or_canary_claim_allowed": false,
+    "remote_run_approved": false,
+    "summary_only_removal_recommended": false
+  },
+  "inputs": {
+    "actions_parquet": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/actions.parquet",
+    "candidate_base_db": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/candidate_base.duckdb",
+    "residual_lots_parquet": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2/residual_lots.parquet",
+    "result_dir": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2",
+    "selector_manifest": "xuan_research_artifacts/xuan_b27_dplus_residual_tail_exemplar_mechanism_selector_implementability_20260522T071500Z/manifest.json"
+  },
+  "next_executable_action": "Implement default-off selected_seed_ledger_context_export_v1 in the local candidate-pipeline state-machine, then smoke it; do not start remote shadow/canary from this spec alone.",
+  "path_safety": {
+    "actions_parquet": true,
+    "candidate_base_db": true,
+    "residual_lots_parquet": true,
+    "result_dir": true,
+    "selector_manifest": true
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "VERIFIER_SPEC_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Spec is ready if schema inputs are present, but a producer export is still needed before a true local verifier can score the mechanism.",
+    "label": "KEEP_RESIDUAL_TAIL_LEDGER_CONTEXT_VERIFIER_SPEC_READY"
+  },
+  "schema_checks": {
+    "actions_columns_used": [
+      "action_id",
+      "candidate_row_id",
+      "day",
+      "condition_id",
+      "slug",
+      "ts_ms",
+      "offset_s",
+      "side",
+      "public_trade_price",
+      "public_trade_size",
+      "l1_pair_ask",
+      "seed_px",
+      "seed_qty",
+      "seed_cost",
+      "pair_qty_after_seed",
+      "pair_actions_after_seed",
+      "pair_cost_wavg_after_seed",
+      "inventory_yes_qty_after",
+      "inventory_no_qty_after",
+      "inventory_yes_cost_after",
+      "inventory_no_cost_after",
+      "blocked_by",
+      "decision_scope"
+    ],
+    "actions_missing": [],
+    "actions_required_present": true,
+    "candidate_base_columns_used": [
+      "candidate_row_id",
+      "source_label",
+      "day",
+      "condition_id",
+      "slug",
+      "ts_ms",
+      "ts_iso",
+      "offset_s",
+      "side",
+      "opposite_side",
+      "winner_side",
+      "candidate_reason",
+      "public_trade_price",
+      "public_trade_size",
+      "public_trade_row_id",
+      "public_trade_recv_ms",
+      "l1_pair_ask",
+      "l1_pair_available_qty"
+    ],
+    "candidate_base_missing": [],
+    "candidate_base_required_present": true,
+    "residual_lots_columns_used": [
+      "source_seed_action_id",
+      "candidate_row_id",
+      "day",
+      "condition_id",
+      "slug",
+      "side",
+      "qty",
+      "px",
+      "cost",
+      "payout",
+      "pnl",
+      "age_s"
+    ],
+    "residual_lots_missing": [],
+    "residual_lots_required_present": true
+  },
+  "schema_version": 1,
+  "scope": "local_implementability_review_verifier_spec",
+  "selector_contract": {
+    "frozen_mechanisms_not_allowed": [
+      "risk_increasing_pair_fill_cap_v1",
+      "summary_only_removal",
+      "static_side_offset_cutoff",
+      "source_public_price_cap",
+      "public_trade_px_cap",
+      "residual_cooldown",
+      "admission_cap",
+      "fill_to_balance90_shadow",
+      "portfolio_ledger_shadow"
+    ],
+    "selected_target_when_signal_is_strong": "residual_tail_ledger_context_verifier_v1",
+    "thresholds": {
+      "min_pair_qty_context_share": 0.1,
+      "min_source_sequence_coverage": 0.95,
+      "min_top_exemplar_residual_cost_share": 0.35,
+      "min_top_group_residual_cost_share": 0.35
+    }
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "verifier_spec": {
+    "future_rule_shape": [
+      "Use exemplar-selected side+offset+risk_direction only as context.",
+      "Condition candidate actions by pre_seed same/opp qty/cost and ledger_proxy_before/after movement.",
+      "Require source_pair_qty/source_pair_pnl preservation while reducing source_residual_qty/source_residual_cost.",
+      "Reject any variant that blocks repair_or_pairing_improving seeds without a local retention proof."
+    ],
+    "future_verifier_pass_criteria": {
+      "deployable": false,
+      "fee_after_pnl_must_remain_positive": true,
+      "pair_qty_retention_vs_late_repair90_min": 0.85,
+      "private_truth_ready": false,
+      "promotion_gate_passed": false,
+      "residual_cost_rate_must_improve": true,
+      "residual_qty_rate_must_improve": true,
+      "seed_action_retention_vs_late_repair90_min": 0.75,
+      "stress100_worst_pnl_must_not_decline_materially": true
+    },
+    "lane": "causal_verifier",
+    "must_not_start_from": [
+      "replay_store_v2 broad strategy search",
+      "events JSONL",
+      "raw/replay/collector/full completion-store scan",
+      "summary-only removal",
+      "static side/offset deletion",
+      "price cap family"
+    ],
+    "must_start_from": [
+      "future approved residual-tail exemplar shadow score.json",
+      "candidate_base DuckDB schema above",
+      "candidate-pipeline state-machine replay over allowed days only"
+    ],
+    "name": "residual_tail_ledger_context_verifier_v1",
+    "producer_export_needed": {
+      "external_shadow_identifier_fields_missing_from_candidate_base": [
+        "source_sequence_id",
+        "quote_intent_id",
+        "source_order_id"
+      ],
+      "fields": [
+        "ledger_proxy_after",
+        "ledger_proxy_before",
+        "pre_seed_opp_cost",
+        "pre_seed_opp_qty",
+        "pre_seed_same_cost",
+        "pre_seed_same_qty",
+        "quote_intent_id",
+        "source_order_id",
+        "source_pair_cost",
+        "source_pair_pnl",
+        "source_pair_qty",
+        "source_residual_age_ms",
+        "source_residual_cost",
+        "source_residual_qty",
+        "source_risk_direction",
+        "source_seed_candidate_row_id",
+        "source_sequence_id",
+        "trigger_px",
+        "trigger_size",
+        "trigger_ts_ms"
+      ],
+      "fields_computable_in_state_machine": [
+        "source_risk_direction",
+        "pre_seed_same_qty",
+        "pre_seed_opp_qty",
+        "pre_seed_same_cost",
+        "pre_seed_opp_cost",
+        "ledger_proxy_before",
+        "ledger_proxy_after",
+        "source_pair_qty",
+        "source_pair_cost",
+        "source_pair_pnl",
+        "source_residual_qty",
+        "source_residual_cost",
+        "source_residual_age_ms"
+      ],
+      "fields_missing_from_current_local_outputs": [
+        "source_seed_candidate_row_id",
+        "source_sequence_id",
+        "quote_intent_id",
+        "source_order_id",
+        "source_risk_direction",
+        "trigger_px",
+        "trigger_size",
+        "trigger_ts_ms",
+        "pre_seed_same_qty",
+        "pre_seed_opp_qty",
+        "pre_seed_same_cost",
+        "pre_seed_opp_cost",
+        "ledger_proxy_before",
+        "ledger_proxy_after",
+        "source_pair_qty",
+        "source_pair_cost",
+        "source_pair_pnl",
+        "source_residual_qty",
+        "source_residual_cost",
+        "source_residual_age_ms"
+      ],
+      "name": "selected_seed_ledger_context_export_v1",
+      "reason": "Current candidate-pipeline outputs can identify actions and residual lots, but do not export the pre-seed ledger/context and source-pair/source-residual attribution needed by the selector target."
+    },
+    "purpose": "Use residual-tail exemplar source contexts to test a sample-preserving non-price ledger/context rule locally before any further remote run.",
+    "status": "SPEC_READY_PRODUCER_EXPORT_NEEDED"
+  }
+}

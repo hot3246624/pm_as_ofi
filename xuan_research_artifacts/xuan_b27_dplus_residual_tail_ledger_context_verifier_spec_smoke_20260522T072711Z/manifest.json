@@ -1,0 +1,47 @@
+{
+  "artifact": "xuan_b27_dplus_residual_tail_ledger_context_verifier_spec_smoke",
+  "checks": {
+    "actions_schema_present": true,
+    "candidate_schema_present": true,
+    "decision_keep": true,
+    "external_ids_named": true,
+    "no_side_effects": true,
+    "pre_seed_fields_named": true,
+    "producer_export_needed": true,
+    "promotion_gate_false": true,
+    "remote_not_approved": true,
+    "residual_lots_schema_present": true,
+    "source_attribution_fields_named": true
+  },
+  "decision_label": "KEEP_RESIDUAL_TAIL_LEDGER_CONTEXT_VERIFIER_SPEC_READY",
+  "hypothesis": "A local schema/spec review can prove the ledger-context verifier is implementable only after adding a default-off producer export, while naming exact missing fields from current outputs.",
+  "next_action": "Implement default-off selected_seed_ledger_context_export_v1 in the local state-machine and smoke it before any mechanism verifier or remote run.",
+  "outputs": {
+    "spec": "xuan_research_artifacts/xuan_b27_dplus_residual_tail_ledger_context_verifier_spec_smoke_20260522T072711Z/spec.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SPEC_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Spec readiness only. The verifier still needs producer export implementation and a future real exemplar score.",
+    "label": "KEEP_RESIDUAL_TAIL_LEDGER_CONTEXT_VERIFIER_SPEC_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
