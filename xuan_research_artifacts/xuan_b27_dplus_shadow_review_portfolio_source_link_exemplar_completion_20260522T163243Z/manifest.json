@@ -1,0 +1,308 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_completion",
+  "created_utc": "2026-05-22T16:50:58Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_PORTFOLIO_LEDGER_SOURCE_LINK_EXEMPLAR_TRADEOFF_LOCAL_VERIFIER_READY",
+  "guardrails": {
+    "do_not_convert_intersection_to_trading_rule_without_local_causal_verifier": true,
+    "no_events_jsonl_read_or_pull": true,
+    "no_new_shadow_started": true,
+    "no_orders_cancels_redeems": true,
+    "no_promotion_or_canary_claim": true,
+    "no_public_profiles_as_private_truth": true,
+    "no_raw_replay_or_full_store_scan": true,
+    "no_repo_sync_build_for_canary": true,
+    "no_service_or_systemd": true,
+    "no_shared_ingress_broker_env_live_writes": true
+  },
+  "lane": "shadow_observe",
+  "next_executable_action": "Implement local-only default-off portfolio_negative_risk_increasing_source_guard_verifier_v1 against allowed candidate_base/state-machine fields; do not SSH/start shadow/canary, do not use price caps or summary-only removal, and require research_ranking/promotion_gate separation.",
+  "promotion_gate": {
+    "canary_ready": false,
+    "deployable": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "reason": "no-order shadow risk budget failed; this is source/proxy/shadow-review evidence only"
+  },
+  "pullback": {
+    "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/remote_clean/output/aggregate_report.json",
+    "allowlisted_files_only": true,
+    "events_jsonl_pulled": 0,
+    "remote_clean_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/remote_clean",
+    "runner_pid_file": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/remote_clean/runner.pid",
+    "stderr_log": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/remote_clean/stderr.log",
+    "stdout_log": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/remote_clean/stdout.log",
+    "summary_count": 26
+  },
+  "run": {
+    "config": {
+      "activation_mode": "opp_seen",
+      "activation_window_s": 15,
+      "edge": 0.07,
+      "event_lite_summary": true,
+      "fill_to_balance_enabled": false,
+      "imbalance_qty_cap": 1.25,
+      "late_repair_only_after_s": 90,
+      "market_prefix": "btc-updown-5m",
+      "max_open_cost": 80,
+      "orders_cancels_redeems_enabled": false,
+      "pair_source_event_lite_summary": true,
+      "pairing_only_when_residual": true,
+      "pm_dry_run": true,
+      "portfolio_ledger_event_lite_summary": true,
+      "portfolio_ledger_trading_rule_enabled": false,
+      "round_offsets": "0..25",
+      "source_link_residual_tail_exemplars_event_lite_summary": true,
+      "source_link_transition_event_lite_summary": true,
+      "target_qty": 5
+    },
+    "duration_s": 3600,
+    "finished_observed_utc": "2026-05-22T16:33:21Z",
+    "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_portfolio_source_link_exemplar_review_edge007_20260522T152643Z",
+    "runner_pid": 235596,
+    "started_utc": "2026-05-22T15:30:38Z"
+  },
+  "schema_version": 1,
+  "scope": {
+    "diagnostic_no_order_shadow_review": true,
+    "not_canary_or_promotion_evidence": true,
+    "not_deployable": true,
+    "not_private_truth": true,
+    "research_only": true
+  },
+  "scorers": {
+    "portfolio_ledger_source_link_intersection": {
+      "decision_label": "KEEP",
+      "intersection_metrics": {
+        "exemplar_rows_considered": 10,
+        "joined_exemplar_rows": 10,
+        "joined_exemplar_share": 1.0,
+        "portfolio_condition_count": 26,
+        "risk_adjusted_negative_joined_residual_cost": 5.2125,
+        "risk_adjusted_negative_joined_residual_cost_share": 1.0,
+        "top_intersection_groups": [
+          {
+            "condition_count": 3,
+            "row_count": 3,
+            "source_pair_qty": 0.0,
+            "source_residual_cost": 1.575,
+            "source_residual_cost_share": 0.302158,
+            "source_side_offset_risk_direction_ledger": "NO|offset_0_30|risk_increasing|risk_adjusted_negative"
+          },
+          {
+            "condition_count": 2,
+            "row_count": 2,
+            "source_pair_qty": 0.0,
+            "source_residual_cost": 1.0375,
+            "source_residual_cost_share": 0.199041,
+            "source_side_offset_risk_direction_ledger": "NO|offset_60_90|risk_increasing|risk_adjusted_negative"
+          },
+          {
+            "condition_count": 2,
+            "row_count": 2,
+            "source_pair_qty": 0.0,
+            "source_residual_cost": 0.9375,
+            "source_residual_cost_share": 0.179856,
+            "source_side_offset_risk_direction_ledger": "NO|offset_30_60|risk_increasing|risk_adjusted_negative"
+          },
+          {
+            "condition_count": 1,
+            "row_count": 1,
+            "source_pair_qty": 0.0,
+            "source_residual_cost": 0.6125,
+            "source_residual_cost_share": 0.117506,
+            "source_side_offset_risk_direction_ledger": "NO|offset_60_90|repair_or_pairing_improving|risk_adjusted_negative"
+          },
+          {
+            "condition_count": 1,
+            "row_count": 1,
+            "source_pair_qty": 0.0,
+            "source_residual_cost": 0.5625,
+            "source_residual_cost_share": 0.107914,
+            "source_side_offset_risk_direction_ledger": "NO|offset_90_120|repair_or_pairing_improving|risk_adjusted_negative"
+          },
+          {
+            "condition_count": 1,
+            "row_count": 1,
+            "source_pair_qty": 0.0,
+            "source_residual_cost": 0.4875,
+            "source_residual_cost_share": 0.093525,
+            "source_side_offset_risk_direction_ledger": "NO|offset_30_60|repair_or_pairing_improving|risk_adjusted_negative"
+          }
+        ]
+      },
+      "missing_files_or_fields": [],
+      "score_path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/local_review_20260522T163243Z/portfolio_source_link_intersection/manifest.json",
+      "status": "KEEP_PORTFOLIO_LEDGER_SOURCE_LINK_INTERSECTION_SCORER_READY",
+      "surface_checks": {
+        "aggregate_portfolio_ledger_present": true,
+        "residual_tail_exemplar_score_ok": true,
+        "residual_tail_failures": [],
+        "source_link_failures": [],
+        "source_link_score_ok": true,
+        "summary_portfolio_ledger_count": 26,
+        "summary_portfolio_ledger_failures_sample": []
+      }
+    },
+    "public_profile_next_lane_review": {
+      "local_pairing_verifier_summary": {
+        "best_rule": "portfolio_risk_adjusted_nonnegative",
+        "pair_qty_retention": 0.955473,
+        "promotion_gate_passed": false,
+        "residual_cost_rate_reduction": 0.466315,
+        "residual_qty_rate_reduction": 0.2742,
+        "seed_action_retention": 0.9519,
+        "stress100_worst_pnl_delta": 10.34035
+      },
+      "public_profile_summary": {
+        "best_positive_wallet": "0x04b6d7e930cf9e493c5e6ef24b496294f95594c8",
+        "negative_control_profile_count": 1,
+        "positive_proxy_profile_count": 1,
+        "profile_lead_active": true,
+        "profiles_reviewed": 2
+      },
+      "research_ranking": {
+        "decision": "PUBLIC_PROFILE_COMPLETE_SET_LEDGER_LEAD_REMAINS_ACTIVE",
+        "interpretation": "The strong public profile supports condition-level complete-set/paired-inventory structure, but it does not add a new deployable local control without same-window action-level diagnostics."
+      },
+      "score_path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/local_review_20260522T163243Z/public_profile_next_lane_review/manifest.json",
+      "status": "KEEP_PUBLIC_PROFILE_INTERSECTION_READY_FOR_LOCAL_VERIFIER_SELECTION"
+    },
+    "residual_tail_exemplar": {
+      "checks": {
+        "aggregate_exemplars_subset_of_summaries": true,
+        "metric_budgets_ok": false,
+        "no_order_safety_ok": true,
+        "paths_safe": true,
+        "report_shape_ok": true,
+        "required_field_coverage_ok": true,
+        "source_link_scorer_ok": true,
+        "source_sequence_coverage_ok": true,
+        "summary_paths_present": true
+      },
+      "decision": "UNKNOWN",
+      "exemplar_metrics": {
+        "aggregate_exemplar_row_count": 23,
+        "quote_intent_coverage": 1.0,
+        "required_field_coverage": 1.0,
+        "risk_direction_counts": {
+          "repair_or_pairing_improving": 8,
+          "risk_increasing": 15
+        },
+        "side_counts": {
+          "NO": 21,
+          "YES": 2
+        },
+        "source_order_coverage": 1.0,
+        "source_sequence_coverage": 1.0,
+        "summary_exemplar_row_count": 23,
+        "top1_residual_cost_share": 0.077541,
+        "top3_residual_cost_share": 0.219965,
+        "top5_residual_cost_share": 0.35764,
+        "total_exemplar_source_residual_cost": 7.899
+      },
+      "field_failures": [],
+      "score_path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/local_review_20260522T163243Z/residual_tail_exemplar_score/score.json",
+      "shadow_gate_failures": [
+        {
+          "actual": 1.1,
+          "gate": "metric_budget",
+          "metric": "net_pair_cost_p90",
+          "required_max": 1.0
+        },
+        {
+          "actual": 0.26148564,
+          "gate": "metric_budget",
+          "metric": "residual_qty_share_of_filled",
+          "required_max": 0.15
+        },
+        {
+          "actual": 0.14271793,
+          "gate": "metric_budget",
+          "metric": "pair_tail_loss_share_of_pair_pnl",
+          "required_max": 0.05
+        }
+      ],
+      "status": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF"
+    },
+    "source_link_transition_bucket": {
+      "promotion_gate": {
+        "can_support_strategy_promotion": false,
+        "deployable": false,
+        "g2_canary_ready": false,
+        "passed": false,
+        "status": "SCORER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+      },
+      "research_ranking": {
+        "decision": "KEEP",
+        "interpretation": "This scorer validates and ranks source-link diagnostic buckets, including side+offset+risk-direction cross buckets when present. It is attribution tooling, not strategy economics or promotion evidence.",
+        "label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY"
+      },
+      "score_path": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_portfolio_source_link_exemplar_driver_20260522T152643Z/local_review_20260522T163243Z/source_link_transition_bucket_score.json",
+      "status": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY"
+    }
+  },
+  "selected_next_local_verifier_target": {
+    "candidate_rule_to_test_locally_only": "For late_repair90 candidate-pipeline replay, only when pre-action condition ledger is risk_adjusted_negative and source_risk_direction is risk_increasing, test a default-off ledger/source-risk guard or defer path; preserve repair_or_pairing_improving seeds and do not use price/public-L1 caps.",
+    "name": "portfolio_negative_risk_increasing_source_guard_verifier_v1",
+    "pass_fail_criteria": {
+      "fee_after_pnl_positive": true,
+      "pair_qty_retention_min": 0.9,
+      "promotion_gate_passed": false,
+      "residual_cost_rate_reduction_min": 0.2,
+      "residual_qty_rate_reduction_min": 0.2,
+      "seed_action_retention_min": 0.9,
+      "stress100_worst_pnl_positive": true,
+      "weighted_pair_cost_worse_max_ratio": 1.01,
+      "worst_day_fee_after_pnl_positive": true
+    },
+    "source_evidence": "top risk-adjusted-negative source-link/residual-tail intersection groups from the same no-order run",
+    "target_group_primary": {
+      "condition_count": 3,
+      "row_count": 3,
+      "source_pair_qty": 0.0,
+      "source_residual_cost": 1.575,
+      "source_residual_cost_share": 0.302158,
+      "source_side_offset_risk_direction_ledger": "NO|offset_0_30|risk_increasing|risk_adjusted_negative"
+    }
+  },
+  "shadow_metrics": {
+    "candidates": 124.0,
+    "filled_cost": 44.35305,
+    "filled_qty": 109.2125,
+    "material_residual_lots": 0.0,
+    "net_pair_cost_proxy_p90": 1.1,
+    "pair_actions": 44.0,
+    "pair_pnl": 4.339292,
+    "pair_qty": 52.1075,
+    "queue_supported_fills": 88.0,
+    "residual_cost": 7.899,
+    "residual_qty": 28.5575
+  },
+  "shadow_trading_acceptance": {
+    "economic_pnl_ok": true,
+    "normalized_risk_budget": {
+      "material_residual_lots": 0,
+      "max_material_residual_lots": 0,
+      "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+      "max_residual_cost_share_of_filled_cost": 0.2,
+      "max_residual_qty_share_of_filled": 0.15,
+      "pair_tail_loss_share_of_pair_pnl": 0.14271793,
+      "residual_cost_share_of_filled_cost": 0.17809373,
+      "residual_qty_share_of_filled": 0.26148564
+    },
+    "promotion_risk_budget_ok": false,
+    "research_ranking": {
+      "conservative_stress_proxy_positive": false,
+      "economic_pnl_positive": true,
+      "fee_adjusted_pair_pnl_proxy": 3.651083,
+      "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE",
+      "promotion_risk_budget_ok": false,
+      "risk_adjusted_pnl_proxy": -4.768992,
+      "sample_size_ok": true
+    },
+    "sample_size_ok": true,
+    "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
+  },
+  "status": "UNKNOWN_PORTFOLIO_LEDGER_SOURCE_LINK_EXEMPLAR_RISK_BUDGET_FAIL_BUT_INTERSECTION_KEEP"
+}
