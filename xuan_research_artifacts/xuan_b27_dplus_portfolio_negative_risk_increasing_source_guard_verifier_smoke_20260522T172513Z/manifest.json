@@ -1,0 +1,42 @@
+{
+  "artifact": "xuan_b27_dplus_portfolio_negative_risk_increasing_source_guard_verifier_smoke",
+  "checks": {
+    "decision_known": true,
+    "decision_label_present": true,
+    "default_off_local_verifier": true,
+    "no_remote_side_effects": true,
+    "not_price_cap": true,
+    "not_summary_only_removal": true,
+    "private_truth_false": true,
+    "promotion_gate_false": true,
+    "repair_allowed_metric_present": true,
+    "run_status_matches_decision": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_PORTFOLIO_NEGATIVE_RISK_GUARD_VERIFIER_SMOKE_PASS",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SMOKE_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "run_decision": "DISCARD",
+  "run_decision_label": "DISCARD_PORTFOLIO_NEGATIVE_RISK_GUARD_SAMPLE_OR_PAIR_COLLAPSE",
+  "run_manifest": "xuan_research_artifacts/xuan_b27_dplus_portfolio_negative_risk_increasing_source_guard_verifier_smoke_20260522T172513Z/run/manifest.json",
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "candidate_base_duckdb_read_only": true,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "orders_sent": false,
+    "raw_replay_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
