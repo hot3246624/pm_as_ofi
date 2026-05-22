@@ -1,0 +1,27 @@
+{
+  "artifact": "xuan_b27_dplus_public_profile_next_lane_review_smoke",
+  "checks": {
+    "decision_unknown": true,
+    "discarded_lane_present": true,
+    "missing_intersection_named": true,
+    "no_side_effects": true,
+    "profile_lead_active": true,
+    "promotion_false": true
+  },
+  "decision_label": "KEEP",
+  "outputs": {
+    "review_manifest": "xuan_research_artifacts/xuan_b27_dplus_public_profile_next_lane_review_smoke_20260522T145643Z/review/manifest.json"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
