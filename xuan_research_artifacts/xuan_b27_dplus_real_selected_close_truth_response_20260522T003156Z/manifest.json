@@ -1,0 +1,129 @@
+{
+  "active_lane": "causal_verifier",
+  "artifact": "xuan_b27_dplus_real_selected_close_truth_response",
+  "created_utc": "2026-05-22T00:31:56Z",
+  "decision": "KEEP",
+  "label": "KEEP_STRICT_RESCUE_CLOSE_REAL_SOURCE_TRUTH_RESEARCH_ONLY",
+  "scope": {
+    "worktree": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research",
+    "state_machine_manifest": "xuan_research_artifacts/xuan_b27_dplus_real_selected_close_truth_response_20260522T003156Z/state_machine/manifest.json",
+    "selected_close_actions_csv": "xuan_research_artifacts/xuan_b27_dplus_real_selected_close_truth_response_20260522T003156Z/selected_close_actions.csv",
+    "selected_close_actions_json": "xuan_research_artifacts/xuan_b27_dplus_real_selected_close_truth_response_20260522T003156Z/selected_close_actions.json",
+    "response_manifest": "xuan_research_artifacts/xuan_b27_dplus_real_selected_close_truth_response_20260522T003156Z/response/VALIDATION_RESPONSE_MANIFEST.json",
+    "strict_rescue_closes_csv": "xuan_research_artifacts/xuan_b27_dplus_real_selected_close_truth_response_20260522T003156Z/response/strict_rescue_closes.csv",
+    "score_json": "xuan_research_artifacts/xuan_b27_dplus_real_selected_close_truth_response_20260522T003156Z/score/score.json"
+  },
+  "inputs": {
+    "candidate_base": "/Users/hot/web3Scientist/poly_backtest_data/derived/completion_candidate_pipeline_v1/local_20260502_20260518_paircap102/candidate_base.duckdb",
+    "replay_store_v2": "/Users/hot/web3Scientist/poly_backtest_data/verification_store/replay_store_v2/20260502_20260518/store.duckdb",
+    "profile": "variant_late_repair_only_after_90",
+    "sample_cap": 30,
+    "per_day_cap": 2,
+    "fee_rate_source": "state_machine_result_config:pass_local_completion_residual_cooldown_officialfee_e055_t5_imb125_rc30_050_20260502_20260518_publicfull_v2:official_fee_rate=0.07"
+  },
+  "selected_close_actions_export": {
+    "eligible_close_actions": 23362,
+    "selected_close_actions": 30,
+    "skipped_by_sample_or_day_cap": 23332,
+    "day_count": 15,
+    "condition_count": 15,
+    "days": [
+      "2026-05-02",
+      "2026-05-03",
+      "2026-05-04",
+      "2026-05-05",
+      "2026-05-06",
+      "2026-05-07",
+      "2026-05-08",
+      "2026-05-09",
+      "2026-05-10",
+      "2026-05-11",
+      "2026-05-12",
+      "2026-05-13",
+      "2026-05-16",
+      "2026-05-17",
+      "2026-05-18"
+    ],
+    "forbidden_days_used": []
+  },
+  "response": {
+    "status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+    "row_count": 30,
+    "status_counts": {
+      "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY": 30
+    },
+    "action_decisions_validated": 30,
+    "strict_rescue_close_rows": 30,
+    "strict_rescue_close_validated_rows": 30,
+    "required_source_refs_coverage": {
+      "market_meta_ref": 1.0,
+      "book_l1_ref": 1.0,
+      "book_l2_ref": 1.0
+    },
+    "optional_source_refs_coverage": {
+      "trade_before_ref": 1.0,
+      "trade_after_ref": 1.0,
+      "settlement_ref": 1.0
+    },
+    "strict_close_missing_fields": []
+  },
+  "score": {
+    "decision": "KEEP",
+    "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
+    "strict_rescue_close_complete_row_count": 30,
+    "strict_rescue_close_validated_row_count": 30,
+    "private_guard_all_false": true,
+    "promotion_gate_passed": false,
+    "named_gaps": {
+      "strict_rescue_close_missing_fields": [],
+      "strict_rescue_close_present_but_incomplete": false
+    }
+  },
+  "source_truth_boundary": {
+    "source_kind": "replay_store_v2",
+    "selected_action_lookup_only": true,
+    "broad_strategy_search": false,
+    "is_private_truth": false,
+    "private_truth_ready": false,
+    "deployable": false,
+    "shadow_ready": false,
+    "canary_ready": false,
+    "interpretation": "Real selected close actions now have replay-derived source-truth timing/cost/source-row validation. This is research-only source truth, not strategy economics or private execution truth."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_STRICT_RESCUE_CLOSE_REAL_SOURCE_TRUTH_RESEARCH_ONLY",
+    "interpretation": "Strict rescue close source-linkage is reproducible for the selected real candidate-pipeline close rows across allowed days."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "SOURCE_TRUTH_RESEARCH_ONLY_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "side_effects": {
+    "network_started": false,
+    "ssh_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "limitations": [
+    "Sampling covered all 15 allowed days but only 15 distinct conditions because per-day first eligible closes came from the same condition.",
+    "This validates strict close timing/cost/source linkage, not strategy profitability or live/no-order transfer.",
+    "Replay source-truth alone must not be converted into deployable, canary, or promotion evidence."
+  ],
+  "next_action": {
+    "lane": "status_hygiene",
+    "description": "Select the next acceleration target: either diversify selected close-action source-truth sampling across distinct conditions/offset buckets, or use this KEEP to define a bounded no-order shadow-review question. Do not start EC2/canary from replay source-truth alone.",
+    "remote_or_canary_allowed": false
+  }
+}
