@@ -150,15 +150,23 @@ class SelectedCloseActionRecorder:
     fee_rate_source: str
     sample_cap: int = 30
     per_day_cap: int = 2
+    selection_mode: str = "first"
     rows: list[dict[str, Any]] | None = None
+    candidate_rows: list[dict[str, Any]] | None = None
     sequence_by_key: dict[tuple[str, str, str], int] | None = None
     selected_by_day: dict[str, int] | None = None
     eligible_count: int = 0
     skipped_by_cap: int = 0
+    selection_finalized: bool = False
 
     def __post_init__(self) -> None:
+        self.selection_mode = str(self.selection_mode or "first").strip().lower()
+        if self.selection_mode not in {"first", "diversified"}:
+            raise ValueError(f"Unsupported selected close-action selection mode: {self.selection_mode}")
         if self.rows is None:
             self.rows = []
+        if self.candidate_rows is None:
+            self.candidate_rows = []
         if self.sequence_by_key is None:
             self.sequence_by_key = {}
         if self.selected_by_day is None:
@@ -190,7 +198,10 @@ class SelectedCloseActionRecorder:
         self.sequence_by_key[key] = close_sequence
         assert self.rows is not None
         assert self.selected_by_day is not None
-        if len(self.rows) >= self.sample_cap or self.selected_by_day[state.day] >= self.per_day_cap:
+        if (
+            self.selection_mode == "first"
+            and (len(self.rows) >= self.sample_cap or self.selected_by_day[state.day] >= self.per_day_cap)
+        ):
             self.skipped_by_cap += 1
             return
 
@@ -249,12 +260,96 @@ class SelectedCloseActionRecorder:
             "close_trade_before_ref": "",
             "close_trade_after_ref": "",
         }
+        if self.selection_mode == "diversified":
+            assert self.candidate_rows is not None
+            self.candidate_rows.append(row)
+            self.selection_finalized = False
+            return
         self.rows.append(row)
         self.selected_by_day[state.day] += 1
 
+    @staticmethod
+    def _row_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(row.get("day") or ""),
+            int(float(row.get("close_ts_ms") or 0)),
+            str(row.get("condition_id") or ""),
+            str(row.get("close_side") or ""),
+            int(float(row.get("close_sequence") or 0)),
+            str(row.get("close_action_id") or ""),
+        )
+
+    def finalize_selection(self) -> None:
+        if self.selection_mode != "diversified" or self.selection_finalized:
+            return
+        assert self.candidate_rows is not None
+        self.rows = []
+        self.selected_by_day = defaultdict(int)
+        selected_ids: set[str] = set()
+
+        if self.sample_cap <= 0 or self.per_day_cap <= 0:
+            self.skipped_by_cap = self.eligible_count
+            self.selection_finalized = True
+            return
+
+        rows_by_day: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in self.candidate_rows:
+            rows_by_day[str(row.get("day") or "")].append(row)
+
+        def add_row(row: dict[str, Any], day_conditions: set[str], day_sides: set[str]) -> bool:
+            assert self.rows is not None
+            assert self.selected_by_day is not None
+            if len(self.rows) >= self.sample_cap:
+                return False
+            day = str(row.get("day") or "")
+            if self.selected_by_day[day] >= self.per_day_cap:
+                return False
+            close_action_id = str(row.get("close_action_id") or "")
+            if close_action_id in selected_ids:
+                return False
+            self.rows.append(row)
+            self.selected_by_day[day] += 1
+            selected_ids.add(close_action_id)
+            day_conditions.add(str(row.get("condition_id") or ""))
+            day_sides.add(str(row.get("close_side") or ""))
+            return True
+
+        for day in sorted(rows_by_day):
+            if len(self.rows) >= self.sample_cap:
+                break
+            day_rows = sorted(rows_by_day[day], key=self._row_sort_key)
+            day_conditions: set[str] = set()
+            day_sides: set[str] = set()
+            for row in day_rows:
+                if str(row.get("condition_id") or "") in day_conditions:
+                    continue
+                if str(row.get("close_side") or "") in day_sides:
+                    continue
+                add_row(row, day_conditions, day_sides)
+                if self.selected_by_day[day] >= self.per_day_cap or len(self.rows) >= self.sample_cap:
+                    break
+            for row in day_rows:
+                if self.selected_by_day[day] >= self.per_day_cap or len(self.rows) >= self.sample_cap:
+                    break
+                if str(row.get("condition_id") or "") in day_conditions:
+                    continue
+                add_row(row, day_conditions, day_sides)
+            for row in day_rows:
+                if self.selected_by_day[day] >= self.per_day_cap or len(self.rows) >= self.sample_cap:
+                    break
+                add_row(row, day_conditions, day_sides)
+
+        self.skipped_by_cap = max(0, self.eligible_count - len(self.rows or []))
+        self.selection_finalized = True
+
     def summary(self) -> dict[str, Any]:
+        self.finalize_selection()
         assert self.rows is not None
         assert self.selected_by_day is not None
+        selected_conditions = {str(row.get("condition_id") or "") for row in self.rows}
+        selected_side_counts: dict[str, int] = defaultdict(int)
+        for row in self.rows:
+            selected_side_counts[str(row.get("close_side") or "")] += 1
         return {
             "schema_version": "selected_close_action_export_v1",
             "profile_name": self.profile_name,
@@ -263,6 +358,10 @@ class SelectedCloseActionRecorder:
             "skipped_by_sample_or_day_cap": self.skipped_by_cap,
             "sample_cap": self.sample_cap,
             "per_day_cap": self.per_day_cap,
+            "selection_mode": self.selection_mode,
+            "candidate_pool_rows": len(self.candidate_rows or []),
+            "selected_condition_count": len(selected_conditions),
+            "selected_side_counts": dict(sorted(selected_side_counts.items())),
             "selected_by_day": dict(sorted(self.selected_by_day.items())),
             "fee_rate_source": self.fee_rate_source,
         }
@@ -1089,6 +1188,15 @@ def main() -> int:
     parser.add_argument("--selected-close-actions-sample-cap", type=int, default=30)
     parser.add_argument("--selected-close-actions-per-day-cap", type=int, default=2)
     parser.add_argument(
+        "--selected-close-actions-selection-mode",
+        choices=("first", "diversified"),
+        default="first",
+        help=(
+            "Default 'first' preserves the legacy first-N export. 'diversified' collects eligible close rows "
+            "and deterministically samples distinct condition_id and close_side within day caps."
+        ),
+    )
+    parser.add_argument(
         "--selected-close-actions-fee-rate-source",
         default=(
             "state_machine_result_config:"
@@ -1131,6 +1239,7 @@ def main() -> int:
             fee_rate_source=args.selected_close_actions_fee_rate_source,
             sample_cap=max(0, int(args.selected_close_actions_sample_cap)),
             per_day_cap=max(0, int(args.selected_close_actions_per_day_cap)),
+            selection_mode=args.selected_close_actions_selection_mode,
         )
         if selected_close_actions_path is not None
         else None
@@ -1191,6 +1300,7 @@ def main() -> int:
     run_result = run_profiles(candidate_db_path, profiles, base_day_counts, close_recorder=close_recorder)
     if selected_close_actions_path is not None:
         assert close_recorder is not None
+        close_recorder.finalize_selection()
         write_csv(selected_close_actions_path, close_recorder.rows or [], SELECTED_CLOSE_ACTION_FIELDS)
     control = run_result["profiles"]["control_seed_offset_max_120"]
     hard_offset90 = run_result["profiles"]["discarded_hard_seed_offset_max_90"]
@@ -1295,6 +1405,7 @@ def main() -> int:
             "selected_close_actions_profile": args.selected_close_actions_profile,
             "selected_close_actions_sample_cap": int(args.selected_close_actions_sample_cap),
             "selected_close_actions_per_day_cap": int(args.selected_close_actions_per_day_cap),
+            "selected_close_actions_selection_mode": args.selected_close_actions_selection_mode,
             "selected_close_actions_fee_rate_source": args.selected_close_actions_fee_rate_source,
         },
         "selected_close_actions_export": {
