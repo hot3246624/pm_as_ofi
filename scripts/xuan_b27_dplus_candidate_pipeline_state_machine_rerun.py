@@ -57,6 +57,9 @@ class Profile:
     risk_increasing_public_trade_px_hi_side: str | None = None
     risk_increasing_imbalance_qty_cap: float | None = None
     risk_increasing_pair_fill_cap: bool = False
+    complete_set_dust_opp_late_repair_sizer: bool = False
+    complete_set_dust_opp_late_repair_after_s: float = 90.0
+    complete_set_dust_opp_late_repair_qty_buffer: float = 1.0
     late_repair_fill_to_balance_after_s: float | None = None
     fill_haircut: float = 0.25
     max_seed_qty: float = 60.0
@@ -928,6 +931,19 @@ def maybe_seed(
             add_count(metrics, day, "seed_qty_cap_risk_increasing_pair_fill")
             add_metric(metrics, day, "seed_risk_increasing_pair_fill_qty_reduction", qty - capped_qty)
         qty = capped_qty
+    complete_set_dust_opp_late_repair_sizer_active = (
+        profile.complete_set_dust_opp_late_repair_sizer
+        and offset_s >= profile.complete_set_dust_opp_late_repair_after_s
+        and not risk_increasing_seed
+        and 0.0 < opp_qty < profile.dust_qty
+    )
+    if complete_set_dust_opp_late_repair_sizer_active:
+        capped_qty = min(qty, opp_qty + profile.complete_set_dust_opp_late_repair_qty_buffer)
+        add_count(metrics, day, "seed_complete_set_dust_opp_late_repair_sizer_candidate")
+        if capped_qty < qty - DUST:
+            add_count(metrics, day, "seed_qty_cap_complete_set_dust_opp_late_repair_sizer")
+            add_metric(metrics, day, "seed_complete_set_dust_opp_late_repair_qty_reduction", qty - capped_qty)
+        qty = capped_qty
     if late_fill_to_balance_active:
         deficit_qty = max(0.0, opp_qty - same_qty)
         capped_qty = min(qty, deficit_qty)
@@ -941,6 +957,8 @@ def maybe_seed(
             add_count(metrics, day, "seed_block_risk_increasing_pair_fill_cap_qty")
         if late_fill_to_balance_active:
             add_count(metrics, day, "seed_block_late_fill_to_balance_qty")
+        if complete_set_dust_opp_late_repair_sizer_active:
+            add_count(metrics, day, "seed_block_complete_set_dust_opp_late_repair_sizer_qty")
         return
 
     seed_lot = Lot(
@@ -1115,6 +1133,18 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_block_late_fill_to_balance_qty": int(metrics["seed_block_late_fill_to_balance_qty"]),
         "seed_late_fill_to_balance_qty_reduction": round(
             float(metrics["seed_late_fill_to_balance_qty_reduction"]), 6
+        ),
+        "seed_complete_set_dust_opp_late_repair_sizer_candidate": int(
+            metrics["seed_complete_set_dust_opp_late_repair_sizer_candidate"]
+        ),
+        "seed_qty_cap_complete_set_dust_opp_late_repair_sizer": int(
+            metrics["seed_qty_cap_complete_set_dust_opp_late_repair_sizer"]
+        ),
+        "seed_block_complete_set_dust_opp_late_repair_sizer_qty": int(
+            metrics["seed_block_complete_set_dust_opp_late_repair_sizer_qty"]
+        ),
+        "seed_complete_set_dust_opp_late_repair_qty_reduction": round(
+            float(metrics["seed_complete_set_dust_opp_late_repair_qty_reduction"]), 6
         ),
         "seed_block_imbalance_cost": int(metrics["seed_block_imbalance_cost"]),
         "summary_by_day": summary_by_day,

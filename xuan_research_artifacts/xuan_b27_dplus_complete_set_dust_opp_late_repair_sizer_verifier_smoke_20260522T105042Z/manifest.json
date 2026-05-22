@@ -1,0 +1,38 @@
+{
+  "artifact": "xuan_b27_dplus_complete_set_dust_opp_late_repair_sizer_verifier_smoke",
+  "checks": {
+    "candidate_count_positive": true,
+    "cap_count_positive": true,
+    "control_no_cap_count": true,
+    "decision_known": true,
+    "fee_formula_recorded": true,
+    "no_side_effects": true,
+    "profile_default_off_field_present": true,
+    "promotion_gate_false": true
+  },
+  "decision_label": "KEEP_COMPLETE_SET_DUST_OPP_LATE_REPAIR_SIZER_VERIFIER_SMOKE_PASS",
+  "outputs": {
+    "score": "xuan_research_artifacts/xuan_b27_dplus_complete_set_dust_opp_late_repair_sizer_verifier_smoke_20260522T105042Z/score.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SMOKE_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "candidate_base_duckdb_read_only": true,
+    "events_jsonl_read": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
