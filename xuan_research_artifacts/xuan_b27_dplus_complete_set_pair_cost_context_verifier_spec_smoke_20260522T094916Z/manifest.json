@@ -1,0 +1,47 @@
+{
+  "artifact": "xuan_b27_dplus_complete_set_pair_cost_context_verifier_spec_smoke",
+  "checks": {
+    "no_order_contract_ok": true,
+    "no_side_effects": true,
+    "pair_cost_fields_named": true,
+    "positive_keep": true,
+    "promotion_gate_false": true,
+    "public_proxy_boundary": true,
+    "remote_not_approved": true,
+    "selected_target_named": true,
+    "weak_blocker_named": true,
+    "weak_unknown": true
+  },
+  "decision_label": "KEEP_COMPLETE_SET_PAIR_COST_CONTEXT_VERIFIER_SPEC_READY",
+  "hypothesis": "A public/proxy complete-set profile signal plus no-order residual-tail exemplar field coverage can select a local pair-cost context verifier without promotion or remote execution.",
+  "next_action": "Implement local complete_set_pair_cost_context_verifier_v1 scorer over public profile summary and no-order exemplar score; do not start remote shadow/canary from this spec alone.",
+  "outputs": {
+    "positive_spec": "xuan_research_artifacts/xuan_b27_dplus_complete_set_pair_cost_context_verifier_spec_smoke_20260522T094916Z/positive_spec.json",
+    "weak_spec": "xuan_research_artifacts/xuan_b27_dplus_complete_set_pair_cost_context_verifier_spec_smoke_20260522T094916Z/weak_spec.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SPEC_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Spec readiness only. Public profile evidence remains proxy inspiration and requires a local verifier before any new shadow question.",
+    "label": "KEEP_COMPLETE_SET_PAIR_COST_CONTEXT_VERIFIER_SPEC_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
