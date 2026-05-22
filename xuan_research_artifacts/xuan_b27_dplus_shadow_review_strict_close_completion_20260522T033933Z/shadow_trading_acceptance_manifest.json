@@ -1,0 +1,275 @@
+{
+  "acceptance_passed": false,
+  "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_strict_close_driver_20260522T020415Z/remote_clean/output/aggregate_report.json",
+  "artifact": "xuan_b27_dplus_shadow_trading_acceptance",
+  "auth_network_started": false,
+  "cancels_sent": false,
+  "checks": {
+    "market_scope_ok": true,
+    "no_order_safety_ok": true,
+    "paths_safe": true,
+    "pnl_metrics_ok": true,
+    "promotion_risk_budget_ok": false,
+    "report_present": true,
+    "report_shape_ok": true,
+    "residual_risk_ok": false,
+    "sample_size_ok": false
+  },
+  "created_utc": "20260522T033933Z",
+  "evidence_interpretation": {
+    "does_not_prove": [
+      "shadow trading acceptance",
+      "live authenticated exchange fills",
+      "actual exchange queue position",
+      "real wallet/cashflow PnL",
+      "maker fee/rebate settlement"
+    ],
+    "proves": [
+      "existing D+ passive/passive shadow runner produced simulated trading metrics",
+      "virtual fills/pairing were evaluated without sending orders"
+    ]
+  },
+  "failures": [
+    "shadow_trading_sample_size_failed",
+    "shadow_trading_promotion_risk_budget_failed"
+  ],
+  "metric_failures": {
+    "legacy_absolute_reference": [
+      {
+        "actual": 18.7275,
+        "legacy_reference_max": 10.0,
+        "metric": "residual_qty"
+      },
+      {
+        "actual": 7.758375,
+        "legacy_reference_max": 5.0,
+        "metric": "residual_cost"
+      },
+      {
+        "actual": 1.0999999999999999,
+        "legacy_reference_max": 1.0,
+        "metric": "net_pair_cost_p90"
+      }
+    ],
+    "pnl_metrics": [],
+    "promotion_risk_budget": [
+      {
+        "actual": 0.24660105,
+        "budget_type": "normalized_residual_qty",
+        "denominator": 75.9425,
+        "metric": "residual_qty_share_of_filled",
+        "numerator": 18.7275,
+        "required_max": 0.15
+      },
+      {
+        "actual": 0.23486652,
+        "budget_type": "normalized_residual_cost",
+        "denominator": 33.033125,
+        "metric": "residual_cost_share_of_filled_cost",
+        "numerator": 7.758375,
+        "required_max": 0.2
+      },
+      {
+        "actual": 0.17301154,
+        "budget_type": "normalized_pair_tail_loss",
+        "fee_adjusted_pair_pnl_proxy": 2.01475,
+        "metric": "pair_tail_loss_share_of_pair_pnl",
+        "net_pair_cost_p90": 1.0999999999999999,
+        "pair_tail_loss_proxy": 0.348575,
+        "required_max": 0.05,
+        "tail_fraction_assumption": 0.1
+      }
+    ],
+    "residual_risk": [
+      {
+        "actual": 0.24660105,
+        "budget_type": "normalized_residual_qty",
+        "denominator": 75.9425,
+        "metric": "residual_qty_share_of_filled",
+        "numerator": 18.7275,
+        "required_max": 0.15
+      },
+      {
+        "actual": 0.23486652,
+        "budget_type": "normalized_residual_cost",
+        "denominator": 33.033125,
+        "metric": "residual_cost_share_of_filled_cost",
+        "numerator": 7.758375,
+        "required_max": 0.2
+      }
+    ],
+    "sample_size": [
+      {
+        "actual": 91,
+        "metric": "candidates",
+        "required_min": 100
+      }
+    ]
+  },
+  "next_gate": "do not promote; gather enough no-order shadow sample while preserving normalized risk budget",
+  "orders_sent": false,
+  "promotion_gate": {
+    "economic_pnl_ok": true,
+    "hard_blockers": [
+      "shadow_trading_sample_size_failed",
+      "shadow_trading_promotion_risk_budget_failed"
+    ],
+    "legacy_absolute_reference": {
+      "breaches": [
+        {
+          "actual": 18.7275,
+          "legacy_reference_max": 10.0,
+          "metric": "residual_qty"
+        },
+        {
+          "actual": 7.758375,
+          "legacy_reference_max": 5.0,
+          "metric": "residual_cost"
+        },
+        {
+          "actual": 1.0999999999999999,
+          "legacy_reference_max": 1.0,
+          "metric": "net_pair_cost_p90"
+        }
+      ],
+      "used_as_primary_promotion_gate": false
+    },
+    "normalized_risk_budget": {
+      "material_residual_lots": 0,
+      "max_material_residual_lots": 0,
+      "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+      "max_residual_cost_share_of_filled_cost": 0.2,
+      "max_residual_qty_share_of_filled": 0.15,
+      "pair_tail_loss_share_of_pair_pnl": 0.17301154,
+      "residual_cost_share_of_filled_cost": 0.23486652,
+      "residual_qty_share_of_filled": 0.24660105
+    },
+    "passed": false,
+    "promotion_risk_budget_ok": false,
+    "required_before_g2_canary": true,
+    "sample_size_ok": false,
+    "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
+  },
+  "redeems_sent": false,
+  "report_safety": {
+    "dry_run": "true",
+    "orders_sent": false,
+    "shared_ingress_role": "client",
+    "shared_ingress_root": "/srv/pm_as_ofi/shared-ingress-main"
+  },
+  "research_ranking": {
+    "conservative_stress_proxy_positive": false,
+    "economic_pnl_positive": true,
+    "fee_adjusted_pair_pnl_proxy": 2.01475,
+    "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE",
+    "legacy_absolute_reference_breaches": [
+      {
+        "actual": 18.7275,
+        "legacy_reference_max": 10.0,
+        "metric": "residual_qty"
+      },
+      {
+        "actual": 7.758375,
+        "legacy_reference_max": 5.0,
+        "metric": "residual_cost"
+      },
+      {
+        "actual": 1.0999999999999999,
+        "legacy_reference_max": 1.0,
+        "metric": "net_pair_cost_p90"
+      }
+    ],
+    "notes": [
+      "research ranking uses economic proxies first; sample and risk gates are reported separately",
+      "residual or pair-cost tail budget failures are TRADEOFF/BLOCKER evidence unless economic PnL turns negative",
+      "conservative stress proxy subtracts full residual_cost and pair-tail-loss proxy; source-of-truth settlement may differ"
+    ],
+    "pair_tail_loss_proxy": 0.348575,
+    "promotion_risk_budget_ok": false,
+    "residual_loss_proxy": 7.758375,
+    "risk_adjusted_pnl_proxy": -6.0922,
+    "sample_size_ok": false
+  },
+  "runner_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_strict_close_driver_20260522T020415Z/remote_clean/output/manifest.json",
+  "schema_version": 1,
+  "scope": "local_no_network_shadow_trading_acceptance",
+  "shadow_run_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_strict_close_driver_20260522T020415Z/remote_clean/output",
+  "side_effects": {
+    "cancels_sent": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_scanned": false,
+    "redeems_sent": false,
+    "shadow_runner_started": false,
+    "started_canary": false
+  },
+  "source_tool": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+  "started_canary": false,
+  "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+  "strategy": "xuan_b27_dplus",
+  "thresholds": {
+    "legacy_absolute_reference": {
+      "max_net_pair_cost_p90": 1.0,
+      "max_residual_cost": 5.0,
+      "max_residual_qty": 10.0,
+      "used_as_primary_promotion_gate": false
+    },
+    "market_prefix": "btc-updown-5m",
+    "max_material_residual_lots": 0,
+    "max_net_pair_cost_p90": 1.0,
+    "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+    "max_residual_cost": 5.0,
+    "max_residual_cost_share_of_filled_cost": 0.2,
+    "max_residual_qty": 10.0,
+    "max_residual_qty_share_of_filled": 0.15,
+    "min_candidates": 100,
+    "min_markets": 1,
+    "min_pair_actions": 1,
+    "min_pair_pnl": 0.0,
+    "min_pair_qty": 1.0,
+    "min_qty_pair_share_of_filled": 0.5,
+    "min_queue_supported_fills": 1,
+    "min_roi_on_filled_cost": 0.0,
+    "pair_tail_loss_fraction": 0.1,
+    "promotion_risk_budget": {
+      "max_material_residual_lots": 0,
+      "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+      "max_residual_cost_share_of_filled_cost": 0.2,
+      "max_residual_qty_share_of_filled": 0.15,
+      "min_qty_pair_share_of_filled": 0.5,
+      "pair_tail_loss_fraction": 0.1
+    }
+  },
+  "trading_metrics": {
+    "candidates": 91,
+    "conservative_risk_adjusted_pnl_proxy": -6.0922,
+    "fee_adjusted_pair_pnl_proxy": 2.01475,
+    "fill_rate": 0.6703296703296703,
+    "fill_wait_p50_ms": 39858.0,
+    "fill_wait_p90_ms": 94093.0,
+    "filled_cost": 33.033125,
+    "filled_qty": 75.9425,
+    "markets": 26,
+    "material_residual_lots": 0,
+    "net_pair_cost_p50": 0.9472999999999999,
+    "net_pair_cost_p90": 1.0999999999999999,
+    "pair_actions": 31,
+    "pair_cost_p50": 0.94,
+    "pair_cost_p90": 1.0999999999999999,
+    "pair_pnl": 2.36125,
+    "pair_qty": 34.8575,
+    "pair_tail_loss_proxy": 0.348575,
+    "pair_tail_loss_share_of_pair_pnl": 0.17301154,
+    "pair_wait_p50_ms": 57483.0,
+    "pair_wait_p90_ms": 106476.0,
+    "qty_pair_share_of_filled": 0.917997168910689,
+    "queue_supported_fills": 61,
+    "residual_cost": 7.758375,
+    "residual_cost_share_of_filled_cost": 0.23486652,
+    "residual_qty": 18.7275,
+    "residual_qty_share_of_filled": 0.24660105,
+    "roi_on_filled_cost": 0.0714812782623503,
+    "roi_on_seed_cost": 0.050378035283293106,
+    "taker_fee": 0.3465
+  }
+}
