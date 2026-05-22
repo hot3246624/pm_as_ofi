@@ -1,0 +1,176 @@
+{
+  "active_lane": "status_hygiene",
+  "artifact": "xuan_b27_dplus_status_hygiene_strict_close_shadow_review_question",
+  "created_utc": "2026-05-22T02:04:15Z",
+  "decision": "KEEP",
+  "label": "KEEP_STRICT_CLOSE_NO_ORDER_SHADOW_REVIEW_QUESTION_SELECTED",
+  "scope": {
+    "worktree": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research",
+    "source_truth_prerequisite": "xuan_research_artifacts/xuan_b27_dplus_diversified_strict_close_truth_response_20260522T013215Z/manifest.json",
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "source_link_scorer": "scripts/xuan_b27_dplus_source_link_transition_bucket_scorer.py"
+  },
+  "source_truth_prerequisite_summary": {
+    "label": "KEEP_DIVERSIFIED_STRICT_CLOSE_SOURCE_TRUTH_RESEARCH_ONLY",
+    "selected_close_actions": 60,
+    "allowed_day_count": 15,
+    "condition_count": 60,
+    "side_counts": {
+      "NO": 35,
+      "YES": 25
+    },
+    "response_status": "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
+    "response_validated_rows": 60,
+    "strict_rescue_close_rows": 60,
+    "strict_rescue_close_validated_rows": 60,
+    "strict_close_missing_fields": [],
+    "market_l1_l2_ref_coverage": 1.0,
+    "trade_before_after_settlement_ref_coverage": 1.0,
+    "private_truth_ready": false,
+    "deployable": false,
+    "promotion_gate_passed": false
+  },
+  "selected_shadow_review_question": {
+    "name": "late_repair90_strict_close_source_link_transfer_no_order_review",
+    "decision": "KEEP_QUESTION_SELECTED_NO_RUN_STARTED",
+    "question": "In a bounded live/no-order same-host window, does the source-truth-validated strict close pattern keep enough sample while preserving pair-cost tail, residual-share, and source-link transition quality under late_repair_only_after_s=90?",
+    "mechanism_under_review": "late_repair_only_after_s=90 with pairing_only_when_residual and source-link diagnostics; no fill-to-balance, no portfolio ledger, no price caps, no static target/cap sweep, no cooldown/admission cap.",
+    "why_this_question_now": [
+      "Replay source-truth now validates diversified real strict close actions across 60 distinct conditions and all allowed days.",
+      "Prior source-link cross-bucket diagnostic failed because residual risk was broad; the next shadow-review question must test live/no-order transfer quality, not re-run the same frozen cross-bucket hypothesis.",
+      "Runner already has default-off event_lite, pair_source, and source_link_transition summaries needed for no-order review without pulling events JSONL."
+    ]
+  },
+  "proposed_runner_config_if_later_approved": {
+    "requires_main_thread_exact_run_approval": true,
+    "no_run_started_in_this_heartbeat": true,
+    "remote_or_ec2_allowed_now": false,
+    "dry_run_required": true,
+    "run_class": "bounded_no_order_shadow_review",
+    "duration_s": 3600,
+    "edge": 0.07,
+    "target_qty": 5,
+    "max_open_cost": 80,
+    "imbalance_qty_cap": 1.25,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "offsets": "0..25",
+    "late_repair_only_after_s": 90,
+    "pairing_only_when_residual": true,
+    "event_lite_summary": true,
+    "pair_source_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "fill_to_balance": false,
+    "portfolio_ledger": false,
+    "orders_cancels_redeems_allowed": false,
+    "pullback_allowlist": [
+      "output/manifest.json",
+      "output/aggregate_report.json",
+      "output/*.summary.json",
+      "stdout.log",
+      "stderr.log",
+      "runner.pid",
+      "small preflight/startup/post-run sanity files"
+    ],
+    "pullback_denylist": [
+      "events JSONL",
+      "raw/replay stores",
+      "collector/raw/replay paths",
+      "broker/shared-ingress/env/live write paths"
+    ]
+  },
+  "allowed_safety_preflight_if_later_approved": {
+    "check_only": true,
+    "no_service_control": true,
+    "no_repo_sync_or_build": true,
+    "checks": [
+      "no active overlapping xuan-research runner",
+      "shared-ingress broker_manifest.json present and fresh enough for read-only client context",
+      "market.sock, chainlink.sock, and local_price.sock present",
+      "root disk and inode usage below exhaustion thresholds",
+      "sudo -n -u pmofi availability if the same-host runner is approved",
+      "remote helper /srv/pm_as_ofi/repo/scripts/resolve_market_ids.py exists",
+      "run path is isolated under /srv/pm_as_ofi/xuan_research_runs/xuan_research_*"
+    ]
+  },
+  "pass_fail_criteria_if_later_run": {
+    "research_keep_requires": {
+      "no_order_safety_preserved": true,
+      "candidates_min": 100,
+      "net_pair_cost_p90_max": 1.0,
+      "residual_qty_share_of_filled_max": 0.15,
+      "residual_cost_share_of_filled_cost_max": 0.2,
+      "pair_tail_loss_share_of_pair_pnl_max": 0.05,
+      "material_residual_lots_max": 0,
+      "source_link_scorer_aggregate_parity": "pass",
+      "source_link_cross_fields_present": true,
+      "strict_close_source_link_review": "event_lite.source_link_transition_diagnostics and pair_source diagnostics must explain admitted pair/close paths without broad residual-risk concentration",
+      "research_ranking_and_promotion_gate_reported_separately": true
+    },
+    "unknown_or_tradeoff_if": [
+      "candidates are below 100 but all risk gates pass",
+      "source-link diagnostics are present but cannot distinguish repair/pairing-improving paths from risk-increasing paths",
+      "bare pair economics are positive but normalized residual or pair-tail budgets still fail",
+      "required event-lite/source-link summary fields are absent"
+    ],
+    "discard_if": [
+      "residual risk remains broad across admitted source-link buckets",
+      "only summary-only removal would improve metrics",
+      "candidate sample is destroyed by a retrospective filter",
+      "results imply frozen mechanisms such as fill-to-balance90, portfolio-ledger, source/public price caps, static caps, cooldown/admission caps, or dynamic risk-state gate without a new local KEEP"
+    ],
+    "blocked_only_for": [
+      "preflight safety conflict",
+      "active overlapping xuan-research runner",
+      "unhealthy shared-ingress read-only prerequisites",
+      "resource exhaustion",
+      "transport failure",
+      "local artifact corruption"
+    ]
+  },
+  "source_truth_boundary": {
+    "source_kind": "replay_store_v2 plus future no-order summary diagnostics only",
+    "selected_action_lookup_only": true,
+    "broad_strategy_search": false,
+    "is_private_truth": false,
+    "private_truth_ready": false,
+    "deployable": false,
+    "shadow_ready": false,
+    "canary_ready": false,
+    "promotion_gate_passed": false,
+    "interpretation": "This artifact selects a bounded no-order shadow-review question. It is not approval to start EC2/shadow/canary and not promotion evidence."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_STRICT_CLOSE_NO_ORDER_SHADOW_REVIEW_QUESTION_SELECTED",
+    "interpretation": "The diversified strict close replay source-truth KEEP is sufficient to define a precise no-order shadow-review question, but not sufficient to run or promote without explicit approval and a future bounded result."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "QUESTION_SELECTED_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "side_effects": {
+    "network_started": false,
+    "ssh_started": false,
+    "ec2_shadow_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_action": {
+    "lane": "status_hygiene",
+    "description": "Wait for exact main-thread approval before any EC2/no-order shadow preflight or run. If approval is not given, continue local-only verifier/spec work; do not start remote work from heartbeat alone.",
+    "executable_if_approved": "Run bounded safety preflight for late_repair90_strict_close_source_link_transfer_no_order_review, then start only the approved no-order dry-run shadow if preflight passes.",
+    "remote_or_canary_allowed_now": false
+  }
+}
