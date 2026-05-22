@@ -1,0 +1,48 @@
+{
+  "artifact": "xuan_b27_dplus_residual_tail_exemplar_mechanism_selector_smoke",
+  "checks": {
+    "keep_does_not_recommend_summary_removal": true,
+    "keep_promotion_gate_false": true,
+    "keep_remote_not_approved": true,
+    "keep_selected_ledger_context_verifier": true,
+    "keep_target_is_local_only": true,
+    "no_side_effects": true,
+    "unknown_names_concentration_blocker": true,
+    "unknown_rejected_weak_signal": true
+  },
+  "decision_label": "KEEP_RESIDUAL_TAIL_EXEMPLAR_MECHANISM_SELECTOR_READY",
+  "hypothesis": "A local selector can turn residual-tail exemplar scorer output into a bounded local verifier target without recommending summary-only removal, frozen cap/price/cooldown families, remote runs, or promotion.",
+  "inputs": {
+    "score_fixture": "xuan_research_artifacts/xuan_b27_dplus_residual_tail_exemplar_shadow_scorer_smoke_20260522T065011Z/pass_score/score.json"
+  },
+  "next_action": "If a real approved residual-tail exemplar shadow score returns a KEEP selector output, implement only the named local verifier before any further remote run.",
+  "outputs": {
+    "keep_selector": "xuan_research_artifacts/xuan_b27_dplus_residual_tail_exemplar_mechanism_selector_smoke_20260522T071500Z/keep_selector.json",
+    "unknown_selector": "xuan_research_artifacts/xuan_b27_dplus_residual_tail_exemplar_mechanism_selector_smoke_20260522T071500Z/unknown_selector.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SELECTOR_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "The selector is local tooling for future approved shadow score pullbacks. It is not strategy economics or promotion evidence.",
+    "label": "KEEP_RESIDUAL_TAIL_EXEMPLAR_MECHANISM_SELECTOR_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
