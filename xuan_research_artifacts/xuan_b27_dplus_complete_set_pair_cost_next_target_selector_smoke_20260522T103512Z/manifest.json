@@ -1,0 +1,7 @@
+{
+  "artifact": "xuan_b27_dplus_complete_set_pair_cost_next_target_selector_smoke",
+  "decision": "KEEP",
+  "decision_label": "KEEP_COMPLETE_SET_PAIR_COST_NEXT_TARGET_SELECTOR_SMOKE_PASS",
+  "positive_manifest": "xuan_research_artifacts/xuan_b27_dplus_complete_set_pair_cost_next_target_selector_smoke_20260522T103512Z/positive/manifest.json",
+  "weak_manifest": "xuan_research_artifacts/xuan_b27_dplus_complete_set_pair_cost_next_target_selector_smoke_20260522T103512Z/weak/manifest.json"
+}
