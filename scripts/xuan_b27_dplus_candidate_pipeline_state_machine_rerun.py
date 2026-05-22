@@ -206,6 +206,58 @@ SELECTED_SEED_LEDGER_CONTEXT_FIELDS = [
     "selected_context_reason",
 ]
 
+CANDIDATE_SEED_OUTCOME_SEPARATOR_FIELDS = [
+    "schema_version",
+    "profile_name",
+    "validation_request_id",
+    "day",
+    "condition_id",
+    "slug",
+    "source_seed_action_id",
+    "source_seed_candidate_row_id",
+    "source_label",
+    "ts_ms",
+    "ts_iso",
+    "side",
+    "opposite_side",
+    "offset_s",
+    "trigger_px",
+    "trigger_size",
+    "trigger_ts_ms",
+    "seed_px",
+    "seed_qty",
+    "seed_cost",
+    "official_fee_rate",
+    "official_fee",
+    "source_risk_direction",
+    "pre_seed_same_qty",
+    "pre_seed_opp_qty",
+    "pre_seed_same_cost",
+    "pre_seed_opp_cost",
+    "pre_seed_open_qty",
+    "pre_seed_open_cost",
+    "ledger_proxy_before",
+    "ledger_proxy_after",
+    "source_pair_qty",
+    "source_pair_cost",
+    "source_pair_pnl",
+    "source_residual_qty",
+    "source_residual_cost",
+    "source_residual_age_s",
+    "pair_outcome_bucket",
+    "residual_tail_outcome_bucket",
+    "outcome_labels_are_post_action",
+    "quote_intent_id",
+    "source_order_id",
+    "source_sequence_id",
+    "external_shadow_ids_available",
+    "external_shadow_id_policy",
+    "pre_action_field_policy",
+    "post_action_label_policy",
+    "live_rule_safety_policy",
+    "separator_export_reason",
+]
+
 
 @dataclass
 class SelectedCloseActionRecorder:
@@ -629,6 +681,126 @@ class SelectedSeedLedgerContextRecorder:
         }
 
 
+@dataclass
+class CandidateSeedOutcomeSeparatorRecorder(SelectedSeedLedgerContextRecorder):
+    def record_seed(
+        self,
+        *,
+        profile: Profile,
+        state: State,
+        row: dict[str, Any],
+        seed_lot: Lot,
+        official_fee: float,
+    ) -> None:
+        if not self.should_record_profile(profile):
+            return
+        super().record_seed(
+            profile=profile,
+            state=state,
+            row=row,
+            seed_lot=seed_lot,
+            official_fee=official_fee,
+        )
+        assert self.rows_by_source is not None
+        source_candidate_row_id = str(row["candidate_row_id"])
+        context_row = self.rows_by_source.get(self._source_key(profile, source_candidate_row_id))
+        if context_row is None:
+            return
+        pre_seed_open_qty = seed_lot.pre_seed_same_qty + seed_lot.pre_seed_opp_qty
+        pre_seed_open_cost = seed_lot.pre_seed_same_cost + seed_lot.pre_seed_opp_cost
+        context_row.update(
+            {
+                "schema_version": "candidate_seed_outcome_separator_export_v1",
+                "validation_request_id": f"candidate_seed_outcome_separator_v1:{profile.name}",
+                "pre_seed_open_qty": round(pre_seed_open_qty, 12),
+                "pre_seed_open_cost": round(pre_seed_open_cost, 12),
+                "pair_outcome_bucket": "post_action_pair_label_pending",
+                "residual_tail_outcome_bucket": "post_action_residual_label_pending",
+                "outcome_labels_are_post_action": True,
+                "pre_action_field_policy": (
+                    "Fields through ledger_proxy_after are pre-action/state-machine-observable local context; "
+                    "candidate_base exports do not contain live quote/order/source_sequence ids."
+                ),
+                "post_action_label_policy": (
+                    "source_pair_* and source_residual_* are offline outcome labels for separator discovery only; "
+                    "they must not be used as live pre-action gates."
+                ),
+                "live_rule_safety_policy": (
+                    "A future mechanism may only use pre-action context fields and must be revalidated separately; "
+                    "this export is not private truth, deployable evidence, shadow-ready evidence, canary evidence, "
+                    "or promotion evidence."
+                ),
+                "separator_export_reason": "candidate_seed_outcome_separator_export_default_off",
+            }
+        )
+
+    @staticmethod
+    def _pair_bucket(row: dict[str, Any]) -> str:
+        pair_qty = float(row.get("source_pair_qty") or 0.0)
+        if pair_qty > DUST:
+            return "paired_nonzero"
+        return "no_pair_observed"
+
+    @staticmethod
+    def _residual_bucket(row: dict[str, Any]) -> str:
+        residual_qty = float(row.get("source_residual_qty") or 0.0)
+        residual_cost = float(row.get("source_residual_cost") or 0.0)
+        seed_cost = float(row.get("seed_cost") or 0.0)
+        residual_cost_share = residual_cost / seed_cost if seed_cost > DUST else 0.0
+        if residual_qty <= DUST:
+            return "residual_zero"
+        if residual_cost_share >= 0.50:
+            return "residual_tail_cost_share_ge_50pct"
+        if residual_cost >= 0.25:
+            return "residual_tail_cost_ge_0p25"
+        return "residual_nonzero"
+
+    def finalize_selection(self) -> None:
+        assert self.rows_by_source is not None
+        for row in self.rows_by_source.values():
+            row["pair_outcome_bucket"] = self._pair_bucket(row)
+            row["residual_tail_outcome_bucket"] = self._residual_bucket(row)
+            row["outcome_labels_are_post_action"] = True
+        super().finalize_selection()
+
+    def summary(self) -> dict[str, Any]:
+        self.finalize_selection()
+        assert self.rows is not None
+        assert self.selected_by_day is not None
+        selected_conditions = {str(row.get("condition_id") or "") for row in self.rows}
+        selected_side_counts: dict[str, int] = defaultdict(int)
+        pair_bucket_counts: dict[str, int] = defaultdict(int)
+        residual_bucket_counts: dict[str, int] = defaultdict(int)
+        post_action_label_rows = 0
+        for row in self.rows:
+            selected_side_counts[str(row.get("side") or "")] += 1
+            pair_bucket_counts[str(row.get("pair_outcome_bucket") or "")] += 1
+            residual_bucket_counts[str(row.get("residual_tail_outcome_bucket") or "")] += 1
+            if (
+                float(row.get("source_pair_qty") or 0.0) > DUST
+                or float(row.get("source_residual_qty") or 0.0) > DUST
+            ):
+                post_action_label_rows += 1
+        return {
+            "schema_version": "candidate_seed_outcome_separator_export_v1",
+            "profile_name": self.profile_name,
+            "eligible_seed_contexts": self.eligible_count,
+            "selected_seed_contexts": len(self.rows),
+            "skipped_by_sample_or_day_cap": self.skipped_by_cap,
+            "sample_cap": self.sample_cap,
+            "per_day_cap": self.per_day_cap,
+            "selection_mode": self.selection_mode,
+            "selected_condition_count": len(selected_conditions),
+            "selected_side_counts": dict(sorted(selected_side_counts.items())),
+            "selected_by_day": dict(sorted(self.selected_by_day.items())),
+            "pair_outcome_bucket_counts": dict(sorted(pair_bucket_counts.items())),
+            "residual_tail_outcome_bucket_counts": dict(sorted(residual_bucket_counts.items())),
+            "post_action_label_rows": post_action_label_rows,
+            "external_shadow_ids_available": False,
+            "outcome_labels_are_post_action": True,
+        }
+
+
 def utc_label() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -745,6 +917,7 @@ def pair_inventory(
     close_recorder: SelectedCloseActionRecorder | None = None,
     trigger_lot: Lot | None = None,
     seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
+    seed_outcome_separator_recorder: CandidateSeedOutcomeSeparatorRecorder | None = None,
 ) -> None:
     yes = state.lots["YES"]
     no = state.lots["NO"]
@@ -795,6 +968,8 @@ def pair_inventory(
             source_lot.source_pair_pnl += pair_pnl
             if seed_ledger_context_recorder is not None:
                 seed_ledger_context_recorder.record_pair(profile, source_lot, take, pair_cost)
+            if seed_outcome_separator_recorder is not None:
+                seed_outcome_separator_recorder.record_pair(profile, source_lot, take, pair_cost)
         yes_lot.qty -= take
         no_lot.qty -= take
         if yes_lot.qty <= DUST:
@@ -828,6 +1003,7 @@ def maybe_seed(
     metrics: defaultdict[str, float],
     close_recorder: SelectedCloseActionRecorder | None = None,
     seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
+    seed_outcome_separator_recorder: CandidateSeedOutcomeSeparatorRecorder | None = None,
 ) -> None:
     day = str(row["day"])
     add_count(metrics, day, "candidate_count")
@@ -997,6 +1173,14 @@ def maybe_seed(
             seed_lot=seed_lot,
             official_fee=fee,
         )
+    if seed_outcome_separator_recorder is not None:
+        seed_outcome_separator_recorder.record_seed(
+            profile=profile,
+            state=state,
+            row=row,
+            seed_lot=seed_lot,
+            official_fee=fee,
+        )
     pair_inventory(
         profile,
         state,
@@ -1005,6 +1189,7 @@ def maybe_seed(
         close_recorder=close_recorder,
         trigger_lot=seed_lot,
         seed_ledger_context_recorder=seed_ledger_context_recorder,
+        seed_outcome_separator_recorder=seed_outcome_separator_recorder,
     )
 
 
@@ -1013,6 +1198,7 @@ def settle(
     profile: Profile,
     metrics: defaultdict[str, float],
     seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
+    seed_outcome_separator_recorder: CandidateSeedOutcomeSeparatorRecorder | None = None,
 ) -> None:
     for state in states.values():
         if not state.active:
@@ -1023,6 +1209,7 @@ def settle(
             metrics,
             state.last_ts_ms,
             seed_ledger_context_recorder=seed_ledger_context_recorder,
+            seed_outcome_separator_recorder=seed_outcome_separator_recorder,
         )
         add_count(metrics, state.day, "active_markets")
         winner = state.winner_side
@@ -1032,6 +1219,8 @@ def settle(
                     continue
                 if seed_ledger_context_recorder is not None:
                     seed_ledger_context_recorder.record_residual(profile, lot, state.last_ts_ms)
+                if seed_outcome_separator_recorder is not None:
+                    seed_outcome_separator_recorder.record_residual(profile, lot, state.last_ts_ms)
                 cost = lot.qty * lot.px
                 payout = lot.qty if winner == side else 0.0
                 add_metric(metrics, state.day, "residual_qty", lot.qty)
@@ -1157,6 +1346,7 @@ def run_profiles(
     base_day_counts: dict[str, int],
     close_recorder: SelectedCloseActionRecorder | None = None,
     seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
+    seed_outcome_separator_recorder: CandidateSeedOutcomeSeparatorRecorder | None = None,
 ) -> dict[str, Any]:
     con = duckdb.connect(str(candidate_base_db), read_only=True)
     select_cols = [
@@ -1207,6 +1397,7 @@ def run_profiles(
                     metrics_by_profile[profile.name],
                     close_recorder=close_recorder,
                     seed_ledger_context_recorder=seed_ledger_context_recorder,
+                    seed_outcome_separator_recorder=seed_outcome_separator_recorder,
                 )
     for profile in profiles:
         settle(
@@ -1214,6 +1405,7 @@ def run_profiles(
             profile,
             metrics_by_profile[profile.name],
             seed_ledger_context_recorder=seed_ledger_context_recorder,
+            seed_outcome_separator_recorder=seed_outcome_separator_recorder,
         )
     con.close()
     return {
@@ -1225,6 +1417,9 @@ def run_profiles(
         "selected_close_actions": close_recorder.summary() if close_recorder is not None else None,
         "selected_seed_ledger_contexts": (
             seed_ledger_context_recorder.summary() if seed_ledger_context_recorder is not None else None
+        ),
+        "candidate_seed_outcome_separator": (
+            seed_outcome_separator_recorder.summary() if seed_outcome_separator_recorder is not None else None
         ),
     }
 
@@ -1628,6 +1823,26 @@ def main() -> int:
             "'first' keeps deterministic first rows by day/time."
         ),
     )
+    parser.add_argument(
+        "--candidate-seed-outcome-separator-output",
+        help="Default-off CSV export path for candidate_seed_outcome_separator_export_v1 rows.",
+    )
+    parser.add_argument(
+        "--candidate-seed-outcome-separator-profile",
+        default="variant_late_repair_only_after_90",
+        help="Profile to sample for candidate seed outcome separator export, or 'all'.",
+    )
+    parser.add_argument("--candidate-seed-outcome-separator-sample-cap", type=int, default=60)
+    parser.add_argument("--candidate-seed-outcome-separator-per-day-cap", type=int, default=4)
+    parser.add_argument(
+        "--candidate-seed-outcome-separator-selection-mode",
+        choices=("first", "residual_tail"),
+        default="residual_tail",
+        help=(
+            "Default 'residual_tail' selects highest residual-cost seed outcome rows after settlement. "
+            "'first' keeps deterministic first rows by day/time."
+        ),
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -1679,6 +1894,21 @@ def main() -> int:
             selection_mode=args.selected_seed_ledger_context_selection_mode,
         )
         if selected_seed_ledger_context_path is not None
+        else None
+    )
+    candidate_seed_outcome_separator_path = (
+        Path(args.candidate_seed_outcome_separator_output)
+        if args.candidate_seed_outcome_separator_output
+        else None
+    )
+    seed_outcome_separator_recorder = (
+        CandidateSeedOutcomeSeparatorRecorder(
+            profile_name=args.candidate_seed_outcome_separator_profile,
+            sample_cap=max(0, int(args.candidate_seed_outcome_separator_sample_cap)),
+            per_day_cap=max(0, int(args.candidate_seed_outcome_separator_per_day_cap)),
+            selection_mode=args.candidate_seed_outcome_separator_selection_mode,
+        )
+        if candidate_seed_outcome_separator_path is not None
         else None
     )
 
@@ -1740,6 +1970,7 @@ def main() -> int:
         base_day_counts,
         close_recorder=close_recorder,
         seed_ledger_context_recorder=seed_ledger_context_recorder,
+        seed_outcome_separator_recorder=seed_outcome_separator_recorder,
     )
     if selected_close_actions_path is not None:
         assert close_recorder is not None
@@ -1752,6 +1983,14 @@ def main() -> int:
             selected_seed_ledger_context_path,
             seed_ledger_context_recorder.rows or [],
             SELECTED_SEED_LEDGER_CONTEXT_FIELDS,
+        )
+    if candidate_seed_outcome_separator_path is not None:
+        assert seed_outcome_separator_recorder is not None
+        seed_outcome_separator_recorder.finalize_selection()
+        write_csv(
+            candidate_seed_outcome_separator_path,
+            seed_outcome_separator_recorder.rows or [],
+            CANDIDATE_SEED_OUTCOME_SEPARATOR_FIELDS,
         )
     control = run_result["profiles"]["control_seed_offset_max_120"]
     hard_offset90 = run_result["profiles"]["discarded_hard_seed_offset_max_90"]
@@ -1863,6 +2102,13 @@ def main() -> int:
             "selected_seed_ledger_context_sample_cap": int(args.selected_seed_ledger_context_sample_cap),
             "selected_seed_ledger_context_per_day_cap": int(args.selected_seed_ledger_context_per_day_cap),
             "selected_seed_ledger_context_selection_mode": args.selected_seed_ledger_context_selection_mode,
+            "candidate_seed_outcome_separator_export_enabled": candidate_seed_outcome_separator_path is not None,
+            "candidate_seed_outcome_separator_profile": args.candidate_seed_outcome_separator_profile,
+            "candidate_seed_outcome_separator_sample_cap": int(args.candidate_seed_outcome_separator_sample_cap),
+            "candidate_seed_outcome_separator_per_day_cap": int(args.candidate_seed_outcome_separator_per_day_cap),
+            "candidate_seed_outcome_separator_selection_mode": (
+                args.candidate_seed_outcome_separator_selection_mode
+            ),
         },
         "selected_close_actions_export": {
             "enabled": selected_close_actions_path is not None,
@@ -1888,6 +2134,30 @@ def main() -> int:
                 "future residual_tail_ledger_context_verifier_v1 joins. They do not fabricate quote/order/source "
                 "sequence ids, do not query replay_store_v2, and are not private truth, deployable, shadow-ready, "
                 "canary, or promotion evidence."
+            ),
+        },
+        "candidate_seed_outcome_separator_export": {
+            "enabled": candidate_seed_outcome_separator_path is not None,
+            "path": (
+                str(candidate_seed_outcome_separator_path)
+                if candidate_seed_outcome_separator_path is not None
+                else None
+            ),
+            "fields": (
+                CANDIDATE_SEED_OUTCOME_SEPARATOR_FIELDS
+                if candidate_seed_outcome_separator_path is not None
+                else []
+            ),
+            "summary": run_result.get("candidate_seed_outcome_separator"),
+            "default_behavior_unchanged_when_unset": True,
+            "external_shadow_ids_available": False,
+            "outcome_labels_are_post_action": True,
+            "source_truth_boundary": (
+                "candidate_seed_outcome_separator rows are local candidate-base/state-machine exports for offline "
+                "separator discovery. source_pair_* and source_residual_* are post-action labels, not live "
+                "pre-action criteria. The export does not fabricate quote/order/source_sequence ids, does not "
+                "query replay_store_v2, and is not private truth, deployable, shadow-ready, canary, or promotion "
+                "evidence."
             ),
         },
         "processed_public_sell_rows": run_result["processed_public_sell_rows"],

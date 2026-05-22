@@ -1,0 +1,64 @@
+{
+  "artifact": "xuan_b27_dplus_candidate_seed_outcome_separator_export_smoke",
+  "candidate_seed_outcome_separator_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_candidate_seed_outcome_separator_export_smoke_20260522T182613Z/export/candidate_seed_outcome_separator.csv",
+  "candidate_seed_outcome_separator_summary": {
+    "eligible_seed_contexts": 2,
+    "external_shadow_ids_available": false,
+    "outcome_labels_are_post_action": true,
+    "pair_outcome_bucket_counts": {
+      "paired_nonzero": 2
+    },
+    "per_day_cap": 10,
+    "post_action_label_rows": 2,
+    "profile_name": "control_seed_offset_max_120",
+    "residual_tail_outcome_bucket_counts": {
+      "residual_nonzero": 1,
+      "residual_zero": 1
+    },
+    "sample_cap": 10,
+    "schema_version": "candidate_seed_outcome_separator_export_v1",
+    "selected_by_day": {
+      "2026-05-18": 2
+    },
+    "selected_condition_count": 1,
+    "selected_seed_contexts": 2,
+    "selected_side_counts": {
+      "NO": 1,
+      "YES": 1
+    },
+    "selection_mode": "residual_tail",
+    "skipped_by_sample_or_day_cap": 0
+  },
+  "checks": {
+    "default_behavior_metrics_unchanged": true,
+    "default_export_disabled": true,
+    "export_enabled": true,
+    "external_ids_marked_unavailable": true,
+    "labels_marked_post_action": true,
+    "pair_bucket_recorded": true,
+    "pair_qty_attributed_to_both_sources": true,
+    "post_action_label_policy_blocks_live_use": true,
+    "pre_seed_inventory_context_present": true,
+    "required_fields_present": true,
+    "residual_bucket_recorded": true,
+    "residual_cost_attributed": true,
+    "residual_qty_attributed": true,
+    "residual_tail_row_selected_first": true,
+    "risk_direction_recorded": true,
+    "selected_rows_present": true
+  },
+  "decision": "KEEP",
+  "label": "KEEP_CANDIDATE_SEED_OUTCOME_SEPARATOR_EXPORT_SMOKE_PASS",
+  "schema_version": "candidate_seed_outcome_separator_export_smoke_v1",
+  "side_effects": {
+    "cancels_sent": false,
+    "fixture_duckdb_only": true,
+    "full_completion_store_scanned": false,
+    "orders_sent": false,
+    "raw_scanned": false,
+    "redeems_sent": false,
+    "replay_store_v2_queried": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  }
+}

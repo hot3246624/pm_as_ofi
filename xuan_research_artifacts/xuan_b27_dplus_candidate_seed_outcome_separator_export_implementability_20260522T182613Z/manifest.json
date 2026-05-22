@@ -1,0 +1,122 @@
+{
+  "artifact": "xuan_b27_dplus_candidate_seed_outcome_separator_export_implementability",
+  "created_utc": "2026-05-22T18:26:13Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_CANDIDATE_SEED_OUTCOME_SEPARATOR_EXPORT_READY",
+  "lane": "implementability_review",
+  "summary": {
+    "candidate_seed_outcome_separator_export": "candidate_seed_outcome_separator_export_v1",
+    "default_off": true,
+    "default_behavior_unchanged_when_unset": true,
+    "pre_action_context_fields_present": true,
+    "post_action_pair_residual_labels_present": true,
+    "post_action_labels_marked_not_live_pre_action_fields": true,
+    "external_shadow_ids_available": false,
+    "private_truth_ready": false,
+    "deployable": false,
+    "promotion_gate_passed": false
+  },
+  "implementation": {
+    "script": "scripts/xuan_b27_dplus_candidate_pipeline_state_machine_rerun.py",
+    "new_cli_flags": [
+      "--candidate-seed-outcome-separator-output",
+      "--candidate-seed-outcome-separator-profile",
+      "--candidate-seed-outcome-separator-sample-cap",
+      "--candidate-seed-outcome-separator-per-day-cap",
+      "--candidate-seed-outcome-separator-selection-mode"
+    ],
+    "schema_fields_include": [
+      "candidate_row_id/day/condition/slug/ts/side/offset",
+      "source_risk_direction",
+      "trigger_px/trigger_size/trigger_ts_ms",
+      "seed_qty/seed_px/seed_cost/official_fee_rate/official_fee",
+      "pre_seed_same_qty/pre_seed_opp_qty/pre_seed_same_cost/pre_seed_opp_cost",
+      "pre_seed_open_qty/pre_seed_open_cost",
+      "ledger_proxy_before/ledger_proxy_after",
+      "source_pair_qty/source_pair_cost/source_pair_pnl",
+      "source_residual_qty/source_residual_cost/source_residual_age_s",
+      "pair_outcome_bucket",
+      "residual_tail_outcome_bucket",
+      "quote_intent_id/source_order_id/source_sequence_id explicitly unavailable unless supplied by a later no-order shadow mapping"
+    ],
+    "post_action_label_policy": "source_pair_* and source_residual_* are offline outcome labels for separator discovery only and must not be used as live pre-action gates."
+  },
+  "real_candidate_base_probe": {
+    "profile_name": "variant_late_repair_only_after_90",
+    "sample_cap": 60,
+    "per_day_cap": 4,
+    "selection_mode": "residual_tail",
+    "eligible_seed_contexts": 41580,
+    "selected_seed_contexts": 60,
+    "selected_condition_count": 60,
+    "selected_side_counts": {
+      "NO": 37,
+      "YES": 23
+    },
+    "selected_by_day_count": 15,
+    "pair_outcome_bucket_counts": {
+      "no_pair_observed": 6,
+      "paired_nonzero": 54
+    },
+    "residual_tail_outcome_bucket_counts": {
+      "residual_tail_cost_share_ge_50pct": 60
+    },
+    "post_action_label_rows": 60,
+    "outcome_labels_are_post_action": true,
+    "external_shadow_ids_available": false
+  },
+  "smoke": {
+    "script": "scripts/xuan_b27_dplus_candidate_seed_outcome_separator_export_smoke.sh",
+    "manifest": "xuan_research_artifacts/xuan_b27_dplus_candidate_seed_outcome_separator_export_smoke_20260522T182613Z/manifest.json",
+    "decision": "KEEP_CANDIDATE_SEED_OUTCOME_SEPARATOR_EXPORT_SMOKE_PASS",
+    "checks_passed": [
+      "default_export_disabled",
+      "export_enabled",
+      "default_behavior_metrics_unchanged",
+      "selected_rows_present",
+      "required_fields_present",
+      "external_ids_marked_unavailable",
+      "labels_marked_post_action",
+      "post_action_label_policy_blocks_live_use",
+      "residual_tail_row_selected_first",
+      "residual_qty_attributed",
+      "residual_cost_attributed",
+      "pair_qty_attributed_to_both_sources",
+      "pair_bucket_recorded",
+      "residual_bucket_recorded",
+      "pre_seed_inventory_context_present",
+      "risk_direction_recorded"
+    ]
+  },
+  "side_effects": {
+    "local_candidate_base_state_machine_only": true,
+    "replay_store_v2_queried": false,
+    "raw_scanned": false,
+    "full_completion_store_scanned": false,
+    "events_jsonl_read_or_pulled": false,
+    "ssh_started": false,
+    "shadow_or_canary_started": false,
+    "shared_ingress_connected_or_modified": false,
+    "broker_service_env_live_modified": false,
+    "orders_cancels_redeems_sent": false
+  },
+  "next_action": {
+    "lane": "causal_verifier",
+    "action": "Use candidate_seed_outcome_separator_export_v1 to train/select exactly one offline pre-action separator target, or return UNKNOWN if the exported labels do not identify a sample-preserving non-price control.",
+    "forbidden": [
+      "using source_pair_* or source_residual_* as live pre-action fields",
+      "broad portfolio-negative risk guard",
+      "dynamic_condition_ledger_risk_state_gate",
+      "risk_increasing_pair_fill_cap_v1",
+      "ledger_tail_first_pair_priority_v1",
+      "dust-opp exact sizer",
+      "price/public-L1 caps",
+      "summary-only removal",
+      "static side/offset deletion",
+      "cooldown/admission caps",
+      "fill-to-balance or portfolio-ledger shadow revival",
+      "broad replay search",
+      "shadow/canary/private-truth/promotion claims"
+    ]
+  }
+}
