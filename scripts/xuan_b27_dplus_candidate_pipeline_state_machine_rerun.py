@@ -70,6 +70,7 @@ class Profile:
     residual_cooldown_age_s: float = 30.0
     residual_cooldown_cost_cap: float = 0.5
     official_fee_rate: float = 0.07
+    pair_inventory_priority: str = "fifo"
 
 
 @dataclass
@@ -709,6 +710,30 @@ def pop_lot(lots: deque[Lot], idx: int) -> Lot:
     return lot
 
 
+def pair_priority_index(lots: deque[Lot], profile: Profile) -> int:
+    if profile.pair_inventory_priority == "fifo" or len(lots) <= 1:
+        return 0
+    if profile.pair_inventory_priority != "ledger_tail_first":
+        raise ValueError(f"unsupported pair_inventory_priority={profile.pair_inventory_priority!r}")
+
+    def score(item: tuple[int, Lot]) -> tuple[float, float, float, float, float, int]:
+        idx, lot = item
+        risk_direction_score = 1.0 if lot.source_risk_direction == "repair_or_pairing_improving" else 0.0
+        late_offset_score = 1.0 if lot.offset_s >= 90.0 else 0.0
+        deficit_qty = max(0.0, lot.pre_seed_opp_qty - lot.pre_seed_same_qty)
+        ledger_after_stress = -lot.ledger_proxy_after
+        return (
+            risk_direction_score,
+            late_offset_score,
+            deficit_qty,
+            ledger_after_stress,
+            lot.offset_s,
+            -idx,
+        )
+
+    return max(enumerate(lots), key=score)[0]
+
+
 def pair_inventory(
     profile: Profile,
     state: State,
@@ -721,8 +746,8 @@ def pair_inventory(
     yes = state.lots["YES"]
     no = state.lots["NO"]
     while yes and no:
-        yes_idx = 0
-        no_idx = 0
+        yes_idx = pair_priority_index(yes, profile)
+        no_idx = pair_priority_index(no, profile)
         yes_lot = yes[yes_idx]
         no_lot = no[no_idx]
         take = min(yes_lot.qty, no_lot.qty)
