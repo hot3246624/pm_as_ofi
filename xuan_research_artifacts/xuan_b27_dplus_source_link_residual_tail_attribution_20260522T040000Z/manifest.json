@@ -1,0 +1,626 @@
+{
+  "artifact": "xuan_b27_dplus_source_link_residual_tail_attribution",
+  "blockers": [],
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_LINK_RESIDUAL_TAIL_LOCAL_VERIFIER_SELECTED",
+  "group_attribution": {
+    "risk_increasing_all_sides": {
+      "admitted_transitions": 41.0,
+      "immediate_pair_actions": 18.0,
+      "immediate_pair_qty_proxy": 26.0,
+      "keys": [
+        "YES|offset_60_90|risk_increasing",
+        "YES|offset_30_60|risk_increasing",
+        "YES|offset_0_30|risk_increasing",
+        "NO|offset_0_30|risk_increasing",
+        "NO|offset_30_60|risk_increasing",
+        "NO|offset_60_90|risk_increasing"
+      ],
+      "residual_cost": 3.375,
+      "residual_qty": 7.5,
+      "row_count": 6,
+      "rows": [
+        {
+          "admitted_transition_share": 0.098901,
+          "admitted_transitions": 9.0,
+          "immediate_pair_actions": 4.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 2.0,
+            "pair_cost_gt_1p05": 1.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 6.0,
+          "immediate_pair_qty_proxy_share": 0.083333,
+          "offset_bucket": "offset_60_90",
+          "residual_cost": 1.775,
+          "residual_cost_share": 0.228785,
+          "residual_count": 3.0,
+          "residual_qty": 3.75,
+          "residual_qty_share": 0.20024,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_60_90|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.065934,
+          "admitted_transitions": 6.0,
+          "immediate_pair_actions": 0.0,
+          "immediate_pair_cost_buckets": {},
+          "immediate_pair_qty_proxy": 0.0,
+          "immediate_pair_qty_proxy_share": 0.0,
+          "offset_bucket": "offset_30_60",
+          "residual_cost": 1.0,
+          "residual_cost_share": 0.128893,
+          "residual_count": 2.0,
+          "residual_qty": 2.5,
+          "residual_qty_share": 0.133494,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_30_60|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.043956,
+          "admitted_transitions": 4.0,
+          "immediate_pair_actions": 1.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 1.5,
+          "immediate_pair_qty_proxy_share": 0.020833,
+          "offset_bucket": "offset_0_30",
+          "residual_cost": 0.6,
+          "residual_cost_share": 0.077336,
+          "residual_count": 1.0,
+          "residual_qty": 1.25,
+          "residual_qty_share": 0.066747,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_0_30|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.065934,
+          "admitted_transitions": 6.0,
+          "immediate_pair_actions": 4.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_gt_1p05": 2.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 5.0,
+          "immediate_pair_qty_proxy_share": 0.069444,
+          "offset_bucket": "offset_0_30",
+          "residual_cost": 0.0,
+          "residual_cost_share": 0.0,
+          "residual_count": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_share": 0.0,
+          "risk_direction": "risk_increasing",
+          "side": "NO",
+          "source_side_offset_risk_direction": "NO|offset_0_30|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.10989,
+          "admitted_transitions": 10.0,
+          "immediate_pair_actions": 6.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_gt_1p05": 1.0,
+            "pair_cost_lt_0p95": 4.0
+          },
+          "immediate_pair_qty_proxy": 9.0,
+          "immediate_pair_qty_proxy_share": 0.125,
+          "offset_bucket": "offset_30_60",
+          "residual_cost": 0.0,
+          "residual_cost_share": 0.0,
+          "residual_count": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_share": 0.0,
+          "risk_direction": "risk_increasing",
+          "side": "NO",
+          "source_side_offset_risk_direction": "NO|offset_30_60|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.065934,
+          "admitted_transitions": 6.0,
+          "immediate_pair_actions": 3.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_lt_0p95": 2.0
+          },
+          "immediate_pair_qty_proxy": 4.5,
+          "immediate_pair_qty_proxy_share": 0.0625,
+          "offset_bucket": "offset_60_90",
+          "residual_cost": 0.0,
+          "residual_cost_share": 0.0,
+          "residual_count": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_share": 0.0,
+          "risk_direction": "risk_increasing",
+          "side": "NO",
+          "source_side_offset_risk_direction": "NO|offset_60_90|risk_increasing"
+        }
+      ],
+      "selector": {
+        "risk_direction": "risk_increasing",
+        "side": "ANY"
+      }
+    },
+    "yes_all": {
+      "admitted_transitions": 44.0,
+      "immediate_pair_actions": 23.0,
+      "immediate_pair_qty_proxy": 31.5,
+      "keys": [
+        "YES|offset_60_90|repair_or_pairing_improving",
+        "YES|offset_60_90|risk_increasing",
+        "YES|offset_30_60|risk_increasing",
+        "YES|offset_30_60|repair_or_pairing_improving",
+        "YES|offset_0_30|risk_increasing",
+        "YES|offset_0_30|repair_or_pairing_improving",
+        "YES|offset_90_120|repair_or_pairing_improving"
+      ],
+      "residual_cost": 7.076575,
+      "residual_qty": 16.2525,
+      "row_count": 7,
+      "rows": [
+        {
+          "admitted_transition_share": 0.087912,
+          "admitted_transitions": 8.0,
+          "immediate_pair_actions": 5.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_gt_1p05": 1.0,
+            "pair_cost_lt_0p95": 2.0
+          },
+          "immediate_pair_qty_proxy": 6.5,
+          "immediate_pair_qty_proxy_share": 0.090278,
+          "offset_bucket": "offset_60_90",
+          "residual_cost": 2.389075,
+          "residual_cost_share": 0.307935,
+          "residual_count": 5.0,
+          "residual_qty": 5.0025,
+          "residual_qty_share": 0.267121,
+          "risk_direction": "repair_or_pairing_improving",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_60_90|repair_or_pairing_improving"
+        },
+        {
+          "admitted_transition_share": 0.098901,
+          "admitted_transitions": 9.0,
+          "immediate_pair_actions": 4.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 2.0,
+            "pair_cost_gt_1p05": 1.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 6.0,
+          "immediate_pair_qty_proxy_share": 0.083333,
+          "offset_bucket": "offset_60_90",
+          "residual_cost": 1.775,
+          "residual_cost_share": 0.228785,
+          "residual_count": 3.0,
+          "residual_qty": 3.75,
+          "residual_qty_share": 0.20024,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_60_90|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.065934,
+          "admitted_transitions": 6.0,
+          "immediate_pair_actions": 0.0,
+          "immediate_pair_cost_buckets": {},
+          "immediate_pair_qty_proxy": 0.0,
+          "immediate_pair_qty_proxy_share": 0.0,
+          "offset_bucket": "offset_30_60",
+          "residual_cost": 1.0,
+          "residual_cost_share": 0.128893,
+          "residual_count": 2.0,
+          "residual_qty": 2.5,
+          "residual_qty_share": 0.133494,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_30_60|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.087912,
+          "admitted_transitions": 8.0,
+          "immediate_pair_actions": 5.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_0p95_1p00": 1.0,
+            "pair_cost_1p00_1p05": 1.0,
+            "pair_cost_lt_0p95": 3.0
+          },
+          "immediate_pair_qty_proxy": 7.5,
+          "immediate_pair_qty_proxy_share": 0.104167,
+          "offset_bucket": "offset_30_60",
+          "residual_cost": 0.7625,
+          "residual_cost_share": 0.098281,
+          "residual_count": 2.0,
+          "residual_qty": 2.5,
+          "residual_qty_share": 0.133494,
+          "risk_direction": "repair_or_pairing_improving",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_30_60|repair_or_pairing_improving"
+        },
+        {
+          "admitted_transition_share": 0.043956,
+          "admitted_transitions": 4.0,
+          "immediate_pair_actions": 1.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 1.5,
+          "immediate_pair_qty_proxy_share": 0.020833,
+          "offset_bucket": "offset_0_30",
+          "residual_cost": 0.6,
+          "residual_cost_share": 0.077336,
+          "residual_count": 1.0,
+          "residual_qty": 1.25,
+          "residual_qty_share": 0.066747,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_0_30|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.043956,
+          "admitted_transitions": 4.0,
+          "immediate_pair_actions": 2.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 2.0
+          },
+          "immediate_pair_qty_proxy": 3.0,
+          "immediate_pair_qty_proxy_share": 0.041667,
+          "offset_bucket": "offset_0_30",
+          "residual_cost": 0.55,
+          "residual_cost_share": 0.070891,
+          "residual_count": 1.0,
+          "residual_qty": 1.25,
+          "residual_qty_share": 0.066747,
+          "risk_direction": "repair_or_pairing_improving",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_0_30|repair_or_pairing_improving"
+        },
+        {
+          "admitted_transition_share": 0.054945,
+          "admitted_transitions": 5.0,
+          "immediate_pair_actions": 6.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_gt_1p05": 2.0,
+            "pair_cost_lt_0p95": 4.0
+          },
+          "immediate_pair_qty_proxy": 7.0,
+          "immediate_pair_qty_proxy_share": 0.097222,
+          "offset_bucket": "offset_90_120",
+          "residual_cost": 0.0,
+          "residual_cost_share": 0.0,
+          "residual_count": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_share": 0.0,
+          "risk_direction": "repair_or_pairing_improving",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_90_120|repair_or_pairing_improving"
+        }
+      ],
+      "selector": {
+        "risk_direction": "ANY",
+        "side": "YES"
+      }
+    },
+    "yes_risk_increasing": {
+      "admitted_transitions": 19.0,
+      "immediate_pair_actions": 5.0,
+      "immediate_pair_qty_proxy": 7.5,
+      "keys": [
+        "YES|offset_60_90|risk_increasing",
+        "YES|offset_30_60|risk_increasing",
+        "YES|offset_0_30|risk_increasing"
+      ],
+      "projection": {
+        "candidate_retention_if_blocked_proxy": 0.791209,
+        "note": "Projection is attribution only. The selected verifier must rerun the state machine with a pre-trade inventory rule; this script does not authorize summary-only removal.",
+        "pair_qty_proxy_retention_if_blocked_proxy": 0.895833,
+        "projected_residual_cost_share_if_tail_removed": 0.13269635,
+        "projected_residual_qty_share_if_tail_removed": 0.14784212,
+        "removed_or_capped_transition_count_proxy": 19.0
+      },
+      "residual_cost": 3.375,
+      "residual_qty": 7.5,
+      "row_count": 3,
+      "rows": [
+        {
+          "admitted_transition_share": 0.098901,
+          "admitted_transitions": 9.0,
+          "immediate_pair_actions": 4.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_1p00_1p05": 2.0,
+            "pair_cost_gt_1p05": 1.0,
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 6.0,
+          "immediate_pair_qty_proxy_share": 0.083333,
+          "offset_bucket": "offset_60_90",
+          "residual_cost": 1.775,
+          "residual_cost_share": 0.228785,
+          "residual_count": 3.0,
+          "residual_qty": 3.75,
+          "residual_qty_share": 0.20024,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_60_90|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.065934,
+          "admitted_transitions": 6.0,
+          "immediate_pair_actions": 0.0,
+          "immediate_pair_cost_buckets": {},
+          "immediate_pair_qty_proxy": 0.0,
+          "immediate_pair_qty_proxy_share": 0.0,
+          "offset_bucket": "offset_30_60",
+          "residual_cost": 1.0,
+          "residual_cost_share": 0.128893,
+          "residual_count": 2.0,
+          "residual_qty": 2.5,
+          "residual_qty_share": 0.133494,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_30_60|risk_increasing"
+        },
+        {
+          "admitted_transition_share": 0.043956,
+          "admitted_transitions": 4.0,
+          "immediate_pair_actions": 1.0,
+          "immediate_pair_cost_buckets": {
+            "pair_cost_lt_0p95": 1.0
+          },
+          "immediate_pair_qty_proxy": 1.5,
+          "immediate_pair_qty_proxy_share": 0.020833,
+          "offset_bucket": "offset_0_30",
+          "residual_cost": 0.6,
+          "residual_cost_share": 0.077336,
+          "residual_count": 1.0,
+          "residual_qty": 1.25,
+          "residual_qty_share": 0.066747,
+          "risk_direction": "risk_increasing",
+          "side": "YES",
+          "source_side_offset_risk_direction": "YES|offset_0_30|risk_increasing"
+        }
+      ],
+      "selector": {
+        "risk_direction": "risk_increasing",
+        "side": "YES"
+      }
+    }
+  },
+  "input_summary": {
+    "metrics": {
+      "candidates": 91.0,
+      "filled_cost": 33.033125,
+      "filled_qty": 75.9425,
+      "net_pair_cost_p90": null,
+      "pair_pnl": 2.36125,
+      "residual_cost": 7.758375,
+      "residual_qty": 18.7275
+    },
+    "missing_cross_bucket_fields": [],
+    "shadow_acceptance_status_context": "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+    "source_link_aggregate_parity_passed": true,
+    "source_link_score_status": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY"
+  },
+  "next_executable_action": "Implement and run a local candidate-pipeline state-machine verifier for risk_increasing_pair_fill_cap_v1, using candidate_base/candidate_registry only. Do not SSH or start another shadow until that verifier returns KEEP.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "LOCAL_VERIFIER_SELECTION_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Source-link attribution selects one local candidate-pipeline verifier. It is not strategy economics, source-truth validation, private truth, or promotion evidence.",
+    "label": "KEEP_SOURCE_LINK_RESIDUAL_TAIL_LOCAL_VERIFIER_SELECTED"
+  },
+  "residual_tail_totals_from_source_link": {
+    "total_pair_qty_proxy": 72.0,
+    "total_residual_cost": 7.758375,
+    "total_residual_qty": 18.7275
+  },
+  "selected_next_local_verifier": {
+    "decision": "KEEP_LOCAL_VERIFIER_SELECTED",
+    "mechanism_family": "inventory_path_non_price_qty_cap",
+    "name": "risk_increasing_pair_fill_cap_v1",
+    "pass_criteria_for_future_verifier": {
+      "deployable": false,
+      "pair_qty_retention_vs_late_repair90_min": 0.85,
+      "private_truth_ready": false,
+      "promotion_gate_passed": false,
+      "residual_cost_rate_must_improve": true,
+      "residual_qty_rate_must_improve": true,
+      "seed_action_retention_vs_late_repair90_min": 0.75,
+      "stress100_worst_pnl_must_not_decline_materially": true
+    },
+    "rule_sketch": [
+      "Use late_repair90 as control.",
+      "When a candidate seed is risk_increasing (same_qty >= opp_qty before seed), cap accepted seed qty to current opposite residual qty.",
+      "If the capped qty is dust/zero, block as no opposite residual to pair.",
+      "Leave underweight repair and pairing-improving seeds on the existing path.",
+      "Report qty_reduction, blocks, seed_actions, pair_qty, residual_qty/cost rates, weighted_pair_cost, p90 proxy if available, stress100, worst-day, research_ranking and promotion_gate separately."
+    ],
+    "sample_policy": {
+      "allowed_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13",
+        "2026-05-16",
+        "2026-05-17",
+        "2026-05-18"
+      ],
+      "candidate_pipeline_source": "candidate_base/candidate_registry under POLY_BT_ROOT only",
+      "forbidden_days": [
+        "2026-05-14",
+        "2026-05-15",
+        "2026-05-19"
+      ],
+      "local_only": true
+    },
+    "why_this_not_summary_removal": "The verifier should cap live seed quantity before admission using current opposite residual inventory. It must not remove completed summaries or discover rows from replay_store_v2."
+  },
+  "side_effects": {
+    "events_jsonl_read": false,
+    "orders_cancels_redeems": false,
+    "raw_replay_scan": false,
+    "shared_ingress_modified": false,
+    "ssh": false
+  },
+  "top_residual_source_cross_buckets": [
+    {
+      "admitted_transition_share": 0.087912,
+      "admitted_transitions": 8.0,
+      "immediate_pair_actions": 5.0,
+      "immediate_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_gt_1p05": 1.0,
+        "pair_cost_lt_0p95": 2.0
+      },
+      "immediate_pair_qty_proxy": 6.5,
+      "immediate_pair_qty_proxy_share": 0.090278,
+      "offset_bucket": "offset_60_90",
+      "residual_cost": 2.389075,
+      "residual_cost_share": 0.307935,
+      "residual_count": 5.0,
+      "residual_qty": 5.0025,
+      "residual_qty_share": 0.267121,
+      "risk_direction": "repair_or_pairing_improving",
+      "side": "YES",
+      "source_side_offset_risk_direction": "YES|offset_60_90|repair_or_pairing_improving"
+    },
+    {
+      "admitted_transition_share": 0.098901,
+      "admitted_transitions": 9.0,
+      "immediate_pair_actions": 4.0,
+      "immediate_pair_cost_buckets": {
+        "pair_cost_1p00_1p05": 2.0,
+        "pair_cost_gt_1p05": 1.0,
+        "pair_cost_lt_0p95": 1.0
+      },
+      "immediate_pair_qty_proxy": 6.0,
+      "immediate_pair_qty_proxy_share": 0.083333,
+      "offset_bucket": "offset_60_90",
+      "residual_cost": 1.775,
+      "residual_cost_share": 0.228785,
+      "residual_count": 3.0,
+      "residual_qty": 3.75,
+      "residual_qty_share": 0.20024,
+      "risk_direction": "risk_increasing",
+      "side": "YES",
+      "source_side_offset_risk_direction": "YES|offset_60_90|risk_increasing"
+    },
+    {
+      "admitted_transition_share": 0.065934,
+      "admitted_transitions": 6.0,
+      "immediate_pair_actions": 0.0,
+      "immediate_pair_cost_buckets": {},
+      "immediate_pair_qty_proxy": 0.0,
+      "immediate_pair_qty_proxy_share": 0.0,
+      "offset_bucket": "offset_30_60",
+      "residual_cost": 1.0,
+      "residual_cost_share": 0.128893,
+      "residual_count": 2.0,
+      "residual_qty": 2.5,
+      "residual_qty_share": 0.133494,
+      "risk_direction": "risk_increasing",
+      "side": "YES",
+      "source_side_offset_risk_direction": "YES|offset_30_60|risk_increasing"
+    },
+    {
+      "admitted_transition_share": 0.087912,
+      "admitted_transitions": 8.0,
+      "immediate_pair_actions": 5.0,
+      "immediate_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 3.0
+      },
+      "immediate_pair_qty_proxy": 7.5,
+      "immediate_pair_qty_proxy_share": 0.104167,
+      "offset_bucket": "offset_30_60",
+      "residual_cost": 0.7625,
+      "residual_cost_share": 0.098281,
+      "residual_count": 2.0,
+      "residual_qty": 2.5,
+      "residual_qty_share": 0.133494,
+      "risk_direction": "repair_or_pairing_improving",
+      "side": "YES",
+      "source_side_offset_risk_direction": "YES|offset_30_60|repair_or_pairing_improving"
+    },
+    {
+      "admitted_transition_share": 0.098901,
+      "admitted_transitions": 9.0,
+      "immediate_pair_actions": 5.0,
+      "immediate_pair_cost_buckets": {
+        "pair_cost_0p95_1p00": 1.0,
+        "pair_cost_1p00_1p05": 1.0,
+        "pair_cost_lt_0p95": 3.0
+      },
+      "immediate_pair_qty_proxy": 6.5,
+      "immediate_pair_qty_proxy_share": 0.090278,
+      "offset_bucket": "offset_90_120",
+      "residual_cost": 0.6818,
+      "residual_cost_share": 0.087879,
+      "residual_count": 3.0,
+      "residual_qty": 2.475,
+      "residual_qty_share": 0.132159,
+      "risk_direction": "repair_or_pairing_improving",
+      "side": "NO",
+      "source_side_offset_risk_direction": "NO|offset_90_120|repair_or_pairing_improving"
+    },
+    {
+      "admitted_transition_share": 0.043956,
+      "admitted_transitions": 4.0,
+      "immediate_pair_actions": 1.0,
+      "immediate_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 1.0
+      },
+      "immediate_pair_qty_proxy": 1.5,
+      "immediate_pair_qty_proxy_share": 0.020833,
+      "offset_bucket": "offset_0_30",
+      "residual_cost": 0.6,
+      "residual_cost_share": 0.077336,
+      "residual_count": 1.0,
+      "residual_qty": 1.25,
+      "residual_qty_share": 0.066747,
+      "risk_direction": "risk_increasing",
+      "side": "YES",
+      "source_side_offset_risk_direction": "YES|offset_0_30|risk_increasing"
+    },
+    {
+      "admitted_transition_share": 0.043956,
+      "admitted_transitions": 4.0,
+      "immediate_pair_actions": 2.0,
+      "immediate_pair_cost_buckets": {
+        "pair_cost_lt_0p95": 2.0
+      },
+      "immediate_pair_qty_proxy": 3.0,
+      "immediate_pair_qty_proxy_share": 0.041667,
+      "offset_bucket": "offset_0_30",
+      "residual_cost": 0.55,
+      "residual_cost_share": 0.070891,
+      "residual_count": 1.0,
+      "residual_qty": 1.25,
+      "residual_qty_share": 0.066747,
+      "risk_direction": "repair_or_pairing_improving",
+      "side": "YES",
+      "source_side_offset_risk_direction": "YES|offset_0_30|repair_or_pairing_improving"
+    }
+  ]
+}

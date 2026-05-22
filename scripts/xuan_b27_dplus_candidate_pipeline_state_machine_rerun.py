@@ -56,6 +56,7 @@ class Profile:
     risk_increasing_public_trade_px_hi: float | None = None
     risk_increasing_public_trade_px_hi_side: str | None = None
     risk_increasing_imbalance_qty_cap: float | None = None
+    risk_increasing_pair_fill_cap: bool = False
     late_repair_fill_to_balance_after_s: float | None = None
     fill_haircut: float = 0.25
     max_seed_qty: float = 60.0
@@ -616,6 +617,16 @@ def maybe_seed(
         and same_qty < opp_qty
     )
     qty = base_qty
+    risk_increasing_pair_fill_cap_active = (
+        profile.risk_increasing_pair_fill_cap and same_qty > opp_qty + DUST
+    )
+    if risk_increasing_pair_fill_cap_active:
+        capped_qty = min(qty, max(0.0, opp_qty))
+        add_count(metrics, day, "seed_risk_increasing_pair_fill_cap_candidate")
+        if capped_qty < qty - DUST:
+            add_count(metrics, day, "seed_qty_cap_risk_increasing_pair_fill")
+            add_metric(metrics, day, "seed_risk_increasing_pair_fill_qty_reduction", qty - capped_qty)
+        qty = capped_qty
     if late_fill_to_balance_active:
         deficit_qty = max(0.0, opp_qty - same_qty)
         capped_qty = min(qty, deficit_qty)
@@ -625,6 +636,8 @@ def maybe_seed(
             add_metric(metrics, day, "seed_late_fill_to_balance_qty_reduction", qty - capped_qty)
         qty = capped_qty
     if qty <= profile.dust_qty:
+        if risk_increasing_pair_fill_cap_active:
+            add_count(metrics, day, "seed_block_risk_increasing_pair_fill_cap_qty")
         if late_fill_to_balance_active:
             add_count(metrics, day, "seed_block_late_fill_to_balance_qty")
         return
@@ -746,6 +759,16 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_block_target": int(metrics["seed_block_target"]),
         "seed_block_imbalance_qty": int(metrics["seed_block_imbalance_qty"]),
         "seed_block_dynamic_imbalance_qty": int(metrics["seed_block_dynamic_imbalance_qty"]),
+        "seed_risk_increasing_pair_fill_cap_candidate": int(
+            metrics["seed_risk_increasing_pair_fill_cap_candidate"]
+        ),
+        "seed_qty_cap_risk_increasing_pair_fill": int(metrics["seed_qty_cap_risk_increasing_pair_fill"]),
+        "seed_block_risk_increasing_pair_fill_cap_qty": int(
+            metrics["seed_block_risk_increasing_pair_fill_cap_qty"]
+        ),
+        "seed_risk_increasing_pair_fill_qty_reduction": round(
+            float(metrics["seed_risk_increasing_pair_fill_qty_reduction"]), 6
+        ),
         "seed_late_fill_to_balance_candidate": int(metrics["seed_late_fill_to_balance_candidate"]),
         "seed_qty_cap_late_fill_to_balance": int(metrics["seed_qty_cap_late_fill_to_balance"]),
         "seed_block_late_fill_to_balance_qty": int(metrics["seed_block_late_fill_to_balance_qty"]),
