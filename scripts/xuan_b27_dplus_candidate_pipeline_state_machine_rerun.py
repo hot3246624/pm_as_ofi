@@ -57,6 +57,9 @@ class Profile:
     risk_increasing_public_trade_px_hi_side: str | None = None
     risk_increasing_imbalance_qty_cap: float | None = None
     risk_increasing_pair_fill_cap: bool = False
+    micro_deficit_repair_guard: bool = False
+    micro_deficit_repair_max_deficit_qty: float = 0.25
+    micro_deficit_repair_open_qty_cap: float = 1.0
     complete_set_dust_opp_late_repair_sizer: bool = False
     complete_set_dust_opp_late_repair_after_s: float = 90.0
     complete_set_dust_opp_late_repair_qty_buffer: float = 1.0
@@ -1036,6 +1039,16 @@ def maybe_seed(
     same_qty = lot_qty(state.lots[side])
     opp_qty = lot_qty(state.lots[other(side)])
     risk_increasing_seed = same_qty >= opp_qty
+    micro_deficit_repair_guard_active = (
+        profile.micro_deficit_repair_guard
+        and not risk_increasing_seed
+        and 0.0 < opp_qty - same_qty <= profile.micro_deficit_repair_max_deficit_qty + 1e-12
+        and same_qty + opp_qty <= profile.micro_deficit_repair_open_qty_cap + 1e-12
+    )
+    if micro_deficit_repair_guard_active:
+        add_count(metrics, day, "seed_micro_deficit_repair_guard_candidate")
+        add_count(metrics, day, "seed_block_micro_deficit_repair_guard")
+        return
     if (
         profile.risk_increasing_public_trade_px_hi is not None
         and trade_px > profile.risk_increasing_public_trade_px_hi
@@ -1317,6 +1330,8 @@ def finish_metrics(profile: Profile, metrics: defaultdict[str, float], base_day_
         "seed_risk_increasing_pair_fill_qty_reduction": round(
             float(metrics["seed_risk_increasing_pair_fill_qty_reduction"]), 6
         ),
+        "seed_micro_deficit_repair_guard_candidate": int(metrics["seed_micro_deficit_repair_guard_candidate"]),
+        "seed_block_micro_deficit_repair_guard": int(metrics["seed_block_micro_deficit_repair_guard"]),
         "seed_late_fill_to_balance_candidate": int(metrics["seed_late_fill_to_balance_candidate"]),
         "seed_qty_cap_late_fill_to_balance": int(metrics["seed_qty_cap_late_fill_to_balance"]),
         "seed_block_late_fill_to_balance_qty": int(metrics["seed_block_late_fill_to_balance_qty"]),
