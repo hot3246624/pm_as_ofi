@@ -1,0 +1,168 @@
+{
+  "active_lane": "shadow_observe",
+  "artifact": "xuan_b27_dplus_shadow_review_residual_tail_exemplar_completion",
+  "created_utc": "2026-05-22T09:20:12Z",
+  "decision": "UNKNOWN",
+  "label": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF_SIGNAL_INSUFFICIENT",
+  "approved_question": "late_repair90_residual_tail_exemplar_no_order_review",
+  "remote_run": {
+    "remote_run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_residual_tail_exemplar_review_edge007_20260522T083136Z",
+    "runner_pid": 216963,
+    "finished_naturally": true,
+    "postrun_pid_alive": false,
+    "summary_json_count": 26,
+    "aggregate_report_present": true,
+    "stdout_stderr_ok": true
+  },
+  "pullback": {
+    "local_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/remote_clean",
+    "allowlisted_files_pulled": [
+      "output/manifest.json",
+      "output/aggregate_report.json",
+      "output/*.summary.json",
+      "stdout.log",
+      "stderr.log",
+      "runner.pid"
+    ],
+    "events_jsonl_pulled": false,
+    "raw_replay_or_collector_scanned": false
+  },
+  "local_review": {
+    "review_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_residual_tail_exemplar_driver_20260522T083136Z/local_review_20260522T092012Z",
+    "source_link_score": "source_link_transition_bucket_score.json",
+    "shadow_trading_acceptance": "shadow_trading_acceptance/manifest.json",
+    "residual_tail_exemplar_score": "residual_tail_exemplar_score/score.json",
+    "mechanism_selection": "residual_tail_exemplar_mechanism_selection.json"
+  },
+  "shadow_trading_acceptance": {
+    "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE",
+    "acceptance_passed": false,
+    "checks": {
+      "no_order_safety_ok": true,
+      "sample_size_ok": false,
+      "pnl_metrics_ok": true,
+      "promotion_risk_budget_ok": false,
+      "residual_risk_ok": false
+    },
+    "trading_metrics": {
+      "markets": 26,
+      "candidates": 99,
+      "queue_supported_fills": 71,
+      "pair_actions": 39,
+      "pair_qty": 47.5,
+      "pair_pnl": 3.270325,
+      "fee_adjusted_pair_pnl_proxy": 2.6132,
+      "roi_on_filled_cost": 0.08342346593880337,
+      "filled_qty": 88.425,
+      "filled_cost": 39.2015,
+      "net_pair_cost_p90": 1.0499999999999998,
+      "residual_qty": 20.925,
+      "residual_cost": 7.86645,
+      "residual_qty_share_of_filled": 0.23664122,
+      "residual_cost_share_of_filled_cost": 0.20066707,
+      "pair_tail_loss_share_of_pair_pnl": 0.09088474,
+      "material_residual_lots": 0,
+      "conservative_risk_adjusted_pnl_proxy": -5.49075
+    },
+    "failures": [
+      "shadow_trading_sample_size_failed",
+      "shadow_trading_promotion_risk_budget_failed"
+    ]
+  },
+  "source_link_scorer": {
+    "status": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY",
+    "aggregate_parity_passed": true,
+    "transition_totals": {
+      "admitted": 99.0,
+      "blocked": 4341.0,
+      "total": 4440.0,
+      "admitted_transition_share": 0.022297
+    },
+    "cross_bucket_fields_present": true
+  },
+  "residual_tail_exemplar_score": {
+    "status": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF",
+    "review_passed": false,
+    "scorer_ready": true,
+    "checks": {
+      "no_order_safety_ok": true,
+      "source_link_scorer_ok": true,
+      "required_field_coverage_ok": true,
+      "source_sequence_coverage_ok": true,
+      "metric_budgets_ok": false
+    },
+    "exemplar_metrics": {
+      "aggregate_exemplar_row_count": 17,
+      "summary_exemplar_row_count": 17,
+      "required_field_coverage": 1.0,
+      "source_sequence_coverage": 1.0,
+      "quote_intent_coverage": 1.0,
+      "source_order_coverage": 1.0,
+      "total_exemplar_source_residual_cost": 7.86645,
+      "total_exemplar_source_pair_qty": 0.035,
+      "top1_residual_cost_share": 0.088986,
+      "top3_residual_cost_share": 0.2606,
+      "top5_residual_cost_share": 0.412232,
+      "side_counts": {
+        "NO": 9,
+        "YES": 8
+      },
+      "risk_direction_counts": {
+        "repair_or_pairing_improving": 10,
+        "risk_increasing": 7
+      }
+    },
+    "shadow_gate_failures": [
+      "candidates_below_100",
+      "net_pair_cost_p90_above_1.0",
+      "residual_qty_share_above_15pct",
+      "residual_cost_share_above_20pct",
+      "pair_tail_loss_share_above_5pct"
+    ]
+  },
+  "mechanism_selector": {
+    "decision_label": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_MECHANISM_SIGNAL_INSUFFICIENT",
+    "selected_next_target": null,
+    "blockers": [
+      "residual_tail_not_concentrated_enough",
+      "top_tail_group_has_insufficient_pair_context_for_sample_preserving_rule"
+    ],
+    "top_source_side_offset_risk_direction": "NO|offset_90_120|repair_or_pairing_improving",
+    "top_residual_cost_share": 0.150958,
+    "top_pair_qty_share": 0.0
+  },
+  "public_profile_context": {
+    "profile": "0xce25e214d5cfe4f459cf67f08df581885aae7fdc",
+    "interpretation": "Public/proxy only. Recent public activity suggests a 15m crypto complete-set/pair-cost style, which may inspire a future local complete_set_pair_cost_context_verifier_v1 after this UNKNOWN result, but it is not private truth or promotion evidence."
+  },
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "label": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF_SIGNAL_INSUFFICIENT",
+    "interpretation": "No-order economics remain positive, and residual-tail fields are complete, but sample size and normalized residual/pair-tail risk budgets failed. Exemplar tail is too broad to select a safe sample-preserving local mechanism."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "private_truth_ready": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "status": "NO_ORDER_SHADOW_REVIEW_NOT_PROMOTION_EVIDENCE",
+    "hard_blockers": [
+      "shadow_trading_sample_size_failed",
+      "shadow_trading_promotion_risk_budget_failed",
+      "mechanism_signal_insufficient"
+    ]
+  },
+  "side_effects": {
+    "ssh_used_for_approved_polling_and_pullback": true,
+    "second_shadow_started": false,
+    "events_jsonl_read_or_pulled": false,
+    "raw_replay_or_collector_scanned": false,
+    "shared_ingress_modified": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_executable_action": "Restore heartbeat cadence to 30 minutes. Do not repeat this exact shadow or start canary. If continuing locally, define a complete_set_pair_cost_context_verifier_v1 from public/proxy complete-set inspiration and current no-order exemplar outputs, with strict private-truth and promotion guards."
+}
