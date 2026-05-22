@@ -361,6 +361,7 @@ class RunnerConfig:
     fill_to_balance_diagnostic_event_lite_summary: bool = False
     portfolio_ledger_event_lite_summary: bool = False
     source_link_transition_event_lite_summary: bool = False
+    source_link_residual_tail_exemplars_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -411,6 +412,12 @@ class VirtualOrder:
     trigger_source_sequence_id: Any | None = None
     opposite_trigger_ts_ms: int | None = None
     source_risk_direction: str = "unknown"
+    pre_seed_same_qty: float | None = None
+    pre_seed_opp_qty: float | None = None
+    pre_seed_same_cost: float | None = None
+    pre_seed_opp_cost: float | None = None
+    ledger_proxy_before: float | None = None
+    ledger_proxy_after: float | None = None
     queue_credit: float = 0.0
     first_bid_touch_ms: int | None = None
     first_trade_touch_ms: int | None = None
@@ -434,6 +441,15 @@ class Lot:
     trigger_ts_ms: int | None = None
     trigger_source_sequence_id: Any | None = None
     source_risk_direction: str = "unknown"
+    pre_seed_same_qty: float | None = None
+    pre_seed_opp_qty: float | None = None
+    pre_seed_same_cost: float | None = None
+    pre_seed_opp_cost: float | None = None
+    ledger_proxy_before: float | None = None
+    ledger_proxy_after: float | None = None
+    source_pair_qty: float = 0.0
+    source_pair_cost: float = 0.0
+    source_pair_pnl: float = 0.0
 
     @property
     def cost(self) -> float:
@@ -837,6 +853,43 @@ class DPlusRunner:
         )
         return diag
 
+    def source_link_residual_tail_exemplars(self, residual_lots: list[Lot], summary_ts_ms: int) -> list[dict[str, Any]]:
+        if not (self.cfg.event_lite_summary and self.cfg.source_link_residual_tail_exemplars_event_lite_summary):
+            return []
+        exemplars: list[dict[str, Any]] = []
+        for lot in residual_lots:
+            residual_age_ms = max(0, summary_ts_ms - lot.fill_ms)
+            exemplars.append(
+                {
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "lot_id": lot.id,
+                    "quote_intent_id": lot.quote_intent_id,
+                    "source_order_id": lot.source_order_id,
+                    "source_sequence_id": lot.trigger_source_sequence_id,
+                    "side": lot.side,
+                    "offset_s": lot.offset_s,
+                    "source_risk_direction": lot.source_risk_direction,
+                    "trigger_px": lot.trigger_px,
+                    "trigger_size": lot.trigger_size,
+                    "trigger_ts_ms": lot.trigger_ts_ms,
+                    "pre_seed_same_qty": round(lot.pre_seed_same_qty or 0.0, 6),
+                    "pre_seed_opp_qty": round(lot.pre_seed_opp_qty or 0.0, 6),
+                    "pre_seed_same_cost": round(lot.pre_seed_same_cost or 0.0, 6),
+                    "pre_seed_opp_cost": round(lot.pre_seed_opp_cost or 0.0, 6),
+                    "ledger_proxy_before": round(lot.ledger_proxy_before or 0.0, 6),
+                    "ledger_proxy_after": round(lot.ledger_proxy_after or 0.0, 6),
+                    "source_pair_qty": round(lot.source_pair_qty, 6),
+                    "source_pair_cost": round(lot.source_pair_cost, 6),
+                    "source_pair_pnl": round(lot.source_pair_pnl, 6),
+                    "source_residual_qty": round(lot.qty, 6),
+                    "source_residual_cost": round(lot.cost, 6),
+                    "source_residual_age_ms": residual_age_ms,
+                    "seed_px": lot.px,
+                }
+            )
+        return sorted(exemplars, key=lambda item: item.get("source_residual_cost", 0.0), reverse=True)[:20]
+
     def record_pair_source_event_lite(
         self,
         *,
@@ -1016,6 +1069,12 @@ class DPlusRunner:
             trigger_ts_ms=order.trigger_ts_ms,
             trigger_source_sequence_id=order.trigger_source_sequence_id,
             source_risk_direction=order.source_risk_direction,
+            pre_seed_same_qty=order.pre_seed_same_qty,
+            pre_seed_opp_qty=order.pre_seed_opp_qty,
+            pre_seed_same_cost=order.pre_seed_same_cost,
+            pre_seed_opp_cost=order.pre_seed_opp_cost,
+            ledger_proxy_before=order.ledger_proxy_before,
+            ledger_proxy_after=order.ledger_proxy_after,
         )
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
@@ -1040,6 +1099,11 @@ class DPlusRunner:
             self.metrics.pair_costs.append(pair_cost)
             self.metrics.net_pair_costs.append(pair_cost)
             self.metrics.pair_wait_ms.append(ts_ms - older)
+            pair_pnl = take * (1.0 - pair_cost)
+            for source_lot in (a, b):
+                source_lot.source_pair_qty += take
+                source_lot.source_pair_cost += take * pair_cost
+                source_lot.source_pair_pnl += pair_pnl
             a.qty -= take
             b.qty -= take
             matched_pair_id = f"{self.slug}:pair:{self.metrics.pair_actions}"
@@ -1096,6 +1160,9 @@ class DPlusRunner:
                 self.metrics.net_pair_costs.append(net_pair)
                 self.metrics.salvage_wait_ms.append(age)
                 self.metrics.pair_wait_ms.append(age)
+                lot.source_pair_qty += take
+                lot.source_pair_cost += take * net_pair
+                lot.source_pair_pnl += take * (1.0 - net_pair)
                 matched_pair_id = f"{self.slug}:salvage:{self.metrics.salvage_actions}"
                 self.record_source_link_pair_transition(qty=take, net_pair_cost=net_pair, sources=[lot])
                 self.record_pair_source_event_lite(
@@ -1281,13 +1348,36 @@ class DPlusRunner:
         opposite_trigger_ts_ms = (
             ts_ms - activation_opp_age_ms if activation_opp_age_ms is not None else opposite_seen_ms
         )
-        order = VirtualOrder(id=self.next_order_id, quote_intent_id=quote_intent_id, condition_id=self.condition_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, accepted_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size, trigger_ts_ms=ts_ms, trigger_source_sequence_id=trigger_source_sequence_id, opposite_trigger_ts_ms=opposite_trigger_ts_ms, source_risk_direction=source_risk_direction)
+        order = VirtualOrder(
+            id=self.next_order_id,
+            quote_intent_id=quote_intent_id,
+            condition_id=self.condition_id,
+            side=side,
+            px=seed_px,
+            qty=qty,
+            created_ms=ts_ms,
+            accepted_ms=ts_ms,
+            offset_s=float(offset),
+            trigger_px=px,
+            trigger_size=size,
+            trigger_ts_ms=ts_ms,
+            trigger_source_sequence_id=trigger_source_sequence_id,
+            opposite_trigger_ts_ms=opposite_trigger_ts_ms,
+            source_risk_direction=source_risk_direction,
+            pre_seed_same_qty=same_qty,
+            pre_seed_opp_qty=opp_qty,
+            pre_seed_same_cost=same_cost_before,
+            pre_seed_opp_cost=opp_cost_before,
+            ledger_proxy_before=ledger_proxy_before,
+        )
         self.next_order_id += 1
         self.pending.append(order)
         self.last_seed_ms = ts_ms
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
+        ledger_proxy_after = self.online_ledger_proxy()
+        order.ledger_proxy_after = ledger_proxy_after
         self.record_event_lite_candidate(side, seed_px, px, offset, qty)
         self.record_source_link_transition(
             status="admitted",
@@ -1300,7 +1390,7 @@ class DPlusRunner:
             same_cost=same_cost_before,
             opp_cost=opp_cost_before,
             ledger_proxy_before=ledger_proxy_before,
-            ledger_proxy_after=self.online_ledger_proxy(),
+            ledger_proxy_after=ledger_proxy_after,
             quote_intent_id=quote_intent_id,
             source_order_id=order.id,
             source_sequence_id=trigger_source_sequence_id,
@@ -1309,10 +1399,10 @@ class DPlusRunner:
         self.record_activation_seen(side, ts_ms)
 
     def write_summary(self, final: bool = False) -> None:
+        summary_ts_ms = now_ms()
         if final:
-            ts_ms = now_ms()
             for order in self.pending_orders():
-                order.cancel_ms = ts_ms
+                order.cancel_ms = summary_ts_ms
                 order.cancel_reason = "final"
                 self.metrics.cancelled_orders += 1
                 if order.first_bid_touch_ms or order.first_trade_touch_ms:
@@ -1329,7 +1419,7 @@ class DPlusRunner:
             "script": "xuan_dplus_passive_passive_shadow_runner.py",
             "slug": self.slug,
             "final": final,
-            "ts_ms": now_ms(),
+            "ts_ms": summary_ts_ms,
             "book_ticks": self.book_ticks,
             "trade_ticks": self.trade_ticks,
             "sell_triggers": self.sell_triggers,
@@ -1374,7 +1464,7 @@ class DPlusRunner:
                 "salvage_wait_p90_ms": pct(m.salvage_wait_ms, 0.9),
             },
             "top_residual_lots": [
-                {"lot_id": lot.id, "quote_intent_id": lot.quote_intent_id, "side": lot.side, "qty": round(lot.qty, 6), "cost": round(lot.cost, 6), "px": lot.px, "age_ms": now_ms() - lot.fill_ms, "source_order_id": lot.source_order_id}
+                {"lot_id": lot.id, "quote_intent_id": lot.quote_intent_id, "side": lot.side, "qty": round(lot.qty, 6), "cost": round(lot.cost, 6), "px": lot.px, "age_ms": summary_ts_ms - lot.fill_ms, "source_order_id": lot.source_order_id}
                 for lot in sorted(residual_lots, key=lambda x: x.cost, reverse=True)[:10]
             ],
         }
@@ -1434,6 +1524,11 @@ class DPlusRunner:
                 summary["event_lite"]["portfolio_ledger_diagnostics"] = self.portfolio_ledger_diagnostics(residual_lots)
             if self.cfg.source_link_transition_event_lite_summary:
                 summary["event_lite"]["source_link_transition_diagnostics"] = self.source_link_transition_diagnostics(residual_lots)
+            if self.cfg.source_link_residual_tail_exemplars_event_lite_summary:
+                summary["event_lite"]["source_link_residual_tail_exemplars"] = self.source_link_residual_tail_exemplars(
+                    residual_lots,
+                    summary_ts_ms,
+                )
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -1690,6 +1785,14 @@ def aggregate(out: Path) -> dict[str, Any]:
                         if "slug" not in item:
                             item = {**item, "slug": s.get("slug")}
                         top_sources.append(item)
+            residual_tail_exemplars = lite.get("source_link_residual_tail_exemplars")
+            if isinstance(residual_tail_exemplars, list):
+                top_tail = event_lite.setdefault("source_link_residual_tail_exemplars", [])
+                for item in residual_tail_exemplars:
+                    if isinstance(item, dict):
+                        if "slug" not in item:
+                            item = {**item, "slug": s.get("slug")}
+                        top_tail.append(item)
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -1731,6 +1834,13 @@ def aggregate(out: Path) -> dict[str, Any]:
         portfolio_diag = event_lite.get("portfolio_ledger_diagnostics")
         if isinstance(portfolio_diag, dict):
             finalize_portfolio_ledger_diagnostics(portfolio_diag)
+        residual_tail_exemplars = event_lite.get("source_link_residual_tail_exemplars")
+        if isinstance(residual_tail_exemplars, list):
+            event_lite["source_link_residual_tail_exemplars"] = sorted(
+                residual_tail_exemplars,
+                key=lambda item: item.get("source_residual_cost", 0.0) if isinstance(item, dict) else 0.0,
+                reverse=True,
+            )[:50]
         aggregate_report["event_lite"] = event_lite
     (out / "aggregate_report.json").write_text(json.dumps(aggregate_report, indent=2, sort_keys=True) + "\n")
     return aggregate_report
@@ -1799,6 +1909,7 @@ async def main() -> None:
     ap.add_argument("--fill-to-balance-diagnostic-event-lite-summary", action="store_true", help="with --event-lite-summary and --late-repair-fill-to-balance-after-s, emit fill-to-balance deficit/base/capped/reduction diagnostic buckets")
     ap.add_argument("--portfolio-ledger-event-lite-summary", action="store_true", help="with --event-lite-summary, emit per-condition paired-inventory and residual risk-adjusted ledger diagnostics")
     ap.add_argument("--source-link-transition-event-lite-summary", action="store_true", help="with --event-lite-summary, emit candidate transition source-link diagnostics for admitted/blocked/pair/residual paths")
+    ap.add_argument("--source-link-residual-tail-exemplars-event-lite-summary", action="store_true", help="with --event-lite-summary, emit top residual source exemplars with action-level source/pair/residual fields")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -1836,6 +1947,7 @@ async def main() -> None:
         fill_to_balance_diagnostic_event_lite_summary=args.fill_to_balance_diagnostic_event_lite_summary,
         portfolio_ledger_event_lite_summary=args.portfolio_ledger_event_lite_summary,
         source_link_transition_event_lite_summary=args.source_link_transition_event_lite_summary,
+        source_link_residual_tail_exemplars_event_lite_summary=args.source_link_residual_tail_exemplars_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -1864,6 +1976,8 @@ async def main() -> None:
         raise SystemExit("--portfolio-ledger-event-lite-summary requires --event-lite-summary")
     if cfg.source_link_transition_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--source-link-transition-event-lite-summary requires --event-lite-summary")
+    if cfg.source_link_residual_tail_exemplars_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--source-link-residual-tail-exemplars-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

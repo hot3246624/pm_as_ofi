@@ -1,0 +1,44 @@
+{
+  "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_source_link_residual_tail_exemplars_smoke",
+  "checks": {
+    "aggregate_merges_residual_tail_exemplars": true,
+    "cli_requires_event_lite": true,
+    "default_event_lite_residual_tail_exemplars_absent": true,
+    "enabled_metrics_match_default": true,
+    "source_link_transition_residual_buckets_still_present": true,
+    "summary_exemplar_has_pair_contribution": true,
+    "summary_exemplar_has_pre_seed_inventory_and_ledger": true,
+    "summary_exemplar_has_required_fields": true,
+    "summary_exemplar_has_residual_contribution": true,
+    "summary_exemplar_links_quote_order_sequence": true
+  },
+  "decision_label": "KEEP",
+  "hypothesis": "default-off residual-tail exemplars expose action-level source, pre-seed, pair, and residual fields without changing default runner behavior",
+  "next_action": "Run a local causal verifier over residual-tail exemplars once a bounded no-order shadow has produced summaries with this default-off flag; do not start EC2 shadow/canary from this smoke alone.",
+  "outputs": {
+    "default_aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_residual_tail_exemplars_smoke_20260522T050159Z/residual_tail_default_off/aggregate_report.json",
+    "default_summary": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_residual_tail_exemplars_smoke_20260522T050159Z/residual_tail_default_off/btc-updown-5m-1900000000.summary.json",
+    "enabled_aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_residual_tail_exemplars_smoke_20260522T050159Z/residual_tail_enabled/aggregate_report.json",
+    "enabled_summary": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_link_residual_tail_exemplars_smoke_20260522T050159Z/residual_tail_enabled/btc-updown-5m-1900000000.summary.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "INSTRUMENTATION_SMOKE_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "network_started": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "tool": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/tools/xuan_dplus_passive_passive_shadow_runner.py"
+}
