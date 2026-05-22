@@ -209,6 +209,18 @@ def inventory_risk_direction(same_qty: float | None, opp_qty: float | None) -> s
     return "risk_increasing" if same_qty + DUST >= opp_qty else "repair_or_pairing_improving"
 
 
+def is_micro_deficit_repair_context(
+    same_qty: float | None,
+    opp_qty: float | None,
+    max_deficit_qty: float,
+    open_qty_cap: float,
+) -> bool:
+    if same_qty is None or opp_qty is None:
+        return False
+    deficit = opp_qty - same_qty
+    return 0.0 < deficit <= max_deficit_qty + 1e-12 and same_qty + opp_qty <= open_qty_cap + 1e-12
+
+
 def side_offset_risk_key(side: str | None, offset_s: float | None, risk_direction: str) -> str:
     return f"{side or 'unknown'}|{offset_bucket(offset_s)}|{risk_direction}"
 
@@ -343,6 +355,9 @@ class RunnerConfig:
     late_repair_after_s: float | None = None
     late_repair_only_after_s: float | None = None
     late_repair_fill_to_balance_after_s: float | None = None
+    micro_deficit_repair_guard: bool = False
+    micro_deficit_repair_max_deficit_qty: float = 0.25
+    micro_deficit_repair_open_qty_cap: float = 1.0
     cooldown_ms: int = 5_000
     order_ttl_ms: int = 120_000
     imbalance_qty_cap: float = 2.0
@@ -412,6 +427,8 @@ class VirtualOrder:
     trigger_source_sequence_id: Any | None = None
     opposite_trigger_ts_ms: int | None = None
     source_risk_direction: str = "unknown"
+    micro_deficit_repair_guard_candidate: bool = False
+    micro_deficit_repair_deficit: float | None = None
     pre_seed_same_qty: float | None = None
     pre_seed_opp_qty: float | None = None
     pre_seed_same_cost: float | None = None
@@ -441,6 +458,8 @@ class Lot:
     trigger_ts_ms: int | None = None
     trigger_source_sequence_id: Any | None = None
     source_risk_direction: str = "unknown"
+    micro_deficit_repair_guard_candidate: bool = False
+    micro_deficit_repair_deficit: float | None = None
     pre_seed_same_qty: float | None = None
     pre_seed_opp_qty: float | None = None
     pre_seed_same_cost: float | None = None
@@ -482,6 +501,8 @@ class Metrics:
     late_repair_fill_to_balance_caps: int = 0
     late_repair_fill_to_balance_blocks: int = 0
     late_repair_fill_to_balance_qty_reduction: float = 0.0
+    micro_deficit_repair_guard_candidates: int = 0
+    micro_deficit_repair_guard_blocks: int = 0
     pair_costs: list[float] = field(default_factory=list)
     net_pair_costs: list[float] = field(default_factory=list)
     fill_wait_ms: list[int] = field(default_factory=list)
@@ -870,11 +891,14 @@ class DPlusRunner:
                     "side": lot.side,
                     "offset_s": lot.offset_s,
                     "source_risk_direction": lot.source_risk_direction,
+                    "micro_deficit_repair_guard_candidate": lot.micro_deficit_repair_guard_candidate,
+                    "micro_deficit_repair_deficit": round(lot.micro_deficit_repair_deficit or 0.0, 6),
                     "trigger_px": lot.trigger_px,
                     "trigger_size": lot.trigger_size,
                     "trigger_ts_ms": lot.trigger_ts_ms,
                     "pre_seed_same_qty": round(lot.pre_seed_same_qty or 0.0, 6),
                     "pre_seed_opp_qty": round(lot.pre_seed_opp_qty or 0.0, 6),
+                    "pre_seed_open_qty": round((lot.pre_seed_same_qty or 0.0) + (lot.pre_seed_opp_qty or 0.0), 6),
                     "pre_seed_same_cost": round(lot.pre_seed_same_cost or 0.0, 6),
                     "pre_seed_opp_cost": round(lot.pre_seed_opp_cost or 0.0, 6),
                     "ledger_proxy_before": round(lot.ledger_proxy_before or 0.0, 6),
@@ -1069,6 +1093,8 @@ class DPlusRunner:
             trigger_ts_ms=order.trigger_ts_ms,
             trigger_source_sequence_id=order.trigger_source_sequence_id,
             source_risk_direction=order.source_risk_direction,
+            micro_deficit_repair_guard_candidate=order.micro_deficit_repair_guard_candidate,
+            micro_deficit_repair_deficit=order.micro_deficit_repair_deficit,
             pre_seed_same_qty=order.pre_seed_same_qty,
             pre_seed_opp_qty=order.pre_seed_opp_qty,
             pre_seed_same_cost=order.pre_seed_same_cost,
@@ -1308,6 +1334,21 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
 
+        micro_deficit_repair_candidate = is_micro_deficit_repair_context(
+            same_qty,
+            opp_qty,
+            self.cfg.micro_deficit_repair_max_deficit_qty,
+            self.cfg.micro_deficit_repair_open_qty_cap,
+        )
+        micro_deficit_repair_deficit = max(0.0, opp_qty - same_qty)
+        if micro_deficit_repair_candidate:
+            self.metrics.micro_deficit_repair_guard_candidates += 1
+        if self.cfg.micro_deficit_repair_guard and micro_deficit_repair_candidate:
+            self.metrics.micro_deficit_repair_guard_blocks += 1
+            self.block("micro_deficit_repair_guard", side=side, public_trade_px=px, offset_s=offset)
+            self.record_activation_seen(side, ts_ms)
+            return
+
         room_cost = self.cfg.max_open_cost - self.total_open_cost()
         base_qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
         fill_to_balance_active = self.cfg.late_repair_fill_to_balance_active(offset) and same_qty < opp_qty
@@ -1364,6 +1405,8 @@ class DPlusRunner:
             trigger_source_sequence_id=trigger_source_sequence_id,
             opposite_trigger_ts_ms=opposite_trigger_ts_ms,
             source_risk_direction=source_risk_direction,
+            micro_deficit_repair_guard_candidate=micro_deficit_repair_candidate,
+            micro_deficit_repair_deficit=micro_deficit_repair_deficit,
             pre_seed_same_qty=same_qty,
             pre_seed_opp_qty=opp_qty,
             pre_seed_same_cost=same_cost_before,
@@ -1395,7 +1438,7 @@ class DPlusRunner:
             source_order_id=order.id,
             source_sequence_id=trigger_source_sequence_id,
         )
-        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "base_seed_qty": base_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "late_repair_only_active": self.cfg.late_repair_only_active(offset), "late_repair_fill_to_balance_active": fill_to_balance_active, "late_repair_fill_to_balance_deficit": fill_to_balance_deficit, "late_repair_fill_to_balance_qty_reduction": round(base_qty - qty, 6) if fill_to_balance_active else 0.0, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
+        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "base_seed_qty": base_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "late_repair_only_active": self.cfg.late_repair_only_active(offset), "late_repair_fill_to_balance_active": fill_to_balance_active, "late_repair_fill_to_balance_deficit": fill_to_balance_deficit, "late_repair_fill_to_balance_qty_reduction": round(base_qty - qty, 6) if fill_to_balance_active else 0.0, "micro_deficit_repair_guard_candidate": micro_deficit_repair_candidate, "micro_deficit_repair_deficit": round(micro_deficit_repair_deficit, 6), "micro_deficit_repair_guard_enabled": self.cfg.micro_deficit_repair_guard, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
         self.record_activation_seen(side, ts_ms)
 
     def write_summary(self, final: bool = False) -> None:
@@ -1452,6 +1495,8 @@ class DPlusRunner:
                 "late_repair_fill_to_balance_caps": m.late_repair_fill_to_balance_caps,
                 "late_repair_fill_to_balance_blocks": m.late_repair_fill_to_balance_blocks,
                 "late_repair_fill_to_balance_qty_reduction": round(m.late_repair_fill_to_balance_qty_reduction, 6),
+                "micro_deficit_repair_guard_candidates": m.micro_deficit_repair_guard_candidates,
+                "micro_deficit_repair_guard_blocks": m.micro_deficit_repair_guard_blocks,
                 "pair_cost_p50": pct(m.pair_costs, 0.5),
                 "pair_cost_p90": pct(m.pair_costs, 0.9),
                 "net_pair_cost_p50": pct(m.net_pair_costs, 0.5),
@@ -1897,6 +1942,9 @@ async def main() -> None:
     ap.add_argument("--late-repair-after-s", type=float, default=None)
     ap.add_argument("--late-repair-only-after-s", type=float, default=None, help="after this offset, allow only imbalance-reducing seeds")
     ap.add_argument("--late-repair-fill-to-balance-after-s", type=float, default=None, help="after this offset, cap repair seed qty to the live opposite-minus-same deficit")
+    ap.add_argument("--micro-deficit-repair-guard", action="store_true", help="default-off diagnostic variant: block tiny opposite-minus-same repair seeds using pre-action inventory context")
+    ap.add_argument("--micro-deficit-repair-max-deficit-qty", type=float, default=0.25)
+    ap.add_argument("--micro-deficit-repair-open-qty-cap", type=float, default=1.0)
     ap.add_argument("--profile-late-repair-after-s", default="", help="CSV repair_after_s values for same-window multi-profile causal verification")
     ap.add_argument("--order-ttl-s", type=float, default=120.0)
     ap.add_argument("--imbalance-qty-cap", type=float, default=2.0)
@@ -1936,6 +1984,9 @@ async def main() -> None:
         late_repair_after_s=args.late_repair_after_s,
         late_repair_only_after_s=args.late_repair_only_after_s,
         late_repair_fill_to_balance_after_s=args.late_repair_fill_to_balance_after_s,
+        micro_deficit_repair_guard=args.micro_deficit_repair_guard,
+        micro_deficit_repair_max_deficit_qty=args.micro_deficit_repair_max_deficit_qty,
+        micro_deficit_repair_open_qty_cap=args.micro_deficit_repair_open_qty_cap,
         order_ttl_ms=int(args.order_ttl_s * 1000),
         imbalance_qty_cap=args.imbalance_qty_cap,
         imbalance_cost_cap=args.imbalance_cost_cap,
@@ -1963,6 +2014,13 @@ async def main() -> None:
             raise SystemExit("--late-repair-fill-to-balance-after-s must be non-negative")
         if cfg.late_repair_after_s is None and cfg.late_repair_only_after_s is None:
             raise SystemExit("--late-repair-fill-to-balance-after-s requires --late-repair-after-s or --late-repair-only-after-s")
+    if cfg.micro_deficit_repair_guard:
+        if cfg.late_repair_after_s is None and cfg.late_repair_only_after_s is None:
+            raise SystemExit("--micro-deficit-repair-guard requires --late-repair-after-s or --late-repair-only-after-s")
+        if cfg.micro_deficit_repair_max_deficit_qty <= 0:
+            raise SystemExit("--micro-deficit-repair-max-deficit-qty must be positive")
+        if cfg.micro_deficit_repair_open_qty_cap <= 0:
+            raise SystemExit("--micro-deficit-repair-open-qty-cap must be positive")
     if cfg.activation_window_s <= 0:
         raise SystemExit("--activation-window-s must be positive")
     if cfg.pair_source_event_lite_summary and not cfg.event_lite_summary:

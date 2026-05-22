@@ -190,8 +190,8 @@ def coverage(rows: list[dict[str, Any]], field: str) -> float:
 
 
 def is_micro_deficit(row: dict[str, Any], max_deficit_qty: float, open_qty_cap: float) -> bool:
-    if row.get("source_risk_direction") != "repair_or_pairing_improving":
-        return False
+    if "micro_deficit_repair_guard_candidate" in row:
+        return bool(row.get("micro_deficit_repair_guard_candidate"))
     same_qty = as_float(row.get("pre_seed_same_qty"))
     opp_qty = as_float(row.get("pre_seed_opp_qty"))
     deficit = opp_qty - same_qty
@@ -416,10 +416,10 @@ def build_score(args: argparse.Namespace) -> dict[str, Any]:
         },
         "contract": {
             "micro_deficit_predicate": {
-                "source_risk_direction": "repair_or_pairing_improving",
                 "pre_seed_opp_qty_minus_same_qty_min_exclusive": 0.0,
                 "pre_seed_opp_qty_minus_same_qty_max_inclusive": args.max_deficit_qty,
                 "pre_seed_same_plus_opp_qty_max_inclusive": args.open_qty_cap,
+                "preferred_field": "micro_deficit_repair_guard_candidate",
             },
             "post_action_labels_not_live_criteria": [
                 "source_pair_qty",
@@ -430,7 +430,7 @@ def build_score(args: argparse.Namespace) -> dict[str, Any]:
                 "source_residual_age_ms",
             ],
             "source_link_exact_micro_deficit_volume_supported": False,
-            "exact_micro_deficit_signature_source": "source_link_residual_tail_exemplars",
+            "exact_micro_deficit_signature_source": "source_link_residual_tail_exemplars with micro_deficit_repair_guard_candidate when present, otherwise exact pre-seed same/opp qty fallback",
         },
         "no_order_safety": no_order_safety(runner_manifest),
         "source_link_checks": {
