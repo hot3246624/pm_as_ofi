@@ -1,0 +1,48 @@
+{
+  "artifact": "xuan_b27_dplus_residual_tail_ledger_context_verifier_smoke",
+  "checks": {
+    "keep_context_delta_zero": true,
+    "keep_decision": true,
+    "keep_external_ids_unavailable": true,
+    "keep_id_join_mode": true,
+    "keep_join_coverage_100": true,
+    "keep_promotion_false": true,
+    "keep_required_selected_coverage_100": true,
+    "no_side_effects": true,
+    "unknown_names_join_gap": true,
+    "unknown_rejected": true,
+    "unknown_unmatched_examples_named": true
+  },
+  "decision_label": "KEEP_RESIDUAL_TAIL_LEDGER_CONTEXT_VERIFIER_READY",
+  "hypothesis": "A local verifier can join selected seed ledger-context exports to residual-tail exemplar scorer rows without fabricating external ids, and can name exact join gaps when they are missing.",
+  "next_action": "Run the verifier on a future approved residual-tail exemplar shadow pullback plus matching selected_seed_ledger_context_export_v1; if KEEP, design exactly one local sample-preserving ledger/context mechanism.",
+  "outputs": {
+    "keep_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_residual_tail_ledger_context_verifier_smoke_20260522T080500Z/keep/score.json",
+    "unknown_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_residual_tail_ledger_context_verifier_smoke_20260522T080500Z/unknown/score.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "VERIFIER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Verifier readiness only; not strategy economics, private truth, deployable, canary, or promotion evidence.",
+    "label": "KEEP_RESIDUAL_TAIL_LEDGER_CONTEXT_VERIFIER_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS"
+}
