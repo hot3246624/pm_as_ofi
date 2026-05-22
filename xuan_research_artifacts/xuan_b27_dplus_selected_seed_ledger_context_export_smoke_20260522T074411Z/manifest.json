@@ -1,0 +1,53 @@
+{
+  "artifact": "xuan_b27_dplus_selected_seed_ledger_context_export_smoke",
+  "checks": {
+    "default_behavior_metrics_unchanged": true,
+    "default_export_disabled": true,
+    "export_enabled": true,
+    "external_ids_marked_unavailable": true,
+    "pair_qty_attributed_to_both_sources": true,
+    "pre_seed_inventory_context_present": true,
+    "required_fields_present": true,
+    "residual_cost_attributed": true,
+    "residual_qty_attributed": true,
+    "residual_tail_row_selected_first": true,
+    "risk_direction_recorded": true,
+    "selected_rows_present": true
+  },
+  "decision": "KEEP",
+  "label": "KEEP_SELECTED_SEED_LEDGER_CONTEXT_EXPORT_SMOKE_PASS",
+  "schema_version": "selected_seed_ledger_context_export_smoke_v1",
+  "selected_seed_ledger_context_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_selected_seed_ledger_context_export_smoke_20260522T074411Z/export/selected_seed_ledger_contexts.csv",
+  "selected_seed_ledger_context_summary": {
+    "eligible_seed_contexts": 2,
+    "external_shadow_ids_available": false,
+    "per_day_cap": 10,
+    "profile_name": "control_seed_offset_max_120",
+    "sample_cap": 10,
+    "schema_version": "selected_seed_ledger_context_export_v1",
+    "selected_by_day": {
+      "2026-05-18": 2
+    },
+    "selected_condition_count": 1,
+    "selected_rows_with_pair_context": 2,
+    "selected_rows_with_residual": 1,
+    "selected_seed_contexts": 2,
+    "selected_side_counts": {
+      "NO": 1,
+      "YES": 1
+    },
+    "selection_mode": "residual_tail",
+    "skipped_by_sample_or_day_cap": 0
+  },
+  "side_effects": {
+    "cancels_sent": false,
+    "fixture_duckdb_only": true,
+    "full_completion_store_scanned": false,
+    "orders_sent": false,
+    "raw_scanned": false,
+    "redeems_sent": false,
+    "replay_store_v2_queried": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  }
+}

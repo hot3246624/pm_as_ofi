@@ -81,6 +81,20 @@ class Lot:
     source_candidate_row_id: str
     lot_id: str = ""
     original_qty: float = 0.0
+    source_label: str = ""
+    offset_s: float = 0.0
+    trigger_px: float = 0.0
+    trigger_size: float = 0.0
+    source_risk_direction: str = "unknown"
+    pre_seed_same_qty: float = 0.0
+    pre_seed_opp_qty: float = 0.0
+    pre_seed_same_cost: float = 0.0
+    pre_seed_opp_cost: float = 0.0
+    ledger_proxy_before: float = 0.0
+    ledger_proxy_after: float = 0.0
+    source_pair_qty: float = 0.0
+    source_pair_cost: float = 0.0
+    source_pair_pnl: float = 0.0
 
 
 @dataclass
@@ -142,6 +156,50 @@ SELECTED_CLOSE_ACTION_FIELDS = [
     "close_book_l2_ref",
     "close_trade_before_ref",
     "close_trade_after_ref",
+]
+
+SELECTED_SEED_LEDGER_CONTEXT_FIELDS = [
+    "schema_version",
+    "profile_name",
+    "validation_request_id",
+    "day",
+    "condition_id",
+    "slug",
+    "source_seed_action_id",
+    "source_seed_candidate_row_id",
+    "source_label",
+    "ts_ms",
+    "ts_iso",
+    "side",
+    "opposite_side",
+    "offset_s",
+    "trigger_px",
+    "trigger_size",
+    "trigger_ts_ms",
+    "seed_px",
+    "seed_qty",
+    "seed_cost",
+    "official_fee_rate",
+    "official_fee",
+    "source_risk_direction",
+    "pre_seed_same_qty",
+    "pre_seed_opp_qty",
+    "pre_seed_same_cost",
+    "pre_seed_opp_cost",
+    "ledger_proxy_before",
+    "ledger_proxy_after",
+    "source_pair_qty",
+    "source_pair_cost",
+    "source_pair_pnl",
+    "source_residual_qty",
+    "source_residual_cost",
+    "source_residual_age_s",
+    "quote_intent_id",
+    "source_order_id",
+    "source_sequence_id",
+    "external_shadow_ids_available",
+    "external_shadow_id_policy",
+    "selected_context_reason",
 ]
 
 
@@ -368,6 +426,205 @@ class SelectedCloseActionRecorder:
         }
 
 
+@dataclass
+class SelectedSeedLedgerContextRecorder:
+    profile_name: str
+    sample_cap: int = 60
+    per_day_cap: int = 4
+    selection_mode: str = "residual_tail"
+    rows_by_source: dict[str, dict[str, Any]] | None = None
+    rows: list[dict[str, Any]] | None = None
+    selected_by_day: dict[str, int] | None = None
+    eligible_count: int = 0
+    selected_count: int = 0
+    skipped_by_cap: int = 0
+    selection_finalized: bool = False
+
+    def __post_init__(self) -> None:
+        self.selection_mode = str(self.selection_mode or "residual_tail").strip().lower()
+        if self.selection_mode not in {"first", "residual_tail"}:
+            raise ValueError(f"Unsupported selected seed ledger-context selection mode: {self.selection_mode}")
+        if self.rows_by_source is None:
+            self.rows_by_source = {}
+        if self.rows is None:
+            self.rows = []
+        if self.selected_by_day is None:
+            self.selected_by_day = defaultdict(int)
+
+    def should_record_profile(self, profile: Profile) -> bool:
+        return self.profile_name == "all" or profile.name == self.profile_name
+
+    @staticmethod
+    def _source_key(profile: Profile, source_candidate_row_id: str) -> str:
+        return f"{profile.name}\x00{source_candidate_row_id}"
+
+    def record_seed(
+        self,
+        *,
+        profile: Profile,
+        state: State,
+        row: dict[str, Any],
+        seed_lot: Lot,
+        official_fee: float,
+    ) -> None:
+        if not self.should_record_profile(profile):
+            return
+        self.eligible_count += 1
+        condition_id = state.condition_id or str(row.get("condition_id") or "unknown_condition")
+        source_candidate_row_id = str(row["candidate_row_id"])
+        assert self.rows_by_source is not None
+        self.rows_by_source[self._source_key(profile, source_candidate_row_id)] = {
+            "schema_version": "selected_seed_ledger_context_export_v1",
+            "profile_name": profile.name,
+            "validation_request_id": f"residual_tail_ledger_context_verifier_v1:{profile.name}",
+            "day": str(row["day"]),
+            "condition_id": condition_id,
+            "slug": str(row["slug"]),
+            "source_seed_action_id": source_candidate_row_id,
+            "source_seed_candidate_row_id": source_candidate_row_id,
+            "source_label": str(row.get("source_label") or ""),
+            "ts_ms": int(row["ts_ms"]),
+            "ts_iso": str(row.get("ts_iso") or ""),
+            "side": seed_lot.side,
+            "opposite_side": other(seed_lot.side),
+            "offset_s": round(seed_lot.offset_s, 6),
+            "trigger_px": round(seed_lot.trigger_px, 12),
+            "trigger_size": round(seed_lot.trigger_size, 12),
+            "trigger_ts_ms": int(seed_lot.ts_ms),
+            "seed_px": round(seed_lot.px, 12),
+            "seed_qty": round(seed_lot.original_qty or seed_lot.qty, 12),
+            "seed_cost": round((seed_lot.original_qty or seed_lot.qty) * seed_lot.px, 12),
+            "official_fee_rate": profile.official_fee_rate,
+            "official_fee": round(official_fee, 12),
+            "source_risk_direction": seed_lot.source_risk_direction,
+            "pre_seed_same_qty": round(seed_lot.pre_seed_same_qty, 12),
+            "pre_seed_opp_qty": round(seed_lot.pre_seed_opp_qty, 12),
+            "pre_seed_same_cost": round(seed_lot.pre_seed_same_cost, 12),
+            "pre_seed_opp_cost": round(seed_lot.pre_seed_opp_cost, 12),
+            "ledger_proxy_before": round(seed_lot.ledger_proxy_before, 12),
+            "ledger_proxy_after": round(seed_lot.ledger_proxy_after, 12),
+            "source_pair_qty": 0.0,
+            "source_pair_cost": 0.0,
+            "source_pair_pnl": 0.0,
+            "source_residual_qty": 0.0,
+            "source_residual_cost": 0.0,
+            "source_residual_age_s": 0.0,
+            "quote_intent_id": "",
+            "source_order_id": "",
+            "source_sequence_id": "",
+            "external_shadow_ids_available": False,
+            "external_shadow_id_policy": (
+                "candidate_base/state_machine export has no quote_intent_id, source_order_id, or "
+                "source_sequence_id; future shadow exemplar joins must align by candidate_row_id/ts/condition/side "
+                "and must not fabricate external ids."
+            ),
+            "selected_context_reason": "selected_seed_ledger_context_export_default_off",
+        }
+
+    def record_pair(self, profile: Profile, lot: Lot, take: float, pair_cost: float) -> None:
+        if not self.should_record_profile(profile):
+            return
+        assert self.rows_by_source is not None
+        row = self.rows_by_source.get(self._source_key(profile, lot.source_candidate_row_id))
+        if row is None:
+            return
+        row["source_pair_qty"] = round(float(row.get("source_pair_qty") or 0.0) + take, 12)
+        row["source_pair_cost"] = round(float(row.get("source_pair_cost") or 0.0) + take * pair_cost, 12)
+        row["source_pair_pnl"] = round(float(row.get("source_pair_pnl") or 0.0) + take * (1.0 - pair_cost), 12)
+
+    def record_residual(self, profile: Profile, lot: Lot, settle_ts_ms: int) -> None:
+        if not self.should_record_profile(profile):
+            return
+        assert self.rows_by_source is not None
+        row = self.rows_by_source.get(self._source_key(profile, lot.source_candidate_row_id))
+        if row is None:
+            return
+        residual_cost = lot.qty * lot.px
+        residual_age_s = max(0.0, (settle_ts_ms - lot.ts_ms) / 1000.0)
+        row["source_residual_qty"] = round(float(row.get("source_residual_qty") or 0.0) + lot.qty, 12)
+        row["source_residual_cost"] = round(float(row.get("source_residual_cost") or 0.0) + residual_cost, 12)
+        row["source_residual_age_s"] = round(max(float(row.get("source_residual_age_s") or 0.0), residual_age_s), 6)
+
+    @staticmethod
+    def _first_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            str(row.get("day") or ""),
+            int(float(row.get("ts_ms") or 0)),
+            str(row.get("condition_id") or ""),
+            str(row.get("side") or ""),
+            str(row.get("source_seed_candidate_row_id") or ""),
+        )
+
+    @staticmethod
+    def _residual_tail_sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+        return (
+            -float(row.get("source_residual_cost") or 0.0),
+            -float(row.get("source_residual_qty") or 0.0),
+            str(row.get("day") or ""),
+            int(float(row.get("ts_ms") or 0)),
+            str(row.get("condition_id") or ""),
+            str(row.get("side") or ""),
+            str(row.get("source_seed_candidate_row_id") or ""),
+        )
+
+    def finalize_selection(self) -> None:
+        if self.selection_finalized:
+            return
+        assert self.rows_by_source is not None
+        assert self.rows is not None
+        assert self.selected_by_day is not None
+        sort_key = self._residual_tail_sort_key if self.selection_mode == "residual_tail" else self._first_sort_key
+        candidates = sorted(self.rows_by_source.values(), key=sort_key)
+        self.rows = []
+        self.selected_by_day = defaultdict(int)
+        if self.sample_cap <= 0 or self.per_day_cap <= 0:
+            self.skipped_by_cap = len(candidates)
+            self.selection_finalized = True
+            return
+        for row in candidates:
+            if len(self.rows) >= self.sample_cap:
+                break
+            day = str(row.get("day") or "")
+            if self.selected_by_day[day] >= self.per_day_cap:
+                continue
+            self.rows.append(row)
+            self.selected_by_day[day] += 1
+        self.selected_count = len(self.rows)
+        self.skipped_by_cap = max(0, len(candidates) - len(self.rows))
+        self.selection_finalized = True
+
+    def summary(self) -> dict[str, Any]:
+        self.finalize_selection()
+        assert self.rows is not None
+        assert self.selected_by_day is not None
+        selected_conditions = {str(row.get("condition_id") or "") for row in self.rows}
+        selected_side_counts: dict[str, int] = defaultdict(int)
+        residual_rows = 0
+        pair_context_rows = 0
+        for row in self.rows:
+            selected_side_counts[str(row.get("side") or "")] += 1
+            if float(row.get("source_residual_qty") or 0.0) > DUST:
+                residual_rows += 1
+            if float(row.get("source_pair_qty") or 0.0) > DUST:
+                pair_context_rows += 1
+        return {
+            "schema_version": "selected_seed_ledger_context_export_v1",
+            "profile_name": self.profile_name,
+            "eligible_seed_contexts": self.eligible_count,
+            "selected_seed_contexts": len(self.rows),
+            "skipped_by_sample_or_day_cap": self.skipped_by_cap,
+            "sample_cap": self.sample_cap,
+            "per_day_cap": self.per_day_cap,
+            "selection_mode": self.selection_mode,
+            "selected_condition_count": len(selected_conditions),
+            "selected_side_counts": dict(sorted(selected_side_counts.items())),
+            "selected_by_day": dict(sorted(self.selected_by_day.items())),
+            "selected_rows_with_residual": residual_rows,
+            "selected_rows_with_pair_context": pair_context_rows,
+            "external_shadow_ids_available": False,
+        }
+
+
 def utc_label() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
@@ -416,6 +673,15 @@ def official_taker_fee(qty: float, px: float, fee_rate: float) -> float:
     return qty * fee_rate * px * (1.0 - px)
 
 
+def ledger_proxy(metrics: defaultdict[str, float], lots: dict[str, deque[Lot]]) -> float:
+    exposure_qty = lot_qty(lots["YES"]) + lot_qty(lots["NO"])
+    open_cost = lot_cost(lots["YES"]) + lot_cost(lots["NO"])
+    pair_qty = float(metrics["pair_qty"])
+    return float(metrics["pair_pnl"]) - float(metrics["official_taker_fee"]) - open_cost - 0.01 * (
+        2.0 * pair_qty + exposure_qty
+    )
+
+
 def day_metrics(metrics: defaultdict[str, float], day: str) -> defaultdict[str, float]:
     key = f"day::{day}"
     value = metrics.get(key)
@@ -450,6 +716,7 @@ def pair_inventory(
     ts_ms: int,
     close_recorder: SelectedCloseActionRecorder | None = None,
     trigger_lot: Lot | None = None,
+    seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
 ) -> None:
     yes = state.lots["YES"]
     no = state.lots["NO"]
@@ -493,6 +760,13 @@ def pair_inventory(
         add_metric(metrics, state.day, "pair_cost_sum", take * pair_cost)
         add_metric(metrics, state.day, "pair_pnl", take * (1.0 - pair_cost))
         add_metric(metrics, state.day, "pair_delay_ms", take * max(0, ts_ms - older_ts))
+        pair_pnl = take * (1.0 - pair_cost)
+        for source_lot in (yes_lot, no_lot):
+            source_lot.source_pair_qty += take
+            source_lot.source_pair_cost += take * pair_cost
+            source_lot.source_pair_pnl += pair_pnl
+            if seed_ledger_context_recorder is not None:
+                seed_ledger_context_recorder.record_pair(profile, source_lot, take, pair_cost)
         yes_lot.qty -= take
         no_lot.qty -= take
         if yes_lot.qty <= DUST:
@@ -525,6 +799,7 @@ def maybe_seed(
     state: State,
     metrics: defaultdict[str, float],
     close_recorder: SelectedCloseActionRecorder | None = None,
+    seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
 ) -> None:
     day = str(row["day"])
     add_count(metrics, day, "candidate_count")
@@ -592,6 +867,7 @@ def maybe_seed(
 
     seed_px = max(0.01, trade_px - profile.edge)
     open_cost = lot_cost(state.lots["YES"]) + lot_cost(state.lots["NO"])
+    ledger_proxy_before = ledger_proxy(metrics, state.lots)
     effective_imbalance_qty_cap = (
         profile.risk_increasing_imbalance_qty_cap
         if risk_increasing_seed and profile.risk_increasing_imbalance_qty_cap is not None
@@ -650,6 +926,16 @@ def maybe_seed(
         source_candidate_row_id=str(row["candidate_row_id"]),
         lot_id=f"residual_lot:{day}:{row['candidate_row_id']}",
         original_qty=qty,
+        source_label=str(row.get("source_label") or ""),
+        offset_s=offset_s,
+        trigger_px=trade_px,
+        trigger_size=trade_size,
+        source_risk_direction="risk_increasing" if risk_increasing_seed else "repair_or_pairing_improving",
+        pre_seed_same_qty=same_qty,
+        pre_seed_opp_qty=opp_qty,
+        pre_seed_same_cost=same_cost,
+        pre_seed_opp_cost=opp_cost,
+        ledger_proxy_before=ledger_proxy_before,
     )
     state.lots[side].append(seed_lot)
     state.last_seed_ts_ms = ts_ms
@@ -659,20 +945,50 @@ def maybe_seed(
     add_metric(metrics, day, "gross_buy_qty", qty)
     add_metric(metrics, day, "gross_buy_cost", qty * seed_px)
     add_metric(metrics, day, "official_taker_fee", fee)
-    pair_inventory(profile, state, metrics, ts_ms, close_recorder=close_recorder, trigger_lot=seed_lot)
+    seed_lot.ledger_proxy_after = ledger_proxy(metrics, state.lots)
+    if seed_ledger_context_recorder is not None:
+        seed_ledger_context_recorder.record_seed(
+            profile=profile,
+            state=state,
+            row=row,
+            seed_lot=seed_lot,
+            official_fee=fee,
+        )
+    pair_inventory(
+        profile,
+        state,
+        metrics,
+        ts_ms,
+        close_recorder=close_recorder,
+        trigger_lot=seed_lot,
+        seed_ledger_context_recorder=seed_ledger_context_recorder,
+    )
 
 
-def settle(states: dict[str, State], profile: Profile, metrics: defaultdict[str, float]) -> None:
+def settle(
+    states: dict[str, State],
+    profile: Profile,
+    metrics: defaultdict[str, float],
+    seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
+) -> None:
     for state in states.values():
         if not state.active:
             continue
-        pair_inventory(profile, state, metrics, state.last_ts_ms)
+        pair_inventory(
+            profile,
+            state,
+            metrics,
+            state.last_ts_ms,
+            seed_ledger_context_recorder=seed_ledger_context_recorder,
+        )
         add_count(metrics, state.day, "active_markets")
         winner = state.winner_side
         for side in ("YES", "NO"):
             for lot in state.lots[side]:
                 if lot.qty <= DUST:
                     continue
+                if seed_ledger_context_recorder is not None:
+                    seed_ledger_context_recorder.record_residual(profile, lot, state.last_ts_ms)
                 cost = lot.qty * lot.px
                 payout = lot.qty if winner == side else 0.0
                 add_metric(metrics, state.day, "residual_qty", lot.qty)
@@ -785,6 +1101,7 @@ def run_profiles(
     profiles: list[Profile],
     base_day_counts: dict[str, int],
     close_recorder: SelectedCloseActionRecorder | None = None,
+    seed_ledger_context_recorder: SelectedSeedLedgerContextRecorder | None = None,
 ) -> dict[str, Any]:
     con = duckdb.connect(str(candidate_base_db), read_only=True)
     select_cols = [
@@ -834,9 +1151,15 @@ def run_profiles(
                     state,
                     metrics_by_profile[profile.name],
                     close_recorder=close_recorder,
+                    seed_ledger_context_recorder=seed_ledger_context_recorder,
                 )
     for profile in profiles:
-        settle(states_by_profile[profile.name], profile, metrics_by_profile[profile.name])
+        settle(
+            states_by_profile[profile.name],
+            profile,
+            metrics_by_profile[profile.name],
+            seed_ledger_context_recorder=seed_ledger_context_recorder,
+        )
     con.close()
     return {
         "processed_public_sell_rows": row_count,
@@ -845,6 +1168,9 @@ def run_profiles(
             for profile in profiles
         },
         "selected_close_actions": close_recorder.summary() if close_recorder is not None else None,
+        "selected_seed_ledger_contexts": (
+            seed_ledger_context_recorder.summary() if seed_ledger_context_recorder is not None else None
+        ),
     }
 
 
@@ -1227,6 +1553,26 @@ def main() -> int:
             "20260502_20260518_publicfull_v2:official_fee_rate=0.07"
         ),
     )
+    parser.add_argument(
+        "--selected-seed-ledger-context-output",
+        help="Default-off CSV export path for selected_seed_ledger_context_export_v1 rows.",
+    )
+    parser.add_argument(
+        "--selected-seed-ledger-context-profile",
+        default="variant_late_repair_only_after_90",
+        help="Profile to sample for selected seed ledger-context export, or 'all'.",
+    )
+    parser.add_argument("--selected-seed-ledger-context-sample-cap", type=int, default=60)
+    parser.add_argument("--selected-seed-ledger-context-per-day-cap", type=int, default=4)
+    parser.add_argument(
+        "--selected-seed-ledger-context-selection-mode",
+        choices=("first", "residual_tail"),
+        default="residual_tail",
+        help=(
+            "Default 'residual_tail' selects highest residual-cost seed contexts after settlement. "
+            "'first' keeps deterministic first rows by day/time."
+        ),
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
@@ -1265,6 +1611,19 @@ def main() -> int:
             selection_mode=args.selected_close_actions_selection_mode,
         )
         if selected_close_actions_path is not None
+        else None
+    )
+    selected_seed_ledger_context_path = (
+        Path(args.selected_seed_ledger_context_output) if args.selected_seed_ledger_context_output else None
+    )
+    seed_ledger_context_recorder = (
+        SelectedSeedLedgerContextRecorder(
+            profile_name=args.selected_seed_ledger_context_profile,
+            sample_cap=max(0, int(args.selected_seed_ledger_context_sample_cap)),
+            per_day_cap=max(0, int(args.selected_seed_ledger_context_per_day_cap)),
+            selection_mode=args.selected_seed_ledger_context_selection_mode,
+        )
+        if selected_seed_ledger_context_path is not None
         else None
     )
 
@@ -1320,11 +1679,25 @@ def main() -> int:
             late_repair_fill_to_balance_after_s=90.0,
         ),
     ]
-    run_result = run_profiles(candidate_db_path, profiles, base_day_counts, close_recorder=close_recorder)
+    run_result = run_profiles(
+        candidate_db_path,
+        profiles,
+        base_day_counts,
+        close_recorder=close_recorder,
+        seed_ledger_context_recorder=seed_ledger_context_recorder,
+    )
     if selected_close_actions_path is not None:
         assert close_recorder is not None
         close_recorder.finalize_selection()
         write_csv(selected_close_actions_path, close_recorder.rows or [], SELECTED_CLOSE_ACTION_FIELDS)
+    if selected_seed_ledger_context_path is not None:
+        assert seed_ledger_context_recorder is not None
+        seed_ledger_context_recorder.finalize_selection()
+        write_csv(
+            selected_seed_ledger_context_path,
+            seed_ledger_context_recorder.rows or [],
+            SELECTED_SEED_LEDGER_CONTEXT_FIELDS,
+        )
     control = run_result["profiles"]["control_seed_offset_max_120"]
     hard_offset90 = run_result["profiles"]["discarded_hard_seed_offset_max_90"]
     variant = run_result["profiles"]["variant_late_repair_only_after_90"]
@@ -1430,6 +1803,11 @@ def main() -> int:
             "selected_close_actions_per_day_cap": int(args.selected_close_actions_per_day_cap),
             "selected_close_actions_selection_mode": args.selected_close_actions_selection_mode,
             "selected_close_actions_fee_rate_source": args.selected_close_actions_fee_rate_source,
+            "selected_seed_ledger_context_export_enabled": selected_seed_ledger_context_path is not None,
+            "selected_seed_ledger_context_profile": args.selected_seed_ledger_context_profile,
+            "selected_seed_ledger_context_sample_cap": int(args.selected_seed_ledger_context_sample_cap),
+            "selected_seed_ledger_context_per_day_cap": int(args.selected_seed_ledger_context_per_day_cap),
+            "selected_seed_ledger_context_selection_mode": args.selected_seed_ledger_context_selection_mode,
         },
         "selected_close_actions_export": {
             "enabled": selected_close_actions_path is not None,
@@ -1441,6 +1819,20 @@ def main() -> int:
                 "selected_close_actions rows are only selected candidate close actions for future bounded "
                 "replay_store_v2 lookup; this export is not replay discovery, private truth, deployable, "
                 "shadow-ready, canary, or promotion evidence."
+            ),
+        },
+        "selected_seed_ledger_context_export": {
+            "enabled": selected_seed_ledger_context_path is not None,
+            "path": str(selected_seed_ledger_context_path) if selected_seed_ledger_context_path is not None else None,
+            "fields": SELECTED_SEED_LEDGER_CONTEXT_FIELDS if selected_seed_ledger_context_path is not None else [],
+            "summary": run_result.get("selected_seed_ledger_contexts"),
+            "default_behavior_unchanged_when_unset": True,
+            "external_shadow_ids_available": False,
+            "source_truth_boundary": (
+                "selected_seed_ledger_context rows are local candidate-base/state-machine seed context exports for "
+                "future residual_tail_ledger_context_verifier_v1 joins. They do not fabricate quote/order/source "
+                "sequence ids, do not query replay_store_v2, and are not private truth, deployable, shadow-ready, "
+                "canary, or promotion evidence."
             ),
         },
         "processed_public_sell_rows": run_result["processed_public_sell_rows"],
