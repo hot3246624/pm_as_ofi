@@ -1,0 +1,106 @@
+{
+  "artifact": "xuan_b27_dplus_truth_validation_response_action_scorer_smoke",
+  "checks": {
+    "multiday_breadth_preserved": true,
+    "multiday_close_gap_named": true,
+    "multiday_fee_delta_joined": true,
+    "multiday_fee_source_100pct": true,
+    "multiday_private_promotion_guards_false": true,
+    "multiday_required_refs_100pct": true,
+    "multiday_score_keep": true,
+    "no_side_effect_flags": true,
+    "py_compile_passed": true,
+    "residual_lot_backed_breadth_preserved": true,
+    "residual_lot_backed_close_gap_named": true,
+    "residual_lot_backed_fee_delta_joined": true,
+    "residual_lot_backed_fee_source_100pct": true,
+    "residual_lot_backed_fifo_response_coverage": true,
+    "residual_lot_backed_private_promotion_guards_false": true,
+    "residual_lot_backed_required_refs_100pct": true,
+    "residual_lot_backed_score_keep": true,
+    "residual_lot_backed_selected_metadata_consistency": true,
+    "residual_lot_backed_state_machine_residual_coverage": true,
+    "single_close_gap_named": true,
+    "single_fee_delta_joined": true,
+    "single_fee_source_100pct": true,
+    "single_private_promotion_guards_false": true,
+    "single_required_refs_100pct": true,
+    "single_score_keep": true
+  },
+  "created_utc": "scorer",
+  "decision_label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORER_READY",
+  "next_action": "Local status_hygiene: use scorer output to decide whether to implement selected-action residual FIFO verifier or require explicit strict rescue close request fields first.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SCORER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "Scorer can audit replay-derived truth_validation_response_v1 outputs and name FIFO/close gaps. This is tooling readiness only.",
+    "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORER_READY"
+  },
+  "schema_version": "xuan_research_smoke_v1",
+  "scores": {
+    "multiday": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke_20260522T003156Z_scorer/multiday/score.json",
+    "residual_lot_backed": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke_20260522T003156Z_scorer/residual_lot_backed/score.json",
+    "single": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke_20260522T003156Z_scorer/single/score.json"
+  },
+  "side_effects": {
+    "broad_strategy_search": false,
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  },
+  "status": "PASS",
+  "summary": {
+    "multiday": {
+      "condition_count": 30,
+      "day_count": 15,
+      "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
+      "max_fee_delta": 3.1250000000204725e-07,
+      "row_count": 30
+    },
+    "residual_lot_backed": {
+      "condition_count": 30,
+      "day_count": 15,
+      "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
+      "max_fee_delta": 4.844000000003845e-07,
+      "residual_fifo_row_count": 30,
+      "row_count": 30,
+      "selected_metadata_consistency": {
+        "all_expected_residual_actions_matched": true,
+        "expected_residual_action_count": 30,
+        "interpretation": "Selected residual metadata was compared to response residual_fifo_lots.csv rows.",
+        "lot_id_match_count": 30,
+        "match_coverage": 1.0,
+        "matched_residual_action_count": 30,
+        "max_abs_remaining_cost_delta": 0.0,
+        "max_abs_remaining_qty_delta": 0.0,
+        "mismatch_examples": [],
+        "missing_examples": [],
+        "missing_residual_action_count": 0,
+        "remaining_cost_match_count": 30,
+        "remaining_qty_match_count": 30,
+        "response_residual_row_count": 30,
+        "source_seed_action_id_match_count": 30,
+        "validation_status_validated_count": 30
+      }
+    },
+    "single": {
+      "condition_count": 1,
+      "day_count": 1,
+      "label": "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY",
+      "max_fee_delta": 3.1250000000204725e-07,
+      "row_count": 10
+    }
+  }
+}

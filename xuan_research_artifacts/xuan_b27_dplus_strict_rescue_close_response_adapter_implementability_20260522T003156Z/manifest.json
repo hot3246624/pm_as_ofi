@@ -1,0 +1,148 @@
+{
+  "active_lane": "implementability_review",
+  "artifact": "xuan_b27_dplus_strict_rescue_close_response_adapter_implementability",
+  "created_utc": "2026-05-22T00:31:56Z",
+  "decision": "KEEP",
+  "label": "KEEP_STRICT_RESCUE_CLOSE_RESPONSE_ADAPTER_READY",
+  "scope": {
+    "worktree": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research",
+    "builder": "scripts/xuan_b27_dplus_replay_store_truth_validation_response_builder.py",
+    "scorer": "scripts/xuan_b27_dplus_truth_validation_response_action_scorer.py",
+    "adapter_smoke": "scripts/xuan_b27_dplus_strict_rescue_close_response_adapter_smoke.sh",
+    "adapter_smoke_manifest": "xuan_research_artifacts/xuan_b27_dplus_strict_rescue_close_response_adapter_smoke_20260522T003156Z/manifest.json",
+    "builder_regression_smoke_manifest": "xuan_research_artifacts/xuan_b27_dplus_replay_store_truth_validation_response_builder_smoke_20260522T003156Z_builder/manifest.json",
+    "scorer_regression_smoke_manifest": "xuan_research_artifacts/xuan_b27_dplus_truth_validation_response_action_scorer_smoke_20260522T003156Z_scorer/manifest.json"
+  },
+  "implementation": {
+    "selected_close_action_export_v1_supported_by_builder": true,
+    "normalization": {
+      "candidate_action_id": "source_seed_candidate_row_id -> source_seed_action_id -> close_action_id",
+      "action_ts_ms": "lookup_close_ts_ms -> close_ts_ms",
+      "side": "lookup_close_side -> close_side",
+      "seed_qty": "close_qty",
+      "seed_px": "close_px",
+      "fee_rate": "close_fee_rate -> fee_rate",
+      "fee_rate_source": "close_fee_rate_source -> fee_rate_source",
+      "expected_decision": "accept"
+    },
+    "strict_rescue_closes_csv_extended_fields": [
+      "source_seed_action_id",
+      "source_seed_candidate_row_id",
+      "residual_lot_id",
+      "residual_lot_source_seed_action_id",
+      "residual_lot_source_candidate_row_id",
+      "close_cost",
+      "close_fee_rate",
+      "close_fee_rate_source",
+      "close_official_fee",
+      "expected_close_decision",
+      "expected_close_status",
+      "close_reason",
+      "paired_qty",
+      "paired_yes_source_action_id",
+      "paired_no_source_action_id",
+      "paired_yes_px",
+      "paired_no_px",
+      "paired_cost",
+      "pair_pnl_delta"
+    ],
+    "scorer_strict_close_completeness": {
+      "downgrades_when_close_rows_present_but_missing_required_fields": true,
+      "keeps_prior_no-close-responses_as_gap_only": true,
+      "required_fields": [
+        "close_action_id",
+        "close_ts_ms",
+        "close_side",
+        "close_qty",
+        "close_px",
+        "close_fee_rate",
+        "close_fee_rate_source",
+        "fee_rate_source",
+        "expected_close_decision",
+        "expected_close_status",
+        "source_seed_action_id",
+        "residual_lot_id",
+        "paired_yes_source_action_id",
+        "paired_no_source_action_id",
+        "book_l1_ref",
+        "book_l2_ref",
+        "trade_before_ref",
+        "trade_after_ref"
+      ]
+    }
+  },
+  "validation": {
+    "py_compile": [
+      "scripts/xuan_b27_dplus_replay_store_truth_validation_response_builder.py",
+      "scripts/xuan_b27_dplus_truth_validation_response_action_scorer.py"
+    ],
+    "bash_n": "scripts/xuan_b27_dplus_strict_rescue_close_response_adapter_smoke.sh",
+    "adapter_smoke": {
+      "decision": "KEEP",
+      "label": "KEEP_STRICT_RESCUE_CLOSE_RESPONSE_ADAPTER_SMOKE_PASS",
+      "checks": {
+        "builder_status_keep": true,
+        "action_decision_validated": true,
+        "strict_close_row_present": true,
+        "strict_close_refs_present": true,
+        "strict_close_fee_source_present": true,
+        "strict_close_fee_formula": true,
+        "strict_close_linkage_present": true,
+        "scorer_keep": true,
+        "scorer_strict_close_complete": true,
+        "private_promotion_guards_false": true,
+        "no_side_effect_flags": true
+      }
+    },
+    "builder_regression_smoke": "PASS",
+    "scorer_regression_smoke": "PASS",
+    "json_tool": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "source_truth_boundary": {
+    "selected_lookup_only": true,
+    "tiny_replay_store_fixture_used_for_adapter_smoke": true,
+    "real_replay_store_v2_used_for_adapter_smoke": false,
+    "replay_store_v2_used_for_broad_strategy_search": false,
+    "strict_rescue_closes_are_private_truth": false,
+    "interpretation": "Builder/scorer can now carry selected close-action rows into truth_validation_response_v1 strict_rescue_closes.csv and score close source-row completeness. This remains replay-derived source-truth tooling only."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_STRICT_RESCUE_CLOSE_RESPONSE_ADAPTER_READY",
+    "interpretation": "selected_close_action_export_v1 rows can be validated through bounded source-row lookup and scored for strict close completeness."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "status": "STRICT_CLOSE_SOURCE_TRUTH_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE",
+    "private_truth_ready": false,
+    "deployable": false,
+    "can_support_strategy_promotion": false,
+    "g2_canary_ready": false
+  },
+  "side_effects": {
+    "network_started": false,
+    "ssh_started": false,
+    "events_jsonl_read": false,
+    "raw_replay_or_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "broad_strategy_search": false,
+    "shared_ingress_connected": false,
+    "broker_modified": false,
+    "service_control_used": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_action": {
+    "lane": "causal_verifier",
+    "description": "Run a local selected close-action source-truth response using real candidate-pipeline selected_close_actions export rows, bounded to <=30 actions across allowed days, then score strict_rescue_closes.csv. Use candidate_base/state-machine export plus replay_store_v2 selected source-row lookups only.",
+    "remote_or_canary_allowed": false
+  },
+  "pass_fail_criteria_for_next": {
+    "KEEP": "Real selected close actions produce SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY, strict_rescue_closes.csv has close L1/L2/trade refs and fee/source linkage, scorer strict close missing_fields is empty, and private/deployable/promotion guards remain false.",
+    "UNKNOWN": "Real selected close-action export lacks required rows or replay_store_v2 selected source rows; exact days/conditions/fields are named.",
+    "DISCARD": "Replay source rows contradict selected close day/condition/time/side/fee assumptions, or the run becomes broad replay strategy search or promotion claim.",
+    "BLOCKED": "Local file/artifact corruption only."
+  }
+}

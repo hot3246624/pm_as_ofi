@@ -27,7 +27,15 @@ STRICT_CLOSE_FIELDS = (
     "close_side",
     "close_qty",
     "close_px",
+    "close_fee_rate",
+    "close_fee_rate_source",
     "fee_rate_source",
+    "expected_close_decision",
+    "expected_close_status",
+    "source_seed_action_id",
+    "residual_lot_id",
+    "paired_yes_source_action_id",
+    "paired_no_source_action_id",
     "book_l1_ref",
     "book_l2_ref",
     "trade_before_ref",
@@ -385,6 +393,18 @@ def strict_close_metrics(close_rows: list[dict[str, str]]) -> dict[str, Any]:
         "strict_rescue_close_row_count": len(close_rows),
         "missing_fields": missing_fields,
         "missing_by_field": missing_by_field,
+        "field_coverage": {
+            field: {
+                "present": len(close_rows) - missing,
+                "missing": missing,
+                "coverage": ((len(close_rows) - missing) / len(close_rows)) if close_rows else 0.0,
+            }
+            for field, missing in missing_by_field.items()
+        },
+        "complete_row_count": sum(
+            1 for row in close_rows if all(row.get(field, "").strip() for field in STRICT_CLOSE_FIELDS)
+        ),
+        "validated_row_count": sum(1 for row in close_rows if row.get("validation_status", "") == VALIDATED_STATUS),
         "coverage_interpretation": (
             "No strict rescue close rows were supplied; full close timing/cost/source-truth validation remains a named gap."
             if not close_rows
@@ -451,10 +471,18 @@ def main() -> int:
         residual_consistency["expected_residual_action_count"] == 0
         or residual_consistency["all_expected_residual_actions_matched"]
     )
+    strict_close_consistent = len(close_rows) == 0 or not closes["missing_fields"]
     if not action_rows:
         decision = "UNKNOWN"
         label = "UNKNOWN_TRUTH_VALIDATION_RESPONSE_EMPTY"
-    elif required_ref_complete and fee_source_complete and decision_consistent and private_guard_ok and residual_consistent:
+    elif (
+        required_ref_complete
+        and fee_source_complete
+        and decision_consistent
+        and private_guard_ok
+        and residual_consistent
+        and strict_close_consistent
+    ):
         decision = "KEEP"
         label = "KEEP_TRUTH_VALIDATION_RESPONSE_ACTION_SCORE_READY"
     else:
@@ -513,6 +541,7 @@ def main() -> int:
             "residual_fifo_response_rows_absent": len(residual_rows) == 0,
             "residual_fifo_selected_metadata_mismatch": not residual_consistent,
             "strict_rescue_close_missing_fields": closes["missing_fields"],
+            "strict_rescue_close_present_but_incomplete": len(close_rows) > 0 and bool(closes["missing_fields"]),
         },
     }
 

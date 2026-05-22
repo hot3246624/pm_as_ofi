@@ -84,6 +84,46 @@ def as_int(value: Any, default: int = 0) -> int:
     return int(as_float(value, default))
 
 
+def first_present(*values: Any) -> Any:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return CSV_NULL
+
+
+def put_if_missing(row: dict[str, Any], field: str, value: Any) -> None:
+    if row.get(field) in (None, "") and value not in (None, ""):
+        row[field] = value
+
+
+def normalize_selected_close_action(row: dict[str, Any]) -> dict[str, Any]:
+    """Map selected_close_action_export_v1 rows onto the selected-action request contract."""
+    out = dict(row)
+    is_close_export = (
+        out.get("schema_version") == "selected_close_action_export_v1"
+        or (
+            out.get("close_action_id") not in (None, "")
+            and out.get("close_fee_rate_source") not in (None, "")
+            and out.get("lookup_close_ts_ms") not in (None, "")
+        )
+    )
+    if not is_close_export:
+        return out
+
+    close_fee_rate = first_present(out.get("close_fee_rate"), out.get("fee_rate"))
+    close_fee_rate_source = first_present(out.get("close_fee_rate_source"), out.get("fee_rate_source"))
+    put_if_missing(out, "candidate_action_id", first_present(out.get("source_seed_candidate_row_id"), out.get("source_seed_action_id"), out.get("close_action_id")))
+    put_if_missing(out, "action_ts_ms", first_present(out.get("lookup_close_ts_ms"), out.get("close_ts_ms")))
+    put_if_missing(out, "side", first_present(out.get("lookup_close_side"), out.get("close_side")))
+    put_if_missing(out, "seed_qty", out.get("close_qty"))
+    put_if_missing(out, "seed_px", out.get("close_px"))
+    put_if_missing(out, "fee_rate", close_fee_rate)
+    put_if_missing(out, "fee_rate_source", close_fee_rate_source)
+    put_if_missing(out, "expected_decision", "accept")
+    put_if_missing(out, "decision_reason", first_present(out.get("close_reason"), out.get("expected_close_status")))
+    return out
+
+
 def load_requests(path: Path) -> list[dict[str, Any]]:
     suffix = path.suffix.lower()
     if suffix == ".jsonl":
@@ -101,7 +141,7 @@ def load_requests(path: Path) -> list[dict[str, Any]]:
             raise ValueError("requests JSON must be a list or an object with actions[]")
     if not all(isinstance(row, dict) for row in rows):
         raise ValueError("all request rows must be objects")
-    return [dict(row) for row in rows]
+    return [normalize_selected_close_action(dict(row)) for row in rows]
 
 
 def stable_ref(table: str, day: str, row: dict[str, Any] | None) -> str:
@@ -325,24 +365,49 @@ def validate_action(
     if action.get("close_action_id"):
         close_qty = as_float(action.get("close_qty"))
         close_px = as_float(action.get("close_px"))
-        close_fee = fee_amount(close_qty, max(fee_rate, 0.0), close_px) if close_qty > 0.0 and 0.0 < close_px < 1.0 else 0.0
+        close_fee_rate = as_float(first_present(action.get("close_fee_rate"), action.get("fee_rate")), fee_rate)
+        close_fee_rate_source = first_present(action.get("close_fee_rate_source"), action.get("fee_rate_source"))
+        close_fee = (
+            fee_amount(close_qty, max(close_fee_rate, 0.0), close_px)
+            if close_qty > 0.0 and 0.0 < close_px < 1.0
+            else 0.0
+        )
         close_rows.append(
             {
                 "schema_version": SCHEMA_VERSION,
                 "validation_request_id": action.get("validation_request_id", CSV_NULL),
                 "candidate_action_id": action.get("candidate_action_id", CSV_NULL),
+                "source_seed_action_id": action.get("source_seed_action_id", action.get("candidate_action_id", CSV_NULL)),
+                "source_seed_candidate_row_id": action.get("source_seed_candidate_row_id", action.get("candidate_action_id", CSV_NULL)),
+                "residual_lot_id": action.get("residual_lot_id", action.get("lot_id", CSV_NULL)),
+                "residual_lot_source_seed_action_id": action.get("residual_lot_source_seed_action_id", CSV_NULL),
+                "residual_lot_source_candidate_row_id": action.get("residual_lot_source_candidate_row_id", CSV_NULL),
                 "close_action_id": action.get("close_action_id", CSV_NULL),
                 "close_ts_ms": action.get("close_ts_ms", CSV_NULL),
                 "close_side": action.get("close_side", CSV_NULL),
                 "close_qty": action.get("close_qty", CSV_NULL),
                 "close_px": action.get("close_px", CSV_NULL),
+                "close_cost": action.get("close_cost", CSV_NULL),
+                "close_fee_rate": close_fee_rate if close_fee_rate >= 0.0 else CSV_NULL,
+                "close_fee_rate_source": close_fee_rate_source,
+                "close_official_fee": round(close_fee, 10),
                 "official_fee": round(close_fee, 10),
-                "fee_rate": fee_rate if fee_rate >= 0.0 else CSV_NULL,
-                "fee_rate_source": action.get("fee_rate_source", CSV_NULL),
-                "book_l1_ref": row["book_l1_ref"],
-                "book_l2_ref": row["book_l2_ref"],
-                "trade_before_ref": row["trade_before_ref"],
-                "trade_after_ref": row["trade_after_ref"],
+                "fee_rate": close_fee_rate if close_fee_rate >= 0.0 else CSV_NULL,
+                "fee_rate_source": close_fee_rate_source,
+                "expected_close_decision": action.get("expected_close_decision", action.get("expected_decision", CSV_NULL)),
+                "expected_close_status": action.get("expected_close_status", CSV_NULL),
+                "close_reason": action.get("close_reason", action.get("decision_reason", CSV_NULL)),
+                "paired_qty": action.get("paired_qty", CSV_NULL),
+                "paired_yes_source_action_id": action.get("paired_yes_source_action_id", CSV_NULL),
+                "paired_no_source_action_id": action.get("paired_no_source_action_id", CSV_NULL),
+                "paired_yes_px": action.get("paired_yes_px", CSV_NULL),
+                "paired_no_px": action.get("paired_no_px", CSV_NULL),
+                "paired_cost": action.get("paired_cost", CSV_NULL),
+                "pair_pnl_delta": action.get("pair_pnl_delta", CSV_NULL),
+                "book_l1_ref": first_present(action.get("close_book_l1_ref"), row["book_l1_ref"]),
+                "book_l2_ref": first_present(action.get("close_book_l2_ref"), row["book_l2_ref"]),
+                "trade_before_ref": first_present(action.get("close_trade_before_ref"), row["trade_before_ref"]),
+                "trade_after_ref": first_present(action.get("close_trade_after_ref"), row["trade_after_ref"]),
                 "validation_status": status,
             }
         )
@@ -434,14 +499,33 @@ def main() -> int:
         "schema_version",
         "validation_request_id",
         "candidate_action_id",
+        "source_seed_action_id",
+        "source_seed_candidate_row_id",
+        "residual_lot_id",
+        "residual_lot_source_seed_action_id",
+        "residual_lot_source_candidate_row_id",
         "close_action_id",
         "close_ts_ms",
         "close_side",
         "close_qty",
         "close_px",
+        "close_cost",
+        "close_fee_rate",
+        "close_fee_rate_source",
+        "close_official_fee",
         "official_fee",
         "fee_rate",
         "fee_rate_source",
+        "expected_close_decision",
+        "expected_close_status",
+        "close_reason",
+        "paired_qty",
+        "paired_yes_source_action_id",
+        "paired_no_source_action_id",
+        "paired_yes_px",
+        "paired_no_px",
+        "paired_cost",
+        "pair_pnl_delta",
         "book_l1_ref",
         "book_l2_ref",
         "trade_before_ref",
