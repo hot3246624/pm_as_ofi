@@ -1,0 +1,77 @@
+{
+  "artifact": "xuan_b27_dplus_source_opportunity_marker_summary_readiness_v1",
+  "changed_surfaces": {
+    "default_off_behavior_change": false,
+    "flag": "--source-opportunity-marker-event-lite-summary",
+    "requires": "--event-lite-summary",
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "schema_version": "source_opportunity_marker_summary_v1",
+    "summary_key": "event_lite.source_opportunity_marker_summary"
+  },
+  "created_utc": "2026-05-23T05:28:04Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_SUMMARY_DEFAULT_OFF_READY",
+  "field_contract": {
+    "admitted_and_blocked_denominators": "status/reason/side/offset/source_risk_direction/open_qty_bucket/deficit_bucket",
+    "micro_deficit_marker_counts": "by status, status_reason, and status_side_offset_risk_open_deficit",
+    "opportunity_fields": [
+      "pending_same_qty",
+      "pending_opp_qty",
+      "pending_same_order_count",
+      "pending_opp_order_count",
+      "opposite_seen",
+      "activation_opp_age_ms"
+    ],
+    "post_action_outcome_labels_included": false,
+    "quantity_fields": [
+      "candidate_qty",
+      "base_qty",
+      "target_room",
+      "room_cost",
+      "imbalance_room"
+    ],
+    "source_link_coverage_fields": [
+      "quote_intent_presence",
+      "source_order_presence",
+      "source_sequence_presence"
+    ]
+  },
+  "limitations": {
+    "pending_opposite_order_availability": "available from runner pending queue only, not private order truth",
+    "quote_intent_and_source_order_for_pre_order_blocks": "expected missing except explicit blocked quote contexts; this is diagnostic coverage, not private truth",
+    "same_window_reproduction": "requires a future explicitly approved no-order run; this artifact starts no run"
+  },
+  "next_executable_action": "Use source_opportunity_marker_summary_v1 only in a future explicitly approved no-order diagnostic pullback, then score whether the frozen micro-deficit predicate appears in admitted/blocked same-window denominators before proposing any guard.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "research_ranking": "TOOLING_READY_REPRODUCTION_GAP_INSTRUMENTATION",
+  "scope": {
+    "events_jsonl_read_or_pulled": false,
+    "local_only": true,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "shadow_started": false,
+    "shared_ingress_broker_env_live_modified": false,
+    "ssh_used": false
+  },
+  "smoke": {
+    "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_SUMMARY_SMOKE_PASS",
+    "manifest": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_marker_smoke_20260523T052804Z/manifest.json",
+    "proved": [
+      "default-off summary absence",
+      "enabled admitted and blocked denominators",
+      "exact open<=1 and 0<deficit<=0.25 marker bucket",
+      "candidate/base qty and room buckets",
+      "pending/opposite availability buckets from runner state",
+      "activation/opposite seen buckets",
+      "blocked source_sequence coverage",
+      "aggregate merge support",
+      "CLI requires --event-lite-summary",
+      "post-action outcome labels excluded"
+    ]
+  }
+}

@@ -163,6 +163,37 @@ def qty_bucket(prefix: str, qty: float | None) -> str:
     return f"{prefix}_gt_5"
 
 
+def deficit_qty_bucket(same_qty: float | None, opp_qty: float | None) -> str:
+    if same_qty is None or opp_qty is None:
+        return "deficit_unknown"
+    deficit = opp_qty - same_qty
+    if deficit <= DUST:
+        return "deficit_le_0"
+    if deficit <= 0.25 + 1e-12:
+        return "deficit_0_0_25"
+    if deficit <= 1.0 + 1e-12:
+        return "deficit_0_25_1"
+    if deficit <= 2.0 + 1e-12:
+        return "deficit_1_2"
+    return "deficit_gt_2"
+
+
+def age_ms_bucket(prefix: str, age_ms: int | float | None) -> str:
+    if age_ms is None:
+        return f"{prefix}_unknown"
+    if age_ms < 0:
+        return f"{prefix}_negative"
+    if age_ms <= 1_000:
+        return f"{prefix}_0_1s"
+    if age_ms <= 5_000:
+        return f"{prefix}_1_5s"
+    if age_ms <= 15_000:
+        return f"{prefix}_5_15s"
+    if age_ms <= 60_000:
+        return f"{prefix}_15_60s"
+    return f"{prefix}_gt_60s"
+
+
 def add_count(hist: dict[str, float], key: str, amount: float = 1.0) -> None:
     hist[key] = round(hist.get(key, 0.0) + amount, 6)
 
@@ -223,6 +254,25 @@ def is_micro_deficit_repair_context(
 
 def side_offset_risk_key(side: str | None, offset_s: float | None, risk_direction: str) -> str:
     return f"{side or 'unknown'}|{offset_bucket(offset_s)}|{risk_direction}"
+
+
+def source_opportunity_marker_key(
+    side: str | None,
+    offset_s: float | None,
+    risk_direction: str,
+    same_qty: float | None,
+    opp_qty: float | None,
+) -> str:
+    open_qty = None if same_qty is None or opp_qty is None else same_qty + opp_qty
+    return "|".join(
+        (
+            side or "unknown",
+            offset_bucket(offset_s),
+            risk_direction,
+            qty_bucket("open_qty", open_qty),
+            deficit_qty_bucket(same_qty, opp_qty),
+        )
+    )
 
 
 def merge_portfolio_ledger_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
@@ -329,6 +379,52 @@ def merge_source_link_transition_diagnostics(dest: dict[str, Any], src: dict[str
             merge_nested_count_hist(dest.setdefault(key, {}), source)
 
 
+def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    if src.get("schema_version"):
+        dest["schema_version"] = src.get("schema_version")
+    if src.get("field_contract"):
+        dest["field_contract"] = src.get("field_contract")
+    count_keys = (
+        "transition_count_by_status",
+        "transition_count_by_reason",
+        "transition_count_by_side_offset_risk_open_deficit",
+        "micro_deficit_marker_count_by_status",
+        "candidate_qty_sum_by_status_reason",
+        "base_qty_sum_by_status_reason",
+        "target_room_sum_by_status_reason",
+        "room_cost_sum_by_status_reason",
+        "imbalance_room_sum_by_status_reason",
+    )
+    nested_keys = (
+        "transition_count_by_status_reason",
+        "transition_count_by_status_side_offset_risk_open_deficit",
+        "micro_deficit_marker_count_by_status_reason",
+        "micro_deficit_marker_count_by_status_side_offset_risk_open_deficit",
+        "candidate_qty_bucket_by_status_reason",
+        "base_qty_bucket_by_status_reason",
+        "target_room_bucket_by_status_reason",
+        "room_cost_bucket_by_status_reason",
+        "imbalance_room_bucket_by_status_reason",
+        "pending_same_qty_bucket_by_status_reason",
+        "pending_opp_qty_bucket_by_status_reason",
+        "pending_same_order_count_bucket_by_status_reason",
+        "pending_opp_order_count_bucket_by_status_reason",
+        "opposite_seen_by_status_reason",
+        "activation_opp_age_bucket_by_status_reason",
+        "quote_intent_presence_by_status_reason",
+        "source_order_presence_by_status_reason",
+        "source_sequence_presence_by_status_reason",
+    )
+    for key in count_keys:
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    for key in nested_keys:
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -377,6 +473,7 @@ class RunnerConfig:
     portfolio_ledger_event_lite_summary: bool = False
     source_link_transition_event_lite_summary: bool = False
     source_link_residual_tail_exemplars_event_lite_summary: bool = False
+    source_opportunity_marker_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -599,6 +696,60 @@ class DPlusRunner:
             "immediate_pair_source_quote_presence_by_side_offset": {},
             "immediate_pair_source_order_presence_by_side_offset": {},
         }
+        self.event_lite_source_opportunity_markers: dict[str, Any] = {
+            "schema_version": "source_opportunity_marker_summary_v1",
+            "transition_count_by_status": {},
+            "transition_count_by_reason": {},
+            "transition_count_by_status_reason": {},
+            "transition_count_by_side_offset_risk_open_deficit": {},
+            "transition_count_by_status_side_offset_risk_open_deficit": {},
+            "micro_deficit_marker_count_by_status": {},
+            "micro_deficit_marker_count_by_status_reason": {},
+            "micro_deficit_marker_count_by_status_side_offset_risk_open_deficit": {},
+            "candidate_qty_sum_by_status_reason": {},
+            "base_qty_sum_by_status_reason": {},
+            "target_room_sum_by_status_reason": {},
+            "room_cost_sum_by_status_reason": {},
+            "imbalance_room_sum_by_status_reason": {},
+            "candidate_qty_bucket_by_status_reason": {},
+            "base_qty_bucket_by_status_reason": {},
+            "target_room_bucket_by_status_reason": {},
+            "room_cost_bucket_by_status_reason": {},
+            "imbalance_room_bucket_by_status_reason": {},
+            "pending_same_qty_bucket_by_status_reason": {},
+            "pending_opp_qty_bucket_by_status_reason": {},
+            "pending_same_order_count_bucket_by_status_reason": {},
+            "pending_opp_order_count_bucket_by_status_reason": {},
+            "opposite_seen_by_status_reason": {},
+            "activation_opp_age_bucket_by_status_reason": {},
+            "quote_intent_presence_by_status_reason": {},
+            "source_order_presence_by_status_reason": {},
+            "source_sequence_presence_by_status_reason": {},
+            "field_contract": {
+                "live_pre_action_fields": [
+                    "status",
+                    "reason",
+                    "side",
+                    "offset_bucket",
+                    "source_risk_direction",
+                    "open_qty_bucket",
+                    "deficit_bucket",
+                    "candidate_qty",
+                    "base_qty",
+                    "target_room",
+                    "room_cost",
+                    "imbalance_room",
+                    "pending_same_qty",
+                    "pending_opp_qty",
+                    "activation_opp_age_ms",
+                    "opposite_seen",
+                ],
+                "post_action_outcome_labels_included": False,
+                "private_truth_ready": False,
+                "deployable": False,
+                "promotion_gate_passed": False,
+            },
+        }
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -620,6 +771,16 @@ class DPlusRunner:
         side: str | None = None,
         public_trade_px: float | None = None,
         offset_s: float | None = None,
+        qty: float | None = None,
+        base_qty: float | None = None,
+        target_qty: float | None = None,
+        room_cost: float | None = None,
+        imbalance_room: float | None = None,
+        activation_opp_age_ms: int | None = None,
+        opposite_seen_ms: int | None = None,
+        quote_intent_id: str | None = None,
+        source_order_id: int | None = None,
+        source_sequence_id: Any | None = None,
     ) -> None:
         self.blocked[reason] = self.blocked.get(reason, 0) + 1
         if self.cfg.event_lite_summary:
@@ -644,7 +805,27 @@ class DPlusRunner:
             same_cost=same_cost,
             opp_cost=opp_cost,
             ledger_proxy_before=self.online_ledger_proxy(),
-            source_sequence_id=None,
+            quote_intent_id=quote_intent_id,
+            source_order_id=source_order_id,
+            source_sequence_id=source_sequence_id,
+        )
+        self.record_source_opportunity_marker(
+            status="blocked",
+            reason=reason,
+            side=side,
+            offset_s=offset_s,
+            qty=qty,
+            base_qty=base_qty,
+            target_qty=target_qty,
+            room_cost=room_cost,
+            imbalance_room=imbalance_room,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            activation_opp_age_ms=activation_opp_age_ms,
+            opposite_seen_ms=opposite_seen_ms,
+            quote_intent_id=quote_intent_id,
+            source_order_id=source_order_id,
+            source_sequence_id=source_sequence_id,
         )
 
     def record_event_lite_candidate(self, side: str, seed_px: float, public_trade_px: float, offset_s: float | None, qty: float) -> None:
@@ -780,6 +961,113 @@ class DPlusRunner:
             diag["candidate_qty_bucket_by_status_side_offset_risk_direction"],
             cross_key,
             qty_bucket("candidate_qty", qty),
+        )
+
+    def record_source_opportunity_marker(
+        self,
+        *,
+        status: str,
+        reason: str,
+        side: str | None,
+        offset_s: float | None,
+        qty: float | None,
+        base_qty: float | None,
+        target_qty: float | None,
+        room_cost: float | None,
+        imbalance_room: float | None,
+        same_qty: float | None,
+        opp_qty: float | None,
+        activation_opp_age_ms: int | None,
+        opposite_seen_ms: int | None,
+        quote_intent_id: str | None,
+        source_order_id: int | None,
+        source_sequence_id: Any | None,
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.source_opportunity_marker_event_lite_summary):
+            return
+        side_key = side or "unknown"
+        risk_direction = inventory_risk_direction(same_qty, opp_qty)
+        marker_key = source_opportunity_marker_key(side, offset_s, risk_direction, same_qty, opp_qty)
+        status_reason = f"{status}|{reason}"
+        pending_same = self.pending_orders(side) if side in {"YES", "NO"} else []
+        pending_opp = self.pending_orders(opp(side)) if side in {"YES", "NO"} else []
+        pending_same_qty = sum(order.qty for order in pending_same)
+        pending_opp_qty = sum(order.qty for order in pending_opp)
+        target_room = None if target_qty is None or same_qty is None else target_qty - same_qty
+        room_cost_value = room_cost if room_cost is not None else self.cfg.max_open_cost - self.total_open_cost()
+        if imbalance_room is None and same_qty is not None and opp_qty is not None:
+            imbalance_room = self.cfg.imbalance_qty_cap - max(0.0, same_qty - opp_qty)
+        micro_deficit = is_micro_deficit_repair_context(
+            same_qty,
+            opp_qty,
+            self.cfg.micro_deficit_repair_max_deficit_qty,
+            self.cfg.micro_deficit_repair_open_qty_cap,
+        )
+        diag = self.event_lite_source_opportunity_markers
+        add_count(diag["transition_count_by_status"], status)
+        add_count(diag["transition_count_by_reason"], reason)
+        add_nested_count(diag["transition_count_by_status_reason"], status, reason)
+        add_count(diag["transition_count_by_side_offset_risk_open_deficit"], marker_key)
+        add_nested_count(diag["transition_count_by_status_side_offset_risk_open_deficit"], status, marker_key)
+        if micro_deficit:
+            add_count(diag["micro_deficit_marker_count_by_status"], status)
+            add_nested_count(diag["micro_deficit_marker_count_by_status_reason"], status, reason)
+            add_nested_count(
+                diag["micro_deficit_marker_count_by_status_side_offset_risk_open_deficit"],
+                status,
+                marker_key,
+            )
+        if qty is not None:
+            add_count(diag["candidate_qty_sum_by_status_reason"], status_reason, max(0.0, qty))
+        if base_qty is not None:
+            add_count(diag["base_qty_sum_by_status_reason"], status_reason, max(0.0, base_qty))
+        if target_room is not None:
+            add_count(diag["target_room_sum_by_status_reason"], status_reason, max(0.0, target_room))
+        if room_cost_value is not None:
+            add_count(diag["room_cost_sum_by_status_reason"], status_reason, max(0.0, room_cost_value))
+        if imbalance_room is not None:
+            add_count(diag["imbalance_room_sum_by_status_reason"], status_reason, max(0.0, imbalance_room))
+        add_nested_count(diag["candidate_qty_bucket_by_status_reason"], status_reason, qty_bucket("candidate_qty", qty))
+        add_nested_count(diag["base_qty_bucket_by_status_reason"], status_reason, qty_bucket("base_qty", base_qty))
+        add_nested_count(diag["target_room_bucket_by_status_reason"], status_reason, qty_bucket("target_room", target_room))
+        add_nested_count(diag["room_cost_bucket_by_status_reason"], status_reason, qty_bucket("room_cost", room_cost_value))
+        add_nested_count(diag["imbalance_room_bucket_by_status_reason"], status_reason, qty_bucket("imbalance_room", imbalance_room))
+        add_nested_count(diag["pending_same_qty_bucket_by_status_reason"], status_reason, qty_bucket("pending_same_qty", pending_same_qty))
+        add_nested_count(diag["pending_opp_qty_bucket_by_status_reason"], status_reason, qty_bucket("pending_opp_qty", pending_opp_qty))
+        add_nested_count(
+            diag["pending_same_order_count_bucket_by_status_reason"],
+            status_reason,
+            qty_bucket("pending_same_order_count", float(len(pending_same))),
+        )
+        add_nested_count(
+            diag["pending_opp_order_count_bucket_by_status_reason"],
+            status_reason,
+            qty_bucket("pending_opp_order_count", float(len(pending_opp))),
+        )
+        add_nested_count(
+            diag["opposite_seen_by_status_reason"],
+            status_reason,
+            "opposite_seen_present" if opposite_seen_ms is not None else "opposite_seen_missing",
+        )
+        add_nested_count(
+            diag["activation_opp_age_bucket_by_status_reason"],
+            status_reason,
+            age_ms_bucket("activation_opp_age", activation_opp_age_ms),
+        )
+        add_nested_count(
+            diag["quote_intent_presence_by_status_reason"],
+            status_reason,
+            "present" if quote_intent_id else "missing",
+        )
+        add_nested_count(
+            diag["source_order_presence_by_status_reason"],
+            status_reason,
+            "present" if source_order_id is not None else "missing",
+        )
+        add_nested_count(
+            diag["source_sequence_presence_by_status_reason"],
+            status_reason,
+            "present" if source_sequence_id is not None else "missing",
         )
 
     def record_source_link_pair_transition(
@@ -1232,6 +1520,16 @@ class DPlusRunner:
         trigger_source_sequence_id = source_sequence_id(msg)
         trigger_event_time_ms = event_time_ms(msg, ts_ms)
 
+        def block_seed(reason: str, **kwargs: Any) -> None:
+            self.block(
+                reason,
+                side=side,
+                public_trade_px=px,
+                offset_s=offset,
+                source_sequence_id=trigger_source_sequence_id,
+                **kwargs,
+            )
+
         if taker == "SELL" and side in {"YES", "NO"}:
             self.mark_touches(ts_ms, side, px)
             for order in self.pending_orders(side):
@@ -1250,22 +1548,22 @@ class DPlusRunner:
         self.sell_triggers += 1
         self.cancel_expired(ts_ms)
         if offset is None or offset < self.cfg.seed_offset_min_s or offset >= self.cfg.seed_offset_max_s:
-            self.block("offset", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("offset")
             return
         if not (self.cfg.seed_px_lo <= px <= self.cfg.seed_px_hi):
-            self.block("price", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("price")
             return
         yes_ask = side_ask(self.book, "YES")
         no_ask = side_ask(self.book, "NO")
         if yes_ask <= 0 or no_ask <= 0:
-            self.block("missing_pair_ask", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("missing_pair_ask")
             return
         l1_pair = yes_ask + no_ask
         if l1_pair > self.cfg.seed_l1_cap + 1e-12:
-            self.block("l1_pair_ask_gt_cap", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("l1_pair_ask_gt_cap")
             return
         if ts_ms - self.last_seed_ms < self.cfg.cooldown_ms:
-            self.block("cooldown", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("cooldown")
             return
 
         same_qty = self.exposure_qty(side)
@@ -1274,22 +1572,28 @@ class DPlusRunner:
         seed_px = max(0.01, px - self.cfg.edge)
         opposite_seen_ms = self.activation_last_seen_ms.get(opp(side))
         if self.cfg.pairing_only_when_residual and same_qty > opp_qty + self.cfg.dust_qty:
-            self.block("pairing_only_when_residual", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("pairing_only_when_residual", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
             return
         if self.cfg.late_repair_only_active(offset) and same_qty >= opp_qty:
-            self.block("late_repair_only", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("late_repair_only", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
             return
         if self.cfg.late_repair_active(offset) and same_qty + self.cfg.dust_qty >= opp_qty:
-            self.block("late_repair_only", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("late_repair_only", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
             return
         risk_increasing_seed = same_qty + self.cfg.dust_qty >= opp_qty
         activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
         if risk_increasing_seed and not activation_ok:
-            self.block("activation_opp_seen", side=side, public_trade_px=px, offset_s=offset)
             blocked_quote_intent_id = self.blocked_quote_intent_id(side, ts_ms)
+            block_seed(
+                "activation_opp_seen",
+                target_qty=target_qty,
+                activation_opp_age_ms=activation_opp_age_ms,
+                opposite_seen_ms=opposite_seen_ms,
+                quote_intent_id=blocked_quote_intent_id,
+            )
             self.emit(
                 {
                     "kind": "activation_block",
@@ -1321,16 +1625,21 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
         if same_qty >= target_qty - self.cfg.dust_qty:
-            self.block("target", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("target", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
             return
         if max(0.0, self.exposure_cost(side) - self.exposure_cost(opp(side))) > self.cfg.imbalance_cost_cap + 1e-12:
-            self.block("imbalance_cost", side=side, public_trade_px=px, offset_s=offset)
+            block_seed("imbalance_cost", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
             return
         imbalance_room = self.cfg.imbalance_qty_cap - max(0.0, same_qty - opp_qty)
         if imbalance_room <= self.cfg.dust_qty:
-            self.block("imbalance_qty", side=side, public_trade_px=px, offset_s=offset)
+            block_seed(
+                "imbalance_qty",
+                target_qty=target_qty,
+                imbalance_room=imbalance_room,
+                opposite_seen_ms=opposite_seen_ms,
+            )
             self.record_activation_seen(side, ts_ms)
             return
 
@@ -1345,7 +1654,12 @@ class DPlusRunner:
             self.metrics.micro_deficit_repair_guard_candidates += 1
         if self.cfg.micro_deficit_repair_guard and micro_deficit_repair_candidate:
             self.metrics.micro_deficit_repair_guard_blocks += 1
-            self.block("micro_deficit_repair_guard", side=side, public_trade_px=px, offset_s=offset)
+            block_seed(
+                "micro_deficit_repair_guard",
+                target_qty=target_qty,
+                imbalance_room=imbalance_room,
+                opposite_seen_ms=opposite_seen_ms,
+            )
             self.record_activation_seen(side, ts_ms)
             return
 
@@ -1375,9 +1689,27 @@ class DPlusRunner:
         if qty <= self.cfg.dust_qty:
             if fill_to_balance_active:
                 self.metrics.late_repair_fill_to_balance_blocks += 1
-                self.block("late_repair_fill_to_balance_qty", side=side, public_trade_px=px, offset_s=offset)
+                block_seed(
+                    "late_repair_fill_to_balance_qty",
+                    qty=qty,
+                    base_qty=base_qty,
+                    target_qty=target_qty,
+                    room_cost=room_cost,
+                    imbalance_room=imbalance_room,
+                    activation_opp_age_ms=activation_opp_age_ms,
+                    opposite_seen_ms=opposite_seen_ms,
+                )
             else:
-                self.block("qty_zero", side=side, public_trade_px=px, offset_s=offset)
+                block_seed(
+                    "qty_zero",
+                    qty=qty,
+                    base_qty=base_qty,
+                    target_qty=target_qty,
+                    room_cost=room_cost,
+                    imbalance_room=imbalance_room,
+                    activation_opp_age_ms=activation_opp_age_ms,
+                    opposite_seen_ms=opposite_seen_ms,
+                )
             self.record_activation_seen(side, ts_ms)
             return
 
@@ -1412,6 +1744,24 @@ class DPlusRunner:
             pre_seed_same_cost=same_cost_before,
             pre_seed_opp_cost=opp_cost_before,
             ledger_proxy_before=ledger_proxy_before,
+        )
+        self.record_source_opportunity_marker(
+            status="admitted",
+            reason="candidate",
+            side=side,
+            offset_s=offset,
+            qty=qty,
+            base_qty=base_qty,
+            target_qty=target_qty,
+            room_cost=room_cost,
+            imbalance_room=imbalance_room,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            activation_opp_age_ms=activation_opp_age_ms,
+            opposite_seen_ms=opposite_seen_ms,
+            quote_intent_id=quote_intent_id,
+            source_order_id=order.id,
+            source_sequence_id=trigger_source_sequence_id,
         )
         self.next_order_id += 1
         self.pending.append(order)
@@ -1574,6 +1924,8 @@ class DPlusRunner:
                     residual_lots,
                     summary_ts_ms,
                 )
+            if self.cfg.source_opportunity_marker_event_lite_summary:
+                summary["event_lite"]["source_opportunity_marker_summary"] = self.event_lite_source_opportunity_markers
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -1838,6 +2190,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                         if "slug" not in item:
                             item = {**item, "slug": s.get("slug")}
                         top_tail.append(item)
+            source_opportunity_marker = lite.get("source_opportunity_marker_summary")
+            if isinstance(source_opportunity_marker, dict):
+                merge_source_opportunity_marker_summary(
+                    event_lite.setdefault("source_opportunity_marker_summary", {}),
+                    source_opportunity_marker,
+                )
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -1958,6 +2316,7 @@ async def main() -> None:
     ap.add_argument("--portfolio-ledger-event-lite-summary", action="store_true", help="with --event-lite-summary, emit per-condition paired-inventory and residual risk-adjusted ledger diagnostics")
     ap.add_argument("--source-link-transition-event-lite-summary", action="store_true", help="with --event-lite-summary, emit candidate transition source-link diagnostics for admitted/blocked/pair/residual paths")
     ap.add_argument("--source-link-residual-tail-exemplars-event-lite-summary", action="store_true", help="with --event-lite-summary, emit top residual source exemplars with action-level source/pair/residual fields")
+    ap.add_argument("--source-opportunity-marker-event-lite-summary", action="store_true", help="with --event-lite-summary, emit admitted/blocked opportunity denominators by pre-action open/deficit/source-risk buckets")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -1999,6 +2358,7 @@ async def main() -> None:
         portfolio_ledger_event_lite_summary=args.portfolio_ledger_event_lite_summary,
         source_link_transition_event_lite_summary=args.source_link_transition_event_lite_summary,
         source_link_residual_tail_exemplars_event_lite_summary=args.source_link_residual_tail_exemplars_event_lite_summary,
+        source_opportunity_marker_event_lite_summary=args.source_opportunity_marker_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -2036,6 +2396,8 @@ async def main() -> None:
         raise SystemExit("--source-link-transition-event-lite-summary requires --event-lite-summary")
     if cfg.source_link_residual_tail_exemplars_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--source-link-residual-tail-exemplars-event-lite-summary requires --event-lite-summary")
+    if cfg.source_opportunity_marker_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--source-opportunity-marker-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")
