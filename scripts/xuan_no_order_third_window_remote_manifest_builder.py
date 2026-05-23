@@ -220,6 +220,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         str(profile["debt_floor"]),
         "--risk-seed-closeability-debt-budget",
         str(profile["debt_budget"]),
+        "--risk-seed-pending-opp-credit",
+        str(profile_value(profile, "risk_seed_pending_opp_credit", 1.0)),
         "--write-normalized-lifecycle",
         "--write-rescue-block-diagnostics",
         "--allow-concurrent-shared-ingress-readers",

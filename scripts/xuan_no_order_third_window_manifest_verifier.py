@@ -128,6 +128,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("remote_command_soft_cap_does_not_match_profile")
     if not option_matches(remote_cmd, "--risk-seed-closeability-debt-budget", profile.get("debt_budget", 1.0)):
         hard_blockers.append("remote_command_debt_budget_does_not_match_profile")
+    if not option_matches(remote_cmd, "--risk-seed-pending-opp-credit", profile.get("risk_seed_pending_opp_credit", 1.0)):
+        hard_blockers.append("remote_command_pending_opp_credit_does_not_match_profile")
     if not option_matches(remote_cmd, "--salvage-net-cap", profile.get("strict_rescue_salvage_net_cap", 0.95)):
         hard_blockers.append("remote_command_salvage_net_cap_does_not_match_profile")
     if not option_matches(remote_cmd, "--imbalance-qty-cap", profile.get("imbalance_qty_cap", 2.0)):
