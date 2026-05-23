@@ -110,7 +110,9 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
     blocked_net_pair = event_diag.get("strict_rescue_block_net_pair_cost", {})
     source_clean = concurrency.get("status") in {"", None, "KEEP_NO_ORDER_CONCURRENT_SHARED_INGRESS_EVIDENCE_PASS_RESEARCH_ONLY"}
     lifecycle_clean = lifecycle.get("status") in {"", None, "KEEP_NO_ORDER_STRICT_RESCUE_LIFECYCLE_SCORER_PASS_RESEARCH_ONLY"}
+    pair_pnl = as_float(metrics.get("pair_pnl"))
     residual_blocked = residual_qty_share > args.max_residual_qty_share or residual_cost_share > args.max_residual_cost_share
+    pnl_blocked = pair_pnl < args.min_pair_pnl
     economics_dominant = net_cap_share >= args.min_net_cap_block_share and l1_age_share <= args.max_l1_age_block_share
     admission_rescue_gap = (
         as_float(candidate_closeability.get("p50")) > args.salvage_net_cap
@@ -123,9 +125,11 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("source_or_concurrency_not_clean")
     if not lifecycle_clean:
         hard_blockers.append("lifecycle_not_clean")
+    if pnl_blocked:
+        hard_blockers.append("pair_pnl_below_min")
     if residual_blocked:
         hard_blockers.append("residual_share_above_runtime_gate")
-    if economics_dominant:
+    if economics_dominant and (residual_blocked or pnl_blocked):
         hard_blockers.append("strict_rescue_net_pair_cap_dominant")
     if admission_rescue_gap:
         hard_blockers.append("soft_admission_above_strict_rescue_cap")
@@ -154,7 +158,7 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
             "fills": as_float(metrics.get("queue_supported_fills")),
             "strict_rescue_closes": as_float(metrics.get("strict_rescue_actions")),
             "strict_rescue_qty": as_float(metrics.get("strict_rescue_qty")),
-            "pair_pnl": as_float(metrics.get("pair_pnl")),
+            "pair_pnl": pair_pnl,
             "filled_qty": as_float(metrics.get("filled_qty")),
             "filled_cost": as_float(metrics.get("filled_cost")),
             "residual_qty": as_float(metrics.get("residual_qty")),
@@ -178,6 +182,7 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
             "risk_seed_closeability_block_reasons": event_diag.get("risk_seed_closeability_block_reasons", {}),
             "soft_cap": args.soft_cap,
             "strict_rescue_salvage_net_cap": args.salvage_net_cap,
+            "target_rescue_net_cap": args.target_rescue_net_cap,
         },
         "per_slug": {
             "slug_count": len(rows),
@@ -192,25 +197,26 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
             "lifecycle": lifecycle.get("status"),
         },
         "recommendation": {
-            "rerun_same_profile_blind": False,
-            "target_rescue_net_cap": args.salvage_net_cap,
-            "recommended_probe_salvage_net_cap": args.soft_cap,
+            "rerun_same_profile_blind": not hard_blockers,
+            "target_rescue_net_cap": args.target_rescue_net_cap,
+            "recommended_probe_salvage_net_cap": args.salvage_net_cap,
+            "strict_rescue_net_pair_cap_dominant": economics_dominant,
             "next_profile": {
                 "activation_mode": "opp_seen",
                 "activation_window_s": 15,
                 "late_repair_after_s": 90,
                 "imbalance_qty_cap": 1.25,
                 "soft_cap": args.soft_cap,
-                "debt_floor": args.salvage_net_cap,
+                "debt_floor": args.target_rescue_net_cap,
                 "debt_budget": 1.0,
-                "salvage_net_cap": args.soft_cap,
+                "salvage_net_cap": args.salvage_net_cap,
             },
             "rationale": (
                 "Source/concurrency/lifecycle checks are clean; residual is concentrated in windows where "
                 "risk-increasing seed admission accepts closeability costs around the soft cap while strict "
-                "rescue remains capped at the replay-aligned salvage cap. The next controller test should "
-                "reduce risk-increasing seed accumulation and force late repair behavior while treating the "
-                "replay-aligned cap as a quality target rather than an absolute floor."
+                "rescue remains capped by the runtime salvage cap. Treat target_rescue_net_cap as the quality "
+                "objective and salvage_net_cap as the bounded runtime floor; positive PnL and controlled "
+                "residual are the pass/fail bottom line for this diagnostic."
             ),
         },
         "decision": {
@@ -268,6 +274,8 @@ def main() -> None:
     parser.add_argument("--lifecycle-scorecard")
     parser.add_argument("--soft-cap", type=float, default=0.98)
     parser.add_argument("--salvage-net-cap", type=float, default=0.95)
+    parser.add_argument("--target-rescue-net-cap", type=float, default=0.95)
+    parser.add_argument("--min-pair-pnl", type=float, default=0.0)
     parser.add_argument("--max-residual-qty-share", type=float, default=0.35)
     parser.add_argument("--max-residual-cost-share", type=float, default=0.30)
     parser.add_argument("--min-net-cap-block-share", type=float, default=0.50)
