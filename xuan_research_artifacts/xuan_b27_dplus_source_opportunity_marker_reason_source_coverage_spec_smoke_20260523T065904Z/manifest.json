@@ -1,0 +1,31 @@
+{
+  "artifact": "xuan_b27_dplus_source_opportunity_marker_reason_source_coverage_spec_smoke",
+  "checks": {
+    "default_off": true,
+    "exact_join_key_includes_reason_marker": true,
+    "no_side_effects": true,
+    "post_action_labels_excluded": true,
+    "private_truth_excluded": true,
+    "promotion_gate_false": true,
+    "quote_intent_presence_field_specified": true,
+    "source_sequence_presence_field_specified": true,
+    "spec_keep": true
+  },
+  "created_utc": "20260523T065904Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_REASON_SOURCE_COVERAGE_SPEC_SMOKE_PASS",
+  "next_action": "Implement the default-off reason/source coverage summary locally if exact marker-by-reason/source coverage is required before another no-order diagnostic.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "FIELD_SPEC_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "This is a local field-contract spec for marker-denominator transfer-gap diagnostics. It is not strategy economics, private truth, deployable evidence, canary evidence, or promotion.",
+    "label": "KEEP_SOURCE_OPPORTUNITY_MARKER_REASON_SOURCE_COVERAGE_SPEC_READY"
+  },
+  "spec_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_reason_source_coverage_spec_smoke_20260523T065904Z/spec_manifest.json"
+}
