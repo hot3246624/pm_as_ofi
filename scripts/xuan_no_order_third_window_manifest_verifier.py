@@ -137,6 +137,12 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         remote_cmd, "--pair-completion-net-cap", profile.get("pair_completion_net_cap")
     ):
         hard_blockers.append("remote_command_pair_completion_net_cap_does_not_match_profile")
+    if profile.get("pair_completion_min_pair_pnl_after") is not None and not option_matches(
+        remote_cmd,
+        "--pair-completion-min-pair-pnl-after",
+        profile.get("pair_completion_min_pair_pnl_after"),
+    ):
+        hard_blockers.append("remote_command_pair_completion_pair_pnl_floor_does_not_match_profile")
     if not option_matches(remote_cmd, "--salvage-net-cap", profile.get("strict_rescue_salvage_net_cap", 0.95)):
         hard_blockers.append("remote_command_salvage_net_cap_does_not_match_profile")
     if not option_matches(remote_cmd, "--imbalance-qty-cap", profile.get("imbalance_qty_cap", 2.0)):

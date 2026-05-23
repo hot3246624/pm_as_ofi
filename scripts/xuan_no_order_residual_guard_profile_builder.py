@@ -108,6 +108,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "debt_budget": args.debt_budget,
         "risk_seed_pending_opp_credit": args.risk_seed_pending_opp_credit,
         "pair_completion_net_cap": args.pair_completion_net_cap,
+        "pair_completion_min_pair_pnl_after": args.pair_completion_min_pair_pnl_after,
         "target_rescue_net_cap": args.target_rescue_net_cap,
         "strict_rescue_salvage_net_cap": args.salvage_net_cap,
         "strict_rescue_skip_low_cost_lots": args.strict_rescue_skip_low_cost_lots,
@@ -204,6 +205,7 @@ def main() -> None:
     parser.add_argument("--debt-budget", type=float, default=1.0)
     parser.add_argument("--risk-seed-pending-opp-credit", type=float, default=1.0)
     parser.add_argument("--pair-completion-net-cap", type=float, default=None)
+    parser.add_argument("--pair-completion-min-pair-pnl-after", type=float, default=None)
     parser.add_argument("--target-rescue-net-cap", type=float, default=0.95)
     parser.add_argument("--salvage-net-cap", type=float, default=0.98)
     parser.add_argument("--strict-rescue-skip-low-cost-lots", action="store_true")

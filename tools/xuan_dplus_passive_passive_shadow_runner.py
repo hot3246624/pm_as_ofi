@@ -265,6 +265,7 @@ class RunnerConfig:
     risk_seed_closeability_debt_budget: float = 0.0
     risk_seed_pending_opp_credit: float = 1.0
     pair_completion_net_cap: float | None = None
+    pair_completion_min_pair_pnl_after: float | None = None
     dust_qty: float = 1.0
     taker_fee_rate: float = 0.07
     salvage_net_cap: float = 0.95
@@ -616,6 +617,7 @@ class DPlusRunner:
     def pair_completion_audit(self, side: str, seed_px: float, qty: float) -> dict[str, Any]:
         matched_qty = 0.0
         weighted_cost = 0.0
+        projected_pair_pnl_delta = 0.0
         worst_cost: float | None = None
         remaining = qty
         for lot in self.lots[opp(side)]:
@@ -627,17 +629,26 @@ class DPlusRunner:
             cost = seed_px + lot.px
             matched_qty += take
             weighted_cost += take * cost
+            projected_pair_pnl_delta += take * (1.0 - cost)
             worst_cost = cost if worst_cost is None else max(worst_cost, cost)
             remaining -= take
         avg_cost = weighted_cost / matched_qty if matched_qty > DUST else None
+        projected_pair_pnl_after = self.metrics.pair_pnl + projected_pair_pnl_delta
         decision = "not_enabled" if self.cfg.pair_completion_net_cap is None else "allow"
+        if self.cfg.pair_completion_min_pair_pnl_after is not None:
+            decision = "allow"
         if matched_qty <= DUST:
             decision = "no_opposite_lots" if self.cfg.pair_completion_net_cap is not None else "not_enabled"
+            if self.cfg.pair_completion_min_pair_pnl_after is not None:
+                decision = "no_opposite_lots"
         return {
             "pair_completion_net_cap": self.cfg.pair_completion_net_cap,
+            "pair_completion_min_pair_pnl_after": self.cfg.pair_completion_min_pair_pnl_after,
             "pair_completion_qty": round(matched_qty, 12),
             "pair_completion_avg_net_pair_cost": round(avg_cost, 12) if avg_cost is not None else None,
             "pair_completion_worst_net_pair_cost": round(worst_cost, 12) if worst_cost is not None else None,
+            "pair_completion_pair_pnl_delta": round(projected_pair_pnl_delta, 12),
+            "pair_completion_projected_pair_pnl_after": round(projected_pair_pnl_after, 12),
             "pair_completion_decision": decision,
         }
 
@@ -1239,6 +1250,41 @@ class DPlusRunner:
             )
             self.record_activation_seen(side, ts_ms)
             return
+        if (
+            self.cfg.pair_completion_min_pair_pnl_after is not None
+            and pair_completion_audit["pair_completion_qty"] > self.cfg.dust_qty
+            and pair_completion_audit["pair_completion_projected_pair_pnl_after"]
+            < self.cfg.pair_completion_min_pair_pnl_after - 1e-12
+        ):
+            self.block("pair_completion_pair_pnl_floor")
+            pair_completion_audit["pair_completion_decision"] = "block_pair_pnl_floor"
+            self.emit(
+                {
+                    "kind": "pair_completion_block",
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "ts_ms": ts_ms,
+                    "side": side,
+                    "price": seed_px,
+                    "qty": qty,
+                    "public_trade_px": px,
+                    "public_trade_size": size,
+                    "source_sequence_id": trigger_source_sequence_id,
+                    "market_md_source_sequence_id": trigger_source_sequence_id,
+                    "block_reason": "pair_completion_pair_pnl_floor",
+                    "same_exposure_qty": same_qty,
+                    "opp_exposure_qty": opp_qty,
+                    "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit,
+                    "risk_seed_pending_opp_qty": pending_opp_qty,
+                    "risk_seed_credited_opp_qty": credited_opp_qty,
+                    **pair_completion_audit,
+                    **closeability_audit,
+                    **source_quality_audit,
+                    **surplus_audit,
+                }
+            )
+            self.record_activation_seen(side, ts_ms)
+            return
         if risk_increasing_seed and self.cfg.risk_seed_closeability_soft_net_cap is not None:
             closeability_audit["risk_seed_closeability_soft_decision"] = "allow"
             closeability_audit["closeability_debt_pre_open"] = round(self.closeability_debt_open, 12)
@@ -1388,9 +1434,12 @@ class DPlusRunner:
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
                     "pair_completion_net_cap": event.get("pair_completion_net_cap"),
+                    "pair_completion_min_pair_pnl_after": event.get("pair_completion_min_pair_pnl_after"),
                     "pair_completion_qty": event.get("pair_completion_qty"),
                     "pair_completion_avg_net_pair_cost": event.get("pair_completion_avg_net_pair_cost"),
                     "pair_completion_worst_net_pair_cost": event.get("pair_completion_worst_net_pair_cost"),
+                    "pair_completion_pair_pnl_delta": event.get("pair_completion_pair_pnl_delta"),
+                    "pair_completion_projected_pair_pnl_after": event.get("pair_completion_projected_pair_pnl_after"),
                     "pair_completion_decision": event.get("pair_completion_decision"),
                     "closeability_net_pair_cost": event.get("closeability_net_pair_cost"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
@@ -1413,8 +1462,8 @@ class DPlusRunner:
             elif kind in {"source_quality_block", "activation_block", "surplus_budget_block", "risk_seed_closeability_block", "pair_completion_block"}:
                 reason = (
                     event.get("source_quality_block_reason")
-                    or event.get("surplus_budget_decision")
                     or event.get("block_reason")
+                    or event.get("surplus_budget_decision")
                     or ("risk_seed_closeability_net_cap" if kind == "risk_seed_closeability_block" else kind)
                 )
                 action_rows.append({
@@ -1437,9 +1486,12 @@ class DPlusRunner:
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
                     "pair_completion_net_cap": event.get("pair_completion_net_cap"),
+                    "pair_completion_min_pair_pnl_after": event.get("pair_completion_min_pair_pnl_after"),
                     "pair_completion_qty": event.get("pair_completion_qty"),
                     "pair_completion_avg_net_pair_cost": event.get("pair_completion_avg_net_pair_cost"),
                     "pair_completion_worst_net_pair_cost": event.get("pair_completion_worst_net_pair_cost"),
+                    "pair_completion_pair_pnl_delta": event.get("pair_completion_pair_pnl_delta"),
+                    "pair_completion_projected_pair_pnl_after": event.get("pair_completion_projected_pair_pnl_after"),
                     "pair_completion_decision": event.get("pair_completion_decision"),
                     "closeability_net_pair_cost": event.get("closeability_net_pair_cost"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
@@ -1568,9 +1620,11 @@ class DPlusRunner:
                 "risk_seed_closeability_debt_floor", "risk_seed_closeability_debt_budget",
                 "risk_seed_closeability_soft_decision", "risk_seed_pending_opp_credit",
                 "risk_seed_pending_opp_qty", "risk_seed_credited_opp_qty",
-                "pair_completion_net_cap", "pair_completion_qty",
-                "pair_completion_avg_net_pair_cost", "pair_completion_worst_net_pair_cost",
-                "pair_completion_decision", "closeability_net_pair_cost",
+                "pair_completion_net_cap", "pair_completion_min_pair_pnl_after",
+                "pair_completion_qty", "pair_completion_avg_net_pair_cost",
+                "pair_completion_worst_net_pair_cost", "pair_completion_pair_pnl_delta",
+                "pair_completion_projected_pair_pnl_after", "pair_completion_decision",
+                "closeability_net_pair_cost",
                 "closeability_debt_per_share", "closeability_debt", "closeability_debt_pre_open",
                 "closeability_debt_post_open",
             ],
@@ -1922,6 +1976,12 @@ async def main() -> None:
         default=None,
         help="Block admissions that would pair against existing opposite lots above this actual FIFO pair-cost cap.",
     )
+    ap.add_argument(
+        "--pair-completion-min-pair-pnl-after",
+        type=float,
+        default=None,
+        help="Block loss-making pair completions only when projected realized pair PnL for this slug would fall below this floor.",
+    )
     ap.add_argument("--taker-fee-rate", type=float, default=0.07)
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
@@ -1988,6 +2048,7 @@ async def main() -> None:
         risk_seed_closeability_debt_budget=args.risk_seed_closeability_debt_budget,
         risk_seed_pending_opp_credit=args.risk_seed_pending_opp_credit,
         pair_completion_net_cap=args.pair_completion_net_cap,
+        pair_completion_min_pair_pnl_after=args.pair_completion_min_pair_pnl_after,
         taker_fee_rate=args.taker_fee_rate,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),

@@ -777,10 +777,12 @@ def smoke_risk_seed_pending_opp_credit_guard() -> dict[str, Any]:
 
 
 def smoke_pair_completion_net_cap() -> dict[str, Any]:
-    def run_one(cfg: RunnerConfig) -> dict[str, Any]:
+    def run_one(cfg: RunnerConfig, *, pre_pair_pnl: float = 0.0) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as td:
             slug = "btc-updown-5m-100"
             runner = DPlusRunner(slug, Path(td), cfg)
+            runner.metrics.pair_pnl = pre_pair_pnl
+            runner.surplus_bank = pre_pair_pnl
             runner.lots["NO"].append(
                 Lot(
                     id=1,
@@ -843,14 +845,40 @@ def smoke_pair_completion_net_cap() -> dict[str, Any]:
         and (allowed_candidate.get("pair_completion_worst_net_pair_cost") or 2.0) <= 1.12
     )
 
+    floor_blocked = run_one(RunnerConfig(cooldown_ms=0, pair_completion_min_pair_pnl_after=0.0))
+    floor_block_event = next((event for event in floor_blocked["events"] if event.get("kind") == "pair_completion_block"), {})
+    floor_blocked_passed = (
+        floor_blocked["state"]["metrics"]["candidates"] == 0
+        and floor_blocked["state"]["blocked"].get("pair_completion_pair_pnl_floor") == 1
+        and floor_block_event.get("block_reason") == "pair_completion_pair_pnl_floor"
+        and floor_block_event.get("pair_completion_decision") == "block_pair_pnl_floor"
+        and (floor_block_event.get("pair_completion_projected_pair_pnl_after") or 0.0) < 0.0
+    )
+
+    floor_allowed = run_one(
+        RunnerConfig(cooldown_ms=0, pair_completion_min_pair_pnl_after=0.0),
+        pre_pair_pnl=0.20,
+    )
+    floor_allowed_candidate = next((event for event in floor_allowed["events"] if event.get("kind") == "candidate"), {})
+    floor_allowed_passed = (
+        floor_allowed["state"]["metrics"]["candidates"] == 1
+        and floor_allowed["state"]["blocked"].get("pair_completion_pair_pnl_floor", 0) == 0
+        and floor_allowed_candidate.get("pair_completion_min_pair_pnl_after") == 0.0
+        and (floor_allowed_candidate.get("pair_completion_projected_pair_pnl_after") or -1.0) >= 0.0
+    )
+
     return {
         "name": "pair_completion_net_cap",
-        "status": "PASS" if default_passed and blocked_passed and allowed_passed else "FAIL",
+        "status": "PASS"
+        if default_passed and blocked_passed and allowed_passed and floor_blocked_passed and floor_allowed_passed
+        else "FAIL",
         "default_state": default["state"],
         "blocked_state": blocked["state"],
         "allowed_state": allowed["state"],
         "block_event": block_event,
         "allowed_candidate": allowed_candidate,
+        "floor_block_event": floor_block_event,
+        "floor_allowed_candidate": floor_allowed_candidate,
     }
 
 
