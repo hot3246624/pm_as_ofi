@@ -282,6 +282,8 @@ class RunnerConfig:
     strict_rescue_max_wait_ms: int | None = None
     strict_rescue_close_size_haircut: float = 1.0
     strict_rescue_close_ask_slip: float = 0.0
+    strict_rescue_surplus_net_cap: float | None = None
+    strict_rescue_min_pair_pnl_after: float | None = None
     strict_rescue_require_book_source: bool = False
     strict_rescue_require_l2_source: bool = False
     source_quality_require_trade_source: bool = False
@@ -921,12 +923,34 @@ class DPlusRunner:
                     break
                 gross_pair = lot.px + ask
                 net_pair = gross_pair + fee
-                if net_pair > self.cfg.salvage_net_cap + 1e-12:
+                size_haircut = self.cfg.strict_rescue_close_size_haircut if strict_rescue_active else 1.0
+                take = min(lot.qty * max(0.0, size_haircut), self.cfg.max_salvage_qty - paired)
+                if take <= DUST:
+                    break
+                projected_pair_pnl_delta = take * (1.0 - net_pair)
+                projected_pair_pnl_after = self.metrics.pair_pnl + projected_pair_pnl_delta
+                surplus_rescue_enabled = (
+                    strict_rescue_active
+                    and self.cfg.strict_rescue_surplus_net_cap is not None
+                    and self.cfg.strict_rescue_min_pair_pnl_after is not None
+                )
+                surplus_rescue_allowed = (
+                    surplus_rescue_enabled
+                    and net_pair <= self.cfg.strict_rescue_surplus_net_cap + 1e-12
+                    and projected_pair_pnl_after >= self.cfg.strict_rescue_min_pair_pnl_after - 1e-12
+                )
+                if net_pair > self.cfg.salvage_net_cap + 1e-12 and not surplus_rescue_allowed:
+                    block_reason = "strict_rescue_net_pair_cap"
+                    if surplus_rescue_enabled:
+                        if net_pair > self.cfg.strict_rescue_surplus_net_cap + 1e-12:
+                            block_reason = "strict_rescue_surplus_net_cap"
+                        else:
+                            block_reason = "strict_rescue_pair_pnl_floor"
                     if strict_rescue_active and self.cfg.write_rescue_block_diagnostics:
                         self.emit(
                             {
                                 **diag_base,
-                                "block_reason": "strict_rescue_net_pair_cap",
+                                "block_reason": block_reason,
                                 "lot_index": lot_idx,
                                 "lot_age_ms": age,
                                 "held_px": lot.px,
@@ -935,14 +959,15 @@ class DPlusRunner:
                                 "gross_pair_cost": gross_pair,
                                 "net_pair_cost": net_pair,
                                 "salvage_net_cap": self.cfg.salvage_net_cap,
+                                "strict_rescue_surplus_net_cap": self.cfg.strict_rescue_surplus_net_cap,
+                                "strict_rescue_min_pair_pnl_after": self.cfg.strict_rescue_min_pair_pnl_after,
+                                "strict_rescue_pair_pnl_delta": round(projected_pair_pnl_delta, 12),
+                                "strict_rescue_projected_pair_pnl_after": round(projected_pair_pnl_after, 12),
+                                "strict_rescue_surplus_decision": "block",
                                 "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
                                 "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
                             }
                         )
-                    break
-                size_haircut = self.cfg.strict_rescue_close_size_haircut if strict_rescue_active else 1.0
-                take = min(lot.qty * max(0.0, size_haircut), self.cfg.max_salvage_qty - paired)
-                if take <= DUST:
                     break
                 paired += take
                 self.metrics.salvage_actions += 1
@@ -954,7 +979,7 @@ class DPlusRunner:
                 self.metrics.completion_cost += take * ask
                 self.metrics.pair_actions += 1
                 self.metrics.pair_qty += take
-                pnl = take * (1.0 - net_pair)
+                pnl = projected_pair_pnl_delta
                 self.metrics.pair_pnl += pnl
                 self.surplus_bank += pnl
                 self.metrics.pair_costs.append(gross_pair)
@@ -965,7 +990,7 @@ class DPlusRunner:
                 closeability_debt_release = take * lot.closeability_debt_per_share
                 debt_pre_open = self.closeability_debt_open
                 self.adjust_closeability_debt(-closeability_debt_release)
-                self.emit({"kind": "fak_salvage", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "quote_intent_id": lot.quote_intent_id, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "raw_comp_ask": raw_ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age, "source_sequence_id": self.book_source_sequence_id, "market_md_source_sequence_id": self.book_source_sequence_id, "book_event_time_ms": self.book_event_time_ms, "strict_rescue_mode": self.cfg.strict_rescue_mode, "strict_rescue_l1_age_ms": book_age_ms, "strict_rescue_l1_age_max_ms": self.cfg.strict_rescue_l1_age_max_ms, "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip if strict_rescue_active else 0.0, "strict_rescue_close_size_haircut": self.cfg.strict_rescue_close_size_haircut if strict_rescue_active else 1.0, "strict_rescue_l2_required": self.cfg.strict_rescue_require_l2_source, "strict_rescue_l2_source_sequence_id": self.book_l2_source_sequence_id, "strict_rescue_l2_event_time_ms": self.book_l2_event_time_ms, "strict_rescue_l2_age_ms": l2_age_ms, "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots, "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots, "source_lot_id": lot.id, "source_lot_sequence_id": lot.source_sequence_id, "source_lot_event_time_ms": lot.source_event_time_ms, "source_lot_closeability_debt_per_share": lot.closeability_debt_per_share, "source_lot_closeability_debt_release": round(closeability_debt_release, 12), "closeability_debt_pre_open": round(debt_pre_open, 12), "closeability_debt_post_open": round(self.closeability_debt_open, 12)})
+                self.emit({"kind": "fak_salvage", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "quote_intent_id": lot.quote_intent_id, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "raw_comp_ask": raw_ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age, "source_sequence_id": self.book_source_sequence_id, "market_md_source_sequence_id": self.book_source_sequence_id, "book_event_time_ms": self.book_event_time_ms, "strict_rescue_mode": self.cfg.strict_rescue_mode, "strict_rescue_l1_age_ms": book_age_ms, "strict_rescue_l1_age_max_ms": self.cfg.strict_rescue_l1_age_max_ms, "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip if strict_rescue_active else 0.0, "strict_rescue_close_size_haircut": self.cfg.strict_rescue_close_size_haircut if strict_rescue_active else 1.0, "strict_rescue_surplus_net_cap": self.cfg.strict_rescue_surplus_net_cap, "strict_rescue_min_pair_pnl_after": self.cfg.strict_rescue_min_pair_pnl_after, "strict_rescue_pair_pnl_delta": round(projected_pair_pnl_delta, 12), "strict_rescue_projected_pair_pnl_after": round(projected_pair_pnl_after, 12), "strict_rescue_surplus_decision": "allow_surplus" if net_pair > self.cfg.salvage_net_cap + 1e-12 else "within_target_cap", "strict_rescue_l2_required": self.cfg.strict_rescue_require_l2_source, "strict_rescue_l2_source_sequence_id": self.book_l2_source_sequence_id, "strict_rescue_l2_event_time_ms": self.book_l2_event_time_ms, "strict_rescue_l2_age_ms": l2_age_ms, "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots, "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots, "source_lot_id": lot.id, "source_lot_sequence_id": lot.source_sequence_id, "source_lot_event_time_ms": lot.source_event_time_ms, "source_lot_closeability_debt_per_share": lot.closeability_debt_per_share, "source_lot_closeability_debt_release": round(closeability_debt_release, 12), "closeability_debt_pre_open": round(debt_pre_open, 12), "closeability_debt_post_open": round(self.closeability_debt_open, 12)})
                 lot.qty -= take
                 if lot.qty <= DUST:
                     lots.pop(lot_idx)
@@ -1584,6 +1609,11 @@ class DPlusRunner:
                     "strict_rescue_l1_age_ms": event.get("strict_rescue_l1_age_ms"),
                     "strict_rescue_l2_source_sequence_id": event.get("strict_rescue_l2_source_sequence_id"),
                     "strict_rescue_l2_age_ms": event.get("strict_rescue_l2_age_ms"),
+                    "strict_rescue_surplus_net_cap": event.get("strict_rescue_surplus_net_cap"),
+                    "strict_rescue_min_pair_pnl_after": event.get("strict_rescue_min_pair_pnl_after"),
+                    "strict_rescue_pair_pnl_delta": event.get("strict_rescue_pair_pnl_delta"),
+                    "strict_rescue_projected_pair_pnl_after": event.get("strict_rescue_projected_pair_pnl_after"),
+                    "strict_rescue_surplus_decision": event.get("strict_rescue_surplus_decision"),
                     "source_lot_id": event.get("source_lot_id"),
                     "source_lot_sequence_id": event.get("source_lot_sequence_id"),
                 })
@@ -1675,6 +1705,9 @@ class DPlusRunner:
                 "matched_pair_id", "held_side", "close_side", "held_px", "close_ask", "qty",
                 "fee_per_share", "net_pair_cost", "age_ms", "strict_rescue_l1_age_ms",
                 "strict_rescue_l2_source_sequence_id", "strict_rescue_l2_age_ms",
+                "strict_rescue_surplus_net_cap", "strict_rescue_min_pair_pnl_after",
+                "strict_rescue_pair_pnl_delta", "strict_rescue_projected_pair_pnl_after",
+                "strict_rescue_surplus_decision",
                 "source_lot_id", "source_lot_sequence_id", "source_sequence_id",
                 "market_md_source_sequence_id",
             ],
@@ -2000,6 +2033,18 @@ async def main() -> None:
     ap.add_argument("--strict-rescue-max-wait-s", type=float, default=None)
     ap.add_argument("--strict-rescue-close-size-haircut", type=float, default=1.0)
     ap.add_argument("--strict-rescue-close-ask-slip", type=float, default=0.0)
+    ap.add_argument(
+        "--strict-rescue-surplus-net-cap",
+        type=float,
+        default=None,
+        help="Optional surplus-backed strict-rescue cap above --salvage-net-cap; requires --strict-rescue-min-pair-pnl-after.",
+    )
+    ap.add_argument(
+        "--strict-rescue-min-pair-pnl-after",
+        type=float,
+        default=None,
+        help="Allow strict rescue above --salvage-net-cap only if projected realized pair PnL stays at or above this floor.",
+    )
     ap.add_argument("--strict-rescue-require-book-source", action="store_true")
     ap.add_argument("--strict-rescue-require-l2-source", action="store_true")
     ap.add_argument("--source-quality-require-trade-source", action="store_true")
@@ -2067,6 +2112,8 @@ async def main() -> None:
         ),
         strict_rescue_close_size_haircut=args.strict_rescue_close_size_haircut,
         strict_rescue_close_ask_slip=args.strict_rescue_close_ask_slip,
+        strict_rescue_surplus_net_cap=args.strict_rescue_surplus_net_cap,
+        strict_rescue_min_pair_pnl_after=args.strict_rescue_min_pair_pnl_after,
         strict_rescue_require_book_source=args.strict_rescue_require_book_source,
         strict_rescue_require_l2_source=args.strict_rescue_require_l2_source,
         source_quality_require_trade_source=args.source_quality_require_trade_source,
@@ -2116,6 +2163,10 @@ async def main() -> None:
         raise SystemExit("--strict-rescue-close-size-haircut must be in (0, 1]")
     if cfg.strict_rescue_close_ask_slip < 0:
         raise SystemExit("--strict-rescue-close-ask-slip must be non-negative")
+    if (cfg.strict_rescue_surplus_net_cap is None) != (cfg.strict_rescue_min_pair_pnl_after is None):
+        raise SystemExit("--strict-rescue-surplus-net-cap and --strict-rescue-min-pair-pnl-after must be provided together")
+    if cfg.strict_rescue_surplus_net_cap is not None and cfg.strict_rescue_surplus_net_cap <= cfg.salvage_net_cap + 1e-12:
+        raise SystemExit("--strict-rescue-surplus-net-cap must exceed --salvage-net-cap")
     if cfg.strict_rescue_l1_age_max_ms is not None and cfg.strict_rescue_l1_age_max_ms < 0:
         raise SystemExit("--strict-rescue-l1-age-max-ms must be non-negative")
     if cfg.source_quality_l1_age_max_ms is not None and cfg.source_quality_l1_age_max_ms < 0:

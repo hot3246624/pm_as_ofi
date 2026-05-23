@@ -145,6 +145,16 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("remote_command_pair_completion_pair_pnl_floor_does_not_match_profile")
     if not option_matches(remote_cmd, "--salvage-net-cap", profile.get("strict_rescue_salvage_net_cap", 0.95)):
         hard_blockers.append("remote_command_salvage_net_cap_does_not_match_profile")
+    if profile.get("strict_rescue_surplus_net_cap") is not None and not option_matches(
+        remote_cmd, "--strict-rescue-surplus-net-cap", profile.get("strict_rescue_surplus_net_cap")
+    ):
+        hard_blockers.append("remote_command_strict_rescue_surplus_net_cap_does_not_match_profile")
+    if profile.get("strict_rescue_min_pair_pnl_after") is not None and not option_matches(
+        remote_cmd,
+        "--strict-rescue-min-pair-pnl-after",
+        profile.get("strict_rescue_min_pair_pnl_after"),
+    ):
+        hard_blockers.append("remote_command_strict_rescue_pair_pnl_floor_does_not_match_profile")
     if not option_matches(remote_cmd, "--imbalance-qty-cap", profile.get("imbalance_qty_cap", 2.0)):
         hard_blockers.append("remote_command_imbalance_qty_cap_does_not_match_profile")
     if profile.get("activation_mode") and not option_matches(remote_cmd, "--activation-mode", profile.get("activation_mode")):

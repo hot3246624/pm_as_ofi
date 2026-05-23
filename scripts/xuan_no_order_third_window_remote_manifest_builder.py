@@ -243,6 +243,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "--pair-completion-min-pair-pnl-after",
         profile.get("pair_completion_min_pair_pnl_after"),
     )
+    append_option(remote_command, "--strict-rescue-surplus-net-cap", profile.get("strict_rescue_surplus_net_cap"))
+    append_option(
+        remote_command,
+        "--strict-rescue-min-pair-pnl-after",
+        profile.get("strict_rescue_min_pair_pnl_after"),
+    )
     if profile.get("pairing_only_when_residual") is True:
         remote_command.append("--pairing-only-when-residual")
     if profile.get("strict_rescue_skip_low_cost_lots") is True:

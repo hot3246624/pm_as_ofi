@@ -882,6 +882,90 @@ def smoke_pair_completion_net_cap() -> dict[str, Any]:
     }
 
 
+def smoke_strict_rescue_surplus_floor() -> dict[str, Any]:
+    def run_case(pre_pair_pnl: float, surplus_cap: float | None, floor: float | None) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            slug = "btc-updown-5m-103"
+            runner = DPlusRunner(
+                slug,
+                Path(td),
+                RunnerConfig(
+                    salvage_net_cap=0.95,
+                    salvage_age_ms=30_000,
+                    salvage_min_lot_cost=0.25,
+                    strict_rescue_mode="source_audit",
+                    strict_rescue_l1_age_max_ms=50,
+                    strict_rescue_require_book_source=True,
+                    strict_rescue_surplus_net_cap=surplus_cap,
+                    strict_rescue_min_pair_pnl_after=floor,
+                    write_rescue_block_diagnostics=True,
+                ),
+            )
+            runner.metrics.pair_pnl = pre_pair_pnl
+            runner.lots["YES"].append(
+                Lot(
+                    id=1,
+                    quote_intent_id="quote-surplus-rescue",
+                    side="YES",
+                    qty=2.0,
+                    px=0.40,
+                    fill_ms=1_000,
+                    source_order_id=1,
+                    source_sequence_id="fill-surplus-rescue",
+                    source_event_time_ms=1_000,
+                )
+            )
+            runner.on_book(
+                {
+                    "ts_ms": 40_000,
+                    "yes_ask": 0.40,
+                    "no_ask": 0.65,
+                    "source_sequence_id": "book-surplus-rescue",
+                    "event_time_ms": 39_990,
+                }
+            )
+            events = read_events(Path(td), slug)
+            return {
+                "state": comparable_state(runner),
+                "salvage_events": [event for event in events if event.get("kind") == "fak_salvage"],
+                "block_events": [event for event in events if event.get("kind") == "strict_rescue_block"],
+            }
+
+    default_blocked = run_case(pre_pair_pnl=1.0, surplus_cap=None, floor=None)
+    default_block = default_blocked["block_events"][-1] if default_blocked["block_events"] else {}
+    default_passed = (
+        not default_blocked["salvage_events"]
+        and default_block.get("block_reason") == "strict_rescue_net_pair_cap"
+    )
+
+    floor_blocked = run_case(pre_pair_pnl=0.0, surplus_cap=1.10, floor=0.0)
+    floor_block = floor_blocked["block_events"][-1] if floor_blocked["block_events"] else {}
+    floor_blocked_passed = (
+        not floor_blocked["salvage_events"]
+        and floor_block.get("block_reason") == "strict_rescue_pair_pnl_floor"
+        and (floor_block.get("strict_rescue_projected_pair_pnl_after") or 1.0) < 0.0
+    )
+
+    surplus_allowed = run_case(pre_pair_pnl=0.30, surplus_cap=1.10, floor=0.0)
+    salvage_event = surplus_allowed["salvage_events"][-1] if surplus_allowed["salvage_events"] else {}
+    surplus_allowed_passed = (
+        len(surplus_allowed["salvage_events"]) == 1
+        and salvage_event.get("strict_rescue_surplus_decision") == "allow_surplus"
+        and (salvage_event.get("net_pair_cost") or 0.0) > 0.95
+        and (salvage_event.get("strict_rescue_projected_pair_pnl_after") or -1.0) >= 0.0
+        and surplus_allowed["state"]["metrics"]["pair_pnl"] >= 0.0
+    )
+
+    return {
+        "name": "strict_rescue_surplus_floor",
+        "status": "PASS" if default_passed and floor_blocked_passed and surplus_allowed_passed else "FAIL",
+        "default_block": default_block,
+        "floor_block": floor_block,
+        "surplus_allowed_event": salvage_event,
+        "surplus_allowed_state": surplus_allowed["state"],
+    }
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as f:
         return list(csv.DictReader(f))
@@ -1058,6 +1142,7 @@ def main() -> None:
         smoke_risk_seed_closeability_soft_debt_gate(),
         smoke_risk_seed_pending_opp_credit_guard(),
         smoke_pair_completion_net_cap(),
+        smoke_strict_rescue_surplus_floor(),
         smoke_normalized_lifecycle_exports(),
         smoke_source_linkage_summary(),
     ]

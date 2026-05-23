@@ -111,6 +111,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "pair_completion_min_pair_pnl_after": args.pair_completion_min_pair_pnl_after,
         "target_rescue_net_cap": args.target_rescue_net_cap,
         "strict_rescue_salvage_net_cap": args.salvage_net_cap,
+        "strict_rescue_surplus_net_cap": args.strict_rescue_surplus_net_cap,
+        "strict_rescue_min_pair_pnl_after": args.strict_rescue_min_pair_pnl_after,
         "strict_rescue_skip_low_cost_lots": args.strict_rescue_skip_low_cost_lots,
         "strict_rescue_l1_age_max_ms": 50,
         "strict_rescue_close_size_haircut": 1.0,
@@ -208,6 +210,8 @@ def main() -> None:
     parser.add_argument("--pair-completion-min-pair-pnl-after", type=float, default=None)
     parser.add_argument("--target-rescue-net-cap", type=float, default=0.95)
     parser.add_argument("--salvage-net-cap", type=float, default=0.98)
+    parser.add_argument("--strict-rescue-surplus-net-cap", type=float, default=None)
+    parser.add_argument("--strict-rescue-min-pair-pnl-after", type=float, default=None)
     parser.add_argument("--strict-rescue-skip-low-cost-lots", action="store_true")
     parser.add_argument("--min-accepted-actions", type=int, default=25)
     parser.add_argument("--min-fills", type=int, default=18)
@@ -219,6 +223,13 @@ def main() -> None:
         raise SystemExit("--risk-seed-pending-opp-credit must be in [0, 1]")
     if args.pair_completion_net_cap is not None and args.pair_completion_net_cap <= 0:
         raise SystemExit("--pair-completion-net-cap must be positive")
+    if (args.strict_rescue_surplus_net_cap is None) != (args.strict_rescue_min_pair_pnl_after is None):
+        raise SystemExit("--strict-rescue-surplus-net-cap and --strict-rescue-min-pair-pnl-after must be provided together")
+    if (
+        args.strict_rescue_surplus_net_cap is not None
+        and args.strict_rescue_surplus_net_cap <= args.salvage_net_cap
+    ):
+        raise SystemExit("--strict-rescue-surplus-net-cap must exceed --salvage-net-cap")
 
     started = time.time()
     card = build(args)
