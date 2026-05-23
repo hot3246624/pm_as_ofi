@@ -1,0 +1,154 @@
+{
+  "artifact": "xuan_b27_dplus_source_opportunity_gap_audit_v1",
+  "created_utc": "2026-05-23T05:23:51Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_GAP_AUDIT_READY_MARKER_REPRODUCTION_GAP_NAMED",
+  "exact_gap_classification": [
+    "no_order_micro_deficit_marker_count_zero",
+    "no_order_selected_offset_risk_has_no_open_le_1_micro_deficit_qty_bucket",
+    "no_order_source_link_lacks_exact_open_qty_and_deficit_cross_denominator",
+    "selected_offset_risk_more_often_blocked_than_admitted_without_marker_reason_join",
+    "blocked_transitions_have_missing_quote_order_sequence_ids",
+    "candidate_qty_for_blocked_selected_offset_risk_is_unknown",
+    "pending_queue_or_opposite_order_availability_not_exported_for_blocked_candidate_context",
+    "activation_age_and_order_room_after_gates_not_joined_to_frozen_predicate"
+  ],
+  "frozen_predicate": {
+    "deficit_bucket": "deficit_0_0_25",
+    "offset_bucket": "offset_90_120",
+    "open_bucket": "open_le_1",
+    "side": "ANY",
+    "source_risk_direction": "repair_or_pairing_improving"
+  },
+  "historical_separator_denominator": {
+    "all_rows": {
+      "fee_after_pnl_proxy": 3.6,
+      "official_fee": 2.0,
+      "pair_cost": 136.0,
+      "pair_pnl": 25.2,
+      "pair_qty": 160.0,
+      "residual_cost": 19.6,
+      "residual_cost_rate": 0.21304348,
+      "residual_qty": 39.2,
+      "residual_qty_rate": 0.196,
+      "rows": 200,
+      "seed_cost": 92.0,
+      "seed_qty": 200.0,
+      "weighted_pair_cost": 0.85
+    },
+    "holdout_comparison": {
+      "residual_cost_rate_reduction": 0.72
+    },
+    "selected_by_day": {
+      "2026-05-02": 20,
+      "2026-05-03": 20
+    },
+    "selected_row_share": 0.2,
+    "selected_rows": {
+      "fee_after_pnl_proxy": -17.2,
+      "official_fee": 0.4,
+      "pair_cost": 8.0,
+      "pair_pnl": 1.2,
+      "pair_qty": 8.0,
+      "residual_cost": 18.0,
+      "residual_cost_rate": 0.9,
+      "residual_qty": 36.0,
+      "residual_qty_rate": 0.9,
+      "rows": 40,
+      "seed_cost": 20.0,
+      "seed_qty": 40.0,
+      "weighted_pair_cost": 1.0
+    },
+    "train_comparison": {
+      "residual_cost_rate_reduction": 0.7
+    },
+    "train_holdout_decision": "KEEP_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_BLOCKED"
+  },
+  "inputs": {
+    "no_order_completion_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_gap_audit_smoke_20260523T045804Z/fixture/completion.json",
+    "no_order_summary_count": 1,
+    "no_order_summary_dir": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_gap_audit_smoke_20260523T045804Z/fixture/summaries",
+    "separator_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_gap_audit_smoke_20260523T045804Z/fixture/candidate_seed_outcome_separator.csv",
+    "train_holdout_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_gap_audit_smoke_20260523T045804Z/fixture/train_holdout.json",
+    "unsafe_paths": []
+  },
+  "next_executable_action": "Implement default-off no-order source_opportunity_marker_summary_v1 fields for blocked/admitted contexts, or produce an implementability spec if runner state cannot expose candidate loss reasons without events JSONL.",
+  "no_order_marker_availability": {
+    "aggregate_candidates": 10,
+    "aggregate_micro_deficit_repair_guard_candidates": 0,
+    "completion_decision": "UNKNOWN_FIXTURE",
+    "marker_reproduction_ratio_vs_historical_selected_rows": 0.0,
+    "source_link_presence_by_status": {
+      "quote_intent": {
+        "admitted|present": 1.0,
+        "blocked|missing": 8.0
+      },
+      "source_order": {
+        "admitted|present": 1.0,
+        "blocked|missing": 8.0
+      },
+      "source_sequence": {
+        "admitted|present": 1.0,
+        "blocked|missing": 8.0
+      }
+    },
+    "source_link_selected_offset_risk": {
+      "admitted_selected_side_offset_risk_count": 1.0,
+      "blocked_selected_side_offset_risk_count": 8.0,
+      "candidate_qty_buckets_for_selected_offset_risk": {
+        "NO|offset_90_120|repair_or_pairing_improving|candidate_qty_unknown": 8.0
+      },
+      "has_exact_open_deficit_cross_bucket": false,
+      "has_open_le_1_micro_deficit_proxy": false,
+      "pre_seed_opp_qty_buckets_for_selected_offset_risk": {
+        "NO|offset_90_120|repair_or_pairing_improving|opp_qty_2_5": 8.0
+      },
+      "pre_seed_same_qty_buckets_for_selected_offset_risk": {
+        "NO|offset_90_120|repair_or_pairing_improving|same_qty_1_2": 8.0
+      },
+      "selected_status_side_offset_risk_direction_counts": {
+        "admitted|YES|offset_90_120|repair_or_pairing_improving": 1.0,
+        "blocked|NO|offset_90_120|repair_or_pairing_improving": 8.0
+      }
+    },
+    "strict_micro_deficit_exemplar_count": 0,
+    "top_block_reasons": {
+      "admitted|candidate": 1.0,
+      "blocked|late_repair_only": 8.0
+    }
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SOURCE_OPPORTUNITY_GAP_AUDIT_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "remediation_contract": {
+    "local_rule_policy": "Do not enable or reshadow the guard until the same-window no-order summaries can reproduce the frozen predicate denominator and explain candidate loss by gate/reason without events JSONL.",
+    "runner_summary_fields_needed": [
+      "transition_count_by_status_side_offset_risk_open_bucket_deficit_bucket",
+      "micro_deficit_repair_guard_candidate_count_by_status_reason_side_offset",
+      "blocked_micro_deficit_candidate_count_by_block_reason",
+      "pre_gate and post_gate pre_seed_same_qty/pre_seed_opp_qty/pre_seed_open_qty/deficit exact buckets",
+      "candidate_qty/base_qty/room_cost/imbalance_room for blocked contexts",
+      "activation_opp_age_ms/opposite_seen status for blocked repair contexts",
+      "pending opposite order availability and queue credit/touch opportunity at source event",
+      "quote_intent_id/source_order_id/source_sequence_id coverage for blocked marker contexts"
+    ]
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "The offline predicate is stable, but the no-order window lacks the micro-deficit/open<=1 tiny-deficit opportunity surface. This points to a source/opportunity instrumentation gap, not a reason to sweep thresholds or promote the guard.",
+    "label": "KEEP_SOURCE_OPPORTUNITY_GAP_AUDIT_READY_MARKER_REPRODUCTION_GAP_NAMED"
+  },
+  "schema_version": "source_opportunity_gap_audit_v1",
+  "scope": {
+    "local_only": true,
+    "modified_shared_ingress_or_live": false,
+    "read_events_jsonl": false,
+    "read_raw_replay_or_collector": false,
+    "sent_orders_cancels_redeems": false,
+    "used_ssh_or_shadow": false
+  }
+}
