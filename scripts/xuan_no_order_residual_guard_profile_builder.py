@@ -107,6 +107,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "debt_floor": args.debt_floor,
         "debt_budget": args.debt_budget,
         "risk_seed_pending_opp_credit": args.risk_seed_pending_opp_credit,
+        "pair_completion_net_cap": args.pair_completion_net_cap,
         "target_rescue_net_cap": args.target_rescue_net_cap,
         "strict_rescue_salvage_net_cap": args.salvage_net_cap,
         "strict_rescue_skip_low_cost_lots": args.strict_rescue_skip_low_cost_lots,
@@ -202,6 +203,7 @@ def main() -> None:
     parser.add_argument("--debt-floor", type=float, default=0.95)
     parser.add_argument("--debt-budget", type=float, default=1.0)
     parser.add_argument("--risk-seed-pending-opp-credit", type=float, default=1.0)
+    parser.add_argument("--pair-completion-net-cap", type=float, default=None)
     parser.add_argument("--target-rescue-net-cap", type=float, default=0.95)
     parser.add_argument("--salvage-net-cap", type=float, default=0.98)
     parser.add_argument("--strict-rescue-skip-low-cost-lots", action="store_true")
@@ -213,6 +215,8 @@ def main() -> None:
     args = parser.parse_args()
     if not (0.0 <= args.risk_seed_pending_opp_credit <= 1.0):
         raise SystemExit("--risk-seed-pending-opp-credit must be in [0, 1]")
+    if args.pair_completion_net_cap is not None and args.pair_completion_net_cap <= 0:
+        raise SystemExit("--pair-completion-net-cap must be positive")
 
     started = time.time()
     card = build(args)

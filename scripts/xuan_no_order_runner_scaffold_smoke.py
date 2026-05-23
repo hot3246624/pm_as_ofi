@@ -776,6 +776,84 @@ def smoke_risk_seed_pending_opp_credit_guard() -> dict[str, Any]:
     }
 
 
+def smoke_pair_completion_net_cap() -> dict[str, Any]:
+    def run_one(cfg: RunnerConfig) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            slug = "btc-updown-5m-100"
+            runner = DPlusRunner(slug, Path(td), cfg)
+            runner.lots["NO"].append(
+                Lot(
+                    id=1,
+                    quote_intent_id="existing-no-lot",
+                    side="NO",
+                    qty=1.25,
+                    px=0.55,
+                    fill_ms=99_000,
+                    source_order_id=1,
+                    source_sequence_id="existing-no-source",
+                    source_event_time_ms=99_000,
+                )
+            )
+            runner.on_book(
+                {
+                    "ts_ms": 100_000,
+                    "yes_ask": 0.45,
+                    "no_ask": 0.45,
+                    "source_sequence_id": "book-pair-completion",
+                    "event_time_ms": 100_000,
+                }
+            )
+            runner.on_trade(
+                {
+                    "ts_ms": 101_000,
+                    "market_side": "YES",
+                    "taker_side": "SELL",
+                    "price": 0.60,
+                    "size": 10.0,
+                    "source_sequence_id": "trade-pair-completion",
+                    "event_time_ms": 101_000,
+                }
+            )
+            return {"state": comparable_state(runner), "events": read_events(Path(td), slug)}
+
+    default = run_one(RunnerConfig(cooldown_ms=0))
+    default_candidate = next((event for event in default["events"] if event.get("kind") == "candidate"), {})
+    default_passed = (
+        default["state"]["metrics"]["candidates"] == 1
+        and default_candidate.get("pair_completion_net_cap") is None
+        and (default_candidate.get("pair_completion_worst_net_pair_cost") or 0.0) > 1.0
+    )
+
+    blocked = run_one(RunnerConfig(cooldown_ms=0, pair_completion_net_cap=1.0))
+    block_event = next((event for event in blocked["events"] if event.get("kind") == "pair_completion_block"), {})
+    blocked_passed = (
+        blocked["state"]["metrics"]["candidates"] == 0
+        and blocked["state"]["blocked"].get("pair_completion_net_cap") == 1
+        and block_event.get("block_reason") == "pair_completion_net_cap"
+        and block_event.get("pair_completion_decision") == "block_net_cap"
+        and (block_event.get("pair_completion_worst_net_pair_cost") or 0.0) > 1.0
+    )
+
+    allowed = run_one(RunnerConfig(cooldown_ms=0, pair_completion_net_cap=1.12))
+    allowed_candidate = next((event for event in allowed["events"] if event.get("kind") == "candidate"), {})
+    allowed_passed = (
+        allowed["state"]["metrics"]["candidates"] == 1
+        and allowed["state"]["blocked"].get("pair_completion_net_cap", 0) == 0
+        and allowed_candidate.get("pair_completion_net_cap") == 1.12
+        and (allowed_candidate.get("pair_completion_worst_net_pair_cost") or 2.0) <= 1.12
+    )
+
+    return {
+        "name": "pair_completion_net_cap",
+        "status": "PASS" if default_passed and blocked_passed and allowed_passed else "FAIL",
+        "default_state": default["state"],
+        "blocked_state": blocked["state"],
+        "allowed_state": allowed["state"],
+        "block_event": block_event,
+        "allowed_candidate": allowed_candidate,
+    }
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as f:
         return list(csv.DictReader(f))
@@ -951,6 +1029,7 @@ def main() -> None:
         smoke_risk_seed_closeability_gate(),
         smoke_risk_seed_closeability_soft_debt_gate(),
         smoke_risk_seed_pending_opp_credit_guard(),
+        smoke_pair_completion_net_cap(),
         smoke_normalized_lifecycle_exports(),
         smoke_source_linkage_summary(),
     ]

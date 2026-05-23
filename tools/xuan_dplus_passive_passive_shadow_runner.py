@@ -264,6 +264,7 @@ class RunnerConfig:
     risk_seed_closeability_debt_floor: float | None = None
     risk_seed_closeability_debt_budget: float = 0.0
     risk_seed_pending_opp_credit: float = 1.0
+    pair_completion_net_cap: float | None = None
     dust_qty: float = 1.0
     taker_fee_rate: float = 0.07
     salvage_net_cap: float = 0.95
@@ -611,6 +612,34 @@ class DPlusRunner:
     def credited_opp_qty_for_seed(self, side: str) -> float:
         opposite = opp(side)
         return self.lot_qty(opposite) + self.cfg.risk_seed_pending_opp_credit * self.pending_qty(opposite)
+
+    def pair_completion_audit(self, side: str, seed_px: float, qty: float) -> dict[str, Any]:
+        matched_qty = 0.0
+        weighted_cost = 0.0
+        worst_cost: float | None = None
+        remaining = qty
+        for lot in self.lots[opp(side)]:
+            if remaining <= DUST:
+                break
+            take = min(lot.qty, remaining)
+            if take <= DUST:
+                continue
+            cost = seed_px + lot.px
+            matched_qty += take
+            weighted_cost += take * cost
+            worst_cost = cost if worst_cost is None else max(worst_cost, cost)
+            remaining -= take
+        avg_cost = weighted_cost / matched_qty if matched_qty > DUST else None
+        decision = "not_enabled" if self.cfg.pair_completion_net_cap is None else "allow"
+        if matched_qty <= DUST:
+            decision = "no_opposite_lots" if self.cfg.pair_completion_net_cap is not None else "not_enabled"
+        return {
+            "pair_completion_net_cap": self.cfg.pair_completion_net_cap,
+            "pair_completion_qty": round(matched_qty, 12),
+            "pair_completion_avg_net_pair_cost": round(avg_cost, 12) if avg_cost is not None else None,
+            "pair_completion_worst_net_pair_cost": round(worst_cost, 12) if worst_cost is not None else None,
+            "pair_completion_decision": decision,
+        }
 
     def total_open_cost(self) -> float:
         return self.exposure_cost("YES") + self.exposure_cost("NO")
@@ -1171,6 +1200,45 @@ class DPlusRunner:
         if qty is None:
             self.record_activation_seen(side, ts_ms)
             return
+        pair_completion_audit = self.pair_completion_audit(side, seed_px, qty)
+        if (
+            self.cfg.pair_completion_net_cap is not None
+            and pair_completion_audit["pair_completion_qty"] > self.cfg.dust_qty
+            and (
+                pair_completion_audit["pair_completion_worst_net_pair_cost"] is None
+                or pair_completion_audit["pair_completion_worst_net_pair_cost"]
+                > self.cfg.pair_completion_net_cap + 1e-12
+            )
+        ):
+            self.block("pair_completion_net_cap")
+            pair_completion_audit["pair_completion_decision"] = "block_net_cap"
+            self.emit(
+                {
+                    "kind": "pair_completion_block",
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "ts_ms": ts_ms,
+                    "side": side,
+                    "price": seed_px,
+                    "qty": qty,
+                    "public_trade_px": px,
+                    "public_trade_size": size,
+                    "source_sequence_id": trigger_source_sequence_id,
+                    "market_md_source_sequence_id": trigger_source_sequence_id,
+                    "block_reason": "pair_completion_net_cap",
+                    "same_exposure_qty": same_qty,
+                    "opp_exposure_qty": opp_qty,
+                    "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit,
+                    "risk_seed_pending_opp_qty": pending_opp_qty,
+                    "risk_seed_credited_opp_qty": credited_opp_qty,
+                    **pair_completion_audit,
+                    **closeability_audit,
+                    **source_quality_audit,
+                    **surplus_audit,
+                }
+            )
+            self.record_activation_seen(side, ts_ms)
+            return
         if risk_increasing_seed and self.cfg.risk_seed_closeability_soft_net_cap is not None:
             closeability_audit["risk_seed_closeability_soft_decision"] = "allow"
             closeability_audit["closeability_debt_pre_open"] = round(self.closeability_debt_open, 12)
@@ -1263,7 +1331,7 @@ class DPlusRunner:
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
-        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit, "risk_seed_pending_opp_qty": pending_opp_qty, "risk_seed_credited_opp_qty": credited_opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "high_price_mode": self.cfg.high_price_mode, "high_price_normal_px_hi": self.cfg.high_price_normal_px_hi, "high_price_close_only_active": high_price_close_only_active, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap, "closeability_comp_ask": closeability_comp_ask, "closeability_net_pair_cost": closeability_net_pair_cost, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask, **closeability_audit, **source_quality_audit, **surplus_audit})
+        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit, "risk_seed_pending_opp_qty": pending_opp_qty, "risk_seed_credited_opp_qty": credited_opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "high_price_mode": self.cfg.high_price_mode, "high_price_normal_px_hi": self.cfg.high_price_normal_px_hi, "high_price_close_only_active": high_price_close_only_active, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap, "closeability_comp_ask": closeability_comp_ask, "closeability_net_pair_cost": closeability_net_pair_cost, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask, **pair_completion_audit, **closeability_audit, **source_quality_audit, **surplus_audit})
         self.record_activation_seen(side, ts_ms)
 
     def read_events(self) -> list[dict[str, Any]]:
@@ -1319,6 +1387,11 @@ class DPlusRunner:
                     "risk_seed_pending_opp_credit": event.get("risk_seed_pending_opp_credit"),
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
+                    "pair_completion_net_cap": event.get("pair_completion_net_cap"),
+                    "pair_completion_qty": event.get("pair_completion_qty"),
+                    "pair_completion_avg_net_pair_cost": event.get("pair_completion_avg_net_pair_cost"),
+                    "pair_completion_worst_net_pair_cost": event.get("pair_completion_worst_net_pair_cost"),
+                    "pair_completion_decision": event.get("pair_completion_decision"),
                     "closeability_net_pair_cost": event.get("closeability_net_pair_cost"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
                     "closeability_debt": event.get("closeability_debt"),
@@ -1337,7 +1410,7 @@ class DPlusRunner:
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
                 })
-            elif kind in {"source_quality_block", "activation_block", "surplus_budget_block", "risk_seed_closeability_block"}:
+            elif kind in {"source_quality_block", "activation_block", "surplus_budget_block", "risk_seed_closeability_block", "pair_completion_block"}:
                 reason = (
                     event.get("source_quality_block_reason")
                     or event.get("surplus_budget_decision")
@@ -1363,6 +1436,11 @@ class DPlusRunner:
                     "risk_seed_pending_opp_credit": event.get("risk_seed_pending_opp_credit"),
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
+                    "pair_completion_net_cap": event.get("pair_completion_net_cap"),
+                    "pair_completion_qty": event.get("pair_completion_qty"),
+                    "pair_completion_avg_net_pair_cost": event.get("pair_completion_avg_net_pair_cost"),
+                    "pair_completion_worst_net_pair_cost": event.get("pair_completion_worst_net_pair_cost"),
+                    "pair_completion_decision": event.get("pair_completion_decision"),
                     "closeability_net_pair_cost": event.get("closeability_net_pair_cost"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
                     "closeability_debt": event.get("closeability_debt"),
@@ -1489,7 +1567,10 @@ class DPlusRunner:
                 "risk_seed_closeability_net_cap", "risk_seed_closeability_soft_net_cap",
                 "risk_seed_closeability_debt_floor", "risk_seed_closeability_debt_budget",
                 "risk_seed_closeability_soft_decision", "risk_seed_pending_opp_credit",
-                "risk_seed_pending_opp_qty", "risk_seed_credited_opp_qty", "closeability_net_pair_cost",
+                "risk_seed_pending_opp_qty", "risk_seed_credited_opp_qty",
+                "pair_completion_net_cap", "pair_completion_qty",
+                "pair_completion_avg_net_pair_cost", "pair_completion_worst_net_pair_cost",
+                "pair_completion_decision", "closeability_net_pair_cost",
                 "closeability_debt_per_share", "closeability_debt", "closeability_debt_pre_open",
                 "closeability_debt_post_open",
             ],
@@ -1835,6 +1916,12 @@ async def main() -> None:
         default=1.0,
         help="Credit pending opposite-side orders as protective exposure for risk-increasing seed gates; 1.0 preserves legacy behavior, 0.0 credits only filled opposite lots.",
     )
+    ap.add_argument(
+        "--pair-completion-net-cap",
+        type=float,
+        default=None,
+        help="Block admissions that would pair against existing opposite lots above this actual FIFO pair-cost cap.",
+    )
     ap.add_argument("--taker-fee-rate", type=float, default=0.07)
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
@@ -1900,6 +1987,7 @@ async def main() -> None:
         risk_seed_closeability_debt_floor=args.risk_seed_closeability_debt_floor,
         risk_seed_closeability_debt_budget=args.risk_seed_closeability_debt_budget,
         risk_seed_pending_opp_credit=args.risk_seed_pending_opp_credit,
+        pair_completion_net_cap=args.pair_completion_net_cap,
         taker_fee_rate=args.taker_fee_rate,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
@@ -1944,6 +2032,8 @@ async def main() -> None:
         raise SystemExit("--risk-seed-closeability-debt-budget must be non-negative")
     if not (0.0 <= cfg.risk_seed_pending_opp_credit <= 1.0):
         raise SystemExit("--risk-seed-pending-opp-credit must be in [0, 1]")
+    if cfg.pair_completion_net_cap is not None and cfg.pair_completion_net_cap <= 0:
+        raise SystemExit("--pair-completion-net-cap must be positive")
     if (
         cfg.risk_seed_closeability_soft_net_cap is not None
         and cfg.risk_seed_closeability_debt_floor is not None

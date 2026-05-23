@@ -237,6 +237,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     append_option(remote_command, "--activation-mode", profile.get("activation_mode"))
     append_option(remote_command, "--activation-window-s", profile.get("activation_window_s"))
     append_option(remote_command, "--late-repair-after-s", profile.get("late_repair_after_s"))
+    append_option(remote_command, "--pair-completion-net-cap", profile.get("pair_completion_net_cap"))
     if profile.get("pairing_only_when_residual") is True:
         remote_command.append("--pairing-only-when-residual")
     if profile.get("strict_rescue_skip_low_cost_lots") is True:
