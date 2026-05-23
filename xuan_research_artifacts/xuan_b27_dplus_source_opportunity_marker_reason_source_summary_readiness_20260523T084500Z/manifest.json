@@ -1,0 +1,136 @@
+{
+  "artifact_kind": "xuan_b27_dplus_source_opportunity_marker_reason_source_summary_readiness",
+  "created_at_utc": "2026-05-23T09:18:00Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_REASON_SOURCE_SUMMARY_DEFAULT_OFF_READY",
+  "research_lane": "implementability_review_local_only",
+  "scope": {
+    "local_only": true,
+    "ssh_used": false,
+    "shadow_started": false,
+    "canary_started": false,
+    "events_jsonl_read_or_pulled": false,
+    "raw_replay_or_collector_scanned": false,
+    "full_completion_store_scanned": false,
+    "shared_ingress_connected_or_modified": false,
+    "broker_env_live_modified": false,
+    "orders_cancels_redeems_sent": false
+  },
+  "code_changes": {
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "scorer": "scripts/xuan_b27_dplus_source_opportunity_marker_summary_scorer.py",
+    "smoke": "scripts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_reason_source_smoke.sh"
+  },
+  "runner_feature": {
+    "flag": "--source-opportunity-marker-reason-source-event-lite-summary",
+    "default_off": true,
+    "requires": [
+      "--event-lite-summary",
+      "--source-opportunity-marker-event-lite-summary"
+    ],
+    "schema_version": "source_opportunity_marker_reason_source_coverage_v1",
+    "parent_summary": "event_lite.source_opportunity_marker_summary",
+    "exact_join_key": "status|reason|side|offset_bucket|source_risk_direction|open_qty_bucket|deficit_bucket",
+    "behavior_change_when_disabled": false,
+    "trading_rule_enabled": false,
+    "micro_deficit_repair_guard_enabled": false
+  },
+  "new_fields": {
+    "count_fields": [
+      "transition_count_by_status_reason_side_offset_risk_open_deficit",
+      "micro_deficit_marker_count_by_status_reason_side_offset_risk_open_deficit"
+    ],
+    "quantity_sum_fields": [
+      "candidate_qty_sum_by_status_reason_side_offset_risk_open_deficit",
+      "base_qty_sum_by_status_reason_side_offset_risk_open_deficit",
+      "target_room_sum_by_status_reason_side_offset_risk_open_deficit",
+      "room_cost_sum_by_status_reason_side_offset_risk_open_deficit",
+      "imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit"
+    ],
+    "bucket_fields": [
+      "candidate_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "base_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "target_room_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "room_cost_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "imbalance_room_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "opposite_seen_by_status_reason_side_offset_risk_open_deficit",
+      "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_deficit",
+      "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit",
+      "source_order_presence_by_status_reason_side_offset_risk_open_deficit",
+      "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit"
+    ],
+    "excluded": [
+      "raw quote_intent_id/source_order_id/source_sequence_id values",
+      "source_pair_qty/source_pair_cost/source_pair_pnl",
+      "source_residual_qty/source_residual_cost/source_residual_age_ms",
+      "private own order/fill/inventory truth",
+      "guard enablement or trading behavior change"
+    ]
+  },
+  "smoke_results": {
+    "runner_reason_source_smoke": {
+      "manifest": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_reason_source_smoke_20260523T084500Z/manifest.json",
+      "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_REASON_SOURCE_SUMMARY_SMOKE_PASS",
+      "checks": {
+        "default_off_reason_source_fields_absent": true,
+        "enabled_exact_status_reason_marker_count_present": true,
+        "enabled_micro_deficit_exact_status_reason_marker_present": true,
+        "enabled_candidate_base_room_pending_activation_buckets_present": true,
+        "enabled_quote_order_sequence_presence_present": true,
+        "aggregate_merges_reason_source_fields": true,
+        "cli_requires_event_lite": true,
+        "cli_requires_source_opportunity_marker_parent": true,
+        "raw_ids_excluded_by_contract": true,
+        "post_action_outcome_labels_excluded": true
+      }
+    },
+    "source_opportunity_marker_scorer_smoke": {
+      "manifest": "xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_summary_scorer_smoke_20260523T084501Z/manifest.json",
+      "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_SUMMARY_SCORER_SMOKE_PASS"
+    },
+    "spec_check": {
+      "manifest": "xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_reason_source_summary_readiness_20260523T084500Z/spec_check_manifest.json",
+      "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_REASON_SOURCE_COVERAGE_SPEC_READY"
+    }
+  },
+  "scorer_update": {
+    "reason_source_coverage_reader": true,
+    "reason_source_coverage_schema_detected": "source_opportunity_marker_reason_source_coverage_v1",
+    "fixture_reason_source_score_manifest": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_reason_source_smoke_20260523T084500Z/reason_source_score/manifest.json",
+    "fixture_reason_source_score": {
+      "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_DENOMINATOR_SCORER_READY",
+      "reason_source_coverage_available": true,
+      "exact_reason_marker_total": 1.0,
+      "exact_reason_micro_deficit_marker_total": 1.0,
+      "quote_intent_presence_rate": 1.0,
+      "source_order_presence_rate": 1.0,
+      "source_sequence_presence_rate": 1.0
+    },
+    "old_v1_compatibility": "existing status_reason-level scorer behavior remains available when reason/source fields are absent"
+  },
+  "interpretation": {
+    "summary": "The runner can now emit exact marker-by-reason presence histograms for admitted and blocked contexts without raw ids, post-action labels, private truth, or trading behavior changes.",
+    "why_needed": "The latest no-order marker reproduction run showed exact frozen marker count zero while blocked offset micro-deficit-like contexts existed; the new surface can separate true marker absence from reason/source coverage gaps in a future approved diagnostic.",
+    "not_strategy_economics": true,
+    "not_private_truth": true,
+    "not_deployable": true,
+    "not_canary_or_promotion": true
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SOURCE_OPPORTUNITY_MARKER_REASON_SOURCE_SUMMARY_DEFAULT_OFF_READY",
+    "separate_from_promotion_gate": true
+  },
+  "promotion_gate": {
+    "passed": false,
+    "private_truth_ready": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "status": "INSTRUMENTATION_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "next_executable_action": "Select a bounded no-order diagnostic packet that adds --source-opportunity-marker-reason-source-event-lite-summary to the previous marker reproduction boundary, or run local scorer compatibility review first; do not enable micro_deficit_repair_guard_v1 or make promotion/canary claims."
+}

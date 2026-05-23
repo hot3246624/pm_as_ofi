@@ -394,6 +394,13 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "target_room_sum_by_status_reason",
         "room_cost_sum_by_status_reason",
         "imbalance_room_sum_by_status_reason",
+        "transition_count_by_status_reason_side_offset_risk_open_deficit",
+        "micro_deficit_marker_count_by_status_reason_side_offset_risk_open_deficit",
+        "candidate_qty_sum_by_status_reason_side_offset_risk_open_deficit",
+        "base_qty_sum_by_status_reason_side_offset_risk_open_deficit",
+        "target_room_sum_by_status_reason_side_offset_risk_open_deficit",
+        "room_cost_sum_by_status_reason_side_offset_risk_open_deficit",
+        "imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit",
     )
     nested_keys = (
         "transition_count_by_status_reason",
@@ -414,6 +421,20 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "quote_intent_presence_by_status_reason",
         "source_order_presence_by_status_reason",
         "source_sequence_presence_by_status_reason",
+        "candidate_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "base_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "target_room_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "room_cost_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "imbalance_room_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "opposite_seen_by_status_reason_side_offset_risk_open_deficit",
+        "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_deficit",
+        "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit",
+        "source_order_presence_by_status_reason_side_offset_risk_open_deficit",
+        "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit",
     )
     for key in count_keys:
         source = src.get(key)
@@ -474,6 +495,7 @@ class RunnerConfig:
     source_link_transition_event_lite_summary: bool = False
     source_link_residual_tail_exemplars_event_lite_summary: bool = False
     source_opportunity_marker_event_lite_summary: bool = False
+    source_opportunity_marker_reason_source_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -750,6 +772,41 @@ class DPlusRunner:
                 "promotion_gate_passed": False,
             },
         }
+        if self.cfg.source_opportunity_marker_reason_source_event_lite_summary:
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "reason_source_coverage_schema_version"
+            ] = "source_opportunity_marker_reason_source_coverage_v1"
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "exact_reason_source_join_key"
+            ] = "status|reason|side|offset_bucket|source_risk_direction|open_qty_bucket|deficit_bucket"
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "raw_quote_order_sequence_ids_included"
+            ] = False
+            self.event_lite_source_opportunity_markers.update(
+                {
+                    "transition_count_by_status_reason_side_offset_risk_open_deficit": {},
+                    "micro_deficit_marker_count_by_status_reason_side_offset_risk_open_deficit": {},
+                    "candidate_qty_sum_by_status_reason_side_offset_risk_open_deficit": {},
+                    "base_qty_sum_by_status_reason_side_offset_risk_open_deficit": {},
+                    "target_room_sum_by_status_reason_side_offset_risk_open_deficit": {},
+                    "room_cost_sum_by_status_reason_side_offset_risk_open_deficit": {},
+                    "imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit": {},
+                    "candidate_qty_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "base_qty_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "target_room_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "room_cost_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "imbalance_room_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "opposite_seen_by_status_reason_side_offset_risk_open_deficit": {},
+                    "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_deficit": {},
+                    "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit": {},
+                    "source_order_presence_by_status_reason_side_offset_risk_open_deficit": {},
+                    "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit": {},
+                }
+            )
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -989,6 +1046,7 @@ class DPlusRunner:
         risk_direction = inventory_risk_direction(same_qty, opp_qty)
         marker_key = source_opportunity_marker_key(side, offset_s, risk_direction, same_qty, opp_qty)
         status_reason = f"{status}|{reason}"
+        status_reason_marker = f"{status_reason}|{marker_key}"
         pending_same = self.pending_orders(side) if side in {"YES", "NO"} else []
         pending_opp = self.pending_orders(opp(side)) if side in {"YES", "NO"} else []
         pending_same_qty = sum(order.qty for order in pending_same)
@@ -1067,6 +1125,118 @@ class DPlusRunner:
         add_nested_count(
             diag["source_sequence_presence_by_status_reason"],
             status_reason,
+            "present" if source_sequence_id is not None else "missing",
+        )
+        if not self.cfg.source_opportunity_marker_reason_source_event_lite_summary:
+            return
+
+        add_count(
+            diag["transition_count_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+        )
+        if micro_deficit:
+            add_count(
+                diag["micro_deficit_marker_count_by_status_reason_side_offset_risk_open_deficit"],
+                status_reason_marker,
+            )
+        if qty is not None:
+            add_count(
+                diag["candidate_qty_sum_by_status_reason_side_offset_risk_open_deficit"],
+                status_reason_marker,
+                max(0.0, qty),
+            )
+        if base_qty is not None:
+            add_count(
+                diag["base_qty_sum_by_status_reason_side_offset_risk_open_deficit"],
+                status_reason_marker,
+                max(0.0, base_qty),
+            )
+        if target_room is not None:
+            add_count(
+                diag["target_room_sum_by_status_reason_side_offset_risk_open_deficit"],
+                status_reason_marker,
+                max(0.0, target_room),
+            )
+        if room_cost_value is not None:
+            add_count(
+                diag["room_cost_sum_by_status_reason_side_offset_risk_open_deficit"],
+                status_reason_marker,
+                max(0.0, room_cost_value),
+            )
+        if imbalance_room is not None:
+            add_count(
+                diag["imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit"],
+                status_reason_marker,
+                max(0.0, imbalance_room),
+            )
+        add_nested_count(
+            diag["candidate_qty_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("candidate_qty", qty),
+        )
+        add_nested_count(
+            diag["base_qty_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("base_qty", base_qty),
+        )
+        add_nested_count(
+            diag["target_room_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("target_room", target_room),
+        )
+        add_nested_count(
+            diag["room_cost_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("room_cost", room_cost_value),
+        )
+        add_nested_count(
+            diag["imbalance_room_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("imbalance_room", imbalance_room),
+        )
+        add_nested_count(
+            diag["pending_same_qty_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("pending_same_qty", pending_same_qty),
+        )
+        add_nested_count(
+            diag["pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("pending_opp_qty", pending_opp_qty),
+        )
+        add_nested_count(
+            diag["pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("pending_same_order_count", float(len(pending_same))),
+        )
+        add_nested_count(
+            diag["pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            qty_bucket("pending_opp_order_count", float(len(pending_opp))),
+        )
+        add_nested_count(
+            diag["opposite_seen_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            "opposite_seen_present" if opposite_seen_ms is not None else "opposite_seen_missing",
+        )
+        add_nested_count(
+            diag["activation_opp_age_bucket_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            age_ms_bucket("activation_opp_age", activation_opp_age_ms),
+        )
+        add_nested_count(
+            diag["quote_intent_presence_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            "present" if quote_intent_id else "missing",
+        )
+        add_nested_count(
+            diag["source_order_presence_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
+            "present" if source_order_id is not None else "missing",
+        )
+        add_nested_count(
+            diag["source_sequence_presence_by_status_reason_side_offset_risk_open_deficit"],
+            status_reason_marker,
             "present" if source_sequence_id is not None else "missing",
         )
 
@@ -2317,6 +2487,7 @@ async def main() -> None:
     ap.add_argument("--source-link-transition-event-lite-summary", action="store_true", help="with --event-lite-summary, emit candidate transition source-link diagnostics for admitted/blocked/pair/residual paths")
     ap.add_argument("--source-link-residual-tail-exemplars-event-lite-summary", action="store_true", help="with --event-lite-summary, emit top residual source exemplars with action-level source/pair/residual fields")
     ap.add_argument("--source-opportunity-marker-event-lite-summary", action="store_true", help="with --event-lite-summary, emit admitted/blocked opportunity denominators by pre-action open/deficit/source-risk buckets")
+    ap.add_argument("--source-opportunity-marker-reason-source-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit exact status/reason/marker source coverage without raw ids or post-action labels")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -2359,6 +2530,7 @@ async def main() -> None:
         source_link_transition_event_lite_summary=args.source_link_transition_event_lite_summary,
         source_link_residual_tail_exemplars_event_lite_summary=args.source_link_residual_tail_exemplars_event_lite_summary,
         source_opportunity_marker_event_lite_summary=args.source_opportunity_marker_event_lite_summary,
+        source_opportunity_marker_reason_source_event_lite_summary=args.source_opportunity_marker_reason_source_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -2398,6 +2570,11 @@ async def main() -> None:
         raise SystemExit("--source-link-residual-tail-exemplars-event-lite-summary requires --event-lite-summary")
     if cfg.source_opportunity_marker_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--source-opportunity-marker-event-lite-summary requires --event-lite-summary")
+    if cfg.source_opportunity_marker_reason_source_event_lite_summary:
+        if not cfg.event_lite_summary:
+            raise SystemExit("--source-opportunity-marker-reason-source-event-lite-summary requires --event-lite-summary")
+        if not cfg.source_opportunity_marker_event_lite_summary:
+            raise SystemExit("--source-opportunity-marker-reason-source-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

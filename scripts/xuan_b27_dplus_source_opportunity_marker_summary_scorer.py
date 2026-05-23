@@ -312,6 +312,70 @@ def marker_denominator(diag: dict[str, Any], keys: list[str]) -> dict[str, Any]:
     }
 
 
+def exact_reason_source_coverage(diag: dict[str, Any], keys: list[str]) -> dict[str, Any]:
+    count_table = diag.get("transition_count_by_status_reason_side_offset_risk_open_deficit", {})
+    micro_table = diag.get("micro_deficit_marker_count_by_status_reason_side_offset_risk_open_deficit", {})
+    if not isinstance(count_table, dict):
+        count_table = {}
+    if not isinstance(micro_table, dict):
+        micro_table = {}
+    matching_rows: list[dict[str, Any]] = []
+    total = 0.0
+    micro_total = 0.0
+    for reason_marker_key, value in count_table.items():
+        reason_marker_text = str(reason_marker_key)
+        if not any(reason_marker_text.endswith(f"|{key}") for key in keys):
+            continue
+        count = as_float(value)
+        total += count
+        micro_count = hist_value(micro_table, reason_marker_text)
+        micro_total += micro_count
+        matching_rows.append(
+            {
+                "status_reason_marker_key": reason_marker_text,
+                "transition_count": round(count, 8),
+                "micro_deficit_marker_count": round(micro_count, 8),
+                "quote_intent_presence_rate": round(
+                    source_presence_rate(
+                        diag,
+                        "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit",
+                        reason_marker_text,
+                    ),
+                    8,
+                ),
+                "source_order_presence_rate": round(
+                    source_presence_rate(
+                        diag,
+                        "source_order_presence_by_status_reason_side_offset_risk_open_deficit",
+                        reason_marker_text,
+                    ),
+                    8,
+                ),
+                "source_sequence_presence_rate": round(
+                    source_presence_rate(
+                        diag,
+                        "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit",
+                        reason_marker_text,
+                    ),
+                    8,
+                ),
+            }
+        )
+    matching_rows.sort(key=lambda row: (-row["transition_count"], row["status_reason_marker_key"]))
+    return {
+        "available": bool(count_table),
+        "schema_version": (
+            diag.get("field_contract", {}).get("reason_source_coverage_schema_version")
+            if isinstance(diag.get("field_contract"), dict)
+            else None
+        ),
+        "exact_reason_marker_total": round(total, 8),
+        "exact_reason_micro_deficit_marker_total": round(micro_total, 8),
+        "matching_marker_rows": matching_rows,
+        "top_reason_marker_buckets": top_items(count_table, limit=8),
+    }
+
+
 def status_reason_details(diag: dict[str, Any], status_reasons: list[str]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     detail_fields = (
@@ -375,6 +439,7 @@ def build_score(args: argparse.Namespace) -> dict[str, Any]:
     diag_for_scoring = aggregate_diag if aggregate_diag else merged_diag
     keys = marker_keys(args.marker_suffix)
     marker = marker_denominator(diag_for_scoring, keys)
+    reason_source = exact_reason_source_coverage(diag_for_scoring, keys)
     total_transitions = sum_numbers(diag_for_scoring.get("transition_count_by_status", {}))
     status_reason_counts = diag_for_scoring.get("transition_count_by_status_reason", {})
     micro_status_reasons: list[str] = []
@@ -421,11 +486,18 @@ def build_score(args: argparse.Namespace) -> dict[str, Any]:
     if status_reason_source_sequence_rates and min(status_reason_source_sequence_rates.values()) < args.min_source_sequence_status_reason_coverage:
         blockers.append("source_sequence_status_reason_coverage_below_threshold")
 
-    reason_join_limitation = (
-        "The runner summary exposes exact marker counts by status+side+offset+risk+open+deficit "
-        "and micro-deficit counts by status+reason, but not exact marker-by-reason-by-source-id. "
-        "This scorer uses status_reason-level coverage as diagnostic context, not private/order truth."
-    )
+    if reason_source["available"]:
+        reason_join_limitation = (
+            "Exact marker-by-reason source coverage is available as presence buckets keyed by "
+            "status|reason|side|offset|risk|open|deficit. It still reports presence only, not raw ids "
+            "or private/order truth."
+        )
+    else:
+        reason_join_limitation = (
+            "The runner summary exposes exact marker counts by status+side+offset+risk+open+deficit "
+            "and micro-deficit counts by status+reason, but not exact marker-by-reason-by-source-id. "
+            "This scorer uses status_reason-level coverage as diagnostic context, not private/order truth."
+        )
 
     if blockers:
         decision = "UNKNOWN"
@@ -494,6 +566,7 @@ def build_score(args: argparse.Namespace) -> dict[str, Any]:
             "marker_share_of_total_transitions": round(safe_ratio(marker["marker_total"], total_transitions), 8),
         },
         "marker_denominator": marker,
+        "reason_source_coverage": reason_source,
         "marker_status_reason_context": detail_by_status_reason,
         "rankings": {
             "top_status_reasons": top_nested(status_reason_counts if isinstance(status_reason_counts, dict) else {}),
