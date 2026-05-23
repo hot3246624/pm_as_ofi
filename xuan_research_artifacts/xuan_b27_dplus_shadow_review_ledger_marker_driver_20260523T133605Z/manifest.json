@@ -1,0 +1,127 @@
+{
+  "allowlisted_pullback_after_finish": [
+    "output/manifest.json",
+    "output/aggregate_report.json",
+    "output/*.summary.json",
+    "stdout.log",
+    "stderr.log",
+    "runner.pid",
+    "small preflight/startup/post-run sanity files"
+  ],
+  "artifact": "xuan_b27_dplus_shadow_review_ledger_marker_driver",
+  "created_utc": "2026-05-23T14:06:43Z",
+  "decision": "KEEP",
+  "decision_label": "RUNNING_LEDGER_AFTER_MARKER_NO_ORDER_SHADOW_REVIEW",
+  "exact_run": "late_repair90_ledger_after_marker_no_order_review",
+  "forbidden_pullback": [
+    "*.events.jsonl",
+    "raw/replay/collector/full completion store"
+  ],
+  "latest_live_check": {
+    "aggregate_report_present": false,
+    "checked_utc": "2026-05-23T14:06:43Z",
+    "output_manifest_present": true,
+    "python_runner_count": 1,
+    "raw_logs": {
+      "stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_marker_driver_20260523T133605Z/live_check_20260523T133605Z.err",
+      "stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_marker_driver_20260523T133605Z/live_check_20260523T133605Z.out"
+    },
+    "root_disk_used_pct": "58%",
+    "root_inode_used_pct": "2%",
+    "runner_pid_alive": true,
+    "runner_pid_file": "317760",
+    "stderr_bytes": 0,
+    "stdout_bytes": 0,
+    "summary_json_count": 26
+  },
+  "next_executable_action": "At next heartbeat, bounded SSH poll PID 317760 and inspect only runner.pid, stdout/stderr tail, output/manifest.json, output/aggregate_report.json if present, output/*.summary.json count, disk/inode sanity. If finished, perform allowlisted pullback and scorer chain; if still running, update active PID/path and do not start another shadow.",
+  "preflight": {
+    "active_runner_count_before_start": 0,
+    "broker_manifest_age_s": 0,
+    "host": "ip-172-31-37-43",
+    "passed": true,
+    "raw_logs": {
+      "stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_marker_driver_20260523T133605Z/preflight_20260523T133605Z.err",
+      "stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_marker_driver_20260523T133605Z/preflight_20260523T133605Z.out"
+    },
+    "resolve_market_ids_present": true,
+    "root_disk_used_pct": "58%",
+    "root_inode_used_pct": "2%",
+    "shared_ingress_broker_manifest_present": true,
+    "shared_ingress_chainlink_sock_present": true,
+    "shared_ingress_local_price_sock_present": true,
+    "shared_ingress_market_sock_present": true,
+    "sudo_pmofi_ok": true
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RUNNING_DIAGNOSTIC_SHADOW_NOT_PROMOTION_EVIDENCE"
+  },
+  "remote": {
+    "expected_completion_utc_approx": "2026-05-23T15:06:17Z",
+    "host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_ledger_after_marker_review_edge007_20260523T133605Z",
+    "runner_pid": 317760,
+    "runner_user": "pmofi",
+    "started_utc_approx": "2026-05-23T14:06:17Z"
+  },
+  "research_lane": "no_order_diagnostic_run",
+  "research_ranking": {
+    "decision": "RUNNING",
+    "interpretation": "Diagnostic no-order shadow is running to test ledger_after marker reproduction. This is not private truth, deployable evidence, canary evidence, or promotion.",
+    "label": "RUNNING_LEDGER_AFTER_MARKER_NO_ORDER_SHADOW_REVIEW"
+  },
+  "run_config": {
+    "PM_DRY_RUN": "true",
+    "PM_SHARED_INGRESS_ROLE": "client",
+    "PM_SHARED_INGRESS_ROOT": "/srv/pm_as_ofi/shared-ingress-main",
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "duration_s": 3600,
+    "edge": 0.07,
+    "event_lite_summary": true,
+    "fill_to_balance_enabled": false,
+    "imbalance_qty_cap": 1.25,
+    "late_repair_only_after_s": 90,
+    "live_canary_orders_cancels_redeems_enabled": false,
+    "max_open_cost": 80,
+    "micro_deficit_repair_guard_enabled": false,
+    "pair_source_event_lite_summary": true,
+    "pairing_only_when_residual": true,
+    "portfolio_ledger_trading_rule_enabled": false,
+    "prefix": "btc-updown-5m",
+    "repo": "/srv/pm_as_ofi/repo",
+    "round_offsets": "0..25",
+    "source_link_residual_tail_exemplars_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "source_opportunity_ledger_marker_event_lite_summary": true,
+    "source_opportunity_marker_event_lite_summary": true,
+    "source_opportunity_marker_reason_source_event_lite_summary": true,
+    "target_qty": 5
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "env_or_live_modified": false,
+    "events_jsonl_read_or_pulled": false,
+    "orders_sent": false,
+    "redeems_sent": false,
+    "repo_sync_or_build_used": false,
+    "second_shadow_started": false,
+    "shadow_started": true,
+    "shared_ingress_modified": false,
+    "ssh_bounded_preflight_used": true,
+    "systemd_or_service_control_used": false
+  },
+  "startup": {
+    "copied_only_runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "passed": true,
+    "remote_runner_path": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_ledger_after_marker_review_edge007_20260523T133605Z/xuan_dplus_passive_passive_shadow_runner.py",
+    "runner_pid": 317760,
+    "stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_marker_driver_20260523T133605Z/startup_20260523T133605Z.err",
+    "stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_marker_driver_20260523T133605Z/startup_20260523T133605Z.out"
+  }
+}
