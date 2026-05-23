@@ -703,6 +703,79 @@ def smoke_risk_seed_closeability_soft_debt_gate() -> dict[str, Any]:
     }
 
 
+def smoke_risk_seed_pending_opp_credit_guard() -> dict[str, Any]:
+    def run_one(cfg: RunnerConfig) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            slug = "btc-updown-5m-100"
+            runner = DPlusRunner(slug, Path(td), cfg)
+            runner.on_book(
+                {
+                    "ts_ms": 101_000,
+                    "yes_ask": 0.50,
+                    "no_ask": 0.50,
+                    "source_sequence_id": "book-pending-credit-l1",
+                    "event_time_ms": 101_000,
+                    "l2_source_sequence_id": "book-pending-credit-l2",
+                    "l2_event_time_ms": 101_000,
+                }
+            )
+            for ts_ms, side, source in (
+                (101_000, "YES", "trade-pending-credit-yes"),
+                (101_100, "NO", "trade-pending-credit-no-1"),
+                (101_200, "NO", "trade-pending-credit-no-2"),
+            ):
+                runner.on_trade(
+                    {
+                        "ts_ms": ts_ms,
+                        "market_side": side,
+                        "taker_side": "SELL",
+                        "price": 0.50,
+                        "size": 20.0,
+                        "source_sequence_id": source,
+                        "event_time_ms": ts_ms,
+                    }
+                )
+            return {
+                "state": comparable_state(runner),
+                "events": read_events(Path(td), slug),
+            }
+
+    legacy = run_one(RunnerConfig(cooldown_ms=0, imbalance_qty_cap=2.0))
+    legacy_candidates = [event for event in legacy["events"] if event.get("kind") == "candidate"]
+    legacy_last = legacy_candidates[-1] if legacy_candidates else {}
+    legacy_passed = (
+        legacy["state"]["metrics"]["candidates"] == 3
+        and legacy_last.get("side") == "NO"
+        and legacy_last.get("risk_seed_pending_opp_credit") == 1.0
+        and legacy_last.get("risk_seed_pending_opp_qty") == 2.0
+        and legacy_last.get("risk_seed_credited_opp_qty") == 2.0
+    )
+
+    filled_only = run_one(
+        RunnerConfig(cooldown_ms=0, imbalance_qty_cap=2.0, risk_seed_pending_opp_credit=0.0)
+    )
+    filled_only_candidates = [event for event in filled_only["events"] if event.get("kind") == "candidate"]
+    filled_only_second = filled_only_candidates[-1] if filled_only_candidates else {}
+    filled_only_passed = (
+        filled_only["state"]["metrics"]["candidates"] == 2
+        and filled_only["state"]["blocked"].get("imbalance_qty") == 1
+        and filled_only_second.get("risk_seed_pending_opp_credit") == 0.0
+        and filled_only_second.get("risk_seed_pending_opp_qty") == 2.0
+        and filled_only_second.get("risk_seed_credited_opp_qty") == 0.0
+    )
+
+    passed = legacy_passed and filled_only_passed
+    return {
+        "name": "risk_seed_pending_opp_credit_guard",
+        "status": "PASS" if passed else "FAIL",
+        "legacy_passed": legacy_passed,
+        "filled_only_passed": filled_only_passed,
+        "legacy_candidates": legacy_candidates,
+        "filled_only_candidates": filled_only_candidates,
+        "filled_only_blocked": filled_only["state"]["blocked"],
+    }
+
+
 def read_csv_rows(path: Path) -> list[dict[str, str]]:
     with path.open(newline="") as f:
         return list(csv.DictReader(f))
@@ -877,6 +950,7 @@ def main() -> None:
         smoke_source_quality_and_l2_paths(),
         smoke_risk_seed_closeability_gate(),
         smoke_risk_seed_closeability_soft_debt_gate(),
+        smoke_risk_seed_pending_opp_credit_guard(),
         smoke_normalized_lifecycle_exports(),
         smoke_source_linkage_summary(),
     ]
