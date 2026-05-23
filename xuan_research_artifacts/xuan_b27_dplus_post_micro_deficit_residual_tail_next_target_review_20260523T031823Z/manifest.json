@@ -1,0 +1,241 @@
+{
+  "artifact": "xuan_b27_dplus_post_micro_deficit_residual_tail_next_target_review",
+  "backtest_methodology_risk": {
+    "reason": "The strongest local historical targets were discovered with post-action source_pair/source_residual labels. That is useful for diagnostics but cannot be treated as out-of-sample trading evidence.",
+    "selection_leakage_risk": true,
+    "state_machine_to_no_order_gap": "Local state-machine fills and immediate pairing do not model live queue/opportunity availability; the no-order marker count mismatch is direct evidence of that gap."
+  },
+  "blockers": [
+    "shadow_sample_below_100",
+    "net_pair_cost_p90_above_1",
+    "residual_qty_share_above_budget",
+    "residual_cost_share_above_budget"
+  ],
+  "candidate_reviews": [
+    {
+      "candidate": "strict_micro_deficit_repair_guard_v1",
+      "decision": "DISCARD_FOR_THIS_WINDOW",
+      "evidence": {
+        "micro_deficit_exemplar_count": 0,
+        "micro_deficit_repair_guard_blocks": 0.0,
+        "micro_deficit_repair_guard_candidates": 0.0
+      },
+      "reason": "The exact approved no-order window exposed zero strict micro-deficit exemplars and zero aggregate micro_deficit_repair_guard_candidates, so this live window cannot justify enabling the guard."
+    },
+    {
+      "candidate": "top_residual_tail_pre_action_group_guard",
+      "decision": "DISCARD",
+      "evidence": {
+        "condition_count": 3,
+        "pre_action_group": "YES|offset_60_90|repair_or_pairing_improving|open_gt_5|deficit_le_1_25",
+        "row_count": 4,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 2.4875,
+        "source_residual_cost_share": 0.28029511,
+        "source_residual_qty": 5.0,
+        "source_residual_qty_share": 0.19049433
+      },
+      "reason": "The strongest remaining group is a side/offset/risk/open/deficit slice observed only among residual-tail exemplars. Converting it to a rule would be static side/offset deletion plus an ungrounded threshold, with no denominator for admitted non-tail candidates."
+    },
+    {
+      "candidate": "repair_or_pairing_improving_tail_guard",
+      "decision": "DISCARD",
+      "evidence": {
+        "repair_exemplar_count": 16,
+        "repair_residual_cost_share": 0.87041633,
+        "risk_increasing_exemplar_count": 5
+      },
+      "reason": "Repair_or_pairing_improving dominates the residual-tail exemplars, but that label also carries needed repair/pair flow. A broad guard would repeat the sample/pair collapse pattern from earlier local guards."
+    },
+    {
+      "candidate": "source_pair_zero_or_source_residual_cost_rule",
+      "decision": "DISCARD",
+      "evidence": {
+        "total_exemplar_source_pair_qty": 0.0,
+        "total_exemplar_source_residual_cost": 8.874575
+      },
+      "reason": "All residual-tail exemplars are post-action zero-pair labels in this pullback. source_pair_* and source_residual_* are valid offline labels but invalid live pre-action criteria."
+    },
+    {
+      "candidate": "trigger_px_or_trigger_size_tail_cap",
+      "decision": "DISCARD",
+      "reason": "Trigger price/size slicing would become a price/cap family or ungrounded threshold sweep; prior price/cap families are frozen unless a new pre-action causal denominator is available."
+    }
+  ],
+  "created_utc": "2026-05-23T03:25:11Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_POST_MICRO_DEFICIT_RESIDUAL_TAIL_NO_SAFE_PRE_ACTION_SEPARATOR",
+  "exact_missing_fields_or_capabilities": [
+    "all same-window admitted candidates with the same pre-action fields, not only residual-tail exemplars",
+    "non-tail and paired control rows joined to source_sequence_id/quote_intent_id/source_order_id",
+    "per-candidate denominator for side/offset/risk/open/deficit groups, including pair_qty and residual labels",
+    "runner-observed pending/opposite order availability and queue/close opportunity at source action time",
+    "action-level follow-up close/rescue linkage after each seed",
+    "candidate_row_id or equivalent local candidate-pipeline join key for causality verifier replay",
+    "train/holdout split proving the separator was not chosen from post-action residual labels only",
+    "a conservative fill/queue model calibrated against no-order marker counts before any new shadow question"
+  ],
+  "inputs": {
+    "aggregate_report": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/remote_clean/output/aggregate_report.json",
+    "completion_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_completion_20260523T022553Z/manifest.json",
+    "micro_deficit_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/local_review_20260523T022553Z/micro_deficit/manifest.json",
+    "residual_tail_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/local_review_20260523T022553Z/residual_tail/score.json",
+    "summary_count": 26
+  },
+  "next_executable_action": "Freeze new micro-mechanism selection and implement local-only backtest_causality_audit_v1: classify pre-action versus post-action fields, flag selector outcome-label usage, add train/holdout checks, and downgrade state-machine results that lack no-order marker reproduction.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "LOCAL_REVIEW_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "rejected_next_directions": [
+    "repeat or tighten micro-deficit threshold/cap sweep",
+    "source_pair/source_residual future-label live gate",
+    "static side/offset deletion",
+    "public/L1 price cap",
+    "trigger price or size cap family",
+    "cooldown/admission cap",
+    "fill-to-balance or portfolio-ledger trading-rule revival",
+    "broad replay search",
+    "shadow/canary/private truth/promotion claim"
+  ],
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "interpretation": "The no-order economics are positive but sample/risk budgets fail, and the local micro-deficit signature did not reproduce live. This is an evidence/methodology gap, not D+ total failure.",
+    "label": "UNKNOWN_POST_MICRO_DEFICIT_RESIDUAL_TAIL_NO_SAFE_PRE_ACTION_SEPARATOR"
+  },
+  "schema_version": "post_micro_deficit_residual_tail_next_target_review_v1",
+  "scope": "local_only_post_run_residual_tail_next_target_review",
+  "selected_next_target": {
+    "name": null,
+    "reason": "No genuinely new non-price, sample-preserving pre-action separator is expressible from the completed micro-deficit pullback. The remaining patterns are residual-tail labels, static side/offset slices, or ungrounded threshold/cap sweeps."
+  },
+  "shadow_budget_summary": {
+    "candidates": 97.0,
+    "fee_adjusted_pair_pnl_proxy": 1.756204,
+    "material_residual_lots": 0.0,
+    "net_pair_cost_p90": 1.1,
+    "pair_pnl": 2.420802,
+    "pair_qty": 41.015,
+    "pair_tail_loss_share_of_pair_pnl": 0.23354348,
+    "queue_supported_fills": 68.0,
+    "residual_cost_share_of_filled_cost": 0.24730649,
+    "residual_qty_share_of_filled": 0.30992443
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "shared_ingress_modified": false,
+    "ssh_started": false
+  },
+  "source_evidence": {
+    "completion_decision_label": "UNKNOWN_MICRO_DEFICIT_NO_ORDER_REVIEW_NO_LIVE_SIGNATURE_RISK_BUDGET_FAIL",
+    "exemplar_count": 21,
+    "micro_deficit_decision_label": "UNKNOWN_MICRO_DEFICIT_NO_ORDER_SUMMARY_INPUTS_INSUFFICIENT",
+    "residual_tail_required_field_coverage": 1.0,
+    "residual_tail_source_sequence_coverage": 1.0,
+    "residual_tail_status": "UNKNOWN",
+    "top_pre_action_groups": [
+      {
+        "condition_count": 3,
+        "pre_action_group": "YES|offset_60_90|repair_or_pairing_improving|open_gt_5|deficit_le_1_25",
+        "row_count": 4,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 2.4875,
+        "source_residual_cost_share": 0.28029511,
+        "source_residual_qty": 5.0,
+        "source_residual_qty_share": 0.19049433
+      },
+      {
+        "condition_count": 2,
+        "pre_action_group": "YES|offset_60_90|repair_or_pairing_improving|open_le_5|deficit_le_1_25",
+        "row_count": 2,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 1.1375,
+        "source_residual_cost_share": 0.12817515,
+        "source_residual_qty": 2.5,
+        "source_residual_qty_share": 0.09524717
+      },
+      {
+        "condition_count": 2,
+        "pre_action_group": "YES|offset_0_30|repair_or_pairing_improving|open_le_2_5|deficit_le_1_25",
+        "row_count": 2,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 1.0875,
+        "source_residual_cost_share": 0.12254108,
+        "source_residual_qty": 2.5,
+        "source_residual_qty_share": 0.09524717
+      },
+      {
+        "condition_count": 2,
+        "pre_action_group": "YES|offset_30_60|repair_or_pairing_improving|open_gt_5|deficit_le_1_25",
+        "row_count": 2,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 0.8875,
+        "source_residual_cost_share": 0.10000479,
+        "source_residual_qty": 2.5,
+        "source_residual_qty_share": 0.09524717
+      },
+      {
+        "condition_count": 1,
+        "pre_action_group": "NO|offset_30_60|repair_or_pairing_improving|open_le_5|deficit_le_1_25",
+        "row_count": 2,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 0.8375,
+        "source_residual_cost_share": 0.09437072,
+        "source_residual_qty": 2.5,
+        "source_residual_qty_share": 0.09524717
+      },
+      {
+        "condition_count": 1,
+        "pre_action_group": "YES|offset_0_30|repair_or_pairing_improving|open_le_5|deficit_le_1_25",
+        "row_count": 1,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 0.6,
+        "source_residual_cost_share": 0.06760887,
+        "source_residual_qty": 1.25,
+        "source_residual_qty_share": 0.04762358
+      },
+      {
+        "condition_count": 1,
+        "pre_action_group": "NO|offset_60_90|risk_increasing|open_le_2_5|deficit_le_0",
+        "row_count": 1,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 0.5125,
+        "source_residual_cost_share": 0.05774924,
+        "source_residual_qty": 1.25,
+        "source_residual_qty_share": 0.04762358
+      },
+      {
+        "condition_count": 1,
+        "pre_action_group": "NO|offset_60_90|repair_or_pairing_improving|open_gt_5|deficit_le_1_25",
+        "row_count": 2,
+        "source_pair_pnl": 0.0,
+        "source_pair_qty": 0.0,
+        "source_residual_cost": 0.349575,
+        "source_residual_cost_share": 0.03939062,
+        "source_residual_qty": 2.4975,
+        "source_residual_qty_share": 0.09515192
+      }
+    ],
+    "total_exemplar_source_pair_qty": 0.0,
+    "total_exemplar_source_residual_cost": 8.874575
+  }
+}
