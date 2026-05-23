@@ -1,0 +1,10 @@
+{
+  "artifact": "xuan_b27_dplus_post_ledger_marker_gap_audit_smoke",
+  "checks": {
+    "negative_fixture_fail_closed": true,
+    "positive_fixture_keep": true,
+    "risk_budget_blocker_reported": true
+  },
+  "fail_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_post_ledger_marker_gap_audit_smoke_20260523T153000Z/fail_manifest.json",
+  "pass_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_post_ledger_marker_gap_audit_smoke_20260523T153000Z/pass_manifest.json"
+}
