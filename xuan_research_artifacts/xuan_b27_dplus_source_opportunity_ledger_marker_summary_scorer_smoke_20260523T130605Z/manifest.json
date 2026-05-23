@@ -1,0 +1,56 @@
+{
+  "artifact": "xuan_b27_dplus_source_opportunity_ledger_marker_summary_scorer_smoke",
+  "checks": {
+    "default_off_missing_ledger_fields": true,
+    "default_off_unknown": true,
+    "enabled_admitted_marker_count_nonzero": true,
+    "enabled_aggregate_parity": true,
+    "enabled_exact_reason_coverage": true,
+    "enabled_keep": true,
+    "enabled_ledger_after_pre_action_declared": true,
+    "enabled_ledger_schema_ok": true,
+    "enabled_marker_count_nonzero": true,
+    "enabled_post_action_labels_excluded": true,
+    "enabled_promotion_gate_false": true,
+    "old_no_order_unknown_if_available": true,
+    "py_compile": true
+  },
+  "created_utc": "20260523T130605Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_LEDGER_MARKER_SUMMARY_SCORER_SMOKE_PASS",
+  "inputs": {
+    "fixture_root": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_ledger_marker_smoke_20260523T123605Z",
+    "old_no_order_root": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_shadow_review_source_opportunity_reason_source_driver_20260523T092200Z/remote_clean/output"
+  },
+  "next_action": "Use this local scorer after a bounded ledger-marker no-order pullback, or prepare the exact no-order review packet without enabling any guard.",
+  "outputs": {
+    "default_off_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_ledger_marker_summary_scorer_smoke_20260523T130605Z/default_off_score/manifest.json",
+    "enabled_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_ledger_marker_summary_scorer_smoke_20260523T130605Z/enabled_score/manifest.json",
+    "old_no_order_score": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_source_opportunity_ledger_marker_summary_scorer_smoke_20260523T130605Z/old_no_order_score/manifest.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "LEDGER_MARKER_SCORER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "The scorer can validate ledger-marker summary fields/parity, detect selected ledger_after denominators, and fail closed on default-off or old pullbacks without ledger fields.",
+    "label": "KEEP_SOURCE_OPPORTUNITY_LEDGER_MARKER_DENOMINATOR_SCORER_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  }
+}
