@@ -264,6 +264,11 @@ def selected_cross_counts(source_link: dict[str, Counter[str]], predicate: dict[
     }
 
 
+def source_opportunity_marker_summary(completion: dict[str, Any]) -> dict[str, Any]:
+    marker = ((completion.get("scorer_results") or {}).get("source_opportunity_marker_summary") or {})
+    return marker if isinstance(marker, dict) else {}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train-holdout-manifest", type=Path, default=DEFAULT_TRAIN_HOLDOUT_MANIFEST)
@@ -321,10 +326,26 @@ def main() -> int:
     aggregate = completion.get("aggregate_metrics") if isinstance(completion.get("aggregate_metrics"), dict) else {}
     micro = ((completion.get("scorer_results") or {}).get("micro_deficit_summary") or {})
     micro_metrics = micro.get("metrics") if isinstance(micro, dict) and isinstance(micro.get("metrics"), dict) else {}
+    marker_summary = source_opportunity_marker_summary(completion)
+    marker_total = as_float(marker_summary.get("marker_total"))
+    admitted_marker_count = as_float(marker_summary.get("admitted_marker_count"))
+    blocked_marker_count = as_float(marker_summary.get("blocked_marker_count"))
+    strict_micro_deficit_marker_total = as_float(marker_summary.get("strict_micro_deficit_marker_total"))
+    reason_source_available = bool(marker_summary.get("reason_source_coverage_available"))
+    reason_source_exact_reason_marker_total = as_float(marker_summary.get("reason_source_exact_reason_marker_total"))
+    reason_source_exact_reason_micro_deficit_marker_total = as_float(
+        marker_summary.get("reason_source_exact_reason_micro_deficit_marker_total")
+    )
+    exact_marker_denominator_available = as_float(marker_summary.get("summary_with_source_opportunity_marker_count")) > 0.0
 
     historical_selected_row_share = safe_ratio(selected["rows"], total["rows"])
-    no_order_marker_count = as_float(aggregate.get("micro_deficit_repair_guard_candidates")) + as_float(
-        micro_metrics.get("micro_deficit_exemplar_count")
+    no_order_marker_count = (
+        as_float(aggregate.get("micro_deficit_repair_guard_candidates"))
+        + as_float(micro_metrics.get("micro_deficit_exemplar_count"))
+        + marker_total
+        + strict_micro_deficit_marker_total
+        + reason_source_exact_reason_marker_total
+        + reason_source_exact_reason_micro_deficit_marker_total
     )
     marker_reproduction_ratio = safe_ratio(no_order_marker_count, selected["rows"])
     concrete_gaps = []
@@ -332,18 +353,36 @@ def main() -> int:
         concrete_gaps.append("no_order_micro_deficit_marker_count_zero")
     if not selected_cross["has_open_le_1_micro_deficit_proxy"]:
         concrete_gaps.append("no_order_selected_offset_risk_has_no_open_le_1_micro_deficit_qty_bucket")
-    if not selected_cross["has_exact_open_deficit_cross_bucket"]:
+    if not exact_marker_denominator_available and not selected_cross["has_exact_open_deficit_cross_bucket"]:
         concrete_gaps.append("no_order_source_link_lacks_exact_open_qty_and_deficit_cross_denominator")
+    elif marker_total <= 0.0 and reason_source_available:
+        concrete_gaps.append("source_opportunity_exact_marker_denominator_zero_even_with_reason_source_coverage")
     if selected_cross["blocked_selected_side_offset_risk_count"] > selected_cross["admitted_selected_side_offset_risk_count"]:
-        concrete_gaps.append("selected_offset_risk_more_often_blocked_than_admitted_without_marker_reason_join")
-    concrete_gaps.extend(
-        [
-            "blocked_transitions_have_missing_quote_order_sequence_ids",
-            "candidate_qty_for_blocked_selected_offset_risk_is_unknown",
-            "pending_queue_or_opposite_order_availability_not_exported_for_blocked_candidate_context",
-            "activation_age_and_order_room_after_gates_not_joined_to_frozen_predicate",
-        ]
-    )
+        if reason_source_available:
+            concrete_gaps.append("selected_offset_risk_more_often_blocked_than_admitted_with_reason_source_available")
+        else:
+            concrete_gaps.append("selected_offset_risk_more_often_blocked_than_admitted_without_marker_reason_join")
+    if reason_source_available:
+        top_micro_bucket = str(marker_summary.get("top_micro_deficit_like_bucket") or "")
+        if top_micro_bucket and str(predicate.get("offset_bucket") or "") not in top_micro_bucket:
+            concrete_gaps.append("closest_micro_deficit_like_bucket_outside_frozen_offset_bucket")
+        if top_micro_bucket and as_float(marker_summary.get("blocked_offset_quote_intent_presence_rate"), default=0.0) <= 0.0:
+            concrete_gaps.append("closest_micro_deficit_like_contexts_blocked_before_quote_order_creation")
+        concrete_gaps.extend(
+            [
+                "reason_source_denominators_present_but_not_joined_to_local_candidate_row_id",
+                "remaining_gap_requires_new_pre_action_signal_family_not_threshold_sweep",
+            ]
+        )
+    else:
+        concrete_gaps.extend(
+            [
+                "blocked_transitions_have_missing_quote_order_sequence_ids",
+                "candidate_qty_for_blocked_selected_offset_risk_is_unknown",
+                "pending_queue_or_opposite_order_availability_not_exported_for_blocked_candidate_context",
+                "activation_age_and_order_room_after_gates_not_joined_to_frozen_predicate",
+            ]
+        )
 
     decision = "KEEP"
     decision_label = "KEEP_SOURCE_OPPORTUNITY_GAP_AUDIT_READY_MARKER_REPRODUCTION_GAP_NAMED"
@@ -384,6 +423,19 @@ def main() -> int:
             "aggregate_candidates": aggregate.get("candidates"),
             "aggregate_micro_deficit_repair_guard_candidates": aggregate.get("micro_deficit_repair_guard_candidates"),
             "strict_micro_deficit_exemplar_count": micro_metrics.get("micro_deficit_exemplar_count"),
+            "source_opportunity_marker_summary_present": bool(marker_summary),
+            "source_opportunity_marker_total": marker_total,
+            "source_opportunity_admitted_marker_count": admitted_marker_count,
+            "source_opportunity_blocked_marker_count": blocked_marker_count,
+            "strict_micro_deficit_marker_total": strict_micro_deficit_marker_total,
+            "reason_source_coverage_available": reason_source_available,
+            "reason_source_exact_reason_marker_total": reason_source_exact_reason_marker_total,
+            "reason_source_exact_reason_micro_deficit_marker_total": reason_source_exact_reason_micro_deficit_marker_total,
+            "top_micro_deficit_like_bucket": marker_summary.get("top_micro_deficit_like_bucket"),
+            "top_micro_deficit_like_bucket_count": marker_summary.get("top_micro_deficit_like_bucket_count"),
+            "blocked_offset_quote_intent_presence_rate": marker_summary.get("blocked_offset_quote_intent_presence_rate"),
+            "blocked_offset_source_order_presence_rate": marker_summary.get("blocked_offset_source_order_presence_rate"),
+            "blocked_offset_source_sequence_presence_rate": marker_summary.get("blocked_offset_source_sequence_presence_rate"),
             "marker_reproduction_ratio_vs_historical_selected_rows": round(marker_reproduction_ratio, 8),
             "source_link_selected_offset_risk": selected_cross,
             "source_link_presence_by_status": {
@@ -395,19 +447,29 @@ def main() -> int:
         },
         "exact_gap_classification": concrete_gaps,
         "remediation_contract": {
-            "runner_summary_fields_needed": [
-                "transition_count_by_status_side_offset_risk_open_bucket_deficit_bucket",
-                "micro_deficit_repair_guard_candidate_count_by_status_reason_side_offset",
-                "blocked_micro_deficit_candidate_count_by_block_reason",
-                "pre_gate and post_gate pre_seed_same_qty/pre_seed_opp_qty/pre_seed_open_qty/deficit exact buckets",
-                "candidate_qty/base_qty/room_cost/imbalance_room for blocked contexts",
-                "activation_opp_age_ms/opposite_seen status for blocked repair contexts",
-                "pending opposite order availability and queue credit/touch opportunity at source event",
-                "quote_intent_id/source_order_id/source_sequence_id coverage for blocked marker contexts",
-            ],
+            "runner_summary_fields_needed": (
+                [
+                    "candidate_row_id/day/condition/ts join from historical separator rows to same-window no-order marker contexts",
+                    "admitted and non-tail denominators joined to residual-tail labels without using source_pair/source_residual as live criteria",
+                    "new pre-action feature family whose exact marker reproduces in no-order before any new shadow promotion review",
+                    "private order/fill/inventory truth only in the later private-truth phase, not in this no-order audit",
+                ]
+                if reason_source_available
+                else [
+                    "transition_count_by_status_side_offset_risk_open_bucket_deficit_bucket",
+                    "micro_deficit_repair_guard_candidate_count_by_status_reason_side_offset",
+                    "blocked_micro_deficit_candidate_count_by_block_reason",
+                    "pre_gate and post_gate pre_seed_same_qty/pre_seed_opp_qty/pre_seed_open_qty/deficit exact buckets",
+                    "candidate_qty/base_qty/room_cost/imbalance_room for blocked contexts",
+                    "activation_opp_age_ms/opposite_seen status for blocked repair contexts",
+                    "pending opposite order availability and queue credit/touch opportunity at source event",
+                    "quote_intent_id/source_order_id/source_sequence_id coverage for blocked marker contexts",
+                ]
+            ),
             "local_rule_policy": (
-                "Do not enable or reshadow the guard until the same-window no-order summaries can reproduce the frozen "
-                "predicate denominator and explain candidate loss by gate/reason without events JSONL."
+                "Do not enable, reshadow, or sweep the guard while the exact frozen marker has zero no-order denominator. "
+                "Reason/source coverage is sufficient to explain this transfer failure when present; the next research "
+                "step must find a different pre-action signal family with strict train/holdout plus no-order reproduction."
             ),
         },
         "research_ranking": {
@@ -427,8 +489,8 @@ def main() -> int:
             "status": "SOURCE_OPPORTUNITY_GAP_AUDIT_ONLY_NOT_PROMOTION_EVIDENCE",
         },
         "next_executable_action": (
-            "Implement default-off no-order source_opportunity_marker_summary_v1 fields for blocked/admitted contexts, "
-            "or produce an implementability spec if runner state cannot expose candidate loss reasons without events JSONL."
+            "Apply the strict no-order reproduction gate to future separator selection and start a new local-only search "
+            "for a genuinely different pre-action signal family; do not repeat micro-deficit threshold/cap sweeps."
         ),
     }
     write_json(output, manifest)

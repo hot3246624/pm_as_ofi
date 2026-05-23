@@ -115,7 +115,26 @@ completion.write_text(
         {
             "decision_label": "UNKNOWN_FIXTURE",
             "aggregate_metrics": {"candidates": 10, "micro_deficit_repair_guard_candidates": 0},
-            "scorer_results": {"micro_deficit_summary": {"metrics": {"micro_deficit_exemplar_count": 0}}},
+            "scorer_results": {
+                "micro_deficit_summary": {"metrics": {"micro_deficit_exemplar_count": 0}},
+                "source_opportunity_marker_summary": {
+                    "marker_total": 0,
+                    "admitted_marker_count": 0,
+                    "blocked_marker_count": 0,
+                    "strict_micro_deficit_marker_total": 0,
+                    "reason_source_coverage_available": True,
+                    "reason_source_exact_reason_marker_total": 0,
+                    "reason_source_exact_reason_micro_deficit_marker_total": 0,
+                    "summary_with_source_opportunity_marker_count": 1,
+                    "top_micro_deficit_like_bucket": (
+                        "blocked|offset|NO|offset_ge_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25"
+                    ),
+                    "top_micro_deficit_like_bucket_count": 8,
+                    "blocked_offset_quote_intent_presence_rate": 0,
+                    "blocked_offset_source_order_presence_rate": 0,
+                    "blocked_offset_source_sequence_presence_rate": 1,
+                },
+            },
         },
         indent=2,
         sort_keys=True,
@@ -174,6 +193,9 @@ assert data["decision"] == "KEEP", data["decision"]
 gaps = set(data["exact_gap_classification"])
 assert "no_order_micro_deficit_marker_count_zero" in gaps
 assert "no_order_selected_offset_risk_has_no_open_le_1_micro_deficit_qty_bucket" in gaps
+assert "source_opportunity_exact_marker_denominator_zero_even_with_reason_source_coverage" in gaps
+assert "closest_micro_deficit_like_bucket_outside_frozen_offset_bucket" in gaps
+assert data["no_order_marker_availability"]["reason_source_coverage_available"] is True
 assert data["promotion_gate"]["passed"] is False
 assert data["historical_separator_denominator"]["selected_rows"]["rows"] == 40
 print(json.dumps({"decision": data["decision"], "output": str(Path(sys.argv[1]))}, sort_keys=True))

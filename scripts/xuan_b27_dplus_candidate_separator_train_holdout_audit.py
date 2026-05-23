@@ -332,25 +332,64 @@ def no_order_reproduction(no_order_manifest: dict[str, Any]) -> dict[str, Any]:
     aggregate = no_order_manifest.get("aggregate_metrics") if isinstance(no_order_manifest.get("aggregate_metrics"), dict) else {}
     micro = no_order_manifest.get("scorer_results", {}).get("micro_deficit_summary", {})
     micro_metrics = micro.get("metrics") if isinstance(micro, dict) and isinstance(micro.get("metrics"), dict) else {}
+    marker = no_order_manifest.get("scorer_results", {}).get("source_opportunity_marker_summary", {})
+    marker = marker if isinstance(marker, dict) else {}
     normalized_risk_budget = (
         no_order_manifest.get("scorer_results", {})
         .get("shadow_acceptance", {})
         .get("promotion_gate", {})
         .get("normalized_risk_budget", {})
     )
+    candidates = aggregate.get("candidates")
+    net_pair_cost_p90 = aggregate.get("net_pair_cost_proxy_p90") or aggregate.get("net_pair_cost_p90")
+    residual_qty_share = aggregate.get("residual_qty_share_of_filled")
+    residual_cost_share = aggregate.get("residual_cost_share_of_filled_cost")
+    pair_tail_loss_share = aggregate.get("pair_tail_loss_share_of_pair_pnl") or normalized_risk_budget.get(
+        "pair_tail_loss_share_of_pair_pnl"
+    )
+    micro_deficit_exemplar_count = micro_metrics.get("micro_deficit_exemplar_count")
+    if micro_deficit_exemplar_count is None and isinstance(micro, dict):
+        micro_deficit_exemplar_count = micro.get("micro_deficit_exemplar_count")
+    marker_total = marker.get("marker_total")
+    admitted_marker_count = marker.get("admitted_marker_count")
+    blocked_marker_count = marker.get("blocked_marker_count")
+    strict_micro_deficit_marker_total = marker.get("strict_micro_deficit_marker_total")
+    exact_reason_marker_total = marker.get("reason_source_exact_reason_marker_total")
+    exact_reason_micro_deficit_marker_total = marker.get("reason_source_exact_reason_micro_deficit_marker_total")
+    marker_reproduced = (
+        as_float(aggregate.get("micro_deficit_repair_guard_candidates")) > 0.0
+        or as_float(micro_deficit_exemplar_count) > 0.0
+        or as_float(marker_total) > 0.0
+        or as_float(exact_reason_marker_total) > 0.0
+        or as_float(strict_micro_deficit_marker_total) > 0.0
+        or as_float(exact_reason_micro_deficit_marker_total) > 0.0
+    )
+    risk_budget_passed = (
+        as_float(candidates) >= 100.0
+        and as_float(net_pair_cost_p90) <= 1.0
+        and as_float(residual_qty_share) <= 0.15
+        and as_float(residual_cost_share) <= 0.20
+        and as_float(pair_tail_loss_share) <= 0.05
+    )
     return {
         "available": bool(no_order_manifest),
         "decision_label": no_order_manifest.get("decision_label"),
-        "candidates": aggregate.get("candidates"),
-        "net_pair_cost_p90": aggregate.get("net_pair_cost_proxy_p90") or aggregate.get("net_pair_cost_p90"),
-        "residual_qty_share": aggregate.get("residual_qty_share_of_filled"),
-        "residual_cost_share": aggregate.get("residual_cost_share_of_filled_cost"),
-        "pair_tail_loss_share": aggregate.get("pair_tail_loss_share_of_pair_pnl")
-        or normalized_risk_budget.get("pair_tail_loss_share_of_pair_pnl"),
+        "candidates": candidates,
+        "net_pair_cost_p90": net_pair_cost_p90,
+        "residual_qty_share": residual_qty_share,
+        "residual_cost_share": residual_cost_share,
+        "pair_tail_loss_share": pair_tail_loss_share,
         "micro_deficit_repair_guard_candidates": aggregate.get("micro_deficit_repair_guard_candidates"),
-        "strict_micro_deficit_exemplar_count": micro_metrics.get("micro_deficit_exemplar_count"),
-        "marker_reproduced": as_float(aggregate.get("micro_deficit_repair_guard_candidates")) > 0.0
-        or as_float(micro_metrics.get("micro_deficit_exemplar_count")) > 0.0,
+        "strict_micro_deficit_exemplar_count": micro_deficit_exemplar_count,
+        "source_opportunity_marker_total": marker_total,
+        "source_opportunity_admitted_marker_count": admitted_marker_count,
+        "source_opportunity_blocked_marker_count": blocked_marker_count,
+        "strict_micro_deficit_marker_total": strict_micro_deficit_marker_total,
+        "reason_source_exact_reason_marker_total": exact_reason_marker_total,
+        "reason_source_exact_reason_micro_deficit_marker_total": exact_reason_micro_deficit_marker_total,
+        "marker_reproduced": marker_reproduced,
+        "risk_budget_passed": risk_budget_passed,
+        "gate_passed": marker_reproduced and risk_budget_passed,
     }
 
 
@@ -362,6 +401,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--split-mode", choices=("alternating", "first60"), default="alternating")
     parser.add_argument("--min-seed-qty-retention", type=float, default=0.90)
     parser.add_argument("--min-pair-qty-retention", type=float, default=0.90)
+    parser.add_argument(
+        "--require-no-order-reproduction",
+        action="store_true",
+        help=(
+            "Downgrade offline-stable predicates to UNKNOWN unless the no-order completion manifest reproduces "
+            "the marker and passes the normalized risk budget."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -442,10 +489,14 @@ def main() -> int:
     )
     no_order = no_order_reproduction(read_json(no_order_manifest_path))
     no_order_reproduced = bool(no_order.get("marker_reproduced"))
+    no_order_gate_passed = bool(no_order.get("gate_passed"))
 
     if not viable:
         decision = "UNKNOWN"
         decision_label = "UNKNOWN_SEPARATOR_TRAIN_NO_VIABLE_PRE_ACTION_PREDICATE"
+    elif holdout_gate_passed and args.require_no_order_reproduction and not no_order_gate_passed:
+        decision = "UNKNOWN"
+        decision_label = "UNKNOWN_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_FAILED"
     elif holdout_gate_passed and not no_order_reproduced:
         decision = "KEEP"
         decision_label = "KEEP_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_BLOCKED"
@@ -501,6 +552,7 @@ def main() -> int:
                 "Post-action source_pair/source_residual labels are used only to select on train days. The selected "
                 "predicate is frozen before holdout evaluation and contains only pre-action fields."
             ),
+            "strict_no_order_reproduction_required": bool(args.require_no_order_reproduction),
         },
         "selection": {
             "viable_train_predicate_count": len(viable),
@@ -534,9 +586,11 @@ def main() -> int:
             "label": decision_label,
             "holdout_gate_passed": holdout_gate_passed,
             "no_order_marker_reproduced": no_order_reproduced,
+            "no_order_gate_passed": no_order_gate_passed,
             "interpretation": (
-                "KEEP here means the train/holdout audit tooling and offline frozen-predicate test are useful. It does "
-                "not rescue the mechanism for deployment because the latest no-order window did not reproduce the marker."
+                "KEEP here means the train/holdout audit tooling and offline frozen-predicate test are useful. If "
+                "--require-no-order-reproduction is set, offline-stable predicates are UNKNOWN unless the no-order "
+                "manifest also reproduces the marker and passes normalized risk budgets."
             ),
         },
         "promotion_gate": {

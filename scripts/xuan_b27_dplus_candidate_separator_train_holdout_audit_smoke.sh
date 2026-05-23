@@ -8,6 +8,7 @@ FIXTURE_DIR="$OUT_DIR/fixture"
 CSV_PATH="$FIXTURE_DIR/candidate_seed_outcome_separator.csv"
 NO_ORDER="$FIXTURE_DIR/no_order_completion.json"
 OUTPUT="$OUT_DIR/manifest.json"
+STRICT_OUTPUT="$OUT_DIR/strict_manifest.json"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$FIXTURE_DIR"
@@ -122,17 +123,29 @@ python3 "$ROOT_DIR/scripts/xuan_b27_dplus_candidate_separator_train_holdout_audi
   --no-order-completion-manifest "$NO_ORDER" \
   --output "$OUTPUT" >/dev/null
 
+python3 "$ROOT_DIR/scripts/xuan_b27_dplus_candidate_separator_train_holdout_audit.py" \
+  --separator-csv "$CSV_PATH" \
+  --no-order-completion-manifest "$NO_ORDER" \
+  --require-no-order-reproduction \
+  --output "$STRICT_OUTPUT" >/dev/null
+
 python3 - "$OUTPUT" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 data = json.loads(Path(sys.argv[1]).read_text())
+strict = json.loads(Path(sys.argv[1]).with_name("strict_manifest.json").read_text())
 assert data["decision"] == "KEEP", data["decision"]
 assert data["selection"]["holdout_gate_passed"] is True
 assert data["no_order_reproduction"]["marker_reproduced"] is False
+assert data["no_order_reproduction"]["gate_passed"] is False
 assert data["promotion_gate"]["passed"] is False
 selected = data["selection"]["selected_predicate"]
 assert selected["source_risk_direction"] == "repair_or_pairing_improving"
-print(json.dumps({"decision": data["decision"], "output": str(Path(sys.argv[1]))}, sort_keys=True))
+assert strict["decision"] == "UNKNOWN", strict["decision"]
+assert strict["decision_label"] == "UNKNOWN_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_FAILED"
+assert strict["field_policy"]["strict_no_order_reproduction_required"] is True
+assert strict["no_order_reproduction"]["gate_passed"] is False
+print(json.dumps({"decision": data["decision"], "strict_decision": strict["decision"], "output": str(Path(sys.argv[1]))}, sort_keys=True))
 PY

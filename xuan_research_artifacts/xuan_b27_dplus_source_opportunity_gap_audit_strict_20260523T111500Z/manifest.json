@@ -1,0 +1,214 @@
+{
+  "artifact": "xuan_b27_dplus_source_opportunity_gap_audit_v1",
+  "created_utc": "2026-05-23T11:33:43Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_GAP_AUDIT_READY_MARKER_REPRODUCTION_GAP_NAMED",
+  "exact_gap_classification": [
+    "no_order_micro_deficit_marker_count_zero",
+    "no_order_selected_offset_risk_has_no_open_le_1_micro_deficit_qty_bucket",
+    "source_opportunity_exact_marker_denominator_zero_even_with_reason_source_coverage",
+    "selected_offset_risk_more_often_blocked_than_admitted_with_reason_source_available",
+    "closest_micro_deficit_like_bucket_outside_frozen_offset_bucket",
+    "closest_micro_deficit_like_contexts_blocked_before_quote_order_creation",
+    "reason_source_denominators_present_but_not_joined_to_local_candidate_row_id",
+    "remaining_gap_requires_new_pre_action_signal_family_not_threshold_sweep"
+  ],
+  "frozen_predicate": {
+    "deficit_bucket": "deficit_0_0_25",
+    "name": "ANY|offset_90_120|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+    "offset_bucket": "offset_90_120",
+    "open_bucket": "open_le_1",
+    "side": "ANY",
+    "source_risk_direction": "repair_or_pairing_improving"
+  },
+  "historical_separator_denominator": {
+    "all_rows": {
+      "fee_after_pnl_proxy": 4753.70001053,
+      "official_fee": 779.14497697,
+      "pair_cost": 45269.986125,
+      "pair_pnl": 5750.563875,
+      "pair_qty": 51020.55,
+      "residual_cost": 217.7188875,
+      "residual_cost_rate": 0.00952705,
+      "residual_qty": 624.7475,
+      "residual_qty_rate": 0.01209689,
+      "rows": 41580,
+      "seed_cost": 22852.71195,
+      "seed_qty": 51645.2975,
+      "weighted_pair_cost": 0.88728926
+    },
+    "holdout_comparison": {
+      "fee_after_pnl_proxy_delta": 39.23400926,
+      "pair_qty_retention": 0.98288232,
+      "residual_cost_rate_reduction": 0.74092242,
+      "residual_qty_rate_reduction": 0.57103246,
+      "row_retention": 0.97622125,
+      "seed_qty_retention": 0.97621789,
+      "stress100_worst_pnl_proxy_delta": 49.01565926,
+      "weighted_pair_cost_worse_ratio": 1.0000043,
+      "worst_day_fee_after_pnl_proxy_delta": 9.27040405
+    },
+    "selected_by_day": {
+      "2026-05-02": 62,
+      "2026-05-03": 44,
+      "2026-05-04": 55,
+      "2026-05-05": 80,
+      "2026-05-06": 75,
+      "2026-05-07": 81,
+      "2026-05-08": 77,
+      "2026-05-09": 63,
+      "2026-05-10": 48,
+      "2026-05-11": 72,
+      "2026-05-12": 55,
+      "2026-05-13": 59,
+      "2026-05-16": 40,
+      "2026-05-17": 61,
+      "2026-05-18": 92
+    },
+    "selected_row_share": 0.02318422,
+    "selected_rows": {
+      "fee_after_pnl_proxy": -79.0100865,
+      "official_fee": 16.110424,
+      "pair_cost": 732.87085,
+      "pair_pnl": 96.35415,
+      "pair_qty": 829.225,
+      "residual_cost": 159.2538125,
+      "residual_cost_rate": 0.30266058,
+      "residual_qty": 367.8725,
+      "residual_qty_rate": 0.30730371,
+      "rows": 964,
+      "seed_cost": 526.1795625,
+      "seed_qty": 1197.0975,
+      "weighted_pair_cost": 0.88380216
+    },
+    "train_comparison": {
+      "fee_after_pnl_proxy_delta": 39.77607725,
+      "pair_qty_retention": 0.98450055,
+      "residual_cost_rate_reduction": 0.71081849,
+      "residual_qty_rate_reduction": 0.58578193,
+      "row_retention": 0.97733303,
+      "seed_qty_retention": 0.9773456,
+      "stress100_worst_pnl_proxy_delta": 50.25765225,
+      "weighted_pair_cost_worse_ratio": 1.00011742,
+      "worst_day_fee_after_pnl_proxy_delta": 6.45660178
+    },
+    "train_holdout_decision": "UNKNOWN_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_FAILED"
+  },
+  "inputs": {
+    "no_order_completion_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_shadow_review_source_opportunity_reason_source_completion_20260523T104314Z/manifest.json",
+    "no_order_summary_count": 26,
+    "no_order_summary_dir": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_shadow_review_source_opportunity_reason_source_driver_20260523T092200Z/remote_clean/output",
+    "separator_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_candidate_seed_outcome_separator_full_20260522T185614Z/candidate_seed_outcome_separator.csv",
+    "train_holdout_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_candidate_separator_train_holdout_audit_strict_no_order_20260523T111500Z/manifest.json",
+    "unsafe_paths": []
+  },
+  "next_executable_action": "Apply the strict no-order reproduction gate to future separator selection and start a new local-only search for a genuinely different pre-action signal family; do not repeat micro-deficit threshold/cap sweeps.",
+  "no_order_marker_availability": {
+    "aggregate_candidates": 85,
+    "aggregate_micro_deficit_repair_guard_candidates": null,
+    "blocked_offset_quote_intent_presence_rate": 0.0,
+    "blocked_offset_source_order_presence_rate": 0.0,
+    "blocked_offset_source_sequence_presence_rate": 1.0,
+    "completion_decision": "UNKNOWN_SOURCE_OPPORTUNITY_REASON_SOURCE_MARKER_ZERO_RISK_BUDGET_FAIL",
+    "marker_reproduction_ratio_vs_historical_selected_rows": 0.0,
+    "reason_source_coverage_available": true,
+    "reason_source_exact_reason_marker_total": 0.0,
+    "reason_source_exact_reason_micro_deficit_marker_total": 0.0,
+    "source_link_presence_by_status": {
+      "quote_intent": {
+        "admitted|present": 85.0,
+        "blocked|missing": 4688.0,
+        "blocked|present": 84.0
+      },
+      "source_order": {
+        "admitted|present": 85.0,
+        "blocked|missing": 4772.0
+      },
+      "source_sequence": {
+        "admitted|present": 85.0,
+        "blocked|present": 4772.0
+      }
+    },
+    "source_link_selected_offset_risk": {
+      "admitted_selected_side_offset_risk_count": 7.0,
+      "blocked_selected_side_offset_risk_count": 71.0,
+      "candidate_qty_buckets_for_selected_offset_risk": {
+        "NO|offset_90_120|repair_or_pairing_improving|candidate_qty_1_2": 2.0,
+        "NO|offset_90_120|repair_or_pairing_improving|candidate_qty_unknown": 54.0,
+        "YES|offset_90_120|repair_or_pairing_improving|candidate_qty_1_2": 5.0,
+        "YES|offset_90_120|repair_or_pairing_improving|candidate_qty_unknown": 17.0
+      },
+      "has_exact_open_deficit_cross_bucket": false,
+      "has_open_le_1_micro_deficit_proxy": false,
+      "pre_seed_opp_qty_buckets_for_selected_offset_risk": {
+        "NO|offset_90_120|repair_or_pairing_improving|opp_qty_1_2": 1.0,
+        "NO|offset_90_120|repair_or_pairing_improving|opp_qty_2_5": 29.0,
+        "NO|offset_90_120|repair_or_pairing_improving|opp_qty_eq_5": 26.0,
+        "YES|offset_90_120|repair_or_pairing_improving|opp_qty_2_5": 15.0,
+        "YES|offset_90_120|repair_or_pairing_improving|opp_qty_eq_5": 7.0
+      },
+      "pre_seed_same_qty_buckets_for_selected_offset_risk": {
+        "NO|offset_90_120|repair_or_pairing_improving|same_qty_2_5": 55.0,
+        "NO|offset_90_120|repair_or_pairing_improving|same_qty_zero": 1.0,
+        "YES|offset_90_120|repair_or_pairing_improving|same_qty_1_2": 3.0,
+        "YES|offset_90_120|repair_or_pairing_improving|same_qty_2_5": 19.0
+      },
+      "selected_status_side_offset_risk_direction_counts": {
+        "admitted|NO|offset_90_120|repair_or_pairing_improving": 2.0,
+        "admitted|YES|offset_90_120|repair_or_pairing_improving": 5.0,
+        "blocked|NO|offset_90_120|repair_or_pairing_improving": 54.0,
+        "blocked|YES|offset_90_120|repair_or_pairing_improving": 17.0
+      }
+    },
+    "source_opportunity_admitted_marker_count": 0.0,
+    "source_opportunity_blocked_marker_count": 0.0,
+    "source_opportunity_marker_summary_present": true,
+    "source_opportunity_marker_total": 0.0,
+    "strict_micro_deficit_exemplar_count": null,
+    "strict_micro_deficit_marker_total": 0.0,
+    "top_block_reasons": {
+      "admitted|candidate": 85.0,
+      "blocked|activation_opp_seen": 84.0,
+      "blocked|cooldown": 597.0,
+      "blocked|l1_pair_ask_gt_cap": 15.0,
+      "blocked|late_repair_only": 205.0,
+      "blocked|offset": 3399.0,
+      "blocked|pairing_only_when_residual": 144.0,
+      "blocked|price": 75.0,
+      "blocked|qty_zero": 223.0,
+      "blocked|target": 30.0
+    },
+    "top_micro_deficit_like_bucket": "blocked|offset|NO|offset_ge_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25",
+    "top_micro_deficit_like_bucket_count": 264.0
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SOURCE_OPPORTUNITY_GAP_AUDIT_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "remediation_contract": {
+    "local_rule_policy": "Do not enable, reshadow, or sweep the guard while the exact frozen marker has zero no-order denominator. Reason/source coverage is sufficient to explain this transfer failure when present; the next research step must find a different pre-action signal family with strict train/holdout plus no-order reproduction.",
+    "runner_summary_fields_needed": [
+      "candidate_row_id/day/condition/ts join from historical separator rows to same-window no-order marker contexts",
+      "admitted and non-tail denominators joined to residual-tail labels without using source_pair/source_residual as live criteria",
+      "new pre-action feature family whose exact marker reproduces in no-order before any new shadow promotion review",
+      "private order/fill/inventory truth only in the later private-truth phase, not in this no-order audit"
+    ]
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "The offline predicate is stable, but the no-order window lacks the micro-deficit/open<=1 tiny-deficit opportunity surface. This points to a source/opportunity instrumentation gap, not a reason to sweep thresholds or promote the guard.",
+    "label": "KEEP_SOURCE_OPPORTUNITY_GAP_AUDIT_READY_MARKER_REPRODUCTION_GAP_NAMED"
+  },
+  "schema_version": "source_opportunity_gap_audit_v1",
+  "scope": {
+    "local_only": true,
+    "modified_shared_ingress_or_live": false,
+    "read_events_jsonl": false,
+    "read_raw_replay_or_collector": false,
+    "sent_orders_cancels_redeems": false,
+    "used_ssh_or_shadow": false
+  }
+}
