@@ -1,0 +1,24 @@
+live_check_utc=2026-05-23T01:17:29Z
+RUN_DIR=/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_micro_deficit_review_edge007_20260523T005615Z
+PID=255394
+pid_file=255394
+pid_status
+    PID    PPID     ELAPSED USER     COMMAND
+ 255394       1       00:36 pmofi    /usr/bin/python3 ./xuan_dplus_passive_passive_shadow_runner.py --repo /srv/pm_as_ofi/repo --shared-ingress-root /srv/pm_as_ofi/shared-ingress-main --prefix btc-updown-5m --round-offsets 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25 --duration-s 3600 --output-dir output --edge 0.07 --target-qty 5 --max-open-cost 80 --imbalance-qty-cap 1.25 --pairing-only-when-residual --activation-mode opp_seen --activation-window-s 15 --late-repair-only-after-s 90 --event-lite-summary --pair-source-event-lite-summary --source-link-transition-event-lite-summary --source-link-residual-tail-exemplars-event-lite-summary
+all_runner_count=1
+all_runner_processes
+255394 /usr/bin/python3 ./xuan_dplus_passive_passive_shadow_runner.py --repo /srv/pm_as_ofi/repo --shared-ingress-root /srv/pm_as_ofi/shared-ingress-main --prefix btc-updown-5m --round-offsets 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25 --duration-s 3600 --output-dir output --edge 0.07 --target-qty 5 --max-open-cost 80 --imbalance-qty-cap 1.25 --pairing-only-when-residual --activation-mode opp_seen --activation-window-s 15 --late-repair-only-after-s 90 --event-lite-summary --pair-source-event-lite-summary --source-link-transition-event-lite-summary --source-link-residual-tail-exemplars-event-lite-summary
+summary_count=26
+manifest_present=true size=12150
+aggregate_present=false
+stdout_size=0
+stderr_size=0
+stdout_tail
+stderr_tail
+disk_root
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/root       145G   70G   75G  49% /
+inode_root
+Filesystem     Inodes IUsed IFree IUse% Mounted on
+/dev/root         18M  182K   18M    1% /
+LIVE_CHECK_OK
