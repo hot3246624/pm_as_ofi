@@ -1,0 +1,218 @@
+{
+  "aggregate_metrics": {
+    "candidates": 97.0,
+    "fee_adjusted_pair_pnl_proxy": 1.756204,
+    "filled_cost": 35.884925,
+    "filled_qty": 84.69,
+    "material_residual_lots": 0.0,
+    "micro_deficit_repair_guard_blocks": 0.0,
+    "micro_deficit_repair_guard_candidates": 0.0,
+    "net_pair_cost_proxy_p90": 1.1,
+    "pair_actions": 33.0,
+    "pair_pnl": 2.420802,
+    "pair_qty": 41.015,
+    "queue_supported_fills": 68.0,
+    "residual_cost": 8.874575,
+    "residual_cost_share_of_filled_cost": 0.24730649,
+    "residual_qty": 26.2475,
+    "residual_qty_share_of_filled": 0.30992443,
+    "taker_fee": 0.664598
+  },
+  "artifact": "xuan_b27_dplus_micro_deficit_shadow_completion_review",
+  "created_at_utc": "2026-05-23T02:34:42Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_MICRO_DEFICIT_NO_ORDER_REVIEW_NO_LIVE_SIGNATURE_RISK_BUDGET_FAIL",
+  "deployable": false,
+  "exact_question": "late_repair90_micro_deficit_repair_guard_no_order_review",
+  "interpretation": {
+    "do_not_send_to_canary_or_promotion": true,
+    "exact_live_window_did_not_reproduce_micro_deficit_signature": true,
+    "micro_deficit_runner_guard_should_not_be_enabled": true,
+    "not_micro_deficit_local_verifier_disproof": true,
+    "not_total_dplus_failure": true,
+    "reason": "No-order run had positive fee-adjusted pair PnL but sample/risk budgets failed and strict micro-deficit residual-tail exemplar count was 0, so the approved diagnostic window does not justify implementing or enabling the guard."
+  },
+  "next_executable_action": "Do not enable micro_deficit_repair_guard_v1. Continue local-only post-run review of residual-tail exemplars for a genuinely new pre-action separator, or return UNKNOWN if no non-price/sample-preserving lane is available.",
+  "private_truth_ready": false,
+  "promotion_gate_passed": false,
+  "pullback": {
+    "aggregate_report_pulled": true,
+    "allowlisted_files_only": true,
+    "events_jsonl_pulled": 0,
+    "manifest_pulled": true,
+    "remote_clean_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/remote_clean",
+    "remote_events_jsonl_observed_but_not_pulled": 12,
+    "runner_pid_pulled": true,
+    "stderr_log_pulled": true,
+    "stdout_log_pulled": true,
+    "summary_json_count": 26
+  },
+  "remote_run": {
+    "all_runner_count_after_finish": 0,
+    "finished": true,
+    "post_run_sanity_utc": "2026-05-23T02:27:46Z",
+    "run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_micro_deficit_review_edge007_20260523T005615Z",
+    "runner_pid": 255394
+  },
+  "scorer_results": {
+    "micro_deficit_summary": {
+      "blockers": [
+        "micro_deficit_exemplar_count_below_threshold",
+        "micro_deficit_residual_cost_share_below_threshold"
+      ],
+      "decision": "UNKNOWN",
+      "decision_label": "UNKNOWN_MICRO_DEFICIT_NO_ORDER_SUMMARY_INPUTS_INSUFFICIENT",
+      "manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/local_review_20260523T022553Z/micro_deficit/manifest.json",
+      "metrics": {
+        "exemplar_count": 21,
+        "micro_deficit_exemplar_count": 0,
+        "micro_deficit_row_share": 0.0,
+        "micro_deficit_source_pair_pnl": 0,
+        "micro_deficit_source_pair_qty": 0,
+        "micro_deficit_source_pair_qty_share": 0.0,
+        "micro_deficit_source_residual_cost": 0,
+        "micro_deficit_source_residual_cost_share": 0.0,
+        "micro_deficit_source_residual_qty": 0,
+        "micro_deficit_source_residual_qty_share": 0.0,
+        "quote_intent_coverage": 1.0,
+        "source_link_summary_count": 26,
+        "source_order_coverage": 1.0,
+        "source_sequence_coverage": 1.0,
+        "summary_count": 26,
+        "top_micro_deficit_group_residual_cost_share": 0.0
+      },
+      "promotion_gate": {
+        "deployable": false,
+        "g2_canary_ready": false,
+        "passed": false,
+        "private_truth_ready": false,
+        "status": "SUMMARY_SCORER_ONLY_NOT_PROMOTION_EVIDENCE"
+      }
+    },
+    "residual_tail_exemplar": {
+      "decision": "UNKNOWN",
+      "promotion_gate": {
+        "deployable": false,
+        "g2_canary_ready": false,
+        "passed": false,
+        "private_truth_ready": false,
+        "status": "RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_NOT_PROMOTION_EVIDENCE"
+      },
+      "research_ranking": {
+        "decision": "UNKNOWN",
+        "interpretation": "This is no-order shadow-review evidence only. Even a KEEP review requires a later local mechanism verifier before another exact remote run, and still does not prove private truth.",
+        "label": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF",
+        "review_passed": false,
+        "scorer_ready": true
+      },
+      "score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/local_review_20260523T022553Z/residual_tail/score.json",
+      "status": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF"
+    },
+    "shadow_acceptance": {
+      "manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/local_review_20260523T022553Z/shadow_acceptance/manifest.json",
+      "promotion_gate": {
+        "economic_pnl_ok": true,
+        "hard_blockers": [
+          "shadow_trading_sample_size_failed",
+          "shadow_trading_promotion_risk_budget_failed"
+        ],
+        "legacy_absolute_reference": {
+          "breaches": [
+            {
+              "actual": 26.2475,
+              "legacy_reference_max": 10.0,
+              "metric": "residual_qty"
+            },
+            {
+              "actual": 8.874575,
+              "legacy_reference_max": 5.0,
+              "metric": "residual_cost"
+            },
+            {
+              "actual": 1.1,
+              "legacy_reference_max": 1.0,
+              "metric": "net_pair_cost_p90"
+            }
+          ],
+          "used_as_primary_promotion_gate": false
+        },
+        "normalized_risk_budget": {
+          "material_residual_lots": 0,
+          "max_material_residual_lots": 0,
+          "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+          "max_residual_cost_share_of_filled_cost": 0.2,
+          "max_residual_qty_share_of_filled": 0.15,
+          "pair_tail_loss_share_of_pair_pnl": 0.23354348,
+          "residual_cost_share_of_filled_cost": 0.24730649,
+          "residual_qty_share_of_filled": 0.30992443
+        },
+        "passed": false,
+        "promotion_risk_budget_ok": false,
+        "required_before_g2_canary": true,
+        "sample_size_ok": false,
+        "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
+      },
+      "research_ranking": {
+        "conservative_stress_proxy_positive": false,
+        "economic_pnl_positive": true,
+        "fee_adjusted_pair_pnl_proxy": 1.756204,
+        "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE",
+        "legacy_absolute_reference_breaches": [
+          {
+            "actual": 26.2475,
+            "legacy_reference_max": 10.0,
+            "metric": "residual_qty"
+          },
+          {
+            "actual": 8.874575,
+            "legacy_reference_max": 5.0,
+            "metric": "residual_cost"
+          },
+          {
+            "actual": 1.1,
+            "legacy_reference_max": 1.0,
+            "metric": "net_pair_cost_p90"
+          }
+        ],
+        "notes": [
+          "research ranking uses economic proxies first; sample and risk gates are reported separately",
+          "residual or pair-cost tail budget failures are TRADEOFF/BLOCKER evidence unless economic PnL turns negative",
+          "conservative stress proxy subtracts full residual_cost and pair-tail-loss proxy; source-of-truth settlement may differ"
+        ],
+        "pair_tail_loss_proxy": 0.41015,
+        "promotion_risk_budget_ok": false,
+        "residual_loss_proxy": 8.874575,
+        "risk_adjusted_pnl_proxy": -7.528521,
+        "sample_size_ok": false
+      },
+      "status": "FAIL_SHADOW_TRADING_SAMPLE_SIZE"
+    },
+    "source_link_transition": {
+      "decision": "KEEP",
+      "promotion_gate": {
+        "can_support_strategy_promotion": false,
+        "deployable": false,
+        "g2_canary_ready": false,
+        "passed": false,
+        "status": "SCORER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+      },
+      "score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/local_review_20260523T022553Z/source_link/score.json",
+      "status": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY"
+    }
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "canary_started": false,
+    "cancels_sent": false,
+    "env_or_live_modified": false,
+    "events_jsonl_read_or_pulled": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "redeems_sent": false,
+    "repo_sync_or_build": false,
+    "second_shadow_started": false,
+    "shared_ingress_modified": false,
+    "ssh_used_for_bounded_poll_and_pullback": true,
+    "systemd_or_service_control": false
+  }
+}
