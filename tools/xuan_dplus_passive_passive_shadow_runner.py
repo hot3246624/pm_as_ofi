@@ -268,6 +268,7 @@ class RunnerConfig:
     salvage_net_cap: float = 0.95
     salvage_age_ms: int = 30_000
     salvage_min_lot_cost: float = 0.25
+    strict_rescue_skip_low_cost_lots: bool = False
     max_salvage_qty: float = 250.0
     surplus_budget_mode: str = "none"
     surplus_budget_bootstrap: float = 0.0
@@ -809,21 +810,48 @@ class DPlusRunner:
             ask = raw_ask + (self.cfg.strict_rescue_close_ask_slip if strict_rescue_active else 0.0)
             fee = fee_per_share(ask, self.cfg.taker_fee_rate)
             paired = 0.0
-            while lots and paired < self.cfg.max_salvage_qty - DUST:
-                lot = lots[0]
+            lot_idx = 0
+            skipped_low_cost_lots = 0
+            while lot_idx < len(lots) and paired < self.cfg.max_salvage_qty - DUST:
+                lot = lots[lot_idx]
                 age = ts_ms - lot.fill_ms
-                if age < self.cfg.salvage_age_ms or lot.cost < self.cfg.salvage_min_lot_cost:
+                if age < self.cfg.salvage_age_ms:
                     if strict_rescue_active and self.cfg.write_rescue_block_diagnostics:
                         self.emit(
                             {
                                 **diag_base,
                                 "block_reason": "strict_rescue_lot_age_or_min_cost",
+                                "block_component": "lot_age",
+                                "lot_index": lot_idx,
                                 "lot_age_ms": age,
                                 "lot_cost": lot.cost,
                                 "salvage_age_ms": self.cfg.salvage_age_ms,
                                 "salvage_min_lot_cost": self.cfg.salvage_min_lot_cost,
+                                "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
+                                "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
                             }
                         )
+                    break
+                if lot.cost < self.cfg.salvage_min_lot_cost:
+                    if strict_rescue_active and self.cfg.write_rescue_block_diagnostics:
+                        self.emit(
+                            {
+                                **diag_base,
+                                "block_reason": "strict_rescue_lot_age_or_min_cost",
+                                "block_component": "lot_min_cost",
+                                "lot_index": lot_idx,
+                                "lot_age_ms": age,
+                                "lot_cost": lot.cost,
+                                "salvage_age_ms": self.cfg.salvage_age_ms,
+                                "salvage_min_lot_cost": self.cfg.salvage_min_lot_cost,
+                                "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
+                                "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
+                            }
+                        )
+                    if self.cfg.strict_rescue_skip_low_cost_lots:
+                        skipped_low_cost_lots += 1
+                        lot_idx += 1
+                        continue
                     break
                 if strict_rescue_active and self.cfg.strict_rescue_max_wait_ms is not None and age > self.cfg.strict_rescue_max_wait_ms:
                     self.block("strict_rescue_max_wait")
@@ -832,8 +860,11 @@ class DPlusRunner:
                             {
                                 **diag_base,
                                 "block_reason": "strict_rescue_max_wait",
+                                "lot_index": lot_idx,
                                 "lot_age_ms": age,
                                 "strict_rescue_max_wait_ms": self.cfg.strict_rescue_max_wait_ms,
+                                "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
+                                "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
                             }
                         )
                     break
@@ -845,6 +876,7 @@ class DPlusRunner:
                             {
                                 **diag_base,
                                 "block_reason": "strict_rescue_net_pair_cap",
+                                "lot_index": lot_idx,
                                 "lot_age_ms": age,
                                 "held_px": lot.px,
                                 "comp_ask": ask,
@@ -852,6 +884,8 @@ class DPlusRunner:
                                 "gross_pair_cost": gross_pair,
                                 "net_pair_cost": net_pair,
                                 "salvage_net_cap": self.cfg.salvage_net_cap,
+                                "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
+                                "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
                             }
                         )
                     break
@@ -880,10 +914,10 @@ class DPlusRunner:
                 closeability_debt_release = take * lot.closeability_debt_per_share
                 debt_pre_open = self.closeability_debt_open
                 self.adjust_closeability_debt(-closeability_debt_release)
-                self.emit({"kind": "fak_salvage", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "quote_intent_id": lot.quote_intent_id, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "raw_comp_ask": raw_ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age, "source_sequence_id": self.book_source_sequence_id, "market_md_source_sequence_id": self.book_source_sequence_id, "book_event_time_ms": self.book_event_time_ms, "strict_rescue_mode": self.cfg.strict_rescue_mode, "strict_rescue_l1_age_ms": book_age_ms, "strict_rescue_l1_age_max_ms": self.cfg.strict_rescue_l1_age_max_ms, "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip if strict_rescue_active else 0.0, "strict_rescue_close_size_haircut": self.cfg.strict_rescue_close_size_haircut if strict_rescue_active else 1.0, "strict_rescue_l2_required": self.cfg.strict_rescue_require_l2_source, "strict_rescue_l2_source_sequence_id": self.book_l2_source_sequence_id, "strict_rescue_l2_event_time_ms": self.book_l2_event_time_ms, "strict_rescue_l2_age_ms": l2_age_ms, "source_lot_id": lot.id, "source_lot_sequence_id": lot.source_sequence_id, "source_lot_event_time_ms": lot.source_event_time_ms, "source_lot_closeability_debt_per_share": lot.closeability_debt_per_share, "source_lot_closeability_debt_release": round(closeability_debt_release, 12), "closeability_debt_pre_open": round(debt_pre_open, 12), "closeability_debt_post_open": round(self.closeability_debt_open, 12)})
+                self.emit({"kind": "fak_salvage", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "matched_pair_id": matched_pair_id, "quote_intent_id": lot.quote_intent_id, "held_side": held_side, "comp_side": comp_side, "qty": take, "held_px": lot.px, "comp_ask": ask, "raw_comp_ask": raw_ask, "fee_per_share": fee, "net_pair_cost": net_pair, "age_ms": age, "source_sequence_id": self.book_source_sequence_id, "market_md_source_sequence_id": self.book_source_sequence_id, "book_event_time_ms": self.book_event_time_ms, "strict_rescue_mode": self.cfg.strict_rescue_mode, "strict_rescue_l1_age_ms": book_age_ms, "strict_rescue_l1_age_max_ms": self.cfg.strict_rescue_l1_age_max_ms, "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip if strict_rescue_active else 0.0, "strict_rescue_close_size_haircut": self.cfg.strict_rescue_close_size_haircut if strict_rescue_active else 1.0, "strict_rescue_l2_required": self.cfg.strict_rescue_require_l2_source, "strict_rescue_l2_source_sequence_id": self.book_l2_source_sequence_id, "strict_rescue_l2_event_time_ms": self.book_l2_event_time_ms, "strict_rescue_l2_age_ms": l2_age_ms, "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots, "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots, "source_lot_id": lot.id, "source_lot_sequence_id": lot.source_sequence_id, "source_lot_event_time_ms": lot.source_event_time_ms, "source_lot_closeability_debt_per_share": lot.closeability_debt_per_share, "source_lot_closeability_debt_release": round(closeability_debt_release, 12), "closeability_debt_pre_open": round(debt_pre_open, 12), "closeability_debt_post_open": round(self.closeability_debt_open, 12)})
                 lot.qty -= take
                 if lot.qty <= DUST:
-                    lots.pop(0)
+                    lots.pop(lot_idx)
                 else:
                     break
 
@@ -1767,6 +1801,11 @@ async def main() -> None:
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
+    ap.add_argument(
+        "--strict-rescue-skip-low-cost-lots",
+        action="store_true",
+        help="Allow strict rescue to scan past FIFO lots below --salvage-min-lot-cost while preserving age ordering.",
+    )
     ap.add_argument("--surplus-budget-mode", choices=["none", "block", "cap"], default="none")
     ap.add_argument("--surplus-budget-bootstrap", type=float, default=0.0)
     ap.add_argument("--surplus-budget-mult", type=float, default=0.0)
@@ -1826,6 +1865,7 @@ async def main() -> None:
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
+        strict_rescue_skip_low_cost_lots=args.strict_rescue_skip_low_cost_lots,
         surplus_budget_mode=args.surplus_budget_mode,
         surplus_budget_bootstrap=args.surplus_budget_bootstrap,
         surplus_budget_mult=args.surplus_budget_mult,

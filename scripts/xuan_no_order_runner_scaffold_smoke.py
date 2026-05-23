@@ -215,6 +215,93 @@ def smoke_strict_rescue_event_fields() -> dict[str, Any]:
         }
 
 
+def smoke_strict_rescue_skip_low_cost_lots() -> dict[str, Any]:
+    def run_case(skip_low_cost: bool) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            slug = "btc-updown-5m-101"
+            runner = DPlusRunner(
+                slug,
+                Path(td),
+                RunnerConfig(
+                    salvage_net_cap=1.10,
+                    salvage_age_ms=30_000,
+                    salvage_min_lot_cost=0.25,
+                    strict_rescue_skip_low_cost_lots=skip_low_cost,
+                    strict_rescue_mode="source_audit",
+                    strict_rescue_l1_age_max_ms=50,
+                    strict_rescue_require_book_source=True,
+                    write_rescue_block_diagnostics=True,
+                ),
+            )
+            runner.lots["YES"].extend(
+                [
+                    Lot(
+                        id=1,
+                        quote_intent_id="quote-dust-head",
+                        side="YES",
+                        qty=1.0,
+                        px=0.05,
+                        fill_ms=1_000,
+                        source_order_id=1,
+                        source_sequence_id="fill-dust-head",
+                        source_event_time_ms=1_000,
+                    ),
+                    Lot(
+                        id=2,
+                        quote_intent_id="quote-rescuable-tail",
+                        side="YES",
+                        qty=4.0,
+                        px=0.40,
+                        fill_ms=1_000,
+                        source_order_id=2,
+                        source_sequence_id="fill-rescuable-tail",
+                        source_event_time_ms=1_000,
+                    ),
+                ]
+            )
+            runner.on_book(
+                {
+                    "ts_ms": 40_000,
+                    "yes_ask": 0.40,
+                    "no_ask": 0.50,
+                    "source_sequence_id": "book-rescue",
+                    "event_time_ms": 39_990,
+                }
+            )
+            events = read_events(Path(td), slug)
+            salvage_events = [event for event in events if event.get("kind") == "fak_salvage"]
+            block_events = [event for event in events if event.get("kind") == "strict_rescue_block"]
+            return {
+                "state": comparable_state(runner),
+                "salvage_events": salvage_events,
+                "block_events": block_events,
+                "remaining_lots": [asdict(lot) for lot in runner.lots["YES"]],
+            }
+
+    disabled = run_case(False)
+    enabled = run_case(True)
+    disabled_passed = (
+        disabled["state"]["metrics"]["strict_rescue_actions"] == 0
+        and disabled["block_events"]
+        and disabled["block_events"][-1].get("block_component") == "lot_min_cost"
+    )
+    enabled_event = enabled["salvage_events"][-1] if enabled["salvage_events"] else {}
+    enabled_passed = (
+        enabled["state"]["metrics"]["strict_rescue_actions"] == 1
+        and enabled_event.get("source_lot_id") == 2
+        and enabled_event.get("strict_rescue_skipped_low_cost_lots") == 1
+        and len(enabled["remaining_lots"]) == 1
+        and enabled["remaining_lots"][0]["id"] == 1
+    )
+    passed = disabled_passed and enabled_passed
+    return {
+        "name": "strict_rescue_skip_low_cost_lots",
+        "status": "PASS" if passed else "FAIL",
+        "disabled": disabled,
+        "enabled": enabled,
+    }
+
+
 def smoke_source_quality_and_l2_paths() -> dict[str, Any]:
     cfg = RunnerConfig(
         source_quality_require_trade_source=True,
@@ -786,6 +873,7 @@ def main() -> None:
         smoke_default_off_parity(),
         smoke_surplus_budget_paths(),
         smoke_strict_rescue_event_fields(),
+        smoke_strict_rescue_skip_low_cost_lots(),
         smoke_source_quality_and_l2_paths(),
         smoke_risk_seed_closeability_gate(),
         smoke_risk_seed_closeability_soft_debt_gate(),
