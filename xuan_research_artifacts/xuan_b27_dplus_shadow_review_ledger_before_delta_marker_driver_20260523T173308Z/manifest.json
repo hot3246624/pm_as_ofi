@@ -1,0 +1,137 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver",
+  "created_utc": "2026-05-23T17:40:40Z",
+  "decision": "KEEP",
+  "decision_label": "RUNNING_LEDGER_BEFORE_DELTA_MARKER_NO_ORDER_SHADOW_REVIEW",
+  "exact_run": "late_repair90_ledger_before_delta_marker_no_order_review",
+  "research_lane": "no_order_diagnostic_run",
+  "preflight": {
+    "passed": true,
+    "host": "ip-172-31-37-43",
+    "active_runner_count_before_start": 0,
+    "root_disk_used_pct": "61%",
+    "root_inode_used_pct": "2%",
+    "shared_ingress_broker_manifest_present": true,
+    "shared_ingress_market_sock_present": true,
+    "shared_ingress_chainlink_sock_present": true,
+    "shared_ingress_local_price_sock_present": true,
+    "broker_manifest_age_s": 0,
+    "resolve_market_ids_present": true,
+    "sudo_pmofi_ok": true,
+    "raw_logs": {
+      "initial_stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/preflight_20260523T173308Z.out",
+      "initial_stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/preflight_20260523T173308Z.err",
+      "retry_stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/preflight_retry_20260523T173308Z.out",
+      "retry_stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/preflight_retry_20260523T173308Z.err"
+    },
+    "note": "Initial preflight exited early on no pgrep match under set -e; retry completed the same bounded checks and passed."
+  },
+  "remote": {
+    "host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_ledger_before_delta_marker_review_edge007_20260523T173308Z",
+    "runner_pid": 356990,
+    "runner_user": "pmofi",
+    "started_utc_approx": "2026-05-23T17:37:27Z",
+    "expected_completion_utc_approx": "2026-05-23T18:37:27Z"
+  },
+  "startup": {
+    "passed": true,
+    "copied_only_runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "remote_runner_path": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_ledger_before_delta_marker_review_edge007_20260523T173308Z/xuan_dplus_passive_passive_shadow_runner.py",
+    "runner_pid": 356990,
+    "runner_pid_repaired": true,
+    "startup_wrapper_cleaned_up": true,
+    "python_runner_count_after_cleanup": 1,
+    "all_runner_match_count_after_cleanup": 1,
+    "stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/startup_retry_20260523T173308Z.out",
+    "stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/startup_retry_20260523T173308Z.err",
+    "note": "Startup retry launched exactly one Python runner; runner.pid write failed in the wrapper, then runner.pid was repaired to 356990 and the stale wrapper was terminated without killing the nohup Python runner."
+  },
+  "latest_live_check": {
+    "checked_utc": "2026-05-23T17:40:40Z",
+    "runner_pid_alive": true,
+    "runner_pid_file": "356990",
+    "python_runner_count": 1,
+    "all_runner_match_count": 1,
+    "summary_json_count": 26,
+    "output_manifest_present": true,
+    "aggregate_report_present": false,
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "root_disk_used_pct": "61%",
+    "root_inode_used_pct": "2%",
+    "raw_logs": {
+      "stdout": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/live_check_20260523T173308Z.out",
+      "stderr": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_before_delta_marker_driver_20260523T173308Z/live_check_20260523T173308Z.err"
+    }
+  },
+  "run_config": {
+    "PM_DRY_RUN": "true",
+    "PM_SHARED_INGRESS_ROOT": "/srv/pm_as_ofi/shared-ingress-main",
+    "PM_SHARED_INGRESS_ROLE": "client",
+    "repo": "/srv/pm_as_ofi/repo",
+    "prefix": "btc-updown-5m",
+    "round_offsets": "0..25",
+    "duration_s": 3600,
+    "edge": 0.07,
+    "target_qty": 5,
+    "max_open_cost": 80,
+    "imbalance_qty_cap": 1.25,
+    "activation_mode": "opp_seen",
+    "activation_window_s": 15,
+    "pairing_only_when_residual": true,
+    "late_repair_only_after_s": 90,
+    "event_lite_summary": true,
+    "pair_source_event_lite_summary": true,
+    "source_link_transition_event_lite_summary": true,
+    "source_link_residual_tail_exemplars_event_lite_summary": true,
+    "source_opportunity_marker_event_lite_summary": true,
+    "source_opportunity_marker_reason_source_event_lite_summary": true,
+    "source_opportunity_ledger_marker_event_lite_summary": true,
+    "source_opportunity_ledger_before_delta_marker_event_lite_summary": true,
+    "micro_deficit_repair_guard_enabled": false,
+    "fill_to_balance_enabled": false,
+    "portfolio_ledger_trading_rule_enabled": false,
+    "live_canary_orders_cancels_redeems_enabled": false
+  },
+  "allowlisted_pullback_after_finish": [
+    "output/manifest.json",
+    "output/aggregate_report.json",
+    "output/*.summary.json",
+    "stdout.log",
+    "stderr.log",
+    "runner.pid",
+    "small preflight/startup/post-run sanity files"
+  ],
+  "forbidden_pullback": [
+    "*.events.jsonl",
+    "raw/replay/collector/full completion store"
+  ],
+  "research_ranking": {
+    "decision": "RUNNING",
+    "label": "RUNNING_LEDGER_BEFORE_DELTA_MARKER_NO_ORDER_SHADOW_REVIEW",
+    "interpretation": "Diagnostic no-order shadow is running to test ledger_before/delta marker reproduction. This is not private truth, deployable evidence, canary evidence, or promotion."
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RUNNING_DIAGNOSTIC_SHADOW_NOT_PROMOTION_EVIDENCE"
+  },
+  "side_effects": {
+    "ssh_bounded_preflight_used": true,
+    "shadow_started": true,
+    "second_shadow_started": false,
+    "repo_sync_or_build_used": false,
+    "systemd_or_service_control_used": false,
+    "shared_ingress_modified": false,
+    "broker_modified": false,
+    "env_or_live_modified": false,
+    "events_jsonl_read_or_pulled": false,
+    "orders_sent": false,
+    "cancels_sent": false,
+    "redeems_sent": false
+  },
+  "next_executable_action": "At next heartbeat, bounded SSH poll PID 356990 and inspect only runner.pid, stdout/stderr size or tail, output/manifest.json, output/aggregate_report.json if present, output/*.summary.json count, disk/inode sanity. If finished, perform allowlisted pullback and scorer chain; if still running, update active PID/path and do not start another shadow."
+}
