@@ -1,0 +1,1016 @@
+{
+  "artifact": "xuan_b27_dplus_candidate_separator_train_holdout_audit_v1",
+  "created_utc": "2026-05-23T04:48:52Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_BLOCKED",
+  "field_policy": {
+    "frozen_predicate_fields": [
+      "side",
+      "source_risk_direction",
+      "offset_s bucket",
+      "pre_seed_same_qty",
+      "pre_seed_opp_qty",
+      "pre_seed_open_qty"
+    ],
+    "offline_discovery_labels": [
+      "source_pair_qty",
+      "source_pair_cost",
+      "source_pair_pnl",
+      "source_residual_qty",
+      "source_residual_cost",
+      "pair_outcome_bucket",
+      "residual_tail_outcome_bucket"
+    ],
+    "policy": "Post-action source_pair/source_residual labels are used only to select on train days. The selected predicate is frozen before holdout evaluation and contains only pre-action fields."
+  },
+  "inputs": {
+    "day_count": 4,
+    "holdout_days": [
+      "2026-05-03",
+      "2026-05-05"
+    ],
+    "no_order_completion_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_candidate_separator_train_holdout_audit_smoke_20260523T041233Z/fixture/no_order_completion.json",
+    "row_count": 528,
+    "separator_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_candidate_separator_train_holdout_audit_smoke_20260523T041233Z/fixture/candidate_seed_outcome_separator.csv",
+    "train_days": [
+      "2026-05-02",
+      "2026-05-04"
+    ],
+    "unsafe_paths": []
+  },
+  "next_executable_action": "Produce local source/opportunity gap audit for the selected predicate: compare historical separator marker denominators against no-order marker availability and name missing same-window queue/opportunity fields; do not start another shadow or sweep thresholds.",
+  "no_order_reproduction": {
+    "available": true,
+    "candidates": 80,
+    "decision_label": "UNKNOWN_FIXTURE_NO_ORDER_MARKER_MISSING",
+    "marker_reproduced": false,
+    "micro_deficit_repair_guard_candidates": 0,
+    "net_pair_cost_p90": 1.1,
+    "pair_tail_loss_share": 0.2,
+    "residual_cost_share": 0.25,
+    "residual_qty_share": 0.3,
+    "strict_micro_deficit_exemplar_count": 0
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "TRAIN_HOLDOUT_AUDIT_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "holdout_gate_passed": true,
+    "interpretation": "KEEP here means the train/holdout audit tooling and offline frozen-predicate test are useful. It does not rescue the mechanism for deployment because the latest no-order window did not reproduce the marker.",
+    "label": "KEEP_SEPARATOR_TRAIN_HOLDOUT_OFFLINE_STABLE_NO_ORDER_REPRODUCTION_BLOCKED",
+    "no_order_marker_reproduced": false
+  },
+  "schema_version": "candidate_separator_train_holdout_audit_v1",
+  "scope": {
+    "local_only": true,
+    "modified_shared_ingress_or_live": false,
+    "read_events_jsonl": false,
+    "read_raw_replay_or_collector": false,
+    "sent_orders_cancels_redeems": false,
+    "used_ssh_or_shadow": false
+  },
+  "selection": {
+    "full": {
+      "comparison": {
+        "fee_after_pnl_proxy_delta": 23.52,
+        "pair_qty_retention": 0.97938144,
+        "residual_cost_rate_reduction": 0.81296296,
+        "residual_qty_rate_reduction": 0.8,
+        "row_retention": 0.90909091,
+        "seed_qty_retention": 0.90909091,
+        "stress100_worst_pnl_proxy_delta": 24.144,
+        "weighted_pair_cost_worse_ratio": 0.99702786,
+        "worst_day_fee_after_pnl_proxy_delta": 5.88
+      },
+      "match": {
+        "day_count": 4,
+        "fee_after_pnl_proxy": -23.52,
+        "official_fee": 0.48,
+        "pair_cost": 9.6,
+        "pair_pnl": 0.96,
+        "pair_qty": 9.6,
+        "residual_cost": 24.0,
+        "residual_cost_rate": 0.90909091,
+        "residual_qty": 43.2,
+        "residual_qty_rate": 0.9,
+        "rows": 48.0,
+        "seed_cost": 26.4,
+        "seed_qty": 48.0,
+        "stress100_worst_pnl_proxy": -24.144,
+        "weighted_pair_cost": 1.0,
+        "worst_day_fee_after_pnl_proxy": -5.88
+      },
+      "predicate": {
+        "deficit_bucket": "deficit_0_0_25",
+        "name": "ANY|ANY|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+        "offset_bucket": "ANY",
+        "open_bucket": "open_le_1",
+        "side": "ANY",
+        "source_risk_direction": "repair_or_pairing_improving"
+      },
+      "score": 2.38501684
+    },
+    "holdout": {
+      "comparison": {
+        "fee_after_pnl_proxy_delta": 11.76,
+        "pair_qty_retention": 0.97938144,
+        "residual_cost_rate_reduction": 0.81296296,
+        "residual_qty_rate_reduction": 0.8,
+        "row_retention": 0.90909091,
+        "seed_qty_retention": 0.90909091,
+        "stress100_worst_pnl_proxy_delta": 12.072,
+        "weighted_pair_cost_worse_ratio": 0.99702786,
+        "worst_day_fee_after_pnl_proxy_delta": 5.88
+      },
+      "match": {
+        "day_count": 2,
+        "fee_after_pnl_proxy": -11.76,
+        "official_fee": 0.24,
+        "pair_cost": 4.8,
+        "pair_pnl": 0.48,
+        "pair_qty": 4.8,
+        "residual_cost": 12.0,
+        "residual_cost_rate": 0.90909091,
+        "residual_qty": 21.6,
+        "residual_qty_rate": 0.9,
+        "rows": 24.0,
+        "seed_cost": 13.2,
+        "seed_qty": 24.0,
+        "stress100_worst_pnl_proxy": -12.072,
+        "weighted_pair_cost": 1.0,
+        "worst_day_fee_after_pnl_proxy": -5.88
+      },
+      "predicate": {
+        "deficit_bucket": "deficit_0_0_25",
+        "name": "ANY|ANY|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+        "offset_bucket": "ANY",
+        "open_bucket": "open_le_1",
+        "side": "ANY",
+        "source_risk_direction": "repair_or_pairing_improving"
+      },
+      "score": 2.38501684
+    },
+    "holdout_gate_passed": true,
+    "selected_predicate": {
+      "deficit_bucket": "deficit_0_0_25",
+      "name": "ANY|ANY|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+      "offset_bucket": "ANY",
+      "open_bucket": "open_le_1",
+      "side": "ANY",
+      "source_risk_direction": "repair_or_pairing_improving"
+    },
+    "top_train_candidates": [
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 11.76,
+          "pair_qty_retention": 0.97938144,
+          "residual_cost_rate_reduction": 0.81296296,
+          "residual_qty_rate_reduction": 0.8,
+          "row_retention": 0.90909091,
+          "seed_qty_retention": 0.90909091,
+          "stress100_worst_pnl_proxy_delta": 12.072,
+          "weighted_pair_cost_worse_ratio": 0.99702786,
+          "worst_day_fee_after_pnl_proxy_delta": 5.88
+        },
+        "match": {
+          "day_count": 2,
+          "fee_after_pnl_proxy": -11.76,
+          "official_fee": 0.24,
+          "pair_cost": 4.8,
+          "pair_pnl": 0.48,
+          "pair_qty": 4.8,
+          "residual_cost": 12.0,
+          "residual_cost_rate": 0.90909091,
+          "residual_qty": 21.6,
+          "residual_qty_rate": 0.9,
+          "rows": 24.0,
+          "seed_cost": 13.2,
+          "seed_qty": 24.0,
+          "stress100_worst_pnl_proxy": -12.072,
+          "weighted_pair_cost": 1.0,
+          "worst_day_fee_after_pnl_proxy": -5.88
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|ANY|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_1",
+          "side": "ANY",
+          "source_risk_direction": "repair_or_pairing_improving"
+        },
+        "score": 2.38501684
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 11.76,
+          "pair_qty_retention": 0.97938144,
+          "residual_cost_rate_reduction": 0.81296296,
+          "residual_qty_rate_reduction": 0.8,
+          "row_retention": 0.90909091,
+          "seed_qty_retention": 0.90909091,
+          "stress100_worst_pnl_proxy_delta": 12.072,
+          "weighted_pair_cost_worse_ratio": 0.99702786,
+          "worst_day_fee_after_pnl_proxy_delta": 5.88
+        },
+        "match": {
+          "day_count": 2,
+          "fee_after_pnl_proxy": -11.76,
+          "official_fee": 0.24,
+          "pair_cost": 4.8,
+          "pair_pnl": 0.48,
+          "pair_qty": 4.8,
+          "residual_cost": 12.0,
+          "residual_cost_rate": 0.90909091,
+          "residual_qty": 21.6,
+          "residual_qty_rate": 0.9,
+          "rows": 24.0,
+          "seed_cost": 13.2,
+          "seed_qty": 24.0,
+          "stress100_worst_pnl_proxy": -12.072,
+          "weighted_pair_cost": 1.0,
+          "worst_day_fee_after_pnl_proxy": -5.88
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|offset_90_120|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+          "offset_bucket": "offset_90_120",
+          "open_bucket": "open_le_1",
+          "side": "ANY",
+          "source_risk_direction": "repair_or_pairing_improving"
+        },
+        "score": 2.38501684
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 11.76,
+          "pair_qty_retention": 0.97938144,
+          "residual_cost_rate_reduction": 0.81296296,
+          "residual_qty_rate_reduction": 0.8,
+          "row_retention": 0.90909091,
+          "seed_qty_retention": 0.90909091,
+          "stress100_worst_pnl_proxy_delta": 12.072,
+          "weighted_pair_cost_worse_ratio": 0.99702786,
+          "worst_day_fee_after_pnl_proxy_delta": 5.88
+        },
+        "match": {
+          "day_count": 2,
+          "fee_after_pnl_proxy": -11.76,
+          "official_fee": 0.24,
+          "pair_cost": 4.8,
+          "pair_pnl": 0.48,
+          "pair_qty": 4.8,
+          "residual_cost": 12.0,
+          "residual_cost_rate": 0.90909091,
+          "residual_qty": 21.6,
+          "residual_qty_rate": 0.9,
+          "rows": 24.0,
+          "seed_cost": 13.2,
+          "seed_qty": 24.0,
+          "stress100_worst_pnl_proxy": -12.072,
+          "weighted_pair_cost": 1.0,
+          "worst_day_fee_after_pnl_proxy": -5.88
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "NO|ANY|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_1",
+          "side": "NO",
+          "source_risk_direction": "repair_or_pairing_improving"
+        },
+        "score": 2.38501684
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 11.76,
+          "pair_qty_retention": 0.97938144,
+          "residual_cost_rate_reduction": 0.81296296,
+          "residual_qty_rate_reduction": 0.8,
+          "row_retention": 0.90909091,
+          "seed_qty_retention": 0.90909091,
+          "stress100_worst_pnl_proxy_delta": 12.072,
+          "weighted_pair_cost_worse_ratio": 0.99702786,
+          "worst_day_fee_after_pnl_proxy_delta": 5.88
+        },
+        "match": {
+          "day_count": 2,
+          "fee_after_pnl_proxy": -11.76,
+          "official_fee": 0.24,
+          "pair_cost": 4.8,
+          "pair_pnl": 0.48,
+          "pair_qty": 4.8,
+          "residual_cost": 12.0,
+          "residual_cost_rate": 0.90909091,
+          "residual_qty": 21.6,
+          "residual_qty_rate": 0.9,
+          "rows": 24.0,
+          "seed_cost": 13.2,
+          "seed_qty": 24.0,
+          "stress100_worst_pnl_proxy": -12.072,
+          "weighted_pair_cost": 1.0,
+          "worst_day_fee_after_pnl_proxy": -5.88
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "NO|offset_90_120|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+          "offset_bucket": "offset_90_120",
+          "open_bucket": "open_le_1",
+          "side": "NO",
+          "source_risk_direction": "repair_or_pairing_improving"
+        },
+        "score": 2.38501684
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|ANY|risk_increasing|open_le_1|deficit_0_0_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_1",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_25_1_25",
+          "name": "ANY|ANY|risk_increasing|open_le_1|deficit_0_25_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_1",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_gt_1_25",
+          "name": "ANY|ANY|risk_increasing|open_le_1|deficit_gt_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_1",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_le_0",
+          "name": "ANY|ANY|risk_increasing|open_le_2_5|deficit_le_0",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_2_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|ANY|risk_increasing|open_le_2_5|deficit_0_0_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_2_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_25_1_25",
+          "name": "ANY|ANY|risk_increasing|open_le_2_5|deficit_0_25_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_2_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_gt_1_25",
+          "name": "ANY|ANY|risk_increasing|open_le_2_5|deficit_gt_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_2_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_le_0",
+          "name": "ANY|ANY|risk_increasing|open_le_5|deficit_le_0",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|ANY|risk_increasing|open_le_5|deficit_0_0_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_25_1_25",
+          "name": "ANY|ANY|risk_increasing|open_le_5|deficit_0_25_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_gt_1_25",
+          "name": "ANY|ANY|risk_increasing|open_le_5|deficit_gt_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_le_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_le_0",
+          "name": "ANY|ANY|risk_increasing|open_gt_5|deficit_le_0",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_gt_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|ANY|risk_increasing|open_gt_5|deficit_0_0_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_gt_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_25_1_25",
+          "name": "ANY|ANY|risk_increasing|open_gt_5|deficit_0_25_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_gt_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_gt_1_25",
+          "name": "ANY|ANY|risk_increasing|open_gt_5|deficit_gt_1_25",
+          "offset_bucket": "ANY",
+          "open_bucket": "open_gt_5",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      },
+      {
+        "comparison": {
+          "fee_after_pnl_proxy_delta": 0.0,
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "weighted_pair_cost_worse_ratio": 1.0,
+          "worst_day_fee_after_pnl_proxy_delta": 0.0
+        },
+        "match": {
+          "day_count": 0,
+          "fee_after_pnl_proxy": 0.0,
+          "official_fee": 0.0,
+          "pair_cost": 0.0,
+          "pair_pnl": 0.0,
+          "pair_qty": 0.0,
+          "residual_cost": 0.0,
+          "residual_cost_rate": 0.0,
+          "residual_qty": 0.0,
+          "residual_qty_rate": 0.0,
+          "rows": 0.0,
+          "seed_cost": 0.0,
+          "seed_qty": 0.0,
+          "stress100_worst_pnl_proxy": 0.0,
+          "weighted_pair_cost": 0.0,
+          "worst_day_fee_after_pnl_proxy": 0.0
+        },
+        "predicate": {
+          "deficit_bucket": "deficit_0_0_25",
+          "name": "ANY|offset_0_30|risk_increasing|open_le_1|deficit_0_0_25",
+          "offset_bucket": "offset_0_30",
+          "open_bucket": "open_le_1",
+          "side": "ANY",
+          "source_risk_direction": "risk_increasing"
+        },
+        "score": 0.0
+      }
+    ],
+    "train": {
+      "comparison": {
+        "fee_after_pnl_proxy_delta": 11.76,
+        "pair_qty_retention": 0.97938144,
+        "residual_cost_rate_reduction": 0.81296296,
+        "residual_qty_rate_reduction": 0.8,
+        "row_retention": 0.90909091,
+        "seed_qty_retention": 0.90909091,
+        "stress100_worst_pnl_proxy_delta": 12.072,
+        "weighted_pair_cost_worse_ratio": 0.99702786,
+        "worst_day_fee_after_pnl_proxy_delta": 5.88
+      },
+      "match": {
+        "day_count": 2,
+        "fee_after_pnl_proxy": -11.76,
+        "official_fee": 0.24,
+        "pair_cost": 4.8,
+        "pair_pnl": 0.48,
+        "pair_qty": 4.8,
+        "residual_cost": 12.0,
+        "residual_cost_rate": 0.90909091,
+        "residual_qty": 21.6,
+        "residual_qty_rate": 0.9,
+        "rows": 24.0,
+        "seed_cost": 13.2,
+        "seed_qty": 24.0,
+        "stress100_worst_pnl_proxy": -12.072,
+        "weighted_pair_cost": 1.0,
+        "worst_day_fee_after_pnl_proxy": -5.88
+      },
+      "predicate": {
+        "deficit_bucket": "deficit_0_0_25",
+        "name": "ANY|ANY|repair_or_pairing_improving|open_le_1|deficit_0_0_25",
+        "offset_bucket": "ANY",
+        "open_bucket": "open_le_1",
+        "side": "ANY",
+        "source_risk_direction": "repair_or_pairing_improving"
+      },
+      "score": 2.38501684
+    },
+    "train_holdout_drift": {
+      "pair_qty_retention_delta": 0.0,
+      "residual_cost_rate_reduction_delta": 0.0,
+      "residual_qty_rate_reduction_delta": 0.0
+    },
+    "viable_train_predicate_count": 4
+  }
+}
