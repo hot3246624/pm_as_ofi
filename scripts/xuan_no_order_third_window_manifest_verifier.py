@@ -118,6 +118,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("pm_dry_run_required_not_true")
     if "PM_DRY_RUN=1" not in remote_cmd:
         hard_blockers.append("remote_command_missing_pm_dry_run")
+    for env_name in ("PM_DRY_RUN", "PM_SHARED_INGRESS_ROLE", "PM_INSTANCE_ID"):
+        if f"'{env_name}=" in remote_cmd or f'"{env_name}=' in remote_cmd:
+            hard_blockers.append(f"remote_command_quoted_env_assignment:{env_name}")
     if "--write-normalized-lifecycle" not in remote_cmd:
         hard_blockers.append("remote_command_missing_normalized_lifecycle")
     if "--write-rescue-block-diagnostics" not in remote_cmd:
@@ -163,6 +166,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "file_checks": file_checks,
         "template_checks": {
             "remote_command_has_pm_dry_run": "PM_DRY_RUN=1" in remote_cmd,
+            "remote_command_has_unquoted_env_assignments": not any(
+                f"'{env_name}=" in remote_cmd or f'"{env_name}=' in remote_cmd
+                for env_name in ("PM_DRY_RUN", "PM_SHARED_INGRESS_ROLE", "PM_INSTANCE_ID")
+            ),
             "remote_command_has_normalized_lifecycle": "--write-normalized-lifecycle" in remote_cmd,
             "remote_command_has_rescue_diagnostics": "--write-rescue-block-diagnostics" in remote_cmd,
             "remote_command_has_concurrent_reader_evidence_flag": "--allow-concurrent-shared-ingress-readers" in remote_cmd,

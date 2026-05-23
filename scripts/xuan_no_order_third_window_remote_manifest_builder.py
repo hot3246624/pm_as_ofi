@@ -53,8 +53,16 @@ def rounded(value: Any) -> Any:
     return value
 
 
+def shell_quote_part(part: str) -> str:
+    if "=" in part:
+        name, value = part.split("=", 1)
+        if name and (name[0].isalpha() or name[0] == "_") and all(ch.isalnum() or ch == "_" for ch in name):
+            return f"{name}={shlex.quote(value)}"
+    return shlex.quote(part)
+
+
 def shell_join(parts: list[str]) -> str:
-    return " ".join(shlex.quote(part) for part in parts)
+    return " ".join(shell_quote_part(part) for part in parts)
 
 
 def profile_value(profile: dict[str, Any], key: str, default: Any) -> Any:
