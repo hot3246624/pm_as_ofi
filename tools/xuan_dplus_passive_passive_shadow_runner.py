@@ -293,6 +293,43 @@ def ledger_after_marker_bucket(value: float | None) -> str:
     return "after_gte_1"
 
 
+def ledger_before_marker_bucket(value: float | None) -> str:
+    if value is None:
+        return "before_unknown"
+    if value < -2.0:
+        return "before_lt_m2"
+    if value < -1.0:
+        return "before_m2_m1"
+    if value < -0.25:
+        return "before_m1_m025"
+    if value < 0.0:
+        return "before_m025_0"
+    if value < 0.25:
+        return "before_0_025"
+    if value < 1.0:
+        return "before_025_1"
+    return "before_gte_1"
+
+
+def ledger_delta_marker_bucket(before: float | None, after: float | None) -> str:
+    if before is None or after is None:
+        return "delta_unknown"
+    delta = after - before
+    if delta < -2.0:
+        return "delta_lt_m2"
+    if delta < -1.0:
+        return "delta_m2_m1"
+    if delta < -0.25:
+        return "delta_m1_m025"
+    if delta < 0.0:
+        return "delta_m025_0"
+    if delta < 0.25:
+        return "delta_0_025"
+    if delta < 1.0:
+        return "delta_025_1"
+    return "delta_gte_1"
+
+
 def source_opportunity_ledger_marker_key(
     side: str | None,
     offset_s: float | None,
@@ -305,6 +342,39 @@ def source_opportunity_ledger_marker_key(
         (
             source_opportunity_marker_key(side, offset_s, risk_direction, same_qty, opp_qty),
             ledger_after_marker_bucket(ledger_proxy_after),
+        )
+    )
+
+
+def source_opportunity_ledger_before_marker_key(
+    side: str | None,
+    offset_s: float | None,
+    risk_direction: str,
+    same_qty: float | None,
+    opp_qty: float | None,
+    ledger_proxy_before: float | None,
+) -> str:
+    return "|".join(
+        (
+            source_opportunity_marker_key(side, offset_s, risk_direction, same_qty, opp_qty),
+            ledger_before_marker_bucket(ledger_proxy_before),
+        )
+    )
+
+
+def source_opportunity_ledger_delta_marker_key(
+    side: str | None,
+    offset_s: float | None,
+    risk_direction: str,
+    same_qty: float | None,
+    opp_qty: float | None,
+    ledger_proxy_before: float | None,
+    ledger_proxy_after: float | None,
+) -> str:
+    return "|".join(
+        (
+            source_opportunity_marker_key(side, offset_s, risk_direction, same_qty, opp_qty),
+            ledger_delta_marker_bucket(ledger_proxy_before, ledger_proxy_after),
         )
     )
 
@@ -436,6 +506,8 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "room_cost_sum_by_status_reason_side_offset_risk_open_deficit",
         "imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit",
         "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_after",
+        "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+        "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
     )
     nested_keys = (
         "transition_count_by_status_reason",
@@ -471,9 +543,17 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "source_order_presence_by_status_reason_side_offset_risk_open_deficit",
         "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit",
         "transition_count_by_status_side_offset_risk_open_deficit_ledger_after",
+        "transition_count_by_status_side_offset_risk_open_deficit_ledger_before",
+        "transition_count_by_status_side_offset_risk_open_deficit_ledger_delta",
         "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after",
         "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after",
         "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after",
+        "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+        "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+        "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+        "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
+        "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
+        "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
     )
     for key in count_keys:
         source = src.get(key)
@@ -536,6 +616,7 @@ class RunnerConfig:
     source_opportunity_marker_event_lite_summary: bool = False
     source_opportunity_marker_reason_source_event_lite_summary: bool = False
     source_opportunity_ledger_marker_event_lite_summary: bool = False
+    source_opportunity_ledger_before_delta_marker_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -831,6 +912,33 @@ class DPlusRunner:
                     "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after": {},
                 }
             )
+        if self.cfg.source_opportunity_ledger_before_delta_marker_event_lite_summary:
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "ledger_before_delta_marker_schema_version"
+            ] = "source_opportunity_ledger_before_delta_marker_v1"
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "ledger_before_marker_join_key"
+            ] = "status|side|offset_bucket|source_risk_direction|open_qty_bucket|deficit_bucket|ledger_before_bucket"
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "ledger_delta_marker_join_key"
+            ] = "status|side|offset_bucket|source_risk_direction|open_qty_bucket|deficit_bucket|ledger_delta_bucket"
+            self.event_lite_source_opportunity_markers["field_contract"]["live_pre_action_fields"].extend(
+                ["ledger_proxy_before_bucket", "ledger_proxy_delta_bucket_when_available"]
+            )
+            self.event_lite_source_opportunity_markers.update(
+                {
+                    "transition_count_by_status_side_offset_risk_open_deficit_ledger_before": {},
+                    "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_before": {},
+                    "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before": {},
+                    "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before": {},
+                    "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before": {},
+                    "transition_count_by_status_side_offset_risk_open_deficit_ledger_delta": {},
+                    "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_delta": {},
+                    "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta": {},
+                    "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta": {},
+                    "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta": {},
+                }
+            )
         if self.cfg.source_opportunity_marker_reason_source_event_lite_summary:
             self.event_lite_source_opportunity_markers["field_contract"][
                 "reason_source_coverage_schema_version"
@@ -910,6 +1018,7 @@ class DPlusRunner:
             opp_cost = self.exposure_cost(opp(side))
         else:
             same_qty = opp_qty = same_cost = opp_cost = None
+        ledger_proxy_before = self.online_ledger_proxy()
         self.record_source_link_transition(
             status="blocked",
             reason=reason,
@@ -920,7 +1029,7 @@ class DPlusRunner:
             opp_qty=opp_qty,
             same_cost=same_cost,
             opp_cost=opp_cost,
-            ledger_proxy_before=self.online_ledger_proxy(),
+            ledger_proxy_before=ledger_proxy_before,
             quote_intent_id=quote_intent_id,
             source_order_id=source_order_id,
             source_sequence_id=source_sequence_id,
@@ -942,6 +1051,7 @@ class DPlusRunner:
             quote_intent_id=quote_intent_id,
             source_order_id=source_order_id,
             source_sequence_id=source_sequence_id,
+            ledger_proxy_before=ledger_proxy_before,
         )
 
     def record_event_lite_candidate(self, side: str, seed_px: float, public_trade_px: float, offset_s: float | None, qty: float) -> None:
@@ -1098,6 +1208,7 @@ class DPlusRunner:
         quote_intent_id: str | None,
         source_order_id: int | None,
         source_sequence_id: Any | None,
+        ledger_proxy_before: float | None = None,
         ledger_proxy_after: float | None = None,
     ) -> None:
         if not (self.cfg.event_lite_summary and self.cfg.source_opportunity_marker_event_lite_summary):
@@ -1113,9 +1224,28 @@ class DPlusRunner:
             opp_qty,
             ledger_proxy_after,
         )
+        ledger_before_marker_key = source_opportunity_ledger_before_marker_key(
+            side,
+            offset_s,
+            risk_direction,
+            same_qty,
+            opp_qty,
+            ledger_proxy_before,
+        )
+        ledger_delta_marker_key = source_opportunity_ledger_delta_marker_key(
+            side,
+            offset_s,
+            risk_direction,
+            same_qty,
+            opp_qty,
+            ledger_proxy_before,
+            ledger_proxy_after,
+        )
         status_reason = f"{status}|{reason}"
         status_reason_marker = f"{status_reason}|{marker_key}"
         status_reason_ledger_marker = f"{status_reason}|{ledger_marker_key}"
+        status_reason_ledger_before_marker = f"{status_reason}|{ledger_before_marker_key}"
+        status_reason_ledger_delta_marker = f"{status_reason}|{ledger_delta_marker_key}"
         pending_same = self.pending_orders(side) if side in {"YES", "NO"} else []
         pending_opp = self.pending_orders(opp(side)) if side in {"YES", "NO"} else []
         pending_same_qty = sum(order.qty for order in pending_same)
@@ -1219,6 +1349,55 @@ class DPlusRunner:
             add_nested_count(
                 diag["source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after"],
                 status_reason_ledger_marker,
+                "present" if source_sequence_id is not None else "missing",
+            )
+        if self.cfg.source_opportunity_ledger_before_delta_marker_event_lite_summary:
+            add_nested_count(
+                diag["transition_count_by_status_side_offset_risk_open_deficit_ledger_before"],
+                status,
+                ledger_before_marker_key,
+            )
+            add_count(
+                diag["transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_before"],
+                status_reason_ledger_before_marker,
+            )
+            add_nested_count(
+                diag["quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before"],
+                status_reason_ledger_before_marker,
+                "present" if quote_intent_id else "missing",
+            )
+            add_nested_count(
+                diag["source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before"],
+                status_reason_ledger_before_marker,
+                "present" if source_order_id is not None else "missing",
+            )
+            add_nested_count(
+                diag["source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before"],
+                status_reason_ledger_before_marker,
+                "present" if source_sequence_id is not None else "missing",
+            )
+            add_nested_count(
+                diag["transition_count_by_status_side_offset_risk_open_deficit_ledger_delta"],
+                status,
+                ledger_delta_marker_key,
+            )
+            add_count(
+                diag["transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_delta"],
+                status_reason_ledger_delta_marker,
+            )
+            add_nested_count(
+                diag["quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta"],
+                status_reason_ledger_delta_marker,
+                "present" if quote_intent_id else "missing",
+            )
+            add_nested_count(
+                diag["source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta"],
+                status_reason_ledger_delta_marker,
+                "present" if source_order_id is not None else "missing",
+            )
+            add_nested_count(
+                diag["source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta"],
+                status_reason_ledger_delta_marker,
                 "present" if source_sequence_id is not None else "missing",
             )
         if not self.cfg.source_opportunity_marker_reason_source_event_lite_summary:
@@ -2027,6 +2206,7 @@ class DPlusRunner:
             quote_intent_id=quote_intent_id,
             source_order_id=order.id,
             source_sequence_id=trigger_source_sequence_id,
+            ledger_proxy_before=ledger_proxy_before,
             ledger_proxy_after=ledger_proxy_after,
         )
         self.next_order_id += 1
@@ -2585,6 +2765,7 @@ async def main() -> None:
     ap.add_argument("--source-opportunity-marker-event-lite-summary", action="store_true", help="with --event-lite-summary, emit admitted/blocked opportunity denominators by pre-action open/deficit/source-risk buckets")
     ap.add_argument("--source-opportunity-marker-reason-source-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit exact status/reason/marker source coverage without raw ids or post-action labels")
     ap.add_argument("--source-opportunity-ledger-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-after marker denominators without changing behavior")
+    ap.add_argument("--source-opportunity-ledger-before-delta-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-before and ledger-delta marker denominators without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -2629,6 +2810,7 @@ async def main() -> None:
         source_opportunity_marker_event_lite_summary=args.source_opportunity_marker_event_lite_summary,
         source_opportunity_marker_reason_source_event_lite_summary=args.source_opportunity_marker_reason_source_event_lite_summary,
         source_opportunity_ledger_marker_event_lite_summary=args.source_opportunity_ledger_marker_event_lite_summary,
+        source_opportunity_ledger_before_delta_marker_event_lite_summary=args.source_opportunity_ledger_before_delta_marker_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -2678,6 +2860,11 @@ async def main() -> None:
             raise SystemExit("--source-opportunity-ledger-marker-event-lite-summary requires --event-lite-summary")
         if not cfg.source_opportunity_marker_event_lite_summary:
             raise SystemExit("--source-opportunity-ledger-marker-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
+    if cfg.source_opportunity_ledger_before_delta_marker_event_lite_summary:
+        if not cfg.event_lite_summary:
+            raise SystemExit("--source-opportunity-ledger-before-delta-marker-event-lite-summary requires --event-lite-summary")
+        if not cfg.source_opportunity_marker_event_lite_summary:
+            raise SystemExit("--source-opportunity-ledger-before-delta-marker-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")
