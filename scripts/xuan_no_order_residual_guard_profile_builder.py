@@ -108,6 +108,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "debt_budget": args.debt_budget,
         "target_rescue_net_cap": args.target_rescue_net_cap,
         "strict_rescue_salvage_net_cap": args.salvage_net_cap,
+        "strict_rescue_skip_low_cost_lots": args.strict_rescue_skip_low_cost_lots,
         "strict_rescue_l1_age_max_ms": 50,
         "strict_rescue_close_size_haircut": 1.0,
         "source_quality_require_trade_source": True,
@@ -201,6 +202,7 @@ def main() -> None:
     parser.add_argument("--debt-budget", type=float, default=1.0)
     parser.add_argument("--target-rescue-net-cap", type=float, default=0.95)
     parser.add_argument("--salvage-net-cap", type=float, default=0.98)
+    parser.add_argument("--strict-rescue-skip-low-cost-lots", action="store_true")
     parser.add_argument("--min-accepted-actions", type=int, default=25)
     parser.add_argument("--min-fills", type=int, default=18)
     parser.add_argument("--min-strict-rescue-closes", type=int, default=3)

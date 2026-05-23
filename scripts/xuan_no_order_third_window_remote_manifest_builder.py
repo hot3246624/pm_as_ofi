@@ -229,6 +229,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     append_option(remote_command, "--late-repair-after-s", profile.get("late_repair_after_s"))
     if profile.get("pairing_only_when_residual") is True:
         remote_command.append("--pairing-only-when-residual")
+    if profile.get("strict_rescue_skip_low_cost_lots") is True:
+        remote_command.append("--strict-rescue-skip-low-cost-lots")
     postrun_command = [
         "python3",
         "scripts/xuan_no_order_third_window_postrun_bundle.py",
