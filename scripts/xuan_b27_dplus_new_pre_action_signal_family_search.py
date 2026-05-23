@@ -47,7 +47,7 @@ FORBIDDEN_PATH_FRAGMENTS = (
     "/broker/",
 )
 DUST = 1e-12
-NO_ORDER_SUPPORTED_FIELDS = {"side", "risk", "offset", "open", "deficit"}
+BASE_NO_ORDER_SUPPORTED_FIELDS = {"side", "risk", "offset", "open", "deficit"}
 NEW_SIGNAL_FIELDS = {"ledger_before", "ledger_after", "ledger_delta"}
 STATIC_FIELDS = {"side", "risk", "offset"}
 
@@ -443,18 +443,28 @@ def flatten_counter(obj: Any, prefix: tuple[str, ...] = ()) -> Counter[str]:
     return out
 
 
-def aggregate_no_order_marker_counts(summary_paths: list[Path]) -> Counter[str]:
+def aggregate_no_order_marker_counts(summary_paths: list[Path]) -> tuple[Counter[str], set[str]]:
     counts: Counter[str] = Counter()
+    supported_fields = set(BASE_NO_ORDER_SUPPORTED_FIELDS)
     for path in summary_paths:
         data = read_json(path)
         marker = ((data.get("event_lite") or {}).get("source_opportunity_marker_summary") or {})
-        counts.update(flatten_counter(marker.get("transition_count_by_status_side_offset_risk_open_deficit") or {}))
-    return counts
+        ledger_counts = marker.get("transition_count_by_status_side_offset_risk_open_deficit_ledger_after")
+        if isinstance(ledger_counts, dict) and ledger_counts:
+            counts.update(flatten_counter(ledger_counts))
+            supported_fields.add("ledger_after")
+        else:
+            counts.update(flatten_counter(marker.get("transition_count_by_status_side_offset_risk_open_deficit") or {}))
+    return counts, supported_fields
 
 
-def no_order_marker_for_combo(combo: tuple[tuple[str, str], ...], marker_counts: Counter[str]) -> dict[str, Any]:
+def no_order_marker_for_combo(
+    combo: tuple[tuple[str, str], ...],
+    marker_counts: Counter[str],
+    supported_fields: set[str],
+) -> dict[str, Any]:
     terms = dict(combo)
-    unsupported = sorted({key for key in terms if key not in NO_ORDER_SUPPORTED_FIELDS})
+    unsupported = sorted({key for key in terms if key not in supported_fields})
     if unsupported:
         return {
             "supported_by_current_no_order_summary": False,
@@ -467,7 +477,7 @@ def no_order_marker_for_combo(combo: tuple[tuple[str, str], ...], marker_counts:
 
     def key_matches(key: str) -> bool:
         parts = key.split("|")
-        if len(parts) != 6:
+        if len(parts) not in {6, 7}:
             return False
         status, side, offset, risk, open_value, deficit_value = parts
         mapping = {
@@ -477,6 +487,8 @@ def no_order_marker_for_combo(combo: tuple[tuple[str, str], ...], marker_counts:
             "open": open_value.replace("open_qty_", "open_"),
             "deficit": deficit_value,
         }
+        if len(parts) == 7:
+            mapping["ledger_after"] = parts[6]
         return all(mapping.get(field) == value for field, value in terms.items())
 
     matched = {key: value for key, value in marker_counts.items() if key_matches(key)}
@@ -572,9 +584,13 @@ def main() -> int:
     selected = ranked[0] if ranked else None
     completion = read_json(completion_path)
     risk_budget = no_order_risk_budget(completion)
-    marker_counts = aggregate_no_order_marker_counts(summary_paths)
+    marker_counts, supported_fields = aggregate_no_order_marker_counts(summary_paths)
     selected_no_order = (
-        no_order_marker_for_combo(tuple((term["field"], term["value"]) for term in selected["predicate_terms"]), marker_counts)
+        no_order_marker_for_combo(
+            tuple((term["field"], term["value"]) for term in selected["predicate_terms"]),
+            marker_counts,
+            supported_fields,
+        )
         if selected
         else {}
     )
@@ -655,7 +671,7 @@ def main() -> int:
             "risk_budget": risk_budget,
             "selected_marker": selected_no_order,
             "strict_gate_passed": selected_gate_passed,
-            "current_summary_supported_fields": sorted(NO_ORDER_SUPPORTED_FIELDS),
+            "current_summary_supported_fields": sorted(supported_fields),
             "missing_marker_fields_for_selected": missing_marker_fields,
         },
         "research_ranking": {
