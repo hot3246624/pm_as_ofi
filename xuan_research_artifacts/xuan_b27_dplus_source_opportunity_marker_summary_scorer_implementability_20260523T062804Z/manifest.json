@@ -1,0 +1,90 @@
+{
+  "artifact": "xuan_b27_dplus_source_opportunity_marker_summary_scorer_implementability",
+  "created_utc": "2026-05-23T06:28:04Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_DENOMINATOR_SCORER_READY",
+  "lane": "implementability_review",
+  "scope": {
+    "local_only": true,
+    "ssh_used": false,
+    "shadow_started": false,
+    "canary_started": false,
+    "events_jsonl_read_or_pulled": false,
+    "raw_replay_collector_or_full_store_scanned": false,
+    "shared_ingress_broker_env_live_modified": false,
+    "orders_cancels_redeems_sent": false
+  },
+  "changed_files": {
+    "scorer": "scripts/xuan_b27_dplus_source_opportunity_marker_summary_scorer.py",
+    "smoke": "scripts/xuan_b27_dplus_source_opportunity_marker_summary_scorer_smoke.sh"
+  },
+  "inputs": {
+    "positive_fixture": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_marker_smoke_20260523T052804Z/enabled",
+    "default_off_fixture": "xuan_research_artifacts/xuan_b27_dplus_passive_passive_shadow_runner_source_opportunity_marker_smoke_20260523T052804Z/default_off",
+    "old_no_order_negative_control": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_micro_deficit_driver_20260523T005615Z/remote_clean/output"
+  },
+  "smoke": {
+    "manifest": "xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_summary_scorer_smoke_20260523T062804Z/manifest.json",
+    "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_SUMMARY_SCORER_SMOKE_PASS",
+    "positive_score": "xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_summary_scorer_smoke_20260523T062804Z/enabled_score/manifest.json",
+    "default_off_score": "xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_summary_scorer_smoke_20260523T062804Z/default_off_score/manifest.json",
+    "old_no_order_score": "xuan_research_artifacts/xuan_b27_dplus_source_opportunity_marker_summary_scorer_smoke_20260523T062804Z/old_no_order_score/manifest.json",
+    "checks": [
+      "py_compile",
+      "enabled source_opportunity_marker_summary_v1 returns KEEP",
+      "aggregate parity passes",
+      "exact frozen marker denominator is nonzero on positive fixture",
+      "default-off fixture returns UNKNOWN",
+      "old no-order pullback without source_opportunity_marker_summary returns UNKNOWN",
+      "post-action source_pair/source_residual labels are not live criteria",
+      "promotion_gate.passed=false"
+    ]
+  },
+  "field_contract": {
+    "summary_key": "event_lite.source_opportunity_marker_summary",
+    "schema_version": "source_opportunity_marker_summary_v1",
+    "frozen_marker_keys": [
+      "YES|offset_90_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25",
+      "NO|offset_90_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25"
+    ],
+    "validates": [
+      "field presence",
+      "aggregate parity against merged summaries",
+      "field_contract post_action_outcome_labels_included=false",
+      "private_truth_ready/deployable/promotion false",
+      "exact marker count by status+side+offset+risk+open+deficit",
+      "micro-deficit marker count by status and status_reason",
+      "status_reason-level quote/order/source_sequence coverage",
+      "pending/opposite/activation/room buckets by status_reason"
+    ],
+    "known_limitation": "The summary does not expose exact marker-by-reason-by-source-id coverage. The scorer therefore uses status_reason-level coverage as diagnostic context, not private/order truth."
+  },
+  "findings": {
+    "positive_fixture": {
+      "decision_label": "KEEP_SOURCE_OPPORTUNITY_MARKER_DENOMINATOR_SCORER_READY",
+      "aggregate_parity_passed": true,
+      "marker_total": 1.0,
+      "admitted_marker_count": 1.0,
+      "blocked_marker_count": 0.0,
+      "source_sequence_presence_rate_for_admitted_candidate": 1.0
+    },
+    "negative_controls": {
+      "default_off": "UNKNOWN_SOURCE_OPPORTUNITY_MARKER_SUMMARY_INPUTS_INSUFFICIENT",
+      "old_no_order_pullback_without_new_summary": "UNKNOWN_SOURCE_OPPORTUNITY_MARKER_SUMMARY_INPUTS_INSUFFICIENT"
+    },
+    "interpretation": "The scorer is ready to evaluate a future approved marker-reproduction no-order pullback. The previous micro-deficit no-order run cannot answer the transfer-gap denominator question because it did not include source_opportunity_marker_summary_v1."
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "label": "KEEP_SOURCE_OPPORTUNITY_MARKER_DENOMINATOR_SCORER_READY",
+    "interpretation": "This is local scorer/tooling readiness for source-opportunity marker denominator review, not strategy economics or private truth."
+  },
+  "promotion_gate": {
+    "passed": false,
+    "private_truth_ready": false,
+    "deployable": false,
+    "g2_canary_ready": false,
+    "status": "SCORER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "next_executable_action": "If the main thread explicitly approves late_repair90_micro_deficit_marker_reproduction_no_order_review, run bounded preflight, start exactly one diagnostic no-order shadow with --source-opportunity-marker-event-lite-summary and --micro-deficit-repair-guard disabled, pull back only allowlisted files, then run this scorer. Without approval, do not SSH; the only local follow-up is a marker-by-reason/source-id coverage spec if status_reason-level coverage proves insufficient."
+}
