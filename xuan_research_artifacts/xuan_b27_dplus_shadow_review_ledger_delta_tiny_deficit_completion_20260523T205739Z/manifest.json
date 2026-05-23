@@ -1,0 +1,339 @@
+{
+  "artifact": "xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_completion",
+  "created_utc": "2026-05-23T20:57:39Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_LEDGER_DELTA_TINY_DEFICIT_MARKER_NO_ORDER_REVIEW_THIN_MARKER_RISK_BUDGET_FAIL",
+  "interpretation": "The approved diagnostic no-order run reached sample size and positive fee-adjusted pair pnl, but normalized risk budget failed and the selected ledger_delta tiny-deficit marker reproduced only once. The before/delta instrumentation is present and parity-clean, but this is a thin admitted path rather than a deployable guard/canary signal.",
+  "marker_reproduction": {
+    "selected_ledger_after_marker_total": 0,
+    "selected_ledger_before_admitted_marker_count": 1.0,
+    "selected_ledger_before_blocked_marker_count": 76.0,
+    "selected_ledger_before_marker_total": 77.0,
+    "selected_ledger_before_reason_source_coverage": {
+      "available": true,
+      "exact_reason_marker_total": 77.0,
+      "matching_marker_rows": [
+        {
+          "quote_intent_presence_rate": 0.0,
+          "source_order_presence_rate": 0.0,
+          "source_sequence_presence_rate": 1.0,
+          "status_reason_marker_key": "blocked|target|NO|offset_90_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+          "transition_count": 43.0
+        },
+        {
+          "quote_intent_presence_rate": 0.0,
+          "source_order_presence_rate": 0.0,
+          "source_sequence_presence_rate": 1.0,
+          "status_reason_marker_key": "blocked|target|YES|offset_90_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+          "transition_count": 30.0
+        },
+        {
+          "quote_intent_presence_rate": 0.0,
+          "source_order_presence_rate": 0.0,
+          "source_sequence_presence_rate": 1.0,
+          "status_reason_marker_key": "blocked|cooldown|NO|offset_90_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+          "transition_count": 2.0
+        },
+        {
+          "quote_intent_presence_rate": 1.0,
+          "source_order_presence_rate": 1.0,
+          "source_sequence_presence_rate": 1.0,
+          "status_reason_marker_key": "admitted|candidate|YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025",
+          "transition_count": 1.0
+        },
+        {
+          "quote_intent_presence_rate": 1.0,
+          "source_order_presence_rate": 0.0,
+          "source_sequence_presence_rate": 1.0,
+          "status_reason_marker_key": "blocked|activation_opp_seen|YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025",
+          "transition_count": 1.0
+        }
+      ],
+      "top_reason_marker_buckets": [
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025",
+          "value": 293.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025",
+          "value": 270.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m1_m025",
+          "value": 166.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m025_0",
+          "value": 158.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "value": 158.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1",
+          "value": 117.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025",
+          "value": 116.0
+        },
+        {
+          "bucket": "blocked|late_repair_only|YES|offset_90_120|risk_increasing|open_qty_eq_5|deficit_le_0|before_m2_m1",
+          "value": 111.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m2_m1",
+          "value": 111.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1",
+          "value": 107.0
+        }
+      ]
+    },
+    "selected_ledger_delta_admitted_marker_count": 1.0,
+    "selected_ledger_delta_blocked_marker_count": 0.0,
+    "selected_ledger_delta_marker_total": 1.0,
+    "selected_ledger_delta_reason_source_coverage": {
+      "available": true,
+      "exact_reason_marker_total": 1.0,
+      "matching_marker_rows": [
+        {
+          "quote_intent_presence_rate": 1.0,
+          "source_order_presence_rate": 1.0,
+          "source_sequence_presence_rate": 1.0,
+          "status_reason_marker_key": "admitted|candidate|YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|delta_m1_m025",
+          "transition_count": 1.0
+        }
+      ],
+      "top_reason_marker_buckets": [
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|delta_unknown",
+          "value": 410.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|delta_unknown",
+          "value": 377.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|delta_unknown",
+          "value": 232.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_unknown",
+          "value": 218.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|delta_unknown",
+          "value": 200.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "value": 158.0
+        },
+        {
+          "bucket": "blocked|offset|YES|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|delta_unknown",
+          "value": 126.0
+        },
+        {
+          "bucket": "blocked|late_repair_only|YES|offset_90_120|risk_increasing|open_qty_eq_5|deficit_le_0|delta_unknown",
+          "value": 116.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_unknown",
+          "value": 116.0
+        },
+        {
+          "bucket": "blocked|offset|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|delta_unknown",
+          "value": 113.0
+        }
+      ]
+    },
+    "selected_source_opportunity_marker_total": 0.0,
+    "source_opportunity_ledger_before_delta_marker_summary_v1_present": true,
+    "source_opportunity_ledger_marker_summary_v1_present": true,
+    "source_opportunity_marker_summary_v1_present": true,
+    "strict_micro_deficit_marker_total": 0
+  },
+  "next_executable_action": "Local-only implementability review: derive a blocker-aware scorer/spec from the before-marker mass (mostly target/cooldown blocked before_lt_m2 open_gt_5) or return UNKNOWN if only forbidden target/cooldown/static cap families remain; do not start another shadow from this result.",
+  "next_target_review": {
+    "candidate_search_summary": {
+      "blockers": [
+        "no_train_holdout_stable_candidate_with_nonzero_before_or_delta_marker"
+      ],
+      "cautions": [
+        "latest_no_order_aggregate_risk_budget_failed_not_candidate_specific"
+      ],
+      "generated_candidate_count": 2736,
+      "marker_supported_candidate_count": 346
+    },
+    "decision": "UNKNOWN",
+    "decision_label": "UNKNOWN_LEDGER_BEFORE_DELTA_GAP_AUDIT_NO_SAFE_FAMILY",
+    "path": "xuan_research_artifacts/xuan_b27_dplus_ledger_delta_tiny_deficit_gap_audit_20260523T205739Z/manifest.json",
+    "promotion_gate": {
+      "deployable": false,
+      "g2_canary_ready": false,
+      "passed": false,
+      "private_truth_ready": false,
+      "status": "LOCAL_LEDGER_BEFORE_DELTA_GAP_AUDIT_ONLY_NOT_PROMOTION_EVIDENCE"
+    },
+    "research_ranking": {
+      "decision": "UNKNOWN",
+      "interpretation": "This audit can nominate a local research lead only when a before/delta predicate is stable on train/holdout and has nonzero same-window no-order marker denominator. It remains research-only and cannot prove private truth, deployability, canary readiness, or promotion.",
+      "label": "UNKNOWN_LEDGER_BEFORE_DELTA_GAP_AUDIT_NO_SAFE_FAMILY"
+    }
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "hard_blockers": [
+      "shadow_trading_report_shape_failed",
+      "shadow_trading_report_safety_failed",
+      "shadow_trading_market_scope_failed",
+      "shadow_trading_promotion_risk_budget_failed"
+    ],
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "NO_ORDER_DIAGNOSTIC_ONLY_RISK_BUDGET_AND_MARKER_GATE_FAILED"
+  },
+  "pullback": {
+    "allowlist_only": true,
+    "files": [
+      "output/manifest.json",
+      "output/aggregate_report.json",
+      "output/*.summary.json",
+      "stdout.log",
+      "stderr.log",
+      "runner.pid",
+      "post_run_sanity_20260523T205739Z.out",
+      "post_run_sanity_20260523T205739Z.err"
+    ],
+    "remote_clean_dir": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/remote_clean",
+    "stderr_bytes": 0,
+    "stdout_bytes": 1091364,
+    "summary_json_count": 26
+  },
+  "remote_run": {
+    "active_runner_count_after_finish": 0,
+    "dry_run": true,
+    "finished_before_poll_utc": "2026-05-23T20:58:04Z",
+    "host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "path": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_ledger_delta_tiny_deficit_review_edge007_20260523T195139Z",
+    "pid": 388844,
+    "pid_alive_after_finish": false,
+    "shared_ingress_role": "client",
+    "started_utc_approx": "2026-05-23T19:52:44Z"
+  },
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "fee_adjusted_pair_pnl_proxy": 2.755605,
+    "interpretation": "Positive pair economics remain a research signal, but marker volume and normalized risk budget block promotion/canary/deployable claims.",
+    "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE_THIN_MARKER",
+    "risk_adjusted_pnl_proxy": -4.27393,
+    "source_acceptance_label": "UNKNOWN_REPORT_OR_SAFETY_INVALID"
+  },
+  "residual_tail": {
+    "decision": "UNKNOWN",
+    "promotion_gate": {
+      "deployable": false,
+      "g2_canary_ready": false,
+      "passed": false,
+      "private_truth_ready": false,
+      "status": "RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_NOT_PROMOTION_EVIDENCE"
+    },
+    "status": "UNKNOWN_RESIDUAL_TAIL_EXEMPLAR_SHADOW_REVIEW_TRADEOFF"
+  },
+  "risk_budget_result": {
+    "conservative_stress_proxy_positive": false,
+    "economic_pnl_positive": true,
+    "fee_adjusted_pair_pnl_proxy": 2.755605,
+    "hard_blockers": [
+      "shadow_trading_report_shape_failed",
+      "shadow_trading_report_safety_failed",
+      "shadow_trading_market_scope_failed",
+      "shadow_trading_promotion_risk_budget_failed"
+    ],
+    "normalized_risk_budget": {
+      "material_residual_lots": 0,
+      "max_material_residual_lots": 0,
+      "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+      "max_residual_cost_share_of_filled_cost": 0.2,
+      "max_residual_qty_share_of_filled": 0.15,
+      "pair_tail_loss_share_of_pair_pnl": 0.11305503,
+      "residual_cost_share_of_filled_cost": 0.16542377,
+      "residual_qty_share_of_filled": 0.24614869
+    },
+    "promotion_risk_budget_ok": false,
+    "risk_adjusted_pnl_proxy": -4.27393,
+    "sample_size_ok": true
+  },
+  "run_name": "late_repair90_ledger_delta_tiny_deficit_marker_no_order_review",
+  "scope": {
+    "events_jsonl_pulled": 0,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_worktree": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research",
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "repo_sync_build_for_canary": false,
+    "second_shadow_started": false,
+    "shared_ingress_or_broker_modified": false,
+    "systemd_or_service_controls": false
+  },
+  "scorer_results": {
+    "residual_tail": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/residual_tail/manifest.json",
+    "shadow_acceptance": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/shadow_acceptance/manifest.json",
+    "source_link": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/source_link_score.json",
+    "source_opportunity_ledger_before_delta_marker": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/ledger_before_delta/manifest.json",
+    "source_opportunity_ledger_marker": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/ledger_marker/manifest.json",
+    "source_opportunity_marker": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/source_opportunity_marker/manifest.json"
+  },
+  "source_link": {
+    "aggregate_parity": {
+      "checked": true,
+      "diff_count": 0,
+      "diffs": [],
+      "passed": true
+    },
+    "decision_label": "KEEP_SOURCE_LINK_TRANSITION_CROSS_BUCKET_SCORER_READY",
+    "transition_totals": {
+      "admitted": 112.0,
+      "admitted_transition_share": 0.025612,
+      "blocked": 4261.0,
+      "total": 4373.0
+    }
+  },
+  "trading_metrics": {
+    "candidates": 112,
+    "conservative_risk_adjusted_pnl_proxy": -4.27393,
+    "fee_adjusted_pair_pnl_proxy": 2.755605,
+    "fill_rate": 0.6964285714285714,
+    "fill_wait_p50_ms": 21482.0,
+    "fill_wait_p90_ms": 51407.0,
+    "filled_cost": 40.61085,
+    "filled_qty": 96.8825,
+    "markets": 26,
+    "material_residual_lots": 0,
+    "net_pair_cost_p50": 0.9600000000000001,
+    "net_pair_cost_p90": 1.0699999999999998,
+    "pair_actions": 37,
+    "pair_cost_p50": 0.9600000000000001,
+    "pair_cost_p90": 1.0699999999999998,
+    "pair_pnl": 3.204253,
+    "pair_qty": 44.505,
+    "pair_tail_loss_proxy": 0.311535,
+    "pair_tail_loss_share_of_pair_pnl": 0.11305503,
+    "pair_wait_p50_ms": 31213.0,
+    "pair_wait_p90_ms": 171069.0,
+    "qty_pair_share_of_filled": 0.9187417748303357,
+    "queue_supported_fills": 78,
+    "residual_cost": 6.718,
+    "residual_cost_share_of_filled_cost": 0.16542377,
+    "residual_qty": 23.8475,
+    "residual_qty_share_of_filled": 0.24614869,
+    "roi_on_filled_cost": 0.07890140196523836,
+    "roi_on_seed_cost": 0.054228466766320246,
+    "taker_fee": 0.448648
+  }
+}

@@ -1,0 +1,3855 @@
+{
+  "artifact": "xuan_b27_dplus_ledger_before_delta_gap_audit_v1",
+  "blockers": [
+    "no_train_holdout_stable_candidate_with_nonzero_before_or_delta_marker"
+  ],
+  "candidate_search": {
+    "generated_candidate_count": 2736,
+    "marker_supported_candidate_count": 346,
+    "near_misses": [
+      {
+        "_score": 4.69,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 27.0,
+          "blocked_count": 717.0,
+          "marker_total": 744.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 4.0,
+            "admitted|YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 6.0,
+            "blocked|NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 12.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 50.0,
+            "blocked|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 116.0,
+            "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m1_m025": 166.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 20.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 8.0,
+            "blocked|YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 12.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 33.0,
+            "blocked|YES|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 5.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 10.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 31.0,
+            "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 5.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 60.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 45.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 104.0
+          }
+        },
+        "predicate_name": "ledger_before=before_m1_m025",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.77879593,
+          "matched": {
+            "fee_after_pnl_proxy": 0.77879594,
+            "official_fee": 0.09620406,
+            "pair_cost": 5.375,
+            "pair_pnl": 0.875,
+            "pair_qty": 6.25,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 5.0,
+            "seed_cost": 2.08125,
+            "seed_qty": 6.25,
+            "stress100_worst_pnl_proxy": 0.65379594,
+            "weighted_pair_cost": 0.86
+          },
+          "pair_qty_retention": 0.99977081,
+          "residual_cost_rate_reduction": -0.00017043,
+          "residual_qty_rate_reduction": -0.00022642,
+          "row_retention": 0.99977513,
+          "seed_qty_retention": 0.99977364,
+          "stress100_worst_pnl_proxy_delta": -0.65379593,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.39847917,
+            "official_fee": 416.03122083,
+            "pair_cost": 24193.77185,
+            "pair_pnl": 3069.49315,
+            "pair_qty": 27263.265,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934062,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234601,
+            "rows": 22230.0,
+            "seed_cost": 12211.555625,
+            "seed_qty": 27604.065,
+            "stress100_worst_pnl_proxy": 1990.72517917,
+            "weighted_pair_cost": 0.88741286
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000708
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025|open=open_qty_zero",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "open",
+            "value": "open_qty_zero"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025|open=open_qty_zero|risk=risk_increasing",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "open",
+            "value": "open_qty_zero"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025|risk=risk_increasing",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "ledger_before=before_0_025",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.48918875,
+          "matched": {
+            "fee_after_pnl_proxy": 0.48918875,
+            "official_fee": 0.08581125,
+            "pair_cost": 4.425,
+            "pair_pnl": 0.575,
+            "pair_qty": 5.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 4.0,
+            "seed_cost": 2.3375,
+            "seed_qty": 5.0,
+            "stress100_worst_pnl_proxy": 0.38918875,
+            "weighted_pair_cost": 0.885
+          },
+          "pair_qty_retention": 0.99981665,
+          "residual_cost_rate_reduction": -0.00019142,
+          "residual_qty_rate_reduction": -0.00018112,
+          "row_retention": 0.9998201,
+          "seed_qty_retention": 0.99981891,
+          "stress100_worst_pnl_proxy_delta": -0.38918875,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.68808635,
+            "official_fee": 416.04161365,
+            "pair_cost": 24194.72185,
+            "pair_pnl": 3069.79315,
+            "pair_qty": 27264.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934081,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234545,
+            "rows": 22231.0,
+            "seed_cost": 12211.299375,
+            "seed_qty": 27605.315,
+            "stress100_worst_pnl_proxy": 1990.98978635,
+            "weighted_pair_cost": 0.88740701
+          },
+          "weighted_pair_cost_worse_ratio": 1.0000005
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "ledger_before=before_0_025|open=open_qty_zero",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "open",
+            "value": "open_qty_zero"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "ledger_before=before_0_025|open=open_qty_zero|risk=risk_increasing",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "open",
+            "value": "open_qty_zero"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 4.23,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 13.0,
+          "blocked_count": 685.0,
+          "marker_total": 698.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "admitted|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 70.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 3.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 293.0
+          }
+        },
+        "predicate_name": "ledger_before=before_0_025|risk=risk_increasing",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.52293156,
+          "matched": {
+            "fee_after_pnl_proxy": 0.52293156,
+            "official_fee": 0.06456844,
+            "pair_cost": 3.1625,
+            "pair_pnl": 0.5875,
+            "pair_qty": 3.75,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 3.0,
+            "seed_cost": 1.81875,
+            "seed_qty": 3.75,
+            "stress100_worst_pnl_proxy": 0.44793156,
+            "weighted_pair_cost": 0.84333333
+          },
+          "pair_qty_retention": 0.99986248,
+          "residual_cost_rate_reduction": -0.00014893,
+          "residual_qty_rate_reduction": -0.00013584,
+          "row_retention": 0.99986508,
+          "seed_qty_retention": 0.99986418,
+          "stress100_worst_pnl_proxy_delta": -0.44793156,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.65434354,
+            "official_fee": 416.06285646,
+            "pair_cost": 24195.98435,
+            "pair_pnl": 3069.78065,
+            "pair_qty": 27265.765,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934042,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234489,
+            "rows": 22232.0,
+            "seed_cost": 12211.818125,
+            "seed_qty": 27606.565,
+            "stress100_worst_pnl_proxy": 1990.93104354,
+            "weighted_pair_cost": 0.88741263
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000683
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 1.33,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 12.0,
+          "blocked_count": 396.0,
+          "marker_total": 408.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 4.0,
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|NO|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 2.0,
+            "admitted|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "admitted|NO|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|NO|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "blocked|NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 12.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 4.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 1.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 50.0,
+            "blocked|NO|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 2.0,
+            "blocked|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_90_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 116.0,
+            "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m1_m025": 166.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 20.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 8.0
+          }
+        },
+        "predicate_name": "ledger_before=before_m1_m025|side=NO",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          },
+          {
+            "field": "side",
+            "value": "NO"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.77879593,
+          "matched": {
+            "fee_after_pnl_proxy": 0.77879594,
+            "official_fee": 0.09620406,
+            "pair_cost": 5.375,
+            "pair_pnl": 0.875,
+            "pair_qty": 6.25,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 5.0,
+            "seed_cost": 2.08125,
+            "seed_qty": 6.25,
+            "stress100_worst_pnl_proxy": 0.65379594,
+            "weighted_pair_cost": 0.86
+          },
+          "pair_qty_retention": 0.99977081,
+          "residual_cost_rate_reduction": -0.00017043,
+          "residual_qty_rate_reduction": -0.00022642,
+          "row_retention": 0.99977513,
+          "seed_qty_retention": 0.99977364,
+          "stress100_worst_pnl_proxy_delta": -0.65379593,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.39847917,
+            "official_fee": 416.03122083,
+            "pair_cost": 24193.77185,
+            "pair_pnl": 3069.49315,
+            "pair_qty": 27263.265,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934062,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234601,
+            "rows": 22230.0,
+            "seed_cost": 12211.555625,
+            "seed_qty": 27604.065,
+            "stress100_worst_pnl_proxy": 1990.72517917,
+            "weighted_pair_cost": 0.88741286
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000708
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 1.28,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 20.0,
+          "blocked_count": 383.0,
+          "marker_total": 403.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 4.0,
+            "admitted|NO|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 2.0,
+            "admitted|NO|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|NO|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 6.0,
+            "admitted|YES|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 2.0,
+            "admitted|YES|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 1.0,
+            "admitted|YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|YES|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 1.0,
+            "blocked|NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 12.0,
+            "blocked|NO|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 2.0,
+            "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 116.0,
+            "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m1_m025": 166.0,
+            "blocked|YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 12.0,
+            "blocked|YES|offset_0_30|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 2.0,
+            "blocked|YES|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 5.0,
+            "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 2.0,
+            "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 5.0,
+            "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 60.0
+          }
+        },
+        "predicate_name": "ledger_before=before_m1_m025|risk=repair_or_pairing_improving",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          },
+          {
+            "field": "risk",
+            "value": "repair_or_pairing_improving"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -0.77879593,
+          "matched": {
+            "fee_after_pnl_proxy": 0.77879594,
+            "official_fee": 0.09620406,
+            "pair_cost": 5.375,
+            "pair_pnl": 0.875,
+            "pair_qty": 6.25,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 5.0,
+            "seed_cost": 2.08125,
+            "seed_qty": 6.25,
+            "stress100_worst_pnl_proxy": 0.65379594,
+            "weighted_pair_cost": 0.86
+          },
+          "pair_qty_retention": 0.99977081,
+          "residual_cost_rate_reduction": -0.00017043,
+          "residual_qty_rate_reduction": -0.00022642,
+          "row_retention": 0.99977513,
+          "seed_qty_retention": 0.99977364,
+          "stress100_worst_pnl_proxy_delta": -0.65379593,
+          "variant": {
+            "fee_after_pnl_proxy": 2539.39847917,
+            "official_fee": 416.03122083,
+            "pair_cost": 24193.77185,
+            "pair_pnl": 3069.49315,
+            "pair_qty": 27263.265,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00934062,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234601,
+            "rows": 22230.0,
+            "seed_cost": 12211.555625,
+            "seed_qty": 27604.065,
+            "stress100_worst_pnl_proxy": 1990.72517917,
+            "weighted_pair_cost": 0.88741286
+          },
+          "weighted_pair_cost_worse_ratio": 1.00000708
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 1.24,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": -2213.52273543,
+          "matched": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "pair_qty_retention": 0.0,
+          "residual_cost_rate_reduction": 1.0,
+          "residual_qty_rate_reduction": 1.0,
+          "row_retention": 0.0,
+          "seed_qty_retention": 0.0,
+          "stress100_worst_pnl_proxy_delta": -1735.66256043,
+          "variant": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "weighted_pair_cost_worse_ratio": 0.0
+        },
+        "holdout_failures": [
+          "seed_qty_retention_below_90pct",
+          "pair_qty_retention_below_90pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 0,
+          "blocked_count": 224.0,
+          "marker_total": 224.0,
+          "matched_marker_keys": {
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 107.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 117.0
+          }
+        },
+        "predicate_name": "ledger_before=before_gte_1",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_gte_1"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": -2535.53399698,
+          "matched": {
+            "fee_after_pnl_proxy": 2535.53399698,
+            "official_fee": 415.37070302,
+            "pair_cost": 24157.04685,
+            "pair_pnl": 3064.96815,
+            "pair_qty": 27222.015,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00935467,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01236448,
+            "rows": 22197.0,
+            "seed_cost": 12193.211875,
+            "seed_qty": 27562.815,
+            "stress100_worst_pnl_proxy": 1987.68569698,
+            "weighted_pair_cost": 0.88740848
+          },
+          "pair_qty_retention": 0.00174187,
+          "residual_cost_rate_reduction": 1.0,
+          "residual_qty_rate_reduction": 1.0,
+          "row_retention": 0.00170902,
+          "seed_qty_retention": 0.00172037,
+          "stress100_worst_pnl_proxy_delta": -1987.68569698,
+          "variant": {
+            "fee_after_pnl_proxy": 4.64327812,
+            "official_fee": 0.75672188,
+            "pair_cost": 42.1,
+            "pair_pnl": 5.4,
+            "pair_qty": 47.5,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 38.0,
+            "seed_cost": 20.425,
+            "seed_qty": 47.5,
+            "stress100_worst_pnl_proxy": 3.69327812,
+            "weighted_pair_cost": 0.88631579
+          },
+          "weighted_pair_cost_worse_ratio": 0.99877082
+        },
+        "train_failures": [
+          "seed_qty_retention_below_90pct",
+          "pair_qty_retention_below_90pct",
+          "fee_after_pnl_proxy_delta_negative",
+          "stress100_worst_pnl_proxy_delta_negative"
+        ]
+      },
+      {
+        "_score": 1.16,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 334.0,
+          "marker_total": 341.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 4.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 1.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 50.0,
+            "blocked|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_90_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 20.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 8.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 33.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 10.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 31.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 45.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 104.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_m1_m025",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.16,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 334.0,
+          "marker_total": 341.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 4.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 1.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 50.0,
+            "blocked|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_90_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 20.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 8.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 33.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 10.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 31.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 45.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 104.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_m1_m025|risk=risk_increasing",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.16,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 334.0,
+          "marker_total": 341.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 1.0,
+            "admitted|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 4.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 1.0,
+            "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 50.0,
+            "blocked|NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|NO|offset_90_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 20.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 8.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 33.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 10.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 31.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 45.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 104.0
+          }
+        },
+        "predicate_name": "ledger_before=before_m1_m025|risk=risk_increasing",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.11,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 15.0,
+          "blocked_count": 321.0,
+          "marker_total": 336.0,
+          "matched_marker_keys": {
+            "admitted|YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 6.0,
+            "admitted|YES|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 2.0,
+            "admitted|YES|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 1.0,
+            "admitted|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 3.0,
+            "admitted|YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 1.0,
+            "admitted|YES|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 1.0,
+            "blocked|YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 12.0,
+            "blocked|YES|offset_0_30|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 2.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 33.0,
+            "blocked|YES|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025": 5.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 10.0,
+            "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 31.0,
+            "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 2.0,
+            "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m1_m025": 5.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 2.0,
+            "blocked|YES|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 7.0,
+            "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025": 60.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m1_m025": 45.0,
+            "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025": 104.0
+          }
+        },
+        "predicate_name": "ledger_before=before_m1_m025|side=YES",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_m1_m025"
+          },
+          {
+            "field": "side",
+            "value": "YES"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.0,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 318.0,
+          "marker_total": 325.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025|open=open_qty_zero|side=NO",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "open",
+            "value": "open_qty_zero"
+          },
+          {
+            "field": "side",
+            "value": "NO"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.0,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 318.0,
+          "marker_total": 325.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025|risk=risk_increasing|side=NO",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          },
+          {
+            "field": "side",
+            "value": "NO"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.0,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 318.0,
+          "marker_total": 325.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0
+          }
+        },
+        "predicate_name": "deficit=deficit_le_0|ledger_before=before_0_025|side=NO",
+        "predicate_terms": [
+          {
+            "field": "deficit",
+            "value": "deficit_le_0"
+          },
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "side",
+            "value": "NO"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      },
+      {
+        "_score": 1.0,
+        "holdout": {
+          "control": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": -0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2213.52273543,
+            "official_fee": 363.01755207,
+            "pair_cost": 21070.839275,
+            "pair_pnl": 2680.195725,
+            "pair_qty": 23751.035,
+            "residual_cost": 103.6554375,
+            "residual_cost_rate": 0.0097429,
+            "residual_qty": 283.9475,
+            "residual_qty_rate": 0.01181393,
+            "rows": 19345.0,
+            "seed_cost": 10639.075075,
+            "seed_qty": 24034.9825,
+            "stress100_worst_pnl_proxy": 1735.66256043,
+            "weighted_pair_cost": 0.88715457
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "holdout_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ],
+        "ledger_marker_kind": "ledger_before",
+        "marker": {
+          "admitted_count": 7.0,
+          "blocked_count": 318.0,
+          "marker_total": 325.0,
+          "matched_marker_keys": {
+            "admitted|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 6.0,
+            "admitted|NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 1.0,
+            "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 48.0,
+            "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025": 270.0
+          }
+        },
+        "predicate_name": "ledger_before=before_0_025|open=open_qty_zero|risk=risk_increasing|side=NO",
+        "predicate_terms": [
+          {
+            "field": "ledger_before",
+            "value": "before_0_025"
+          },
+          {
+            "field": "open",
+            "value": "open_qty_zero"
+          },
+          {
+            "field": "risk",
+            "value": "risk_increasing"
+          },
+          {
+            "field": "side",
+            "value": "NO"
+          }
+        ],
+        "train": {
+          "control": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "fee_after_pnl_proxy_delta": 0.0,
+          "matched": {
+            "fee_after_pnl_proxy": 0.0,
+            "official_fee": 0.0,
+            "pair_cost": 0.0,
+            "pair_pnl": 0.0,
+            "pair_qty": 0.0,
+            "residual_cost": 0.0,
+            "residual_cost_rate": 0.0,
+            "residual_qty": 0.0,
+            "residual_qty_rate": 0.0,
+            "rows": 0.0,
+            "seed_cost": 0.0,
+            "seed_qty": 0.0,
+            "stress100_worst_pnl_proxy": 0.0,
+            "weighted_pair_cost": 0.0
+          },
+          "pair_qty_retention": 1.0,
+          "residual_cost_rate_reduction": 0.0,
+          "residual_qty_rate_reduction": 0.0,
+          "row_retention": 1.0,
+          "seed_qty_retention": 1.0,
+          "stress100_worst_pnl_proxy_delta": 0.0,
+          "variant": {
+            "fee_after_pnl_proxy": 2540.1772751,
+            "official_fee": 416.1274249,
+            "pair_cost": 24199.14685,
+            "pair_pnl": 3070.36815,
+            "pair_qty": 27269.515,
+            "residual_cost": 114.06345,
+            "residual_cost_rate": 0.00933902,
+            "residual_qty": 340.8,
+            "residual_qty_rate": 0.01234321,
+            "rows": 22235.0,
+            "seed_cost": 12213.636875,
+            "seed_qty": 27610.315,
+            "stress100_worst_pnl_proxy": 1991.3789751,
+            "weighted_pair_cost": 0.88740657
+          },
+          "weighted_pair_cost_worse_ratio": 1.0
+        },
+        "train_failures": [
+          "matched_rows_below_min",
+          "residual_qty_rate_reduction_below_20pct",
+          "residual_cost_rate_reduction_below_20pct"
+        ]
+      }
+    ],
+    "train_gate_candidate_count": 0,
+    "train_holdout_marker_candidate_count": 0,
+    "viable_candidates": []
+  },
+  "cautions": [
+    "latest_no_order_aggregate_risk_budget_failed_not_candidate_specific"
+  ],
+  "created_utc": "2026-05-23T21:05:18Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_LEDGER_BEFORE_DELTA_GAP_AUDIT_NO_SAFE_FAMILY",
+  "guardrails": {
+    "excluded_families": [
+      "frozen_micro_deficit_offset_90_120_open_le_1_deficit_0_0_25",
+      "frozen_ledger_before_gte_1_offset_90_120_or_open_le_1_sweep",
+      "price_or_public_l1_caps",
+      "static_side_or_offset_deletion",
+      "cooldown_or_admission_caps",
+      "fill_to_balance_or_portfolio_ledger_trading_rule_revival"
+    ],
+    "requires_ledger_before_or_delta_pre_action_field": true,
+    "requires_no_order_marker_denominator": true,
+    "requires_sample_preservation": true,
+    "requires_train_holdout_stability": true,
+    "source_pair_source_residual_used_as_live_criteria": false
+  },
+  "historical_distribution": {
+    "ledger_before_full": {
+      "before_025_1": 26.0,
+      "before_0_025": 4.0,
+      "before_gte_1": 41542.0,
+      "before_m025_0": 3.0,
+      "before_m1_m025": 5.0
+    },
+    "ledger_before_holdout": {
+      "before_gte_1": 19345.0
+    },
+    "ledger_before_train": {
+      "before_025_1": 26.0,
+      "before_0_025": 4.0,
+      "before_gte_1": 22197.0,
+      "before_m025_0": 3.0,
+      "before_m1_m025": 5.0
+    },
+    "ledger_delta_full": {
+      "delta_m025_0": 3234.0,
+      "delta_m1_m025": 37308.0,
+      "delta_m2_m1": 1038.0
+    },
+    "ledger_delta_holdout": {
+      "delta_m025_0": 1491.0,
+      "delta_m1_m025": 17392.0,
+      "delta_m2_m1": 462.0
+    },
+    "ledger_delta_train": {
+      "delta_m025_0": 1743.0,
+      "delta_m1_m025": 19916.0,
+      "delta_m2_m1": 576.0
+    },
+    "top_full_before_marker_keys": {
+      "NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 1885.0,
+      "NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 3109.0,
+      "NO|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 3371.0,
+      "NO|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 2816.0,
+      "NO|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 3655.0,
+      "NO|offset_60_90|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25|before_gte_1": 289.0,
+      "NO|offset_60_90|risk_increasing|open_qty_le_1|deficit_le_0|before_gte_1": 219.0,
+      "NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 2918.0,
+      "NO|offset_90_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 1540.0,
+      "NO|offset_90_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25|before_gte_1": 503.0,
+      "YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 1946.0,
+      "YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 3189.0,
+      "YES|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 3156.0,
+      "YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 3022.0,
+      "YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 3406.0,
+      "YES|offset_60_90|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25|before_gte_1": 228.0,
+      "YES|offset_60_90|risk_increasing|open_qty_le_1|deficit_le_0|before_gte_1": 268.0,
+      "YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1": 3141.0,
+      "YES|offset_90_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_gte_1": 1465.0,
+      "YES|offset_90_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25|before_gte_1": 461.0
+    },
+    "top_full_delta_marker_keys": {
+      "NO|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 1851.0,
+      "NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025": 3067.0,
+      "NO|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 3133.0,
+      "NO|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025": 2606.0,
+      "NO|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m025_0": 419.0,
+      "NO|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 3083.0,
+      "NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|delta_m025_0": 380.0,
+      "NO|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025": 2433.0,
+      "NO|offset_90_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 1232.0,
+      "NO|offset_90_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25|delta_m1_m025": 366.0,
+      "YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 1905.0,
+      "YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025": 3156.0,
+      "YES|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 2967.0,
+      "YES|offset_30_60|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025": 2819.0,
+      "YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m025_0": 361.0,
+      "YES|offset_60_90|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 2887.0,
+      "YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|delta_m025_0": 402.0,
+      "YES|offset_60_90|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025": 2631.0,
+      "YES|offset_90_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025": 1151.0,
+      "YES|offset_90_120|repair_or_pairing_improving|open_qty_le_1|deficit_0_0_25|delta_m1_m025": 365.0
+    }
+  },
+  "inputs": {
+    "aggregate_report": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/remote_clean/output/aggregate_report.json",
+    "completion_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_completion_20260523T205739Z/manifest.json",
+    "holdout_days": [
+      "2026-05-03",
+      "2026-05-05",
+      "2026-05-07",
+      "2026-05-09",
+      "2026-05-11",
+      "2026-05-13",
+      "2026-05-17"
+    ],
+    "row_count": 41580,
+    "separator_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_candidate_seed_outcome_separator_full_20260522T185614Z/candidate_seed_outcome_separator.csv",
+    "summary_count": 26,
+    "summary_dir": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/remote_clean/output",
+    "train_days": [
+      "2026-05-02",
+      "2026-05-04",
+      "2026-05-06",
+      "2026-05-08",
+      "2026-05-10",
+      "2026-05-12",
+      "2026-05-16",
+      "2026-05-18"
+    ],
+    "unsafe_paths": []
+  },
+  "next_executable_action": "Return UNKNOWN for the current allowed before/delta marker field set. Do not SSH/start another shadow from this result; either add a genuinely new default-off pre-action denominator or change research direction.",
+  "no_order_distribution": {
+    "ledger_before": {
+      "by_status_bucket": {
+        "admitted|before_0_025": 13.0,
+        "admitted|before_lt_m2": 30.0,
+        "admitted|before_m025_0": 2.0,
+        "admitted|before_m1_m025": 27.0,
+        "admitted|before_m2_m1": 40.0,
+        "blocked|before_0_025": 685.0,
+        "blocked|before_gte_1": 224.0,
+        "blocked|before_lt_m2": 1236.0,
+        "blocked|before_m025_0": 243.0,
+        "blocked|before_m1_m025": 717.0,
+        "blocked|before_m2_m1": 1156.0
+      },
+      "top_marker_keys": [
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025",
+          "transition_count": 293.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_0_025",
+          "transition_count": 270.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m1_m025",
+          "transition_count": 166.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m025_0",
+          "transition_count": 158.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "transition_count": 158.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_90_120|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "transition_count": 124.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_90_120|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "transition_count": 121.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_90_120|risk_increasing|open_qty_eq_5|deficit_le_0|before_m2_m1",
+          "transition_count": 119.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1",
+          "transition_count": 117.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025",
+          "transition_count": 116.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m2_m1",
+          "transition_count": 111.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|before_gte_1",
+          "transition_count": 107.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m2_m1",
+          "transition_count": 104.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025",
+          "transition_count": 104.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|before_m2_m1",
+          "transition_count": 96.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_gt_5|deficit_gt_2|before_lt_m2",
+          "transition_count": 85.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_60_90|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "transition_count": 83.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m2_m1",
+          "transition_count": 81.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "transition_count": 76.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025",
+          "transition_count": 70.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|before_m2_m1",
+          "transition_count": 66.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+          "transition_count": 64.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|before_lt_m2",
+          "transition_count": 62.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025",
+          "transition_count": 60.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m2_m1",
+          "transition_count": 58.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_60_90|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+          "transition_count": 54.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|before_m025_0",
+          "transition_count": 53.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_90_120|risk_increasing|open_qty_eq_5|deficit_le_0|before_m2_m1",
+          "transition_count": 51.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025",
+          "transition_count": 50.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m2_m1",
+          "transition_count": 50.0
+        }
+      ]
+    },
+    "ledger_delta": {
+      "by_status_bucket": {
+        "admitted|delta_m025_0": 7.0,
+        "admitted|delta_m1_m025": 100.0,
+        "admitted|delta_m2_m1": 5.0,
+        "blocked|delta_unknown": 4261.0
+      },
+      "top_marker_keys": [
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|delta_unknown",
+          "transition_count": 410.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_zero|deficit_le_0|delta_unknown",
+          "transition_count": 377.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|delta_unknown",
+          "transition_count": 232.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_unknown",
+          "transition_count": 218.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|delta_unknown",
+          "transition_count": 200.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "transition_count": 158.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_90_120|risk_increasing|open_qty_eq_5|deficit_le_0|delta_unknown",
+          "transition_count": 126.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_gt_2|delta_unknown",
+          "transition_count": 126.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_90_120|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "transition_count": 124.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_90_120|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "transition_count": 121.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_unknown",
+          "transition_count": 116.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_2_5|deficit_le_0|delta_unknown",
+          "transition_count": 113.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|delta_unknown",
+          "transition_count": 112.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|delta_unknown",
+          "transition_count": 101.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_gt_5|deficit_gt_2|delta_unknown",
+          "transition_count": 85.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_60_90|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "transition_count": 83.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "transition_count": 76.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_1_2|deficit_le_0|delta_unknown",
+          "transition_count": 73.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|risk_increasing|open_qty_eq_5|deficit_le_0|delta_unknown",
+          "transition_count": 72.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|delta_unknown",
+          "transition_count": 70.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|delta_unknown",
+          "transition_count": 64.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|delta_unknown",
+          "transition_count": 62.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_90_120|risk_increasing|open_qty_eq_5|deficit_le_0|delta_unknown",
+          "transition_count": 59.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_ge_120|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|delta_unknown",
+          "transition_count": 58.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_60_90|risk_increasing|open_qty_gt_5|deficit_le_0|delta_unknown",
+          "transition_count": 56.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|delta_unknown",
+          "transition_count": 52.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_ge_120|risk_increasing|open_qty_eq_5|deficit_le_0|delta_unknown",
+          "transition_count": 51.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_60_90|risk_increasing|open_qty_eq_5|deficit_le_0|delta_unknown",
+          "transition_count": 49.0
+        },
+        {
+          "marker_key": "blocked|NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|delta_unknown",
+          "transition_count": 48.0
+        },
+        {
+          "marker_key": "blocked|YES|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|delta_unknown",
+          "transition_count": 46.0
+        }
+      ]
+    }
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "LOCAL_LEDGER_BEFORE_DELTA_GAP_AUDIT_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "interpretation": "This audit can nominate a local research lead only when a before/delta predicate is stable on train/holdout and has nonzero same-window no-order marker denominator. It remains research-only and cannot prove private truth, deployability, canary readiness, or promotion.",
+    "label": "UNKNOWN_LEDGER_BEFORE_DELTA_GAP_AUDIT_NO_SAFE_FAMILY"
+  },
+  "residual_tail_context": {
+    "exemplar_count": 21,
+    "top_before_by_residual_cost": [
+      {
+        "count": 2.0,
+        "marker_key": "NO|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m2_m1",
+        "residual_cost": 1.075
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|risk_increasing|open_qty_gt_5|deficit_le_0|before_lt_m2",
+        "residual_cost": 0.6875
+      },
+      {
+        "count": 3.0,
+        "marker_key": "YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|before_m2_m1",
+        "residual_cost": 0.4868
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|before_m2_m1",
+        "residual_cost": 0.475
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|risk_increasing|open_qty_eq_5|deficit_le_0|before_lt_m2",
+        "residual_cost": 0.4375
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025",
+        "residual_cost": 0.4
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m2_m1",
+        "residual_cost": 0.3875
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|before_0_025",
+        "residual_cost": 0.375
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_0_30|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|before_m2_m1",
+        "residual_cost": 0.3625
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|before_lt_m2",
+        "residual_cost": 0.35
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|before_lt_m2",
+        "residual_cost": 0.3325
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_30_60|risk_increasing|open_qty_eq_5|deficit_le_0|before_lt_m2",
+        "residual_cost": 0.325
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+        "residual_cost": 0.3125
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|before_m1_m025",
+        "residual_cost": 0.2737
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|before_m1_m025",
+        "residual_cost": 0.2125
+      }
+    ],
+    "top_delta_by_residual_cost": [
+      {
+        "count": 2.0,
+        "marker_key": "NO|offset_30_60|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|delta_m1_m025",
+        "residual_cost": 1.075
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|risk_increasing|open_qty_gt_5|deficit_le_0|delta_m1_m025",
+        "residual_cost": 0.6875
+      },
+      {
+        "count": 3.0,
+        "marker_key": "YES|offset_30_60|risk_increasing|open_qty_2_5|deficit_le_0|delta_m1_m025",
+        "residual_cost": 0.4868
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_0_30|risk_increasing|open_qty_2_5|deficit_le_0|delta_m1_m025",
+        "residual_cost": 0.475
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|risk_increasing|open_qty_eq_5|deficit_le_0|delta_m1_m025",
+        "residual_cost": 0.4375
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_30_60|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025",
+        "residual_cost": 0.4
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_60_90|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|delta_m1_m025",
+        "residual_cost": 0.3875
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_0_30|risk_increasing|open_qty_zero|deficit_le_0|delta_m1_m025",
+        "residual_cost": 0.375
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_0_30|repair_or_pairing_improving|open_qty_2_5|deficit_1_2|delta_m1_m025",
+        "residual_cost": 0.3625
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|delta_m1_m025",
+        "residual_cost": 0.35
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_1_2|delta_m1_m025",
+        "residual_cost": 0.3325
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_30_60|risk_increasing|open_qty_eq_5|deficit_le_0|delta_m1_m025",
+        "residual_cost": 0.325
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_60_90|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|delta_m1_m025",
+        "residual_cost": 0.3125
+      },
+      {
+        "count": 1.0,
+        "marker_key": "YES|offset_0_30|repair_or_pairing_improving|open_qty_1_2|deficit_1_2|delta_m1_m025",
+        "residual_cost": 0.2737
+      },
+      {
+        "count": 1.0,
+        "marker_key": "NO|offset_60_90|risk_increasing|open_qty_2_5|deficit_le_0|delta_m025_0",
+        "residual_cost": 0.2125
+      }
+    ]
+  },
+  "risk_budget": {
+    "candidates": 112.0,
+    "fee_adjusted_pair_pnl_proxy": 2.755605,
+    "hard_blockers": [],
+    "net_pair_cost_p90": 1.0699999999999998,
+    "pair_tail_loss_share_of_pair_pnl": 0.11305503,
+    "passed": false,
+    "promotion_gate_passed": false,
+    "residual_cost_share_of_filled_cost": 0.16542377,
+    "residual_qty_share_of_filled": 0.24614869,
+    "risk_adjusted_pnl_proxy": -4.27393
+  },
+  "schema_version": "ledger_before_delta_gap_audit_v1",
+  "scope": {
+    "local_only": true,
+    "modified_shared_ingress_or_live": false,
+    "read_events_jsonl": false,
+    "read_raw_replay_or_collector": false,
+    "sent_orders_cancels_redeems": false,
+    "used_ssh_or_shadow": false
+  }
+}
