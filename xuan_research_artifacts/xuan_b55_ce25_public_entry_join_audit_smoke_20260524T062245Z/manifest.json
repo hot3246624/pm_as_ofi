@@ -1,0 +1,19 @@
+{
+  "artifact": "xuan_b55_ce25_public_entry_join_audit_smoke",
+  "bad_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_entry_join_audit_smoke_20260524T062245Z/bad/manifest.json",
+  "checks": {
+    "bad_fixture_fail_closed": true,
+    "bad_fixture_missing_probability": true,
+    "complete_fixture_joined_to_public": true,
+    "complete_fixture_not_real_inputs": true,
+    "complete_fixture_ready": true,
+    "missing_candidate_rows_absent": true,
+    "missing_fields_include_fair_probability": true,
+    "missing_public_real_unknown": true,
+    "no_side_effect_scope": true,
+    "promotion_never_passes": true
+  },
+  "complete_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_entry_join_audit_smoke_20260524T062245Z/complete/manifest.json",
+  "decision_label": "KEEP_B55_CE25_PUBLIC_ENTRY_JOIN_AUDIT_SMOKE_PASS",
+  "missing_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_entry_join_audit_smoke_20260524T062245Z/missing/manifest.json"
+}

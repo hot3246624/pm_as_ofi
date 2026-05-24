@@ -1,0 +1,18 @@
+{
+  "candidate_entry_join_status": "MISSING_CANDIDATE_ENTRY_JOIN_ROWS",
+  "decision_label": "KEEP_B55_CE25_PUBLIC_ENTRY_JOIN_AUDIT_READY_REAL_INPUTS_UNKNOWN",
+  "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_entry_join_audit_smoke_20260524T062245Z/missing/manifest.json",
+  "next_executable_action": "Implement b55_ce25_entry_row_source_gap_audit_v1: determine the smallest safe local export needed to produce per-trade public entry rows with fee/liquidity role and joinable fair source fields, without starting local agg/shared WS/shadow/live. If no existing safe export exists, return UNKNOWN and name the exact required exporter fields.",
+  "public_export_missing_fields": [
+    "per_trade_outcome",
+    "per_trade_size",
+    "per_trade_fee_usdc",
+    "liquidity_role",
+    "fair_probability",
+    "fair_probability_uncertainty",
+    "edge_after_fee_and_uncertainty",
+    "source_count/source_names/source_dispersion_bps/max_source_age_ms_join",
+    "volatility_lookback_s/volatility_bps"
+  ],
+  "public_real_status": "UNKNOWN_PUBLIC_ENTRY_JOIN_FIELDS_MISSING"
+}
