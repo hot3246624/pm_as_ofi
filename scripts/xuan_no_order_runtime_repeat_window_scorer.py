@@ -82,6 +82,59 @@ def slug_debt_metrics(root: Path) -> dict[str, float]:
     }
 
 
+def strict_rescue_net_pair_gate(
+    rescues: list[dict[str, str]],
+    target_cap: float,
+    surplus_cap: float | None,
+    surplus_floor: float | None,
+) -> dict[str, Any]:
+    blockers: list[str] = []
+    target_values: list[float] = []
+    surplus_values: list[float] = []
+    surplus_projected: list[float] = []
+    over_target = 0
+    surplus_allowed = 0
+    for row in rescues:
+        net_pair = as_float(row.get("net_pair_cost"), float("nan"))
+        if not math.isfinite(net_pair):
+            continue
+        if net_pair <= target_cap + 1e-12:
+            target_values.append(net_pair)
+            continue
+        over_target += 1
+        decision = row.get("strict_rescue_surplus_decision")
+        projected_after = as_float(row.get("strict_rescue_projected_pair_pnl_after"), float("nan"))
+        if decision != "allow_surplus":
+            blockers.append("rescue_net_pair_cost_above_target_without_surplus_approval")
+            continue
+        if surplus_cap is None or surplus_floor is None:
+            blockers.append("rescue_surplus_policy_missing_from_config")
+            continue
+        row_blockers: list[str] = []
+        if net_pair > surplus_cap + 1e-12:
+            row_blockers.append("rescue_surplus_net_pair_cost_above_cap")
+        if not math.isfinite(projected_after):
+            row_blockers.append("rescue_surplus_projected_pair_pnl_missing")
+        elif projected_after < surplus_floor - 1e-12:
+            row_blockers.append("rescue_surplus_projected_pair_pnl_below_floor")
+        else:
+            surplus_projected.append(projected_after)
+        surplus_values.append(net_pair)
+        blockers.extend(row_blockers)
+        if not row_blockers:
+            surplus_allowed += 1
+    all_values = target_values + surplus_values
+    return {
+        "hard_blockers": sorted(set(blockers)),
+        "rescue_net_pair_cost_max": max(all_values) if all_values else None,
+        "rescue_target_cap_net_pair_cost_max": max(target_values) if target_values else None,
+        "rescue_surplus_net_pair_cost_max": max(surplus_values) if surplus_values else None,
+        "rescue_over_target_count": over_target,
+        "rescue_surplus_allowed_count": surplus_allowed,
+        "rescue_surplus_projected_pair_pnl_after_min": min(surplus_projected) if surplus_projected else None,
+    }
+
+
 def score_window(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     required = ["manifest.json", "aggregate_report.json", "run_exit_code.txt", "run_stderr.log"]
     missing = [name for name in required if not (root / name).exists()]
@@ -117,9 +170,16 @@ def score_window(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     residual_cost = as_float(metrics.get("residual_cost"))
     residual_qty_share = residual_qty / filled_qty if filled_qty else None
     residual_cost_share = residual_cost / filled_cost if filled_cost else None
-    rescue_net_pair_max = max_float(rescues, "net_pair_cost")
     accepted_l1_max = max_float(accepted, "source_quality_l1_age_ms")
     rescue_l1_max = max_float(rescues, "strict_rescue_l1_age_ms")
+    strict_rescue_surplus_net_cap = as_float(config.get("strict_rescue_surplus_net_cap"), float("nan"))
+    strict_rescue_min_pair_pnl_after = as_float(config.get("strict_rescue_min_pair_pnl_after"), float("nan"))
+    rescue_net_pair_gate = strict_rescue_net_pair_gate(
+        rescues,
+        args.max_rescue_net_pair_cost,
+        strict_rescue_surplus_net_cap if math.isfinite(strict_rescue_surplus_net_cap) else None,
+        strict_rescue_min_pair_pnl_after if math.isfinite(strict_rescue_min_pair_pnl_after) else None,
+    )
     debt = slug_debt_metrics(root)
     soft_debt_budget = as_float(config.get("risk_seed_closeability_debt_budget"))
 
@@ -146,8 +206,9 @@ def score_window(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("accepted_l1_age_above_max")
     if rescue_l1_max is None or rescue_l1_max > args.max_rescue_l1_age_ms:
         hard_blockers.append("rescue_l1_age_above_max")
-    if rescue_net_pair_max is None or rescue_net_pair_max > args.max_rescue_net_pair_cost:
-        hard_blockers.append("rescue_net_pair_cost_above_max")
+    if rescue_net_pair_gate["rescue_net_pair_cost_max"] is None:
+        hard_blockers.append("rescue_net_pair_cost_missing")
+    hard_blockers.extend(rescue_net_pair_gate["hard_blockers"])
     if soft_debt_budget > 0:
         if debt["closeability_debt_open_per_slug_max"] > soft_debt_budget + 1e-12:
             hard_blockers.append("closeability_debt_open_per_slug_exceeds_config_budget")
@@ -188,7 +249,7 @@ def score_window(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "residual_cost": residual_cost,
             "residual_qty_share": residual_qty_share,
             "residual_cost_share": residual_cost_share,
-            "rescue_net_pair_cost_max": rescue_net_pair_max,
+            **{key: value for key, value in rescue_net_pair_gate.items() if key != "hard_blockers"},
             "strict_rescue_l1_age_blocks": int(blocked.get("strict_rescue_l1_age") or 0),
         },
         "source_age": {
