@@ -379,6 +379,81 @@ def source_opportunity_ledger_delta_marker_key(
     )
 
 
+def closed_cycle_open_bucket(same_qty: float | None, opp_qty: float | None) -> str:
+    if same_qty is None or opp_qty is None:
+        return "open_unknown"
+    open_qty = same_qty + opp_qty
+    if open_qty <= 1.0 + DUST:
+        return "open_le_1"
+    if open_qty <= 2.5 + DUST:
+        return "open_1_2_5"
+    if open_qty <= 5.0 + DUST:
+        return "open_2_5"
+    return "open_gt_5"
+
+
+def closed_cycle_balance_bucket(same_qty: float | None, opp_qty: float | None) -> str:
+    if same_qty is None or opp_qty is None:
+        return "balance_unknown"
+    deficit = opp_qty - same_qty
+    if deficit <= DUST:
+        return "deficit_le_0"
+    if deficit <= 0.25 + 1e-12:
+        return "deficit_0_0_25"
+    if deficit <= 1.25 + 1e-12:
+        return "deficit_0_25_1_25"
+    if deficit <= 2.0 + 1e-12:
+        return "deficit_1_25_2"
+    return "deficit_gt_2"
+
+
+def closed_cycle_preseed_sides_bucket(same_qty: float | None, opp_qty: float | None) -> str:
+    if same_qty is None or opp_qty is None:
+        return "preseed_sides_unknown"
+    if same_qty > DUST and opp_qty > DUST:
+        return "both_preseed_sides"
+    if same_qty > DUST:
+        return "same_only_preseed"
+    if opp_qty > DUST:
+        return "opp_only_preseed"
+    return "empty_preseed"
+
+
+def closed_cycle_qty_bucket(prefix: str, qty: float | None) -> str:
+    if qty is None:
+        return f"{prefix}_unknown"
+    if qty <= DUST:
+        return f"{prefix}_zero"
+    if qty <= 5.0 + DUST:
+        return f"{prefix}_le_5"
+    if qty <= 10.0 + DUST:
+        return f"{prefix}_5_10"
+    if qty <= 25.0 + DUST:
+        return f"{prefix}_10_25"
+    return f"{prefix}_gt_25"
+
+
+def source_opportunity_closed_cycle_marker_key(
+    side: str | None,
+    offset_s: float | None,
+    risk_direction: str,
+    same_qty: float | None,
+    opp_qty: float | None,
+) -> str:
+    return "|".join(
+        (
+            side or "unknown",
+            offset_bucket(offset_s),
+            risk_direction,
+            closed_cycle_open_bucket(same_qty, opp_qty),
+            closed_cycle_balance_bucket(same_qty, opp_qty),
+            closed_cycle_preseed_sides_bucket(same_qty, opp_qty),
+            closed_cycle_qty_bucket("same", same_qty),
+            closed_cycle_qty_bucket("opp", opp_qty),
+        )
+    )
+
+
 def merge_portfolio_ledger_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
     dest["condition_count"] = int(dest.get("condition_count", 0)) + 1
     numeric_keys = (
@@ -508,6 +583,12 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_after",
         "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_before",
         "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
+        "transition_count_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "candidate_qty_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "base_qty_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "target_room_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "room_cost_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "imbalance_room_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
     )
     nested_keys = (
         "transition_count_by_status_reason",
@@ -545,6 +626,7 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "transition_count_by_status_side_offset_risk_open_deficit_ledger_after",
         "transition_count_by_status_side_offset_risk_open_deficit_ledger_before",
         "transition_count_by_status_side_offset_risk_open_deficit_ledger_delta",
+        "transition_count_by_status_side_offset_risk_open_balance_sides_same_opp",
         "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after",
         "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after",
         "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_after",
@@ -554,6 +636,20 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
         "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
         "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
         "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta",
+        "candidate_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "base_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "target_room_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "room_cost_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "imbalance_room_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "opposite_seen_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "quote_intent_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "source_order_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
+        "source_sequence_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp",
     )
     for key in count_keys:
         source = src.get(key)
@@ -617,6 +713,7 @@ class RunnerConfig:
     source_opportunity_marker_reason_source_event_lite_summary: bool = False
     source_opportunity_ledger_marker_event_lite_summary: bool = False
     source_opportunity_ledger_before_delta_marker_event_lite_summary: bool = False
+    source_opportunity_closed_cycle_marker_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -939,6 +1036,62 @@ class DPlusRunner:
                     "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta": {},
                 }
             )
+        if self.cfg.source_opportunity_closed_cycle_marker_event_lite_summary:
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "closed_cycle_marker_schema_version"
+            ] = "source_opportunity_closed_cycle_marker_v1"
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "closed_cycle_marker_join_key"
+            ] = (
+                "status|reason|side|offset_bucket|source_risk_direction|open_bucket|balance_bucket|"
+                "preseed_sides|same_qty_bucket|opp_qty_bucket"
+            )
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "post_action_pair_residual_labels_included"
+            ] = False
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "gross_pair_pnl_available_at_marker"
+            ] = False
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "residual_stress_available_at_marker"
+            ] = False
+            self.event_lite_source_opportunity_markers["field_contract"][
+                "requires_post_run_scorer_join_for_pnl"
+            ] = True
+            self.event_lite_source_opportunity_markers["field_contract"]["live_pre_action_fields"].extend(
+                [
+                    "closed_cycle_open_bucket",
+                    "closed_cycle_balance_bucket",
+                    "closed_cycle_preseed_sides",
+                    "closed_cycle_same_qty_bucket",
+                    "closed_cycle_opp_qty_bucket",
+                ]
+            )
+            self.event_lite_source_opportunity_markers.update(
+                {
+                    "transition_count_by_status_side_offset_risk_open_balance_sides_same_opp": {},
+                    "transition_count_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "candidate_qty_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "base_qty_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "target_room_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "room_cost_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "imbalance_room_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "candidate_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "base_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "target_room_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "room_cost_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "imbalance_room_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "opposite_seen_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "quote_intent_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "source_order_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                    "source_sequence_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp": {},
+                }
+            )
         if self.cfg.source_opportunity_marker_reason_source_event_lite_summary:
             self.event_lite_source_opportunity_markers["field_contract"][
                 "reason_source_coverage_schema_version"
@@ -1241,11 +1394,19 @@ class DPlusRunner:
             ledger_proxy_before,
             ledger_proxy_after,
         )
+        closed_cycle_marker_key = source_opportunity_closed_cycle_marker_key(
+            side,
+            offset_s,
+            risk_direction,
+            same_qty,
+            opp_qty,
+        )
         status_reason = f"{status}|{reason}"
         status_reason_marker = f"{status_reason}|{marker_key}"
         status_reason_ledger_marker = f"{status_reason}|{ledger_marker_key}"
         status_reason_ledger_before_marker = f"{status_reason}|{ledger_before_marker_key}"
         status_reason_ledger_delta_marker = f"{status_reason}|{ledger_delta_marker_key}"
+        status_reason_closed_cycle_marker = f"{status_reason}|{closed_cycle_marker_key}"
         pending_same = self.pending_orders(side) if side in {"YES", "NO"} else []
         pending_opp = self.pending_orders(opp(side)) if side in {"YES", "NO"} else []
         pending_same_qty = sum(order.qty for order in pending_same)
@@ -1398,6 +1559,116 @@ class DPlusRunner:
             add_nested_count(
                 diag["source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_delta"],
                 status_reason_ledger_delta_marker,
+                "present" if source_sequence_id is not None else "missing",
+            )
+        if self.cfg.source_opportunity_closed_cycle_marker_event_lite_summary:
+            add_nested_count(
+                diag["transition_count_by_status_side_offset_risk_open_balance_sides_same_opp"],
+                status,
+                closed_cycle_marker_key,
+            )
+            add_count(
+                diag["transition_count_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+            )
+            if qty is not None:
+                add_count(
+                    diag["candidate_qty_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                    status_reason_closed_cycle_marker,
+                    max(0.0, qty),
+                )
+            if base_qty is not None:
+                add_count(
+                    diag["base_qty_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                    status_reason_closed_cycle_marker,
+                    max(0.0, base_qty),
+                )
+            if target_room is not None:
+                add_count(
+                    diag["target_room_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                    status_reason_closed_cycle_marker,
+                    max(0.0, target_room),
+                )
+            if room_cost_value is not None:
+                add_count(
+                    diag["room_cost_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                    status_reason_closed_cycle_marker,
+                    max(0.0, room_cost_value),
+                )
+            if imbalance_room is not None:
+                add_count(
+                    diag["imbalance_room_sum_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                    status_reason_closed_cycle_marker,
+                    max(0.0, imbalance_room),
+                )
+            add_nested_count(
+                diag["candidate_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("candidate_qty", qty),
+            )
+            add_nested_count(
+                diag["base_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("base_qty", base_qty),
+            )
+            add_nested_count(
+                diag["target_room_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("target_room", target_room),
+            )
+            add_nested_count(
+                diag["room_cost_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("room_cost", room_cost_value),
+            )
+            add_nested_count(
+                diag["imbalance_room_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("imbalance_room", imbalance_room),
+            )
+            add_nested_count(
+                diag["pending_same_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("pending_same_qty", pending_same_qty),
+            )
+            add_nested_count(
+                diag["pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("pending_opp_qty", pending_opp_qty),
+            )
+            add_nested_count(
+                diag["pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("pending_same_order_count", float(len(pending_same))),
+            )
+            add_nested_count(
+                diag["pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                qty_bucket("pending_opp_order_count", float(len(pending_opp))),
+            )
+            add_nested_count(
+                diag["opposite_seen_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                "opposite_seen_present" if opposite_seen_ms is not None else "opposite_seen_missing",
+            )
+            add_nested_count(
+                diag["activation_opp_age_bucket_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                age_ms_bucket("activation_opp_age", activation_opp_age_ms),
+            )
+            add_nested_count(
+                diag["quote_intent_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                "present" if quote_intent_id else "missing",
+            )
+            add_nested_count(
+                diag["source_order_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
+                "present" if source_order_id is not None else "missing",
+            )
+            add_nested_count(
+                diag["source_sequence_presence_by_status_reason_side_offset_risk_open_balance_sides_same_opp"],
+                status_reason_closed_cycle_marker,
                 "present" if source_sequence_id is not None else "missing",
             )
         if not self.cfg.source_opportunity_marker_reason_source_event_lite_summary:
@@ -2766,6 +3037,7 @@ async def main() -> None:
     ap.add_argument("--source-opportunity-marker-reason-source-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit exact status/reason/marker source coverage without raw ids or post-action labels")
     ap.add_argument("--source-opportunity-ledger-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-after marker denominators without changing behavior")
     ap.add_argument("--source-opportunity-ledger-before-delta-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-before and ledger-delta marker denominators without changing behavior")
+    ap.add_argument("--source-opportunity-closed-cycle-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit closed-cycle pre-action marker denominators without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -2811,6 +3083,7 @@ async def main() -> None:
         source_opportunity_marker_reason_source_event_lite_summary=args.source_opportunity_marker_reason_source_event_lite_summary,
         source_opportunity_ledger_marker_event_lite_summary=args.source_opportunity_ledger_marker_event_lite_summary,
         source_opportunity_ledger_before_delta_marker_event_lite_summary=args.source_opportunity_ledger_before_delta_marker_event_lite_summary,
+        source_opportunity_closed_cycle_marker_event_lite_summary=args.source_opportunity_closed_cycle_marker_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -2865,6 +3138,11 @@ async def main() -> None:
             raise SystemExit("--source-opportunity-ledger-before-delta-marker-event-lite-summary requires --event-lite-summary")
         if not cfg.source_opportunity_marker_event_lite_summary:
             raise SystemExit("--source-opportunity-ledger-before-delta-marker-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
+    if cfg.source_opportunity_closed_cycle_marker_event_lite_summary:
+        if not cfg.event_lite_summary:
+            raise SystemExit("--source-opportunity-closed-cycle-marker-event-lite-summary requires --event-lite-summary")
+        if not cfg.source_opportunity_marker_event_lite_summary:
+            raise SystemExit("--source-opportunity-closed-cycle-marker-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

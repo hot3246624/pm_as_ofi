@@ -95,3 +95,21 @@ Holdout:
 This is useful because gross pair PnL is now explicitly subordinated to residual-stress-adjusted closed-cycle PnL. It is not deployable because there is no same-window no-order closed-cycle marker yet, and the historical export itself is too optimistic versus fresh no-order evidence.
 
 Next executable action: implement a default-off closed-cycle no-order marker summary/scorer only if the runner can expose pre-action cycle denominators without changing behavior. Do not start a shadow from this local audit.
+
+## Marker Summary Readiness
+
+Artifact: `xuan_research_artifacts/xuan_passive_shadow_runner_closed_cycle_marker_smoke_20260524T024818Z/manifest.json`.
+
+Decision: `KEEP_CLOSED_CYCLE_MARKER_SUMMARY_SMOKE_PASS`.
+
+`tools/xuan_dplus_passive_passive_shadow_runner.py` now has default-off `--source-opportunity-closed-cycle-marker-event-lite-summary`. It depends on `--event-lite-summary` and `--source-opportunity-marker-event-lite-summary`, and it only emits diagnostic denominators. It does not change admission, sizing, pairing, cancellation, or any trading behavior.
+
+Fields added under `event_lite.source_opportunity_marker_summary`:
+
+- status/status+reason counts by `side|offset|risk|open|balance|preseed_sides|same_qty|opp_qty`
+- candidate/base/target-room/room-cost/imbalance-room sums and buckets for exact closed-cycle keys
+- pending same/opposite qty and order-count buckets
+- opposite-seen and activation-age buckets
+- quote/order/source-sequence presence by exact key
+
+The field contract explicitly sets `post_action_pair_residual_labels_included=false`, `gross_pair_pnl_available_at_marker=false`, and `residual_stress_available_at_marker=false`. This is intentional: same-window no-order diagnostics can expose denominators and source coverage, but PnL/stress still require a post-run scorer join. This keeps the fix aligned with the corrected methodology rather than leaking future labels into live criteria.
