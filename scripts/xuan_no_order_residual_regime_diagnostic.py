@@ -89,10 +89,16 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
     metrics = aggregate.get("metrics", {})
     strict_reasons = event_diag.get("strict_rescue_block_reasons", {})
     net_cap_blocks = as_float(strict_reasons.get("strict_rescue_net_pair_cap"))
+    surplus_net_cap_blocks = as_float(strict_reasons.get("strict_rescue_surplus_net_cap"))
+    pair_pnl_floor_blocks = as_float(strict_reasons.get("strict_rescue_pair_pnl_floor"))
     lot_age_blocks = as_float(strict_reasons.get("strict_rescue_lot_age_or_min_cost"))
     l1_age_blocks = as_float(strict_reasons.get("strict_rescue_l1_age"))
-    total_rescue_blocks = net_cap_blocks + lot_age_blocks + l1_age_blocks
+    total_rescue_blocks = sum(as_float(value) for value in strict_reasons.values())
+    economic_blocks = net_cap_blocks + surplus_net_cap_blocks + pair_pnl_floor_blocks
     net_cap_share = share(net_cap_blocks, total_rescue_blocks)
+    surplus_net_cap_share = share(surplus_net_cap_blocks, total_rescue_blocks)
+    pair_pnl_floor_share = share(pair_pnl_floor_blocks, total_rescue_blocks)
+    economic_block_share = share(economic_blocks, total_rescue_blocks)
     l1_age_share = share(l1_age_blocks, total_rescue_blocks)
     residual_qty_share = share(as_float(metrics.get("residual_qty")), as_float(metrics.get("filled_qty")))
     residual_cost_share = share(as_float(metrics.get("residual_cost")), as_float(metrics.get("filled_cost")))
@@ -113,7 +119,7 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
     pair_pnl = as_float(metrics.get("pair_pnl"))
     residual_blocked = residual_qty_share > args.max_residual_qty_share or residual_cost_share > args.max_residual_cost_share
     pnl_blocked = pair_pnl < args.min_pair_pnl
-    economics_dominant = net_cap_share >= args.min_net_cap_block_share and l1_age_share <= args.max_l1_age_block_share
+    economics_dominant = economic_block_share >= args.min_net_cap_block_share and l1_age_share <= args.max_l1_age_block_share
     admission_rescue_gap = (
         as_float(candidate_closeability.get("p50")) > args.salvage_net_cap
         and as_float(candidate_closeability.get("p90")) <= args.soft_cap + 1e-12
@@ -130,12 +136,16 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
     if residual_blocked:
         hard_blockers.append("residual_share_above_runtime_gate")
     if economics_dominant and (residual_blocked or pnl_blocked):
-        hard_blockers.append("strict_rescue_net_pair_cap_dominant")
+        hard_blockers.append("strict_rescue_economic_gate_dominant")
+    if surplus_net_cap_share >= args.min_net_cap_block_share and (residual_blocked or pnl_blocked):
+        hard_blockers.append("strict_rescue_surplus_net_cap_dominant")
     if admission_rescue_gap:
         hard_blockers.append("soft_admission_above_strict_rescue_cap")
 
     status = (
-        "UNKNOWN_RESIDUAL_REGIME_ECONOMIC_ADMISSION_RESCUE_MISMATCH"
+        "UNKNOWN_RESIDUAL_REGIME_ECONOMIC_RESCUE_SURPLUS_PAIR_PNL_BLOCKED"
+        if residual_blocked and economics_dominant and surplus_net_cap_share >= args.min_net_cap_block_share
+        else "UNKNOWN_RESIDUAL_REGIME_ECONOMIC_ADMISSION_RESCUE_MISMATCH"
         if residual_blocked and economics_dominant and admission_rescue_gap
         else "UNKNOWN_RESIDUAL_REGIME_REQUIRES_CONTROLLER_REVIEW"
         if hard_blockers
@@ -173,6 +183,9 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
             "reason_counts": strict_reasons,
             "total": total_rescue_blocks,
             "net_pair_cap_share": net_cap_share,
+            "surplus_net_cap_share": surplus_net_cap_share,
+            "pair_pnl_floor_share": pair_pnl_floor_share,
+            "economic_block_share": economic_block_share,
             "l1_age_share": l1_age_share,
             "net_pair_cost_stats": blocked_net_pair,
             "l1_age_ms_stats": event_diag.get("strict_rescue_block_l1_age_ms", {}),
@@ -201,6 +214,7 @@ def classify(args: argparse.Namespace) -> dict[str, Any]:
             "target_rescue_net_cap": args.target_rescue_net_cap,
             "recommended_probe_salvage_net_cap": args.salvage_net_cap,
             "strict_rescue_net_pair_cap_dominant": economics_dominant,
+            "strict_rescue_surplus_net_cap_dominant": surplus_net_cap_share >= args.min_net_cap_block_share,
             "next_profile": {
                 "activation_mode": "opp_seen",
                 "activation_window_s": 15,
@@ -245,6 +259,9 @@ def render_markdown(card: dict[str, Any]) -> str:
         "",
         "## Diagnosis",
         f"- strict_rescue_net_pair_cap_share: `{round(diag['net_pair_cap_share'], 6)}`",
+        f"- strict_rescue_surplus_net_cap_share: `{round(diag['surplus_net_cap_share'], 6)}`",
+        f"- strict_rescue_pair_pnl_floor_share: `{round(diag['pair_pnl_floor_share'], 6)}`",
+        f"- strict_rescue_economic_block_share: `{round(diag['economic_block_share'], 6)}`",
         f"- strict_rescue_l1_age_share: `{round(diag['l1_age_share'], 6)}`",
         f"- blocked_net_pair_cost_stats: `{diag['net_pair_cost_stats']}`",
         f"- candidate_closeability_net_pair_cost: `{card['admission_closeability']['candidate_closeability_net_pair_cost']}`",

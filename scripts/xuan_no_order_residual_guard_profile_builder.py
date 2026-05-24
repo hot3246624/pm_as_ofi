@@ -126,6 +126,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "write_rescue_block_diagnostics": True,
         "allow_concurrent_shared_ingress_readers": True,
     }
+    rescue_hard_cap = args.strict_rescue_surplus_net_cap if args.strict_rescue_surplus_net_cap is not None else args.salvage_net_cap
     acceptance = {
         "accepted_actions": args.min_accepted_actions,
         "queue_supported_fills": args.min_fills,
@@ -133,7 +134,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "pair_pnl": 0.0,
         "max_residual_qty_share": args.max_residual_qty_share,
         "max_residual_cost_share": args.max_residual_cost_share,
-        "max_rescue_net_pair_cost": args.salvage_net_cap,
+        "max_rescue_net_pair_cost": rescue_hard_cap,
         "target_rescue_net_pair_cost": args.target_rescue_net_cap,
         "max_accepted_l1_age_ms": 1000,
         "max_rescue_l1_age_ms": 50,

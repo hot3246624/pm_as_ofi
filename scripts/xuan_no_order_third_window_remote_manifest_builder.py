@@ -30,6 +30,8 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_no_order_concurrent_shared_ingress_scorer.py",
     "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
     "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
+    "scripts/xuan_capacity_stage_public_benchmark_gate.py",
+    "scripts/xuan_no_order_event_diagnostics_from_jsonl.py",
 ]
 
 
@@ -280,12 +282,19 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     if public_benchmark_path and public_benchmark_path.exists():
         postrun_command.extend(["--public-benchmark-scorecard", str(public_benchmark_path)])
+    capacity_plan_path = Path(args.capacity_plan_scorecard).expanduser().resolve() if args.capacity_plan_scorecard else None
+    if capacity_plan_path and capacity_plan_path.exists():
+        postrun_command.extend(["--capacity-plan-scorecard", str(capacity_plan_path)])
+        if args.capacity_stage:
+            postrun_command.extend(["--capacity-stage", args.capacity_stage])
 
     return {
         "status": "THIRD_WINDOW_REMOTE_STAGING_MANIFEST_READY_LOCAL_ONLY",
         "profile_scorecard": str(profile_path),
         "profile_status": profile_status,
         "public_benchmark_scorecard": str(public_benchmark_path) if public_benchmark_path else None,
+        "capacity_plan_scorecard": str(capacity_plan_path) if capacity_plan_path else None,
+        "capacity_stage": args.capacity_stage,
         "profile": profile,
         "target": {
             "ssh_host": args.ssh_host,
@@ -329,6 +338,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-scorecard", default=".tmp_xuan/scorecards/no_order_soft_closeability_third_window_profile_20260522T1849Z.json")
     parser.add_argument("--public-benchmark-scorecard", default=".tmp_xuan/scorecards/xuan_public_leaderboard_trader_review_20260524T1200Z.json")
+    parser.add_argument("--capacity-plan-scorecard")
+    parser.add_argument("--capacity-stage")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--stage-files", nargs="+", default=DEFAULT_STAGE_FILES)
