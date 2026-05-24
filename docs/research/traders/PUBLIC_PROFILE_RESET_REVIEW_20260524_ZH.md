@@ -140,3 +140,13 @@ Decision: `KEEP_SOURCE_OPPORTUNITY_CLOSED_CYCLE_MARKER_SUMMARY_SCORER_SMOKE_PASS
 Added local-only `scripts/xuan_source_opportunity_closed_cycle_marker_summary_scorer.py` and smoke coverage. The scorer reads only runner manifest, completion manifest, aggregate report, and summary JSON files. It validates `source_opportunity_closed_cycle_marker_v1`, aggregate parity, selected closed-cycle marker denominators, exact status/reason/source coverage, post-action label exclusion, and `private_truth_ready=false`, `deployable=false`, `promotion_gate.passed=false`.
 
 This gives the fast-switch gate we lacked in D+: after one bounded no-order diagnostic, the closed-cycle line either has same-window denominator support or gets discarded immediately.
+
+## Closed-Cycle No-Order Diagnostic
+
+Artifact: `xuan_research_artifacts/xuan_shadow_review_closed_cycle_marker_completion_20260524T041958Z/manifest.json`.
+
+Decision: `UNKNOWN_CLOSED_CYCLE_MARKER_NO_ORDER_REVIEW_DENOMINATOR_PRESENT_RISK_BUDGET_FAIL`.
+
+The bounded no-order run validated that the closed-cycle marker surface is real, but it did not produce a roughly feasible strategy candidate. The selected closed-cycle marker denominator was nonzero and above threshold: total `216`, admitted `34`, blocked `182`. Source-link parity passed and the closed-cycle scorer returned KEEP. However, the trading/risk gate failed: candidates `72` below the required `100`, net pair cost p90 `1.03`, residual qty share `40.275225%`, residual cost share `29.03635%`, fee-adjusted pair PnL proxy `+1.438294`, and risk-adjusted PnL proxy `-5.060424`.
+
+Interpretation: this confirms instrumentation and denominator observability, not strategy viability. Under the fast screen policy, this is not worth another remote closed-cycle shadow or local threshold sweep. Pivot to the `b55` 24h realized/MTM public-profile audit and keep `04b6` only as the infrastructure template.
