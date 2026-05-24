@@ -96,6 +96,8 @@ def scan(root: Path) -> dict[str, Any]:
     risk_seed_closeability_block_reasons: Counter[str] = Counter()
     cancel_reasons: Counter[str] = Counter()
     strict_rescue_block_reasons: Counter[str] = Counter()
+    strict_rescue_block_components: Counter[str] = Counter()
+    strict_rescue_lot_age_min_cost_classes: Counter[str] = Counter()
     strict_rescue_close_skipped_low_cost_lots: Counter[str] = Counter()
     candidate_pending_opp_credit_values: Counter[str] = Counter()
     candidate_soft_decisions: Counter[str] = Counter()
@@ -196,12 +198,41 @@ def scan(root: Path) -> dict[str, Any]:
                 if kind == "strict_rescue_block":
                     strict_rescue_block_reasons[reason or "<missing>"] += 1
                     per_slug_strict_reason_counts[slug][reason or "<missing>"] += 1
+                    component = str(obj.get("block_component") or "<missing>")
+                    strict_rescue_block_components[component] += 1
                     add_stat(stats, "strict_rescue_block_l1_age_ms", obj.get("strict_rescue_l1_age_ms"))
                     add_stat(stats, "strict_rescue_block_l2_age_ms", obj.get("strict_rescue_l2_age_ms"))
                     add_stat(stats, "strict_rescue_block_lot_age_ms", obj.get("lot_age_ms"))
                     add_stat(stats, "strict_rescue_block_lot_cost", obj.get("lot_cost"))
                     add_stat(stats, "strict_rescue_block_oldest_lot_cost", obj.get("oldest_lot_cost"))
                     add_stat(stats, "strict_rescue_block_raw_comp_ask", obj.get("raw_comp_ask"))
+                    lot_age_ms = as_float(obj.get("lot_age_ms"))
+                    salvage_age_ms = as_float(obj.get("salvage_age_ms"))
+                    lot_cost = as_float(obj.get("lot_cost"))
+                    salvage_min_lot_cost = as_float(obj.get("salvage_min_lot_cost"))
+                    if reason == "strict_rescue_lot_age_or_min_cost":
+                        age_ok = (
+                            lot_age_ms is not None
+                            and salvage_age_ms is not None
+                            and lot_age_ms >= salvage_age_ms
+                        )
+                        cost_ok = (
+                            lot_cost is not None
+                            and salvage_min_lot_cost is not None
+                            and lot_cost >= salvage_min_lot_cost
+                        )
+                        if age_ok and cost_ok:
+                            strict_rescue_lot_age_min_cost_classes["thresholds_ok_but_blocked"] += 1
+                        elif age_ok:
+                            strict_rescue_lot_age_min_cost_classes["min_cost_only"] += 1
+                        elif cost_ok:
+                            strict_rescue_lot_age_min_cost_classes["age_only"] += 1
+                        else:
+                            strict_rescue_lot_age_min_cost_classes["age_and_min_cost"] += 1
+                        if lot_age_ms is not None and salvage_age_ms is not None:
+                            add_stat(stats, "strict_rescue_block_lot_age_ms_to_threshold", salvage_age_ms - lot_age_ms)
+                        if lot_cost is not None and salvage_min_lot_cost is not None:
+                            add_stat(stats, "strict_rescue_block_lot_cost_to_threshold", salvage_min_lot_cost - lot_cost)
                     val = first_number(
                         obj,
                         (
@@ -257,6 +288,8 @@ def scan(root: Path) -> dict[str, Any]:
         "risk_seed_closeability_block_reasons": dict(risk_seed_closeability_block_reasons.most_common()),
         "cancel_reasons": dict(cancel_reasons.most_common()),
         "strict_rescue_block_reasons": dict(strict_rescue_block_reasons.most_common()),
+        "strict_rescue_block_components": dict(strict_rescue_block_components.most_common()),
+        "strict_rescue_lot_age_min_cost_classes": dict(strict_rescue_lot_age_min_cost_classes.most_common()),
         "strict_rescue_close_skipped_low_cost_lots": dict(strict_rescue_close_skipped_low_cost_lots.most_common()),
     }
     for key, values in sorted(stats.items()):
