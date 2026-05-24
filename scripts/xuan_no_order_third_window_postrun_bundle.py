@@ -202,6 +202,8 @@ def main() -> None:
     parser.add_argument("--no-default-prior-output-roots", action="store_true")
     parser.add_argument("--profile-scorecard", default=".tmp_xuan/scorecards/no_order_soft_closeability_third_window_profile_20260522T1849Z.json")
     parser.add_argument("--public-benchmark-scorecard", default=None)
+    parser.add_argument("--capacity-plan-scorecard", default=None)
+    parser.add_argument("--capacity-stage", default="cap_25")
     parser.add_argument("--max-closeability-debt-per-slug", type=float, default=1.0)
     args = parser.parse_args()
     if args.prior_output_roots is None:
@@ -239,6 +241,15 @@ def main() -> None:
     )
     if public_benchmark_path and public_benchmark_path.exists():
         paths["public_benchmark"] = scorecard_dir / f"no_order_{args.tag}_public_benchmark_comparison.json"
+    capacity_plan_path = (
+        Path(args.capacity_plan_scorecard).expanduser().resolve()
+        if args.capacity_plan_scorecard
+        else None
+    )
+    if public_benchmark_path and capacity_plan_path and public_benchmark_path.exists() and capacity_plan_path.exists():
+        paths["capacity_stage_public_benchmark"] = (
+            scorecard_dir / f"no_order_{args.tag}_capacity_stage_public_benchmark_gate.json"
+        )
 
     runtime_summary = write_runtime_summary(third_root, paths["runtime_summary"])
     commands = [
@@ -336,6 +347,27 @@ def main() -> None:
                 str(paths["repeat"]),
                 "--scorecard-json",
                 str(paths["public_benchmark"]),
+            ]
+        )
+    if public_benchmark_path and capacity_plan_path and "capacity_stage_public_benchmark" in paths:
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_capacity_stage_public_benchmark_gate.py",
+                "--runtime-summary",
+                str(paths["runtime_summary"]),
+                "--capital-roi-scorecard",
+                str(paths["capital"]),
+                "--public-benchmark-scorecard",
+                str(public_benchmark_path),
+                "--capacity-plan",
+                str(capacity_plan_path),
+                "--stage",
+                str(args.capacity_stage),
+                "--scorecard-json",
+                str(paths["capacity_stage_public_benchmark"]),
+                "--markdown",
+                str(output_dir / "CAPACITY_STAGE_PUBLIC_BENCHMARK_GATE.md"),
             ]
         )
     packet_command = [
