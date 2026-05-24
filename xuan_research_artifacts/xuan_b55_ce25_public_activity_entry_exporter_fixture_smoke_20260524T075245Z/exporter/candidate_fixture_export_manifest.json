@@ -1,0 +1,84 @@
+{
+  "accounts_covered": [
+    "b55",
+    "ce25"
+  ],
+  "artifact": "xuan_b55_ce25_public_activity_entry_exporter_candidate_export",
+  "created_utc": "20260524T080414Z",
+  "decision_label": "KEEP_FIXTURE_PUBLIC_ACTIVITY_ENTRY_EXPORT_READY",
+  "fair_source_snapshot_policy": {
+    "fixture_synthetic_source": true,
+    "max_join_abs_delta_ms": 1000,
+    "min_source_count": 3,
+    "safe_export_only": true
+  },
+  "fee_usdc_derivation_policy": {
+    "actual_usdc_source": "usdcSize",
+    "fee_per_share_formula": "fee_usdc / size",
+    "fee_usdc_formula": "actual_usdc - gross_usdc",
+    "gross_usdc_formula": "polymarket_price * size",
+    "usdc_size_basis_declared": true
+  },
+  "fixture": true,
+  "joins_declared": {
+    "fair_source_snapshot_rows": true,
+    "fee_usdc_derivation": true,
+    "liquidity_role_truth_source": true,
+    "market_metadata_boundary": true,
+    "probability_model_output": true,
+    "public_activity_trade_rows": true,
+    "volatility_rows": true
+  },
+  "liquidity_role_truth_source": {
+    "fixture_synthetic_role": true,
+    "per_trade_role_join_declared": true,
+    "uses_rebate_or_fee_inference": false
+  },
+  "probability_model_output": {
+    "fixture_synthetic_probability": true,
+    "probability_output_basis": "purchased_outcome_win_probability",
+    "uncertainty_declared": true
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "provided_fields": [
+    "account",
+    "actual_usdc",
+    "asset",
+    "boundary_price",
+    "condition_id",
+    "edge_after_fee_and_uncertainty",
+    "entry_delta_s",
+    "fair_probability",
+    "fair_probability_uncertainty",
+    "fair_spot_mid",
+    "fee_usdc",
+    "gross_usdc",
+    "liquidity_role",
+    "market_end_ts",
+    "market_slug",
+    "market_start_ts",
+    "max_source_age_ms",
+    "model_name",
+    "model_version",
+    "outcome",
+    "polymarket_price",
+    "quote_ts",
+    "size",
+    "source_count",
+    "source_dispersion_bps",
+    "source_names",
+    "time_to_expiry_s",
+    "timeframe",
+    "trade_id",
+    "volatility_bps",
+    "volatility_lookback_s"
+  ],
+  "real_input": false,
+  "row_count": 24,
+  "rows_path": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/exporter/fixture_public_activity_entry_rows.json",
+  "schema_version": 1
+}

@@ -1,0 +1,252 @@
+{
+  "artifact": "xuan_b55_ce25_public_activity_entry_exporter_fixture",
+  "conversion_summary": {
+    "b55": {
+      "accepted_count": 422,
+      "public_input_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xb55fa1296e6ec55d0ce53d93b9237389f11764d4/activity_trade_rows.json",
+      "raw_count": 3492,
+      "rejections": {
+        "asset_not_in_b55_ce25_contract": 881,
+        "market_metadata_unparseable": 424,
+        "outside_entry_window": 93,
+        "outside_price_habitat": 453,
+        "timeframe_not_in_b55_ce25_contract": 1219
+      },
+      "top_rejection_examples": {
+        "asset_not_in_b55_ce25_contract": {
+          "asset": "SOL"
+        },
+        "market_metadata_unparseable": {
+          "slug": "ethereum-up-or-down-may-23-2026-10pm-et"
+        },
+        "outside_entry_window": {
+          "entry_delta_s": -3024
+        },
+        "outside_price_habitat": {
+          "price": 0.99
+        },
+        "timeframe_not_in_b55_ce25_contract": {
+          "timeframe": "5m"
+        }
+      }
+    },
+    "ce25": {
+      "accepted_count": 496,
+      "public_input_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xce25e214d5cfe4f459cf67f08df581885aae7fdc/activity_trade_rows.json",
+      "raw_count": 3497,
+      "rejections": {
+        "asset_not_in_b55_ce25_contract": 867,
+        "outside_entry_window": 39,
+        "outside_price_habitat": 377,
+        "timeframe_not_in_b55_ce25_contract": 1718
+      },
+      "top_rejection_examples": {
+        "asset_not_in_b55_ce25_contract": {
+          "asset": "SOL"
+        },
+        "outside_entry_window": {
+          "entry_delta_s": -11
+        },
+        "outside_price_habitat": {
+          "price": 0.02
+        },
+        "timeframe_not_in_b55_ce25_contract": {
+          "timeframe": "5m"
+        }
+      }
+    }
+  },
+  "created_utc": "20260524T080414Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_B55_CE25_PUBLIC_ACTIVITY_ENTRY_EXPORTER_FIXTURE_READY_REAL_STILL_UNKNOWN",
+  "fail_closed_probes": {
+    "cases": {
+      "bad_slug_metadata": {
+        "converted": false,
+        "extra": {
+          "slug": "btc-updown-15m-notatime"
+        },
+        "reasons": [
+          "market_metadata_unparseable"
+        ]
+      },
+      "negative_fee": {
+        "converted": false,
+        "extra": {
+          "actual_usdc": 157.4,
+          "fee_usdc": -1.0,
+          "gross_usdc": 158.4
+        },
+        "reasons": [
+          "fee_usdc_negative_beyond_tolerance"
+        ]
+      },
+      "sell_side": {
+        "converted": false,
+        "extra": {},
+        "reasons": [
+          "not_buy_side"
+        ]
+      }
+    },
+    "checks": {
+      "bad_slug_rejected": true,
+      "negative_fee_rejected": true,
+      "sell_side_rejected": true
+    }
+  },
+  "fixture_export": {
+    "account_counts": {
+      "b55": 12,
+      "ce25": 12
+    },
+    "candidate_manifest_decision_label": "KEEP_FIXTURE_PUBLIC_ACTIVITY_ENTRY_EXPORT_READY",
+    "candidate_manifest_path": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/exporter/candidate_fixture_export_manifest.json",
+    "provided_fields": [
+      "account",
+      "trade_id",
+      "condition_id",
+      "market_slug",
+      "asset",
+      "timeframe",
+      "market_start_ts",
+      "market_end_ts",
+      "quote_ts",
+      "entry_delta_s",
+      "time_to_expiry_s",
+      "outcome",
+      "polymarket_price",
+      "size",
+      "gross_usdc",
+      "fee_usdc",
+      "actual_usdc",
+      "liquidity_role",
+      "boundary_price",
+      "fair_spot_mid",
+      "source_count",
+      "source_names",
+      "source_dispersion_bps",
+      "max_source_age_ms",
+      "volatility_lookback_s",
+      "volatility_bps",
+      "fair_probability",
+      "fair_probability_uncertainty",
+      "edge_after_fee_and_uncertainty",
+      "model_name",
+      "model_version"
+    ],
+    "row_count": 24,
+    "rows_path": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/exporter/fixture_public_activity_entry_rows.json",
+    "status": "READY_FIXTURE_PUBLIC_ACTIVITY_ENTRY_EXPORT",
+    "synthetic_fields": [
+      "liquidity_role",
+      "boundary_price",
+      "fair_spot_mid",
+      "source_count",
+      "source_names",
+      "source_dispersion_bps",
+      "max_source_age_ms",
+      "volatility_lookback_s",
+      "volatility_bps",
+      "fair_probability",
+      "fair_probability_uncertainty",
+      "edge_after_fee_and_uncertainty",
+      "model_name",
+      "model_version"
+    ]
+  },
+  "lane": "b55_ce25_public_activity_entry_exporter_fixture",
+  "next_executable_action": "Implement b55_ce25_public_activity_entry_scorer_v1 locally: run the export spec validator over the real and fixture manifests, report real UNKNOWN versus fixture READY, and define the exact non-fixture liquidity_role/fair-source inputs needed before any no-order diagnostic.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "PUBLIC_ACTIVITY_ENTRY_EXPORTER_FIXTURE_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "real_export": {
+    "account_counts": {
+      "b55": 12,
+      "ce25": 12
+    },
+    "candidate_manifest_decision_label": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING",
+    "candidate_manifest_path": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/exporter/candidate_real_export_manifest.json",
+    "missing_fields": [
+      "liquidity_role",
+      "boundary_price",
+      "fair_spot_mid",
+      "source_count",
+      "source_names",
+      "source_dispersion_bps",
+      "max_source_age_ms",
+      "volatility_lookback_s",
+      "volatility_bps",
+      "fair_probability",
+      "fair_probability_uncertainty",
+      "edge_after_fee_and_uncertainty",
+      "model_name",
+      "model_version"
+    ],
+    "provided_fields": [
+      "account",
+      "trade_id",
+      "condition_id",
+      "market_slug",
+      "asset",
+      "timeframe",
+      "market_start_ts",
+      "market_end_ts",
+      "quote_ts",
+      "entry_delta_s",
+      "time_to_expiry_s",
+      "outcome",
+      "polymarket_price",
+      "size",
+      "gross_usdc",
+      "fee_usdc",
+      "actual_usdc"
+    ],
+    "row_count": 24,
+    "rows_path": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/exporter/real_public_activity_entry_rows.json",
+    "status": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING"
+  },
+  "research_ranking": {
+    "blockers_before_shadow_or_deployable_claim": [
+      "non_fixture_liquidity_role_truth_missing",
+      "non_fixture_fair_source_snapshot_join_missing",
+      "non_fixture_probability_model_output_missing",
+      "private_truth_not_available"
+    ],
+    "decision": "KEEP",
+    "fixture_export_ready": true,
+    "fixture_rows_are_strategy_evidence": false,
+    "interpretation": "Already-available public activity rows can be normalized into b55/ce25 entry rows with fee derivation and market timing, but real evaluation remains blocked by liquidity_role truth and fair-source probability joins. Fixture rows only validate the schema and scorer contract.",
+    "label": "KEEP_B55_CE25_PUBLIC_ACTIVITY_ENTRY_EXPORTER_FIXTURE_READY_REAL_STILL_UNKNOWN",
+    "real_export_status": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING",
+    "real_rows_are_strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "dplus_failed_families_enabled_or_swept": false,
+    "events_jsonl_read": false,
+    "fixture_only_for_complete_export": true,
+    "full_completion_store_scanned": false,
+    "local_agg_started": false,
+    "local_only": true,
+    "orders_sent": false,
+    "private_owner_trade_truth_used": false,
+    "public_profile_exports_only": true,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_used": false
+  },
+  "source_inputs": {
+    "export_spec_manifest": "xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_export_spec_20260524T072245Z/manifest.json",
+    "public_input_root": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs"
+  }
+}

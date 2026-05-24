@@ -1,0 +1,27 @@
+{
+  "artifact": "xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke",
+  "checks": {
+    "bad_slug_fail_closed": true,
+    "exporter_keep": true,
+    "fixture_rows_both_accounts": true,
+    "fixture_rows_ready": true,
+    "negative_fee_fail_closed": true,
+    "no_side_effect_scope": true,
+    "promotion_never_passes": true,
+    "real_export_unknown": true,
+    "real_rows_both_accounts": true,
+    "real_rows_have_fee_usdc": true,
+    "real_rows_missing_fair_probability": true,
+    "real_rows_missing_liquidity_role": true,
+    "sell_side_fail_closed": true,
+    "spec_fixture_ready": true,
+    "spec_fixture_still_not_real": true,
+    "spec_real_fail_closed": true,
+    "spec_real_missing_probability": true,
+    "spec_real_missing_role": true
+  },
+  "decision_label": "KEEP_B55_CE25_PUBLIC_ACTIVITY_ENTRY_EXPORTER_FIXTURE_SMOKE_PASS",
+  "exporter_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/exporter/manifest.json",
+  "spec_fixture_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/spec_fixture/manifest.json",
+  "spec_real_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/spec_real/manifest.json"
+}

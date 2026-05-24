@@ -1,0 +1,70 @@
+{
+  "accounts_covered": [
+    "b55",
+    "ce25"
+  ],
+  "artifact": "xuan_b55_ce25_public_activity_entry_exporter_candidate_export",
+  "created_utc": "20260524T080253Z",
+  "decision_label": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING",
+  "fair_source_snapshot_policy": {
+    "fixture_synthetic_source": false,
+    "max_join_abs_delta_ms": 1000,
+    "min_source_count": 3,
+    "safe_export_only": true
+  },
+  "fee_usdc_derivation_policy": {
+    "actual_usdc_source": "usdcSize",
+    "fee_per_share_formula": "fee_usdc / size",
+    "fee_usdc_formula": "actual_usdc - gross_usdc",
+    "gross_usdc_formula": "polymarket_price * size",
+    "usdc_size_basis_declared": true
+  },
+  "fixture": false,
+  "joins_declared": {
+    "fair_source_snapshot_rows": false,
+    "fee_usdc_derivation": true,
+    "liquidity_role_truth_source": false,
+    "market_metadata_boundary": true,
+    "probability_model_output": false,
+    "public_activity_trade_rows": true,
+    "volatility_rows": false
+  },
+  "liquidity_role_truth_source": {
+    "fixture_synthetic_role": false,
+    "per_trade_role_join_declared": false,
+    "uses_rebate_or_fee_inference": false
+  },
+  "probability_model_output": {
+    "fixture_synthetic_probability": false,
+    "probability_output_basis": "missing_in_real_public_rows",
+    "uncertainty_declared": false
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "provided_fields": [
+    "account",
+    "actual_usdc",
+    "asset",
+    "condition_id",
+    "entry_delta_s",
+    "fee_usdc",
+    "gross_usdc",
+    "market_end_ts",
+    "market_slug",
+    "market_start_ts",
+    "outcome",
+    "polymarket_price",
+    "quote_ts",
+    "size",
+    "time_to_expiry_s",
+    "timeframe",
+    "trade_id"
+  ],
+  "real_input": true,
+  "row_count": 24,
+  "rows_path": "xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_20260524T075245Z/real_public_activity_entry_rows.json",
+  "schema_version": 1
+}
