@@ -186,6 +186,23 @@ def score(root: Path, args: argparse.Namespace) -> dict[str, Any]:
     residual_cost = float(metrics.get("residual_cost") or 0.0)
     residual_qty_share = residual_qty / filled_qty if filled_qty else None
     residual_cost_share = residual_cost / filled_cost if filled_cost else None
+    young_tiny_scorecard: dict[str, Any] = {}
+    if args.young_tiny_residual_scorecard:
+        path = Path(args.young_tiny_residual_scorecard).expanduser().resolve()
+        if path.exists():
+            young_tiny_scorecard = read_json(path)
+        else:
+            hard_blockers.append("young_tiny_residual_scorecard_missing")
+    residual_materiality = young_tiny_scorecard.get("residual_summary") if young_tiny_scorecard else {}
+    material_residual_qty = float((residual_materiality.get("class_qty") or {}).get("mature_material") or 0.0)
+    material_residual_cost = float((residual_materiality.get("class_cost") or {}).get("mature_material") or 0.0)
+    material_residual_qty_share = material_residual_qty / filled_qty if filled_qty else None
+    material_residual_cost_share = material_residual_cost / filled_cost if filled_cost else None
+    residual_gate_qty_share = residual_qty_share
+    residual_gate_cost_share = residual_cost_share
+    if args.residual_share_mode == "material":
+        residual_gate_qty_share = material_residual_qty_share
+        residual_gate_cost_share = material_residual_cost_share
     rescue_qty = float(metrics.get("strict_rescue_qty") or 0.0)
     strict_rescue_source_blocks = float(metrics.get("strict_rescue_source_blocks") or 0.0)
     strict_l1_blocks = int(blocked.get("strict_rescue_l1_age") or 0)
@@ -245,9 +262,9 @@ def score(root: Path, args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("pair_pnl_below_min")
     if rescue_qty < args.min_rescue_qty:
         hard_blockers.append("strict_rescue_qty_below_min")
-    if residual_qty_share is None or residual_qty_share > args.max_residual_qty_share:
+    if residual_gate_qty_share is None or residual_gate_qty_share > args.max_residual_qty_share:
         hard_blockers.append("residual_qty_share_above_max")
-    if residual_cost_share is None or residual_cost_share > args.max_residual_cost_share:
+    if residual_gate_cost_share is None or residual_gate_cost_share > args.max_residual_cost_share:
         hard_blockers.append("residual_cost_share_above_max")
     if strict_rescue_source_blocks != 0:
         hard_blockers.append("strict_rescue_source_blocks_nonzero")
@@ -323,6 +340,10 @@ def score(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "max_closeability_debt_open_per_slug": args.max_closeability_debt_open_per_slug,
             "max_closeability_debt_max_open_per_slug": args.max_closeability_debt_max_open_per_slug,
             "closeability_debt_tolerance": args.closeability_debt_tolerance,
+            "residual_share_mode": args.residual_share_mode,
+            "young_tiny_residual_scorecard": str(Path(args.young_tiny_residual_scorecard).expanduser().resolve())
+            if args.young_tiny_residual_scorecard
+            else None,
         },
         "safety": {
             "orders_sent": safety.get("orders_sent"),
@@ -352,7 +373,15 @@ def score(root: Path, args: argparse.Namespace) -> dict[str, Any]:
             "residual_cost": residual_cost,
             "residual_qty_share": residual_qty_share,
             "residual_cost_share": residual_cost_share,
+            "residual_gate_qty_share": residual_gate_qty_share,
+            "residual_gate_cost_share": residual_gate_cost_share,
             "residual_closeability_debt": residual_closeability_debt,
+            "material_residual_qty": material_residual_qty,
+            "material_residual_cost": material_residual_cost,
+            "material_residual_qty_share": material_residual_qty_share,
+            "material_residual_cost_share": material_residual_cost_share,
+            "young_tiny_residual_status": young_tiny_scorecard.get("status") if young_tiny_scorecard else None,
+            "young_tiny_residual_summary": residual_materiality or None,
         },
         "closeability_risk": {
             "soft_closeability_cap": soft_closeability_cap,
@@ -402,6 +431,16 @@ def main() -> None:
     parser.add_argument("--max-closeability-debt-open-per-slug", type=float)
     parser.add_argument("--max-closeability-debt-max-open-per-slug", type=float)
     parser.add_argument("--closeability-debt-tolerance", type=float, default=1e-5)
+    parser.add_argument(
+        "--young-tiny-residual-scorecard",
+        help="Optional local scorecard from xuan_no_order_young_tiny_residual_scorer.py",
+    )
+    parser.add_argument(
+        "--residual-share-mode",
+        choices=("all", "material"),
+        default="all",
+        help="Use legacy all-residual shares or mature-material residual shares for residual gates.",
+    )
     args = parser.parse_args()
 
     started = time.time()
