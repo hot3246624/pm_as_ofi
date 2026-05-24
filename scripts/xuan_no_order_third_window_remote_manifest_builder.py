@@ -352,13 +352,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     remote_launch_command_template = (
         f"cd {shlex.quote(args.remote_repo.rsplit('/', 1)[0])} && "
         f"mkdir -p {remote_output_q} && "
-        f"( {remote_command_template} > {remote_output_q}/run_stdout.log "
+        f"{{ ( {remote_command_template} > {remote_output_q}/run_stdout.log "
         f"2> {remote_output_q}/run_stderr.log; "
         f"echo $? > {remote_output_q}/run_exit_code.txt ) "
         f"< /dev/null "
         f"> {remote_output_q}/remote_wrapper_stdout.log "
         f"2> {remote_output_q}/remote_wrapper_stderr.log & "
-        f"echo $! > {remote_output_q}/remote_wrapper_pid.txt"
+        f"echo $! > {remote_output_q}/remote_wrapper_pid.txt; }}"
     )
 
     return {
