@@ -89,6 +89,9 @@ def scan(root: Path) -> dict[str, Any]:
     per_slug_reason_counts: dict[str, Counter[str]] = defaultdict(Counter)
     per_slug_strict_reason_counts: dict[str, Counter[str]] = defaultdict(Counter)
     candidate_pair_completion_decisions: Counter[str] = Counter()
+    candidate_fair_price_admission_decisions: Counter[str] = Counter()
+    candidate_fair_price_admission_modes: Counter[str] = Counter()
+    fair_price_admission_block_reasons: Counter[str] = Counter()
     pair_completion_block_reasons: Counter[str] = Counter()
     risk_seed_closeability_block_reasons: Counter[str] = Counter()
     strict_rescue_block_reasons: Counter[str] = Counter()
@@ -143,8 +146,14 @@ def scan(root: Path) -> dict[str, Any]:
                     add_stat(stats, "candidate_pair_completion_avg_net_pair_cost", obj.get("pair_completion_avg_net_pair_cost"))
                     add_stat(stats, "candidate_pair_completion_worst_net_pair_cost", obj.get("pair_completion_worst_net_pair_cost"))
                     add_stat(stats, "candidate_pair_completion_projected_pair_pnl_after", obj.get("pair_completion_projected_pair_pnl_after"))
+                    add_stat(stats, "candidate_fair_price_pair_cost_after_fee", obj.get("fair_price_pair_cost_after_fee"))
+                    add_stat(stats, "candidate_fair_price_edge_after_fee", obj.get("fair_price_edge_after_fee"))
                     decision = str(obj.get("pair_completion_decision") or "<missing>")
                     candidate_pair_completion_decisions[decision] += 1
+                    fair_decision = str(obj.get("fair_price_admission_decision") or "<missing>")
+                    candidate_fair_price_admission_decisions[fair_decision] += 1
+                    fair_mode = str(obj.get("fair_price_admission_mode") or "<missing>")
+                    candidate_fair_price_admission_modes[fair_mode] += 1
                     soft_decision = str(obj.get("risk_seed_closeability_soft_decision") or "<missing>")
                     candidate_soft_decisions[soft_decision] += 1
                     pending = obj.get("risk_seed_pending_opp_credit")
@@ -162,6 +171,12 @@ def scan(root: Path) -> dict[str, Any]:
                         ),
                     )
                     add_stat(stats, "risk_seed_closeability_net_pair_cost", val)
+
+                if kind == "fair_price_admission_block":
+                    fair_price_admission_block_reasons[reason or str(obj.get("fair_price_admission_block_reason") or "<missing>")] += 1
+                    add_stat(stats, "fair_price_block_pair_cost_after_fee", obj.get("fair_price_pair_cost_after_fee"))
+                    add_stat(stats, "fair_price_block_edge_after_fee", obj.get("fair_price_edge_after_fee"))
+                    add_stat(stats, "fair_price_block_seconds_to_close", obj.get("fair_price_seconds_to_close"))
 
                 if kind == "pair_completion_block":
                     pair_completion_block_reasons[reason or str(obj.get("pair_completion_decision") or "<missing>")] += 1
@@ -225,8 +240,11 @@ def scan(root: Path) -> dict[str, Any]:
         "accepted_source_total": source_total,
         "accepted_source_missing_any": source_missing,
         "candidate_pair_completion_decisions": dict(candidate_pair_completion_decisions.most_common()),
+        "candidate_fair_price_admission_decisions": dict(candidate_fair_price_admission_decisions.most_common()),
+        "candidate_fair_price_admission_modes": dict(candidate_fair_price_admission_modes.most_common()),
         "candidate_pending_opp_credit_values": dict(candidate_pending_opp_credit_values.most_common()),
         "candidate_soft_decisions": dict(candidate_soft_decisions.most_common()),
+        "fair_price_admission_block_reasons": dict(fair_price_admission_block_reasons.most_common()),
         "pair_completion_block_reasons": dict(pair_completion_block_reasons.most_common()),
         "risk_seed_closeability_block_reasons": dict(risk_seed_closeability_block_reasons.most_common()),
         "strict_rescue_block_reasons": dict(strict_rescue_block_reasons.most_common()),
