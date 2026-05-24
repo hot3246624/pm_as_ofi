@@ -59,6 +59,11 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     profile_path = Path(args.profile_scorecard).expanduser().resolve()
     concurrency_path = Path(args.concurrency_scorecard).expanduser().resolve() if args.concurrency_scorecard else None
     capital_path = Path(args.capital_roi_scorecard).expanduser().resolve() if args.capital_roi_scorecard else None
+    public_benchmark_path = (
+        Path(args.public_benchmark_comparison_scorecard).expanduser().resolve()
+        if args.public_benchmark_comparison_scorecard
+        else None
+    )
 
     replay = read_json(replay_path)
     runtime = read_json(runtime_path)
@@ -67,6 +72,11 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     profile = read_json(profile_path)
     concurrency = read_json(concurrency_path) if concurrency_path and concurrency_path.exists() else None
     capital = read_json(capital_path) if capital_path and capital_path.exists() else None
+    public_benchmark = (
+        read_json(public_benchmark_path)
+        if public_benchmark_path and public_benchmark_path.exists()
+        else None
+    )
 
     replay_metrics = replay.get("metrics", {})
     replay_econ = replay_metrics.get("economics", {})
@@ -97,6 +107,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "profile_status": profile.get("status"),
         "concurrency_status": concurrency.get("status") if concurrency else None,
         "capital_roi_status": capital.get("status") if capital else None,
+        "public_benchmark_status": public_benchmark.get("status") if public_benchmark else None,
         "shadow_review_ready": shadow_ready,
         "deployable": False,
         "remote_runner_allowed": False,
@@ -114,6 +125,9 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "profile_scorecard": str(profile_path),
             "concurrency_scorecard": str(concurrency_path) if concurrency_path else None,
             "capital_roi_scorecard": str(capital_path) if capital_path else None,
+            "public_benchmark_comparison_scorecard": str(public_benchmark_path)
+            if public_benchmark_path
+            else None,
         },
         "replay_evidence": {
             "fee_after_with_rescue": as_float(replay_econ.get("fee_after_with_rescue")),
@@ -146,6 +160,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "warnings": concurrency.get("warnings", []) if concurrency else [],
         },
         "capital_reuse_roi": capital.get("aggregate", {}) if capital else {},
+        "public_benchmark_comparison": public_benchmark.get("comparison", {}) if public_benchmark else {},
         "next_profile": profile_body,
         "decision": {
             "research_only": True,
@@ -207,6 +222,29 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         metric_line(
             "worst_case_pair_pnl_if_residual_zero",
             capital.get("aggregate", {}).get("round_roi", {}).get("worst_case_pair_pnl_if_residual_zero") if capital else None,
+        ),
+        "",
+        "## Public Benchmark Comparison",
+        metric_line("status", public_benchmark.get("status") if public_benchmark else None),
+        metric_line(
+            "actual_pair_cost_after_fee",
+            public_benchmark.get("comparison", {}).get("actual_pair_cost_after_fee") if public_benchmark else None,
+        ),
+        metric_line(
+            "b55_actual_pair_cost",
+            public_benchmark.get("comparison", {}).get("vs_b55", {}).get("b55_actual_pair_cost") if public_benchmark else None,
+        ),
+        metric_line(
+            "pair_cost_delta_vs_b55",
+            public_benchmark.get("comparison", {}).get("vs_b55", {}).get("pair_cost_delta_vs_b55") if public_benchmark else None,
+        ),
+        metric_line(
+            "residual_qty_share_delta_vs_b55",
+            public_benchmark.get("comparison", {}).get("vs_b55", {}).get("residual_qty_share_delta_vs_b55") if public_benchmark else None,
+        ),
+        metric_line(
+            "residual_qty_share_delta_vs_ce25",
+            public_benchmark.get("comparison", {}).get("vs_ce25", {}).get("residual_qty_share_delta_vs_ce25") if public_benchmark else None,
         ),
         "",
         "## Replay Evidence",
@@ -279,6 +317,7 @@ def main() -> None:
     parser.add_argument("--profile-scorecard", required=True)
     parser.add_argument("--concurrency-scorecard", default=None)
     parser.add_argument("--capital-roi-scorecard", default=None)
+    parser.add_argument("--public-benchmark-comparison-scorecard", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--scorecard-json", required=True)
     args = parser.parse_args()

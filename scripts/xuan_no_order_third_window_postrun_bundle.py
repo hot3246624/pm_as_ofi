@@ -201,6 +201,7 @@ def main() -> None:
     parser.add_argument("--prior-output-roots", nargs="*", default=None)
     parser.add_argument("--no-default-prior-output-roots", action="store_true")
     parser.add_argument("--profile-scorecard", default=".tmp_xuan/scorecards/no_order_soft_closeability_third_window_profile_20260522T1849Z.json")
+    parser.add_argument("--public-benchmark-scorecard", default=None)
     parser.add_argument("--max-closeability-debt-per-slug", type=float, default=1.0)
     args = parser.parse_args()
     if args.prior_output_roots is None:
@@ -231,6 +232,13 @@ def main() -> None:
         "capital": scorecard_dir / f"no_order_{args.tag}_capital_reuse_roi.json",
         "packet": scorecard_dir / f"no_order_{args.tag}_shadow_review_packet.json",
     }
+    public_benchmark_path = (
+        Path(args.public_benchmark_scorecard).expanduser().resolve()
+        if args.public_benchmark_scorecard
+        else None
+    )
+    if public_benchmark_path and public_benchmark_path.exists():
+        paths["public_benchmark"] = scorecard_dir / f"no_order_{args.tag}_public_benchmark_comparison.json"
 
     runtime_summary = write_runtime_summary(third_root, paths["runtime_summary"])
     commands = [
@@ -314,29 +322,47 @@ def main() -> None:
             "--round-minutes",
             "5",
         ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_shadow_review_packet_builder.py",
-            "--replay-scorecard",
-            str(Path(args.replay_scorecard).expanduser().resolve()),
-            "--runtime-scorecard",
-            str(paths["runtime_summary"]),
-            "--repeat-scorecard",
-            str(paths["repeat"]),
-            "--gap-plan-scorecard",
-            str(paths["gap"]),
-            "--profile-scorecard",
-            str(Path(args.profile_scorecard).expanduser().resolve()),
-            "--concurrency-scorecard",
-            str(paths["concurrency"]),
-            "--capital-roi-scorecard",
-            str(paths["capital"]),
-            "--output-dir",
-            str(output_dir),
-            "--scorecard-json",
-            str(paths["packet"]),
-        ],
     ]
+    if public_benchmark_path and "public_benchmark" in paths:
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
+                "--public-benchmark-scorecard",
+                str(public_benchmark_path),
+                "--capital-roi-scorecard",
+                str(paths["capital"]),
+                "--runtime-scorecard",
+                str(paths["repeat"]),
+                "--scorecard-json",
+                str(paths["public_benchmark"]),
+            ]
+        )
+    packet_command = [
+        sys.executable,
+        "scripts/xuan_no_order_shadow_review_packet_builder.py",
+        "--replay-scorecard",
+        str(Path(args.replay_scorecard).expanduser().resolve()),
+        "--runtime-scorecard",
+        str(paths["runtime_summary"]),
+        "--repeat-scorecard",
+        str(paths["repeat"]),
+        "--gap-plan-scorecard",
+        str(paths["gap"]),
+        "--profile-scorecard",
+        str(Path(args.profile_scorecard).expanduser().resolve()),
+        "--concurrency-scorecard",
+        str(paths["concurrency"]),
+        "--capital-roi-scorecard",
+        str(paths["capital"]),
+        "--output-dir",
+        str(output_dir),
+        "--scorecard-json",
+        str(paths["packet"]),
+    ]
+    if "public_benchmark" in paths:
+        packet_command.extend(["--public-benchmark-comparison-scorecard", str(paths["public_benchmark"])])
+    commands.append(packet_command)
 
     command_results = [run_command(command, cwd) for command in commands]
     statuses = {name: status_of(path) for name, path in paths.items()}

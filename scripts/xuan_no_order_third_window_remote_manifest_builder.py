@@ -29,6 +29,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_no_order_shadow_review_packet_builder.py",
     "scripts/xuan_no_order_concurrent_shared_ingress_scorer.py",
     "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
+    "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
 ]
 
 
@@ -272,11 +273,19 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     ]
     if reset_repeat_roots:
         postrun_command.append("--no-default-prior-output-roots")
+    public_benchmark_path = (
+        Path(args.public_benchmark_scorecard).expanduser().resolve()
+        if args.public_benchmark_scorecard
+        else None
+    )
+    if public_benchmark_path and public_benchmark_path.exists():
+        postrun_command.extend(["--public-benchmark-scorecard", str(public_benchmark_path)])
 
     return {
         "status": "THIRD_WINDOW_REMOTE_STAGING_MANIFEST_READY_LOCAL_ONLY",
         "profile_scorecard": str(profile_path),
         "profile_status": profile_status,
+        "public_benchmark_scorecard": str(public_benchmark_path) if public_benchmark_path else None,
         "profile": profile,
         "target": {
             "ssh_host": args.ssh_host,
@@ -319,6 +328,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--profile-scorecard", default=".tmp_xuan/scorecards/no_order_soft_closeability_third_window_profile_20260522T1849Z.json")
+    parser.add_argument("--public-benchmark-scorecard", default=".tmp_xuan/scorecards/xuan_public_leaderboard_trader_review_20260524T1200Z.json")
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--stage-files", nargs="+", default=DEFAULT_STAGE_FILES)
