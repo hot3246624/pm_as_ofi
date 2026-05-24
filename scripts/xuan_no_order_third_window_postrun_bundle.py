@@ -229,6 +229,7 @@ def main() -> None:
         "comparison": scorecard_dir / f"no_order_{args.tag}_comparison_scorer.json",
         "shadow": scorecard_dir / f"no_order_{args.tag}_shadow_readiness.json",
         "concurrency": scorecard_dir / f"no_order_{args.tag}_concurrent_shared_ingress_scorer.json",
+        "young_tiny_residual": scorecard_dir / f"no_order_{args.tag}_young_tiny_residual_scorer.json",
         "repeat": scorecard_dir / f"no_order_{args.tag}_repeat_window_scorer.json",
         "gap": scorecard_dir / f"no_order_{args.tag}_repeat_window_gap_plan.json",
         "capital": scorecard_dir / f"no_order_{args.tag}_capital_reuse_roi.json",
@@ -298,6 +299,14 @@ def main() -> None:
             str(third_root),
             "--scorecard-json",
             str(paths["concurrency"]),
+        ],
+        [
+            sys.executable,
+            "scripts/xuan_no_order_young_tiny_residual_scorer.py",
+            "--output-root",
+            str(third_root),
+            "--scorecard-json",
+            str(paths["young_tiny_residual"]),
         ],
         [
             sys.executable,

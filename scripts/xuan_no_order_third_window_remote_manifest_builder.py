@@ -28,6 +28,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_no_order_runtime_repeat_window_gap_planner.py",
     "scripts/xuan_no_order_shadow_review_packet_builder.py",
     "scripts/xuan_no_order_concurrent_shared_ingress_scorer.py",
+    "scripts/xuan_no_order_young_tiny_residual_scorer.py",
     "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
     "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
     "scripts/xuan_capacity_stage_public_benchmark_gate.py",
