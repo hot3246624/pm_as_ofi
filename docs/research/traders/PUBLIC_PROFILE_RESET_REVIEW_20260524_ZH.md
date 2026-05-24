@@ -24,11 +24,29 @@ Artifact: `xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022
 | profile | wallet | decision | recent public trade rows | motif | key metric |
 | --- | --- | --- | ---: | --- | --- |
 | `0x04b6...` | `0x04b6d7e930cf9e493c5e6ef24b496294f95594c8` | KEEP | 3500 | short-horizon complete-set pairing | 75.0% BTC 5m, 20.9% BTC 15m, pair cost 0.9932, residual share 15.9% |
-| `0x9f5...` | `0x9f5ffe76a818dce37c70f947998b52b70671a008` | UNKNOWN / negative control | 3426 | high turnover but poor pair economics | pair cost 1.0405, residual share 40.0%, current paired position proxy -86.25 |
+| `0x9f5...` | `0x9f5ffe76a818dce37c70f947998b52b70671a008` | KEEP as profit/settlement lead, not robust-pairing lead | 3426 | high turnover, strong directional/settlement exposure | sampled pair cost 1.0405, residual share 40.0%, current paired position proxy -86.25 |
 | `0x8dxd` | `0x63ce342161250d705dc0b16df89036c8e5f9ba9a` | KEEP as lead/control | 3500 | strong entry edge but residual-heavy | pair cost 0.9278, weighted edge +7.22%, residual share 83.9%, current positions 0 |
 | `gabagool22` | `0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d` | UNKNOWN / mixed | 3426 | closed-cycle low residual, timeframe mixed | pair cost 0.9957, residual share 4.46%, 50% of rows are 10-share clips |
 
-Important caveat: the public activity endpoint returned HTTP 400 after offset 3500 for these profiles, so this is a capped recent-window review, not a full lifetime reconstruction. That is still enough to classify current motifs and choose the next local objective.
+Important caveat: the public activity endpoint returned HTTP 400 after offset 3500 for these profiles, so this is a capped recent-window review, not a full 72h or lifetime reconstruction. It is enough to classify sampled motifs, but not enough to rank 72h fee-after account PnL. In particular, `0x9f5...` should not be read as a weak account: the sampled pair-cost lens says its paired subset is expensive/residual-heavy, while a 72h realized/settlement PnL lens can still rank it as the strongest earner.
+
+## Methodology Correction
+
+There are two different questions:
+
+1. Strongest money machine over a realized public window.
+2. Most robust and copyable infrastructure pattern.
+
+Under the first question, `0x9f5...` can legitimately rank first if 72h fee-after PnL is +$43k and all days are positive. Its edge appears to come from direction/settlement selection rather than low-risk complete-set pairing. That is valuable and should be studied, but it is not the same object as a low-residual pairing engine.
+
+Under the second question, `0x04b6...` remains the priority because it has lower residual, more concentrated BTC short-horizon activity, low takerOnly sample, positive paired-cost structure, and material maker/rebate support. It is not necessarily the highest PnL account, but it is the cleaner strategy-structure template.
+
+Therefore the updated ranking is:
+
+- Profitability lead: `0x9f5...`.
+- Robust/copyable infrastructure lead: `0x04b6...`.
+- Directional/lifecycle lead or control: `0x8dxd` and any equivalent high-residual zero-position account.
+- Mixed closed-cycle clip lead: `gabagool22`.
 
 ## What This Changes
 
