@@ -196,6 +196,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("remote_command_debt_budget_does_not_match_profile")
     if not option_matches(remote_cmd, "--risk-seed-pending-opp-credit", profile.get("risk_seed_pending_opp_credit", 1.0)):
         hard_blockers.append("remote_command_pending_opp_credit_does_not_match_profile")
+    cancel_closeability_cap = profile.get("risk_seed_cancel_on_closeability_net_cap")
+    if cancel_closeability_cap is not None and not option_matches(
+        remote_cmd,
+        "--risk-seed-cancel-on-closeability-net-cap",
+        cancel_closeability_cap,
+    ):
+        hard_blockers.append("remote_command_closeability_cancel_cap_does_not_match_profile")
     if profile.get("pair_completion_net_cap") is not None and not option_matches(
         remote_cmd, "--pair-completion-net-cap", profile.get("pair_completion_net_cap")
     ):
@@ -263,6 +270,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "remote_command_has_normalized_lifecycle": "--write-normalized-lifecycle" in remote_cmd,
             "remote_command_has_rescue_diagnostics": "--write-rescue-block-diagnostics" in remote_cmd,
             "remote_command_has_concurrent_reader_evidence_flag": "--allow-concurrent-shared-ingress-readers" in remote_cmd,
+            "remote_command_has_closeability_cancel_guard": "--risk-seed-cancel-on-closeability-net-cap" in remote_cmd,
             "fair_price_admission_enabled": fair_price_admission.get("enabled") is True,
             "remote_command_has_fair_price_admission": "--fair-price-admission-jsonl" in remote_cmd,
             "postrun_command_has_bundle_script": "xuan_no_order_third_window_postrun_bundle.py" in postrun_cmd,

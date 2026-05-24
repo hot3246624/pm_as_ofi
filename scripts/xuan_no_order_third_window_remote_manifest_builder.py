@@ -291,6 +291,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     append_option(remote_command, "--activation-mode", profile.get("activation_mode"))
     append_option(remote_command, "--activation-window-s", profile.get("activation_window_s"))
     append_option(remote_command, "--late-repair-after-s", profile.get("late_repair_after_s"))
+    append_option(
+        remote_command,
+        "--risk-seed-cancel-on-closeability-net-cap",
+        profile.get("risk_seed_cancel_on_closeability_net_cap"),
+    )
     append_option(remote_command, "--pair-completion-net-cap", profile.get("pair_completion_net_cap"))
     append_option(
         remote_command,
@@ -367,6 +372,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "max_pair_cost": args.fair_price_max_pair_cost if fair_price_admission_path else None,
             "min_seconds_to_close": args.fair_price_min_seconds_to_close if fair_price_admission_path else None,
             "max_seconds_to_close": args.fair_price_max_seconds_to_close if fair_price_admission_path else None,
+        },
+        "closeability_cancel_guard": {
+            "enabled": profile.get("risk_seed_cancel_on_closeability_net_cap") is not None,
+            "net_cap": profile.get("risk_seed_cancel_on_closeability_net_cap"),
         },
         "target": {
             "ssh_host": args.ssh_host,
