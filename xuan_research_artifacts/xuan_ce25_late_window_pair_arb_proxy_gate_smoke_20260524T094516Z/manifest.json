@@ -1,0 +1,20 @@
+{
+  "artifact": "xuan_ce25_late_window_pair_arb_proxy_gate_smoke",
+  "checks": {
+    "b55_strength_control": true,
+    "btc_5m_negative_control_negative": true,
+    "missing_fail_closed": true,
+    "missing_not_deployable": true,
+    "no_order_not_allowed": true,
+    "primary_cohort_positive": true,
+    "primary_pair_positive": true,
+    "primary_residual_drag_visible": true,
+    "primary_tail_blocker_visible": true,
+    "promotion_never_passes": true,
+    "real_keep": true,
+    "selected_primary_group": true
+  },
+  "decision_label": "KEEP_CE25_LATE_WINDOW_PAIR_ARB_PROXY_GATE_SMOKE_PASS",
+  "missing_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_ce25_late_window_pair_arb_proxy_gate_smoke_20260524T094516Z/missing/manifest.json",
+  "real_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_ce25_late_window_pair_arb_proxy_gate_smoke_20260524T094516Z/real/manifest.json"
+}
