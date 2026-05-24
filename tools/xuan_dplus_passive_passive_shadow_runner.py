@@ -473,6 +473,7 @@ class RunnerConfig:
     risk_seed_closeability_soft_net_cap: float | None = None
     risk_seed_closeability_debt_floor: float | None = None
     risk_seed_closeability_debt_budget: float = 0.0
+    risk_seed_cancel_on_closeability_net_cap: float | None = None
     risk_seed_pending_opp_credit: float = 1.0
     pair_completion_net_cap: float | None = None
     pair_completion_min_pair_pnl_after: float | None = None
@@ -546,6 +547,7 @@ class VirtualOrder:
     trigger_px: float
     trigger_size: float
     trigger_ts_ms: int
+    risk_increasing_seed: bool = True
     trigger_source_sequence_id: Any | None = None
     opposite_trigger_ts_ms: int | None = None
     closeability_comp_ask: float | None = None
@@ -555,6 +557,7 @@ class VirtualOrder:
     risk_seed_closeability_debt_budget: float = 0.0
     closeability_debt_per_share: float = 0.0
     closeability_debt: float = 0.0
+    risk_seed_cancel_on_closeability_net_cap: float | None = None
     queue_credit: float = 0.0
     first_bid_touch_ms: int | None = None
     first_trade_touch_ms: int | None = None
@@ -690,6 +693,14 @@ class DPlusRunner:
             self.metrics.closeability_debt_max_open,
             self.closeability_debt_open,
         )
+
+    def current_order_closeability(self, order: VirtualOrder) -> tuple[float | None, float | None, float | None]:
+        comp_ask = side_ask(self.book, opp(order.side))
+        if comp_ask <= 0:
+            return None, None, None
+        close_px = comp_ask + self.cfg.strict_rescue_close_ask_slip
+        fee = fee_per_share(close_px, self.cfg.taker_fee_rate)
+        return comp_ask, fee, order.px + comp_ask + self.cfg.strict_rescue_close_ask_slip + fee
 
     def observe_source_linkage(
         self,
@@ -982,6 +993,25 @@ class DPlusRunner:
                 self.metrics.touch_only_orders += 1
             self.emit({"kind": "cancel", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "cancel_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "reason": order.cancel_reason, "side": order.side, "price": order.px, "px": order.px, "size": order.qty, "qty": order.qty, "placed_ts_ms": order.created_ms, "accepted_ts_ms": order.accepted_ms, "opposite_trigger_ts_ms": order.opposite_trigger_ts_ms, "queue_credit": order.queue_credit, "closeability_debt": order.closeability_debt, "closeability_debt_per_share": order.closeability_debt_per_share, "closeability_debt_pre_open": round(debt_pre_open, 12), "closeability_debt_post_open": round(self.closeability_debt_open, 12)})
 
+    def cancel_closeability_deteriorated(self, ts_ms: int) -> None:
+        cap = self.cfg.risk_seed_cancel_on_closeability_net_cap
+        if cap is None:
+            return
+        for order in self.pending_orders():
+            if not order.risk_increasing_seed:
+                continue
+            comp_ask, fee, net_pair = self.current_order_closeability(order)
+            if net_pair is None or net_pair <= cap + 1e-12:
+                continue
+            debt_pre_open = self.closeability_debt_open
+            self.adjust_closeability_debt(-order.closeability_debt)
+            order.cancel_ms = ts_ms
+            order.cancel_reason = "closeability_deterioration"
+            self.metrics.cancelled_orders += 1
+            if order.first_bid_touch_ms or order.first_trade_touch_ms:
+                self.metrics.touch_only_orders += 1
+            self.emit({"kind": "cancel", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "cancel_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "reason": order.cancel_reason, "side": order.side, "price": order.px, "px": order.px, "size": order.qty, "qty": order.qty, "placed_ts_ms": order.created_ms, "accepted_ts_ms": order.accepted_ms, "opposite_trigger_ts_ms": order.opposite_trigger_ts_ms, "queue_credit": order.queue_credit, "risk_increasing_seed": order.risk_increasing_seed, "source_sequence_id": self.book_source_sequence_id, "market_md_source_sequence_id": self.book_source_sequence_id, "book_event_time_ms": self.book_event_time_ms, "closeability_comp_ask": order.closeability_comp_ask, "closeability_net_pair_cost": order.closeability_net_pair_cost, "closeability_current_comp_ask": comp_ask, "closeability_current_fee_per_share": fee, "closeability_current_net_pair_cost": net_pair, "risk_seed_cancel_on_closeability_net_cap": cap, "closeability_debt": order.closeability_debt, "closeability_debt_per_share": order.closeability_debt_per_share, "closeability_debt_pre_open": round(debt_pre_open, 12), "closeability_debt_post_open": round(self.closeability_debt_open, 12)})
+
     def fill_order(
         self,
         order: VirtualOrder,
@@ -1252,6 +1282,7 @@ class DPlusRunner:
         self.observe_source_linkage("book_l1", self.book_source_sequence_id, self.book_event_time_ms, ts_ms)
         self.observe_source_linkage("book_l2", self.book_l2_source_sequence_id, self.book_l2_event_time_ms, self.book_l2_ts_ms)
         self.mark_touches(ts_ms)
+        self.cancel_closeability_deteriorated(ts_ms)
         self.cancel_expired(ts_ms)
         self.pair_inventory(ts_ms)
         self.try_salvage(ts_ms)
@@ -1270,6 +1301,7 @@ class DPlusRunner:
 
         if taker == "SELL" and side in {"YES", "NO"}:
             self.mark_touches(ts_ms, side, px)
+            self.cancel_closeability_deteriorated(ts_ms)
             for order in self.pending_orders(side):
                 if px > order.px + 1e-12:
                     continue
@@ -1680,14 +1712,14 @@ class DPlusRunner:
         opposite_trigger_ts_ms = (
             ts_ms - activation_opp_age_ms if activation_opp_age_ms is not None else opposite_seen_ms
         )
-        order = VirtualOrder(id=self.next_order_id, quote_intent_id=quote_intent_id, condition_id=self.condition_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, accepted_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size, trigger_ts_ms=ts_ms, trigger_source_sequence_id=trigger_source_sequence_id, opposite_trigger_ts_ms=opposite_trigger_ts_ms, closeability_comp_ask=closeability_comp_ask, closeability_net_pair_cost=closeability_net_pair_cost, risk_seed_closeability_soft_net_cap=self.cfg.risk_seed_closeability_soft_net_cap, risk_seed_closeability_debt_floor=closeability_audit["risk_seed_closeability_debt_floor"], risk_seed_closeability_debt_budget=self.cfg.risk_seed_closeability_debt_budget, closeability_debt_per_share=closeability_audit["closeability_debt_per_share"], closeability_debt=closeability_audit["closeability_debt"])
+        order = VirtualOrder(id=self.next_order_id, quote_intent_id=quote_intent_id, condition_id=self.condition_id, side=side, px=seed_px, qty=qty, created_ms=ts_ms, accepted_ms=ts_ms, offset_s=float(offset), trigger_px=px, trigger_size=size, trigger_ts_ms=ts_ms, risk_increasing_seed=risk_increasing_seed, trigger_source_sequence_id=trigger_source_sequence_id, opposite_trigger_ts_ms=opposite_trigger_ts_ms, closeability_comp_ask=closeability_comp_ask, closeability_net_pair_cost=closeability_net_pair_cost, risk_seed_closeability_soft_net_cap=self.cfg.risk_seed_closeability_soft_net_cap, risk_seed_closeability_debt_floor=closeability_audit["risk_seed_closeability_debt_floor"], risk_seed_closeability_debt_budget=self.cfg.risk_seed_closeability_debt_budget, closeability_debt_per_share=closeability_audit["closeability_debt_per_share"], closeability_debt=closeability_audit["closeability_debt"], risk_seed_cancel_on_closeability_net_cap=self.cfg.risk_seed_cancel_on_closeability_net_cap)
         self.next_order_id += 1
         self.pending.append(order)
         self.last_seed_ms = ts_ms
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
-        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit, "risk_seed_pending_opp_qty": pending_opp_qty, "risk_seed_credited_opp_qty": credited_opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "high_price_mode": self.cfg.high_price_mode, "high_price_normal_px_hi": self.cfg.high_price_normal_px_hi, "high_price_close_only_active": high_price_close_only_active, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap, "closeability_comp_ask": closeability_comp_ask, "closeability_net_pair_cost": closeability_net_pair_cost, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask, **pair_completion_audit, **closeability_audit, **fair_price_audit, **source_quality_audit, **surplus_audit})
+        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit, "risk_seed_pending_opp_qty": pending_opp_qty, "risk_seed_credited_opp_qty": credited_opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "high_price_mode": self.cfg.high_price_mode, "high_price_normal_px_hi": self.cfg.high_price_normal_px_hi, "high_price_close_only_active": high_price_close_only_active, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap, "risk_seed_cancel_on_closeability_net_cap": self.cfg.risk_seed_cancel_on_closeability_net_cap, "closeability_comp_ask": closeability_comp_ask, "closeability_net_pair_cost": closeability_net_pair_cost, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask, **pair_completion_audit, **closeability_audit, **fair_price_audit, **source_quality_audit, **surplus_audit})
         self.record_activation_seen(side, ts_ms)
 
     def read_events(self) -> list[dict[str, Any]]:
@@ -1740,6 +1772,7 @@ class DPlusRunner:
                     "risk_seed_closeability_debt_floor": event.get("risk_seed_closeability_debt_floor"),
                     "risk_seed_closeability_debt_budget": event.get("risk_seed_closeability_debt_budget"),
                     "risk_seed_closeability_soft_decision": event.get("risk_seed_closeability_soft_decision"),
+                    "risk_seed_cancel_on_closeability_net_cap": event.get("risk_seed_cancel_on_closeability_net_cap"),
                     "risk_seed_pending_opp_credit": event.get("risk_seed_pending_opp_credit"),
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
@@ -1774,6 +1807,11 @@ class DPlusRunner:
                     "placed_ts_ms": event.get("placed_ts_ms"),
                     "accepted_ts_ms": event.get("accepted_ts_ms"),
                     "cancel_reason": "",
+                    "risk_seed_cancel_on_closeability_net_cap": event.get("risk_seed_cancel_on_closeability_net_cap"),
+                    "closeability_comp_ask": event.get("closeability_comp_ask"),
+                    "closeability_net_pair_cost": event.get("closeability_net_pair_cost"),
+                    "closeability_current_comp_ask": "",
+                    "closeability_current_net_pair_cost": "",
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
                 })
@@ -1801,6 +1839,7 @@ class DPlusRunner:
                     "risk_seed_closeability_debt_floor": event.get("risk_seed_closeability_debt_floor"),
                     "risk_seed_closeability_debt_budget": event.get("risk_seed_closeability_debt_budget"),
                     "risk_seed_closeability_soft_decision": event.get("risk_seed_closeability_soft_decision"),
+                    "risk_seed_cancel_on_closeability_net_cap": event.get("risk_seed_cancel_on_closeability_net_cap"),
                     "risk_seed_pending_opp_credit": event.get("risk_seed_pending_opp_credit"),
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
@@ -1836,6 +1875,11 @@ class DPlusRunner:
                     "placed_ts_ms": event.get("placed_ts_ms"),
                     "accepted_ts_ms": event.get("accepted_ts_ms"),
                     "cancel_reason": event.get("reason"),
+                    "risk_seed_cancel_on_closeability_net_cap": event.get("risk_seed_cancel_on_closeability_net_cap"),
+                    "closeability_comp_ask": event.get("closeability_comp_ask"),
+                    "closeability_net_pair_cost": event.get("closeability_net_pair_cost"),
+                    "closeability_current_comp_ask": event.get("closeability_current_comp_ask"),
+                    "closeability_current_net_pair_cost": event.get("closeability_current_net_pair_cost"),
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
                 })
@@ -1950,8 +1994,8 @@ class DPlusRunner:
                 "surplus_budget_decision", "surplus_budget_projected_unpaired_cost",
                 "risk_seed_closeability_net_cap", "risk_seed_closeability_soft_net_cap",
                 "risk_seed_closeability_debt_floor", "risk_seed_closeability_debt_budget",
-                "risk_seed_closeability_soft_decision", "risk_seed_pending_opp_credit",
-                "risk_seed_pending_opp_qty", "risk_seed_credited_opp_qty",
+                "risk_seed_closeability_soft_decision", "risk_seed_cancel_on_closeability_net_cap",
+                "risk_seed_pending_opp_credit", "risk_seed_pending_opp_qty", "risk_seed_credited_opp_qty",
                 "pair_completion_net_cap", "pair_completion_min_pair_pnl_after",
                 "pair_completion_qty", "pair_completion_avg_net_pair_cost",
                 "pair_completion_worst_net_pair_cost", "pair_completion_pair_pnl_delta",
@@ -1972,6 +2016,9 @@ class DPlusRunner:
                 "event_id", "kind", "slug", "condition_id", "ts_ms", "quote_intent_id", "side",
                 "order_event_type", "order_id", "price", "qty", "placed_ts_ms", "accepted_ts_ms",
                 "cancel_reason", "source_sequence_id", "market_md_source_sequence_id",
+                "risk_seed_cancel_on_closeability_net_cap", "closeability_comp_ask",
+                "closeability_net_pair_cost", "closeability_current_comp_ask",
+                "closeability_current_net_pair_cost",
                 "closeability_debt_per_share", "closeability_debt",
             ],
             order_rows,
@@ -2347,6 +2394,12 @@ async def main() -> None:
     ap.add_argument("--risk-seed-closeability-debt-floor", type=float, default=None)
     ap.add_argument("--risk-seed-closeability-debt-budget", type=float, default=0.0)
     ap.add_argument(
+        "--risk-seed-cancel-on-closeability-net-cap",
+        type=float,
+        default=None,
+        help="Default-off guard: cancel pending risk seed orders when current opposite ask implies net pair cost above this cap.",
+    )
+    ap.add_argument(
         "--risk-seed-pending-opp-credit",
         type=float,
         default=1.0,
@@ -2451,6 +2504,7 @@ async def main() -> None:
         risk_seed_closeability_soft_net_cap=args.risk_seed_closeability_soft_net_cap,
         risk_seed_closeability_debt_floor=args.risk_seed_closeability_debt_floor,
         risk_seed_closeability_debt_budget=args.risk_seed_closeability_debt_budget,
+        risk_seed_cancel_on_closeability_net_cap=args.risk_seed_cancel_on_closeability_net_cap,
         risk_seed_pending_opp_credit=args.risk_seed_pending_opp_credit,
         pair_completion_net_cap=args.pair_completion_net_cap,
         pair_completion_min_pair_pnl_after=args.pair_completion_min_pair_pnl_after,
@@ -2505,6 +2559,8 @@ async def main() -> None:
         raise SystemExit("--risk-seed-closeability-debt-floor must be positive")
     if cfg.risk_seed_closeability_debt_budget < 0:
         raise SystemExit("--risk-seed-closeability-debt-budget must be non-negative")
+    if cfg.risk_seed_cancel_on_closeability_net_cap is not None and cfg.risk_seed_cancel_on_closeability_net_cap <= 0:
+        raise SystemExit("--risk-seed-cancel-on-closeability-net-cap must be positive")
     if not (0.0 <= cfg.risk_seed_pending_opp_credit <= 1.0):
         raise SystemExit("--risk-seed-pending-opp-credit must be in [0, 1]")
     if cfg.pair_completion_net_cap is not None and cfg.pair_completion_net_cap <= 0:

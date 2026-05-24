@@ -94,6 +94,7 @@ def scan(root: Path) -> dict[str, Any]:
     fair_price_admission_block_reasons: Counter[str] = Counter()
     pair_completion_block_reasons: Counter[str] = Counter()
     risk_seed_closeability_block_reasons: Counter[str] = Counter()
+    cancel_reasons: Counter[str] = Counter()
     strict_rescue_block_reasons: Counter[str] = Counter()
     strict_rescue_close_skipped_low_cost_lots: Counter[str] = Counter()
     candidate_pending_opp_credit_values: Counter[str] = Counter()
@@ -172,6 +173,13 @@ def scan(root: Path) -> dict[str, Any]:
                     )
                     add_stat(stats, "risk_seed_closeability_net_pair_cost", val)
 
+                if kind == "cancel":
+                    cancel_reasons[reason or "<missing>"] += 1
+                    add_stat(stats, "cancel_closeability_original_net_pair_cost", obj.get("closeability_net_pair_cost"))
+                    add_stat(stats, "cancel_closeability_current_comp_ask", obj.get("closeability_current_comp_ask"))
+                    add_stat(stats, "cancel_closeability_current_net_pair_cost", obj.get("closeability_current_net_pair_cost"))
+                    add_stat(stats, "cancel_closeability_net_cap", obj.get("risk_seed_cancel_on_closeability_net_cap"))
+
                 if kind == "fair_price_admission_block":
                     fair_price_admission_block_reasons[reason or str(obj.get("fair_price_admission_block_reason") or "<missing>")] += 1
                     add_stat(stats, "fair_price_block_pair_cost_after_fee", obj.get("fair_price_pair_cost_after_fee"))
@@ -247,6 +255,7 @@ def scan(root: Path) -> dict[str, Any]:
         "fair_price_admission_block_reasons": dict(fair_price_admission_block_reasons.most_common()),
         "pair_completion_block_reasons": dict(pair_completion_block_reasons.most_common()),
         "risk_seed_closeability_block_reasons": dict(risk_seed_closeability_block_reasons.most_common()),
+        "cancel_reasons": dict(cancel_reasons.most_common()),
         "strict_rescue_block_reasons": dict(strict_rescue_block_reasons.most_common()),
         "strict_rescue_close_skipped_low_cost_lots": dict(strict_rescue_close_skipped_low_cost_lots.most_common()),
     }

@@ -708,6 +708,191 @@ def smoke_risk_seed_closeability_soft_debt_gate() -> dict[str, Any]:
     }
 
 
+def smoke_risk_seed_closeability_cancel_guard() -> dict[str, Any]:
+    with tempfile.TemporaryDirectory() as td:
+        slug = "btc-updown-5m-100"
+        runner = DPlusRunner(
+            slug,
+            Path(td),
+            RunnerConfig(
+                cooldown_ms=0,
+                seed_offset_max_s=1.5,
+                risk_seed_closeability_soft_net_cap=0.98,
+                risk_seed_closeability_debt_floor=0.95,
+                risk_seed_closeability_debt_budget=0.10,
+                risk_seed_cancel_on_closeability_net_cap=0.98,
+            ),
+        )
+        runner.on_book(
+            {
+                "ts_ms": 101_000,
+                "yes_ask": 0.50,
+                "no_ask": 0.50,
+                "source_sequence_id": "book-cancel-closeability-l1",
+                "event_time_ms": 101_000,
+                "l2_source_sequence_id": "book-cancel-closeability-l2",
+                "l2_event_time_ms": 101_000,
+            }
+        )
+        runner.on_trade(
+            {
+                "ts_ms": 101_000,
+                "market_side": "YES",
+                "taker_side": "SELL",
+                "price": 0.50,
+                "size": 20.0,
+                "source_sequence_id": "trade-cancel-closeability-seed",
+                "event_time_ms": 101_000,
+            }
+        )
+        candidate = next(
+            (event for event in read_events(Path(td), slug) if event.get("kind") == "candidate"),
+            {},
+        )
+        runner.on_book(
+            {
+                "ts_ms": 102_000,
+                "yes_ask": 0.50,
+                "no_ask": 0.60,
+                "source_sequence_id": "book-cancel-closeability-deteriorated",
+                "event_time_ms": 102_000,
+                "l2_source_sequence_id": "book-cancel-closeability-deteriorated-l2",
+                "l2_event_time_ms": 102_000,
+            }
+        )
+        runner.on_trade(
+            {
+                "ts_ms": 102_100,
+                "market_side": "YES",
+                "taker_side": "SELL",
+                "price": 0.46,
+                "size": 100.0,
+                "source_sequence_id": "trade-cancel-closeability-through",
+                "event_time_ms": 102_100,
+            }
+        )
+        events = read_events(Path(td), slug)
+        cancel_event = next(
+            (event for event in events if event.get("kind") == "cancel" and event.get("reason") == "closeability_deterioration"),
+            {},
+        )
+        state = comparable_state(runner)
+
+    with tempfile.TemporaryDirectory() as td:
+        slug = "btc-updown-5m-101"
+        protected_runner = DPlusRunner(
+            slug,
+            Path(td),
+            RunnerConfig(
+                cooldown_ms=0,
+                seed_offset_max_s=1.5,
+                risk_seed_closeability_soft_net_cap=0.98,
+                risk_seed_closeability_debt_floor=0.95,
+                risk_seed_closeability_debt_budget=0.10,
+                risk_seed_cancel_on_closeability_net_cap=0.98,
+            ),
+        )
+        protected_runner.lots["NO"].append(
+            Lot(
+                id=1,
+                quote_intent_id="existing-no-lot",
+                side="NO",
+                qty=5.0,
+                px=0.40,
+                fill_ms=100_000,
+                source_order_id=0,
+                source_sequence_id="existing-no-source",
+                source_event_time_ms=100_000,
+            )
+        )
+        protected_runner.on_book(
+            {
+                "ts_ms": 101_000,
+                "yes_ask": 0.50,
+                "no_ask": 0.50,
+                "source_sequence_id": "book-risk-reducing-l1",
+                "event_time_ms": 101_000,
+                "l2_source_sequence_id": "book-risk-reducing-l2",
+                "l2_event_time_ms": 101_000,
+            }
+        )
+        protected_runner.on_trade(
+            {
+                "ts_ms": 101_000,
+                "market_side": "YES",
+                "taker_side": "SELL",
+                "price": 0.50,
+                "size": 20.0,
+                "source_sequence_id": "trade-risk-reducing-seed",
+                "event_time_ms": 101_000,
+            }
+        )
+        protected_runner.on_book(
+            {
+                "ts_ms": 102_000,
+                "yes_ask": 0.50,
+                "no_ask": 0.60,
+                "source_sequence_id": "book-risk-reducing-deteriorated",
+                "event_time_ms": 102_000,
+                "l2_source_sequence_id": "book-risk-reducing-deteriorated-l2",
+                "l2_event_time_ms": 102_000,
+            }
+        )
+        protected_runner.on_trade(
+            {
+                "ts_ms": 102_100,
+                "market_side": "YES",
+                "taker_side": "SELL",
+                "price": 0.46,
+                "size": 100.0,
+                "source_sequence_id": "trade-risk-reducing-through",
+                "event_time_ms": 102_100,
+            }
+        )
+        protected_events = read_events(Path(td), slug)
+        protected_candidate = next(
+            (event for event in protected_events if event.get("kind") == "candidate"),
+            {},
+        )
+        protected_state = comparable_state(protected_runner)
+
+    candidate_passed = (
+        candidate.get("risk_seed_closeability_soft_decision") == "allow"
+        and (candidate.get("closeability_net_pair_cost") or 2.0) <= 0.98
+        and (candidate.get("closeability_debt") or 0.0) > 0.0
+    )
+    cancel_passed = (
+        cancel_event.get("reason") == "closeability_deterioration"
+        and cancel_event.get("risk_seed_cancel_on_closeability_net_cap") == 0.98
+        and (cancel_event.get("closeability_current_net_pair_cost") or 0.0) > 0.98
+        and cancel_event.get("closeability_debt_post_open") == 0.0
+    )
+    no_fill_after_cancel_passed = (
+        state["metrics"]["queue_supported_fills"] == 0
+        and state["metrics"]["cancelled_orders"] == 1
+        and state["metrics"]["candidates"] == 1
+    )
+    risk_reducing_not_cancelled_passed = (
+        protected_candidate.get("risk_increasing_seed") is False
+        and protected_state["metrics"]["cancelled_orders"] == 0
+        and protected_state["metrics"]["queue_supported_fills"] == 1
+    )
+    passed = candidate_passed and cancel_passed and no_fill_after_cancel_passed and risk_reducing_not_cancelled_passed
+    return {
+        "name": "risk_seed_closeability_cancel_guard",
+        "status": "PASS" if passed else "FAIL",
+        "candidate_passed": candidate_passed,
+        "cancel_passed": cancel_passed,
+        "no_fill_after_cancel_passed": no_fill_after_cancel_passed,
+        "risk_reducing_not_cancelled_passed": risk_reducing_not_cancelled_passed,
+        "candidate": candidate,
+        "cancel_event": cancel_event,
+        "state": state,
+        "protected_candidate": protected_candidate,
+        "protected_state": protected_state,
+    }
+
+
 def smoke_risk_seed_pending_opp_credit_guard() -> dict[str, Any]:
     def run_one(cfg: RunnerConfig) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as td:
@@ -1226,6 +1411,7 @@ def main() -> None:
         smoke_source_quality_and_l2_paths(),
         smoke_risk_seed_closeability_gate(),
         smoke_risk_seed_closeability_soft_debt_gate(),
+        smoke_risk_seed_closeability_cancel_guard(),
         smoke_risk_seed_pending_opp_credit_guard(),
         smoke_pair_completion_net_cap(),
         smoke_strict_rescue_surplus_floor(),
