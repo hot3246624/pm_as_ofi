@@ -169,6 +169,14 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "## Capital-Reuse ROI",
         metric_line("status", capital.get("status") if capital else None),
         metric_line(
+            "fee_accounting",
+            capital.get("assumptions", {}).get("fee_accounting") if capital else None,
+        ),
+        metric_line(
+            "taker_fee",
+            capital.get("aggregate", {}).get("totals", {}).get("taker_fee") if capital else None,
+        ),
+        metric_line(
             "edge_on_redeem_notional",
             capital.get("aggregate", {}).get("round_roi", {}).get("edge_on_redeem_notional") if capital else None,
         ),

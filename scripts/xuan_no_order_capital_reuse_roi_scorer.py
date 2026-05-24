@@ -481,6 +481,7 @@ def main() -> int:
             "internal_pair_release": "fifo_yes_no_lot_cost",
             "strict_rescue_release": "held_lot_cost_delta",
             "strict_rescue_close_cash_in_peak_gross_need": True,
+            "fee_accounting": "strict_rescue_taker_fee_per_share_is_in_net_pair_cost_and_pair_pnl",
             "projection_is_linear_capacity_hypothesis": True,
         },
         "decision": {
