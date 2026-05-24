@@ -47,3 +47,33 @@ Required target function:
 ## Next Action
 
 Implement local-only `closed_cycle_pairing_objective_audit_v1` against allowed candidate/state-machine exports. It must explicitly reject candidates that show positive gross pair PnL while residual-stress-adjusted PnL is negative. Keep `private_truth_ready=false`, `deployable=false`, and `promotion_gate.passed=false`.
+
+## First Local Objective Audit
+
+Artifact: `xuan_research_artifacts/xuan_closed_cycle_pairing_objective_audit_20260524T030800Z/manifest.json`.
+
+Decision: `KEEP_CLOSED_CYCLE_PAIRING_OBJECTIVE_AUDIT_READY_NO_ORDER_MARKER_BLOCKED`.
+
+The audit found that the objective is expressible in the historical separator export, but not yet safe to shadow. Selected local historical family:
+
+`balance=deficit_0_25_1_25&opp_qty=opp_le_5`
+
+Train:
+
+- rows=11008, seed_qty=13701.4125, pair_qty=13670.0225
+- weighted_pair_cost=0.88736382
+- closed_cycle_pnl_proxy=1320.43955482
+- stress100_closed_cycle_pnl_proxy=1046.72520482
+- residual_qty_share_of_pair_plus_residual=0.2291%
+
+Holdout:
+
+- rows=9596, seed_qty=11940.58, pair_qty=11910.3175
+- weighted_pair_cost=0.88715578
+- closed_cycle_pnl_proxy=1152.73574123
+- stress100_closed_cycle_pnl_proxy=914.22676623
+- residual_qty_share_of_pair_plus_residual=0.2534%
+
+This is useful because gross pair PnL is now explicitly subordinated to residual-stress-adjusted closed-cycle PnL. It is not deployable because there is no same-window no-order closed-cycle marker yet, and the historical export itself is too optimistic versus fresh no-order evidence.
+
+Next executable action: implement a default-off closed-cycle no-order marker summary/scorer only if the runner can expose pre-action cycle denominators without changing behavior. Do not start a shadow from this local audit.
