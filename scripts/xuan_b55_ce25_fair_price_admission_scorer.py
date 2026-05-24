@@ -5,8 +5,8 @@ This is a local/read-only scorer. It does not read shared sockets, mutate
 localagg, authorize remote execution, or place orders. It turns public
 benchmark lessons into an explicit candidate-row contract:
 
-* BTC/ETH only
-* 15m or named-hour markets
+* b55 profile: BTC/ETH, 15m or named-hour markets
+* ce25 profiles: SOL/ETH or BTC/ETH/SOL, 5m/15m markets
 * entry window mostly end-15m to end-1m
 * fee-aware fair-price edge
 * fee-included pair-cost discipline
@@ -28,8 +28,61 @@ from typing import Any, Iterable
 ASSET_SLUG_HINTS = {
     "BTC": ("btc-", "bitcoin-"),
     "ETH": ("eth-", "ethereum-"),
+    "SOL": ("sol-", "solana-"),
+    "XRP": ("xrp-", "ripple-"),
 }
-SUPPORTED_TIMEFRAMES = {"15m", "1h", "1h_or_named", "named_hour"}
+SUPPORTED_TIMEFRAMES = {"5m", "15m", "1h", "1h_or_named", "named_hour"}
+
+PROFILE_DEFAULTS: dict[str, dict[str, Any]] = {
+    "b55_ce25": {
+        "assets": ["BTC", "ETH"],
+        "timeframes": ["15m", "1h_or_named"],
+        "min_seconds_to_close": 60.0,
+        "max_seconds_to_close": 900.0,
+        "min_price": 0.35,
+        "max_price": 0.90,
+        "preferred_min_price": 0.50,
+        "preferred_max_price": 0.80,
+        "min_fair_edge": 0.015,
+        "target_pair_cost": 0.965,
+        "max_pair_cost": 0.975,
+        "target_residual_budget_share": 0.10,
+        "max_residual_budget_share": 0.20,
+        "max_effective_fee_rate": 0.0175,
+    },
+    "ce25_starter": {
+        "assets": ["SOL", "ETH"],
+        "timeframes": ["5m", "15m"],
+        "min_seconds_to_close": 60.0,
+        "max_seconds_to_close": 900.0,
+        "min_price": 0.01,
+        "max_price": 0.99,
+        "preferred_min_price": 0.05,
+        "preferred_max_price": 0.95,
+        "min_fair_edge": 0.015,
+        "target_pair_cost": 0.90,
+        "max_pair_cost": 0.90,
+        "target_residual_budget_share": 0.10,
+        "max_residual_budget_share": 0.15,
+        "max_effective_fee_rate": 0.0175,
+    },
+    "ce25_core": {
+        "assets": ["BTC", "ETH", "SOL"],
+        "timeframes": ["5m", "15m"],
+        "min_seconds_to_close": 60.0,
+        "max_seconds_to_close": 900.0,
+        "min_price": 0.01,
+        "max_price": 0.99,
+        "preferred_min_price": 0.05,
+        "preferred_max_price": 0.95,
+        "min_fair_edge": 0.015,
+        "target_pair_cost": 0.90,
+        "max_pair_cost": 0.95,
+        "target_residual_budget_share": 0.05,
+        "max_residual_budget_share": 0.10,
+        "max_effective_fee_rate": 0.0175,
+    },
+}
 
 
 def as_float(value: Any, default: float | None = None) -> float | None:
@@ -60,6 +113,14 @@ def pct(value: float | None, digits: int = 4) -> float | None:
     if value is None or not math.isfinite(value):
         return None
     return round(value * 100.0, digits)
+
+
+def apply_profile_defaults(args: argparse.Namespace) -> argparse.Namespace:
+    defaults = PROFILE_DEFAULTS[args.profile]
+    for key, value in defaults.items():
+        if getattr(args, key) is None:
+            setattr(args, key, list(value) if isinstance(value, list) else value)
+    return args
 
 
 def get_first(row: dict[str, Any], names: Iterable[str], default: Any = None) -> Any:
@@ -231,11 +292,11 @@ def score_row(row: dict[str, Any], args: argparse.Namespace, row_index: int) -> 
         blockers.append("ask_missing")
     else:
         if ask < args.min_price:
-            blockers.append("price_below_b55_band")
+            blockers.append("price_below_profile_band")
         if ask > args.max_price:
-            blockers.append("price_above_b55_band")
+            blockers.append("price_above_profile_band")
         if not (args.preferred_min_price <= ask <= args.preferred_max_price):
-            warnings.append("outside_preferred_50c_80c_band")
+            warnings.append("outside_preferred_profile_price_band")
     if fair_prob is None:
         blockers.append("fair_probability_missing")
     elif not (0.0 <= fair_prob <= 1.0):
@@ -271,7 +332,7 @@ def score_row(row: dict[str, Any], args: argparse.Namespace, row_index: int) -> 
         if pair_cost_after_fee > args.max_pair_cost:
             blockers.append("pair_cost_after_fee_above_hard")
         elif pair_cost_after_fee > args.target_pair_cost:
-            warnings.append("pair_cost_above_b55_target_below_hard")
+            warnings.append("pair_cost_above_profile_target_below_hard")
     if residual_budget_share is not None and residual_budget_share > args.max_residual_budget_share:
         blockers.append("residual_budget_share_above_hard")
     elif residual_budget_share is not None and residual_budget_share > args.target_residual_budget_share:
@@ -390,6 +451,7 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
         "script": "scripts/xuan_b55_ce25_fair_price_admission_scorer.py",
         "status": status,
         "inputs": {
+            "profile": args.profile,
             "input": str(Path(args.input).expanduser().resolve()),
             "assets": args.assets,
             "timeframes": args.timeframes,
@@ -410,12 +472,21 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
             "official_fee_rate": args.official_fee_rate,
         },
         "benchmark_contract": {
-            "basis": "public_b55_ce25_corrected_review_20260524",
+            "basis": "public_b55_ce25_corrected_review_20260524_and_ce25_deep_profile_20260524",
+            "profile": args.profile,
             "b55_actual_pair_cost": 0.9592,
             "b55_pair_edge": 0.0408,
             "b55_residual_rate": 0.1495,
             "ce25_actual_pair_cost": 0.9742,
             "ce25_residual_rate": 0.0871,
+            "ce25_good_pair_cost_lte": 0.95,
+            "ce25_best_pair_cost_lte": 0.90,
+            "ce25_stop_pair_cost_gte": 1.00,
+            "ce25_residual_good_lte": 0.10,
+            "ce25_residual_starter_lte": 0.15,
+            "ce25_preferred_assets_starter": ["SOL", "ETH"],
+            "ce25_preferred_assets_core": ["BTC", "ETH", "SOL"],
+            "ce25_preferred_timeframes": ["5m", "15m"],
             "target_actual_pair_cost_lte": args.target_pair_cost,
             "review_actual_pair_cost_lte": args.max_pair_cost,
             "residual_target_lte": args.target_residual_budget_share,
@@ -465,21 +536,22 @@ def main() -> int:
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--accepted-jsonl")
     parser.add_argument("--markdown")
-    parser.add_argument("--assets", type=split_csv, default=["BTC", "ETH"])
-    parser.add_argument("--timeframes", type=split_csv, default=["15m", "1h_or_named"])
-    parser.add_argument("--min-seconds-to-close", type=float, default=60.0)
-    parser.add_argument("--max-seconds-to-close", type=float, default=900.0)
-    parser.add_argument("--min-price", type=float, default=0.35)
-    parser.add_argument("--max-price", type=float, default=0.90)
-    parser.add_argument("--preferred-min-price", type=float, default=0.50)
-    parser.add_argument("--preferred-max-price", type=float, default=0.80)
+    parser.add_argument("--profile", choices=sorted(PROFILE_DEFAULTS), default="b55_ce25")
+    parser.add_argument("--assets", type=split_csv, default=None)
+    parser.add_argument("--timeframes", type=split_csv, default=None)
+    parser.add_argument("--min-seconds-to-close", type=float, default=None)
+    parser.add_argument("--max-seconds-to-close", type=float, default=None)
+    parser.add_argument("--min-price", type=float, default=None)
+    parser.add_argument("--max-price", type=float, default=None)
+    parser.add_argument("--preferred-min-price", type=float, default=None)
+    parser.add_argument("--preferred-max-price", type=float, default=None)
     parser.add_argument("--official-fee-rate", type=float, default=0.07)
-    parser.add_argument("--min-fair-edge", type=float, default=0.015)
-    parser.add_argument("--target-pair-cost", type=float, default=0.965)
-    parser.add_argument("--max-pair-cost", type=float, default=0.975)
-    parser.add_argument("--target-residual-budget-share", type=float, default=0.10)
-    parser.add_argument("--max-residual-budget-share", type=float, default=0.20)
-    parser.add_argument("--max-effective-fee-rate", type=float, default=0.0175)
+    parser.add_argument("--min-fair-edge", type=float, default=None)
+    parser.add_argument("--target-pair-cost", type=float, default=None)
+    parser.add_argument("--max-pair-cost", type=float, default=None)
+    parser.add_argument("--target-residual-budget-share", type=float, default=None)
+    parser.add_argument("--max-residual-budget-share", type=float, default=None)
+    parser.add_argument("--max-effective-fee-rate", type=float, default=None)
     parser.add_argument("--min-accepted-rows", type=int, default=1)
     parser.add_argument("--min-accepted-notional", type=float, default=0.0)
     parser.add_argument("--sample-rows", type=int, default=5)
@@ -487,7 +559,7 @@ def main() -> int:
     parser.add_argument("--require-source-fields", action="store_true")
     parser.add_argument("--include-raw-rows", action="store_true")
     parser.set_defaults(require_pair_cost=True)
-    args = parser.parse_args()
+    args = apply_profile_defaults(parser.parse_args())
 
     card, accepted = build(args)
     scorecard_path = Path(args.scorecard_json).expanduser().resolve()
