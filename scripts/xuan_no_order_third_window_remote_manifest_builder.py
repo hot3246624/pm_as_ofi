@@ -118,6 +118,11 @@ def render_markdown(manifest: dict[str, Any]) -> str:
             manifest["remote_command_template"],
             "```",
             "",
+            "## Remote Launch Command Template",
+            "```bash",
+            manifest["remote_launch_command_template"],
+            "```",
+            "",
             "## Local Post-Run Bundle Command Template",
             "```bash",
             manifest["postrun_bundle_command_template"],
@@ -342,6 +347,19 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         if args.capacity_stage:
             postrun_command.extend(["--capacity-stage", args.capacity_stage])
 
+    remote_command_template = shell_join(remote_command)
+    remote_output_q = shlex.quote(remote_output_template)
+    remote_launch_command_template = (
+        f"cd {shlex.quote(args.remote_repo.rsplit('/', 1)[0])} && "
+        f"mkdir -p {remote_output_q} && "
+        f"( {remote_command_template} > {remote_output_q}/run_stdout.log "
+        f"2> {remote_output_q}/run_stderr.log; "
+        f"echo $? > {remote_output_q}/run_exit_code.txt ) "
+        f"> {remote_output_q}/remote_wrapper_stdout.log "
+        f"2> {remote_output_q}/remote_wrapper_stderr.log & "
+        f"echo $! > {remote_output_q}/remote_wrapper_pid.txt"
+    )
+
     return {
         "status": "THIRD_WINDOW_REMOTE_STAGING_MANIFEST_READY_LOCAL_ONLY",
         "profile_scorecard": str(profile_path),
@@ -394,7 +412,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "local_output_root_template": local_output_template,
         },
         "files_to_stage": files,
-        "remote_command_template": shell_join(remote_command),
+        "remote_command_template": remote_command_template,
+        "remote_launch_command_template": remote_launch_command_template,
         "postrun_bundle_command_template": shell_join(postrun_command),
         "safety": {
             "orders_sent_allowed": False,

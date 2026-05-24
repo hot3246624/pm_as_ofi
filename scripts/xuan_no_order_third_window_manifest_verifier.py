@@ -131,6 +131,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     decision = manifest.get("decision", {})
     safety = manifest.get("safety", {})
     remote_cmd = manifest.get("remote_command_template", "")
+    remote_launch_cmd = manifest.get("remote_launch_command_template", "")
     postrun_cmd = manifest.get("postrun_bundle_command_template", "")
     profile = manifest.get("profile", {})
     bounded_policy = manifest.get("bounded_remote_run_policy", {})
@@ -150,6 +151,19 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("pm_dry_run_required_not_true")
     if "PM_DRY_RUN=1" not in remote_cmd:
         hard_blockers.append("remote_command_missing_pm_dry_run")
+    if not remote_launch_cmd:
+        hard_blockers.append("remote_launch_command_missing")
+    else:
+        if "run_exit_code.txt" not in remote_launch_cmd:
+            hard_blockers.append("remote_launch_command_missing_run_exit_capture")
+        if "run_stdout.log" not in remote_launch_cmd:
+            hard_blockers.append("remote_launch_command_missing_run_stdout_capture")
+        if "run_stderr.log" not in remote_launch_cmd:
+            hard_blockers.append("remote_launch_command_missing_run_stderr_capture")
+        if "remote_wrapper_pid.txt" not in remote_launch_cmd:
+            hard_blockers.append("remote_launch_command_missing_wrapper_pid")
+        if "timeout" not in remote_launch_cmd or "PM_DRY_RUN=1" not in remote_launch_cmd:
+            hard_blockers.append("remote_launch_command_missing_bounded_dry_run")
     if duration_s is None:
         hard_blockers.append("remote_command_missing_duration_s")
     elif duration_s > args.max_dry_run_duration_s:
@@ -242,6 +256,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     for token in PROHIBITED_REMOTE_TOKENS:
         if token in remote_cmd:
             hard_blockers.append(f"remote_command_contains_prohibited_token:{token}")
+        if token in remote_launch_cmd:
+            hard_blockers.append(f"remote_launch_command_contains_prohibited_token:{token}")
     if profile.get("duration_s") != args.max_dry_run_duration_s:
         warnings.append("profile_duration_not_standard_30m")
     if profile.get("round_offsets") != "0,1,2,3,4,5,6,7,8,9,10,11,12":
@@ -274,6 +290,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "fair_price_admission_enabled": fair_price_admission.get("enabled") is True,
             "remote_command_has_fair_price_admission": "--fair-price-admission-jsonl" in remote_cmd,
             "postrun_command_has_bundle_script": "xuan_no_order_third_window_postrun_bundle.py" in postrun_cmd,
+            "remote_launch_command_has_run_exit_capture": "run_exit_code.txt" in remote_launch_cmd,
+            "remote_launch_command_has_run_stdout_capture": "run_stdout.log" in remote_launch_cmd,
+            "remote_launch_command_has_run_stderr_capture": "run_stderr.log" in remote_launch_cmd,
+            "remote_launch_command_has_wrapper_pid": "remote_wrapper_pid.txt" in remote_launch_cmd,
         },
         "decision": {
             "local_manifest_verified": not hard_blockers,
