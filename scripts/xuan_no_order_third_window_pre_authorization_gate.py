@@ -87,7 +87,7 @@ def score(args: argparse.Namespace) -> dict[str, Any]:
     if next_floor.get("min_strict_rescue_closes_to_clear_aggregate") != 5:
         hard_blockers.append("next_window_floor_rescue_gap_not_5")
     expected_profile = {
-        "duration_s": 3600,
+        "duration_s": 1800,
         "round_offsets": "0,1,2,3,4,5,6,7,8,9,10,11,12",
         "soft_cap": 0.98,
         "debt_floor": 0.95,

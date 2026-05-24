@@ -140,6 +140,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     profile_status = str(profile_card.get("status") or "")
     profile_family = str(profile.get("profile_family") or "")
     reset_repeat_roots = profile_status.startswith("RESIDUAL_GUARD") or profile_family == "residual_guard"
+    duration_s = int(profile["duration_s"])
+    if duration_s > args.max_dry_run_duration_s:
+        raise SystemExit(
+            f"profile duration_s={duration_s} exceeds max dry-run duration "
+            f"{args.max_dry_run_duration_s}; split the work into bounded <=30m runs"
+        )
+    remote_timeout_s = duration_s + int(args.remote_timeout_buffer_s)
     files = []
     for rel in args.stage_files:
         path = (cwd / rel).resolve()
@@ -157,6 +164,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     remote_output_template = f"{args.remote_output_base}/{instance_template}"
     local_output_template = f".tmp_xuan/local_verifier_artifacts/{instance_template}/remote_outputs"
     remote_command = [
+        "timeout",
+        f"{remote_timeout_s}s",
+        "env",
         "PM_DRY_RUN=1",
         f"PM_SHARED_INGRESS_ROLE={args.shared_ingress_role}",
         f"PM_INSTANCE_ID={instance_template}",
@@ -167,7 +177,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "--shared-ingress-root",
         args.shared_ingress_root,
         "--duration-s",
-        str(profile["duration_s"]),
+        str(duration_s),
         "--output-dir",
         remote_output_template,
         "--edge",
@@ -299,6 +309,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "capacity_plan_scorecard": str(capacity_plan_path) if capacity_plan_path else None,
         "capacity_stage": args.capacity_stage,
         "profile": profile,
+        "bounded_remote_run_policy": {
+            "max_dry_run_duration_s": args.max_dry_run_duration_s,
+            "remote_timeout_buffer_s": args.remote_timeout_buffer_s,
+            "remote_timeout_s": remote_timeout_s,
+            "requires_timeout_wrapper": True,
+            "default_remote_dry_run_duration_s": 1800,
+            "longer_than_1800_requires_explicit_profile_split": True,
+        },
         "market_resolution": {
             "mode": "exact_slugs" if args.market_slugs else "prefix_offsets",
             "market_slugs": [part.strip() for part in args.market_slugs.split(",") if part.strip()]
@@ -365,7 +383,13 @@ def main() -> None:
     parser.add_argument("--remote-output-base", default="/srv/pm_as_ofi/xuan-frontier-no-order-smoke")
     parser.add_argument("--market-prefix", default="btc-updown-5m")
     parser.add_argument("--market-slugs", default=None, help="Exact comma-separated market slugs for runner --market-slugs mode.")
+    parser.add_argument("--max-dry-run-duration-s", type=int, default=1800)
+    parser.add_argument("--remote-timeout-buffer-s", type=int, default=300)
     args = parser.parse_args()
+    if args.max_dry_run_duration_s <= 0:
+        raise SystemExit("--max-dry-run-duration-s must be positive")
+    if args.remote_timeout_buffer_s < 60:
+        raise SystemExit("--remote-timeout-buffer-s must be at least 60s")
 
     started = time.time()
     manifest = build(args)

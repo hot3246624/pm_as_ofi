@@ -71,6 +71,32 @@ def option_matches(command: str, option: str, expected: Any) -> bool:
     return actual == str(expected)
 
 
+def command_parts(command: str) -> list[str]:
+    try:
+        return shlex.split(command)
+    except ValueError:
+        return []
+
+
+def parse_duration_seconds(raw: str | None) -> int | None:
+    if not raw:
+        return None
+    text = raw.strip().lower()
+    multiplier = 1
+    if text.endswith("s"):
+        text = text[:-1]
+    elif text.endswith("m"):
+        text = text[:-1]
+        multiplier = 60
+    elif text.endswith("h"):
+        text = text[:-1]
+        multiplier = 3600
+    try:
+        return int(float(text) * multiplier)
+    except ValueError:
+        return None
+
+
 def verify(args: argparse.Namespace) -> dict[str, Any]:
     manifest_path = Path(args.manifest_scorecard).expanduser().resolve()
     manifest = read_json(manifest_path)
@@ -107,6 +133,11 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     remote_cmd = manifest.get("remote_command_template", "")
     postrun_cmd = manifest.get("postrun_bundle_command_template", "")
     profile = manifest.get("profile", {})
+    bounded_policy = manifest.get("bounded_remote_run_policy", {})
+    parts = command_parts(remote_cmd)
+    duration_value = option_value(remote_cmd, "--duration-s")
+    duration_s = parse_duration_seconds(duration_value)
+    timeout_s = parse_duration_seconds(parts[1] if len(parts) >= 2 and parts[0] == "timeout" else None)
 
     if decision.get("remote_runner_allowed") is not False:
         hard_blockers.append("manifest_remote_runner_allowed_not_false")
@@ -118,6 +149,18 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("pm_dry_run_required_not_true")
     if "PM_DRY_RUN=1" not in remote_cmd:
         hard_blockers.append("remote_command_missing_pm_dry_run")
+    if duration_s is None:
+        hard_blockers.append("remote_command_missing_duration_s")
+    elif duration_s > args.max_dry_run_duration_s:
+        hard_blockers.append("remote_command_duration_exceeds_30m")
+    if len(parts) < 3 or parts[0] != "timeout" or parts[2] != "env":
+        hard_blockers.append("remote_command_missing_timeout_env_wrapper")
+    if timeout_s is None:
+        hard_blockers.append("remote_command_timeout_missing_or_unparseable")
+    elif duration_s is not None and timeout_s < duration_s + args.min_timeout_buffer_s:
+        hard_blockers.append("remote_command_timeout_too_short")
+    if bounded_policy.get("max_dry_run_duration_s") not in (args.max_dry_run_duration_s, None):
+        hard_blockers.append("manifest_bounded_policy_max_duration_mismatch")
     for env_name in ("PM_DRY_RUN", "PM_SHARED_INGRESS_ROLE", "PM_INSTANCE_ID"):
         if f"'{env_name}=" in remote_cmd or f'"{env_name}=' in remote_cmd:
             hard_blockers.append(f"remote_command_quoted_env_assignment:{env_name}")
@@ -172,8 +215,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     for token in PROHIBITED_REMOTE_TOKENS:
         if token in remote_cmd:
             hard_blockers.append(f"remote_command_contains_prohibited_token:{token}")
-    if profile.get("duration_s") not in (1800, 3600):
-        warnings.append("profile_duration_not_1800_or_3600")
+    if profile.get("duration_s") != args.max_dry_run_duration_s:
+        warnings.append("profile_duration_not_standard_30m")
     if profile.get("round_offsets") != "0,1,2,3,4,5,6,7,8,9,10,11,12":
         warnings.append("profile_offsets_not_comparable_set")
 
@@ -190,6 +233,9 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         "file_checks": file_checks,
         "template_checks": {
             "remote_command_has_pm_dry_run": "PM_DRY_RUN=1" in remote_cmd,
+            "remote_command_duration_s": duration_s,
+            "remote_command_timeout_s": timeout_s,
+            "remote_command_has_timeout_env_wrapper": len(parts) >= 3 and parts[0] == "timeout" and parts[2] == "env",
             "remote_command_has_unquoted_env_assignments": not any(
                 f"'{env_name}=" in remote_cmd or f'"{env_name}=' in remote_cmd
                 for env_name in ("PM_DRY_RUN", "PM_SHARED_INGRESS_ROLE", "PM_INSTANCE_ID")
@@ -211,6 +257,8 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest-scorecard", required=True)
     parser.add_argument("--scorecard-json", required=True)
+    parser.add_argument("--max-dry-run-duration-s", type=int, default=1800)
+    parser.add_argument("--min-timeout-buffer-s", type=int, default=300)
     args = parser.parse_args()
 
     started = time.time()
