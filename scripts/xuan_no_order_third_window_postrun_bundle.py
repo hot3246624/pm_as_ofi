@@ -228,6 +228,7 @@ def main() -> None:
         "concurrency": scorecard_dir / f"no_order_{args.tag}_concurrent_shared_ingress_scorer.json",
         "repeat": scorecard_dir / f"no_order_{args.tag}_repeat_window_scorer.json",
         "gap": scorecard_dir / f"no_order_{args.tag}_repeat_window_gap_plan.json",
+        "capital": scorecard_dir / f"no_order_{args.tag}_capital_reuse_roi.json",
         "packet": scorecard_dir / f"no_order_{args.tag}_shadow_review_packet.json",
     }
 
@@ -300,6 +301,21 @@ def main() -> None:
         ],
         [
             sys.executable,
+            "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
+            *[
+                item
+                for root in [*[str(Path(root).expanduser().resolve()) for root in args.prior_output_roots], str(third_root)]
+                for item in ("--output-root", root)
+            ],
+            "--scorecard-json",
+            str(paths["capital"]),
+            "--round-notional",
+            str(profile_body.get("target_qty") or 300.0),
+            "--round-minutes",
+            "5",
+        ],
+        [
+            sys.executable,
             "scripts/xuan_no_order_shadow_review_packet_builder.py",
             "--replay-scorecard",
             str(Path(args.replay_scorecard).expanduser().resolve()),
@@ -313,6 +329,8 @@ def main() -> None:
             str(Path(args.profile_scorecard).expanduser().resolve()),
             "--concurrency-scorecard",
             str(paths["concurrency"]),
+            "--capital-roi-scorecard",
+            str(paths["capital"]),
             "--output-dir",
             str(output_dir),
             "--scorecard-json",

@@ -145,6 +145,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("remote_command_pair_completion_pair_pnl_floor_does_not_match_profile")
     if not option_matches(remote_cmd, "--salvage-net-cap", profile.get("strict_rescue_salvage_net_cap", 0.95)):
         hard_blockers.append("remote_command_salvage_net_cap_does_not_match_profile")
+    if profile.get("max_salvage_qty") is not None and not option_matches(
+        remote_cmd, "--max-salvage-qty", profile.get("max_salvage_qty")
+    ):
+        hard_blockers.append("remote_command_max_salvage_qty_does_not_match_profile")
     if profile.get("strict_rescue_surplus_net_cap") is not None and not option_matches(
         remote_cmd, "--strict-rescue-surplus-net-cap", profile.get("strict_rescue_surplus_net_cap")
     ):

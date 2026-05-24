@@ -84,10 +84,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "round_offsets": args.round_offsets,
         "edge": 0.040,
         "queue_share": 0.50,
-        "target_qty": 5.0,
+        "target_qty": args.target_qty,
         "fill_haircut": 0.25,
-        "max_seed_qty": 60.0,
-        "max_open_cost": 80.0,
+        "max_seed_qty": args.max_seed_qty,
+        "max_open_cost": args.max_open_cost,
         "seed_l1_cap": 1.02,
         "seed_px_lo": 0.05,
         "seed_px_hi": 0.90,
@@ -101,7 +101,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "surplus_budget_mode": "block",
         "surplus_budget_bootstrap": 1.0,
         "surplus_budget_mult": 0.5,
-        "surplus_budget_max_abs_unpaired_cost": 2.0,
+        "surplus_budget_max_abs_unpaired_cost": args.surplus_budget_max_abs_unpaired_cost,
         "taker_fee_rate": 0.07,
         "soft_cap": args.soft_cap,
         "debt_floor": args.debt_floor,
@@ -116,6 +116,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "strict_rescue_skip_low_cost_lots": args.strict_rescue_skip_low_cost_lots,
         "strict_rescue_l1_age_max_ms": 50,
         "strict_rescue_close_size_haircut": 1.0,
+        "max_salvage_qty": args.max_salvage_qty,
         "source_quality_require_trade_source": True,
         "source_quality_require_l1_source": True,
         "source_quality_require_l2_source": True,
@@ -198,6 +199,9 @@ def main() -> None:
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--duration-s", type=int, default=1800)
     parser.add_argument("--round-offsets", default="0,1,2,3,4,5,6,7,8,9,10,11,12")
+    parser.add_argument("--target-qty", type=float, default=5.0)
+    parser.add_argument("--max-seed-qty", type=float, default=60.0)
+    parser.add_argument("--max-open-cost", type=float, default=80.0)
     parser.add_argument("--activation-mode", choices=["none", "opp_seen"], default="opp_seen")
     parser.add_argument("--activation-window-s", type=float, default=15.0)
     parser.add_argument("--late-repair-after-s", type=float, default=90.0)
@@ -205,6 +209,7 @@ def main() -> None:
     parser.add_argument("--soft-cap", type=float, default=0.98)
     parser.add_argument("--debt-floor", type=float, default=0.95)
     parser.add_argument("--debt-budget", type=float, default=1.0)
+    parser.add_argument("--surplus-budget-max-abs-unpaired-cost", type=float, default=2.0)
     parser.add_argument("--risk-seed-pending-opp-credit", type=float, default=1.0)
     parser.add_argument("--pair-completion-net-cap", type=float, default=None)
     parser.add_argument("--pair-completion-min-pair-pnl-after", type=float, default=None)
@@ -213,6 +218,7 @@ def main() -> None:
     parser.add_argument("--strict-rescue-surplus-net-cap", type=float, default=None)
     parser.add_argument("--strict-rescue-min-pair-pnl-after", type=float, default=None)
     parser.add_argument("--strict-rescue-skip-low-cost-lots", action="store_true")
+    parser.add_argument("--max-salvage-qty", type=float, default=250.0)
     parser.add_argument("--min-accepted-actions", type=int, default=25)
     parser.add_argument("--min-fills", type=int, default=18)
     parser.add_argument("--min-strict-rescue-closes", type=int, default=3)
@@ -230,6 +236,10 @@ def main() -> None:
         and args.strict_rescue_surplus_net_cap <= args.salvage_net_cap
     ):
         raise SystemExit("--strict-rescue-surplus-net-cap must exceed --salvage-net-cap")
+    if args.target_qty <= 0 or args.max_seed_qty <= 0 or args.max_open_cost <= 0:
+        raise SystemExit("--target-qty, --max-seed-qty, and --max-open-cost must be positive")
+    if args.max_salvage_qty <= 0:
+        raise SystemExit("--max-salvage-qty must be positive")
 
     started = time.time()
     card = build(args)

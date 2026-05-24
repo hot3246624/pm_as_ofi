@@ -2019,6 +2019,7 @@ async def main() -> None:
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
+    ap.add_argument("--max-salvage-qty", type=float, default=250.0)
     ap.add_argument(
         "--strict-rescue-skip-low-cost-lots",
         action="store_true",
@@ -2098,6 +2099,7 @@ async def main() -> None:
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
+        max_salvage_qty=args.max_salvage_qty,
         strict_rescue_skip_low_cost_lots=args.strict_rescue_skip_low_cost_lots,
         surplus_budget_mode=args.surplus_budget_mode,
         surplus_budget_bootstrap=args.surplus_budget_bootstrap,
@@ -2159,6 +2161,8 @@ async def main() -> None:
         raise SystemExit("--surplus-budget-bootstrap and --surplus-budget-mult must be non-negative")
     if cfg.surplus_budget_max_abs_unpaired_cost is not None and cfg.surplus_budget_max_abs_unpaired_cost < 0:
         raise SystemExit("--surplus-budget-max-abs-unpaired-cost must be non-negative")
+    if cfg.max_salvage_qty <= 0:
+        raise SystemExit("--max-salvage-qty must be positive")
     if not (0.0 < cfg.strict_rescue_close_size_haircut <= 1.0):
         raise SystemExit("--strict-rescue-close-size-haircut must be in (0, 1]")
     if cfg.strict_rescue_close_ask_slip < 0:

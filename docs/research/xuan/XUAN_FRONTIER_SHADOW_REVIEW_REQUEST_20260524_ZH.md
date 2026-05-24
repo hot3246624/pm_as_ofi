@@ -105,3 +105,32 @@ capital reuse scorer 已按 FIFO 重建资金占用：
 - shared_ingress_mutation
 - collector_rebuild_or_publish
 - raw_replay_mutation
+
+## Next: Capacity Ladder
+
+shadow review 之后的下一个研究问题是容量，而不是 fee 口径。当前已经生成本地容量阶梯计划：
+
+- capacity ladder 状态：`KEEP_CAPACITY_LADDER_PLAN_READY_LOCAL_ONLY`
+- next stage：`cap_25`
+- cap_25 target_qty / round redeem notional：`25`
+- cap_25 max_open_cost：`30`
+- cap_25 max_seed_qty：`75`
+- cap_25 imbalance_qty_cap：`6.25`
+- cap_25 surplus_budget_max_abs_unpaired_cost：`10`
+- cap_25 remote manifest：`THIRD_WINDOW_REMOTE_STAGING_MANIFEST_READY_LOCAL_ONLY`
+- cap_25 manifest verifier：`KEEP_THIRD_WINDOW_MANIFEST_VERIFIER_PASS_LOCAL_ONLY`
+
+cap_25 通过后才允许进入 `75 -> 150 -> 300` 的容量阶梯。每一级都必须保持：
+
+- `PM_DRY_RUN=1`
+- orders_sent=false
+- fee-aware positive PnL
+- edge_on_redeem_notional_after_fee >= `2%`
+- roi_on_total_cash_spend_after_fee >= `1.5%`
+- residual_cost_share <= `15%`
+- residual_qty_share <= `20%`
+- residual_cost_to_pair_qty <= `5%`
+- source blocks = `0`
+- no deploy/restart/shared mutation
+
+这仍然只是 bounded no-order research review，不是 live capacity approval。

@@ -28,6 +28,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_no_order_runtime_repeat_window_gap_planner.py",
     "scripts/xuan_no_order_shadow_review_packet_builder.py",
     "scripts/xuan_no_order_concurrent_shared_ingress_scorer.py",
+    "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
 ]
 
 
@@ -209,6 +210,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "30",
         "--salvage-min-lot-cost",
         "0.25",
+        "--max-salvage-qty",
+        str(profile_value(profile, "max_salvage_qty", 250.0)),
         "--strict-rescue-mode",
         "source_audit",
         "--strict-rescue-l1-age-max-ms",
