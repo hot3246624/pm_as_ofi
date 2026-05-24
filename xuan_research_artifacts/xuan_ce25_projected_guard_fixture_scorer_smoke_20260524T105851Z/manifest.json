@@ -1,0 +1,23 @@
+{
+  "artifact": "xuan_ce25_projected_guard_fixture_scorer_smoke",
+  "bad_manifest": "xuan_research_artifacts/xuan_ce25_projected_guard_fixture_scorer_smoke_20260524T105851Z/bad/manifest.json",
+  "checks": {
+    "bad_expectation_failed": true,
+    "bad_unknown": true,
+    "good_all_fixture_expectations_met": true,
+    "good_core_allowed": true,
+    "good_final60_block": true,
+    "good_fixture_not_strategy_evidence": true,
+    "good_keep": true,
+    "good_missing_pre_action_fail_closed": true,
+    "good_missing_projected_fail_closed": true,
+    "good_no_order_not_allowed": true,
+    "good_pair_cost_hard_kill": true,
+    "good_residual_hard_kill": true,
+    "good_retrospective_reference_only": true,
+    "good_starter_allowed": true,
+    "promotion_never_passes": true
+  },
+  "decision_label": "KEEP_CE25_PROJECTED_GUARD_FIXTURE_SCORER_SMOKE_PASS",
+  "good_manifest": "xuan_research_artifacts/xuan_ce25_projected_guard_fixture_scorer_smoke_20260524T105851Z/good/manifest.json"
+}

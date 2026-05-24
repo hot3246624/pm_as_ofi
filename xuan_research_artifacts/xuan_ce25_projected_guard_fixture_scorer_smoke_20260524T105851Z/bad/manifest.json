@@ -1,0 +1,125 @@
+{
+  "artifact": "xuan_ce25_projected_guard_fixture_scorer",
+  "created_utc": "20260524T105900Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_CE25_PROJECTED_GUARD_FIXTURE_SCORER_INPUTS_INSUFFICIENT",
+  "fixture_results": [
+    {
+      "case": "bad_missing_cost",
+      "evaluation": {
+        "allowed": false,
+        "missing_fields": [
+          "pre_no_actual_cost"
+        ],
+        "status": "FAIL_CLOSED_PRE_ACTION_FIELD_MISSING"
+      },
+      "expected_ok": false,
+      "expected_primary_guard": null,
+      "expected_status": "ALLOW_PROJECTED_GUARD",
+      "projected_fields": {}
+    }
+  ],
+  "lane": "ce25_projected_guard_fixture_scorer",
+  "next_executable_action": "Implement ce25_projected_guard_runner_instrumentation_spec_v1 local-only: inspect runner pre-action state availability for projected pair cost/residual diagnostics, prove default-off/no behavior change, or reject the line if required fields cannot be produced safely.",
+  "promotion_gate": {
+    "blockers": [
+      "synthetic fixtures are not strategy evidence",
+      "projected guard not wired as runner diagnostic",
+      "no authenticated owner order/fill/queue truth",
+      "no no-order diagnostic approval from this artifact"
+    ],
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "FIXTURE_SCORER_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "UNKNOWN",
+    "deployable": false,
+    "fixture_strategy_evidence": false,
+    "label": "UNKNOWN_CE25_PROJECTED_GUARD_FIXTURE_SCORER_INPUTS_INSUFFICIENT",
+    "next_local_only_target": "ce25_projected_guard_runner_instrumentation_spec_v1",
+    "next_target_reason": "fixture scorer validates formulae; next inspect whether a runner can expose the same pre-action fields as diagnostics without behavior changes",
+    "no_order_diagnostic_allowed": false,
+    "private_truth_ready": false,
+    "promotion_gate_passed": false,
+    "scorer_ready": false
+  },
+  "retrospective_rule_bucket_status": {
+    "ce25_core_bucket": {
+      "avg_actual_pair_cost": 0.861041,
+      "avg_residual_rate": 0.046593,
+      "buy_actual": 40326.973165,
+      "cohort_pnl": 5078.22286,
+      "losses": 1,
+      "markets": 119,
+      "pair_pnl": 5292.480085,
+      "residual_pnl_est": -401.647225,
+      "wins": 118
+    },
+    "ce25_hard_loss_bucket": {
+      "avg_actual_pair_cost": 1.089349,
+      "avg_residual_rate": 0.135101,
+      "buy_actual": 59093.644974,
+      "cohort_pnl": -5589.455319,
+      "losses": 145,
+      "markets": 163,
+      "pair_pnl": -4142.396449,
+      "residual_pnl_est": -1495.359572,
+      "wins": 18
+    },
+    "status": "REFERENCE_ONLY_NOT_LIVE_CRITERIA"
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "canary_started": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_agg_started": false,
+    "local_only": true,
+    "new_data_fetch": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "shared_ws_started": false,
+    "ssh_used": false,
+    "synthetic_fixtures_only": true,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "blockers": [
+      "all_fixture_expectations_met",
+      "starter_fixture_allowed",
+      "core_fixture_allowed",
+      "pair_cost_hard_kill_blocked",
+      "residual_near_close_hard_kill_blocked",
+      "final60_initiation_blocked",
+      "missing_projected_field_fail_closed"
+    ],
+    "checks": {
+      "all_fixture_expectations_met": false,
+      "contract_present": true,
+      "core_fixture_allowed": false,
+      "final60_initiation_blocked": false,
+      "missing_pre_action_field_fail_closed": true,
+      "missing_projected_field_fail_closed": false,
+      "pair_cost_hard_kill_blocked": false,
+      "promotion_spec_false": true,
+      "residual_near_close_hard_kill_blocked": false,
+      "retrospective_warning_present": true,
+      "spec_keep": true,
+      "starter_fixture_allowed": false
+    },
+    "missing_projected_field_probe": null
+  },
+  "source_inputs": {
+    "fixture_file": "xuan_research_artifacts/xuan_ce25_projected_guard_fixture_scorer_smoke_20260524T105851Z/bad_fixture.json",
+    "fixtures_are_synthetic": true,
+    "spec_manifest": "xuan_research_artifacts/xuan_ce25_projected_pair_cost_residual_guard_spec_20260524T104842Z/manifest.json"
+  }
+}
