@@ -134,6 +134,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     postrun_cmd = manifest.get("postrun_bundle_command_template", "")
     profile = manifest.get("profile", {})
     bounded_policy = manifest.get("bounded_remote_run_policy", {})
+    fair_price_admission = manifest.get("fair_price_admission", {})
     parts = command_parts(remote_cmd)
     duration_value = option_value(remote_cmd, "--duration-s")
     duration_s = parse_duration_seconds(duration_value)
@@ -170,6 +171,25 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("remote_command_missing_rescue_diagnostics")
     if "--allow-concurrent-shared-ingress-readers" not in remote_cmd:
         hard_blockers.append("remote_command_missing_concurrent_reader_evidence_flag")
+    if fair_price_admission.get("enabled") is True:
+        remote_admission = fair_price_admission.get("remote_path_template")
+        max_pair_cost = fair_price_admission.get("max_pair_cost")
+        min_seconds_to_close = fair_price_admission.get("min_seconds_to_close")
+        max_seconds_to_close = fair_price_admission.get("max_seconds_to_close")
+        if not remote_admission:
+            hard_blockers.append("fair_price_admission_missing_remote_path")
+        if not option_matches(remote_cmd, "--fair-price-admission-jsonl", remote_admission):
+            hard_blockers.append("remote_command_fair_price_admission_path_mismatch")
+        if max_pair_cost is not None and not option_matches(remote_cmd, "--fair-price-max-pair-cost", max_pair_cost):
+            hard_blockers.append("remote_command_fair_price_max_pair_cost_mismatch")
+        if min_seconds_to_close is not None and not option_matches(
+            remote_cmd, "--fair-price-min-seconds-to-close", min_seconds_to_close
+        ):
+            hard_blockers.append("remote_command_fair_price_min_seconds_to_close_mismatch")
+        if max_seconds_to_close is not None and not option_matches(
+            remote_cmd, "--fair-price-max-seconds-to-close", max_seconds_to_close
+        ):
+            hard_blockers.append("remote_command_fair_price_max_seconds_to_close_mismatch")
     if not option_matches(remote_cmd, "--risk-seed-closeability-soft-net-cap", profile.get("soft_cap", 0.98)):
         hard_blockers.append("remote_command_soft_cap_does_not_match_profile")
     if not option_matches(remote_cmd, "--risk-seed-closeability-debt-budget", profile.get("debt_budget", 1.0)):
@@ -243,6 +263,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "remote_command_has_normalized_lifecycle": "--write-normalized-lifecycle" in remote_cmd,
             "remote_command_has_rescue_diagnostics": "--write-rescue-block-diagnostics" in remote_cmd,
             "remote_command_has_concurrent_reader_evidence_flag": "--allow-concurrent-shared-ingress-readers" in remote_cmd,
+            "fair_price_admission_enabled": fair_price_admission.get("enabled") is True,
+            "remote_command_has_fair_price_admission": "--fair-price-admission-jsonl" in remote_cmd,
             "postrun_command_has_bundle_script": "xuan_no_order_third_window_postrun_bundle.py" in postrun_cmd,
         },
         "decision": {

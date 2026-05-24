@@ -106,7 +106,9 @@ def render_markdown(manifest: dict[str, Any]) -> str:
         lines.append(f"- {key}: `{value}`")
     lines.extend(["", "## Files To Stage"])
     for item in manifest["files_to_stage"]:
-        lines.append(f"- `{item['path']}` sha256=`{item['sha256']}` bytes=`{item['bytes']}`")
+        remote_path = item.get("remote_path_template")
+        remote_note = f" remote=`{remote_path}`" if remote_path else ""
+        lines.append(f"- `{item['path']}` sha256=`{item['sha256']}` bytes=`{item['bytes']}`{remote_note}")
     lines.extend(
         [
             "",
@@ -161,8 +163,28 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     instance_template = f"{args.instance_prefix}-<YYYYMMDDTHHMMZ>"
     remote_runner_template = f"{args.remote_tool_dir}/xuan_dplus_passive_passive_shadow_runner_<YYYYMMDDTHHMMZ>.py"
+    remote_fair_price_admission_template = (
+        args.remote_fair_price_admission_path
+        or f"{args.remote_tool_dir}/fair_price_admission_<YYYYMMDDTHHMMZ>.jsonl"
+    )
     remote_output_template = f"{args.remote_output_base}/{instance_template}"
     local_output_template = f".tmp_xuan/local_verifier_artifacts/{instance_template}/remote_outputs"
+    fair_price_admission_path = (
+        Path(args.fair_price_admission_jsonl).expanduser().resolve()
+        if args.fair_price_admission_jsonl
+        else None
+    )
+    if fair_price_admission_path is not None:
+        files.append(
+            {
+                "path": str(fair_price_admission_path),
+                "abs_path": str(fair_price_admission_path),
+                "bytes": fair_price_admission_path.stat().st_size,
+                "sha256": sha256_file(fair_price_admission_path),
+                "artifact_type": "fair_price_admission_jsonl",
+                "remote_path_template": remote_fair_price_admission_template,
+            }
+        )
     remote_command = [
         "timeout",
         f"{remote_timeout_s}s",
@@ -253,6 +275,19 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         remote_command.extend(["--market-slugs", args.market_slugs])
     else:
         remote_command.extend(["--prefix", args.market_prefix, "--round-offsets", str(profile["round_offsets"])])
+    if fair_price_admission_path is not None:
+        remote_command.extend(
+            [
+                "--fair-price-admission-jsonl",
+                remote_fair_price_admission_template,
+                "--fair-price-max-pair-cost",
+                str(args.fair_price_max_pair_cost),
+                "--fair-price-min-seconds-to-close",
+                str(args.fair_price_min_seconds_to_close),
+                "--fair-price-max-seconds-to-close",
+                str(args.fair_price_max_seconds_to_close),
+            ]
+        )
     append_option(remote_command, "--activation-mode", profile.get("activation_mode"))
     append_option(remote_command, "--activation-window-s", profile.get("activation_window_s"))
     append_option(remote_command, "--late-repair-after-s", profile.get("late_repair_after_s"))
@@ -325,6 +360,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "market_prefix": args.market_prefix,
             "round_offsets": profile.get("round_offsets"),
         },
+        "fair_price_admission": {
+            "enabled": fair_price_admission_path is not None,
+            "local_path": str(fair_price_admission_path) if fair_price_admission_path else None,
+            "remote_path_template": remote_fair_price_admission_template if fair_price_admission_path else None,
+            "max_pair_cost": args.fair_price_max_pair_cost if fair_price_admission_path else None,
+            "min_seconds_to_close": args.fair_price_min_seconds_to_close if fair_price_admission_path else None,
+            "max_seconds_to_close": args.fair_price_max_seconds_to_close if fair_price_admission_path else None,
+        },
         "target": {
             "ssh_host": args.ssh_host,
             "fixed_ip": args.fixed_ip,
@@ -383,6 +426,11 @@ def main() -> None:
     parser.add_argument("--remote-output-base", default="/srv/pm_as_ofi/xuan-frontier-no-order-smoke")
     parser.add_argument("--market-prefix", default="btc-updown-5m")
     parser.add_argument("--market-slugs", default=None, help="Exact comma-separated market slugs for runner --market-slugs mode.")
+    parser.add_argument("--fair-price-admission-jsonl")
+    parser.add_argument("--remote-fair-price-admission-path")
+    parser.add_argument("--fair-price-max-pair-cost", type=float, default=0.95)
+    parser.add_argument("--fair-price-min-seconds-to-close", type=float, default=60.0)
+    parser.add_argument("--fair-price-max-seconds-to-close", type=float, default=900.0)
     parser.add_argument("--max-dry-run-duration-s", type=int, default=1800)
     parser.add_argument("--remote-timeout-buffer-s", type=int, default=300)
     args = parser.parse_args()
