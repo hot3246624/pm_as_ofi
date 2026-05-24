@@ -1,0 +1,22 @@
+{
+  "artifact": "xuan_symmetric_activation_contract_smoke",
+  "bad_runner_manifest": "xuan_research_artifacts/xuan_symmetric_activation_contract_smoke_20260524T164000Z/bad_runner/manifest.json",
+  "bad_selector_manifest": "xuan_research_artifacts/xuan_symmetric_activation_contract_smoke_20260524T164000Z/bad_selector/manifest.json",
+  "checks": {
+    "bad_runner_token_blocker": true,
+    "bad_runner_unknown": true,
+    "bad_selector_blocker": true,
+    "bad_selector_unknown": true,
+    "good_contract_schema": true,
+    "good_default_off": true,
+    "good_keep": true,
+    "good_min_opp_supported": true,
+    "good_no_no_order": true,
+    "good_promotion_false": true,
+    "good_research_not_strategy_evidence": true,
+    "good_runner_ready": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_CONTRACT_SMOKE_PASS",
+  "good_manifest": "xuan_research_artifacts/xuan_symmetric_activation_contract_smoke_20260524T164000Z/good/manifest.json"
+}
