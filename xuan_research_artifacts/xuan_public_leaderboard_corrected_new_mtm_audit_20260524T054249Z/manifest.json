@@ -1,0 +1,526 @@
+{
+  "artifact": "xuan_public_leaderboard_corrected_new_mtm_audit",
+  "created_utc": "20260524T054341Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_CORRECTED_PUBLIC_LEADERBOARD_RANKING_READY_B55_MAIN_CE25_CLEAN_CONTROL",
+  "lane": "public_leaderboard_corrected_new_mtm_audit",
+  "next_executable_action": "Make b55 the main fair-price/pair-edge template and ce25 the clean low-residual control; next build a local-only fair-price source manifest/reviewer for BTC/ETH 15m and 1h that can join entry window, multi-exchange fair probability, per-trade fee/liquidity role, pair cost tail, and residual gates.",
+  "profiles": [
+    {
+      "account": "b55",
+      "activity_types": {
+        "counts": {
+          "MAKER_REBATE": 1,
+          "MERGE": 17,
+          "REDEEM": 710,
+          "TRADE": 22749
+        },
+        "usdc": {
+          "MAKER_REBATE": 662.0591,
+          "MERGE": 14603.730852,
+          "REDEEM": 277728.260954,
+          "TRADE": 289123.992505
+        }
+      },
+      "address_or_handle": "0xb55fa1296e6ec55d0ce53d93b9237389f11764d4",
+      "available": true,
+      "observed_public_metrics": {
+        "activity_usdc_maker_rebate": 662.0591,
+        "activity_usdc_merge": 14603.730852,
+        "activity_usdc_redeem": 277728.260954,
+        "actual_pair_cost": 0.959218,
+        "buy_actual_cost": 289123.992505,
+        "cash_plus_current_value": 9330.839901,
+        "cash_pnl": 3870.058401,
+        "current_residual_rate": 0.183211,
+        "current_value": 5460.7815,
+        "fee_rate_on_gross": 0.01171,
+        "fee_rate_on_gross_pct": 1.171,
+        "inferred_fee_total": 3346.47332,
+        "lifetime_residual_rate": 0.149474,
+        "lifetime_residual_rate_pct": 14.9474,
+        "maker_rebate": 662.0591,
+        "merge_total": 14603.730852,
+        "pair_cost_p90": 1.164791,
+        "paired_actual_profit": 11159.8229,
+        "redeem_total": 277728.260954
+      },
+      "role": "main_fair_price_pair_edge_template",
+      "row_counts": {
+        "activity_rows": 23477,
+        "current_position_rows": 20,
+        "market_trade_rows": 729,
+        "tracked_markets": 739
+      },
+      "source_export": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_b55_recent24h_20260523_103000_to_20260524_103000_bjt",
+      "split_interference": {
+        "absent_in_reported_sample": true,
+        "split_rows": 0
+      },
+      "status": "ACTIVE",
+      "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_b55_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json",
+      "user_corrected_overlay": {
+        "corrected_new_mtm_ex_rebate": 2851.0,
+        "corrected_new_mtm_incl_rebate": 3513.0,
+        "new_window_cash_ex_rebate": -2610.0,
+        "old_position_redeem_benefit": 5818.0,
+        "source": "user_peer_corrected_24h_activity_recalculation",
+        "split_count_reported": 0
+      },
+      "window": {
+        "end_iso": "2026-05-24T02:30:00Z",
+        "end_s": 1779589800,
+        "start_iso": "2026-05-23T02:30:00Z",
+        "start_s": 1779503400
+      }
+    },
+    {
+      "account": "ce25",
+      "activity_types": {
+        "counts": {
+          "MAKER_REBATE": 1,
+          "REDEEM": 628,
+          "TRADE": 17080
+        },
+        "usdc": {
+          "MAKER_REBATE": 308.3476,
+          "REDEEM": 144550.854416,
+          "TRADE": 144400.83361
+        }
+      },
+      "address_or_handle": "0xce25e214d5cfe4f459cf67f08df581885aae7fdc",
+      "available": true,
+      "observed_public_metrics": {
+        "activity_usdc_maker_rebate": 308.3476,
+        "activity_usdc_merge": 0.0,
+        "activity_usdc_redeem": 144550.854416,
+        "actual_pair_cost": 0.974217,
+        "buy_actual_cost": 144400.83361,
+        "cash_plus_current_value": 458.368406,
+        "cash_pnl": 458.368406,
+        "current_residual_rate": 0.0,
+        "current_value": 0.0,
+        "fee_rate_on_gross": 0.014253,
+        "fee_rate_on_gross_pct": 1.4253,
+        "inferred_fee_total": 2029.20669,
+        "lifetime_residual_rate": 0.087091,
+        "lifetime_residual_rate_pct": 8.7091,
+        "maker_rebate": 308.3476,
+        "merge_total": 0.0,
+        "pair_cost_p90": 1.141624,
+        "paired_actual_profit": 3605.251327,
+        "redeem_total": 144550.854416
+      },
+      "role": "clean_low_residual_pair_arb_control",
+      "row_counts": {
+        "activity_rows": 17709,
+        "current_position_rows": 0,
+        "market_trade_rows": 640,
+        "tracked_markets": 640
+      },
+      "source_export": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_ce25_recent24h_20260523_103000_to_20260524_103000_bjt",
+      "split_interference": {
+        "absent_in_reported_sample": true,
+        "split_rows": 0
+      },
+      "status": "ACTIVE",
+      "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_ce25_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json",
+      "user_corrected_overlay": {
+        "corrected_new_mtm_ex_rebate": 150.0,
+        "corrected_new_mtm_incl_rebate": 458.0,
+        "new_window_cash_ex_rebate": 150.0,
+        "old_position_redeem_benefit": 0.0,
+        "source": "user_peer_corrected_24h_activity_recalculation",
+        "split_count_reported": 0
+      },
+      "window": {
+        "end_iso": "2026-05-24T02:30:00Z",
+        "end_s": 1779589800,
+        "start_iso": "2026-05-23T02:30:00Z",
+        "start_s": 1779503400
+      }
+    },
+    {
+      "account": "ohanism",
+      "activity_types": {
+        "counts": {
+          "MAKER_REBATE": 1,
+          "REDEEM": 1411,
+          "TRADE": 21794
+        },
+        "usdc": {
+          "MAKER_REBATE": 1019.9142,
+          "REDEEM": 179690.820377,
+          "TRADE": 242671.699289
+        }
+      },
+      "address_or_handle": "ohanism",
+      "available": true,
+      "observed_public_metrics": {
+        "activity_usdc_maker_rebate": 1019.9142,
+        "activity_usdc_merge": 0.0,
+        "activity_usdc_redeem": 179690.820377,
+        "actual_pair_cost": 1.036747,
+        "buy_actual_cost": 210632.440837,
+        "cash_plus_current_value": 2768.031792,
+        "cash_pnl": 2117.552192,
+        "current_residual_rate": 0.761457,
+        "current_value": 650.4796,
+        "fee_rate_on_gross": -0.0,
+        "fee_rate_on_gross_pct": -0.0,
+        "inferred_fee_total": -0.0,
+        "lifetime_residual_rate": 0.769792,
+        "lifetime_residual_rate_pct": 76.9792,
+        "maker_rebate": 1019.9142,
+        "merge_total": 0.0,
+        "pair_cost_p90": 1.446208,
+        "paired_actual_profit": -1490.466829,
+        "redeem_total": 179690.820377
+      },
+      "role": "direction_rebate_inventory_control",
+      "row_counts": {
+        "activity_rows": 23206,
+        "current_position_rows": 7,
+        "market_trade_rows": 1403,
+        "tracked_markets": 1428
+      },
+      "source_export": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_ohanism_recent24h_20260523_103000_to_20260524_103000_bjt",
+      "split_interference": {
+        "absent_in_reported_sample": true,
+        "split_rows": 0
+      },
+      "status": "ACTIVE",
+      "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_ohanism_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json",
+      "user_corrected_overlay": {
+        "corrected_new_mtm_ex_rebate": 751.0,
+        "corrected_new_mtm_incl_rebate": 1771.0,
+        "new_window_cash_ex_rebate": 100.0,
+        "old_position_redeem_benefit": 997.0,
+        "source": "user_peer_corrected_24h_activity_recalculation",
+        "split_count_reported": 0
+      },
+      "window": {
+        "end_iso": "2026-05-24T02:30:00Z",
+        "end_s": 1779589800,
+        "start_iso": "2026-05-23T02:30:00Z",
+        "start_s": 1779503400
+      }
+    },
+    {
+      "account": "xuan",
+      "activity_types": {
+        "counts": {
+          "MERGE": 173,
+          "REDEEM": 47,
+          "TRADE": 938
+        },
+        "usdc": {
+          "MERGE": 59112.74,
+          "REDEEM": 6915.23,
+          "TRADE": 66314.45191
+        }
+      },
+      "address_or_handle": "xuanxuan008",
+      "available": true,
+      "observed_public_metrics": {
+        "activity_usdc_maker_rebate": 0.0,
+        "activity_usdc_merge": 59112.74,
+        "activity_usdc_redeem": 6915.23,
+        "actual_pair_cost": 1.00693,
+        "buy_actual_cost": 66314.45191,
+        "cash_plus_current_value": -286.48191,
+        "cash_pnl": -286.48191,
+        "current_residual_rate": 1.0,
+        "current_value": 0.0,
+        "fee_rate_on_gross": 0.027956,
+        "fee_rate_on_gross_pct": 2.7956,
+        "inferred_fee_total": 1803.43991,
+        "lifetime_residual_rate": 0.004266,
+        "lifetime_residual_rate_pct": 0.4266,
+        "maker_rebate": 0.0,
+        "merge_total": 59112.74,
+        "pair_cost_p90": 1.06976,
+        "paired_actual_profit": -453.870322,
+        "redeem_total": 6915.23
+      },
+      "role": "excluded_high_fee_control",
+      "row_counts": {
+        "activity_rows": 1158,
+        "current_position_rows": 1,
+        "market_trade_rows": 119,
+        "tracked_markets": 120
+      },
+      "source_export": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_xuan_recent24h_20260523_103000_to_20260524_103000_bjt",
+      "split_interference": {
+        "absent_in_reported_sample": true,
+        "split_rows": 0
+      },
+      "status": "ACTIVE",
+      "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_xuan_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json",
+      "user_corrected_overlay": {
+        "corrected_new_mtm_ex_rebate": -394.0,
+        "corrected_new_mtm_incl_rebate": -394.0,
+        "new_window_cash_ex_rebate": -394.0,
+        "old_position_redeem_benefit": 108.0,
+        "source": "user_peer_corrected_24h_activity_recalculation",
+        "split_count_reported": 0
+      },
+      "window": {
+        "end_iso": "2026-05-24T02:30:00Z",
+        "end_s": 1779589800,
+        "start_iso": "2026-05-23T02:30:00Z",
+        "start_s": 1779503400
+      }
+    },
+    {
+      "account": "04b6",
+      "activity_types": {
+        "counts": {
+          "REDEEM": 1,
+          "TRADE": 39
+        },
+        "usdc": {
+          "REDEEM": 473.678233,
+          "TRADE": 460.242533
+        }
+      },
+      "address_or_handle": "0x04b6d7e930cf9e493c5e6ef24b496294f95594c8",
+      "available": true,
+      "observed_public_metrics": {
+        "activity_usdc_maker_rebate": 0.0,
+        "activity_usdc_merge": 0.0,
+        "activity_usdc_redeem": 473.678233,
+        "actual_pair_cost": 1.011359,
+        "buy_actual_cost": 460.242533,
+        "cash_plus_current_value": 13.4357,
+        "cash_pnl": 13.4357,
+        "current_residual_rate": 0.0,
+        "current_value": 0.0,
+        "fee_rate_on_gross": 0.008555,
+        "fee_rate_on_gross_pct": 0.8555,
+        "inferred_fee_total": 3.90404,
+        "lifetime_residual_rate": 0.139233,
+        "lifetime_residual_rate_pct": 13.9233,
+        "maker_rebate": 0.0,
+        "merge_total": 0.0,
+        "pair_cost_p90": 1.011359,
+        "paired_actual_profit": -4.065442,
+        "redeem_total": 473.678233
+      },
+      "role": "stale_or_inactive_recent_window_control",
+      "row_counts": {
+        "activity_rows": 40,
+        "current_position_rows": 0,
+        "market_trade_rows": 1,
+        "tracked_markets": 1
+      },
+      "source_export": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_04b6_recent24h_20260523_103000_to_20260524_103000_bjt",
+      "split_interference": {
+        "absent_in_reported_sample": true,
+        "split_rows": 0
+      },
+      "status": "ACTIVE",
+      "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_04b6_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json",
+      "user_corrected_overlay": {
+        "corrected_new_mtm_ex_rebate": 13.0,
+        "corrected_new_mtm_incl_rebate": 13.0,
+        "new_window_cash_ex_rebate": 13.0,
+        "old_position_redeem_benefit": 0.0,
+        "source": "user_peer_corrected_24h_activity_recalculation",
+        "split_count_reported": 0
+      },
+      "window": {
+        "end_iso": "2026-05-24T02:30:00Z",
+        "end_s": 1779589800,
+        "start_iso": "2026-05-23T02:30:00Z",
+        "start_s": 1779503400
+      }
+    },
+    {
+      "account": "b27bc",
+      "activity_types": {
+        "counts": {},
+        "usdc": {}
+      },
+      "address_or_handle": "b27bc",
+      "available": true,
+      "observed_public_metrics": {
+        "activity_usdc_maker_rebate": 0.0,
+        "activity_usdc_merge": 0.0,
+        "activity_usdc_redeem": 0.0,
+        "actual_pair_cost": 0.0,
+        "buy_actual_cost": 0.0,
+        "cash_plus_current_value": 0.0,
+        "cash_pnl": 0.0,
+        "current_residual_rate": 0.0,
+        "current_value": 0.0,
+        "fee_rate_on_gross": 0.0,
+        "fee_rate_on_gross_pct": 0.0,
+        "inferred_fee_total": 0.0,
+        "lifetime_residual_rate": 0.0,
+        "lifetime_residual_rate_pct": 0.0,
+        "maker_rebate": 0.0,
+        "merge_total": 0.0,
+        "pair_cost_p90": 0.0,
+        "paired_actual_profit": 0.0,
+        "redeem_total": 0.0
+      },
+      "role": "inactive_historical_benchmark",
+      "row_counts": {
+        "activity_rows": 0,
+        "current_position_rows": 0,
+        "market_trade_rows": 0,
+        "tracked_markets": 0
+      },
+      "source_export": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_b27bc_recent24h_20260523_103000_to_20260524_103000_bjt",
+      "split_interference": {
+        "absent_in_reported_sample": true,
+        "split_rows": 0
+      },
+      "status": "INACTIVE_OR_NO_TRADE_ACTIVITY",
+      "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_b27bc_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json",
+      "user_corrected_overlay": {
+        "corrected_new_mtm_ex_rebate": null,
+        "corrected_new_mtm_incl_rebate": null,
+        "new_window_cash_ex_rebate": null,
+        "old_position_redeem_benefit": null,
+        "source": "user_peer_corrected_24h_activity_recalculation",
+        "split_count_reported": 0
+      },
+      "window": {
+        "end_iso": "2026-05-24T02:30:00Z",
+        "end_s": 1779589800,
+        "start_iso": "2026-05-23T02:30:00Z",
+        "start_s": 1779503400
+      }
+    }
+  ],
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "PUBLIC_PROFILE_CORRECTED_RANKING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "account_interpretation": {
+      "b55": {
+        "actual_pair_cost": 0.959218,
+        "corrected_new_mtm_ex_rebate": 2851.0,
+        "corrected_new_mtm_incl_rebate": 3513.0,
+        "pair_cost_p90": 1.164791,
+        "residual_rate": 0.149474,
+        "status": "main_lead_but_profit_downshifted",
+        "why": [
+          "Corrected new-window MTM remains positive, but far below the naive cash-plus-current leaderboard read.",
+          "Average actual pair cost is strong and below 0.97.",
+          "Residual rate and pair-cost tail are still too high for direct replication."
+        ]
+      },
+      "ce25": {
+        "actual_pair_cost": 0.974217,
+        "fee_rate_on_gross": 0.014253,
+        "residual_rate": 0.087091,
+        "status": "upgraded_clean_control",
+        "why": [
+          "No reported old-position redeem pollution in the 24h sample.",
+          "Residual rate is below the first replication target.",
+          "Profit scale is thin and fee rate is higher than b55, so it is a control rather than the main template."
+        ]
+      },
+      "ohanism": {
+        "actual_pair_cost": 1.036747,
+        "residual_rate": 0.769792,
+        "status": "downgraded_direction_inventory_rebate_control",
+        "why": [
+          "Average pair cost is above 1.0, so paired subset is not the robust arb mechanism.",
+          "Residual exposure is very high.",
+          "Old-position redeem and maker rebate materially affect naive 24h PnL."
+        ]
+      },
+      "xuan": {
+        "actual_pair_cost": 1.00693,
+        "fee_rate_on_gross": 0.027956,
+        "status": "excluded",
+        "why": [
+          "Corrected new-window result is negative.",
+          "Fee rate and pair cost remain above the required strategy quality bar."
+        ]
+      }
+    },
+    "blockers_before_shadow_or_deployable_claim": [
+      "b55_residual_above_first_replication_target",
+      "b55_pair_cost_tail_above_arb_leg_threshold",
+      "b55_window_new_cash_negative_after_old_redeem_adjustment",
+      "fair_price_source_missing_or_not_yet_joined",
+      "per_trade_fee_and_liquidity_role_missing",
+      "public_profile_proxy_only_not_private_truth"
+    ],
+    "decision": "KEEP",
+    "label": "KEEP_CORRECTED_PUBLIC_LEADERBOARD_RANKING_READY_B55_MAIN_CE25_CLEAN_CONTROL",
+    "ranking_semantics": {
+      "clean_low_residual_pair_arb_control": "ce25",
+      "direction_rebate_inventory_control": "ohanism",
+      "excluded_high_fee_control": "xuan",
+      "inactive_historical_benchmark": "b27bc",
+      "leaderboard_cash_pnl": "candidate_pool_only_not_conclusion",
+      "primary_pair_arb_research_ranking": [
+        "b55",
+        "ce25",
+        "b27bc",
+        "ohanism",
+        "xuan",
+        "04b6"
+      ],
+      "profitability_fair_price_lead": "b55",
+      "stale_recent_window_control": "04b6"
+    },
+    "split_interference_absent_for_reported_accounts": true
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "dplus_failed_families_enabled_or_swept": false,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "orders_sent": false,
+    "private_owner_trade_truth_used": false,
+    "public_profile_exports_only": true,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_used": false
+  },
+  "source_inputs": {
+    "export_root": "/Users/hot/web3Scientist/poly_trans_research/data/exports",
+    "profiles": [
+      {
+        "account": "b55",
+        "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_b55_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json"
+      },
+      {
+        "account": "ce25",
+        "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_ce25_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json"
+      },
+      {
+        "account": "ohanism",
+        "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_ohanism_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json"
+      },
+      {
+        "account": "xuan",
+        "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_xuan_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json"
+      },
+      {
+        "account": "04b6",
+        "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_04b6_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json"
+      },
+      {
+        "account": "b27bc",
+        "summary_json": "/Users/hot/web3Scientist/poly_trans_research/data/exports/leaderboard_b27bc_recent24h_20260523_103000_to_20260524_103000_bjt/summary.json"
+      }
+    ]
+  }
+}
