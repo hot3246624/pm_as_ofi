@@ -1,0 +1,1046 @@
+{
+  "artifact": "xuan_public_profile_multiday_source_inventory",
+  "created_utc": "20260524T122920Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_PUBLIC_PROFILE_MULTIDAY_SOURCE_READY",
+  "inputs": {
+    "allowlisted_source_files": [
+      "scripts/xuan_public_profile_reset_review.py",
+      "scripts/xuan_public_leaderboard_corrected_new_mtm_audit.py",
+      "scripts/xuan_public_profile_next_lead_gate.py",
+      "scripts/xuan_ce25_three_day_input_source_readiness.py",
+      "scripts/xuan_ce25_three_day_pair_cost_validation_spec.py",
+      "scripts/xuan_b55_ce25_public_activity_entry_exporter_fixture.py"
+    ],
+    "manifests": [
+      "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/manifest.json",
+      "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/manifest.json",
+      "xuan_research_artifacts/xuan_public_profile_next_lead_gate_20260524T091916Z/manifest.json",
+      "xuan_research_artifacts/xuan_ce25_three_day_input_source_readiness_20260524T115616Z/manifest.json",
+      "xuan_research_artifacts/xuan_ce25_three_day_pair_cost_validation_spec_20260524T122500Z/manifest.json",
+      "xuan_research_artifacts/xuan_b55_ce25_non_fixture_input_source_review_20260524T090916Z/manifest.json"
+    ],
+    "public_input_roots": [
+      "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs",
+      "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs",
+      "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs",
+      "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs"
+    ]
+  },
+  "inventory_contract": {
+    "contract_name": "xuan_public_profile_multiday_source_inventory_v1",
+    "minimum_ready_source": {
+      "bjt_day_count_gte": 3,
+      "required_public_activity_fields": [
+        "conditionId",
+        "slug",
+        "timestamp",
+        "price",
+        "size",
+        "usdcSize",
+        "side",
+        "type"
+      ],
+      "row_count_gte": 500,
+      "source_path_policy": "must be inside the current pm_as_ofi-xuan-research worktree"
+    },
+    "purpose": "Find an in-worktree multi-day public-profile source that can justify the next validation contract.",
+    "rejected_substitutes": [
+      "external worktree exports",
+      "single-day or two-day public rows",
+      "fixtures/synthetic rows",
+      "price cap/static asset-timeframe filters",
+      "realized pair_cost as live criterion",
+      "D+ failed micro-deficit/ledger/tiny-deficit/closed-cycle families",
+      "unobservable direction/fair-probability claims"
+    ]
+  },
+  "lane": "public_profile_multiday_source_inventory",
+  "manifest_summaries": [
+    {
+      "artifact": "xuan_public_profile_reset_review",
+      "decision_label": "KEEP_PUBLIC_PROFILE_RESET_RESEARCH_READY",
+      "exists": true,
+      "next_executable_action": "Implement local-only closed_cycle_pairing_objective_audit_v1: define success as risk-adjusted closed-cycle PnL after fees and residual stress, compare profile-inspired motifs across allowed candidate exports, and reject any candidate that only has positive gross pair PnL while residual stress is negative.",
+      "path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/manifest.json",
+      "promotion_gate_passed": false,
+      "research_status": "KEEP_PUBLIC_PROFILE_RESET_RESEARCH_READY",
+      "strategy_evidence": false
+    },
+    {
+      "artifact": "xuan_public_profile_reset_review",
+      "decision_label": "KEEP_PUBLIC_PROFILE_RESET_RESEARCH_READY",
+      "exists": true,
+      "next_executable_action": "Implement local-only closed_cycle_pairing_objective_audit_v1: define success as risk-adjusted closed-cycle PnL after fees and residual stress, compare profile-inspired motifs across allowed candidate exports, and reject any candidate that only has positive gross pair PnL while residual stress is negative.",
+      "path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/manifest.json",
+      "promotion_gate_passed": false,
+      "research_status": "KEEP_PUBLIC_PROFILE_RESET_RESEARCH_READY",
+      "strategy_evidence": false
+    },
+    {
+      "artifact": "xuan_public_profile_next_lead_gate",
+      "decision_label": "KEEP_PUBLIC_PROFILE_NEXT_LEAD_GATE_CE25_MIMICABILITY_SELECTED_B55_CONTROL",
+      "exists": true,
+      "next_executable_action": "Implement ce25_late_window_pair_arb_proxy_gate_v1 local-only using the same existing deep-compare/public export rows: test ce25 15m BTC/ETH/SOL as the first mimicability subgroup, keep BTC 5m as a negative control and b55 as strength control, and fail closed until non-fixture liquidity-role/fair-probability joins exist.",
+      "path": "xuan_research_artifacts/xuan_public_profile_next_lead_gate_20260524T091916Z/manifest.json",
+      "promotion_gate_passed": false,
+      "research_status": "KEEP_PUBLIC_PROFILE_NEXT_LEAD_GATE_CE25_MIMICABILITY_SELECTED_B55_CONTROL",
+      "strategy_evidence": false
+    },
+    {
+      "artifact": "xuan_ce25_three_day_input_source_readiness",
+      "decision_label": "UNKNOWN_CE25_THREE_DAY_INPUT_SOURCE_NOT_IN_CURRENT_WORKTREE",
+      "exists": true,
+      "next_executable_action": "Provide or create inside this worktree a safe offline ce25 72h daily-cohort manifest matching ce25_three_day_pair_cost_validation_v1, then run the validation command; otherwise mark ce25 mimicability input-blocked and pivot to another lead with in-worktree multi-day evidence.",
+      "path": "xuan_research_artifacts/xuan_ce25_three_day_input_source_readiness_20260524T115616Z/manifest.json",
+      "promotion_gate_passed": false,
+      "research_status": "UNKNOWN_CE25_THREE_DAY_INPUT_SOURCE_NOT_IN_CURRENT_WORKTREE",
+      "strategy_evidence": false
+    },
+    {
+      "artifact": "xuan_ce25_three_day_pair_cost_validation_spec",
+      "decision_label": "KEEP_CE25_THREE_DAY_PAIR_COST_VALIDATION_SPEC_READY_REAL_INPUT_UNKNOWN",
+      "exists": true,
+      "next_executable_action": "prepare a safe offline 72h ce25 public-export manifest matching ce25_three_day_pair_cost_validation_v1, or run this scorer on an already-created manifest; do not start no-order diagnostics",
+      "path": "xuan_research_artifacts/xuan_ce25_three_day_pair_cost_validation_spec_20260524T122500Z/manifest.json",
+      "promotion_gate_passed": false,
+      "research_status": "KEEP_CE25_THREE_DAY_PAIR_COST_VALIDATION_SPEC_READY_REAL_INPUT_UNKNOWN",
+      "strategy_evidence": false
+    },
+    {
+      "artifact": "xuan_b55_ce25_non_fixture_input_source_review",
+      "decision_label": "UNKNOWN_B55_CE25_NON_FIXTURE_INPUT_SOURCE_MISSING",
+      "exists": true,
+      "next_executable_action": "Either prepare an explicitly approved safe offline exporter for non-service liquidity_role/fair-source probability joins, or pivot to a different public-profile lead that has observable non-fixture evidence; do not start no-order diagnostics for b55/ce25 until real_non_fixture_source_ready=true.",
+      "path": "xuan_research_artifacts/xuan_b55_ce25_non_fixture_input_source_review_20260524T090916Z/manifest.json",
+      "promotion_gate_passed": false,
+      "research_status": "UNKNOWN_B55_CE25_NON_FIXTURE_INPUT_SOURCE_MISSING",
+      "strategy_evidence": false
+    }
+  ],
+  "next_executable_action": "Implement a local-only validation contract for the selected in-worktree multi-day public source xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json and keep it proxy-only; do not start no-order diagnostics.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "PUBLIC_PROFILE_SOURCE_INVENTORY_ONLY_NOT_STRATEGY_OR_PROMOTION_EVIDENCE"
+  },
+  "public_input_inventory": {
+    "account_rollup": {
+      "04b6": {
+        "best_bjt_day_count": 1,
+        "best_bjt_days": [
+          "2026-05-23"
+        ],
+        "best_row_count": 3500,
+        "best_source_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_trade_rows.json",
+        "best_utc_day_count": 2,
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "candidate_sources": [],
+        "has_multiday_candidate": false,
+        "source_count": 4
+      },
+      "0x8dxd": {
+        "best_bjt_day_count": 3,
+        "best_bjt_days": [
+          "2026-03-24",
+          "2026-04-29",
+          "2026-05-12"
+        ],
+        "best_row_count": 3500,
+        "best_source_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json",
+        "best_utc_day_count": 4,
+        "blockers": [],
+        "candidate_sources": [
+          {
+            "bjt_day_count": 3,
+            "path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json",
+            "row_count": 3500,
+            "validation_command": "python3 scripts/xuan_public_profile_multiday_validation_spec.py --public-input xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json --output-dir xuan_research_artifacts/xuan_public_profile_multiday_validation_score_<UTC>"
+          }
+        ],
+        "has_multiday_candidate": true,
+        "source_count": 1
+      },
+      "9f5": {
+        "best_bjt_day_count": 1,
+        "best_bjt_days": [
+          "2026-05-24"
+        ],
+        "best_row_count": 3426,
+        "best_source_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_trade_rows.json",
+        "best_utc_day_count": 2,
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "candidate_sources": [],
+        "has_multiday_candidate": false,
+        "source_count": 3
+      },
+      "b55": {
+        "best_bjt_day_count": 1,
+        "best_bjt_days": [
+          "2026-05-24"
+        ],
+        "best_row_count": 3492,
+        "best_source_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xb55fa1296e6ec55d0ce53d93b9237389f11764d4/activity_trade_rows.json",
+        "best_utc_day_count": 1,
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "candidate_sources": [],
+        "has_multiday_candidate": false,
+        "source_count": 1
+      },
+      "ce25": {
+        "best_bjt_day_count": 1,
+        "best_bjt_days": [
+          "2026-05-24"
+        ],
+        "best_row_count": 3497,
+        "best_source_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xce25e214d5cfe4f459cf67f08df581885aae7fdc/activity_trade_rows.json",
+        "best_utc_day_count": 2,
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "candidate_sources": [],
+        "has_multiday_candidate": false,
+        "source_count": 1
+      },
+      "gabagool22": {
+        "best_bjt_day_count": 1,
+        "best_bjt_days": [
+          "2026-02-20"
+        ],
+        "best_row_count": 3426,
+        "best_source_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d/activity_trade_rows.json",
+        "best_utc_day_count": 1,
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "candidate_sources": [],
+        "has_multiday_candidate": false,
+        "source_count": 1
+      },
+      "ohanism": {
+        "best_bjt_day_count": 1,
+        "best_bjt_days": [
+          "2026-05-24"
+        ],
+        "best_row_count": 3490,
+        "best_source_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x89b5cdaaa4866c1e738406712012a630b4078beb/activity_trade_rows.json",
+        "best_utc_day_count": 2,
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "candidate_sources": [],
+        "has_multiday_candidate": false,
+        "source_count": 1
+      }
+    },
+    "rejected_roots": [],
+    "sources": [
+      {
+        "account": "04b6",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_trade_rows.json",
+        "all_row_count": 3500,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-23"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 18,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/positions_rows.json",
+        "row_count_used": 3500,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs",
+        "timestamp_max": 1779519223,
+        "timestamp_min": 1779472591,
+        "trade_row_count": 3500,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-22",
+          "2026-05-23"
+        ],
+        "validation_command": null,
+        "wallet": "0x04b6d7e930cf9e493c5e6ef24b496294f95594c8"
+      },
+      {
+        "account": "ohanism",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x89b5cdaaa4866c1e738406712012a630b4078beb/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x89b5cdaaa4866c1e738406712012a630b4078beb/activity_trade_rows.json",
+        "all_row_count": 3482,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-24"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 23,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0x89b5cdaaa4866c1e738406712012a630b4078beb/positions_rows.json",
+        "row_count_used": 3490,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs",
+        "timestamp_max": 1779592365,
+        "timestamp_min": 1779573344,
+        "trade_row_count": 3490,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-23",
+          "2026-05-24"
+        ],
+        "validation_command": null,
+        "wallet": "0x89b5cdaaa4866c1e738406712012a630b4078beb"
+      },
+      {
+        "account": "b55",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xb55fa1296e6ec55d0ce53d93b9237389f11764d4/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xb55fa1296e6ec55d0ce53d93b9237389f11764d4/activity_trade_rows.json",
+        "all_row_count": 3492,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-24"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 39,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xb55fa1296e6ec55d0ce53d93b9237389f11764d4/positions_rows.json",
+        "row_count_used": 3492,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs",
+        "timestamp_max": 1779592293,
+        "timestamp_min": 1779582843,
+        "trade_row_count": 3492,
+        "utc_day_count": 1,
+        "utc_days": [
+          "2026-05-24"
+        ],
+        "validation_command": null,
+        "wallet": "0xb55fa1296e6ec55d0ce53d93b9237389f11764d4"
+      },
+      {
+        "account": "ce25",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xce25e214d5cfe4f459cf67f08df581885aae7fdc/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xce25e214d5cfe4f459cf67f08df581885aae7fdc/activity_trade_rows.json",
+        "all_row_count": 3498,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-24"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 8,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xce25e214d5cfe4f459cf67f08df581885aae7fdc/positions_rows.json",
+        "row_count_used": 3497,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs",
+        "timestamp_max": 1779592349,
+        "timestamp_min": 1779577168,
+        "trade_row_count": 3497,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-23",
+          "2026-05-24"
+        ],
+        "validation_command": null,
+        "wallet": "0xce25e214d5cfe4f459cf67f08df581885aae7fdc"
+      },
+      {
+        "account": "04b6",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_trade_rows.json",
+        "all_row_count": 3500,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-23"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 18,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/positions_rows.json",
+        "row_count_used": 3500,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs",
+        "timestamp_max": 1779519223,
+        "timestamp_min": 1779472591,
+        "trade_row_count": 3500,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-22",
+          "2026-05-23"
+        ],
+        "validation_command": null,
+        "wallet": "0x04b6d7e930cf9e493c5e6ef24b496294f95594c8"
+      },
+      {
+        "account": "gabagool22",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d/activity_trade_rows.json",
+        "all_row_count": 3428,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-02-20"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 0,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d/positions_rows.json",
+        "row_count_used": 3426,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs",
+        "timestamp_max": 1771578374,
+        "timestamp_min": 1771574042,
+        "trade_row_count": 3426,
+        "utc_day_count": 1,
+        "utc_days": [
+          "2026-02-20"
+        ],
+        "validation_command": null,
+        "wallet": "0x6031b6eed1c97e853c6e0f03ad3ce3529351f96d"
+      },
+      {
+        "account": "0x8dxd",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json",
+        "all_row_count": 3500,
+        "bjt_day_count": 3,
+        "bjt_days": [
+          "2026-03-24",
+          "2026-04-29",
+          "2026-05-12"
+        ],
+        "blockers": [],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 0,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/positions_rows.json",
+        "row_count_used": 3500,
+        "source_is_multiday_candidate": true,
+        "source_root": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs",
+        "timestamp_max": 1778595374,
+        "timestamp_min": 1774349417,
+        "trade_row_count": 3500,
+        "utc_day_count": 4,
+        "utc_days": [
+          "2026-03-24",
+          "2026-04-28",
+          "2026-04-29",
+          "2026-05-12"
+        ],
+        "validation_command": "python3 scripts/xuan_public_profile_multiday_validation_spec.py --public-input xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json --output-dir xuan_research_artifacts/xuan_public_profile_multiday_validation_score_<UTC>",
+        "wallet": "0x63ce342161250d705dc0b16df89036c8e5f9ba9a"
+      },
+      {
+        "account": "9f5",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_trade_rows.json",
+        "all_row_count": 3430,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-24"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 19,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/positions_rows.json",
+        "row_count_used": 3426,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs",
+        "timestamp_max": 1779589286,
+        "timestamp_min": 1779578713,
+        "trade_row_count": 3426,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-23",
+          "2026-05-24"
+        ],
+        "validation_command": null,
+        "wallet": "0x9f5ffe76a818dce37c70f947998b52b70671a008"
+      },
+      {
+        "account": "04b6",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_trade_rows.json",
+        "all_row_count": 3500,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-23"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 18,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/positions_rows.json",
+        "row_count_used": 3500,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs",
+        "timestamp_max": 1779519223,
+        "timestamp_min": 1779472591,
+        "trade_row_count": 3500,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-22",
+          "2026-05-23"
+        ],
+        "validation_command": null,
+        "wallet": "0x04b6d7e930cf9e493c5e6ef24b496294f95594c8"
+      },
+      {
+        "account": "9f5",
+        "activity_all_rows_exists": true,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_trade_rows.json",
+        "all_row_count": 3432,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-24"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 11,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/positions_rows.json",
+        "row_count_used": 3425,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T021417Z/public_inputs",
+        "timestamp_max": 1779588959,
+        "timestamp_min": 1779578536,
+        "trade_row_count": 3425,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-23",
+          "2026-05-24"
+        ],
+        "validation_command": null,
+        "wallet": "0x9f5ffe76a818dce37c70f947998b52b70671a008"
+      },
+      {
+        "account": "04b6",
+        "activity_all_rows_exists": false,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/activity_trade_rows.json",
+        "all_row_count": 0,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-22"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 18,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs/0x04b6d7e930cf9e493c5e6ef24b496294f95594c8/positions_rows.json",
+        "row_count_used": 3000,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs",
+        "timestamp_max": 1779437705,
+        "timestamp_min": 1779391666,
+        "trade_row_count": 3000,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-21",
+          "2026-05-22"
+        ],
+        "validation_command": null,
+        "wallet": "0x04b6d7e930cf9e493c5e6ef24b496294f95594c8"
+      },
+      {
+        "account": "9f5",
+        "activity_all_rows_exists": false,
+        "activity_all_rows_path": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_all_rows.json",
+        "activity_trade_rows_exists": true,
+        "activity_trade_rows_path": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/activity_trade_rows.json",
+        "all_row_count": 0,
+        "bjt_day_count": 1,
+        "bjt_days": [
+          "2026-05-22"
+        ],
+        "blockers": [
+          "fewer_than_3_bjt_days"
+        ],
+        "has_required_public_fields": true,
+        "keys": [
+          "asset",
+          "bio",
+          "conditionId",
+          "eventSlug",
+          "icon",
+          "name",
+          "outcome",
+          "outcomeIndex",
+          "price",
+          "profileImage",
+          "profileImageOptimized",
+          "proxyWallet",
+          "pseudonym",
+          "side",
+          "size",
+          "slug",
+          "timestamp",
+          "title",
+          "transactionHash",
+          "type",
+          "usdcSize"
+        ],
+        "position_row_count": 20,
+        "positions_rows_exists": true,
+        "positions_rows_path": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs/0x9f5ffe76a818dce37c70f947998b52b70671a008/positions_rows.json",
+        "row_count_used": 3000,
+        "source_is_multiday_candidate": false,
+        "source_root": "xuan_research_artifacts/xuan_b27_dplus_public_profile_two_account_complete_set_review_20260522T113113Z/public_inputs",
+        "timestamp_max": 1779449913,
+        "timestamp_min": 1779402434,
+        "trade_row_count": 3000,
+        "utc_day_count": 2,
+        "utc_days": [
+          "2026-05-21",
+          "2026-05-22"
+        ],
+        "validation_command": null,
+        "wallet": "0x9f5ffe76a818dce37c70f947998b52b70671a008"
+      }
+    ]
+  },
+  "research_ranking": {
+    "account_day_counts": {
+      "04b6": {
+        "best_bjt_day_count": 1,
+        "best_row_count": 3500,
+        "has_multiday_candidate": false
+      },
+      "0x8dxd": {
+        "best_bjt_day_count": 3,
+        "best_row_count": 3500,
+        "has_multiday_candidate": true
+      },
+      "9f5": {
+        "best_bjt_day_count": 1,
+        "best_row_count": 3426,
+        "has_multiday_candidate": false
+      },
+      "b55": {
+        "best_bjt_day_count": 1,
+        "best_row_count": 3492,
+        "has_multiday_candidate": false
+      },
+      "ce25": {
+        "best_bjt_day_count": 1,
+        "best_row_count": 3497,
+        "has_multiday_candidate": false
+      },
+      "gabagool22": {
+        "best_bjt_day_count": 1,
+        "best_row_count": 3426,
+        "has_multiday_candidate": false
+      },
+      "ohanism": {
+        "best_bjt_day_count": 1,
+        "best_row_count": 3490,
+        "has_multiday_candidate": false
+      }
+    },
+    "accounts_reviewed": [
+      "04b6",
+      "0x8dxd",
+      "9f5",
+      "b55",
+      "ce25",
+      "gabagool22",
+      "ohanism"
+    ],
+    "exact_blockers": [],
+    "no_order_diagnostic_allowed": false,
+    "safe_in_worktree_multiday_source_ready": true,
+    "status": "KEEP_PUBLIC_PROFILE_MULTIDAY_SOURCE_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "selected_multiday_source": {
+    "account": "0x8dxd",
+    "bjt_day_count": 3,
+    "bjt_days": [
+      "2026-03-24",
+      "2026-04-29",
+      "2026-05-12"
+    ],
+    "row_count": 3500,
+    "source_path": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json",
+    "validation_command": "python3 scripts/xuan_public_profile_multiday_validation_spec.py --public-input xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json --output-dir xuan_research_artifacts/xuan_public_profile_multiday_validation_score_<UTC>",
+    "wallet": "0x63ce342161250d705dc0b16df89036c8e5f9ba9a"
+  },
+  "source_code_summaries": [
+    {
+      "exists": true,
+      "mentions_external_export_root": false,
+      "mentions_fetch": true,
+      "mentions_public_activity_rows": true,
+      "mentions_three_day": false,
+      "mentions_validation_command": false,
+      "path": "scripts/xuan_public_profile_reset_review.py"
+    },
+    {
+      "exists": true,
+      "mentions_external_export_root": true,
+      "mentions_fetch": false,
+      "mentions_public_activity_rows": false,
+      "mentions_three_day": false,
+      "mentions_validation_command": false,
+      "path": "scripts/xuan_public_leaderboard_corrected_new_mtm_audit.py"
+    },
+    {
+      "exists": true,
+      "mentions_external_export_root": true,
+      "mentions_fetch": false,
+      "mentions_public_activity_rows": false,
+      "mentions_three_day": false,
+      "mentions_validation_command": false,
+      "path": "scripts/xuan_public_profile_next_lead_gate.py"
+    },
+    {
+      "exists": true,
+      "mentions_external_export_root": true,
+      "mentions_fetch": false,
+      "mentions_public_activity_rows": true,
+      "mentions_three_day": true,
+      "mentions_validation_command": true,
+      "path": "scripts/xuan_ce25_three_day_input_source_readiness.py"
+    },
+    {
+      "exists": true,
+      "mentions_external_export_root": false,
+      "mentions_fetch": false,
+      "mentions_public_activity_rows": false,
+      "mentions_three_day": true,
+      "mentions_validation_command": true,
+      "path": "scripts/xuan_ce25_three_day_pair_cost_validation_spec.py"
+    },
+    {
+      "exists": true,
+      "mentions_external_export_root": false,
+      "mentions_fetch": false,
+      "mentions_public_activity_rows": true,
+      "mentions_three_day": false,
+      "mentions_validation_command": false,
+      "path": "scripts/xuan_b55_ce25_public_activity_entry_exporter_fixture.py"
+    }
+  ]
+}

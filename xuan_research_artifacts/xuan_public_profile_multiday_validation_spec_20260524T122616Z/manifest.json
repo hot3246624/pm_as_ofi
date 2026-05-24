@@ -1,0 +1,227 @@
+{
+  "artifact": "xuan_public_profile_multiday_validation_spec",
+  "created_utc": "20260524T123202Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_PUBLIC_PROFILE_MULTIDAY_VALIDATION_SAMPLE_INSUFFICIENT",
+  "inputs": {
+    "public_input": "xuan_research_artifacts/xuan_public_profile_reset_review_20260524T022800Z/public_inputs/0x63ce342161250d705dc0b16df89036c8e5f9ba9a/activity_trade_rows.json",
+    "public_input_error": null,
+    "row_count": 3500
+  },
+  "lane": "public_profile_multiday_validation_spec",
+  "next_executable_action": "If validation is UNKNOWN, do not continue this source as mimicability evidence; provide a safer 72h source or pivot to another line. If validation is KEEP, implement only a proxy scorer/spec next; do not start no-order diagnostics.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "PUBLIC_PROFILE_MULTIDAY_VALIDATION_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "public_profile_multiday_validation": {
+    "bjt_day_count": 3,
+    "bjt_days": [
+      "2026-03-24",
+      "2026-04-29",
+      "2026-05-12"
+    ],
+    "blockers": [
+      "2026-03-24_residual_share_above_max",
+      "2026-04-29_both_outcome_ratio_below_min",
+      "2026-04-29_buy_rows_below_min",
+      "2026-04-29_no_matched_pair_cost",
+      "2026-04-29_residual_share_above_max",
+      "2026-04-29_trade_rows_below_min",
+      "2026-05-12_both_outcome_ratio_below_min",
+      "2026-05-12_buy_rows_below_min",
+      "2026-05-12_no_bought_qty",
+      "2026-05-12_no_matched_pair_cost",
+      "2026-05-12_sell_share_above_max",
+      "2026-05-12_trade_rows_below_min",
+      "fewer_than_3_valid_days"
+    ],
+    "candidate_status": "UNKNOWN",
+    "daily_results": {
+      "2026-03-24": {
+        "blockers": [
+          "residual_share_above_max"
+        ],
+        "complete_set_metrics": {
+          "both_outcome_condition_count": 37,
+          "both_outcome_condition_ratio": 0.94871795,
+          "bought_qty": 106811.960656,
+          "buy_rows": 3173,
+          "condition_count": 39,
+          "matched_qty": 39046.801844,
+          "residual_cost_proxy": 9186.39900565,
+          "residual_qty": 28718.356968,
+          "residual_share": 0.26886836,
+          "top_conditions_by_residual_qty": [
+            {
+              "condition_id": "0xd8cc0f453ad702ae6308bb73156e4cb15044c99b68d1b6d6ab1cc24e777b38e6",
+              "matched_qty": 1739.080978,
+              "outcome_count": 2,
+              "residual_qty": 4622.00978,
+              "total_qty": 8100.171736
+            },
+            {
+              "condition_id": "0xa69a692679cafb7711b9b2bb433390fe730afd0096bdb2154ba021ee966aef58",
+              "matched_qty": 2170.441648,
+              "outcome_count": 2,
+              "residual_qty": 3045.606746,
+              "total_qty": 7386.490042
+            },
+            {
+              "condition_id": "0xcbcbfff941d895fcb9de8ea3726f4a217974500e1f801c79638703b3275a140b",
+              "matched_qty": 579.579068,
+              "outcome_count": 2,
+              "residual_qty": 2710.847052,
+              "total_qty": 3870.005188
+            },
+            {
+              "condition_id": "0xed3d8fee990dac2d29dd437e1f23af5d00de0674165aead27435432e2b474ed1",
+              "matched_qty": 6.12,
+              "outcome_count": 2,
+              "residual_qty": 2662.136251,
+              "total_qty": 2674.376251
+            },
+            {
+              "condition_id": "0xa50072610231e2930a424b1ce902d7826e0116681b7c9f829ec0acb24be06374",
+              "matched_qty": 5502.79938,
+              "outcome_count": 2,
+              "residual_qty": 1830.661978,
+              "total_qty": 12836.260738
+            }
+          ],
+          "weighted_pair_cost": 0.87912486,
+          "weighted_pair_edge": 0.12087514
+        },
+        "passed": false,
+        "sell_rows": 296,
+        "sell_share": 0.08532718,
+        "trade_rows": 3469
+      },
+      "2026-04-29": {
+        "blockers": [
+          "trade_rows_below_min",
+          "buy_rows_below_min",
+          "no_matched_pair_cost",
+          "residual_share_above_max",
+          "both_outcome_ratio_below_min"
+        ],
+        "complete_set_metrics": {
+          "both_outcome_condition_count": 0,
+          "both_outcome_condition_ratio": 0.0,
+          "bought_qty": 175204.817091,
+          "buy_rows": 28,
+          "condition_count": 1,
+          "matched_qty": 0.0,
+          "residual_cost_proxy": 11388.313111,
+          "residual_qty": 175204.817091,
+          "residual_share": 1.0,
+          "top_conditions_by_residual_qty": [
+            {
+              "condition_id": "0xd9fb1184af0064e5e34b129f5b79afa5a17b7e32f2953ab05efed82315fee6d4",
+              "matched_qty": 0.0,
+              "outcome_count": 1,
+              "residual_qty": 175204.817091,
+              "total_qty": 175204.817091
+            }
+          ],
+          "weighted_pair_cost": null,
+          "weighted_pair_edge": null
+        },
+        "passed": false,
+        "sell_rows": 2,
+        "sell_share": 0.06666667,
+        "trade_rows": 30
+      },
+      "2026-05-12": {
+        "blockers": [
+          "trade_rows_below_min",
+          "buy_rows_below_min",
+          "sell_share_above_max",
+          "no_matched_pair_cost",
+          "no_bought_qty",
+          "both_outcome_ratio_below_min"
+        ],
+        "complete_set_metrics": {
+          "both_outcome_condition_count": 0,
+          "both_outcome_condition_ratio": 0.0,
+          "bought_qty": 0.0,
+          "buy_rows": 0,
+          "condition_count": 0,
+          "matched_qty": 0.0,
+          "residual_cost_proxy": 0.0,
+          "residual_qty": 0.0,
+          "residual_share": null,
+          "top_conditions_by_residual_qty": [],
+          "weighted_pair_cost": null,
+          "weighted_pair_edge": null
+        },
+        "passed": false,
+        "sell_rows": 1,
+        "sell_share": 1.0,
+        "trade_rows": 1
+      }
+    },
+    "valid_day_count": 0,
+    "valid_days": []
+  },
+  "research_ranking": {
+    "blockers": [
+      "2026-03-24_residual_share_above_max",
+      "2026-04-29_both_outcome_ratio_below_min",
+      "2026-04-29_buy_rows_below_min",
+      "2026-04-29_no_matched_pair_cost",
+      "2026-04-29_residual_share_above_max",
+      "2026-04-29_trade_rows_below_min",
+      "2026-05-12_both_outcome_ratio_below_min",
+      "2026-05-12_buy_rows_below_min",
+      "2026-05-12_no_bought_qty",
+      "2026-05-12_no_matched_pair_cost",
+      "2026-05-12_sell_share_above_max",
+      "2026-05-12_trade_rows_below_min",
+      "fewer_than_3_valid_days"
+    ],
+    "interpretation": "The selected public rows must pass daily sample, buy-side, complete-set pair-cost, and residual checks before they become a useful proxy lead. Passing still would not prove private truth or deployability.",
+    "no_order_diagnostic_allowed": false,
+    "public_proxy_ready": false,
+    "status": "UNKNOWN_PUBLIC_PROFILE_MULTIDAY_VALIDATION_SAMPLE_INSUFFICIENT",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "validation_contract": {
+    "contract_name": "xuan_public_profile_multiday_validation_v1",
+    "max_residual_share": 0.25,
+    "max_sell_share": 0.1,
+    "max_weighted_pair_cost": 0.98,
+    "min_both_outcome_condition_ratio": 0.5,
+    "minimum_buy_rows_per_day": 80,
+    "minimum_days": 3,
+    "minimum_rows_per_day": 100,
+    "rejected_interpretations": [
+      "deployable or canary-ready evidence",
+      "private truth",
+      "directional settlement skill proof",
+      "realized pair_cost as live criterion",
+      "price cap/static filter",
+      "D+ failed families"
+    ],
+    "retrospective_public_proxy_only": true
+  }
+}
