@@ -147,6 +147,68 @@ def pair_cost_bucket(cost: float | None) -> str:
     return "pair_cost_gt_1p05"
 
 
+def ce25_projected_pair_cost_bucket(cost: float | None) -> str:
+    if cost is None or cost <= 0:
+        return "projected_pair_cost_unknown"
+    if cost < 0.90:
+        return "projected_pair_cost_lt_0p90"
+    if cost < 0.95:
+        return "projected_pair_cost_0p90_0p95"
+    if cost < 1.00:
+        return "projected_pair_cost_0p95_1p00"
+    return "projected_pair_cost_gte_1p00"
+
+
+def ce25_projected_residual_bucket(rate: float | None) -> str:
+    if rate is None or rate < 0:
+        return "projected_residual_unknown"
+    if rate < 0.10:
+        return "projected_residual_lt_10pct"
+    if rate < 0.15:
+        return "projected_residual_10_15pct"
+    if rate <= 0.20:
+        return "projected_residual_15_20pct"
+    return "projected_residual_gt_20pct"
+
+
+def asset_from_slug(slug: str) -> str:
+    first = (slug or "").split("-", 1)[0]
+    return first.upper() if first else "UNKNOWN"
+
+
+def timeframe_from_slug(slug: str) -> str:
+    lower = (slug or "").lower()
+    if "updown-5m" in lower:
+        return "5m"
+    if "updown-15m" in lower:
+        return "15m"
+    if "updown-1h" in lower or "up-or-down" in lower:
+        return "1h"
+    if "updown-4h" in lower:
+        return "4h"
+    return "unknown"
+
+
+def market_round_length_s(slug: str) -> float | None:
+    timeframe = timeframe_from_slug(slug)
+    if timeframe == "5m":
+        return 300.0
+    if timeframe == "15m":
+        return 900.0
+    if timeframe == "1h":
+        return 3600.0
+    if timeframe == "4h":
+        return 14400.0
+    return None
+
+
+def seconds_to_expiry_from_offset(slug: str, offset_s: float | None) -> float | None:
+    round_length = market_round_length_s(slug)
+    if round_length is None or offset_s is None:
+        return None
+    return max(0.0, round_length - offset_s)
+
+
 def qty_bucket(prefix: str, qty: float | None) -> str:
     if qty is None:
         return f"{prefix}_unknown"
@@ -661,6 +723,23 @@ def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str,
             merge_nested_count_hist(dest.setdefault(key, {}), source)
 
 
+def merge_ce25_projected_guard_summary(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    for key in ("schema_version", "field_contract"):
+        if key in src and key not in dest:
+            dest[key] = src[key]
+    for key in (
+        "decision_count_by_status",
+        "decision_count_by_guard",
+        "decision_count_by_asset_timeframe_guard_status",
+        "projected_pair_cost_bucket_by_guard",
+        "projected_residual_bucket_by_guard",
+        "final_window_policy_count",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -714,6 +793,7 @@ class RunnerConfig:
     source_opportunity_ledger_marker_event_lite_summary: bool = False
     source_opportunity_ledger_before_delta_marker_event_lite_summary: bool = False
     source_opportunity_closed_cycle_marker_event_lite_summary: bool = False
+    ce25_projected_guard_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -989,6 +1069,26 @@ class DPlusRunner:
                 "deployable": False,
                 "promotion_gate_passed": False,
             },
+        }
+        self.event_lite_ce25_projected_guard_summary: dict[str, Any] = {
+            "schema_version": "ce25_projected_guard_summary_v1",
+            "field_contract": {
+                "default_off": True,
+                "source": "pre_action_inventory_plus_intended_no_order_seed",
+                "estimated_fee_per_share_policy": "0.0_for_passive_no_order_seed_proxy_only",
+                "post_action_outcome_labels_included": False,
+                "realized_pair_cost_used_as_live_criteria": False,
+                "trading_behavior_changed": False,
+                "private_truth_ready": False,
+                "deployable": False,
+                "promotion_gate_passed": False,
+            },
+            "decision_count_by_status": {},
+            "decision_count_by_guard": {},
+            "decision_count_by_asset_timeframe_guard_status": {},
+            "projected_pair_cost_bucket_by_guard": {},
+            "projected_residual_bucket_by_guard": {},
+            "final_window_policy_count": {},
         }
         if self.cfg.source_opportunity_ledger_marker_event_lite_summary:
             self.event_lite_source_opportunity_markers["field_contract"][
@@ -1784,6 +1884,161 @@ class DPlusRunner:
             "present" if source_sequence_id is not None else "missing",
         )
 
+    def ce25_projected_guard_context(
+        self,
+        *,
+        side: str,
+        offset_s: float | None,
+        qty: float,
+        seed_px: float,
+        same_qty: float,
+        opp_qty: float,
+        same_cost: float,
+        opp_cost: float,
+        estimated_fee_per_share: float = 0.0,
+    ) -> dict[str, Any]:
+        asset = asset_from_slug(self.slug)
+        timeframe = timeframe_from_slug(self.slug)
+        seconds_to_expiry = seconds_to_expiry_from_offset(self.slug, offset_s)
+        if side == "YES":
+            pre_yes_qty, pre_no_qty = same_qty, opp_qty
+            pre_yes_cost, pre_no_cost = same_cost, opp_cost
+        else:
+            pre_yes_qty, pre_no_qty = opp_qty, same_qty
+            pre_yes_cost, pre_no_cost = opp_cost, same_cost
+        order_actual_cost = qty * (seed_px + estimated_fee_per_share)
+        projected_yes_qty = pre_yes_qty + (qty if side == "YES" else 0.0)
+        projected_no_qty = pre_no_qty + (qty if side == "NO" else 0.0)
+        projected_yes_cost = pre_yes_cost + (order_actual_cost if side == "YES" else 0.0)
+        projected_no_cost = pre_no_cost + (order_actual_cost if side == "NO" else 0.0)
+        projected_pair_qty = min(projected_yes_qty, projected_no_qty)
+        projected_total_bought_qty = projected_yes_qty + projected_no_qty
+        projected_residual_qty = abs(projected_yes_qty - projected_no_qty)
+        projected_pair_cost = None
+        if projected_pair_qty > DUST and projected_yes_qty > DUST and projected_no_qty > DUST:
+            projected_pair_cost = (projected_yes_cost / projected_yes_qty) + (
+                projected_no_cost / projected_no_qty
+            )
+        projected_residual_rate = None
+        if projected_total_bought_qty > DUST:
+            projected_residual_rate = projected_residual_qty / projected_total_bought_qty
+        pre_pair_qty = min(pre_yes_qty, pre_no_qty)
+        pre_residual_qty = abs(pre_yes_qty - pre_no_qty)
+        pre_total_qty = pre_yes_qty + pre_no_qty
+        pre_residual_rate = pre_residual_qty / pre_total_qty if pre_total_qty > DUST else None
+        action_intent = "initiation"
+        if projected_pair_qty > pre_pair_qty + DUST:
+            action_intent = "completion_cleanup"
+        elif pre_residual_rate is not None and projected_residual_rate is not None and projected_residual_rate <= pre_residual_rate:
+            action_intent = "completion_cleanup"
+        return {
+            "asset": asset,
+            "timeframe": timeframe,
+            "seconds_to_expiry": seconds_to_expiry,
+            "action_intent": action_intent,
+            "outcome": side,
+            "order_qty": qty,
+            "order_price": seed_px,
+            "estimated_fee_per_share": estimated_fee_per_share,
+            "pre_yes_qty": pre_yes_qty,
+            "pre_no_qty": pre_no_qty,
+            "pre_yes_actual_cost": pre_yes_cost,
+            "pre_no_actual_cost": pre_no_cost,
+            "projected_yes_qty": projected_yes_qty,
+            "projected_no_qty": projected_no_qty,
+            "projected_yes_actual_cost": projected_yes_cost,
+            "projected_no_actual_cost": projected_no_cost,
+            "projected_pair_qty": projected_pair_qty,
+            "projected_pair_cost": projected_pair_cost,
+            "projected_residual_qty": projected_residual_qty,
+            "projected_total_bought_qty": projected_total_bought_qty,
+            "projected_residual_rate_on_bought_qty": projected_residual_rate,
+        }
+
+    def ce25_projected_guard_decision(self, context: dict[str, Any]) -> dict[str, Any]:
+        asset = str(context.get("asset") or "UNKNOWN")
+        timeframe = str(context.get("timeframe") or "unknown")
+        seconds_to_expiry = context.get("seconds_to_expiry")
+        pair_cost = context.get("projected_pair_cost")
+        residual_rate = context.get("projected_residual_rate_on_bought_qty")
+        action_intent = str(context.get("action_intent") or "unknown")
+        if pair_cost is None or residual_rate is None:
+            return {"status": "would_block_missing_projected_fields", "guard": "fail_closed", "allowed": False}
+        if pair_cost >= 1.0:
+            return {"status": "would_block_pair_cost_gte_1_00", "guard": "hard_kill", "allowed": False}
+        if seconds_to_expiry is not None and seconds_to_expiry <= 300 and residual_rate > 0.20:
+            return {"status": "would_block_residual_gt_20pct_near_close", "guard": "hard_kill", "allowed": False}
+        if seconds_to_expiry is not None and seconds_to_expiry <= 60 and action_intent == "initiation":
+            return {"status": "would_block_final60_initiation", "guard": "final_window", "allowed": False}
+        if seconds_to_expiry is not None and 60 < seconds_to_expiry <= 300 and action_intent != "completion_cleanup":
+            return {"status": "would_block_final_1m_5m_not_cleanup", "guard": "final_window", "allowed": False}
+        matched: list[str] = []
+        if asset in {"ETH", "SOL"} and timeframe in {"5m", "15m"} and pair_cost < 0.90 and residual_rate < 0.15:
+            matched.append("starter")
+        if asset in {"BTC", "ETH", "SOL"} and timeframe in {"5m", "15m"} and pair_cost < 0.95 and residual_rate < 0.10:
+            matched.append("core")
+        if not matched:
+            return {"status": "would_block_no_projected_guard_match", "guard": "no_match", "allowed": False}
+        return {"status": "would_allow_projected_guard", "guard": "starter" if "starter" in matched else matched[0], "allowed": True}
+
+    def record_ce25_projected_guard_diagnostic(
+        self,
+        *,
+        side: str,
+        offset_s: float | None,
+        qty: float,
+        seed_px: float,
+        same_qty: float,
+        opp_qty: float,
+        same_cost: float,
+        opp_cost: float,
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.ce25_projected_guard_event_lite_summary):
+            return
+        context = self.ce25_projected_guard_context(
+            side=side,
+            offset_s=offset_s,
+            qty=qty,
+            seed_px=seed_px,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost,
+            opp_cost=opp_cost,
+        )
+        decision = self.ce25_projected_guard_decision(context)
+        guard = str(decision.get("guard") or "unknown")
+        status = str(decision.get("status") or "unknown")
+        asset = str(context.get("asset") or "UNKNOWN")
+        timeframe = str(context.get("timeframe") or "unknown")
+        diag = self.event_lite_ce25_projected_guard_summary
+        add_nested_count(diag["decision_count_by_status"], status, side)
+        add_nested_count(diag["decision_count_by_guard"], guard, status)
+        add_nested_count(
+            diag["decision_count_by_asset_timeframe_guard_status"],
+            f"{asset}|{timeframe}|{guard}",
+            status,
+        )
+        add_nested_count(
+            diag["projected_pair_cost_bucket_by_guard"],
+            guard,
+            ce25_projected_pair_cost_bucket(context.get("projected_pair_cost")),
+        )
+        add_nested_count(
+            diag["projected_residual_bucket_by_guard"],
+            guard,
+            ce25_projected_residual_bucket(context.get("projected_residual_rate_on_bought_qty")),
+        )
+        seconds_to_expiry = context.get("seconds_to_expiry")
+        if seconds_to_expiry is None:
+            final_policy = "seconds_to_expiry_unknown"
+        elif seconds_to_expiry <= 60:
+            final_policy = "final_0_60s"
+        elif seconds_to_expiry <= 300:
+            final_policy = "final_1m_5m"
+        else:
+            final_policy = "pre_final_5m_plus"
+        add_nested_count(diag["final_window_policy_count"], final_policy, status)
+
     def record_source_link_pair_transition(
         self,
         *,
@@ -2460,6 +2715,16 @@ class DPlusRunner:
             pre_seed_opp_cost=opp_cost_before,
             ledger_proxy_before=ledger_proxy_before,
         )
+        self.record_ce25_projected_guard_diagnostic(
+            side=side,
+            offset_s=offset,
+            qty=qty,
+            seed_px=seed_px,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost_before,
+            opp_cost=opp_cost_before,
+        )
         self.record_source_opportunity_marker(
             status="admitted",
             reason="candidate",
@@ -2643,6 +2908,8 @@ class DPlusRunner:
                 )
             if self.cfg.source_opportunity_marker_event_lite_summary:
                 summary["event_lite"]["source_opportunity_marker_summary"] = self.event_lite_source_opportunity_markers
+            if self.cfg.ce25_projected_guard_event_lite_summary:
+                summary["event_lite"]["ce25_projected_guard_summary"] = self.event_lite_ce25_projected_guard_summary
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -2913,6 +3180,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                     event_lite.setdefault("source_opportunity_marker_summary", {}),
                     source_opportunity_marker,
                 )
+            ce25_projected_guard = lite.get("ce25_projected_guard_summary")
+            if isinstance(ce25_projected_guard, dict):
+                merge_ce25_projected_guard_summary(
+                    event_lite.setdefault("ce25_projected_guard_summary", {}),
+                    ce25_projected_guard,
+                )
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -3038,6 +3311,7 @@ async def main() -> None:
     ap.add_argument("--source-opportunity-ledger-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-after marker denominators without changing behavior")
     ap.add_argument("--source-opportunity-ledger-before-delta-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-before and ledger-delta marker denominators without changing behavior")
     ap.add_argument("--source-opportunity-closed-cycle-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit closed-cycle pre-action marker denominators without changing behavior")
+    ap.add_argument("--ce25-projected-guard-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off ce25 projected pair-cost/residual guard diagnostics without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -3084,6 +3358,7 @@ async def main() -> None:
         source_opportunity_ledger_marker_event_lite_summary=args.source_opportunity_ledger_marker_event_lite_summary,
         source_opportunity_ledger_before_delta_marker_event_lite_summary=args.source_opportunity_ledger_before_delta_marker_event_lite_summary,
         source_opportunity_closed_cycle_marker_event_lite_summary=args.source_opportunity_closed_cycle_marker_event_lite_summary,
+        ce25_projected_guard_event_lite_summary=args.ce25_projected_guard_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -3143,6 +3418,8 @@ async def main() -> None:
             raise SystemExit("--source-opportunity-closed-cycle-marker-event-lite-summary requires --event-lite-summary")
         if not cfg.source_opportunity_marker_event_lite_summary:
             raise SystemExit("--source-opportunity-closed-cycle-marker-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
+    if cfg.ce25_projected_guard_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--ce25-projected-guard-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

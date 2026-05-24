@@ -1,0 +1,35 @@
+{
+  "artifact": "xuan_ce25_projected_guard_runner_instrumentation_smoke",
+  "checks": {
+    "aggregate_merges_ce25_summary": true,
+    "candidate_count_unchanged": true,
+    "cli_requires_event_lite": true,
+    "core_allow_count": 1,
+    "default_off_ce25_summary_absent": true,
+    "enabled_ce25_summary_present": true,
+    "hard_kill_pair_cost_block_count": 1,
+    "post_action_outcome_labels_excluded": true,
+    "starter_allow_count": 1,
+    "trading_behavior_changed": false
+  },
+  "created_utc": "20260524T113800Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_CE25_PROJECTED_GUARD_RUNNER_INSTRUMENTATION_DEFAULT_OFF_READY",
+  "next_executable_action": "implement ce25_projected_guard_summary_scorer_v1 local-only; read only summary/aggregate manifests and fail closed on missing or behavior-changing fields",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "scope": {
+    "events_jsonl_read": false,
+    "local_no_network_fixture": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_live_modified": false,
+    "ssh_used": false
+  }
+}
