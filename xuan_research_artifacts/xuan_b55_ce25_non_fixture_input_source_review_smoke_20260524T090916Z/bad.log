@@ -1,0 +1,23 @@
+{
+  "candidate_input_source_status": "CANDIDATE_NON_FIXTURE_INPUT_SOURCE_FAIL_CLOSED",
+  "decision_label": "UNKNOWN_B55_CE25_NON_FIXTURE_INPUT_SOURCE_MISSING",
+  "exact_missing_inputs": [
+    "liquidity_role",
+    "boundary_price",
+    "fair_spot_mid",
+    "source_count",
+    "source_names",
+    "source_dispersion_bps",
+    "max_source_age_ms",
+    "volatility_lookback_s",
+    "volatility_bps",
+    "fair_probability",
+    "fair_probability_uncertainty",
+    "edge_after_fee_and_uncertainty",
+    "model_name",
+    "model_version"
+  ],
+  "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_non_fixture_input_source_review_smoke_20260524T090916Z/bad/manifest.json",
+  "next_executable_action": "Either prepare an explicitly approved safe offline exporter for non-service liquidity_role/fair-source probability joins, or pivot to a different public-profile lead that has observable non-fixture evidence; do not start no-order diagnostics for b55/ce25 until real_non_fixture_source_ready=true.",
+  "real_non_fixture_source_ready": false
+}
