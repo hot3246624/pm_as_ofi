@@ -355,6 +355,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         f"( {remote_command_template} > {remote_output_q}/run_stdout.log "
         f"2> {remote_output_q}/run_stderr.log; "
         f"echo $? > {remote_output_q}/run_exit_code.txt ) "
+        f"< /dev/null "
         f"> {remote_output_q}/remote_wrapper_stdout.log "
         f"2> {remote_output_q}/remote_wrapper_stderr.log & "
         f"echo $! > {remote_output_q}/remote_wrapper_pid.txt"

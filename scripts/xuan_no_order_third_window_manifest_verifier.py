@@ -164,6 +164,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             hard_blockers.append("remote_launch_command_missing_wrapper_pid")
         if "timeout" not in remote_launch_cmd or "PM_DRY_RUN=1" not in remote_launch_cmd:
             hard_blockers.append("remote_launch_command_missing_bounded_dry_run")
+        if "< /dev/null" not in remote_launch_cmd:
+            hard_blockers.append("remote_launch_command_missing_stdin_detach")
     if duration_s is None:
         hard_blockers.append("remote_command_missing_duration_s")
     elif duration_s > args.max_dry_run_duration_s:
@@ -294,6 +296,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "remote_launch_command_has_run_stdout_capture": "run_stdout.log" in remote_launch_cmd,
             "remote_launch_command_has_run_stderr_capture": "run_stderr.log" in remote_launch_cmd,
             "remote_launch_command_has_wrapper_pid": "remote_wrapper_pid.txt" in remote_launch_cmd,
+            "remote_launch_command_has_stdin_detach": "< /dev/null" in remote_launch_cmd,
         },
         "decision": {
             "local_manifest_verified": not hard_blockers,
