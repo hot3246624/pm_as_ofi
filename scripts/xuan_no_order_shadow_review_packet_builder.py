@@ -58,6 +58,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     gap_path = Path(args.gap_plan_scorecard).expanduser().resolve()
     profile_path = Path(args.profile_scorecard).expanduser().resolve()
     concurrency_path = Path(args.concurrency_scorecard).expanduser().resolve() if args.concurrency_scorecard else None
+    capital_path = Path(args.capital_roi_scorecard).expanduser().resolve() if args.capital_roi_scorecard else None
 
     replay = read_json(replay_path)
     runtime = read_json(runtime_path)
@@ -65,6 +66,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     gap = read_json(gap_path)
     profile = read_json(profile_path)
     concurrency = read_json(concurrency_path) if concurrency_path and concurrency_path.exists() else None
+    capital = read_json(capital_path) if capital_path and capital_path.exists() else None
 
     replay_metrics = replay.get("metrics", {})
     replay_econ = replay_metrics.get("economics", {})
@@ -94,6 +96,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "gap_plan_status": gap.get("status"),
         "profile_status": profile.get("status"),
         "concurrency_status": concurrency.get("status") if concurrency else None,
+        "capital_roi_status": capital.get("status") if capital else None,
         "shadow_review_ready": shadow_ready,
         "deployable": False,
         "remote_runner_allowed": False,
@@ -110,6 +113,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "gap_plan_scorecard": str(gap_path),
             "profile_scorecard": str(profile_path),
             "concurrency_scorecard": str(concurrency_path) if concurrency_path else None,
+            "capital_roi_scorecard": str(capital_path) if capital_path else None,
         },
         "replay_evidence": {
             "fee_after_with_rescue": as_float(replay_econ.get("fee_after_with_rescue")),
@@ -141,6 +145,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "hard_blockers": concurrency.get("hard_blockers", []) if concurrency else [],
             "warnings": concurrency.get("warnings", []) if concurrency else [],
         },
+        "capital_reuse_roi": capital.get("aggregate", {}) if capital else {},
         "next_profile": profile_body,
         "decision": {
             "research_only": True,
@@ -160,6 +165,41 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         metric_line("deployable", False),
         metric_line("remote_runner_allowed", False),
         metric_line("hard_blockers", ", ".join(hard_blockers) if hard_blockers else "none"),
+        "",
+        "## Capital-Reuse ROI",
+        metric_line("status", capital.get("status") if capital else None),
+        metric_line(
+            "edge_on_redeem_notional",
+            capital.get("aggregate", {}).get("round_roi", {}).get("edge_on_redeem_notional") if capital else None,
+        ),
+        metric_line(
+            "roi_on_pair_cost",
+            capital.get("aggregate", {}).get("round_roi", {}).get("roi_on_pair_cost") if capital else None,
+        ),
+        metric_line(
+            "legacy_roi_on_filled_seed_cost",
+            capital.get("aggregate", {}).get("round_roi", {}).get("roi_on_filled_seed_cost") if capital else None,
+        ),
+        metric_line(
+            "max_window_gross_cash_need",
+            capital.get("aggregate", {}).get("capital_reuse", {}).get("max_window_gross_cash_need") if capital else None,
+        ),
+        metric_line(
+            "capital_roi_on_max_window_gross_cash_need",
+            capital.get("aggregate", {}).get("capital_reuse", {}).get("capital_roi_on_max_window_gross_cash_need") if capital else None,
+        ),
+        metric_line(
+            "profit_per_round_if_300_redeem_notional_filled",
+            capital.get("aggregate", {}).get("projection", {}).get("profit_per_round_if_redeem_notional_filled") if capital else None,
+        ),
+        metric_line(
+            "profit_per_day_if_300_redeem_notional_filled_every_round",
+            capital.get("aggregate", {}).get("projection", {}).get("profit_per_day_if_redeem_notional_filled_every_round") if capital else None,
+        ),
+        metric_line(
+            "worst_case_pair_pnl_if_residual_zero",
+            capital.get("aggregate", {}).get("round_roi", {}).get("worst_case_pair_pnl_if_residual_zero") if capital else None,
+        ),
         "",
         "## Replay Evidence",
         metric_line("status", replay.get("status")),
@@ -230,6 +270,7 @@ def main() -> None:
     parser.add_argument("--gap-plan-scorecard", required=True)
     parser.add_argument("--profile-scorecard", required=True)
     parser.add_argument("--concurrency-scorecard", default=None)
+    parser.add_argument("--capital-roi-scorecard", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--scorecard-json", required=True)
     args = parser.parse_args()
