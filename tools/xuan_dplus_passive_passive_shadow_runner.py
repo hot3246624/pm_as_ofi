@@ -475,6 +475,8 @@ class RunnerConfig:
     risk_seed_closeability_debt_budget: float = 0.0
     risk_seed_cancel_on_closeability_net_cap: float | None = None
     risk_seed_pending_opp_credit: float = 1.0
+    risk_seed_pair_completion_required_above_net_cap: float | None = None
+    risk_seed_pair_completion_min_qty: float = 0.0
     pair_completion_net_cap: float | None = None
     pair_completion_min_pair_pnl_after: float | None = None
     dust_qty: float = 1.0
@@ -894,6 +896,8 @@ class DPlusRunner:
             "pair_completion_pair_pnl_delta": round(projected_pair_pnl_delta, 12),
             "pair_completion_projected_pair_pnl_after": round(projected_pair_pnl_after, 12),
             "pair_completion_decision": decision,
+            "risk_seed_pair_completion_required_above_net_cap": self.cfg.risk_seed_pair_completion_required_above_net_cap,
+            "risk_seed_pair_completion_min_qty": self.cfg.risk_seed_pair_completion_min_qty,
         }
 
     def total_open_cost(self) -> float:
@@ -1550,6 +1554,51 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
         pair_completion_audit = self.pair_completion_audit(side, seed_px, qty)
+        risk_seed_completion_required = (
+            risk_increasing_seed
+            and self.cfg.risk_seed_pair_completion_required_above_net_cap is not None
+            and (
+                closeability_net_pair_cost is None
+                or closeability_net_pair_cost
+                > self.cfg.risk_seed_pair_completion_required_above_net_cap + 1e-12
+            )
+        )
+        if risk_seed_completion_required:
+            required_qty = max(self.cfg.dust_qty, self.cfg.risk_seed_pair_completion_min_qty)
+            if pair_completion_audit["pair_completion_qty"] < required_qty - 1e-12:
+                self.block("risk_seed_pair_completion_required")
+                pair_completion_audit["pair_completion_decision"] = "block_required_pair_completion"
+                self.emit(
+                    {
+                        "kind": "pair_completion_block",
+                        "slug": self.slug,
+                        "condition_id": self.condition_id,
+                        "ts_ms": ts_ms,
+                        "side": side,
+                        "price": seed_px,
+                        "qty": qty,
+                        "public_trade_px": px,
+                        "public_trade_size": size,
+                        "source_sequence_id": trigger_source_sequence_id,
+                        "market_md_source_sequence_id": trigger_source_sequence_id,
+                        "block_reason": "risk_seed_pair_completion_required",
+                        "same_exposure_qty": same_qty,
+                        "opp_exposure_qty": opp_qty,
+                        "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit,
+                        "risk_seed_pending_opp_qty": pending_opp_qty,
+                        "risk_seed_credited_opp_qty": credited_opp_qty,
+                        "risk_increasing_seed": risk_increasing_seed,
+                        "closeability_comp_ask": closeability_comp_ask,
+                        "closeability_net_pair_cost": closeability_net_pair_cost,
+                        **pair_completion_audit,
+                        **closeability_audit,
+                        **fair_price_audit,
+                        **source_quality_audit,
+                        **surplus_audit,
+                    }
+                )
+                self.record_activation_seen(side, ts_ms)
+                return
         if (
             self.cfg.pair_completion_net_cap is not None
             and pair_completion_audit["pair_completion_qty"] > self.cfg.dust_qty
@@ -1776,6 +1825,8 @@ class DPlusRunner:
                     "risk_seed_pending_opp_credit": event.get("risk_seed_pending_opp_credit"),
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
+                    "risk_seed_pair_completion_required_above_net_cap": event.get("risk_seed_pair_completion_required_above_net_cap"),
+                    "risk_seed_pair_completion_min_qty": event.get("risk_seed_pair_completion_min_qty"),
                     "pair_completion_net_cap": event.get("pair_completion_net_cap"),
                     "pair_completion_min_pair_pnl_after": event.get("pair_completion_min_pair_pnl_after"),
                     "pair_completion_qty": event.get("pair_completion_qty"),
@@ -1843,6 +1894,8 @@ class DPlusRunner:
                     "risk_seed_pending_opp_credit": event.get("risk_seed_pending_opp_credit"),
                     "risk_seed_pending_opp_qty": event.get("risk_seed_pending_opp_qty"),
                     "risk_seed_credited_opp_qty": event.get("risk_seed_credited_opp_qty"),
+                    "risk_seed_pair_completion_required_above_net_cap": event.get("risk_seed_pair_completion_required_above_net_cap"),
+                    "risk_seed_pair_completion_min_qty": event.get("risk_seed_pair_completion_min_qty"),
                     "pair_completion_net_cap": event.get("pair_completion_net_cap"),
                     "pair_completion_min_pair_pnl_after": event.get("pair_completion_min_pair_pnl_after"),
                     "pair_completion_qty": event.get("pair_completion_qty"),
@@ -1996,6 +2049,7 @@ class DPlusRunner:
                 "risk_seed_closeability_debt_floor", "risk_seed_closeability_debt_budget",
                 "risk_seed_closeability_soft_decision", "risk_seed_cancel_on_closeability_net_cap",
                 "risk_seed_pending_opp_credit", "risk_seed_pending_opp_qty", "risk_seed_credited_opp_qty",
+                "risk_seed_pair_completion_required_above_net_cap", "risk_seed_pair_completion_min_qty",
                 "pair_completion_net_cap", "pair_completion_min_pair_pnl_after",
                 "pair_completion_qty", "pair_completion_avg_net_pair_cost",
                 "pair_completion_worst_net_pair_cost", "pair_completion_pair_pnl_delta",
@@ -2406,6 +2460,18 @@ async def main() -> None:
         help="Credit pending opposite-side orders as protective exposure for risk-increasing seed gates; 1.0 preserves legacy behavior, 0.0 credits only filled opposite lots.",
     )
     ap.add_argument(
+        "--risk-seed-pair-completion-required-above-net-cap",
+        type=float,
+        default=None,
+        help="Default-off guard: risk-increasing seeds above this current closeability net pair cost must be able to pair against existing filled opposite lots.",
+    )
+    ap.add_argument(
+        "--risk-seed-pair-completion-min-qty",
+        type=float,
+        default=0.0,
+        help="Minimum existing opposite filled lot quantity required when --risk-seed-pair-completion-required-above-net-cap is active; 0 uses dust_qty.",
+    )
+    ap.add_argument(
         "--pair-completion-net-cap",
         type=float,
         default=None,
@@ -2506,6 +2572,8 @@ async def main() -> None:
         risk_seed_closeability_debt_budget=args.risk_seed_closeability_debt_budget,
         risk_seed_cancel_on_closeability_net_cap=args.risk_seed_cancel_on_closeability_net_cap,
         risk_seed_pending_opp_credit=args.risk_seed_pending_opp_credit,
+        risk_seed_pair_completion_required_above_net_cap=args.risk_seed_pair_completion_required_above_net_cap,
+        risk_seed_pair_completion_min_qty=args.risk_seed_pair_completion_min_qty,
         pair_completion_net_cap=args.pair_completion_net_cap,
         pair_completion_min_pair_pnl_after=args.pair_completion_min_pair_pnl_after,
         taker_fee_rate=args.taker_fee_rate,
@@ -2563,6 +2631,13 @@ async def main() -> None:
         raise SystemExit("--risk-seed-cancel-on-closeability-net-cap must be positive")
     if not (0.0 <= cfg.risk_seed_pending_opp_credit <= 1.0):
         raise SystemExit("--risk-seed-pending-opp-credit must be in [0, 1]")
+    if (
+        cfg.risk_seed_pair_completion_required_above_net_cap is not None
+        and cfg.risk_seed_pair_completion_required_above_net_cap <= 0
+    ):
+        raise SystemExit("--risk-seed-pair-completion-required-above-net-cap must be positive")
+    if cfg.risk_seed_pair_completion_min_qty < 0:
+        raise SystemExit("--risk-seed-pair-completion-min-qty must be non-negative")
     if cfg.pair_completion_net_cap is not None and cfg.pair_completion_net_cap <= 0:
         raise SystemExit("--pair-completion-net-cap must be positive")
     if (

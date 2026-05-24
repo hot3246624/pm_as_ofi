@@ -221,6 +221,20 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         cancel_closeability_cap,
     ):
         hard_blockers.append("remote_command_closeability_cancel_cap_does_not_match_profile")
+    required_pair_completion_cap = profile.get("risk_seed_pair_completion_required_above_net_cap")
+    if required_pair_completion_cap is not None and not option_matches(
+        remote_cmd,
+        "--risk-seed-pair-completion-required-above-net-cap",
+        required_pair_completion_cap,
+    ):
+        hard_blockers.append("remote_command_risk_seed_pair_completion_required_cap_does_not_match_profile")
+    required_pair_completion_min_qty = profile.get("risk_seed_pair_completion_min_qty")
+    if required_pair_completion_min_qty is not None and not option_matches(
+        remote_cmd,
+        "--risk-seed-pair-completion-min-qty",
+        required_pair_completion_min_qty,
+    ):
+        hard_blockers.append("remote_command_risk_seed_pair_completion_min_qty_does_not_match_profile")
     if profile.get("pair_completion_net_cap") is not None and not option_matches(
         remote_cmd, "--pair-completion-net-cap", profile.get("pair_completion_net_cap")
     ):

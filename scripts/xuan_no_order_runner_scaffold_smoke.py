@@ -26,6 +26,7 @@ from tools.xuan_dplus_passive_passive_shadow_runner import (
     FairPriceAdmissionGate,
     Lot,
     RunnerConfig,
+    VirtualOrder,
 )
 
 
@@ -1072,6 +1073,125 @@ def smoke_pair_completion_net_cap() -> dict[str, Any]:
     }
 
 
+def smoke_risk_seed_pair_completion_required() -> dict[str, Any]:
+    def run_one(cfg: RunnerConfig, *, with_pairable_inventory: bool = False) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            slug = "btc-updown-5m-100"
+            runner = DPlusRunner(slug, Path(td), cfg)
+            if with_pairable_inventory:
+                runner.lots["NO"].append(
+                    Lot(
+                        id=2,
+                        quote_intent_id="existing-no-lot",
+                        side="NO",
+                        qty=1.25,
+                        px=0.45,
+                        fill_ms=99_000,
+                        source_order_id=2,
+                        source_sequence_id="existing-no-source",
+                        source_event_time_ms=99_000,
+                    )
+                )
+            runner.on_book(
+                {
+                    "ts_ms": 100_000,
+                    "yes_ask": 0.50,
+                    "no_ask": 0.50,
+                    "source_sequence_id": "book-required-pair-completion",
+                    "event_time_ms": 100_000,
+                }
+            )
+            if with_pairable_inventory:
+                runner.pending.append(
+                    VirtualOrder(
+                        id=99,
+                        quote_intent_id="existing-yes-pending",
+                        condition_id=slug,
+                        side="YES",
+                        px=0.01,
+                        qty=2.5,
+                        created_ms=100_000,
+                        accepted_ms=100_000,
+                        offset_s=0.0,
+                        trigger_px=0.01,
+                        trigger_size=2.5,
+                        trigger_ts_ms=100_000,
+                    )
+                )
+            runner.on_trade(
+                {
+                    "ts_ms": 101_000,
+                    "market_side": "YES",
+                    "taker_side": "SELL",
+                    "price": 0.51,
+                    "size": 20.0,
+                    "source_sequence_id": "trade-required-pair-completion",
+                    "event_time_ms": 101_000,
+                }
+            )
+            return {"state": comparable_state(runner), "events": read_events(Path(td), slug)}
+
+    default = run_one(RunnerConfig(cooldown_ms=0))
+    default_candidate = next((event for event in default["events"] if event.get("kind") == "candidate"), {})
+    default_passed = (
+        default["state"]["metrics"]["candidates"] == 1
+        and default_candidate.get("risk_seed_pair_completion_required_above_net_cap") is None
+        and (default_candidate.get("closeability_net_pair_cost") or 0.0) > 0.98
+    )
+
+    blocked = run_one(
+        RunnerConfig(
+            cooldown_ms=0,
+            risk_seed_pair_completion_required_above_net_cap=0.98,
+            risk_seed_pair_completion_min_qty=1.25,
+        )
+    )
+    block_event = next((event for event in blocked["events"] if event.get("kind") == "pair_completion_block"), {})
+    blocked_passed = (
+        blocked["state"]["metrics"]["candidates"] == 0
+        and blocked["state"]["blocked"].get("risk_seed_pair_completion_required") == 1
+        and block_event.get("block_reason") == "risk_seed_pair_completion_required"
+        and block_event.get("pair_completion_decision") == "block_required_pair_completion"
+        and (block_event.get("pair_completion_qty") or 1.0) < 1.25
+        and (block_event.get("closeability_net_pair_cost") or 0.0) > 0.98
+    )
+
+    allowed = run_one(
+        RunnerConfig(
+            cooldown_ms=0,
+            target_qty=6.0,
+            imbalance_qty_cap=5.0,
+            risk_seed_pair_completion_required_above_net_cap=0.98,
+            risk_seed_pair_completion_min_qty=1.25,
+            pair_completion_net_cap=0.95,
+            pair_completion_min_pair_pnl_after=0.0,
+        ),
+        with_pairable_inventory=True,
+    )
+    allowed_candidate = next((event for event in allowed["events"] if event.get("kind") == "candidate"), {})
+    allowed_passed = (
+        allowed["state"]["metrics"]["candidates"] == 1
+        and allowed["state"]["blocked"].get("risk_seed_pair_completion_required", 0) == 0
+        and allowed_candidate.get("risk_seed_pair_completion_required_above_net_cap") == 0.98
+        and allowed_candidate.get("risk_seed_pair_completion_min_qty") == 1.25
+        and (allowed_candidate.get("pair_completion_qty") or 0.0) >= 1.25
+        and (allowed_candidate.get("pair_completion_worst_net_pair_cost") or 2.0) <= 0.95
+        and (allowed_candidate.get("pair_completion_projected_pair_pnl_after") or -1.0) >= 0.0
+    )
+
+    passed = default_passed and blocked_passed and allowed_passed
+    return {
+        "name": "risk_seed_pair_completion_required",
+        "status": "PASS" if passed else "FAIL",
+        "default_candidate": default_candidate,
+        "block_event": block_event,
+        "allowed_candidate": allowed_candidate,
+        "default_passed": default_passed,
+        "blocked_passed": blocked_passed,
+        "allowed_passed": allowed_passed,
+    }
+
+
 def smoke_strict_rescue_surplus_floor() -> dict[str, Any]:
     def run_case(pre_pair_pnl: float, surplus_cap: float | None, floor: float | None) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as td:
@@ -1414,6 +1534,7 @@ def main() -> None:
         smoke_risk_seed_closeability_cancel_guard(),
         smoke_risk_seed_pending_opp_credit_guard(),
         smoke_pair_completion_net_cap(),
+        smoke_risk_seed_pair_completion_required(),
         smoke_strict_rescue_surplus_floor(),
         smoke_normalized_lifecycle_exports(),
         smoke_source_linkage_summary(),

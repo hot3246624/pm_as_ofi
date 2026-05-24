@@ -302,6 +302,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "--risk-seed-cancel-on-closeability-net-cap",
         profile.get("risk_seed_cancel_on_closeability_net_cap"),
     )
+    append_option(
+        remote_command,
+        "--risk-seed-pair-completion-required-above-net-cap",
+        profile.get("risk_seed_pair_completion_required_above_net_cap"),
+    )
+    append_option(
+        remote_command,
+        "--risk-seed-pair-completion-min-qty",
+        profile.get("risk_seed_pair_completion_min_qty"),
+    )
     append_option(remote_command, "--pair-completion-net-cap", profile.get("pair_completion_net_cap"))
     append_option(
         remote_command,
