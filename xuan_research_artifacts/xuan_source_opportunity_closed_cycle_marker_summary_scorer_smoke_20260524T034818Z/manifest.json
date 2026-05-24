@@ -1,0 +1,56 @@
+{
+  "artifact": "xuan_source_opportunity_closed_cycle_marker_summary_scorer_smoke",
+  "checks": {
+    "default_off_missing_closed_cycle_fields": true,
+    "default_off_unknown": true,
+    "enabled_admitted_marker_count_nonzero": true,
+    "enabled_aggregate_parity": true,
+    "enabled_closed_cycle_pre_action_declared": true,
+    "enabled_exact_reason_coverage": true,
+    "enabled_join_key_ok": true,
+    "enabled_keep": true,
+    "enabled_marker_count_nonzero": true,
+    "enabled_pair_residual_labels_excluded": true,
+    "enabled_post_action_outcome_labels_excluded": true,
+    "enabled_promotion_gate_false": true,
+    "enabled_requires_post_run_join": true,
+    "enabled_schema_ok": true,
+    "py_compile": true
+  },
+  "created_utc": "20260524T034818Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_CLOSED_CYCLE_MARKER_SUMMARY_SCORER_SMOKE_PASS",
+  "inputs": {
+    "fixture_root": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_passive_shadow_runner_closed_cycle_marker_smoke_20260524T024818Z_rerun"
+  },
+  "next_action": "Use this local scorer after a bounded b55-style closed-cycle no-order pullback, or switch lines immediately if the denominator is absent/thin.",
+  "outputs": {
+    "default_off_score": "xuan_research_artifacts/xuan_source_opportunity_closed_cycle_marker_summary_scorer_smoke_20260524T034818Z/default_off_score/manifest.json",
+    "enabled_score": "xuan_research_artifacts/xuan_source_opportunity_closed_cycle_marker_summary_scorer_smoke_20260524T034818Z/enabled_score/manifest.json"
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "CLOSED_CYCLE_MARKER_SCORER_TOOLING_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "The scorer can validate closed-cycle marker fields/parity, detect selected denominators, and fail closed on default-off pullbacks without closed-cycle fields.",
+    "label": "KEEP_SOURCE_OPPORTUNITY_CLOSED_CYCLE_MARKER_DENOMINATOR_SCORER_READY"
+  },
+  "side_effects": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "network_started": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_connected": false,
+    "ssh_started": false
+  }
+}

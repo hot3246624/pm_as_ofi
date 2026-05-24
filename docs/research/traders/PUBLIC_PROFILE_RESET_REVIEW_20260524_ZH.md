@@ -113,3 +113,30 @@ Fields added under `event_lite.source_opportunity_marker_summary`:
 - quote/order/source-sequence presence by exact key
 
 The field contract explicitly sets `post_action_pair_residual_labels_included=false`, `gross_pair_pnl_available_at_marker=false`, and `residual_stress_available_at_marker=false`. This is intentional: same-window no-order diagnostics can expose denominators and source coverage, but PnL/stress still require a post-run scorer join. This keeps the fix aligned with the corrected methodology rather than leaking future labels into live criteria.
+
+## Leaderboard Candidate Fast Screen
+
+Artifact: `xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/manifest.json`.
+
+Decision: `KEEP_PUBLIC_LEADERBOARD_FAST_SCREEN_READY`.
+
+The new leaderboard candidates were screened separately from the original reset set: `b55`, `ohanism`, `ce25`, and `04b6`. The important correction is that `b55` can be a real 24h profitability/MTM lead while still not passing the low-residual public pair-proxy structure test. In the capped recent-window public pull, `b55` had positive pair proxy edge `+0.0290` but residual proxy `34.25%` and short crypto share `38.37%`. `04b6` remains the cleaner infrastructure template, but the pulled activity window is stale. `ce25` improved structurally but remains fee-sensitive. `ohanism` is a strong direction/settlement control, not a low-residual pairing template.
+
+Separate the lanes:
+
+- `b55`: profitability/MTM reconstruction lane.
+- `04b6`: robust closed-cycle infrastructure lane.
+- `ohanism`: high-residual direction/settlement control.
+- `ce25`: fee-stress execution control.
+
+Do not collapse these into a single ranking, and do not treat public profile evidence as deployable/private truth.
+
+## Closed-Cycle Scorer Readiness
+
+Artifact: `xuan_research_artifacts/xuan_source_opportunity_closed_cycle_marker_summary_scorer_smoke_20260524T034818Z/manifest.json`.
+
+Decision: `KEEP_SOURCE_OPPORTUNITY_CLOSED_CYCLE_MARKER_SUMMARY_SCORER_SMOKE_PASS`.
+
+Added local-only `scripts/xuan_source_opportunity_closed_cycle_marker_summary_scorer.py` and smoke coverage. The scorer reads only runner manifest, completion manifest, aggregate report, and summary JSON files. It validates `source_opportunity_closed_cycle_marker_v1`, aggregate parity, selected closed-cycle marker denominators, exact status/reason/source coverage, post-action label exclusion, and `private_truth_ready=false`, `deployable=false`, `promotion_gate.passed=false`.
+
+This gives the fast-switch gate we lacked in D+: after one bounded no-order diagnostic, the closed-cycle line either has same-window denominator support or gets discarded immediately.

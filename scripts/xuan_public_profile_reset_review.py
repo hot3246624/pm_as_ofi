@@ -645,7 +645,12 @@ def build_manifest(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", action="append", default=list(DEFAULT_PROFILES))
+    parser.add_argument("--profile", action="append", default=None)
+    parser.add_argument(
+        "--no-default-profiles",
+        action="store_true",
+        help="review only explicitly supplied --profile values instead of the default reset set",
+    )
     parser.add_argument("--trade-max-rows", type=int, default=6000)
     parser.add_argument("--activity-max-rows", type=int, default=6000)
     parser.add_argument("--position-max-rows", type=int, default=1000)
@@ -656,7 +661,15 @@ def parse_args() -> argparse.Namespace:
         default="explicit_public_proxy_fee_rate_zero_for_cross_profile_pattern_scoring",
     )
     parser.add_argument("--output-dir", type=Path)
-    return parser.parse_args()
+    args = parser.parse_args()
+    explicit_profiles = args.profile or []
+    if args.no_default_profiles:
+        args.profile = explicit_profiles
+    else:
+        args.profile = list(DEFAULT_PROFILES) + explicit_profiles
+    if not args.profile:
+        parser.error("at least one --profile is required when --no-default-profiles is set")
+    return args
 
 
 def main() -> int:
