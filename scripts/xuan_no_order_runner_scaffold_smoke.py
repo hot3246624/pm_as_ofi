@@ -21,7 +21,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.xuan_dplus_passive_passive_shadow_runner import DPlusRunner, Lot, RunnerConfig
+from tools.xuan_dplus_passive_passive_shadow_runner import (
+    DPlusRunner,
+    FairPriceAdmissionGate,
+    Lot,
+    RunnerConfig,
+)
 
 
 def read_events(out_dir: Path, slug: str) -> list[dict[str, Any]]:
@@ -1124,6 +1129,77 @@ def smoke_source_linkage_summary() -> dict[str, Any]:
         }
 
 
+def smoke_fair_price_admission_gate() -> dict[str, Any]:
+    def run_case(fair_probability: float) -> dict[str, Any]:
+        with tempfile.TemporaryDirectory() as td:
+            slug = "btc-updown-15m-100"
+            gate = FairPriceAdmissionGate(
+                [
+                    {
+                        "row_id": f"fair-{fair_probability}",
+                        "market_slug": slug,
+                        "side": "YES",
+                        "min_seconds_to_close": 60,
+                        "max_seconds_to_close": 900,
+                        "fair_side_probability": fair_probability,
+                    }
+                ],
+                min_edge=0.015,
+                max_pair_cost=0.975,
+                min_seconds_to_close=60,
+                max_seconds_to_close=900,
+                max_row_age_ms=None,
+            )
+            runner = DPlusRunner(slug, Path(td), RunnerConfig(), fair_price_gate=gate)
+            runner.on_book(
+                {
+                    "ts_ms": 101_000,
+                    "yes_ask": 0.50,
+                    "no_ask": 0.47,
+                    "source_sequence_id": "book-fair",
+                    "event_time_ms": 101_000,
+                }
+            )
+            runner.on_trade(
+                {
+                    "ts_ms": 101_000,
+                    "market_side": "YES",
+                    "taker_side": "SELL",
+                    "price": 0.50,
+                    "size": 20.0,
+                    "source_sequence_id": "trade-fair",
+                    "event_time_ms": 101_000,
+                }
+            )
+            return {
+                "state": comparable_state(runner),
+                "events": read_events(Path(td), slug),
+            }
+
+    allow = run_case(0.52)
+    block = run_case(0.47)
+    allow_candidates = [event for event in allow["events"] if event.get("kind") == "candidate"]
+    block_events = [event for event in block["events"] if event.get("kind") == "fair_price_admission_block"]
+    passed = (
+        allow["state"]["metrics"]["candidates"] == 1
+        and bool(allow_candidates)
+        and allow_candidates[0].get("fair_price_admission_decision") == "allow"
+        and allow_candidates[0].get("fair_price_pair_cost_after_fee") <= 0.975
+        and block["state"]["metrics"]["candidates"] == 0
+        and block["state"]["blocked"].get("fair_price_edge_after_fee", 0) == 1
+        and bool(block_events)
+        and block_events[0].get("fair_price_admission_block_reason") == "fair_price_edge_after_fee"
+    )
+    return {
+        "name": "fair_price_admission_gate",
+        "status": "PASS" if passed else "FAIL",
+        "allow_state": allow["state"],
+        "allow_candidate": allow_candidates[0] if allow_candidates else {},
+        "block_state": block["state"],
+        "block_event": block_events[0] if block_events else {},
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out-dir", required=True)
@@ -1145,6 +1221,7 @@ def main() -> None:
         smoke_strict_rescue_surplus_floor(),
         smoke_normalized_lifecycle_exports(),
         smoke_source_linkage_summary(),
+        smoke_fair_price_admission_gate(),
     ]
     status = "PASS" if all(check["status"] == "PASS" for check in checks) else "FAIL"
     report = {

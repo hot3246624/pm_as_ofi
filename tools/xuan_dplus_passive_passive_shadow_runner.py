@@ -84,6 +84,73 @@ def fee_per_share(px: float, rate: float) -> float:
     return rate * price * (1.0 - price)
 
 
+def market_duration_s_from_slug(slug: str) -> float | None:
+    if "-15m-" in slug:
+        return 15.0 * 60.0
+    if "-5m-" in slug:
+        return 5.0 * 60.0
+    if "up-or-down" in slug:
+        return 60.0 * 60.0
+    return None
+
+
+def jsonl_rows(path: Path) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid JSONL at {path}:{lineno}: {exc}") from exc
+        if not isinstance(row, dict):
+            raise RuntimeError(f"invalid JSONL at {path}:{lineno}: expected object row")
+        rows.append(row)
+    return rows
+
+
+def row_float(row: dict[str, Any], keys: tuple[str, ...], default: float | None = None) -> float | None:
+    for key in keys:
+        value = row.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            out = float(value)
+        except (TypeError, ValueError):
+            continue
+        return out if out == out else default
+    return default
+
+
+def fair_probability_for_side(row: dict[str, Any], side: str) -> float | None:
+    direct = row_float(
+        row,
+        (
+            "fair_side_probability",
+            "side_fair_probability",
+            "fair_probability_side",
+            "fair_prob_side",
+        ),
+    )
+    if direct is not None:
+        return direct
+    yes_prob = row_float(
+        row,
+        (
+            "fair_probability_yes",
+            "aggregate_fair_probability_yes",
+            "fair_probability",
+            "aggregate_fair_probability",
+            "fair_prob",
+            "p_yes",
+        ),
+    )
+    if yes_prob is None:
+        return None
+    return yes_prob if side == "YES" else 1.0 - yes_prob
+
+
 def source_sequence_id(msg: dict[str, Any]) -> Any:
     for key in ("source_sequence_id", "source_seq", "sequence_id", "seq"):
         value = msg.get(key)
@@ -234,6 +301,143 @@ def empty_source_linkage_stats() -> dict[str, Any]:
     return stats
 
 
+class FairPriceAdmissionGate:
+    """Default-off fair-price gate for b55/ce25-style admission rows."""
+
+    def __init__(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        min_edge: float,
+        max_pair_cost: float,
+        min_seconds_to_close: float | None,
+        max_seconds_to_close: float | None,
+        max_row_age_ms: int | None,
+    ) -> None:
+        self.rows = rows
+        self.min_edge = min_edge
+        self.max_pair_cost = max_pair_cost
+        self.min_seconds_to_close = min_seconds_to_close
+        self.max_seconds_to_close = max_seconds_to_close
+        self.max_row_age_ms = max_row_age_ms
+        self.by_slug_side: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        for row in rows:
+            slug = str(row.get("market_slug") or row.get("slug") or "")
+            side = side_from_str(str(row.get("side") or row.get("outcome") or "YES"))
+            if not slug or side not in {"YES", "NO"}:
+                continue
+            self.by_slug_side.setdefault((slug, side), []).append(row)
+
+    @classmethod
+    def from_path(
+        cls,
+        path: Path,
+        *,
+        min_edge: float,
+        max_pair_cost: float,
+        min_seconds_to_close: float | None,
+        max_seconds_to_close: float | None,
+        max_row_age_ms: int | None,
+    ) -> "FairPriceAdmissionGate":
+        return cls(
+            jsonl_rows(path),
+            min_edge=min_edge,
+            max_pair_cost=max_pair_cost,
+            min_seconds_to_close=min_seconds_to_close,
+            max_seconds_to_close=max_seconds_to_close,
+            max_row_age_ms=max_row_age_ms,
+        )
+
+    def row_applies(
+        self,
+        row: dict[str, Any],
+        *,
+        ts_ms: int,
+        seconds_to_close: float | None,
+    ) -> bool:
+        valid_from = row_float(row, ("valid_from_ts_ms", "start_ts_ms"))
+        valid_to = row_float(row, ("valid_to_ts_ms", "end_ts_ms"))
+        if valid_from is not None and ts_ms < valid_from:
+            return False
+        if valid_to is not None and ts_ms > valid_to:
+            return False
+        row_ts = row_float(row, ("fair_probability_ts_ms", "sample_ts_ms", "venue_sample_ts_ms", "ts_ms"))
+        if self.max_row_age_ms is not None and row_ts is not None and ts_ms - row_ts > self.max_row_age_ms:
+            return False
+        min_stc = row_float(row, ("min_seconds_to_close",), self.min_seconds_to_close)
+        max_stc = row_float(row, ("max_seconds_to_close",), self.max_seconds_to_close)
+        if seconds_to_close is not None:
+            if min_stc is not None and seconds_to_close < min_stc:
+                return False
+            if max_stc is not None and seconds_to_close > max_stc:
+                return False
+        return True
+
+    def select_row(self, slug: str, side: str, ts_ms: int, seconds_to_close: float | None) -> dict[str, Any] | None:
+        candidates = self.by_slug_side.get((slug, side), [])
+        selected = None
+        selected_ts = -(10**18)
+        for row in candidates:
+            if not self.row_applies(row, ts_ms=ts_ms, seconds_to_close=seconds_to_close):
+                continue
+            row_ts = row_float(row, ("fair_probability_ts_ms", "sample_ts_ms", "venue_sample_ts_ms", "ts_ms"), 0.0) or 0.0
+            if row_ts >= selected_ts:
+                selected = row
+                selected_ts = row_ts
+        return selected
+
+    def audit(
+        self,
+        *,
+        slug: str,
+        side: str,
+        ts_ms: int,
+        seed_px: float,
+        opposite_ask: float,
+        taker_fee_rate: float,
+        seconds_to_close: float | None,
+    ) -> tuple[str | None, dict[str, Any]]:
+        row = self.select_row(slug, side, ts_ms, seconds_to_close)
+        audit: dict[str, Any] = {
+            "fair_price_admission_enabled": True,
+            "fair_price_admission_decision": "allow",
+            "fair_price_admission_block_reason": "",
+            "fair_price_min_edge": self.min_edge,
+            "fair_price_max_pair_cost": self.max_pair_cost,
+            "fair_price_seconds_to_close": seconds_to_close,
+            "fair_price_side_probability": None,
+            "fair_price_edge_after_fee": None,
+            "fair_price_pair_cost_after_fee": None,
+            "fair_price_row_id": None,
+        }
+        if row is None:
+            audit["fair_price_admission_decision"] = "block"
+            audit["fair_price_admission_block_reason"] = "fair_price_admission_missing"
+            return "fair_price_admission_missing", audit
+        fair_prob = fair_probability_for_side(row, side)
+        audit["fair_price_row_id"] = row.get("row_id") or row.get("id") or row.get("market_slug") or slug
+        audit["fair_price_side_probability"] = fair_prob
+        if fair_prob is None:
+            audit["fair_price_admission_decision"] = "block"
+            audit["fair_price_admission_block_reason"] = "fair_price_probability_missing"
+            return "fair_price_probability_missing", audit
+        seed_fee = fee_per_share(seed_px, taker_fee_rate)
+        edge_after_fee = fair_prob - seed_px - seed_fee
+        comp_fee = fee_per_share(opposite_ask, taker_fee_rate) if opposite_ask > 0 else None
+        pair_cost = seed_px + opposite_ask + seed_fee + comp_fee if comp_fee is not None else None
+        audit["fair_price_edge_after_fee"] = round(edge_after_fee, 12)
+        audit["fair_price_pair_cost_after_fee"] = round(pair_cost, 12) if pair_cost is not None else None
+        if edge_after_fee < self.min_edge - 1e-12:
+            audit["fair_price_admission_decision"] = "block"
+            audit["fair_price_admission_block_reason"] = "fair_price_edge_after_fee"
+            return "fair_price_edge_after_fee", audit
+        if pair_cost is None or pair_cost > self.max_pair_cost + 1e-12:
+            audit["fair_price_admission_decision"] = "block"
+            audit["fair_price_admission_block_reason"] = "fair_price_pair_cost_after_fee"
+            return "fair_price_pair_cost_after_fee", audit
+        return None, audit
+
+
 @dataclass(frozen=True)
 class RunnerConfig:
     edge: float = 0.040
@@ -290,6 +494,12 @@ class RunnerConfig:
     source_quality_require_l1_source: bool = False
     source_quality_l1_age_max_ms: int | None = None
     source_quality_require_l2_source: bool = False
+    fair_price_admission_path: str | None = None
+    fair_price_min_edge: float = 0.015
+    fair_price_max_pair_cost: float = 0.975
+    fair_price_min_seconds_to_close: float | None = None
+    fair_price_max_seconds_to_close: float | None = None
+    fair_price_max_row_age_ms: int | None = None
     write_normalized_lifecycle: bool = False
     write_rescue_block_diagnostics: bool = False
     allow_concurrent_shared_ingress_readers: bool = False
@@ -401,12 +611,21 @@ class Metrics:
 
 
 class DPlusRunner:
-    def __init__(self, slug: str, out_dir: Path, cfg: RunnerConfig, condition_id: str | None = None) -> None:
+    def __init__(
+        self,
+        slug: str,
+        out_dir: Path,
+        cfg: RunnerConfig,
+        condition_id: str | None = None,
+        fair_price_gate: FairPriceAdmissionGate | None = None,
+    ) -> None:
         self.slug = slug
         self.condition_id = condition_id or slug
         self.start_s = round_start_from_slug(slug)
+        self.duration_s = market_duration_s_from_slug(slug)
         self.out_dir = out_dir
         self.cfg = cfg
+        self.fair_price_gate = fair_price_gate
         self.book: dict[str, float] = {}
         self.book_ts_ms: int | None = None
         self.book_event_time_ms: int | None = None
@@ -439,6 +658,12 @@ class DPlusRunner:
 
     def offset_s(self, ts_ms: int) -> float | None:
         return ts_ms / 1000.0 - self.start_s if self.start_s else None
+
+    def seconds_to_close(self, ts_ms: int) -> float | None:
+        offset = self.offset_s(ts_ms)
+        if offset is None or self.duration_s is None:
+            return None
+        return max(0.0, self.duration_s - offset)
 
     def emit(self, obj: dict[str, Any]) -> None:
         with self.events_path.open("a") as f:
@@ -1173,6 +1398,54 @@ class DPlusRunner:
             "closeability_debt_post_open": round(self.closeability_debt_open, 12),
             "risk_seed_closeability_soft_decision": "not_enabled",
         }
+        fair_price_audit = {
+            "fair_price_admission_enabled": False,
+            "fair_price_admission_decision": "not_enabled",
+            "fair_price_admission_block_reason": "",
+            "fair_price_min_edge": self.cfg.fair_price_min_edge,
+            "fair_price_max_pair_cost": self.cfg.fair_price_max_pair_cost,
+            "fair_price_seconds_to_close": self.seconds_to_close(ts_ms),
+            "fair_price_side_probability": None,
+            "fair_price_edge_after_fee": None,
+            "fair_price_pair_cost_after_fee": None,
+            "fair_price_row_id": None,
+        }
+        if self.fair_price_gate is not None:
+            fair_price_reason, fair_price_audit = self.fair_price_gate.audit(
+                slug=self.slug,
+                side=side,
+                ts_ms=ts_ms,
+                seed_px=seed_px,
+                opposite_ask=closeability_comp_ask,
+                taker_fee_rate=self.cfg.taker_fee_rate,
+                seconds_to_close=self.seconds_to_close(ts_ms),
+            )
+            if fair_price_reason:
+                self.block(fair_price_reason)
+                self.emit(
+                    {
+                        "kind": "fair_price_admission_block",
+                        "slug": self.slug,
+                        "condition_id": self.condition_id,
+                        "ts_ms": ts_ms,
+                        "side": side,
+                        "price": seed_px,
+                        "public_trade_px": px,
+                        "public_trade_size": size,
+                        "source_sequence_id": trigger_source_sequence_id,
+                        "market_md_source_sequence_id": trigger_source_sequence_id,
+                        "block_reason": fair_price_reason,
+                        "risk_increasing_seed": risk_increasing_seed,
+                        "same_exposure_qty": same_qty,
+                        "opp_exposure_qty": opp_qty,
+                        "closeability_comp_ask": closeability_comp_ask,
+                        "closeability_net_pair_cost": closeability_net_pair_cost,
+                        **fair_price_audit,
+                        **source_quality_audit,
+                    }
+                )
+                self.record_activation_seen(side, ts_ms)
+                return
         if (
             risk_increasing_seed
             and self.cfg.risk_seed_closeability_net_cap is not None
@@ -1206,6 +1479,7 @@ class DPlusRunner:
                     "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap,
                     "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip,
                     **closeability_audit,
+                    **fair_price_audit,
                 }
             )
             self.record_activation_seen(side, ts_ms)
@@ -1269,6 +1543,7 @@ class DPlusRunner:
                     "risk_seed_credited_opp_qty": credited_opp_qty,
                     **pair_completion_audit,
                     **closeability_audit,
+                    **fair_price_audit,
                     **source_quality_audit,
                     **surplus_audit,
                 }
@@ -1304,6 +1579,7 @@ class DPlusRunner:
                     "risk_seed_credited_opp_qty": credited_opp_qty,
                     **pair_completion_audit,
                     **closeability_audit,
+                    **fair_price_audit,
                     **source_quality_audit,
                     **surplus_audit,
                 }
@@ -1344,6 +1620,7 @@ class DPlusRunner:
                         "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap,
                         "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip,
                         **closeability_audit,
+                        **fair_price_audit,
                         **surplus_audit,
                     }
                 )
@@ -1383,6 +1660,7 @@ class DPlusRunner:
                         "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap,
                         "strict_rescue_close_ask_slip": self.cfg.strict_rescue_close_ask_slip,
                         **closeability_audit,
+                        **fair_price_audit,
                         **surplus_audit,
                     }
                 )
@@ -1402,7 +1680,7 @@ class DPlusRunner:
         self.metrics.candidates += 1
         self.metrics.seed_qty += qty
         self.metrics.seed_cost += qty * seed_px
-        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit, "risk_seed_pending_opp_qty": pending_opp_qty, "risk_seed_credited_opp_qty": credited_opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "high_price_mode": self.cfg.high_price_mode, "high_price_normal_px_hi": self.cfg.high_price_normal_px_hi, "high_price_close_only_active": high_price_close_only_active, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap, "closeability_comp_ask": closeability_comp_ask, "closeability_net_pair_cost": closeability_net_pair_cost, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask, **pair_completion_audit, **closeability_audit, **source_quality_audit, **surplus_audit})
+        self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "risk_seed_pending_opp_credit": self.cfg.risk_seed_pending_opp_credit, "risk_seed_pending_opp_qty": pending_opp_qty, "risk_seed_credited_opp_qty": credited_opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "high_price_mode": self.cfg.high_price_mode, "high_price_normal_px_hi": self.cfg.high_price_normal_px_hi, "high_price_close_only_active": high_price_close_only_active, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "risk_seed_closeability_net_cap": self.cfg.risk_seed_closeability_net_cap, "closeability_comp_ask": closeability_comp_ask, "closeability_net_pair_cost": closeability_net_pair_cost, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask, **pair_completion_audit, **closeability_audit, **fair_price_audit, **source_quality_audit, **surplus_audit})
         self.record_activation_seen(side, ts_ms)
 
     def read_events(self) -> list[dict[str, Any]]:
@@ -1471,6 +1749,13 @@ class DPlusRunner:
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_pre_open": event.get("closeability_debt_pre_open"),
                     "closeability_debt_post_open": event.get("closeability_debt_post_open"),
+                    "fair_price_admission_decision": event.get("fair_price_admission_decision"),
+                    "fair_price_admission_block_reason": event.get("fair_price_admission_block_reason"),
+                    "fair_price_side_probability": event.get("fair_price_side_probability"),
+                    "fair_price_edge_after_fee": event.get("fair_price_edge_after_fee"),
+                    "fair_price_pair_cost_after_fee": event.get("fair_price_pair_cost_after_fee"),
+                    "fair_price_seconds_to_close": event.get("fair_price_seconds_to_close"),
+                    "fair_price_row_id": event.get("fair_price_row_id"),
                 })
                 order_rows.append({
                     **common,
@@ -1484,10 +1769,11 @@ class DPlusRunner:
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_per_share": event.get("closeability_debt_per_share"),
                 })
-            elif kind in {"source_quality_block", "activation_block", "surplus_budget_block", "risk_seed_closeability_block", "pair_completion_block"}:
+            elif kind in {"source_quality_block", "activation_block", "surplus_budget_block", "risk_seed_closeability_block", "pair_completion_block", "fair_price_admission_block"}:
                 reason = (
                     event.get("source_quality_block_reason")
                     or event.get("block_reason")
+                    or event.get("fair_price_admission_block_reason")
                     or event.get("surplus_budget_decision")
                     or ("risk_seed_closeability_net_cap" if kind == "risk_seed_closeability_block" else kind)
                 )
@@ -1523,6 +1809,13 @@ class DPlusRunner:
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_pre_open": event.get("closeability_debt_pre_open"),
                     "closeability_debt_post_open": event.get("closeability_debt_post_open"),
+                    "fair_price_admission_decision": event.get("fair_price_admission_decision"),
+                    "fair_price_admission_block_reason": event.get("fair_price_admission_block_reason"),
+                    "fair_price_side_probability": event.get("fair_price_side_probability"),
+                    "fair_price_edge_after_fee": event.get("fair_price_edge_after_fee"),
+                    "fair_price_pair_cost_after_fee": event.get("fair_price_pair_cost_after_fee"),
+                    "fair_price_seconds_to_close": event.get("fair_price_seconds_to_close"),
+                    "fair_price_row_id": event.get("fair_price_row_id"),
                 })
             elif kind == "cancel":
                 order_rows.append({
@@ -1656,7 +1949,10 @@ class DPlusRunner:
                 "pair_completion_projected_pair_pnl_after", "pair_completion_decision",
                 "closeability_net_pair_cost",
                 "closeability_debt_per_share", "closeability_debt", "closeability_debt_pre_open",
-                "closeability_debt_post_open",
+                "closeability_debt_post_open", "fair_price_admission_decision",
+                "fair_price_admission_block_reason", "fair_price_side_probability",
+                "fair_price_edge_after_fee", "fair_price_pair_cost_after_fee",
+                "fair_price_seconds_to_close", "fair_price_row_id",
             ],
             action_rows,
         )
@@ -1822,9 +2118,22 @@ class DPlusRunner:
             self.write_normalized_lifecycle_exports(residual_lots)
 
 
-async def run_market(market: dict[str, str], socket_path: str, out: Path, duration_s: int, cfg: RunnerConfig) -> None:
+async def run_market(
+    market: dict[str, str],
+    socket_path: str,
+    out: Path,
+    duration_s: int,
+    cfg: RunnerConfig,
+    fair_price_gate: FairPriceAdmissionGate | None = None,
+) -> None:
     slug = market["POLYMARKET_MARKET_SLUG"]
-    runner = DPlusRunner(slug, out, cfg, condition_id=market.get("POLYMARKET_MARKET_ID"))
+    runner = DPlusRunner(
+        slug,
+        out,
+        cfg,
+        condition_id=market.get("POLYMARKET_MARKET_ID"),
+        fair_price_gate=fair_price_gate,
+    )
     reader, writer = await asyncio.open_unix_connection(socket_path)
     req = {
         "stream": "market",
@@ -2082,6 +2391,16 @@ async def main() -> None:
     ap.add_argument("--source-quality-require-l1-source", action="store_true")
     ap.add_argument("--source-quality-l1-age-max-ms", type=int, default=None)
     ap.add_argument("--source-quality-require-l2-source", action="store_true")
+    ap.add_argument(
+        "--fair-price-admission-jsonl",
+        default=None,
+        help="Default-off b55/ce25-style fair-price admission rows keyed by market_slug and side.",
+    )
+    ap.add_argument("--fair-price-min-edge", type=float, default=0.015)
+    ap.add_argument("--fair-price-max-pair-cost", type=float, default=0.975)
+    ap.add_argument("--fair-price-min-seconds-to-close", type=float, default=None)
+    ap.add_argument("--fair-price-max-seconds-to-close", type=float, default=None)
+    ap.add_argument("--fair-price-max-row-age-ms", type=int, default=None)
     ap.add_argument("--write-normalized-lifecycle", action="store_true")
     ap.add_argument("--write-rescue-block-diagnostics", action="store_true")
     ap.add_argument(
@@ -2152,6 +2471,12 @@ async def main() -> None:
         source_quality_require_l1_source=args.source_quality_require_l1_source,
         source_quality_l1_age_max_ms=args.source_quality_l1_age_max_ms,
         source_quality_require_l2_source=args.source_quality_require_l2_source,
+        fair_price_admission_path=args.fair_price_admission_jsonl,
+        fair_price_min_edge=args.fair_price_min_edge,
+        fair_price_max_pair_cost=args.fair_price_max_pair_cost,
+        fair_price_min_seconds_to_close=args.fair_price_min_seconds_to_close,
+        fair_price_max_seconds_to_close=args.fair_price_max_seconds_to_close,
+        fair_price_max_row_age_ms=args.fair_price_max_row_age_ms,
         write_normalized_lifecycle=args.write_normalized_lifecycle,
         write_rescue_block_diagnostics=args.write_rescue_block_diagnostics,
         allow_concurrent_shared_ingress_readers=args.allow_concurrent_shared_ingress_readers,
@@ -2207,6 +2532,33 @@ async def main() -> None:
         raise SystemExit("--source-quality-l1-age-max-ms must be non-negative")
     if cfg.strict_rescue_max_wait_ms is not None and cfg.strict_rescue_max_wait_ms <= cfg.salvage_age_ms:
         raise SystemExit("--strict-rescue-max-wait-s must exceed --salvage-age-s")
+    if cfg.fair_price_min_edge < 0:
+        raise SystemExit("--fair-price-min-edge must be non-negative")
+    if cfg.fair_price_max_pair_cost <= 0:
+        raise SystemExit("--fair-price-max-pair-cost must be positive")
+    if cfg.fair_price_max_row_age_ms is not None and cfg.fair_price_max_row_age_ms < 0:
+        raise SystemExit("--fair-price-max-row-age-ms must be non-negative")
+    if (
+        cfg.fair_price_min_seconds_to_close is not None
+        and cfg.fair_price_max_seconds_to_close is not None
+        and cfg.fair_price_min_seconds_to_close > cfg.fair_price_max_seconds_to_close + 1e-12
+    ):
+        raise SystemExit("--fair-price-min-seconds-to-close cannot exceed --fair-price-max-seconds-to-close")
+    fair_price_gate = None
+    fair_price_rows = 0
+    if args.fair_price_admission_jsonl:
+        fair_price_path = Path(args.fair_price_admission_jsonl).expanduser().resolve()
+        if not fair_price_path.exists():
+            raise SystemExit(f"--fair-price-admission-jsonl does not exist: {fair_price_path}")
+        fair_price_gate = FairPriceAdmissionGate.from_path(
+            fair_price_path,
+            min_edge=cfg.fair_price_min_edge,
+            max_pair_cost=cfg.fair_price_max_pair_cost,
+            min_seconds_to_close=cfg.fair_price_min_seconds_to_close,
+            max_seconds_to_close=cfg.fair_price_max_seconds_to_close,
+            max_row_age_ms=cfg.fair_price_max_row_age_ms,
+        )
+        fair_price_rows = len(fair_price_gate.rows)
     socket_path = str(Path(args.shared_ingress_root) / "market.sock")
     process_snapshot_start = collect_runner_process_snapshot()
     markets = resolve_markets(Path(args.repo), args.prefix, args.round_offsets, args.market_slugs)
@@ -2223,6 +2575,16 @@ async def main() -> None:
             "market_slugs": split_csv(args.market_slugs),
         },
         "config": cfg.__dict__,
+        "fair_price_admission": {
+            "enabled": fair_price_gate is not None,
+            "path": str(Path(args.fair_price_admission_jsonl).expanduser().resolve()) if args.fair_price_admission_jsonl else None,
+            "rows": fair_price_rows,
+            "min_edge": cfg.fair_price_min_edge,
+            "max_pair_cost": cfg.fair_price_max_pair_cost,
+            "min_seconds_to_close": cfg.fair_price_min_seconds_to_close,
+            "max_seconds_to_close": cfg.fair_price_max_seconds_to_close,
+            "max_row_age_ms": cfg.fair_price_max_row_age_ms,
+        },
         "safety": {
             "orders_sent": False,
             "dry_run": os.environ.get("PM_DRY_RUN"),
@@ -2256,7 +2618,7 @@ async def main() -> None:
         },
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
-    await asyncio.gather(*(run_market(m, socket_path, out, args.duration_s, cfg) for m in markets))
+    await asyncio.gather(*(run_market(m, socket_path, out, args.duration_s, cfg, fair_price_gate) for m in markets))
     aggregate_report = aggregate(out)
     manifest["completed_ms"] = now_ms()
     manifest["concurrency"]["process_snapshot_end"] = collect_runner_process_snapshot()
