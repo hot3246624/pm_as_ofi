@@ -1,0 +1,216 @@
+{
+  "artifact": "xuan_ce25_projected_guard_runner_instrumentation_spec",
+  "blockers": [],
+  "capability_checks": {
+    "candidate_pre_append_hook_available": true,
+    "current_realized_pair_cost_not_live_criteria": true,
+    "default_off_cli_pattern_available": true,
+    "event_lite_pattern_available": true,
+    "fixture_scorer_ready": true,
+    "intended_order_available": true,
+    "same_opp_cost_available": true,
+    "same_opp_qty_available": true,
+    "scorer_promotion_false": true,
+    "spec_promotion_false": true,
+    "spec_required_fields_present": true
+  },
+  "created_utc": "20260524T112050Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_CE25_PROJECTED_GUARD_RUNNER_INSTRUMENTATION_SPEC_READY",
+  "fixture_scorer_check": {
+    "missing_or_false_checks": [],
+    "ok": true,
+    "required_checks": [
+      "all_fixture_expectations_met",
+      "starter_fixture_allowed",
+      "core_fixture_allowed",
+      "pair_cost_hard_kill_blocked",
+      "residual_near_close_hard_kill_blocked",
+      "missing_pre_action_field_fail_closed",
+      "missing_projected_field_fail_closed"
+    ]
+  },
+  "instrumentation_contract": {
+    "admitted_candidate_scope": "diagnose candidate orders only after existing gates compute seed_px/base_qty/qty; do not unblock or block anything in v1",
+    "behavior_change": false,
+    "canonical_mapping": {
+      "estimated_fee_per_share": "0.0 for passive no-order seed proxy; nonzero real fee remains out of scope",
+      "if_side_no": {
+        "pre_no_actual_cost": "same_cost_before",
+        "pre_no_qty": "same_qty",
+        "pre_yes_actual_cost": "opp_cost_before",
+        "pre_yes_qty": "opp_qty"
+      },
+      "if_side_yes": {
+        "pre_no_actual_cost": "opp_cost_before",
+        "pre_no_qty": "opp_qty",
+        "pre_yes_actual_cost": "same_cost_before",
+        "pre_yes_qty": "same_qty"
+      },
+      "order_price": "seed_px",
+      "order_qty": "qty",
+      "outcome": "side"
+    },
+    "contract_name": "ce25_projected_guard_runner_instrumentation_v1",
+    "default_off_flag": "--ce25-projected-guard-event-lite-summary",
+    "dependencies": [
+      "--event-lite-summary"
+    ],
+    "new_helper_functions": [
+      "market_round_length_s(slug) -> 300/900/3600/14400 for updown 5m/15m/1h/4h; otherwise None",
+      "seconds_to_expiry_from_offset(slug, offset_s) -> max(round_length_s - offset_s, 0)",
+      "projected_guard_context(side, qty, seed_px, same_qty, opp_qty, same_cost, opp_cost, estimated_fee_per_share)",
+      "projected_guard_decision(context, ce25 starter/core/hard-kill thresholds)"
+    ],
+    "placement": "after qty is finalized and before VirtualOrder is appended in DPlusRunner.on_trade",
+    "smoke_plan": [
+      "default-off runner fixture summary does not contain ce25_projected_guard_summary",
+      "enabled runner fixture summary contains ce25_projected_guard_summary_v1",
+      "fixture admitted starter/core candidates match projected scorer formulae",
+      "fixture hard-kill candidate is counted as diagnostic blocked-but-behavior-unchanged",
+      "CLI dependency fails closed when flag is used without --event-lite-summary"
+    ],
+    "summary_fields": {
+      "event_lite.ce25_projected_guard_summary.decision_count_by_asset_timeframe_guard_status": {},
+      "event_lite.ce25_projected_guard_summary.decision_count_by_guard": {},
+      "event_lite.ce25_projected_guard_summary.decision_count_by_status": {},
+      "event_lite.ce25_projected_guard_summary.field_contract.deployable": false,
+      "event_lite.ce25_projected_guard_summary.field_contract.post_action_outcome_labels_included": false,
+      "event_lite.ce25_projected_guard_summary.field_contract.private_truth_ready": false,
+      "event_lite.ce25_projected_guard_summary.field_contract.promotion_gate_passed": false,
+      "event_lite.ce25_projected_guard_summary.final_window_policy_count": {},
+      "event_lite.ce25_projected_guard_summary.projected_pair_cost_bucket_by_guard": {},
+      "event_lite.ce25_projected_guard_summary.projected_residual_bucket_by_guard": {},
+      "event_lite.ce25_projected_guard_summary.schema_version": "ce25_projected_guard_summary_v1"
+    }
+  },
+  "lane": "ce25_projected_guard_runner_instrumentation_spec",
+  "next_executable_action": "Implement ce25_projected_guard_runner_instrumentation_default_off_v1 in tools/xuan_dplus_passive_passive_shadow_runner.py plus smoke: add default-off summary-only diagnostics, prove default-off absence/enabled presence/dependency fail-closed/no behavior change, and keep promotion_gate.passed=false.",
+  "promotion_gate": {
+    "blockers": [
+      "spec only; runner code not changed in this artifact",
+      "default-off diagnostics must be implemented and smoked before any diagnostic run",
+      "synthetic fixtures and public buckets are not private truth",
+      "no no-order diagnostic approval from this artifact"
+    ],
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RUNNER_INSTRUMENTATION_SPEC_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "deployable": false,
+    "instrumentation_spec_ready": true,
+    "label": "KEEP_CE25_PROJECTED_GUARD_RUNNER_INSTRUMENTATION_SPEC_READY",
+    "next_local_only_target": "ce25_projected_guard_runner_instrumentation_default_off_v1",
+    "no_order_diagnostic_allowed": false,
+    "private_truth_ready": false,
+    "promotion_gate_passed": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "canary_started": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_agg_started": false,
+    "local_only": true,
+    "new_data_fetch": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "shared_ws_started": false,
+    "source_review_only": true,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "source_capabilities": {
+    "candidate_pre_append_hook_available": {
+      "missing": [],
+      "needles": [
+        "quote_intent_id = self.quote_intent_id(self.next_order_id)",
+        "self.pending.append(order)",
+        "self.metrics.candidates += 1"
+      ],
+      "ok": true
+    },
+    "current_realized_pair_cost_not_live_criteria": {
+      "missing": [],
+      "needles": [
+        "pair_cost = a.px + b.px",
+        "self.metrics.pair_costs.append(pair_cost)"
+      ],
+      "ok": true
+    },
+    "default_off_cli_pattern_available": {
+      "missing": [],
+      "needles": [
+        "source_opportunity_closed_cycle_marker_event_lite_summary: bool = False",
+        "ap.add_argument(\"--source-opportunity-closed-cycle-marker-event-lite-summary\""
+      ],
+      "ok": true
+    },
+    "event_lite_pattern_available": {
+      "missing": [],
+      "needles": [
+        "event_lite_summary: bool = False",
+        "ap.add_argument(\"--event-lite-summary\"",
+        "summary[\"event_lite\"]"
+      ],
+      "ok": true
+    },
+    "intended_order_available": {
+      "missing": [],
+      "needles": [
+        "seed_px = max(0.01, px - self.cfg.edge)",
+        "qty = base_qty",
+        "order = VirtualOrder(",
+        "side=side",
+        "px=seed_px",
+        "qty=qty"
+      ],
+      "ok": true
+    },
+    "same_opp_cost_available": {
+      "missing": [],
+      "needles": [
+        "same_cost_before = self.exposure_cost(side)",
+        "opp_cost_before = self.exposure_cost(opp(side))"
+      ],
+      "ok": true
+    },
+    "same_opp_qty_available": {
+      "missing": [],
+      "needles": [
+        "same_qty = self.exposure_qty(side)",
+        "opp_qty = self.exposure_qty(opp(side))"
+      ],
+      "ok": true
+    }
+  },
+  "source_inputs": {
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "scorer_manifest": "xuan_research_artifacts/xuan_ce25_projected_guard_fixture_scorer_20260524T105851Z/manifest.json",
+    "spec_manifest": "xuan_research_artifacts/xuan_ce25_projected_pair_cost_residual_guard_spec_20260524T104842Z/manifest.json"
+  },
+  "spec_required_fields_check": {
+    "missing": [],
+    "ok": true,
+    "required_subset": [
+      "estimated_fee_per_share",
+      "order_price",
+      "order_qty",
+      "pre_no_actual_cost",
+      "pre_no_qty",
+      "pre_yes_actual_cost",
+      "pre_yes_qty",
+      "projected_pair_cost",
+      "projected_residual_rate_on_bought_qty"
+    ]
+  }
+}
