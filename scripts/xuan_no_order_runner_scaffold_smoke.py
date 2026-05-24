@@ -1130,20 +1130,21 @@ def smoke_source_linkage_summary() -> dict[str, Any]:
 
 
 def smoke_fair_price_admission_gate() -> dict[str, Any]:
-    def run_case(fair_probability: float) -> dict[str, Any]:
+    def run_case(fair_probability: float, admission_mode: str = "fair_probability") -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as td:
             slug = "btc-updown-15m-100"
+            row = {
+                "row_id": f"fair-{fair_probability}-{admission_mode}",
+                "market_slug": slug,
+                "side": "YES",
+                "min_seconds_to_close": 60,
+                "max_seconds_to_close": 900,
+                "admission_mode": admission_mode,
+            }
+            if admission_mode != "pair_cost_only":
+                row["fair_side_probability"] = fair_probability
             gate = FairPriceAdmissionGate(
-                [
-                    {
-                        "row_id": f"fair-{fair_probability}",
-                        "market_slug": slug,
-                        "side": "YES",
-                        "min_seconds_to_close": 60,
-                        "max_seconds_to_close": 900,
-                        "fair_side_probability": fair_probability,
-                    }
-                ],
+                [row],
                 min_edge=0.015,
                 max_pair_cost=0.975,
                 min_seconds_to_close=60,
@@ -1178,8 +1179,10 @@ def smoke_fair_price_admission_gate() -> dict[str, Any]:
 
     allow = run_case(0.52)
     block = run_case(0.47)
+    pair_cost_only = run_case(0.0, admission_mode="pair_cost_only")
     allow_candidates = [event for event in allow["events"] if event.get("kind") == "candidate"]
     block_events = [event for event in block["events"] if event.get("kind") == "fair_price_admission_block"]
+    pair_cost_only_candidates = [event for event in pair_cost_only["events"] if event.get("kind") == "candidate"]
     passed = (
         allow["state"]["metrics"]["candidates"] == 1
         and bool(allow_candidates)
@@ -1189,6 +1192,11 @@ def smoke_fair_price_admission_gate() -> dict[str, Any]:
         and block["state"]["blocked"].get("fair_price_edge_after_fee", 0) == 1
         and bool(block_events)
         and block_events[0].get("fair_price_admission_block_reason") == "fair_price_edge_after_fee"
+        and pair_cost_only["state"]["metrics"]["candidates"] == 1
+        and bool(pair_cost_only_candidates)
+        and pair_cost_only_candidates[0].get("fair_price_admission_mode") == "pair_cost_only"
+        and pair_cost_only_candidates[0].get("fair_price_side_probability") is None
+        and pair_cost_only_candidates[0].get("fair_price_pair_cost_after_fee") <= 0.975
     )
     return {
         "name": "fair_price_admission_gate",
@@ -1197,6 +1205,8 @@ def smoke_fair_price_admission_gate() -> dict[str, Any]:
         "allow_candidate": allow_candidates[0] if allow_candidates else {},
         "block_state": block["state"],
         "block_event": block_events[0] if block_events else {},
+        "pair_cost_only_state": pair_cost_only["state"],
+        "pair_cost_only_candidate": pair_cost_only_candidates[0] if pair_cost_only_candidates else {},
     }
 
 

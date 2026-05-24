@@ -400,6 +400,7 @@ class FairPriceAdmissionGate:
         row = self.select_row(slug, side, ts_ms, seconds_to_close)
         audit: dict[str, Any] = {
             "fair_price_admission_enabled": True,
+            "fair_price_admission_mode": "fair_probability",
             "fair_price_admission_decision": "allow",
             "fair_price_admission_block_reason": "",
             "fair_price_min_edge": self.min_edge,
@@ -414,27 +415,32 @@ class FairPriceAdmissionGate:
             audit["fair_price_admission_decision"] = "block"
             audit["fair_price_admission_block_reason"] = "fair_price_admission_missing"
             return "fair_price_admission_missing", audit
+        mode = str(row.get("admission_mode") or "fair_probability")
+        pair_cost_only = mode == "pair_cost_only" or bool(row.get("pair_cost_only"))
+        audit["fair_price_admission_mode"] = "pair_cost_only" if pair_cost_only else "fair_probability"
         fair_prob = fair_probability_for_side(row, side)
         audit["fair_price_row_id"] = row.get("row_id") or row.get("id") or row.get("market_slug") or slug
+        seed_fee = fee_per_share(seed_px, taker_fee_rate)
+        comp_fee = fee_per_share(opposite_ask, taker_fee_rate) if opposite_ask > 0 else None
+        pair_cost = seed_px + opposite_ask + seed_fee + comp_fee if comp_fee is not None else None
+        audit["fair_price_pair_cost_after_fee"] = round(pair_cost, 12) if pair_cost is not None else None
+        if pair_cost is None or pair_cost > self.max_pair_cost + 1e-12:
+            audit["fair_price_admission_decision"] = "block"
+            audit["fair_price_admission_block_reason"] = "fair_price_pair_cost_after_fee"
+            return "fair_price_pair_cost_after_fee", audit
+        if pair_cost_only:
+            return None, audit
         audit["fair_price_side_probability"] = fair_prob
         if fair_prob is None:
             audit["fair_price_admission_decision"] = "block"
             audit["fair_price_admission_block_reason"] = "fair_price_probability_missing"
             return "fair_price_probability_missing", audit
-        seed_fee = fee_per_share(seed_px, taker_fee_rate)
         edge_after_fee = fair_prob - seed_px - seed_fee
-        comp_fee = fee_per_share(opposite_ask, taker_fee_rate) if opposite_ask > 0 else None
-        pair_cost = seed_px + opposite_ask + seed_fee + comp_fee if comp_fee is not None else None
         audit["fair_price_edge_after_fee"] = round(edge_after_fee, 12)
-        audit["fair_price_pair_cost_after_fee"] = round(pair_cost, 12) if pair_cost is not None else None
         if edge_after_fee < self.min_edge - 1e-12:
             audit["fair_price_admission_decision"] = "block"
             audit["fair_price_admission_block_reason"] = "fair_price_edge_after_fee"
             return "fair_price_edge_after_fee", audit
-        if pair_cost is None or pair_cost > self.max_pair_cost + 1e-12:
-            audit["fair_price_admission_decision"] = "block"
-            audit["fair_price_admission_block_reason"] = "fair_price_pair_cost_after_fee"
-            return "fair_price_pair_cost_after_fee", audit
         return None, audit
 
 
@@ -1400,6 +1406,7 @@ class DPlusRunner:
         }
         fair_price_audit = {
             "fair_price_admission_enabled": False,
+            "fair_price_admission_mode": "not_enabled",
             "fair_price_admission_decision": "not_enabled",
             "fair_price_admission_block_reason": "",
             "fair_price_min_edge": self.cfg.fair_price_min_edge,
@@ -1749,6 +1756,7 @@ class DPlusRunner:
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_pre_open": event.get("closeability_debt_pre_open"),
                     "closeability_debt_post_open": event.get("closeability_debt_post_open"),
+                    "fair_price_admission_mode": event.get("fair_price_admission_mode"),
                     "fair_price_admission_decision": event.get("fair_price_admission_decision"),
                     "fair_price_admission_block_reason": event.get("fair_price_admission_block_reason"),
                     "fair_price_side_probability": event.get("fair_price_side_probability"),
@@ -1809,6 +1817,7 @@ class DPlusRunner:
                     "closeability_debt": event.get("closeability_debt"),
                     "closeability_debt_pre_open": event.get("closeability_debt_pre_open"),
                     "closeability_debt_post_open": event.get("closeability_debt_post_open"),
+                    "fair_price_admission_mode": event.get("fair_price_admission_mode"),
                     "fair_price_admission_decision": event.get("fair_price_admission_decision"),
                     "fair_price_admission_block_reason": event.get("fair_price_admission_block_reason"),
                     "fair_price_side_probability": event.get("fair_price_side_probability"),
@@ -1949,10 +1958,11 @@ class DPlusRunner:
                 "pair_completion_projected_pair_pnl_after", "pair_completion_decision",
                 "closeability_net_pair_cost",
                 "closeability_debt_per_share", "closeability_debt", "closeability_debt_pre_open",
-                "closeability_debt_post_open", "fair_price_admission_decision",
-                "fair_price_admission_block_reason", "fair_price_side_probability",
-                "fair_price_edge_after_fee", "fair_price_pair_cost_after_fee",
-                "fair_price_seconds_to_close", "fair_price_row_id",
+                "closeability_debt_post_open", "fair_price_admission_mode",
+                "fair_price_admission_decision", "fair_price_admission_block_reason",
+                "fair_price_side_probability", "fair_price_edge_after_fee",
+                "fair_price_pair_cost_after_fee", "fair_price_seconds_to_close",
+                "fair_price_row_id",
             ],
             action_rows,
         )
