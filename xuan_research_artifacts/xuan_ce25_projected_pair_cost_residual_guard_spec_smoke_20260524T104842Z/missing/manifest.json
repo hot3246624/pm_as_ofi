@@ -1,0 +1,51 @@
+{
+  "artifact": "xuan_ce25_projected_pair_cost_residual_guard_spec",
+  "created_utc": "20260524T104852Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_CE25_PROJECTED_GUARD_SPEC_INPUTS_MISSING",
+  "lane": "ce25_projected_pair_cost_residual_guard_spec",
+  "next_executable_action": "Rerun on complete existing public/deep-compare exports; do not start diagnostics.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "INPUTS_MISSING_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "deployable": false,
+    "private_truth_ready": false,
+    "promotion_gate_passed": false,
+    "spec_ready": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "canary_started": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "existing_public_exports_only": true,
+    "full_completion_store_scanned": false,
+    "local_agg_started": false,
+    "local_only": true,
+    "new_data_fetch": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "shared_ws_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "source_inputs": {
+    "deep_compare_dir": "xuan_research_artifacts/xuan_ce25_projected_pair_cost_residual_guard_spec_smoke_20260524T104842Z/missing_deep_compare",
+    "missing_required_files": [
+      "strategy_rules_report.md",
+      "post_window_by_condition.csv",
+      "ce25/market_cash_pnl.csv",
+      "b55/market_cash_pnl.csv"
+    ],
+    "rule_report": "xuan_research_artifacts/xuan_ce25_projected_pair_cost_residual_guard_spec_smoke_20260524T104842Z/missing_deep_compare/strategy_rules_report.md"
+  }
+}
