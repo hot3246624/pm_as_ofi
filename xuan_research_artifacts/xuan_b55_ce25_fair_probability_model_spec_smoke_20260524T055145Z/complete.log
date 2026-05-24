@@ -1,0 +1,7 @@
+{
+  "candidate_manifest_status": "CANDIDATE_FAIR_PROBABILITY_MANIFEST_READY",
+  "decision_label": "KEEP_B55_CE25_FAIR_PROBABILITY_MODEL_SPEC_READY",
+  "manifest": "xuan_research_artifacts/xuan_b55_ce25_fair_probability_model_spec_smoke_20260524T055145Z/complete/manifest.json",
+  "next_executable_action": "Implement b55_ce25_public_entry_join_audit_v1 locally: join the public b55/ce25 entry rows to the probability-model contract fields, first with fixtures and then with any existing safe exported source tapes if available. Fail closed if per-trade fee/liquidity role or volatility/uncertainty inputs are absent; do not start collection, shared WS, shadow, canary, or live trading.",
+  "real_input_status": "UNKNOWN_REAL_FAIR_PROBABILITY_INPUTS_MISSING"
+}

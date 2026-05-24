@@ -1,0 +1,68 @@
+{
+  "accounts_covered": [
+    "b55",
+    "ce25"
+  ],
+  "artifact": "b55_ce25_fair_probability_model_fixture",
+  "assets_covered": [
+    "BTC",
+    "ETH"
+  ],
+  "fixture": true,
+  "model": {
+    "model_name": "fixture_entry_boundary_normal_probability",
+    "model_version": "fixture-v1",
+    "probability_output_basis": "entry_win_probability",
+    "uses_volatility_or_uncertainty_input": true
+  },
+  "provided_fields": [
+    "account",
+    "trade_id",
+    "condition_id",
+    "market_slug",
+    "asset",
+    "timeframe",
+    "market_start_ts",
+    "market_end_ts",
+    "quote_ts",
+    "entry_delta_s",
+    "time_to_expiry_s",
+    "outcome",
+    "polymarket_price",
+    "size",
+    "gross_usdc",
+    "fee_usdc",
+    "actual_usdc",
+    "liquidity_role",
+    "boundary_price",
+    "fair_spot_mid",
+    "source_count",
+    "source_names",
+    "source_dispersion_bps",
+    "max_source_age_ms",
+    "volatility_lookback_s",
+    "volatility_bps",
+    "fair_probability",
+    "fair_probability_uncertainty",
+    "edge_after_fee_and_uncertainty",
+    "model_name",
+    "model_version"
+  ],
+  "quality_gates": {
+    "max_probability_uncertainty": 0.03,
+    "max_source_age_ms": 1500,
+    "max_source_dispersion_bps": 8.0,
+    "min_edge_after_fee_and_uncertainty": 0.02,
+    "min_source_count": 3
+  },
+  "sample_policy": {
+    "entry_delta_s_max": -60,
+    "entry_delta_s_min": -900,
+    "polymarket_price_max": 0.9,
+    "polymarket_price_min": 0.35
+  },
+  "timeframes_covered": [
+    "15m",
+    "1h_or_named"
+  ]
+}
