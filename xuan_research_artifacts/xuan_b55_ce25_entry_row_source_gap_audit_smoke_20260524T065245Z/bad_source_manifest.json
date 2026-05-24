@@ -1,0 +1,47 @@
+{
+  "accounts_covered": [
+    "b55",
+    "ce25"
+  ],
+  "artifact": "xuan_b55_ce25_entry_row_source_gap_bad_fixture",
+  "decision_label": "UNKNOWN_BAD_SOURCE_MANIFEST_MISSING_ROLE_AND_PROBABILITY",
+  "fixture": true,
+  "joins_declared": {
+    "fair_source_snapshot_rows": true,
+    "liquidity_role_truth_source": false,
+    "market_metadata_boundary": true,
+    "probability_model_output": false,
+    "public_activity_trade_rows": true,
+    "volatility_rows": true
+  },
+  "provided_fields": [
+    "account",
+    "trade_id",
+    "condition_id",
+    "market_slug",
+    "asset",
+    "timeframe",
+    "market_start_ts",
+    "market_end_ts",
+    "quote_ts",
+    "entry_delta_s",
+    "time_to_expiry_s",
+    "outcome",
+    "polymarket_price",
+    "size",
+    "gross_usdc",
+    "fee_usdc",
+    "actual_usdc",
+    "boundary_price",
+    "fair_spot_mid",
+    "source_count",
+    "source_names",
+    "source_dispersion_bps",
+    "max_source_age_ms",
+    "volatility_lookback_s",
+    "volatility_bps",
+    "edge_after_fee_and_uncertainty",
+    "model_name",
+    "model_version"
+  ]
+}

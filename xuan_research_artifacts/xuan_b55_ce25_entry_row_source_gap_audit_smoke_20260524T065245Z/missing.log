@@ -1,0 +1,31 @@
+{
+  "candidate_source_manifest_status": "MISSING_CANDIDATE_ENTRY_ROW_SOURCE_MANIFEST",
+  "critical_blockers": [
+    "liquidity_role",
+    "fair_probability",
+    "fair_probability_uncertainty",
+    "edge_after_fee_and_uncertainty",
+    "source_quality_time_join",
+    "volatility_bps"
+  ],
+  "decision_label": "UNKNOWN_B55_CE25_ENTRY_ROW_SOURCE_GAP_REAL_EXPORT_FIELDS_MISSING",
+  "hard_missing_fields": [
+    "boundary_price",
+    "edge_after_fee_and_uncertainty",
+    "fair_probability",
+    "fair_probability_uncertainty",
+    "fair_spot_mid",
+    "fee_usdc",
+    "liquidity_role",
+    "max_source_age_ms",
+    "model_name",
+    "model_version",
+    "source_count",
+    "source_dispersion_bps",
+    "source_names",
+    "volatility_bps",
+    "volatility_lookback_s"
+  ],
+  "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_entry_row_source_gap_audit_smoke_20260524T065245Z/missing/manifest.json",
+  "next_executable_action": "Implement b55_ce25_public_activity_entry_export_spec_v1 locally: define a fail-closed exporter contract for public activity trade rows plus market metadata, explicit fee/liquidity-role evidence, and optional safe fair-source snapshot manifest. Return UNKNOWN until non-fixture rows provide liquidity_role and fair_probability/uncertainty joins for both b55 and ce25."
+}
