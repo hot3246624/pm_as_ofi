@@ -1,0 +1,223 @@
+{
+  "artifact": "xuan_b55_ce25_public_activity_entry_scorer",
+  "created_utc": "20260524T084057Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_B55_CE25_PUBLIC_ACTIVITY_ENTRY_SCORER_INPUTS_INSUFFICIENT",
+  "lane": "b55_ce25_public_activity_entry_scorer",
+  "next_executable_action": "Implement b55_ce25_non_fixture_input_source_review_v1 locally: determine whether any safe existing non-service export can provide per-trade liquidity_role and fair-source probability joins; otherwise return UNKNOWN and stop before any no-order diagnostic.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "PUBLIC_ACTIVITY_ENTRY_SCORER_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "b55_role": "main fair-price/pair-edge template",
+    "ce25_role": "clean low-residual control",
+    "decision": "UNKNOWN",
+    "fixture_export_status": "READY_FIXTURE_PUBLIC_ACTIVITY_ENTRY_EXPORT_NOT_REAL_INPUT",
+    "interpretation": "The public activity entry pipeline is mechanically ready for fixtures and fail-closes real rows. It is not strategy evidence until non-fixture liquidity role and fair-probability source joins exist.",
+    "label": "UNKNOWN_B55_CE25_PUBLIC_ACTIVITY_ENTRY_SCORER_INPUTS_INSUFFICIENT",
+    "real_export_status": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING"
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "dplus_failed_families_enabled_or_swept": false,
+    "events_jsonl_read": false,
+    "fixture_inputs_allowed_for_schema_only": true,
+    "full_completion_store_scanned": false,
+    "local_agg_started": false,
+    "local_only": true,
+    "orders_sent": false,
+    "private_owner_trade_truth_used": false,
+    "public_profile_exports_only": true,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "ssh_used": false
+  },
+  "score": {
+    "blockers": [
+      "fixture_spec_ready",
+      "fixture_spec_missing_no_fields"
+    ],
+    "checks": {
+      "exporter_fixture_keep": true,
+      "fixture_not_real_input": true,
+      "fixture_rows_cover_b55_ce25": true,
+      "fixture_rows_present": true,
+      "fixture_spec_missing_no_fields": false,
+      "fixture_spec_ready": false,
+      "fixture_status_ready": true,
+      "no_side_effect_scope": true,
+      "promotion_never_passes": true,
+      "real_rows_cover_b55_ce25": true,
+      "real_rows_present": true,
+      "real_spec_fail_closed": true,
+      "real_spec_missing_critical_inputs": true,
+      "real_status_unknown": true
+    },
+    "decision": "UNKNOWN",
+    "decision_label": "UNKNOWN_B55_CE25_PUBLIC_ACTIVITY_ENTRY_SCORER_INPUTS_INSUFFICIENT",
+    "fixture_score": {
+      "account_counts": {
+        "b55": 12,
+        "ce25": 12
+      },
+      "provided_fields": [
+        "account",
+        "trade_id",
+        "condition_id",
+        "market_slug",
+        "asset",
+        "timeframe",
+        "market_start_ts",
+        "market_end_ts",
+        "quote_ts",
+        "entry_delta_s",
+        "time_to_expiry_s",
+        "outcome",
+        "polymarket_price",
+        "size",
+        "gross_usdc",
+        "fee_usdc",
+        "actual_usdc",
+        "liquidity_role",
+        "boundary_price",
+        "fair_spot_mid",
+        "source_count",
+        "source_names",
+        "source_dispersion_bps",
+        "max_source_age_ms",
+        "volatility_lookback_s",
+        "volatility_bps",
+        "fair_probability",
+        "fair_probability_uncertainty",
+        "edge_after_fee_and_uncertainty",
+        "model_name",
+        "model_version"
+      ],
+      "row_count": 24,
+      "spec_validator_missing_fields": [
+        "fair_probability"
+      ],
+      "spec_validator_status": "CANDIDATE_PUBLIC_ACTIVITY_ENTRY_EXPORT_MANIFEST_FAIL_CLOSED",
+      "status": "READY_FIXTURE_PUBLIC_ACTIVITY_ENTRY_EXPORT_NOT_REAL_INPUT",
+      "strategy_evidence": false
+    },
+    "real_score": {
+      "account_counts": {
+        "b55": 12,
+        "ce25": 12
+      },
+      "missing_fields": [
+        "liquidity_role",
+        "boundary_price",
+        "fair_spot_mid",
+        "source_count",
+        "source_names",
+        "source_dispersion_bps",
+        "max_source_age_ms",
+        "volatility_lookback_s",
+        "volatility_bps",
+        "fair_probability",
+        "fair_probability_uncertainty",
+        "edge_after_fee_and_uncertainty",
+        "model_name",
+        "model_version"
+      ],
+      "provided_fields": [
+        "account",
+        "trade_id",
+        "condition_id",
+        "market_slug",
+        "asset",
+        "timeframe",
+        "market_start_ts",
+        "market_end_ts",
+        "quote_ts",
+        "entry_delta_s",
+        "time_to_expiry_s",
+        "outcome",
+        "polymarket_price",
+        "size",
+        "gross_usdc",
+        "fee_usdc",
+        "actual_usdc"
+      ],
+      "row_count": 24,
+      "spec_validator_missing_fields": [
+        "liquidity_role",
+        "boundary_price",
+        "fair_spot_mid",
+        "source_count",
+        "source_names",
+        "source_dispersion_bps",
+        "max_source_age_ms",
+        "volatility_lookback_s",
+        "volatility_bps",
+        "fair_probability",
+        "fair_probability_uncertainty",
+        "edge_after_fee_and_uncertainty",
+        "model_name",
+        "model_version"
+      ],
+      "spec_validator_status": "CANDIDATE_PUBLIC_ACTIVITY_ENTRY_EXPORT_MANIFEST_FAIL_CLOSED",
+      "status": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING",
+      "strategy_evidence": false
+    },
+    "required_non_fixture_inputs_before_no_order_diagnostic": [
+      {
+        "accepted_sources": [
+          "explicit public maker/taker field",
+          "documented per-trade takerOnly field",
+          "verified non-private fill metadata"
+        ],
+        "field": "liquidity_role",
+        "rejected_sources": [
+          "maker rebate",
+          "fee magnitude",
+          "price improvement",
+          "account-level taker share"
+        ]
+      },
+      {
+        "field": "fair_source_snapshot_join",
+        "join_tolerance_ms": 1500,
+        "required_fields": [
+          "boundary_price",
+          "fair_spot_mid",
+          "source_count",
+          "source_names",
+          "source_dispersion_bps",
+          "max_source_age_ms"
+        ],
+        "source_policy": "safe pre-existing export only; no service/shared-WS/local-agg start"
+      },
+      {
+        "edge_formula": "fair_probability - polymarket_price - fee_usdc / size - fair_probability_uncertainty",
+        "field": "volatility_and_probability_model",
+        "required_fields": [
+          "volatility_lookback_s",
+          "volatility_bps",
+          "fair_probability",
+          "fair_probability_uncertainty",
+          "edge_after_fee_and_uncertainty",
+          "model_name",
+          "model_version"
+        ]
+      }
+    ]
+  },
+  "source_inputs": {
+    "exporter_manifest": "xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_20260524T075245Z/manifest.json",
+    "load_errors": {},
+    "spec_fixture_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_scorer_smoke_20260524T083746Z/bad_spec_fixture_manifest.json",
+    "spec_real_manifest": "xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_exporter_fixture_smoke_20260524T075245Z/spec_real/manifest.json"
+  }
+}

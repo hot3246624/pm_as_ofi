@@ -1,0 +1,7 @@
+{
+  "decision_label": "UNKNOWN_B55_CE25_PUBLIC_ACTIVITY_ENTRY_SCORER_INPUTS_INSUFFICIENT",
+  "fixture_export_status": "READY_FIXTURE_PUBLIC_ACTIVITY_ENTRY_EXPORT_NOT_REAL_INPUT",
+  "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_scorer_smoke_20260524T083746Z/bad/manifest.json",
+  "next_executable_action": "Implement b55_ce25_non_fixture_input_source_review_v1 locally: determine whether any safe existing non-service export can provide per-trade liquidity_role and fair-source probability joins; otherwise return UNKNOWN and stop before any no-order diagnostic.",
+  "real_export_status": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_REQUIRED_JOINS_MISSING"
+}

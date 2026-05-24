@@ -1,0 +1,19 @@
+{
+  "artifact": "xuan_b55_ce25_public_activity_entry_scorer_smoke",
+  "bad_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_scorer_smoke_20260524T083746Z/bad/manifest.json",
+  "checks": {
+    "bad_fixture_check_failed": true,
+    "bad_unknown": true,
+    "good_fixture_ready": true,
+    "good_fixture_strategy_false": true,
+    "good_keep": true,
+    "good_missing_liquidity_role": true,
+    "good_real_strategy_false": true,
+    "good_real_unknown": true,
+    "good_requires_non_fixture_inputs": true,
+    "no_side_effect_scope": true,
+    "promotion_never_passes": true
+  },
+  "decision_label": "KEEP_B55_CE25_PUBLIC_ACTIVITY_ENTRY_SCORER_SMOKE_PASS",
+  "good_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_scorer_smoke_20260524T083746Z/good/manifest.json"
+}
