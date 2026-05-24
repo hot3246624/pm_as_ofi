@@ -52,11 +52,21 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
     capital_path = Path(args.capital_roi_scorecard).expanduser().resolve()
     repeat_path = Path(args.repeat_scorecard).expanduser().resolve()
     replay_path = Path(args.replay_scorecard).expanduser().resolve()
+    public_benchmark_path = (
+        Path(args.public_benchmark_comparison_scorecard).expanduser().resolve()
+        if args.public_benchmark_comparison_scorecard
+        else None
+    )
 
     packet = read_json(packet_path)
     capital = read_json(capital_path)
     repeat = read_json(repeat_path)
     replay = read_json(replay_path)
+    public_benchmark = (
+        read_json(public_benchmark_path)
+        if public_benchmark_path and public_benchmark_path.exists()
+        else None
+    )
 
     packet_summary = packet.get("summary", {})
     packet_decision = packet.get("decision", {})
@@ -69,6 +79,8 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
     repeat_decision = repeat.get("decision", {})
     repeat_aggregate = repeat.get("aggregate", {})
     replay_decision = replay.get("decision", {})
+    public_benchmark_decision = public_benchmark.get("decision", {}) if public_benchmark else {}
+    public_benchmark_comparison = public_benchmark.get("comparison", {}) if public_benchmark else {}
 
     fee_accounting = capital.get("assumptions", {}).get("fee_accounting")
     taker_fee = as_float(capital_totals.get("taker_fee"))
@@ -156,6 +168,27 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
         "repeat_residual_qty_share_above_max",
         hard_blockers,
     )
+    if public_benchmark is not None:
+        fail_unless(
+            public_benchmark.get("status") == "KEEP_PUBLIC_BENCHMARK_COMPARISON_PASS_RESEARCH_ONLY",
+            "public_benchmark_comparison_not_pass",
+            hard_blockers,
+        )
+        fail_unless(
+            public_benchmark_decision.get("public_benchmark_comparison_pass") is True,
+            "public_benchmark_pass_flag_false",
+            hard_blockers,
+        )
+        fail_unless(
+            public_benchmark_decision.get("deployable") is False,
+            "public_benchmark_deployable_true",
+            hard_blockers,
+        )
+        fail_unless(
+            public_benchmark_decision.get("remote_runner_allowed") is False,
+            "public_benchmark_remote_runner_allowed_true",
+            hard_blockers,
+        )
 
     if worst_residual_zero < 0:
         caveats.append("residual_zero_stress_negative_size_capacity_needed_before_live")
@@ -182,6 +215,9 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "capital_roi_scorecard": str(capital_path),
             "repeat_scorecard": str(repeat_path),
             "replay_scorecard": str(replay_path),
+            "public_benchmark_comparison_scorecard": str(public_benchmark_path)
+            if public_benchmark_path
+            else None,
             "min_edge_on_redeem": args.min_edge_on_redeem,
             "min_repeat_rescue_closes": args.min_repeat_rescue_closes,
             "max_repeat_residual_cost_share": args.max_repeat_residual_cost_share,
@@ -204,6 +240,7 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "packet_status": packet.get("status"),
             "repeat_status": repeat.get("status"),
             "capital_roi_status": capital.get("status"),
+            "public_benchmark_status": public_benchmark.get("status") if public_benchmark else None,
             "fee_accounting": fee_accounting,
             "taker_fee": taker_fee,
             "pair_pnl": as_float(capital_totals.get("pair_pnl")),
@@ -228,6 +265,26 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "profit_per_day_if_300_redeem_notional_filled_every_round": as_float(
                 projection.get("profit_per_day_if_redeem_notional_filled_every_round")
             ),
+            "actual_pair_cost_after_fee": as_float(
+                public_benchmark_comparison.get("actual_pair_cost_after_fee")
+            )
+            if public_benchmark
+            else None,
+            "b55_actual_pair_cost": as_float(
+                public_benchmark_comparison.get("vs_b55", {}).get("b55_actual_pair_cost")
+            )
+            if public_benchmark
+            else None,
+            "pair_cost_delta_vs_b55": as_float(
+                public_benchmark_comparison.get("vs_b55", {}).get("pair_cost_delta_vs_b55")
+            )
+            if public_benchmark
+            else None,
+            "residual_qty_share_delta_vs_b55": as_float(
+                public_benchmark_comparison.get("vs_b55", {}).get("residual_qty_share_delta_vs_b55")
+            )
+            if public_benchmark
+            else None,
         },
         "approval_scope": {
             "allowed": [
@@ -280,6 +337,14 @@ def markdown(scorecard: dict[str, Any]) -> str:
         f"- roi_on_pair_cost: `{round_opt(pct(evidence['roi_on_pair_cost']), 4)}%`",
         f"- roi_on_total_cash_spend: `{round_opt(pct(evidence['roi_on_total_cash_spend']), 4)}%`",
         "",
+        "## Public Benchmark",
+        "",
+        f"- public_benchmark_status: `{evidence['public_benchmark_status']}`",
+        f"- actual_pair_cost_after_fee: `{round_opt(evidence['actual_pair_cost_after_fee'], 6)}`",
+        f"- b55_actual_pair_cost: `{round_opt(evidence['b55_actual_pair_cost'], 6)}`",
+        f"- pair_cost_delta_vs_b55: `{round_opt(evidence['pair_cost_delta_vs_b55'], 6)}`",
+        f"- residual_qty_share_delta_vs_b55: `{round_opt(evidence['residual_qty_share_delta_vs_b55'], 6)}`",
+        "",
         "## Capital Reuse",
         "",
         f"- max_window_gross_cash_need: `{round_opt(evidence['max_window_gross_cash_need'], 6)}`",
@@ -319,6 +384,7 @@ def main() -> int:
     parser.add_argument("--capital-roi-scorecard", required=True)
     parser.add_argument("--repeat-scorecard", required=True)
     parser.add_argument("--replay-scorecard", required=True)
+    parser.add_argument("--public-benchmark-comparison-scorecard", default=None)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--markdown")
     parser.add_argument("--min-edge-on-redeem", type=float, default=0.02)
