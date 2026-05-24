@@ -1,0 +1,59 @@
+{
+  "artifact": "xuan_symmetric_activation_summary_scorer",
+  "created_utc": "20260524T164602Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_SUMMARY_SCORER_READY",
+  "default_aggregate": "xuan_research_artifacts/xuan_symmetric_activation_runner_instrumentation_smoke_20260524T165500Z/default_off/aggregate_report.json",
+  "enabled_aggregate": "xuan_research_artifacts/xuan_symmetric_activation_runner_instrumentation_smoke_20260524T165500Z/enabled/aggregate_report.json",
+  "enabled_summary_dir": "xuan_research_artifacts/xuan_symmetric_activation_runner_instrumentation_smoke_20260524T165500Z/enabled",
+  "next_executable_action": "Use this scorer on future allowlisted no-order pullbacks that include symmetric_activation_summary_v1; do not start no-order diagnostics from scorer readiness alone.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SCORER_READY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "no_order_diagnostic_allowed": false,
+    "status": "KEEP_SYMMETRIC_ACTIVATION_SUMMARY_SCORER_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "blockers": [],
+    "checks": {
+      "admitted_activation_denominator_positive": true,
+      "aggregate_parity": true,
+      "blocked_activation_denominator_positive": true,
+      "default_off_summary_absent": true,
+      "enabled_summary_present": true,
+      "field_contract_ok": true,
+      "projected_pair_cost_bucket_present": true,
+      "schema_ok": true,
+      "source_sequence_coverage_present": true
+    },
+    "summary": {
+      "admitted_activation_denominator": 1.0,
+      "aggregate_total": 2.0,
+      "blocked_activation_denominator": 1.0,
+      "summary_file_count": 1,
+      "summary_file_total": 2.0
+    }
+  }
+}
