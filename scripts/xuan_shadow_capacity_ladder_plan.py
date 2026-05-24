@@ -38,7 +38,14 @@ def pct(value: float | None) -> float | None:
     return value * 100.0
 
 
-def build_stage(notional: float, *, duration_s: int, offsets: str, base_profile: dict[str, Any]) -> dict[str, Any]:
+def build_stage(
+    notional: float,
+    *,
+    duration_s: int,
+    offsets: str,
+    base_profile: dict[str, Any],
+    public_benchmark: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # Target qty is redeem notional in binary markets. Conservative caps allow
     # the dry-run to express capacity while keeping residual budget bounded.
     target_qty = notional
@@ -46,7 +53,7 @@ def build_stage(notional: float, *, duration_s: int, offsets: str, base_profile:
     max_open_cost = notional * 1.20
     max_seed_qty = notional * 3.0
     surplus_abs = notional * 0.40
-    return {
+    stage = {
         "stage": f"cap_{int(notional)}",
         "round_redeem_notional": notional,
         "duration_s": duration_s,
@@ -84,6 +91,9 @@ def build_stage(notional: float, *, duration_s: int, offsets: str, base_profile:
         },
         "promotion_rule": "advance_to_next_stage_only_if_all_pass_gates_hold",
     }
+    if public_benchmark:
+        stage["public_benchmark_review_targets"] = public_benchmark
+    return stage
 
 
 def render_markdown(card: dict[str, Any]) -> str:
@@ -121,6 +131,10 @@ def render_markdown(card: dict[str, Any]) -> str:
         lines.append("- pass_gates:")
         for key, value in stage["pass_gates"].items():
             lines.append(f"  - {key}: `{value}`")
+        if stage.get("public_benchmark_review_targets"):
+            lines.append("- public_benchmark_review_targets:")
+            for key, value in stage["public_benchmark_review_targets"].items():
+                lines.append(f"  - {key}: `{value}`")
     lines.extend(
         [
             "",
@@ -139,6 +153,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     approval = read_json(Path(args.approval_gate).expanduser().resolve())
     capital = read_json(Path(args.capital_roi_scorecard).expanduser().resolve())
     profile_card = read_json(Path(args.profile_scorecard).expanduser().resolve())
+    public_benchmark_card = (
+        read_json(Path(args.public_benchmark_scorecard).expanduser().resolve())
+        if args.public_benchmark_scorecard
+        else None
+    )
     profile = profile_card.get("profile", {})
     cap_agg = capital.get("aggregate", {})
     totals = cap_agg.get("totals", {})
@@ -151,8 +170,26 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("capital_reuse_roi_not_ready")
 
     notionals = [as_float(item) for item in args.round_notionals.split(",") if item.strip()]
+    public_benchmark = None
+    if public_benchmark_card:
+        targets = public_benchmark_card.get("benchmark_targets", {})
+        public_benchmark = {
+            "source_scorecard": str(Path(args.public_benchmark_scorecard).expanduser().resolve()),
+            "b55_actual_pair_cost": targets.get("b55_actual_pair_cost"),
+            "b55_pair_edge": targets.get("b55_pair_edge"),
+            "b55_residual_rate": targets.get("b55_residual_rate"),
+            "ce25_residual_rate": targets.get("ce25_residual_rate"),
+            **targets.get("xuan_capacity_ladder_review_targets", {}),
+        }
+
     stages = [
-        build_stage(notional, duration_s=args.duration_s, offsets=args.round_offsets, base_profile=profile)
+        build_stage(
+            notional,
+            duration_s=args.duration_s,
+            offsets=args.round_offsets,
+            base_profile=profile,
+            public_benchmark=public_benchmark,
+        )
         for notional in notionals
     ]
     status = (
@@ -169,6 +206,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "approval_gate": str(Path(args.approval_gate).expanduser().resolve()),
             "capital_roi_scorecard": str(Path(args.capital_roi_scorecard).expanduser().resolve()),
             "profile_scorecard": str(Path(args.profile_scorecard).expanduser().resolve()),
+            "public_benchmark_scorecard": str(Path(args.public_benchmark_scorecard).expanduser().resolve())
+            if args.public_benchmark_scorecard
+            else None,
         },
         "baseline": {
             "pair_pnl_after_fee": round_opt(as_float(totals.get("pair_pnl"))),
@@ -179,6 +219,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "current_profile_target_qty": profile.get("target_qty"),
             "current_profile_max_open_cost": profile.get("max_open_cost"),
         },
+        "public_benchmark": public_benchmark,
         "ladder": stages,
         "decision": {
             "capacity_ladder_ready": not hard_blockers,
@@ -197,6 +238,7 @@ def main() -> int:
     parser.add_argument("--approval-gate", required=True)
     parser.add_argument("--capital-roi-scorecard", required=True)
     parser.add_argument("--profile-scorecard", required=True)
+    parser.add_argument("--public-benchmark-scorecard", default=None)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--markdown", required=True)
     parser.add_argument("--round-notionals", default="25,75,150,300")
