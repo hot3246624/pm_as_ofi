@@ -309,6 +309,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     )
     append_option(
         remote_command,
+        "--risk-seed-pair-completion-required-above-fair-price-pair-cost",
+        profile.get("risk_seed_pair_completion_required_above_fair_price_pair_cost"),
+    )
+    append_option(
+        remote_command,
         "--risk-seed-pair-completion-min-qty",
         profile.get("risk_seed_pair_completion_min_qty"),
     )

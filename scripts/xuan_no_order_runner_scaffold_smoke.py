@@ -1074,10 +1074,32 @@ def smoke_pair_completion_net_cap() -> dict[str, Any]:
 
 
 def smoke_risk_seed_pair_completion_required() -> dict[str, Any]:
-    def run_one(cfg: RunnerConfig, *, with_pairable_inventory: bool = False) -> dict[str, Any]:
+    def run_one(
+        cfg: RunnerConfig,
+        *,
+        with_pairable_inventory: bool = False,
+        fair_price_pair_cost_max: float | None = None,
+    ) -> dict[str, Any]:
         with tempfile.TemporaryDirectory() as td:
             slug = "btc-updown-5m-100"
-            runner = DPlusRunner(slug, Path(td), cfg)
+            fair_gate = None
+            if fair_price_pair_cost_max is not None:
+                fair_gate = FairPriceAdmissionGate(
+                    [
+                        {
+                            "market_slug": slug,
+                            "side": "YES",
+                            "admission_mode": "pair_cost_only",
+                            "row_id": "required-pair-completion-fair-row",
+                        }
+                    ],
+                    min_edge=0.0,
+                    max_pair_cost=fair_price_pair_cost_max,
+                    min_seconds_to_close=None,
+                    max_seconds_to_close=None,
+                    max_row_age_ms=None,
+                )
+            runner = DPlusRunner(slug, Path(td), cfg, fair_price_gate=fair_gate)
             if with_pairable_inventory:
                 runner.lots["NO"].append(
                     Lot(
@@ -1156,6 +1178,26 @@ def smoke_risk_seed_pair_completion_required() -> dict[str, Any]:
         and (block_event.get("closeability_net_pair_cost") or 0.0) > 0.98
     )
 
+    fair_blocked = run_one(
+        RunnerConfig(
+            cooldown_ms=0,
+            risk_seed_pair_completion_required_above_fair_price_pair_cost=0.98,
+            risk_seed_pair_completion_min_qty=1.25,
+        ),
+        fair_price_pair_cost_max=1.01,
+    )
+    fair_block_event = next(
+        (event for event in fair_blocked["events"] if event.get("kind") == "pair_completion_block"),
+        {},
+    )
+    fair_blocked_passed = (
+        fair_blocked["state"]["metrics"]["candidates"] == 0
+        and fair_blocked["state"]["blocked"].get("risk_seed_pair_completion_required") == 1
+        and fair_block_event.get("block_reason") == "risk_seed_pair_completion_required"
+        and fair_block_event.get("risk_seed_pair_completion_required_above_fair_price_pair_cost") == 0.98
+        and (fair_block_event.get("fair_price_pair_cost_after_fee") or 0.0) > 0.98
+    )
+
     allowed = run_one(
         RunnerConfig(
             cooldown_ms=0,
@@ -1179,16 +1221,42 @@ def smoke_risk_seed_pair_completion_required() -> dict[str, Any]:
         and (allowed_candidate.get("pair_completion_projected_pair_pnl_after") or -1.0) >= 0.0
     )
 
-    passed = default_passed and blocked_passed and allowed_passed
+    fair_allowed = run_one(
+        RunnerConfig(
+            cooldown_ms=0,
+            target_qty=6.0,
+            imbalance_qty_cap=5.0,
+            risk_seed_pair_completion_required_above_fair_price_pair_cost=0.98,
+            risk_seed_pair_completion_min_qty=1.25,
+            pair_completion_net_cap=0.95,
+            pair_completion_min_pair_pnl_after=0.0,
+        ),
+        with_pairable_inventory=True,
+        fair_price_pair_cost_max=1.01,
+    )
+    fair_allowed_candidate = next((event for event in fair_allowed["events"] if event.get("kind") == "candidate"), {})
+    fair_allowed_passed = (
+        fair_allowed["state"]["metrics"]["candidates"] == 1
+        and fair_allowed["state"]["blocked"].get("risk_seed_pair_completion_required", 0) == 0
+        and fair_allowed_candidate.get("risk_seed_pair_completion_required_above_fair_price_pair_cost") == 0.98
+        and (fair_allowed_candidate.get("fair_price_pair_cost_after_fee") or 0.0) > 0.98
+        and (fair_allowed_candidate.get("pair_completion_qty") or 0.0) >= 1.25
+    )
+
+    passed = default_passed and blocked_passed and fair_blocked_passed and allowed_passed and fair_allowed_passed
     return {
         "name": "risk_seed_pair_completion_required",
         "status": "PASS" if passed else "FAIL",
         "default_candidate": default_candidate,
         "block_event": block_event,
+        "fair_block_event": fair_block_event,
         "allowed_candidate": allowed_candidate,
+        "fair_allowed_candidate": fair_allowed_candidate,
         "default_passed": default_passed,
         "blocked_passed": blocked_passed,
+        "fair_blocked_passed": fair_blocked_passed,
         "allowed_passed": allowed_passed,
+        "fair_allowed_passed": fair_allowed_passed,
     }
 
 

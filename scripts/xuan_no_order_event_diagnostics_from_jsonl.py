@@ -80,7 +80,13 @@ def rounded(value: Any) -> Any:
     return value
 
 
-def scan(root: Path) -> dict[str, Any]:
+def scan(
+    root: Path,
+    *,
+    risk_seed_pair_completion_required_above_net_cap: float | None = None,
+    risk_seed_pair_completion_required_above_fair_price_pair_cost: float | None = None,
+    risk_seed_pair_completion_min_qty: float = 0.0,
+) -> dict[str, Any]:
     event_files = sorted(root.glob("*.events.jsonl"))
     event_counts: Counter[str] = Counter()
     block_reason_counts: Counter[str] = Counter()
@@ -101,6 +107,9 @@ def scan(root: Path) -> dict[str, Any]:
     strict_rescue_close_skipped_low_cost_lots: Counter[str] = Counter()
     candidate_pending_opp_credit_values: Counter[str] = Counter()
     candidate_soft_decisions: Counter[str] = Counter()
+    candidate_risk_increasing_seed_values: Counter[str] = Counter()
+    risk_seed_pair_completion_required_counterfactual: Counter[str] = Counter()
+    per_slug_pair_completion_required_counterfactual: dict[str, Counter[str]] = defaultdict(Counter)
     source_missing = 0
     source_total = 0
     bad_json = 0
@@ -159,6 +168,71 @@ def scan(root: Path) -> dict[str, Any]:
                     candidate_fair_price_admission_modes[fair_mode] += 1
                     soft_decision = str(obj.get("risk_seed_closeability_soft_decision") or "<missing>")
                     candidate_soft_decisions[soft_decision] += 1
+                    risk_increasing_seed = bool(obj.get("risk_increasing_seed"))
+                    candidate_risk_increasing_seed_values[str(risk_increasing_seed).lower()] += 1
+                    if (
+                        risk_seed_pair_completion_required_above_net_cap is not None
+                        or risk_seed_pair_completion_required_above_fair_price_pair_cost is not None
+                    ):
+                        closeability_net_pair_cost = as_float(obj.get("closeability_net_pair_cost"))
+                        fair_price_pair_cost_after_fee = as_float(obj.get("fair_price_pair_cost_after_fee"))
+                        pair_completion_qty = as_float(obj.get("pair_completion_qty")) or 0.0
+                        required_qty = max(1.0, risk_seed_pair_completion_min_qty)
+                        applies_by_closeability = (
+                            risk_seed_pair_completion_required_above_net_cap is not None
+                            and (
+                                closeability_net_pair_cost is None
+                                or closeability_net_pair_cost
+                                > risk_seed_pair_completion_required_above_net_cap + 1e-12
+                            )
+                        )
+                        applies_by_fair_price = (
+                            risk_seed_pair_completion_required_above_fair_price_pair_cost is not None
+                            and fair_price_pair_cost_after_fee is not None
+                            and fair_price_pair_cost_after_fee
+                            > risk_seed_pair_completion_required_above_fair_price_pair_cost + 1e-12
+                        )
+                        applies = risk_increasing_seed and (applies_by_closeability or applies_by_fair_price)
+                        if not applies:
+                            decision = "not_applicable"
+                        elif pair_completion_qty < required_qty - 1e-12:
+                            decision = "would_block_required_pair_completion"
+                            add_stat(
+                                stats,
+                                "risk_seed_pair_completion_required_would_block_closeability_net_pair_cost",
+                                closeability_net_pair_cost,
+                            )
+                            add_stat(
+                                stats,
+                                "risk_seed_pair_completion_required_would_block_pair_completion_qty",
+                                pair_completion_qty,
+                            )
+                            if applies_by_fair_price:
+                                add_stat(
+                                    stats,
+                                    "risk_seed_pair_completion_required_would_block_fair_price_pair_cost_after_fee",
+                                    fair_price_pair_cost_after_fee,
+                                )
+                        else:
+                            decision = "would_allow_required_pair_completion"
+                            add_stat(
+                                stats,
+                                "risk_seed_pair_completion_required_would_allow_closeability_net_pair_cost",
+                                closeability_net_pair_cost,
+                            )
+                            add_stat(
+                                stats,
+                                "risk_seed_pair_completion_required_would_allow_pair_completion_qty",
+                                pair_completion_qty,
+                            )
+                            if applies_by_fair_price:
+                                add_stat(
+                                    stats,
+                                    "risk_seed_pair_completion_required_would_allow_fair_price_pair_cost_after_fee",
+                                    fair_price_pair_cost_after_fee,
+                                )
+                        risk_seed_pair_completion_required_counterfactual[decision] += 1
+                        per_slug_pair_completion_required_counterfactual[slug][decision] += 1
                     pending = obj.get("risk_seed_pending_opp_credit")
                     if pending is not None:
                         candidate_pending_opp_credit_values[str(pending)] += 1
@@ -283,6 +357,21 @@ def scan(root: Path) -> dict[str, Any]:
         "candidate_fair_price_admission_modes": dict(candidate_fair_price_admission_modes.most_common()),
         "candidate_pending_opp_credit_values": dict(candidate_pending_opp_credit_values.most_common()),
         "candidate_soft_decisions": dict(candidate_soft_decisions.most_common()),
+        "candidate_risk_increasing_seed_values": dict(candidate_risk_increasing_seed_values.most_common()),
+        "risk_seed_pair_completion_required_counterfactual": {
+            "enabled": (
+                risk_seed_pair_completion_required_above_net_cap is not None
+                or risk_seed_pair_completion_required_above_fair_price_pair_cost is not None
+            ),
+            "required_above_net_cap": risk_seed_pair_completion_required_above_net_cap,
+            "required_above_fair_price_pair_cost": risk_seed_pair_completion_required_above_fair_price_pair_cost,
+            "min_qty": risk_seed_pair_completion_min_qty,
+            "counts": dict(risk_seed_pair_completion_required_counterfactual.most_common()),
+        },
+        "per_slug_pair_completion_required_counterfactual": {
+            slug: dict(counter.most_common())
+            for slug, counter in sorted(per_slug_pair_completion_required_counterfactual.items())
+        },
         "fair_price_admission_block_reasons": dict(fair_price_admission_block_reasons.most_common()),
         "pair_completion_block_reasons": dict(pair_completion_block_reasons.most_common()),
         "risk_seed_closeability_block_reasons": dict(risk_seed_closeability_block_reasons.most_common()),
@@ -301,10 +390,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--output-json", required=True)
+    parser.add_argument("--risk-seed-pair-completion-required-above-net-cap", type=float, default=None)
+    parser.add_argument("--risk-seed-pair-completion-required-above-fair-price-pair-cost", type=float, default=None)
+    parser.add_argument("--risk-seed-pair-completion-min-qty", type=float, default=0.0)
     args = parser.parse_args()
     root = Path(args.output_root).expanduser().resolve()
     out_path = Path(args.output_json).expanduser().resolve()
-    result = scan(root)
+    result = scan(
+        root,
+        risk_seed_pair_completion_required_above_net_cap=args.risk_seed_pair_completion_required_above_net_cap,
+        risk_seed_pair_completion_required_above_fair_price_pair_cost=args.risk_seed_pair_completion_required_above_fair_price_pair_cost,
+        risk_seed_pair_completion_min_qty=args.risk_seed_pair_completion_min_qty,
+    )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))

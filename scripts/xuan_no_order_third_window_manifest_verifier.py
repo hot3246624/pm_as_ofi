@@ -228,6 +228,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         required_pair_completion_cap,
     ):
         hard_blockers.append("remote_command_risk_seed_pair_completion_required_cap_does_not_match_profile")
+    required_pair_completion_fair_cap = profile.get("risk_seed_pair_completion_required_above_fair_price_pair_cost")
+    if required_pair_completion_fair_cap is not None and not option_matches(
+        remote_cmd,
+        "--risk-seed-pair-completion-required-above-fair-price-pair-cost",
+        required_pair_completion_fair_cap,
+    ):
+        hard_blockers.append("remote_command_risk_seed_pair_completion_required_fair_price_cap_does_not_match_profile")
     required_pair_completion_min_qty = profile.get("risk_seed_pair_completion_min_qty")
     if required_pair_completion_min_qty is not None and not option_matches(
         remote_cmd,
