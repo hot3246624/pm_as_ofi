@@ -1,0 +1,47 @@
+{
+  "deployable": false,
+  "fixture": true,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "schema_version": "symmetric_activation_acceptance_adapter_input_v1",
+  "shadow_acceptance": {
+    "acceptance_passed": true,
+    "checks": {
+      "no_order_safety_ok": true
+    },
+    "trading_metrics": {
+      "candidates": 20,
+      "fee_adjusted_pair_pnl_proxy": 2.5,
+      "material_residual_lots": 0,
+      "net_pair_cost_p90": 1.07,
+      "pair_tail_loss_share_of_pair_pnl": 0.02,
+      "residual_cost_share_of_filled_cost": 0.14,
+      "residual_qty_share_of_filled": 0.12
+    }
+  },
+  "symmetric_activation_score": {
+    "decision_label": "KEEP_SYMMETRIC_ACTIVATION_SUMMARY_SCORER_READY",
+    "promotion_gate": {
+      "passed": false
+    },
+    "research_ranking": {
+      "strategy_evidence": false
+    },
+    "score": {
+      "checks": {
+        "aggregate_parity": true,
+        "field_contract_ok": true,
+        "schema_ok": true,
+        "source_sequence_coverage_present": false
+      },
+      "summary": {
+        "admitted_activation_denominator": 4,
+        "aggregate_total": 7,
+        "blocked_activation_denominator": 0,
+        "summary_file_total": 7
+      }
+    }
+  }
+}
