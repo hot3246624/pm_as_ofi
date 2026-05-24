@@ -101,6 +101,9 @@ def render_markdown(manifest: dict[str, Any]) -> str:
     ]
     for key, value in manifest["profile"].items():
         lines.append(f"- {key}: `{value}`")
+    lines.extend(["", "## Market Resolution"])
+    for key, value in manifest["market_resolution"].items():
+        lines.append(f"- {key}: `{value}`")
     lines.extend(["", "## Files To Stage"])
     for item in manifest["files_to_stage"]:
         lines.append(f"- `{item['path']}` sha256=`{item['sha256']}` bytes=`{item['bytes']}`")
@@ -163,10 +166,6 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         args.remote_repo,
         "--shared-ingress-root",
         args.shared_ingress_root,
-        "--prefix",
-        args.market_prefix,
-        "--round-offsets",
-        str(profile["round_offsets"]),
         "--duration-s",
         str(profile["duration_s"]),
         "--output-dir",
@@ -240,6 +239,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "--write-rescue-block-diagnostics",
         "--allow-concurrent-shared-ingress-readers",
     ]
+    if args.market_slugs:
+        remote_command.extend(["--market-slugs", args.market_slugs])
+    else:
+        remote_command.extend(["--prefix", args.market_prefix, "--round-offsets", str(profile["round_offsets"])])
     append_option(remote_command, "--activation-mode", profile.get("activation_mode"))
     append_option(remote_command, "--activation-window-s", profile.get("activation_window_s"))
     append_option(remote_command, "--late-repair-after-s", profile.get("late_repair_after_s"))
@@ -296,6 +299,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "capacity_plan_scorecard": str(capacity_plan_path) if capacity_plan_path else None,
         "capacity_stage": args.capacity_stage,
         "profile": profile,
+        "market_resolution": {
+            "mode": "exact_slugs" if args.market_slugs else "prefix_offsets",
+            "market_slugs": [part.strip() for part in args.market_slugs.split(",") if part.strip()]
+            if args.market_slugs
+            else [],
+            "market_prefix": args.market_prefix,
+            "round_offsets": profile.get("round_offsets"),
+        },
         "target": {
             "ssh_host": args.ssh_host,
             "fixed_ip": args.fixed_ip,
@@ -353,6 +364,7 @@ def main() -> None:
     parser.add_argument("--remote-tool-dir", default="/srv/pm_as_ofi/xuan-frontier-no-order-smoke-tools")
     parser.add_argument("--remote-output-base", default="/srv/pm_as_ofi/xuan-frontier-no-order-smoke")
     parser.add_argument("--market-prefix", default="btc-updown-5m")
+    parser.add_argument("--market-slugs", default=None, help="Exact comma-separated market slugs for runner --market-slugs mode.")
     args = parser.parse_args()
 
     started = time.time()

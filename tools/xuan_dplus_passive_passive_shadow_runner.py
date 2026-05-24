@@ -1865,7 +1865,32 @@ async def run_market(market: dict[str, str], socket_path: str, out: Path, durati
         await writer.wait_closed()
 
 
-def resolve_markets(repo: Path, prefix: str, offsets: str) -> list[dict[str, str]]:
+def resolve_market_slug(repo: Path, slug: str) -> dict[str, str]:
+    proc = subprocess.run(
+        ["/usr/bin/python3", str(repo / "scripts/resolve_market_ids.py"), "--slug", slug, "--format", "env"],
+        cwd=repo,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    env = parse_env_exports(proc.stdout)
+    if not env:
+        raise RuntimeError(f"empty market resolution env for slug={slug}")
+    return env
+
+
+def split_csv(raw: str | None) -> list[str]:
+    if raw is None:
+        return []
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def resolve_markets(repo: Path, prefix: str, offsets: str, market_slugs: str | None = None) -> list[dict[str, str]]:
+    exact_slugs = split_csv(market_slugs)
+    if exact_slugs:
+        return [resolve_market_slug(repo, slug) for slug in exact_slugs]
+
     markets: list[dict[str, str]] = []
     for raw_offset in offsets.split(","):
         offset = raw_offset.strip()
@@ -1970,6 +1995,11 @@ async def main() -> None:
     ap.add_argument("--shared-ingress-root", default="/srv/pm_as_ofi/shared-ingress-main")
     ap.add_argument("--prefix", default="btc-updown-5m")
     ap.add_argument("--round-offsets", default="0,1,2,3")
+    ap.add_argument(
+        "--market-slugs",
+        default=None,
+        help="Comma-separated exact market slugs to resolve. When set, this bypasses --prefix/--round-offsets generation.",
+    )
     ap.add_argument("--duration-s", type=int, default=1800)
     ap.add_argument("--output-dir", required=True)
     ap.add_argument("--edge", type=float, default=0.040)
@@ -2179,13 +2209,19 @@ async def main() -> None:
         raise SystemExit("--strict-rescue-max-wait-s must exceed --salvage-age-s")
     socket_path = str(Path(args.shared_ingress_root) / "market.sock")
     process_snapshot_start = collect_runner_process_snapshot()
-    markets = resolve_markets(Path(args.repo), args.prefix, args.round_offsets)
+    markets = resolve_markets(Path(args.repo), args.prefix, args.round_offsets, args.market_slugs)
     manifest = {
         "kind": "manifest",
         "created_ms": now_ms(),
         "script": "xuan_dplus_passive_passive_shadow_runner.py",
         "duration_s": args.duration_s,
         "markets": markets,
+        "market_resolution": {
+            "mode": "exact_slugs" if split_csv(args.market_slugs) else "prefix_offsets",
+            "prefix": args.prefix,
+            "round_offsets": args.round_offsets,
+            "market_slugs": split_csv(args.market_slugs),
+        },
         "config": cfg.__dict__,
         "safety": {
             "orders_sent": False,
