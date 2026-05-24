@@ -1,0 +1,93 @@
+{
+  "artifact": "xuan_public_profile_input_blocked_handoff",
+  "blocked_summary": {
+    "0x8dxd_blockers": [
+      "2026-03-24 residual_share_above_max",
+      "2026-04-29 sparse/no matched pair",
+      "2026-05-12 SELL-only",
+      "fewer_than_3_valid_days"
+    ],
+    "0x8dxd_validation": "UNKNOWN_PUBLIC_PROFILE_MULTIDAY_VALIDATION_SAMPLE_INSUFFICIENT",
+    "ce25_b55_04b6_9f5_ohanism_gabagool_current_worktree_days": "1 BJT day each",
+    "only_shallow_multiday_source": "0x8dxd"
+  },
+  "created_utc": "20260524T125834Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_PUBLIC_PROFILE_INPUT_BLOCKED_SAFE_72H_SOURCE_REQUIRED",
+  "inputs_checked": {
+    "ce25_source_readiness_manifest": "xuan_research_artifacts/xuan_ce25_three_day_input_source_readiness_20260524T115616Z/manifest.json",
+    "latest_inventory_manifest": "xuan_research_artifacts/xuan_public_profile_multiday_source_inventory_20260524T122616Z/manifest.json",
+    "latest_validation_manifest": "xuan_research_artifacts/xuan_public_profile_multiday_validation_spec_20260524T122616Z/manifest.json",
+    "new_safe_72h_manifest_found": false,
+    "safe_72h_manifest_search_patterns": [
+      "*72h*manifest*.json",
+      "*three_day*source*manifest*.json",
+      "*daily*cohort*manifest*.json"
+    ]
+  },
+  "lane": "input_blocked_decision_or_safe_manifest_wait",
+  "next_executable_action": "Pause this public-profile line until a safe 72h manifest is placed inside the current worktree, or pivot only to a new lane with existing current-worktree multi-day evidence; do not start no-order diagnostics.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "INPUT_BLOCKED_HANDOFF_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "exact_blockers": [
+      "safe_72h_public_export_manifest_absent",
+      "current_worktree_public_profile_multiday_validation_failed"
+    ],
+    "no_order_diagnostic_allowed": false,
+    "status": "UNKNOWN_PUBLIC_PROFILE_INPUT_BLOCKED_SAFE_72H_SOURCE_REQUIRED",
+    "strategy_evidence": false
+  },
+  "safe_manifest_requirements": {
+    "forbidden_actions": [
+      "fetch_new_data",
+      "external_worktree_read",
+      "service_or_local_agg_or_shared_ws_start",
+      "ssh",
+      "shadow",
+      "canary_or_live",
+      "raw_replay_full_store_scan",
+      "order_cancel_redeem"
+    ],
+    "must_be_inside_current_worktree": true,
+    "required_daily_fields": [
+      "day_id",
+      "account",
+      "cohort",
+      "markets",
+      "buy_actual",
+      "cohort_pnl_ex_rebate",
+      "cohort_pnl_including_rebate",
+      "pair_pnl",
+      "residual_pnl_est",
+      "wins",
+      "losses",
+      "avg_pair_cost",
+      "residual_rate",
+      "old_redeem_contamination",
+      "post_window_same_condition_buy",
+      "rebate"
+    ],
+    "safe_offline_72h_export": true
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false
+  }
+}
