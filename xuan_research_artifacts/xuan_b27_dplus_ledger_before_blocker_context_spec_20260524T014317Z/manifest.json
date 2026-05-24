@@ -1,0 +1,181 @@
+{
+  "artifact": "xuan_b27_dplus_ledger_before_blocker_context_spec_v1",
+  "blockers": [],
+  "cautions": [],
+  "created_utc": "2026-05-24T01:46:45Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_LEDGER_BEFORE_BLOCKER_CONTEXT_SPEC_READY",
+  "existing_runner_surface": {
+    "cooldown_block_before_target_qty": true,
+    "generic_target_room_by_exact_marker_without_ledger": true,
+    "ledger_before_reason_count": true,
+    "ledger_before_reason_source_presence": true
+  },
+  "field_contract": {
+    "exact_join_key": "status|reason|side|offset_bucket|source_risk_direction|open_qty_bucket|deficit_bucket|ledger_before_bucket",
+    "explicitly_excluded": [
+      "raw events JSONL",
+      "raw quote_intent_id/source_order_id/source_sequence_id values",
+      "source_pair/source_residual outcome labels as live criteria",
+      "private own order/fill/inventory truth",
+      "target/cooldown/static side/offset deletion rules",
+      "guard enablement or trading behavior change"
+    ],
+    "new_bucket_fields": [
+      "target_room_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "room_cost_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "imbalance_room_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "cooldown_remaining_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "opposite_seen_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "quote_intent_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "source_order_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "source_sequence_presence_by_status_reason_side_offset_risk_open_deficit_ledger_before"
+    ],
+    "new_count_fields": [
+      "transition_count_by_status_reason_side_offset_risk_open_deficit_ledger_before"
+    ],
+    "new_quantity_sum_fields": [
+      "target_room_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "room_cost_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "candidate_qty_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+      "base_qty_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before"
+    ],
+    "parent_summary": "event_lite.source_opportunity_marker_summary",
+    "purpose": "Explain whether the offset_90_120 tiny-deficit ledger-before mass is a legal pre-action context or only target/cooldown/static-cap blocked mass. The fields are diagnostics only.",
+    "recommended_flag": "--source-opportunity-ledger-before-blocker-context-event-lite-summary",
+    "requires": [
+      "--event-lite-summary",
+      "--source-opportunity-marker-event-lite-summary",
+      "--source-opportunity-marker-reason-source-event-lite-summary",
+      "--source-opportunity-ledger-before-delta-marker-event-lite-summary"
+    ],
+    "schema_version": "source_opportunity_ledger_before_blocker_context_v1"
+  },
+  "inputs": {
+    "completion_manifest": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_completion_20260523T205739Z/manifest.json",
+    "gap_manifest": "xuan_research_artifacts/xuan_b27_dplus_ledger_delta_tiny_deficit_gap_audit_20260523T205739Z/manifest.json",
+    "ledger_before_delta_score": "xuan_research_artifacts/xuan_b27_dplus_shadow_review_ledger_delta_tiny_deficit_driver_20260523T195139Z/local_review_20260523T205739Z/ledger_before_delta/manifest.json",
+    "runner": "tools/xuan_dplus_passive_passive_shadow_runner.py"
+  },
+  "legal_assessment": {
+    "changes_trading_behavior": false,
+    "is_diagnostic_only": true,
+    "is_new_vs_current_outputs": true,
+    "is_target_or_cooldown_deletion_rule": false,
+    "is_threshold_or_cap_sweep": false,
+    "requires_private_truth": false,
+    "requires_shadow_or_ssh_now": false,
+    "uses_future_labels_as_live_criteria": false
+  },
+  "missing_exact_ledger_before_blocker_fields": [
+    "target_room_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "room_cost_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "imbalance_room_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "pending_same_qty_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "pending_opp_qty_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "pending_same_order_count_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "pending_opp_order_count_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "cooldown_remaining_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "activation_opp_age_bucket_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "opposite_seen_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "target_room_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "room_cost_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "imbalance_room_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "candidate_qty_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before",
+    "base_qty_sum_by_status_reason_side_offset_risk_open_deficit_ledger_before"
+  ],
+  "missing_input_artifacts": [],
+  "next_executable_action": "Implement the default-off ledger-before blocker context summary plus smoke locally, or return UNKNOWN if this diagnostic precision is not useful enough to justify another instrumented run. Do not start SSH/shadow/canary from this spec.",
+  "observed_before_marker_mass": {
+    "admitted_marker_count": 1.0,
+    "blocked_marker_count": 76.0,
+    "cooldown_count": 2.0,
+    "marker_total": 77.0,
+    "target_cooldown_count": 75.0,
+    "target_cooldown_share": 0.97402597,
+    "target_count": 73.0,
+    "top_matching_rows": [
+      {
+        "quote_intent_presence_rate": 0.0,
+        "source_order_presence_rate": 0.0,
+        "source_sequence_presence_rate": 1.0,
+        "status_reason_marker_key": "blocked|target|NO|offset_90_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+        "transition_count": 43.0
+      },
+      {
+        "quote_intent_presence_rate": 0.0,
+        "source_order_presence_rate": 0.0,
+        "source_sequence_presence_rate": 1.0,
+        "status_reason_marker_key": "blocked|target|YES|offset_90_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+        "transition_count": 30.0
+      },
+      {
+        "quote_intent_presence_rate": 0.0,
+        "source_order_presence_rate": 0.0,
+        "source_sequence_presence_rate": 1.0,
+        "status_reason_marker_key": "blocked|cooldown|NO|offset_90_120|repair_or_pairing_improving|open_qty_gt_5|deficit_0_0_25|before_lt_m2",
+        "transition_count": 2.0
+      },
+      {
+        "quote_intent_presence_rate": 1.0,
+        "source_order_presence_rate": 1.0,
+        "source_sequence_presence_rate": 1.0,
+        "status_reason_marker_key": "admitted|candidate|YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025",
+        "transition_count": 1.0
+      },
+      {
+        "quote_intent_presence_rate": 1.0,
+        "source_order_presence_rate": 0.0,
+        "source_sequence_presence_rate": 1.0,
+        "status_reason_marker_key": "blocked|activation_opp_seen|YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|before_m1_m025",
+        "transition_count": 1.0
+      }
+    ]
+  },
+  "observed_delta_marker": {
+    "admitted_marker_count": 1.0,
+    "blocked_marker_count": 0.0,
+    "marker_total": 1.0,
+    "matched_marker_rows": [
+      {
+        "marker_key": "YES|offset_90_120|repair_or_pairing_improving|open_qty_2_5|deficit_0_0_25|delta_m1_m025",
+        "status": "admitted",
+        "transition_count": 1.0
+      }
+    ]
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "FIELD_SPEC_ONLY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "decision": "KEEP",
+    "interpretation": "This spec is only a default-off diagnostic contract for blocker-aware attribution. It is not a trading rule, private truth, deployable evidence, canary evidence, or promotion.",
+    "label": "KEEP_LEDGER_BEFORE_BLOCKER_CONTEXT_SPEC_READY"
+  },
+  "scope": {
+    "events_jsonl_read": false,
+    "full_completion_store_scanned": false,
+    "local_only_spec": true,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_connected_or_modified": false,
+    "ssh_used": false
+  },
+  "source_decisions": {
+    "completion_decision_label": "UNKNOWN_LEDGER_DELTA_TINY_DEFICIT_MARKER_NO_ORDER_REVIEW_THIN_MARKER_RISK_BUDGET_FAIL",
+    "gap_decision_label": "UNKNOWN_LEDGER_BEFORE_DELTA_GAP_AUDIT_NO_SAFE_FAMILY",
+    "ledger_before_delta_score_label": "KEEP_SOURCE_OPPORTUNITY_LEDGER_BEFORE_DELTA_MARKER_DENOMINATOR_SCORER_READY"
+  },
+  "unsafe_input_paths": []
+}
