@@ -1,0 +1,177 @@
+{
+  "artifact": "xuan_ce25_three_day_pair_cost_validation_spec",
+  "candidate_three_day_score": {
+    "blockers": [
+      "candidate_three_day_manifest_missing"
+    ],
+    "candidate_status": "UNKNOWN",
+    "daily_results": {},
+    "day_count": 0,
+    "days": [],
+    "evidence_status": "UNKNOWN_THREE_DAY_INPUT_MISSING",
+    "fixture": false,
+    "strategy_evidence": false
+  },
+  "created_utc": "20260524T114827Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_CE25_THREE_DAY_PAIR_COST_VALIDATION_SPEC_READY_REAL_INPUT_UNKNOWN",
+  "inputs": {
+    "candidate_three_day_manifest": null,
+    "candidate_three_day_manifest_error": null,
+    "one_day_source": "xuan_research_artifacts/xuan_ce25_projected_pair_cost_residual_guard_spec_20260524T104842Z/manifest.json",
+    "one_day_source_error": null
+  },
+  "lane": "ce25_three_day_pair_cost_validation_spec",
+  "next_executable_action": "prepare a safe offline 72h ce25 public-export manifest matching ce25_three_day_pair_cost_validation_v1, or run this scorer on an already-created manifest; do not start no-order diagnostics",
+  "one_day_observation": {
+    "core": {
+      "avg_actual_pair_cost": 0.861041,
+      "avg_residual_rate": 0.046593,
+      "cohort_pnl": 5078.22286,
+      "losses": 1,
+      "markets": 119,
+      "wins": 118
+    },
+    "hard_loss": {
+      "avg_actual_pair_cost": 1.089349,
+      "avg_residual_rate": 0.135101,
+      "cohort_pnl": -5589.455319,
+      "losses": 145,
+      "markets": 163,
+      "wins": 18
+    },
+    "single_day_only": true,
+    "source_decision": "KEEP_CE25_PROJECTED_PAIR_COST_RESIDUAL_GUARD_SPEC_READY",
+    "starter": {
+      "avg_actual_pair_cost": 0.796786,
+      "avg_residual_rate": 0.070275,
+      "cohort_pnl": 1752.797631,
+      "losses": 0,
+      "markets": 61,
+      "wins": 61
+    }
+  },
+  "promotion_gate": {
+    "blockers": [
+      "three_day_non_fixture_public_proxy_missing_or_not_private_truth",
+      "no per-trade liquidity_role truth",
+      "no fair-source probability/uncertainty join",
+      "no no-order pullback validation"
+    ],
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "research_ranking": {
+    "core_rule": "BTC/ETH/SOL 5m+15m pair_cost<0.95 residual<10%; live translation must use projected fields",
+    "hard_kill_rule": "pair_cost>=1.00 must be a negative retrospective bucket and projected_pair_cost>=1.00 must fail closed live",
+    "no_order_diagnostic_allowed": false,
+    "spec_ready": true,
+    "starter_rule": "ETH/SOL 5m+15m pair_cost<0.90 residual<15%; live translation must use projected fields",
+    "status": "KEEP_CE25_THREE_DAY_PAIR_COST_VALIDATION_SPEC_READY_REAL_INPUT_UNKNOWN",
+    "strategy_evidence": false,
+    "three_day_real_input_status": "UNKNOWN_THREE_DAY_INPUT_MISSING"
+  },
+  "schema_version": 1,
+  "scope": {
+    "events_jsonl_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_live_modified": false,
+    "ssh_used": false
+  },
+  "validation_contract": {
+    "account": "ce25",
+    "contract_name": "ce25_three_day_pair_cost_validation_v1",
+    "fail_closed_conditions": [
+      "fewer than 3 distinct day_id values",
+      "any required cohort missing for any day",
+      "starter or core daily PnL is not positive",
+      "starter/core average pair cost or residual rate violates threshold",
+      "hard-loss pair_cost>=1.00 bucket is not negative each day",
+      "old redeem contamination or post-window same-condition buy contamination is nonzero for ce25",
+      "fixture data is presented as real strategy evidence",
+      "strategy evidence is claimed without non-fixture per-trade liquidity role and fair-source probability joins"
+    ],
+    "live_translation": "Only projected_pair_cost/projected_residual may be used in runner diagnostics; realized pair_cost is never a live criterion.",
+    "lookback_days_min": 3,
+    "optional_but_desired_fields": [
+      "taker_only_sample_count",
+      "taker_only_share",
+      "maker_taker_role_source",
+      "per_trade_liquidity_role_truth_coverage"
+    ],
+    "purpose": "Confirm the ce25 low-pair-cost/low-residual rule is not a one-day artifact.",
+    "required_daily_cohorts": {
+      "core_btc_eth_sol_5m15m": {
+        "assets": [
+          "BTC",
+          "ETH",
+          "SOL"
+        ],
+        "excluded_assets": [
+          "XRP"
+        ],
+        "min_markets_per_day": 40,
+        "pair_cost_lt": 0.95,
+        "require_daily_pnl_positive": true,
+        "residual_rate_lt": 0.1,
+        "timeframes": [
+          "5m",
+          "15m"
+        ]
+      },
+      "hard_loss_pair_cost_ge_1": {
+        "assets": [
+          "BTC",
+          "ETH",
+          "SOL"
+        ],
+        "pair_cost_gte": 1.0,
+        "purpose": "Show the stop condition remains a real loss bucket across days.",
+        "require_daily_pnl_negative": true,
+        "timeframes": [
+          "5m",
+          "15m"
+        ]
+      },
+      "starter_eth_sol_5m15m": {
+        "assets": [
+          "ETH",
+          "SOL"
+        ],
+        "min_markets_per_day": 20,
+        "pair_cost_lt": 0.9,
+        "require_daily_pnl_positive": true,
+        "residual_rate_lt": 0.15,
+        "timeframes": [
+          "5m",
+          "15m"
+        ]
+      }
+    },
+    "required_input_fields_per_daily_cohort": [
+      "day_id",
+      "account",
+      "cohort",
+      "markets",
+      "buy_actual",
+      "cohort_pnl_ex_rebate",
+      "cohort_pnl_including_rebate",
+      "pair_pnl",
+      "residual_pnl_est",
+      "wins",
+      "losses",
+      "avg_pair_cost",
+      "residual_rate",
+      "old_redeem_contamination",
+      "post_window_same_condition_buy",
+      "rebate"
+    ],
+    "retrospective_only": true
+  }
+}
