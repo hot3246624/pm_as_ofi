@@ -1,0 +1,38 @@
+{
+  "artifact": "xuan_symmetric_activation_runner_instrumentation_smoke",
+  "checks": {
+    "admitted_activation_denominator": 1,
+    "aggregate_merges_summary": true,
+    "blocked_activation_denominator": 1,
+    "blocked_count_unchanged": true,
+    "candidate_count_unchanged": true,
+    "cli_requires_event_lite": true,
+    "default_off_summary_absent": true,
+    "enabled_summary_present": true,
+    "post_action_outcome_labels_excluded": true,
+    "projected_pair_cost_bucket_present": true,
+    "realized_pair_cost_not_live_criterion": true,
+    "source_sequence_coverage_present": true,
+    "trading_behavior_changed": false
+  },
+  "created_utc": "20260524T165500Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_RUNNER_INSTRUMENTATION_DEFAULT_OFF_READY",
+  "next_executable_action": "implement symmetric_activation_summary_scorer_v1 local-only; read only summary/aggregate manifests and fail closed on missing or behavior-changing fields",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "scope": {
+    "events_jsonl_read": false,
+    "local_no_network_fixture": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_live_modified": false,
+    "ssh_used": false
+  }
+}

@@ -171,6 +171,14 @@ def ce25_projected_residual_bucket(rate: float | None) -> str:
     return "projected_residual_gt_20pct"
 
 
+def activation_state_bucket(required: bool, age_ms: int | float | None, opposite_seen_ms: int | None) -> str:
+    if not required:
+        return "activation_not_required"
+    if age_ms is None:
+        return "activation_required_missing_opp" if opposite_seen_ms is None else "activation_required_age_unknown"
+    return f"activation_required_{age_ms_bucket('activation_opp_age', age_ms)}"
+
+
 def asset_from_slug(slug: str) -> str:
     first = (slug or "").split("-", 1)[0]
     return first.upper() if first else "UNKNOWN"
@@ -740,6 +748,27 @@ def merge_ce25_projected_guard_summary(dest: dict[str, Any], src: dict[str, Any]
             merge_nested_count_hist(dest.setdefault(key, {}), source)
 
 
+def merge_symmetric_activation_summary(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    for key in ("schema_version", "field_contract"):
+        if key in src and key not in dest:
+            dest[key] = src[key]
+    for key in ("residual_leak_stress_cost_sum_by_status_reason_activation_bucket",):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    for key in (
+        "candidate_count_by_status_reason_activation_bucket",
+        "candidate_count_by_status_reason_side_offset_activation_bucket",
+        "projected_pair_cost_bucket_by_status_reason_activation_bucket",
+        "projected_residual_rate_bucket_by_status_reason_activation_bucket",
+        "activation_age_bucket_by_status_reason_activation_bucket",
+        "source_sequence_presence_by_status_reason_activation_bucket",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -794,6 +823,7 @@ class RunnerConfig:
     source_opportunity_ledger_before_delta_marker_event_lite_summary: bool = False
     source_opportunity_closed_cycle_marker_event_lite_summary: bool = False
     ce25_projected_guard_event_lite_summary: bool = False
+    symmetric_activation_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -1089,6 +1119,30 @@ class DPlusRunner:
             "projected_pair_cost_bucket_by_guard": {},
             "projected_residual_bucket_by_guard": {},
             "final_window_policy_count": {},
+        }
+        self.event_lite_symmetric_activation_summary: dict[str, Any] = {
+            "schema_version": "symmetric_activation_contract_summary_v1",
+            "field_contract": {
+                "default_off": True,
+                "source": "pre_action_activation_opposite_seen_plus_inventory",
+                "selected_edge": 0.07,
+                "selected_activation_window_s": 7.5,
+                "selected_min_opp_count": 1,
+                "selected_leak_rate": 0.02,
+                "post_action_outcome_labels_included": False,
+                "realized_pair_cost_used_as_live_criteria": False,
+                "trading_behavior_changed": False,
+                "private_truth_ready": False,
+                "deployable": False,
+                "promotion_gate_passed": False,
+            },
+            "candidate_count_by_status_reason_activation_bucket": {},
+            "candidate_count_by_status_reason_side_offset_activation_bucket": {},
+            "projected_pair_cost_bucket_by_status_reason_activation_bucket": {},
+            "projected_residual_rate_bucket_by_status_reason_activation_bucket": {},
+            "activation_age_bucket_by_status_reason_activation_bucket": {},
+            "source_sequence_presence_by_status_reason_activation_bucket": {},
+            "residual_leak_stress_cost_sum_by_status_reason_activation_bucket": {},
         }
         if self.cfg.source_opportunity_ledger_marker_event_lite_summary:
             self.event_lite_source_opportunity_markers["field_contract"][
@@ -2039,6 +2093,80 @@ class DPlusRunner:
             final_policy = "pre_final_5m_plus"
         add_nested_count(diag["final_window_policy_count"], final_policy, status)
 
+    def record_symmetric_activation_diagnostic(
+        self,
+        *,
+        status: str,
+        reason: str,
+        side: str,
+        offset_s: float | None,
+        qty: float,
+        seed_px: float,
+        same_qty: float,
+        opp_qty: float,
+        same_cost: float,
+        opp_cost: float,
+        activation_required: bool,
+        activation_opp_age_ms: int | None,
+        opposite_seen_ms: int | None,
+        source_sequence_id: Any | None,
+    ) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.symmetric_activation_event_lite_summary):
+            return
+        context = self.ce25_projected_guard_context(
+            side=side,
+            offset_s=offset_s,
+            qty=max(0.0, qty),
+            seed_px=seed_px,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost,
+            opp_cost=opp_cost,
+        )
+        activation_bucket = activation_state_bucket(activation_required, activation_opp_age_ms, opposite_seen_ms)
+        status_reason_activation = f"{status}|{reason}|{activation_bucket}"
+        side_offset_activation = f"{side}|{offset_bucket(offset_s)}|{activation_bucket}"
+        projected_residual_qty = context.get("projected_residual_qty")
+        residual_leak_stress_cost = 0.0
+        if isinstance(projected_residual_qty, (int, float)):
+            residual_leak_stress_cost = max(0.0, float(projected_residual_qty)) * max(seed_px, 0.0) * 0.02
+        diag = self.event_lite_symmetric_activation_summary
+        add_nested_count(
+            diag["candidate_count_by_status_reason_activation_bucket"],
+            f"{status}|{reason}",
+            activation_bucket,
+        )
+        add_nested_count(
+            diag["candidate_count_by_status_reason_side_offset_activation_bucket"],
+            f"{status}|{reason}",
+            side_offset_activation,
+        )
+        add_nested_count(
+            diag["projected_pair_cost_bucket_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            ce25_projected_pair_cost_bucket(context.get("projected_pair_cost")),
+        )
+        add_nested_count(
+            diag["projected_residual_rate_bucket_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            ce25_projected_residual_bucket(context.get("projected_residual_rate_on_bought_qty")),
+        )
+        add_nested_count(
+            diag["activation_age_bucket_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            age_ms_bucket("activation_opp_age", activation_opp_age_ms),
+        )
+        add_nested_count(
+            diag["source_sequence_presence_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            "present" if source_sequence_id is not None else "missing",
+        )
+        add_count(
+            diag["residual_leak_stress_cost_sum_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            residual_leak_stress_cost,
+        )
+
     def record_source_link_pair_transition(
         self,
         *,
@@ -2540,6 +2668,8 @@ class DPlusRunner:
         target_qty = self.cfg.target_for(offset)
         seed_px = max(0.01, px - self.cfg.edge)
         opposite_seen_ms = self.activation_last_seen_ms.get(opp(side))
+        same_cost_before = self.exposure_cost(side)
+        opp_cost_before = self.exposure_cost(opp(side))
         if self.cfg.pairing_only_when_residual and same_qty > opp_qty + self.cfg.dust_qty:
             block_seed("pairing_only_when_residual", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
@@ -2556,6 +2686,23 @@ class DPlusRunner:
         activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
         if risk_increasing_seed and not activation_ok:
             blocked_quote_intent_id = self.blocked_quote_intent_id(side, ts_ms)
+            diagnostic_qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, max(0.0, target_qty - same_qty))
+            self.record_symmetric_activation_diagnostic(
+                status="blocked",
+                reason="activation_opp_seen",
+                side=side,
+                offset_s=offset,
+                qty=diagnostic_qty,
+                seed_px=seed_px,
+                same_qty=same_qty,
+                opp_qty=opp_qty,
+                same_cost=same_cost_before,
+                opp_cost=opp_cost_before,
+                activation_required=True,
+                activation_opp_age_ms=activation_opp_age_ms,
+                opposite_seen_ms=opposite_seen_ms,
+                source_sequence_id=trigger_source_sequence_id,
+            )
             block_seed(
                 "activation_opp_seen",
                 target_qty=target_qty,
@@ -2684,8 +2831,6 @@ class DPlusRunner:
 
         ledger_proxy_before = self.online_ledger_proxy()
         ledger_proxy_after = ledger_proxy_before - qty * seed_px - 0.01 * qty
-        same_cost_before = self.exposure_cost(side)
-        opp_cost_before = self.exposure_cost(opp(side))
         source_risk_direction = inventory_risk_direction(same_qty, opp_qty)
         quote_intent_id = self.quote_intent_id(self.next_order_id)
         opposite_trigger_ts_ms = (
@@ -2724,6 +2869,22 @@ class DPlusRunner:
             opp_qty=opp_qty,
             same_cost=same_cost_before,
             opp_cost=opp_cost_before,
+        )
+        self.record_symmetric_activation_diagnostic(
+            status="admitted",
+            reason="candidate",
+            side=side,
+            offset_s=offset,
+            qty=qty,
+            seed_px=seed_px,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost_before,
+            opp_cost=opp_cost_before,
+            activation_required=risk_increasing_seed and self.cfg.activation_mode != "none",
+            activation_opp_age_ms=activation_opp_age_ms,
+            opposite_seen_ms=opposite_seen_ms,
+            source_sequence_id=trigger_source_sequence_id,
         )
         self.record_source_opportunity_marker(
             status="admitted",
@@ -2910,6 +3071,8 @@ class DPlusRunner:
                 summary["event_lite"]["source_opportunity_marker_summary"] = self.event_lite_source_opportunity_markers
             if self.cfg.ce25_projected_guard_event_lite_summary:
                 summary["event_lite"]["ce25_projected_guard_summary"] = self.event_lite_ce25_projected_guard_summary
+            if self.cfg.symmetric_activation_event_lite_summary:
+                summary["event_lite"]["symmetric_activation_summary"] = self.event_lite_symmetric_activation_summary
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -3186,6 +3349,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                     event_lite.setdefault("ce25_projected_guard_summary", {}),
                     ce25_projected_guard,
                 )
+            symmetric_activation = lite.get("symmetric_activation_summary")
+            if isinstance(symmetric_activation, dict):
+                merge_symmetric_activation_summary(
+                    event_lite.setdefault("symmetric_activation_summary", {}),
+                    symmetric_activation,
+                )
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -3312,6 +3481,7 @@ async def main() -> None:
     ap.add_argument("--source-opportunity-ledger-before-delta-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-before and ledger-delta marker denominators without changing behavior")
     ap.add_argument("--source-opportunity-closed-cycle-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit closed-cycle pre-action marker denominators without changing behavior")
     ap.add_argument("--ce25-projected-guard-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off ce25 projected pair-cost/residual guard diagnostics without changing behavior")
+    ap.add_argument("--symmetric-activation-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off symmetric activation projected pair-cost/residual diagnostics without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -3359,6 +3529,7 @@ async def main() -> None:
         source_opportunity_ledger_before_delta_marker_event_lite_summary=args.source_opportunity_ledger_before_delta_marker_event_lite_summary,
         source_opportunity_closed_cycle_marker_event_lite_summary=args.source_opportunity_closed_cycle_marker_event_lite_summary,
         ce25_projected_guard_event_lite_summary=args.ce25_projected_guard_event_lite_summary,
+        symmetric_activation_event_lite_summary=args.symmetric_activation_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -3420,6 +3591,8 @@ async def main() -> None:
             raise SystemExit("--source-opportunity-closed-cycle-marker-event-lite-summary requires --source-opportunity-marker-event-lite-summary")
     if cfg.ce25_projected_guard_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--ce25-projected-guard-event-lite-summary requires --event-lite-summary")
+    if cfg.symmetric_activation_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--symmetric-activation-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")
