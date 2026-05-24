@@ -1,0 +1,50 @@
+{
+  "artifact": "xuan_ce25_15m_market_tail_gap_audit",
+  "created_utc": "20260524T102657Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_CE25_15M_MARKET_TAIL_GAP_AUDIT_INPUTS_MISSING",
+  "lane": "ce25_15m_market_tail_gap_audit",
+  "next_executable_action": "Rerun on complete existing ce25 deep-compare exports; do not start diagnostics.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "INPUTS_MISSING_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "deployable": false,
+    "private_truth_ready": false,
+    "promotion_gate_passed": false,
+    "tail_gap_status": "UNKNOWN_INPUTS_MISSING"
+  },
+  "schema_version": 1,
+  "scope": {
+    "broker_modified": false,
+    "canary_started": false,
+    "cancels_sent": false,
+    "events_jsonl_read": false,
+    "existing_public_exports_only": true,
+    "full_completion_store_scanned": false,
+    "local_agg_started": false,
+    "local_only": true,
+    "new_data_fetch": false,
+    "orders_sent": false,
+    "raw_replay_or_collector_scanned": false,
+    "redeems_sent": false,
+    "shadow_started": false,
+    "shared_ingress_connected": false,
+    "shared_ws_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "source_inputs": {
+    "deep_compare_dir": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_ce25_15m_market_tail_gap_audit_smoke_20260524T101516Z/missing_deep_compare",
+    "missing_deep_compare_files": [
+      "ce25/market_cash_pnl.csv",
+      "post_window_by_condition.csv"
+    ],
+    "proxy_gate_manifest": "xuan_research_artifacts/xuan_ce25_late_window_pair_arb_proxy_gate_20260524T094516Z/manifest.json",
+    "public_rows": "xuan_research_artifacts/xuan_public_leaderboard_candidate_fast_screen_20260524T035500Z/public_inputs/0xce25e214d5cfe4f459cf67f08df581885aae7fdc/activity_trade_rows.json"
+  }
+}
