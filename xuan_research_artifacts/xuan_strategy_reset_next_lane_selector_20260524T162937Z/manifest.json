@@ -1,0 +1,650 @@
+{
+  "artifact": "xuan_strategy_reset_next_lane_selector",
+  "blockers": [],
+  "contract_name": "xuan_strategy_reset_next_lane_selector_v1",
+  "created_utc": "20260524T163311Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_NEXT_STRATEGY_SELECTED_RESEARCH_ONLY",
+  "lane": "strategy_reset_next_lane_selector",
+  "next_executable_action": "Implement symmetric_activation_contract_v1 local-only: define default-off pre-action fields for opposite-side strict-flow activation, projected pair cost, residual/leak stress, and summary/scorer fail-closed checks; do not start shadow/no-order diagnostics.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RESEARCH_ONLY_NEXT_LANE_SELECTION_NOT_PROMOTION_EVIDENCE"
+  },
+  "public_profile_disposition": {
+    "blockers": [
+      "safe_72h_public_export_manifest_absent",
+      "current_worktree_public_profile_multiday_validation_failed"
+    ],
+    "decision": "DISCARD",
+    "discard_or_freeze": true,
+    "reason": "User requested pivot instead of waiting; current worktree has no safe 72h public-profile manifest, so this line is frozen and not eligible for automatic no-order diagnostics.",
+    "status": "DISCARD_PUBLIC_PROFILE_MIMICABILITY_INPUT_BLOCKED"
+  },
+  "research_ranking": {
+    "no_order_diagnostic_allowed": false,
+    "public_profile_line_discarded_or_frozen": true,
+    "selected_line": "symmetric_activation_residual_stress",
+    "status": "KEEP_SYMMETRIC_ACTIVATION_NEXT_STRATEGY_SELECTED_RESEARCH_ONLY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "selected_strategy_line": {
+    "name": "symmetric_activation_residual_stress",
+    "not_claimed": [
+      "not private truth",
+      "not deployable",
+      "not canary-ready",
+      "not promotion evidence",
+      "not an approval to start no-order diagnostics"
+    ],
+    "selected": {
+      "activation_window_s": 7.5,
+      "covered_pair_actions": 3079,
+      "covered_residual_qty_rate": 0.025476,
+      "covered_worst_day": 20.588189,
+      "covered_worst_net_fee_after": 778.801385,
+      "edge": 0.07,
+      "holdout_pair_actions": 594,
+      "holdout_residual_qty_rate": 0.02776,
+      "holdout_worst_day": 17.860534,
+      "holdout_worst_net_fee_after": 151.002955,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "selection_score": [
+        151.002955,
+        17.860534,
+        594,
+        -0.02776
+      ],
+      "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+      "source_name": "strict_count_boundary_activation_residual_stress"
+    },
+    "why_new": [
+      "uses current-worktree multi-day covered+holdout strict-cache evidence",
+      "does not depend on public-profile 72h manifests",
+      "does not reuse micro-deficit/ledger/tiny-deficit/closed-cycle target-cooldown families",
+      "uses pre-action opposite-side strict-flow activation rather than realized pair_cost as live criterion"
+    ]
+  },
+  "selection_thresholds": {
+    "max_covered_residual_qty_rate": 0.05,
+    "max_holdout_residual_qty_rate": 0.05,
+    "min_covered_pair_actions": 1000,
+    "min_holdout_pair_actions": 200,
+    "require_positive_covered_worst_day": true,
+    "require_positive_covered_worst_net_fee_after": true,
+    "require_positive_holdout_worst_day": true,
+    "require_positive_holdout_worst_net_fee_after": true
+  },
+  "source_summaries": {
+    "base_residual_control": {
+      "artifact": "xuan_symmetric_admission_residual_stress_probe",
+      "assets": [
+        "BTC"
+      ],
+      "covered_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13"
+      ],
+      "dataset_type": "strict_cache_symmetric_admission_residual_stress_probe",
+      "external_data_root_not_read": true,
+      "holdout_days": [
+        "2026-05-16",
+        "2026-05-17",
+        "2026-05-18"
+      ],
+      "manifest_declares_external_data_root": true,
+      "market_prefix": "btc-updown-5m-",
+      "qualified_count": 0,
+      "rejected_qualified_count": 0,
+      "robust_candidate_count": 0,
+      "robust_candidates": [],
+      "source_manifest": "xuan_research_artifacts/xuan_symmetric_admission_residual_stress_w10_20260519T1128Z/manifest.json",
+      "source_name": "base_symmetric_admission_residual_stress_control",
+      "status": "DISCARD_RESIDUAL_FRAGILE"
+    },
+    "primary": {
+      "artifact": "xuan_symmetric_admission_activation_residual_stress_probe",
+      "assets": [
+        "BTC"
+      ],
+      "covered_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13"
+      ],
+      "dataset_type": "strict_cache_symmetric_admission_activation_residual_stress_probe",
+      "external_data_root_not_read": true,
+      "holdout_days": [
+        "2026-05-16",
+        "2026-05-17",
+        "2026-05-18"
+      ],
+      "manifest_declares_external_data_root": true,
+      "market_prefix": "btc-updown-5m-",
+      "qualified_count": 25,
+      "rejected_qualified_count": 2,
+      "robust_candidate_count": 23,
+      "robust_candidates": [
+        {
+          "activation_window_s": 7.5,
+          "covered_pair_actions": 3079,
+          "covered_residual_qty_rate": 0.025476,
+          "covered_worst_day": 20.588189,
+          "covered_worst_net_fee_after": 778.801385,
+          "edge": 0.07,
+          "holdout_pair_actions": 594,
+          "holdout_residual_qty_rate": 0.02776,
+          "holdout_worst_day": 17.860534,
+          "holdout_worst_net_fee_after": 151.002955,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            151.002955,
+            17.860534,
+            594,
+            -0.02776
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.026541,
+          "covered_worst_day": 27.313716,
+          "covered_worst_net_fee_after": 790.194374,
+          "edge": 0.07,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.027891,
+          "holdout_worst_day": 22.092898,
+          "holdout_worst_net_fee_after": 149.822508,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            149.822508,
+            22.092898,
+            726,
+            -0.027891
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 5.0,
+          "covered_pair_actions": 2290,
+          "covered_residual_qty_rate": 0.024577,
+          "covered_worst_day": 13.896032,
+          "covered_worst_net_fee_after": 679.940563,
+          "edge": 0.07,
+          "holdout_pair_actions": 426,
+          "holdout_residual_qty_rate": 0.028129,
+          "holdout_worst_day": 12.883275,
+          "holdout_worst_net_fee_after": 120.080707,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            120.080707,
+            12.883275,
+            426,
+            -0.028129
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 7.5,
+          "covered_pair_actions": 3079,
+          "covered_residual_qty_rate": 0.025476,
+          "covered_worst_day": 14.847704,
+          "covered_worst_net_fee_after": 616.356206,
+          "edge": 0.065,
+          "holdout_pair_actions": 594,
+          "holdout_residual_qty_rate": 0.02776,
+          "holdout_worst_day": 14.102097,
+          "holdout_worst_net_fee_after": 119.590447,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            119.590447,
+            14.102097,
+            594,
+            -0.02776
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.026541,
+          "covered_worst_day": 17.859806,
+          "covered_worst_net_fee_after": 593.082117,
+          "edge": 0.065,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.027891,
+          "holdout_worst_day": 17.27377,
+          "holdout_worst_net_fee_after": 111.424244,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            111.424244,
+            17.27377,
+            726,
+            -0.027891
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 7.5,
+          "covered_pair_actions": 3079,
+          "covered_residual_qty_rate": 0.037733,
+          "covered_worst_day": 11.658946,
+          "covered_worst_net_fee_after": 581.293747,
+          "edge": 0.07,
+          "holdout_pair_actions": 594,
+          "holdout_residual_qty_rate": 0.041069,
+          "holdout_worst_day": 12.893331,
+          "holdout_worst_net_fee_after": 109.991781,
+          "leak_rate": 0.03,
+          "min_opp_count": 1,
+          "selection_score": [
+            109.991781,
+            12.893331,
+            594,
+            -0.041069
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.03929,
+          "covered_worst_day": 7.406622,
+          "covered_worst_net_fee_after": 536.380113,
+          "edge": 0.07,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.041261,
+          "holdout_worst_day": 15.515377,
+          "holdout_worst_net_fee_after": 98.613682,
+          "leak_rate": 0.03,
+          "min_opp_count": 1,
+          "selection_score": [
+            98.613682,
+            15.515377,
+            726,
+            -0.041261
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 5.0,
+          "covered_pair_actions": 2290,
+          "covered_residual_qty_rate": 0.024577,
+          "covered_worst_day": 10.15919,
+          "covered_worst_net_fee_after": 559.233568,
+          "edge": 0.065,
+          "holdout_pair_actions": 426,
+          "holdout_residual_qty_rate": 0.028129,
+          "holdout_worst_day": 10.237973,
+          "holdout_worst_net_fee_after": 97.54397,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            97.54397,
+            10.237973,
+            426,
+            -0.028129
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 5.0,
+          "covered_pair_actions": 2290,
+          "covered_residual_qty_rate": 0.036418,
+          "covered_worst_day": 7.4671,
+          "covered_worst_net_fee_after": 541.24603,
+          "edge": 0.07,
+          "holdout_pair_actions": 426,
+          "holdout_residual_qty_rate": 0.041609,
+          "holdout_worst_day": 9.494512,
+          "holdout_worst_net_fee_after": 90.823515,
+          "leak_rate": 0.03,
+          "min_opp_count": 1,
+          "selection_score": [
+            90.823515,
+            9.494512,
+            426,
+            -0.041609
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        },
+        {
+          "activation_window_s": 7.5,
+          "covered_pair_actions": 3079,
+          "covered_residual_qty_rate": 0.025476,
+          "covered_worst_day": 7.112597,
+          "covered_worst_net_fee_after": 453.911028,
+          "edge": 0.06,
+          "holdout_pair_actions": 594,
+          "holdout_residual_qty_rate": 0.02776,
+          "holdout_worst_day": 10.343661,
+          "holdout_worst_net_fee_after": 88.177939,
+          "leak_rate": 0.02,
+          "min_opp_count": 1,
+          "selection_score": [
+            88.177939,
+            10.343661,
+            594,
+            -0.02776
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+          "source_name": "strict_count_boundary_activation_residual_stress"
+        }
+      ],
+      "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+      "source_name": "strict_count_boundary_activation_residual_stress",
+      "status": "UNKNOWN_ACTIVATION_REPAIR_LEAD"
+    },
+    "support": {
+      "artifact": "xuan_symmetric_admission_activation_residual_stress_probe",
+      "assets": [
+        "BTC"
+      ],
+      "covered_days": [
+        "2026-05-02",
+        "2026-05-03",
+        "2026-05-04",
+        "2026-05-05",
+        "2026-05-06",
+        "2026-05-07",
+        "2026-05-08",
+        "2026-05-09",
+        "2026-05-10",
+        "2026-05-11",
+        "2026-05-12",
+        "2026-05-13"
+      ],
+      "dataset_type": "strict_cache_symmetric_admission_activation_residual_stress_probe",
+      "external_data_root_not_read": true,
+      "holdout_days": [
+        "2026-05-16",
+        "2026-05-17",
+        "2026-05-18"
+      ],
+      "manifest_declares_external_data_root": true,
+      "market_prefix": "btc-updown-5m-",
+      "qualified_count": 28,
+      "rejected_qualified_count": 0,
+      "robust_candidate_count": 28,
+      "robust_candidates": [
+        {
+          "activation_window_s": 20.0,
+          "covered_pair_actions": 4700,
+          "covered_residual_qty_rate": 0.009826,
+          "covered_worst_day": 41.790569,
+          "covered_worst_net_fee_after": 1172.518244,
+          "edge": 0.07,
+          "holdout_pair_actions": 900,
+          "holdout_residual_qty_rate": 0.010339,
+          "holdout_worst_day": 33.950908,
+          "holdout_worst_net_fee_after": 237.215256,
+          "leak_rate": 0.005,
+          "min_opp_count": 1,
+          "selection_score": [
+            237.215256,
+            33.950908,
+            900,
+            -0.010339
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 30.0,
+          "covered_pair_actions": 5210,
+          "covered_residual_qty_rate": 0.011986,
+          "covered_worst_day": 40.190466,
+          "covered_worst_net_fee_after": 1100.06532,
+          "edge": 0.07,
+          "holdout_pair_actions": 1004,
+          "holdout_residual_qty_rate": 0.012241,
+          "holdout_worst_day": 34.799977,
+          "holdout_worst_net_fee_after": 234.809292,
+          "leak_rate": 0.005,
+          "min_opp_count": 1,
+          "selection_score": [
+            234.809292,
+            34.799977,
+            1004,
+            -0.012241
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.00677,
+          "covered_worst_day": 44.269869,
+          "covered_worst_net_fee_after": 1170.915765,
+          "edge": 0.07,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.007122,
+          "holdout_worst_day": 31.95918,
+          "holdout_worst_net_fee_after": 226.635747,
+          "leak_rate": 0.005,
+          "min_opp_count": 1,
+          "selection_score": [
+            226.635747,
+            31.95918,
+            726,
+            -0.007122
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.013449,
+          "covered_worst_day": 38.617818,
+          "covered_worst_net_fee_after": 1044.008634,
+          "edge": 0.07,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.014143,
+          "holdout_worst_day": 28.670419,
+          "holdout_worst_net_fee_after": 201.031334,
+          "leak_rate": 0.01,
+          "min_opp_count": 1,
+          "selection_score": [
+            201.031334,
+            28.670419,
+            726,
+            -0.014143
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 20.0,
+          "covered_pair_actions": 4700,
+          "covered_residual_qty_rate": 0.009826,
+          "covered_worst_day": 31.807833,
+          "covered_worst_net_fee_after": 928.469748,
+          "edge": 0.065,
+          "holdout_pair_actions": 900,
+          "holdout_residual_qty_rate": 0.010339,
+          "holdout_worst_day": 28.428037,
+          "holdout_worst_net_fee_after": 190.458326,
+          "leak_rate": 0.005,
+          "min_opp_count": 1,
+          "selection_score": [
+            190.458326,
+            28.428037,
+            900,
+            -0.010339
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.00677,
+          "covered_worst_day": 37.167529,
+          "covered_worst_net_fee_after": 977.727116,
+          "edge": 0.065,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.007122,
+          "holdout_worst_day": 27.245324,
+          "holdout_worst_net_fee_after": 189.040713,
+          "leak_rate": 0.005,
+          "min_opp_count": 1,
+          "selection_score": [
+            189.040713,
+            27.245324,
+            726,
+            -0.007122
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 20.0,
+          "covered_pair_actions": 4700,
+          "covered_residual_qty_rate": 0.019461,
+          "covered_worst_day": 30.644568,
+          "covered_worst_net_fee_after": 930.401153,
+          "edge": 0.07,
+          "holdout_pair_actions": 900,
+          "holdout_residual_qty_rate": 0.020467,
+          "holdout_worst_day": 26.704221,
+          "holdout_worst_net_fee_after": 189.020891,
+          "leak_rate": 0.01,
+          "min_opp_count": 1,
+          "selection_score": [
+            189.020891,
+            26.704221,
+            900,
+            -0.020467
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 30.0,
+          "covered_pair_actions": 5210,
+          "covered_residual_qty_rate": 0.011986,
+          "covered_worst_day": 26.300876,
+          "covered_worst_net_fee_after": 828.943485,
+          "edge": 0.065,
+          "holdout_pair_actions": 1004,
+          "holdout_residual_qty_rate": 0.012241,
+          "holdout_worst_day": 28.374645,
+          "holdout_worst_net_fee_after": 182.548901,
+          "leak_rate": 0.005,
+          "min_opp_count": 1,
+          "selection_score": [
+            182.548901,
+            28.374645,
+            1004,
+            -0.012241
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 30.0,
+          "covered_pair_actions": 5210,
+          "covered_residual_qty_rate": 0.023688,
+          "covered_worst_day": 16.127647,
+          "covered_worst_net_fee_after": 764.393495,
+          "edge": 0.07,
+          "holdout_pair_actions": 1004,
+          "holdout_residual_qty_rate": 0.024186,
+          "holdout_worst_day": 24.483815,
+          "holdout_worst_net_fee_after": 169.669829,
+          "leak_rate": 0.01,
+          "min_opp_count": 1,
+          "selection_score": [
+            169.669829,
+            24.483815,
+            1004,
+            -0.024186
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        },
+        {
+          "activation_window_s": 10.0,
+          "covered_pair_actions": 3732,
+          "covered_residual_qty_rate": 0.013449,
+          "covered_worst_day": 31.456994,
+          "covered_worst_net_fee_after": 849.512116,
+          "edge": 0.065,
+          "holdout_pair_actions": 726,
+          "holdout_residual_qty_rate": 0.014143,
+          "holdout_worst_day": 23.921473,
+          "holdout_worst_net_fee_after": 163.168557,
+          "leak_rate": 0.01,
+          "min_opp_count": 1,
+          "selection_score": [
+            163.168557,
+            23.921473,
+            726,
+            -0.014143
+          ],
+          "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+          "source_name": "activation_residual_stress_low_leak_support"
+        }
+      ],
+      "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_20260519T1231Z/manifest.json",
+      "source_name": "activation_residual_stress_low_leak_support",
+      "status": "UNKNOWN_ACTIVATION_REPAIR_LEAD"
+    }
+  }
+}
