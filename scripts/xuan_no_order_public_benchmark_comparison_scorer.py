@@ -152,6 +152,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "hard_residual_rate_lte": hard_residual,
             "fee_after_cash_pnl_must_be_positive": review_targets.get("fee_after_cash_pnl_must_be_positive"),
         },
+        "benchmark_interpretation": {
+            "b55_benchmark_scope": targets.get("b55_benchmark_scope"),
+            "b55_cash_pnl_contains_old_inventory_redeem": targets.get(
+                "b55_cash_pnl_contains_old_inventory_redeem"
+            ),
+            "b55_new_position_mtm_ex_rebate": targets.get("b55_new_position_mtm_ex_rebate"),
+            "b55_new_position_mtm_including_rebate": targets.get(
+                "b55_new_position_mtm_including_rebate"
+            ),
+            "split_count_all_accounts": targets.get("split_count_all_accounts"),
+            "comparison_scope": "pair_quality_fee_residual_only_not_new_window_realized_pnl",
+        },
         "comparison": comparison,
         "decision": {
             "research_only": True,
@@ -169,6 +181,7 @@ def write_markdown(path: Path, card: dict[str, Any]) -> None:
     b55 = c["vs_b55"]
     ce25 = c["vs_ce25"]
     d = card["decision"]
+    interpretation = card.get("benchmark_interpretation", {})
     lines = [
         "# Xuan Public Benchmark Comparison",
         "",
@@ -199,6 +212,15 @@ def write_markdown(path: Path, card: dict[str, Any]) -> None:
         f"- residual_qty_share_delta_vs_b55: `{b55['residual_qty_share_delta_vs_b55']}`",
         f"- ce25_residual_rate: `{ce25['ce25_residual_rate']}`",
         f"- residual_qty_share_delta_vs_ce25: `{ce25['residual_qty_share_delta_vs_ce25']}`",
+        "",
+        "## Benchmark Interpretation",
+        "",
+        f"- b55_benchmark_scope: `{interpretation.get('b55_benchmark_scope')}`",
+        f"- b55_cash_pnl_contains_old_inventory_redeem: `{interpretation.get('b55_cash_pnl_contains_old_inventory_redeem')}`",
+        f"- b55_new_position_mtm_ex_rebate: `{interpretation.get('b55_new_position_mtm_ex_rebate')}`",
+        f"- b55_new_position_mtm_including_rebate: `{interpretation.get('b55_new_position_mtm_including_rebate')}`",
+        f"- split_count_all_accounts: `{interpretation.get('split_count_all_accounts')}`",
+        f"- comparison_scope: `{interpretation.get('comparison_scope')}`",
         "",
         "## Guardrails",
         "",

@@ -81,6 +81,7 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
     replay_decision = replay.get("decision", {})
     public_benchmark_decision = public_benchmark.get("decision", {}) if public_benchmark else {}
     public_benchmark_comparison = public_benchmark.get("comparison", {}) if public_benchmark else {}
+    public_benchmark_interpretation = public_benchmark.get("benchmark_interpretation", {}) if public_benchmark else {}
 
     fee_accounting = capital.get("assumptions", {}).get("fee_accounting")
     taker_fee = as_float(capital_totals.get("taker_fee"))
@@ -241,6 +242,24 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "repeat_status": repeat.get("status"),
             "capital_roi_status": capital.get("status"),
             "public_benchmark_status": public_benchmark.get("status") if public_benchmark else None,
+            "public_benchmark_scope": public_benchmark_interpretation.get("b55_benchmark_scope")
+            if public_benchmark
+            else None,
+            "b55_cash_pnl_contains_old_inventory_redeem": public_benchmark_interpretation.get(
+                "b55_cash_pnl_contains_old_inventory_redeem"
+            )
+            if public_benchmark
+            else None,
+            "b55_new_position_mtm_ex_rebate": as_float(
+                public_benchmark_interpretation.get("b55_new_position_mtm_ex_rebate")
+            )
+            if public_benchmark
+            else None,
+            "b55_new_position_mtm_including_rebate": as_float(
+                public_benchmark_interpretation.get("b55_new_position_mtm_including_rebate")
+            )
+            if public_benchmark
+            else None,
             "fee_accounting": fee_accounting,
             "taker_fee": taker_fee,
             "pair_pnl": as_float(capital_totals.get("pair_pnl")),
@@ -340,6 +359,10 @@ def markdown(scorecard: dict[str, Any]) -> str:
         "## Public Benchmark",
         "",
         f"- public_benchmark_status: `{evidence['public_benchmark_status']}`",
+        f"- public_benchmark_scope: `{evidence['public_benchmark_scope']}`",
+        f"- b55_cash_pnl_contains_old_inventory_redeem: `{evidence['b55_cash_pnl_contains_old_inventory_redeem']}`",
+        f"- b55_new_position_mtm_ex_rebate: `{round_opt(evidence['b55_new_position_mtm_ex_rebate'], 6)}`",
+        f"- b55_new_position_mtm_including_rebate: `{round_opt(evidence['b55_new_position_mtm_including_rebate'], 6)}`",
         f"- actual_pair_cost_after_fee: `{round_opt(evidence['actual_pair_cost_after_fee'], 6)}`",
         f"- b55_actual_pair_cost: `{round_opt(evidence['b55_actual_pair_cost'], 6)}`",
         f"- pair_cost_delta_vs_b55: `{round_opt(evidence['pair_cost_delta_vs_b55'], 6)}`",
