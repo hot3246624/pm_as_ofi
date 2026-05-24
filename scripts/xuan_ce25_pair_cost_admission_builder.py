@@ -145,6 +145,13 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def read_slug_rows(raw: str) -> list[dict[str, Any]]:
+    rows = []
+    for slug in [part.strip() for part in raw.split(",") if part.strip()]:
+        rows.append({"market_slug": slug})
+    return rows
+
+
 def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     profile = PROFILE_DEFAULTS[args.profile]
     cap = args.pair_cost_cap if args.pair_cost_cap is not None else profile["pair_cost_cap"]
@@ -153,7 +160,12 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
         if args.residual_budget_share is not None
         else profile["residual_budget_share"]
     )
-    rows = read_rows(Path(args.book_snapshots).expanduser().resolve())
+    input_mode = "book_snapshot"
+    if args.market_slugs:
+        input_mode = "runtime_slug_universe"
+        rows = read_slug_rows(args.market_slugs)
+    else:
+        rows = read_rows(Path(args.book_snapshots).expanduser().resolve())
     admissions: list[dict[str, Any]] = []
     blockers: dict[str, int] = {}
 
@@ -176,20 +188,27 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
         if timeframe not in profile["timeframes"]:
             block("timeframe_not_in_profile")
             continue
-        if seconds_to_close is None:
+        if seconds_to_close is None and input_mode != "runtime_slug_universe":
             block("seconds_to_close_missing")
             continue
-        if seconds_to_close < args.min_seconds_to_close:
+        if seconds_to_close is not None and seconds_to_close < args.min_seconds_to_close:
             block("too_close_to_end")
             continue
-        if seconds_to_close > args.max_seconds_to_close:
+        if seconds_to_close is not None and seconds_to_close > args.max_seconds_to_close:
             block("too_far_from_end")
             continue
-        if yes_ask is None or no_ask is None or yes_ask <= 0 or no_ask <= 0:
+        if (
+            (yes_ask is None or no_ask is None or yes_ask <= 0 or no_ask <= 0)
+            and input_mode != "runtime_slug_universe"
+        ):
             block("missing_or_invalid_asks")
             continue
-        pair_cost = yes_ask + no_ask + fee_per_share(yes_ask, args.official_fee_rate) + fee_per_share(no_ask, args.official_fee_rate)
-        if pair_cost > cap + 1e-12:
+        pair_cost = (
+            yes_ask + no_ask + fee_per_share(yes_ask, args.official_fee_rate) + fee_per_share(no_ask, args.official_fee_rate)
+            if yes_ask is not None and no_ask is not None and yes_ask > 0 and no_ask > 0
+            else None
+        )
+        if pair_cost is not None and pair_cost > cap + 1e-12:
             block("pair_cost_above_cap")
             continue
         common = {
@@ -199,12 +218,12 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
             "timeframe": timeframe,
             "admission_mode": "pair_cost_only",
             "pair_cost_only": True,
-            "pair_cost_after_fee_snapshot": round(pair_cost, 12),
+            "pair_cost_after_fee_snapshot": round(pair_cost, 12) if pair_cost is not None else None,
             "yes_ask_snapshot": yes_ask,
             "no_ask_snapshot": no_ask,
             "min_seconds_to_close": args.min_seconds_to_close,
             "max_seconds_to_close": args.max_seconds_to_close,
-            "seconds_to_close_snapshot": round(seconds_to_close, 6),
+            "seconds_to_close_snapshot": round(seconds_to_close, 6) if seconds_to_close is not None else None,
             "residual_budget_share": residual_budget_share,
             "source_sequence_id": get_first(row, ("source_sequence_id", "book_l1_source_sequence_id", "l1_source_sequence_id")),
             "l1_source_sequence_id": get_first(row, ("l1_source_sequence_id", "book_l1_source_sequence_id", "source_sequence_id")),
@@ -217,9 +236,11 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
         "artifact": "xuan_ce25_pair_cost_admission_builder",
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "script": "scripts/xuan_ce25_pair_cost_admission_builder.py",
-        "status": "KEEP_CE25_PAIR_COST_ADMISSION_BUILDER_PASS_RESEARCH_ONLY" if admissions else "UNKNOWN_CE25_PAIR_COST_ADMISSION_BUILDER_NO_ADMISSIONS",
-        "inputs": {
-            "book_snapshots": str(Path(args.book_snapshots).expanduser().resolve()),
+            "status": "KEEP_CE25_PAIR_COST_ADMISSION_BUILDER_PASS_RESEARCH_ONLY" if admissions else "UNKNOWN_CE25_PAIR_COST_ADMISSION_BUILDER_NO_ADMISSIONS",
+            "inputs": {
+            "input_mode": input_mode,
+            "book_snapshots": str(Path(args.book_snapshots).expanduser().resolve()) if args.book_snapshots else None,
+            "market_slugs_count": len(rows) if args.market_slugs else 0,
             "profile": args.profile,
             "pair_cost_cap": cap,
             "residual_budget_share": residual_budget_share,
@@ -232,8 +253,8 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
             "admission_rows": len(admissions),
             "admission_markets": len({row["market_slug"] for row in admissions}),
             "blocker_counts": dict(sorted(blockers.items())),
-            "pair_cost_min": round_opt(min((row["pair_cost_after_fee_snapshot"] for row in admissions), default=math.nan)),
-            "pair_cost_max": round_opt(max((row["pair_cost_after_fee_snapshot"] for row in admissions), default=math.nan)),
+            "pair_cost_min": round_opt(min((row["pair_cost_after_fee_snapshot"] for row in admissions if row["pair_cost_after_fee_snapshot"] is not None), default=math.nan)),
+            "pair_cost_max": round_opt(max((row["pair_cost_after_fee_snapshot"] for row in admissions if row["pair_cost_after_fee_snapshot"] is not None), default=math.nan)),
         },
         "sample_admissions": admissions[: args.sample_rows],
         "decision": {
@@ -252,7 +273,8 @@ def build(args: argparse.Namespace) -> tuple[dict[str, Any], list[dict[str, Any]
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--book-snapshots", required=True)
+    parser.add_argument("--book-snapshots")
+    parser.add_argument("--market-slugs", help="Comma-separated exact slugs. Emits runtime pair-cost-only rows without requiring snapshot asks.")
     parser.add_argument("--admission-jsonl", required=True)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--profile", choices=sorted(PROFILE_DEFAULTS), default="ce25_core")
@@ -263,6 +285,8 @@ def main() -> int:
     parser.add_argument("--official-fee-rate", type=float, default=0.07)
     parser.add_argument("--sample-rows", type=int, default=6)
     args = parser.parse_args()
+    if bool(args.book_snapshots) == bool(args.market_slugs):
+        raise SystemExit("provide exactly one of --book-snapshots or --market-slugs")
 
     scorecard, admissions = build(args)
     admission_path = Path(args.admission_jsonl).expanduser().resolve()
