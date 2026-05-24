@@ -1,0 +1,70 @@
+{
+  "artifact": "xuan_ce25_projected_guard_summary_scorer",
+  "created_utc": "20260524T114237Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_CE25_PROJECTED_GUARD_SUMMARY_SCORER_READY",
+  "inputs": {
+    "default_aggregate": "xuan_research_artifacts/xuan_ce25_projected_guard_runner_instrumentation_smoke_20260524T113800Z/default_off/aggregate_report.json",
+    "enabled_aggregate": "xuan_research_artifacts/xuan_ce25_projected_guard_runner_instrumentation_smoke_20260524T113800Z/enabled/aggregate_report.json",
+    "enabled_summary_dir": "xuan_research_artifacts/xuan_ce25_projected_guard_runner_instrumentation_smoke_20260524T113800Z/enabled",
+    "runner_smoke_manifest": "xuan_research_artifacts/xuan_ce25_projected_guard_runner_instrumentation_smoke_20260524T113800Z/manifest.json"
+  },
+  "lane": "ce25_projected_guard_summary_scorer",
+  "next_executable_action": "implement ce25_projected_guard_summary_real_pullback_scorer_adapter local-only only after a future allowlisted no-order pullback contains ce25_projected_guard_summary_v1; until then continue local public-profile search or non-fixture input preparation, not no-order diagnostics",
+  "promotion_gate": {
+    "blockers": [
+      "summary_only_diagnostics_not_strategy_evidence",
+      "no_private_truth",
+      "no_non_fixture_live_profitability_validation"
+    ],
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "research_ranking": {
+    "diagnostic_ready": true,
+    "no_order_diagnostic_allowed": false,
+    "status": "KEEP_CE25_PROJECTED_GUARD_SUMMARY_SCORER_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "events_jsonl_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_live_modified": false,
+    "ssh_used": false,
+    "summary_aggregate_only": true
+  },
+  "score": {
+    "blockers": [],
+    "checks": {
+      "aggregate_parity": true,
+      "core_denominator_present": true,
+      "default_off_summary_absent": true,
+      "deployable_false": true,
+      "enabled_summary_present": true,
+      "field_contract_ok": true,
+      "hard_kill_denominator_present": true,
+      "no_side_effect_scope": true,
+      "private_truth_false": true,
+      "projected_pair_cost_buckets_present": true,
+      "projected_residual_buckets_present": true,
+      "promotion_never_passes": true,
+      "runner_smoke_keep": true,
+      "schema_version_ok": true,
+      "starter_denominator_present": true
+    },
+    "summary": {
+      "core_allow_count": 1.0,
+      "enabled_summary_files": 3,
+      "hard_kill_pair_cost_count": 1.0,
+      "schema_version": "ce25_projected_guard_summary_v1",
+      "starter_allow_count": 1.0
+    }
+  }
+}
