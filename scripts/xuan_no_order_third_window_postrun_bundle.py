@@ -270,6 +270,7 @@ def main() -> None:
         paths["shadow_evidence_ledger"] = scorecard_dir / f"no_order_{args.tag}_shadow_evidence_ledger.json"
         paths["existing_window_candidates"] = scorecard_dir / f"no_order_{args.tag}_existing_window_candidates.json"
         paths["cap25_reproduction_review"] = scorecard_dir / f"no_order_{args.tag}_cap25_reproduction_review.json"
+        paths["cap25_density_trigger"] = scorecard_dir / f"no_order_{args.tag}_cap25_density_trigger.json"
     public_benchmark_path = (
         Path(args.public_benchmark_scorecard).expanduser().resolve()
         if args.public_benchmark_scorecard
@@ -609,6 +610,22 @@ def main() -> None:
                 str(paths["cap25_reproduction_review"]),
                 "--markdown-output",
                 str(output_dir / "SOFT_MAINLINE_CAP25_REPRODUCTION_REVIEW.md"),
+            ]
+        )
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_cap25_density_trigger.py",
+                "--cap25-reproduction-review",
+                str(paths["cap25_reproduction_review"]),
+                "--existing-window-candidates",
+                str(paths["existing_window_candidates"]),
+                "--latest-run-trigger-policy",
+                str(paths["run_trigger_policy"]),
+                "--scorecard-json",
+                str(paths["cap25_density_trigger"]),
+                "--markdown-output",
+                str(output_dir / "SOFT_MAINLINE_CAP25_DENSITY_TRIGGER.md"),
             ]
         )
     if public_benchmark_path and "public_benchmark" in paths:

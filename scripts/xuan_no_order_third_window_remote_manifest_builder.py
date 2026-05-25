@@ -45,6 +45,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_soft_mainline_shadow_evidence_ledger.py",
     "scripts/xuan_soft_mainline_existing_window_candidate_scorer.py",
     "scripts/xuan_soft_mainline_cap25_reproduction_reviewer.py",
+    "scripts/xuan_soft_mainline_cap25_density_trigger.py",
 ]
 
 
