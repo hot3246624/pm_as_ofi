@@ -629,6 +629,8 @@ def main() -> None:
                 str(paths["run_trigger_policy"]),
                 "--source-caveat-audit-scorecard",
                 str(paths["source_caveat_audit"]),
+                "--bridge-shadow-gap-scorecard",
+                str(paths["bridge_shadow_gap"]),
                 "--scorecard-json",
                 str(paths["shadow_promotion_gate"]),
             ]

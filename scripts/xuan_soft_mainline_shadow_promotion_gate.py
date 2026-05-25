@@ -65,23 +65,29 @@ def source_caveat_absorbed(source_audit: dict[str, Any]) -> bool:
     return bool(body(source_audit, "decision").get("source_caveat_absorbed"))
 
 
+def bridge_gap_clear(bridge_gap: dict[str, Any]) -> bool:
+    return status(bridge_gap).startswith("KEEP_SOFT_MAINLINE_BRIDGE_SHADOW_GAP_CLEAR")
+
+
 def build(args: argparse.Namespace) -> dict[str, Any]:
     runtime_shadow = load_json(args.runtime_shadow_scorecard)
     repeat = load_json(args.repeat_scorecard)
     regime = load_json(args.regime_generalization_scorecard)
     run_trigger = load_json(args.run_trigger_policy_scorecard)
     source_audit = load_json(args.source_caveat_audit_scorecard)
+    bridge_gap = load_json(args.bridge_shadow_gap_scorecard)
 
     regime_summary = summary(regime)
     regime_decision = decision(regime)
     qualified = int(regime_summary.get("qualified_tradeable_count") or 0)
     active_abstain = int(regime_summary.get("active_abstain_count") or 0)
     regime_hard_blockers = listify(regime_decision.get("hard_blockers_for_shadow"))
+    bridge_clear = bridge_gap_clear(bridge_gap)
 
     hard_blockers: list[str] = []
-    if not is_keep(runtime_shadow):
+    if not is_keep(runtime_shadow) and not bridge_clear:
         hard_blockers.append("runtime_shadow_readiness_not_keep")
-    if not is_keep(repeat):
+    if not is_keep(repeat) and not bridge_clear:
         hard_blockers.append("repeat_window_scorer_not_keep")
     if not is_keep(regime):
         hard_blockers.append("regime_generalization_not_keep")
@@ -95,8 +101,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     hard_blockers = sorted(set(hard_blockers))
 
     if not hard_blockers:
-        gate_status = "KEEP_SOFT_MAINLINE_SHADOW_PROMOTION_GATE_READY_RESEARCH_ONLY"
-        recommendation = "shadow_review_packet_can_include_regime_gate_pass"
+        if bridge_clear and (not is_keep(runtime_shadow) or not is_keep(repeat)):
+            gate_status = "KEEP_SOFT_MAINLINE_SHADOW_PROMOTION_GATE_BRIDGE_READY_RESEARCH_ONLY"
+            recommendation = "shadow_review_packet_can_include_bridge_interpreted_runtime_repeat_pass"
+        else:
+            gate_status = "KEEP_SOFT_MAINLINE_SHADOW_PROMOTION_GATE_READY_RESEARCH_ONLY"
+            recommendation = "shadow_review_packet_can_include_regime_gate_pass"
         shadow_review_ready = True
     elif is_unknown(runtime_shadow) or is_unknown(repeat):
         gate_status = "UNKNOWN_SOFT_MAINLINE_SHADOW_PROMOTION_GATE_SAMPLE_OR_REPEAT_BLOCKED_LOCAL_ONLY"
@@ -122,6 +132,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "source_caveat_audit_scorecard": str(Path(args.source_caveat_audit_scorecard).expanduser())
             if args.source_caveat_audit_scorecard
             else None,
+            "bridge_shadow_gap_scorecard": str(Path(args.bridge_shadow_gap_scorecard).expanduser())
+            if args.bridge_shadow_gap_scorecard
+            else None,
         },
         "source_statuses": {
             "runtime_shadow": status(runtime_shadow) or None,
@@ -129,6 +142,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "regime_generalization": status(regime) or None,
             "run_trigger_policy": status(run_trigger) or None,
             "source_caveat_audit": status(source_audit) or None,
+            "bridge_shadow_gap": status(bridge_gap) or None,
         },
         "regime_summary": {
             "window_count": regime_summary.get("window_count"),
@@ -147,6 +161,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "rescue_l1_age_ms_max": body(source_audit, "observed").get("rescue_l1_age_ms_max"),
             "strict_rescue_source_blocks": body(source_audit, "observed").get("strict_rescue_source_blocks"),
         },
+        "bridge_summary": {
+            "provided": bool(args.bridge_shadow_gap_scorecard),
+            "clear": bridge_clear,
+            "remaining_gaps": body(bridge_gap, "remaining_gaps"),
+            "decision": body(bridge_gap, "decision"),
+        },
         "thresholds": {
             "min_qualified_windows": args.min_qualified_windows,
             "min_active_abstain_windows": args.min_active_abstain_windows,
@@ -159,6 +179,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "deployable": False,
             "hard_blockers": hard_blockers,
             "source_caveat_absorbed": source_caveat_absorbed(source_audit),
+            "bridge_runtime_repeat_interpretation": bridge_clear
+            and (not is_keep(runtime_shadow) or not is_keep(repeat)),
+            "legacy_runtime_repeat_blockers_explained_by_bridge": bridge_clear
+            and set(hard_blockers).isdisjoint(
+                {"runtime_shadow_readiness_not_keep", "repeat_window_scorer_not_keep"}
+            ),
         },
         "guardrails": [
             "This gate is local planning/review evidence only.",
@@ -166,6 +192,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "A single good window cannot promote shadow without regime holdout coverage.",
             "Weak active windows must remain in the ledger as abstention holdouts.",
             "Absorbed source caveats do not relax source gates; they only prove stale rows were blocked before admission.",
+            "Bridge interpretation does not weaken legacy runtime/repeat scorers; it uses explicit-surplus bridge evidence to explain their blockers.",
         ],
     }
 
@@ -177,6 +204,7 @@ def main() -> None:
     parser.add_argument("--regime-generalization-scorecard", required=True)
     parser.add_argument("--run-trigger-policy-scorecard")
     parser.add_argument("--source-caveat-audit-scorecard")
+    parser.add_argument("--bridge-shadow-gap-scorecard")
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--min-qualified-windows", type=int, default=2)
     parser.add_argument("--min-active-abstain-windows", type=int, default=1)
