@@ -38,6 +38,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_soft_mainline_next_run_decision_scorer.py",
     "scripts/xuan_soft_mainline_window_contrast_scorer.py",
     "scripts/xuan_soft_mainline_density_history_scorer.py",
+    "scripts/xuan_soft_mainline_run_trigger_policy_builder.py",
 ]
 
 

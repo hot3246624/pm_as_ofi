@@ -242,6 +242,7 @@ def main() -> None:
         "density_preflight": scorecard_dir / f"no_order_{args.tag}_density_preflight_gate.json",
         "density_prefix": scorecard_dir / f"no_order_{args.tag}_density_prefix_scorer.json",
         "next_run_decision": scorecard_dir / f"no_order_{args.tag}_next_run_decision.json",
+        "run_trigger_policy": scorecard_dir / f"no_order_{args.tag}_run_trigger_policy.json",
         "lifecycle": scorecard_dir / f"no_order_{args.tag}_lifecycle_scorer.json",
         "comparison": scorecard_dir / f"no_order_{args.tag}_comparison_scorer.json",
         "concurrency": scorecard_dir / f"no_order_{args.tag}_concurrent_shared_ingress_scorer.json",
@@ -384,6 +385,30 @@ def main() -> None:
                 str(paths["density_history"]),
             ]
         )
+    run_trigger_policy_command = [
+        sys.executable,
+        "scripts/xuan_soft_mainline_run_trigger_policy_builder.py",
+        "--latest-density-scorecard",
+        str(paths["density_preflight"]),
+        "--latest-prefix-scorecard",
+        str(paths["density_prefix"]),
+        "--next-run-decision-scorecard",
+        str(paths["next_run_decision"]),
+        "--scorecard-json",
+        str(paths["run_trigger_policy"]),
+        "--markdown-output",
+        str(output_dir / "SOFT_MAINLINE_RUN_TRIGGER_POLICY.md"),
+    ]
+    if contrast_reference_available:
+        run_trigger_policy_command.extend(
+            [
+                "--density-history-scorecard",
+                str(paths["density_history"]),
+                "--window-contrast-scorecard",
+                str(paths["window_contrast"]),
+            ]
+        )
+    commands.append(run_trigger_policy_command)
     commands.extend(
         [
             [
