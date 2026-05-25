@@ -21,6 +21,7 @@ import shlex
 import subprocess
 import time
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -105,6 +106,12 @@ def parse_float_csv(raw: str | None) -> list[float]:
 def profile_name_for_late_repair(value: float) -> str:
     text = ("%g" % value).replace("-", "m").replace(".", "p")
     return f"repair{text}"
+
+
+def day_id_from_ts_ms(ts_ms: int | None) -> str | None:
+    if ts_ms is None:
+        return None
+    return datetime.fromtimestamp(ts_ms / 1000.0, timezone.utc).date().isoformat()
 
 
 def px_bucket(px: float | None) -> str:
@@ -878,6 +885,7 @@ class RunnerConfig:
     symmetric_activation_event_lite_summary: bool = False
     symmetric_activation_tail_attribution_event_lite_summary: bool = False
     symmetric_activation_projected_residual_tail_join_event_lite_summary: bool = False
+    observable_pre_action_rule_miner_feature_join_output: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -1046,6 +1054,16 @@ class DPlusRunner:
         self.activation_last_seen_ms: dict[str, int | None] = {"YES": None, "NO": None}
         self.events_path = out_dir / f"{slug}.events.jsonl"
         self.summary_path = out_dir / f"{slug}.summary.json"
+        self.observable_pre_action_candidate_rows_path = (
+            out_dir / f"{slug}.observable_pre_action_candidate_rows.jsonl"
+        )
+        self.observable_pre_action_source_link_summary_path = (
+            out_dir / f"{slug}.observable_pre_action_source_link_summary.json"
+        )
+        self.observable_pre_action_feature_join_manifest_path = (
+            out_dir / f"{slug}.observable_pre_action_feature_join_manifest.json"
+        )
+        self.observable_pre_action_candidate_rows: list[dict[str, Any]] = []
         self.event_lite_candidate_seed_px_buckets: dict[str, float] = {}
         self.event_lite_candidate_public_trade_px_buckets: dict[str, float] = {}
         self.event_lite_candidate_side_counts: dict[str, float] = {}
@@ -1431,6 +1449,7 @@ class DPlusRunner:
         imbalance_room: float | None = None,
         activation_opp_age_ms: int | None = None,
         opposite_seen_ms: int | None = None,
+        quote_ts_ms: int | None = None,
         quote_intent_id: str | None = None,
         source_order_id: int | None = None,
         source_sequence_id: Any | None = None,
@@ -1462,6 +1481,8 @@ class DPlusRunner:
             quote_intent_id=quote_intent_id,
             source_order_id=source_order_id,
             source_sequence_id=source_sequence_id,
+            quote_ts_ms=quote_ts_ms,
+            feature_join_candidate_qty=qty,
         )
         self.record_source_opportunity_marker(
             status="blocked",
@@ -1546,6 +1567,8 @@ class DPlusRunner:
         quote_intent_id: str | None = None,
         source_order_id: int | None = None,
         source_sequence_id: Any | None = None,
+        quote_ts_ms: int | None = None,
+        feature_join_candidate_qty: float | None = None,
     ) -> None:
         if not (self.cfg.event_lite_summary and self.cfg.source_link_transition_event_lite_summary):
             return
@@ -1617,6 +1640,58 @@ class DPlusRunner:
             cross_key,
             qty_bucket("candidate_qty", qty),
         )
+        if self.cfg.observable_pre_action_rule_miner_feature_join_output:
+            row_qty = qty if feature_join_candidate_qty is None else feature_join_candidate_qty
+            pre_seed_open_qty = (
+                None if same_qty is None or opp_qty is None else round(max(0.0, same_qty) + max(0.0, opp_qty), 8)
+            )
+            pre_seed_open_cost = (
+                None
+                if same_cost is None or opp_cost is None
+                else round(max(0.0, same_cost) + max(0.0, opp_cost), 8)
+            )
+            pre_seed_deficit_qty = (
+                None if same_qty is None or opp_qty is None else round(max(0.0, opp_qty - same_qty), 8)
+            )
+            self.observable_pre_action_candidate_rows.append(
+                {
+                    "schema_version": "observable_pre_action_candidate_row_v1",
+                    "condition_id": self.condition_id,
+                    "market_slug": self.slug,
+                    "day_id": day_id_from_ts_ms(quote_ts_ms),
+                    "quote_ts_ms": quote_ts_ms,
+                    "side": side_key,
+                    "offset_s": round(offset_s, 6) if offset_s is not None else None,
+                    "offset_bucket": offset_key,
+                    "status_before_action": status,
+                    "reason": reason,
+                    "block_reason": reason if status == "blocked" else None,
+                    "source_sequence_present": source_sequence_id is not None,
+                    "quote_intent_present": bool(quote_intent_id),
+                    "source_order_present": source_order_id is not None,
+                    "source_sequence_id_policy": "present_redacted" if source_sequence_id is not None else "missing",
+                    "quote_intent_id_policy": "present_redacted" if quote_intent_id else "missing",
+                    "source_order_id_policy": "present_redacted" if source_order_id is not None else "missing",
+                    "pre_seed_same_qty": round(same_qty, 8) if same_qty is not None else None,
+                    "pre_seed_opp_qty": round(opp_qty, 8) if opp_qty is not None else None,
+                    "pre_seed_same_cost": round(same_cost, 8) if same_cost is not None else None,
+                    "pre_seed_opp_cost": round(opp_cost, 8) if opp_cost is not None else None,
+                    "pre_seed_open_qty": pre_seed_open_qty,
+                    "pre_seed_open_cost": pre_seed_open_cost,
+                    "pre_seed_deficit_qty": pre_seed_deficit_qty,
+                    "candidate_qty": round(row_qty, 8) if row_qty is not None else None,
+                    "pre_seed_same_qty_bucket": qty_bucket("same_qty", same_qty),
+                    "pre_seed_opp_qty_bucket": qty_bucket("opp_qty", opp_qty),
+                    "pre_seed_open_qty_bucket": qty_bucket("open_qty", pre_seed_open_qty),
+                    "pre_seed_deficit_qty_bucket": qty_bucket("deficit", pre_seed_deficit_qty),
+                    "candidate_qty_bucket": qty_bucket("candidate_qty", row_qty),
+                    "source_risk_direction": risk_direction,
+                    "side_offset_risk_direction": cross_key,
+                    "post_action_outcome_labels_included": False,
+                    "realized_pair_cost_used_as_live_criteria": False,
+                    "trading_behavior_changed": False,
+                }
+            )
 
     def record_source_opportunity_marker(
         self,
@@ -2488,6 +2563,125 @@ class DPlusRunner:
         )
         return diag
 
+    def observable_pre_action_feature_join_field_contract(self) -> dict[str, Any]:
+        return {
+            "schema_version": "observable_pre_action_feature_join_field_contract_v1",
+            "default_off": True,
+            "writes_events_jsonl": False,
+            "reads_events_jsonl": False,
+            "raw_replay_or_full_store_scan": False,
+            "post_action_outcome_labels_included": False,
+            "realized_pair_cost_used_as_live_criteria": False,
+            "trading_behavior_changed": False,
+            "strategy_evidence": False,
+            "private_truth_ready": False,
+            "deployable": False,
+            "promotion_gate_passed": False,
+        }
+
+    def observable_pre_action_source_link_summary(self) -> dict[str, Any]:
+        summary: dict[str, Any] = {
+            "schema_version": "observable_pre_action_source_link_summary_v1",
+            "slug": self.slug,
+            "condition_id": self.condition_id,
+            "row_count": len(self.observable_pre_action_candidate_rows),
+            "row_count_by_status": {},
+            "row_count_by_status_reason": {},
+            "source_sequence_presence_by_status": {},
+            "quote_intent_presence_by_status": {},
+            "source_order_presence_by_status": {},
+            "candidate_qty_bucket_by_status_reason": {},
+            "pre_seed_open_qty_bucket_by_status_reason": {},
+            "pre_seed_deficit_qty_bucket_by_status_reason": {},
+            "source_risk_direction_by_status_reason": {},
+            "field_contract": self.observable_pre_action_feature_join_field_contract(),
+        }
+        for row in self.observable_pre_action_candidate_rows:
+            status = str(row.get("status_before_action") or "unknown")
+            reason = str(row.get("reason") or "unknown")
+            status_reason = f"{status}|{reason}"
+            add_count(summary["row_count_by_status"], status)
+            add_nested_count(summary["row_count_by_status_reason"], status, reason)
+            add_nested_count(
+                summary["source_sequence_presence_by_status"],
+                status,
+                "present" if row.get("source_sequence_present") else "missing",
+            )
+            add_nested_count(
+                summary["quote_intent_presence_by_status"],
+                status,
+                "present" if row.get("quote_intent_present") else "missing",
+            )
+            add_nested_count(
+                summary["source_order_presence_by_status"],
+                status,
+                "present" if row.get("source_order_present") else "missing",
+            )
+            add_nested_count(
+                summary["candidate_qty_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("candidate_qty_bucket") or "candidate_qty_unknown"),
+            )
+            add_nested_count(
+                summary["pre_seed_open_qty_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("pre_seed_open_qty_bucket") or "open_qty_unknown"),
+            )
+            add_nested_count(
+                summary["pre_seed_deficit_qty_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("pre_seed_deficit_qty_bucket") or "deficit_unknown"),
+            )
+            add_nested_count(
+                summary["source_risk_direction_by_status_reason"],
+                status_reason,
+                str(row.get("source_risk_direction") or "unknown"),
+            )
+        return summary
+
+    def write_observable_pre_action_feature_join_outputs(self, summary_ts_ms: int, final: bool) -> None:
+        if not self.cfg.observable_pre_action_rule_miner_feature_join_output:
+            return
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        with self.observable_pre_action_candidate_rows_path.open("w") as f:
+            for row in self.observable_pre_action_candidate_rows:
+                f.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
+        source_link_summary = self.observable_pre_action_source_link_summary()
+        self.observable_pre_action_source_link_summary_path.write_text(
+            json.dumps(source_link_summary, indent=2, sort_keys=True) + "\n"
+        )
+        manifest = {
+            "schema_version": "observable_pre_action_feature_join_manifest_v1",
+            "slug": self.slug,
+            "condition_id": self.condition_id,
+            "created_ms": summary_ts_ms,
+            "final": final,
+            "candidate_rows_path": self.observable_pre_action_candidate_rows_path.name,
+            "source_link_summary_path": self.observable_pre_action_source_link_summary_path.name,
+            "candidate_row_count": len(self.observable_pre_action_candidate_rows),
+            "aggregate_merge_required": True,
+            "allowlisted_output_files": [
+                "observable_pre_action_candidate_rows.jsonl",
+                "observable_pre_action_source_link_summary.json",
+                "observable_pre_action_feature_join_manifest.json",
+            ],
+            "field_contract": self.observable_pre_action_feature_join_field_contract(),
+            "safety": {
+                "orders_sent": False,
+                "cancels_sent": False,
+                "redeems_sent": False,
+                "shared_ingress_modified": False,
+                "broker_modified": False,
+                "service_control_used": False,
+                "events_jsonl_read": False,
+                "events_jsonl_pulled": False,
+                "raw_replay_or_full_store_scan": False,
+            },
+        }
+        self.observable_pre_action_feature_join_manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        )
+
     def source_link_residual_tail_exemplars(self, residual_lots: list[Lot], summary_ts_ms: int) -> list[dict[str, Any]]:
         if not (self.cfg.event_lite_summary and self.cfg.source_link_residual_tail_exemplars_event_lite_summary):
             return []
@@ -2863,6 +3057,7 @@ class DPlusRunner:
                 side=side,
                 public_trade_px=px,
                 offset_s=offset,
+                quote_ts_ms=ts_ms,
                 source_sequence_id=trigger_source_sequence_id,
                 **kwargs,
             )
@@ -3191,6 +3386,7 @@ class DPlusRunner:
             quote_intent_id=quote_intent_id,
             source_order_id=order.id,
             source_sequence_id=trigger_source_sequence_id,
+            quote_ts_ms=ts_ms,
         )
         self.emit({"kind": "candidate", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "placed_ts_ms": ts_ms, "accepted_ts_ms": ts_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "side": side, "price": seed_px, "size": qty, "offset_s": offset, "public_trade_px": px, "public_trade_size": size, "trigger_ts_ms": ts_ms, "trigger_event_time_ms": trigger_event_time_ms, "source": "no_order_public_trade_candidate", "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "opposite_trigger_ts_ms": opposite_trigger_ts_ms, "seed_px": seed_px, "qty": qty, "edge": self.cfg.edge, "queue_share": self.cfg.queue_share, "l1_pair_ask": l1_pair, "same_exposure_qty": same_qty, "opp_exposure_qty": opp_qty, "target_qty": target_qty, "base_target_qty": self.cfg.target_qty, "base_seed_qty": base_qty, "late_target_active": self.cfg.late_target_active(offset), "late_repair_active": self.cfg.late_repair_active(offset), "late_repair_only_active": self.cfg.late_repair_only_active(offset), "late_repair_fill_to_balance_active": fill_to_balance_active, "late_repair_fill_to_balance_deficit": fill_to_balance_deficit, "late_repair_fill_to_balance_qty_reduction": round(base_qty - qty, 6) if fill_to_balance_active else 0.0, "micro_deficit_repair_guard_candidate": micro_deficit_repair_candidate, "micro_deficit_repair_deficit": round(micro_deficit_repair_deficit, 6), "micro_deficit_repair_guard_enabled": self.cfg.micro_deficit_repair_guard, "activation_mode": self.cfg.activation_mode, "activation_window_s": self.cfg.activation_window_s, "activation_required": risk_increasing_seed and self.cfg.activation_mode != "none", "risk_increasing_seed": risk_increasing_seed, "activation_opp_age_ms": activation_opp_age_ms, "open_cost": self.total_open_cost(), "yes_bid": self.book.get("yes_bid"), "yes_ask": yes_ask, "no_bid": self.book.get("no_bid"), "no_ask": no_ask})
         self.record_activation_seen(side, ts_ms)
@@ -3402,6 +3598,7 @@ class DPlusRunner:
                     self.symmetric_activation_tail_residual_exemplars(residual_lots, summary_ts_ms)
                 )
                 summary["event_lite"]["symmetric_activation_tail_attribution_summary"] = tail_diag
+        self.write_observable_pre_action_feature_join_outputs(summary_ts_ms, final)
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -3522,6 +3719,140 @@ def resolve_markets(repo: Path, prefix: str, offsets: str) -> list[dict[str, str
         if env:
             markets.append(env)
     return markets
+
+
+def observable_pre_action_feature_join_field_contract() -> dict[str, Any]:
+    return {
+        "schema_version": "observable_pre_action_feature_join_field_contract_v1",
+        "default_off": True,
+        "writes_events_jsonl": False,
+        "reads_events_jsonl": False,
+        "raw_replay_or_full_store_scan": False,
+        "post_action_outcome_labels_included": False,
+        "realized_pair_cost_used_as_live_criteria": False,
+        "trading_behavior_changed": False,
+        "strategy_evidence": False,
+        "private_truth_ready": False,
+        "deployable": False,
+        "promotion_gate_passed": False,
+    }
+
+
+def aggregate_observable_pre_action_feature_join_outputs(out: Path) -> dict[str, Any] | None:
+    per_slug_manifests = sorted(out.glob("*.observable_pre_action_feature_join_manifest.json"))
+    if not per_slug_manifests:
+        return None
+    candidate_rows_path = out / "observable_pre_action_candidate_rows.jsonl"
+    source_link_summary_path = out / "observable_pre_action_source_link_summary.json"
+    feature_join_manifest_path = out / "observable_pre_action_feature_join_manifest.json"
+    source_summary: dict[str, Any] = {
+        "schema_version": "observable_pre_action_source_link_summary_v1",
+        "row_count": 0,
+        "slug_count": 0,
+        "row_count_by_status": {},
+        "row_count_by_status_reason": {},
+        "source_sequence_presence_by_status": {},
+        "quote_intent_presence_by_status": {},
+        "source_order_presence_by_status": {},
+        "candidate_qty_bucket_by_status_reason": {},
+        "pre_seed_open_qty_bucket_by_status_reason": {},
+        "pre_seed_deficit_qty_bucket_by_status_reason": {},
+        "source_risk_direction_by_status_reason": {},
+        "field_contract": observable_pre_action_feature_join_field_contract(),
+    }
+    source_manifest_paths: list[str] = []
+    missing_row_files: list[str] = []
+    row_count = 0
+    slug_count = 0
+    with candidate_rows_path.open("w") as dest:
+        for manifest_path in per_slug_manifests:
+            try:
+                manifest = json.loads(manifest_path.read_text())
+            except Exception:
+                missing_row_files.append(manifest_path.name)
+                continue
+            source_manifest_paths.append(manifest_path.name)
+            row_file = manifest_path.with_name(str(manifest.get("candidate_rows_path") or ""))
+            if not row_file.exists():
+                missing_row_files.append(row_file.name)
+                continue
+            slug_count += 1
+            for line in row_file.read_text().splitlines():
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                dest.write(json.dumps(row, separators=(",", ":"), sort_keys=True) + "\n")
+                row_count += 1
+                status = str(row.get("status_before_action") or "unknown")
+                reason = str(row.get("reason") or "unknown")
+                status_reason = f"{status}|{reason}"
+                add_count(source_summary["row_count_by_status"], status)
+                add_nested_count(source_summary["row_count_by_status_reason"], status, reason)
+                add_nested_count(
+                    source_summary["source_sequence_presence_by_status"],
+                    status,
+                    "present" if row.get("source_sequence_present") else "missing",
+                )
+                add_nested_count(
+                    source_summary["quote_intent_presence_by_status"],
+                    status,
+                    "present" if row.get("quote_intent_present") else "missing",
+                )
+                add_nested_count(
+                    source_summary["source_order_presence_by_status"],
+                    status,
+                    "present" if row.get("source_order_present") else "missing",
+                )
+                add_nested_count(
+                    source_summary["candidate_qty_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("candidate_qty_bucket") or "candidate_qty_unknown"),
+                )
+                add_nested_count(
+                    source_summary["pre_seed_open_qty_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("pre_seed_open_qty_bucket") or "open_qty_unknown"),
+                )
+                add_nested_count(
+                    source_summary["pre_seed_deficit_qty_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("pre_seed_deficit_qty_bucket") or "deficit_unknown"),
+                )
+                add_nested_count(
+                    source_summary["source_risk_direction_by_status_reason"],
+                    status_reason,
+                    str(row.get("source_risk_direction") or "unknown"),
+                )
+    source_summary["row_count"] = row_count
+    source_summary["slug_count"] = slug_count
+    source_summary["source_manifest_paths"] = source_manifest_paths
+    source_summary["missing_row_files"] = missing_row_files
+    source_link_summary_path.write_text(json.dumps(source_summary, indent=2, sort_keys=True) + "\n")
+    feature_join_manifest = {
+        "schema_version": "observable_pre_action_feature_join_manifest_v1",
+        "created_ms": now_ms(),
+        "candidate_rows_path": candidate_rows_path.name,
+        "source_link_summary_path": source_link_summary_path.name,
+        "candidate_row_count": row_count,
+        "slug_manifest_count": len(per_slug_manifests),
+        "slug_count_with_rows": slug_count,
+        "source_manifest_paths": source_manifest_paths,
+        "missing_row_files": missing_row_files,
+        "field_contract": observable_pre_action_feature_join_field_contract(),
+        "safety": {
+            "orders_sent": False,
+            "cancels_sent": False,
+            "redeems_sent": False,
+            "shared_ingress_modified": False,
+            "broker_modified": False,
+            "service_control_used": False,
+            "events_jsonl_read": False,
+            "events_jsonl_pulled": False,
+            "raw_replay_or_full_store_scan": False,
+        },
+    }
+    feature_join_manifest_path.write_text(json.dumps(feature_join_manifest, indent=2, sort_keys=True) + "\n")
+    return feature_join_manifest
 
 
 def aggregate(out: Path) -> dict[str, Any]:
@@ -3728,6 +4059,9 @@ def aggregate(out: Path) -> dict[str, Any]:
         },
         "top_residual_lots": sorted(top_residual, key=lambda x: x.get("cost", 0), reverse=True)[:20],
     }
+    observable_pre_action_feature_join_manifest = aggregate_observable_pre_action_feature_join_outputs(out)
+    if isinstance(observable_pre_action_feature_join_manifest, dict):
+        aggregate_report["observable_pre_action_feature_join_manifest"] = observable_pre_action_feature_join_manifest
     if event_lite_seen:
         top_sources = event_lite.get("top_high_cost_pair_sources")
         if isinstance(top_sources, list):
@@ -3836,6 +4170,7 @@ async def main() -> None:
     ap.add_argument("--symmetric-activation-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off symmetric activation projected pair-cost/residual diagnostics without changing behavior")
     ap.add_argument("--symmetric-activation-tail-attribution-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off source-attributed realized pair/residual tail diagnostics joined to activation buckets without changing behavior")
     ap.add_argument("--symmetric-activation-projected-residual-tail-join-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off realized residual/pair diagnostics joined to pre-action projected residual buckets without changing behavior")
+    ap.add_argument("--observable-pre-action-rule-miner-feature-join-output", action="store_true", help="with --event-lite-summary and --source-link-transition-event-lite-summary, write default-off materialized observable pre-action candidate rows without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -3886,6 +4221,7 @@ async def main() -> None:
         symmetric_activation_event_lite_summary=args.symmetric_activation_event_lite_summary,
         symmetric_activation_tail_attribution_event_lite_summary=args.symmetric_activation_tail_attribution_event_lite_summary,
         symmetric_activation_projected_residual_tail_join_event_lite_summary=args.symmetric_activation_projected_residual_tail_join_event_lite_summary,
+        observable_pre_action_rule_miner_feature_join_output=args.observable_pre_action_rule_miner_feature_join_output,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -3953,6 +4289,11 @@ async def main() -> None:
         raise SystemExit("--symmetric-activation-tail-attribution-event-lite-summary requires --event-lite-summary")
     if cfg.symmetric_activation_projected_residual_tail_join_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--symmetric-activation-projected-residual-tail-join-event-lite-summary requires --event-lite-summary")
+    if cfg.observable_pre_action_rule_miner_feature_join_output:
+        if not cfg.event_lite_summary:
+            raise SystemExit("--observable-pre-action-rule-miner-feature-join-output requires --event-lite-summary")
+        if not cfg.source_link_transition_event_lite_summary:
+            raise SystemExit("--observable-pre-action-rule-miner-feature-join-output requires --source-link-transition-event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

@@ -1,0 +1,34 @@
+{
+  "artifact": "xuan_observable_pre_action_rule_miner_feature_join_runner_instrumentation_smoke",
+  "checks": {
+    "aggregate_manifest_present": true,
+    "block_counts_unchanged": true,
+    "candidate_counts_unchanged": true,
+    "cli_requires_event_lite": true,
+    "cli_requires_source_link_transition": true,
+    "default_off_absent": true,
+    "deployable": false,
+    "enabled_files_present": true,
+    "post_action_outcome_labels_excluded": true,
+    "private_truth_ready": false,
+    "promotion_gate_passed": false,
+    "queue_supported_fills_unchanged": true,
+    "realized_pair_cost_used_as_live_criteria": false,
+    "row_level_block_reason_present": true,
+    "row_level_pre_seed_fields_present": true,
+    "row_level_source_presence_present": true,
+    "row_level_status_before_action_present": true,
+    "top_level_allowlisted_files_present": true,
+    "trading_behavior_changed": false
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_RUNNER_INSTRUMENTATION_SMOKE_PASS",
+  "outputs": {
+    "candidate_rows_path": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_feature_join_runner_instrumentation_smoke_20260525T195536Z/enabled/observable_pre_action_candidate_rows.jsonl",
+    "default_dir": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_feature_join_runner_instrumentation_smoke_20260525T195536Z/default_off",
+    "enabled_dir": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_feature_join_runner_instrumentation_smoke_20260525T195536Z/enabled",
+    "feature_join_manifest_path": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_feature_join_runner_instrumentation_smoke_20260525T195536Z/enabled/observable_pre_action_feature_join_manifest.json",
+    "source_link_summary_path": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_feature_join_runner_instrumentation_smoke_20260525T195536Z/enabled/observable_pre_action_source_link_summary.json"
+  },
+  "schema_version": 1
+}
