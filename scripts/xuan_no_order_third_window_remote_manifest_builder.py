@@ -198,6 +198,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "PM_DRY_RUN=1",
         f"PM_SHARED_INGRESS_ROLE={args.shared_ingress_role}",
         f"PM_INSTANCE_ID={instance_template}",
+        f"PM_MARKET_RESOLVER_CACHE={remote_output_template}/market_resolver_cache.json",
         "python3",
         remote_runner_template,
         "--repo",
@@ -411,6 +412,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "closeability_cancel_guard": {
             "enabled": profile.get("risk_seed_cancel_on_closeability_net_cap") is not None,
             "net_cap": profile.get("risk_seed_cancel_on_closeability_net_cap"),
+        },
+        "market_resolver_cache": {
+            "path_template": f"{remote_output_template}/market_resolver_cache.json",
+            "repo_cache_mutation_allowed": False,
+            "reason": "Keep remote repo read-only while allowing resolve_market_ids.py to cache current/future slugs.",
         },
         "target": {
             "ssh_host": args.ssh_host,

@@ -78,6 +78,14 @@ def command_parts(command: str) -> list[str]:
         return []
 
 
+def env_assignment_value(parts: list[str], env_name: str) -> str | None:
+    prefix = f"{env_name}="
+    for part in parts:
+        if part.startswith(prefix):
+            return part[len(prefix):]
+    return None
+
+
 def parse_duration_seconds(raw: str | None) -> int | None:
     if not raw:
         return None
@@ -136,6 +144,7 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     profile = manifest.get("profile", {})
     bounded_policy = manifest.get("bounded_remote_run_policy", {})
     fair_price_admission = manifest.get("fair_price_admission", {})
+    market_resolver_cache = manifest.get("market_resolver_cache", {})
     parts = command_parts(remote_cmd)
     duration_value = option_value(remote_cmd, "--duration-s")
     duration_s = parse_duration_seconds(duration_value)
@@ -183,6 +192,18 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     for env_name in ("PM_DRY_RUN", "PM_SHARED_INGRESS_ROLE", "PM_INSTANCE_ID"):
         if f"'{env_name}=" in remote_cmd or f'"{env_name}=' in remote_cmd:
             hard_blockers.append(f"remote_command_quoted_env_assignment:{env_name}")
+    resolver_cache_actual = env_assignment_value(parts, "PM_MARKET_RESOLVER_CACHE")
+    if resolver_cache_actual is None:
+        hard_blockers.append("remote_command_missing_market_resolver_cache")
+    elif "/run/market_resolver_cache.json" in resolver_cache_actual:
+        hard_blockers.append("remote_command_uses_repo_market_resolver_cache")
+    resolver_cache_path = market_resolver_cache.get("path_template")
+    if not resolver_cache_path:
+        hard_blockers.append("manifest_missing_market_resolver_cache_path")
+    elif resolver_cache_actual != resolver_cache_path:
+        hard_blockers.append("remote_command_market_resolver_cache_path_mismatch")
+    if market_resolver_cache.get("repo_cache_mutation_allowed") is not False:
+        hard_blockers.append("market_resolver_repo_cache_mutation_not_disallowed")
     if "--write-normalized-lifecycle" not in remote_cmd:
         hard_blockers.append("remote_command_missing_normalized_lifecycle")
     if "--write-rescue-block-diagnostics" not in remote_cmd:
@@ -307,6 +328,12 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "remote_command_has_unquoted_env_assignments": not any(
                 f"'{env_name}=" in remote_cmd or f'"{env_name}=' in remote_cmd
                 for env_name in ("PM_DRY_RUN", "PM_SHARED_INGRESS_ROLE", "PM_INSTANCE_ID")
+            ),
+            "remote_command_has_market_resolver_cache": "PM_MARKET_RESOLVER_CACHE=" in remote_cmd,
+            "remote_command_market_resolver_cache_is_output_scoped": (
+                bool(resolver_cache_path)
+                and resolver_cache_actual == resolver_cache_path
+                and "/run/market_resolver_cache.json" not in (resolver_cache_actual or "")
             ),
             "remote_command_has_normalized_lifecycle": "--write-normalized-lifecycle" in remote_cmd,
             "remote_command_has_rescue_diagnostics": "--write-rescue-block-diagnostics" in remote_cmd,
