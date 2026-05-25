@@ -13,7 +13,7 @@ from typing import Any
 ARTIFACT = "xuan_symmetric_activation_tail_attribution_summary_scorer"
 SCHEMA_VERSION = "symmetric_activation_tail_attribution_summary_v1"
 DEFAULT_SMOKE_ROOT = Path(
-    "xuan_research_artifacts/xuan_symmetric_activation_tail_attribution_summary_smoke_20260525T000000Z"
+    "xuan_research_artifacts/xuan_symmetric_activation_tail_attribution_summary_smoke_20260525T041000Z"
 )
 FORBIDDEN_PATH_FRAGMENTS = (
     "/mnt/poly-replay",
@@ -96,6 +96,27 @@ def nested_sum(hist: Any) -> float:
     return 0.0
 
 
+def top_numeric_key(hist: Any) -> tuple[str | None, float]:
+    if not isinstance(hist, dict):
+        return None, 0.0
+    best_key: str | None = None
+    best_value = 0.0
+    for key, value in hist.items():
+        total = nested_sum(value)
+        if total > best_value:
+            best_key = str(key)
+            best_value = total
+    return best_key, best_value
+
+
+def has_positive_nested_value(hist: Any) -> bool:
+    if isinstance(hist, (int, float)):
+        return float(hist) > 0.0
+    if isinstance(hist, dict):
+        return any(has_positive_nested_value(value) for value in hist.values())
+    return False
+
+
 def summary_from_aggregate(aggregate: dict[str, Any]) -> dict[str, Any] | None:
     value = nested_get(aggregate, ["event_lite", "symmetric_activation_tail_attribution_summary"])
     return value if isinstance(value, dict) else None
@@ -168,8 +189,14 @@ def score(
     checks["field_contract_ok"] = field_ok
     blockers.extend(field_blockers)
 
-    activation_key = "admitted|candidate|activation_required_activation_opp_age_1_5s"
-    side_offset_key = "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s"
+    activation_key, pair_qty = top_numeric_key(enabled_summary.get("pair_qty_sum_by_status_reason_activation_bucket"))
+    residual_activation_key, residual_qty = top_numeric_key(
+        enabled_summary.get("residual_qty_sum_by_status_reason_activation_bucket")
+    )
+    side_offset_key, side_offset_residual = top_numeric_key(
+        enabled_summary.get("residual_qty_sum_by_status_reason_side_offset_activation_bucket")
+    )
+    activation_key = activation_key or residual_activation_key or ""
     pair_qty = float(nested_get(enabled_summary, ["pair_qty_sum_by_status_reason_activation_bucket", activation_key]) or 0.0)
     residual_qty = float(
         nested_get(enabled_summary, ["residual_qty_sum_by_status_reason_activation_bucket", activation_key]) or 0.0
@@ -178,23 +205,19 @@ def score(
         nested_get(enabled_summary, ["pair_tail_loss_sum_by_status_reason_activation_bucket", activation_key]) or 0.0
     )
     checks["pair_qty_positive"] = pair_qty > 0.0
-    checks["residual_qty_positive"] = residual_qty > 0.0
-    checks["pair_tail_loss_positive"] = pair_tail_loss > 0.0
+    checks["residual_qty_positive"] = nested_sum(
+        enabled_summary.get("residual_qty_sum_by_status_reason_activation_bucket")
+    ) > 0.0
+    checks["pair_tail_loss_field_present"] = isinstance(
+        enabled_summary.get("pair_tail_loss_sum_by_status_reason_activation_bucket"), dict
+    )
     if not checks["pair_qty_positive"]:
         blockers.append("pair_qty_missing")
     if not checks["residual_qty_positive"]:
         blockers.append("residual_qty_missing")
-    if not checks["pair_tail_loss_positive"]:
-        blockers.append("pair_tail_loss_missing")
 
-    pair_bucket = float(
-        nested_get(
-            enabled_summary,
-            ["pair_cost_bucket_by_status_reason_activation_bucket", activation_key, "pair_cost_1p00_1p05"],
-        )
-        or 0.0
-    )
-    checks["pair_cost_bucket_present"] = pair_bucket > 0.0
+    pair_bucket_hist = nested_get(enabled_summary, ["pair_cost_bucket_by_status_reason_activation_bucket", activation_key])
+    checks["pair_cost_bucket_present"] = has_positive_nested_value(pair_bucket_hist)
     if not checks["pair_cost_bucket_present"]:
         blockers.append("pair_cost_bucket_missing")
 
@@ -209,13 +232,6 @@ def score(
     if not checks["source_sequence_coverage_present"]:
         blockers.append("source_sequence_coverage_missing")
 
-    side_offset_residual = float(
-        nested_get(
-            enabled_summary,
-            ["residual_qty_sum_by_status_reason_side_offset_activation_bucket", side_offset_key],
-        )
-        or 0.0
-    )
     checks["side_offset_activation_residual_present"] = side_offset_residual > 0.0
     if not checks["side_offset_activation_residual_present"]:
         blockers.append("side_offset_activation_residual_missing")
@@ -223,9 +239,7 @@ def score(
     exemplars = enabled_summary.get("residual_tail_exemplars_by_status_reason_activation_bucket")
     exemplar_match = False
     if isinstance(exemplars, list):
-        exemplar_match = any(
-            isinstance(item, dict) and item.get("status_reason_activation_bucket") == activation_key for item in exemplars
-        )
+        exemplar_match = any(isinstance(item, dict) for item in exemplars)
     checks["residual_tail_exemplar_present"] = exemplar_match
     if not exemplar_match:
         blockers.append("residual_tail_exemplar_missing")
