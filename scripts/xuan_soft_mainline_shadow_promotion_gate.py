@@ -52,8 +52,17 @@ def summary(card: dict[str, Any]) -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def body(card: dict[str, Any], key: str) -> dict[str, Any]:
+    raw = card.get(key)
+    return raw if isinstance(raw, dict) else {}
+
+
 def listify(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
+
+
+def source_caveat_absorbed(source_audit: dict[str, Any]) -> bool:
+    return bool(body(source_audit, "decision").get("source_caveat_absorbed"))
 
 
 def build(args: argparse.Namespace) -> dict[str, Any]:
@@ -61,6 +70,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     repeat = load_json(args.repeat_scorecard)
     regime = load_json(args.regime_generalization_scorecard)
     run_trigger = load_json(args.run_trigger_policy_scorecard)
+    source_audit = load_json(args.source_caveat_audit_scorecard)
 
     regime_summary = summary(regime)
     regime_decision = decision(regime)
@@ -79,6 +89,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("qualified_tradeable_windows_below_min")
     if active_abstain < args.min_active_abstain_windows:
         hard_blockers.append("active_weak_abstention_holdouts_below_min")
+    if args.source_caveat_audit_scorecard and not source_caveat_absorbed(source_audit):
+        hard_blockers.append("source_caveat_audit_not_absorbed")
     hard_blockers.extend(str(item) for item in regime_hard_blockers)
     hard_blockers = sorted(set(hard_blockers))
 
@@ -107,12 +119,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "run_trigger_policy_scorecard": str(Path(args.run_trigger_policy_scorecard).expanduser())
             if args.run_trigger_policy_scorecard
             else None,
+            "source_caveat_audit_scorecard": str(Path(args.source_caveat_audit_scorecard).expanduser())
+            if args.source_caveat_audit_scorecard
+            else None,
         },
         "source_statuses": {
             "runtime_shadow": status(runtime_shadow) or None,
             "repeat": status(repeat) or None,
             "regime_generalization": status(regime) or None,
             "run_trigger_policy": status(run_trigger) or None,
+            "source_caveat_audit": status(source_audit) or None,
         },
         "regime_summary": {
             "window_count": regime_summary.get("window_count"),
@@ -122,6 +138,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "regimes_seen": regime_summary.get("regimes_seen"),
             "overfit_risk_control": regime_summary.get("overfit_risk_control"),
             "hard_blockers_for_shadow": regime_hard_blockers,
+        },
+        "source_caveat_summary": {
+            "provided": bool(args.source_caveat_audit_scorecard),
+            "absorbed": source_caveat_absorbed(source_audit),
+            "source_block_rows": body(source_audit, "observed").get("source_block_rows"),
+            "accepted_l1_age_ms_max": body(source_audit, "observed").get("accepted_l1_age_ms_max"),
+            "rescue_l1_age_ms_max": body(source_audit, "observed").get("rescue_l1_age_ms_max"),
+            "strict_rescue_source_blocks": body(source_audit, "observed").get("strict_rescue_source_blocks"),
         },
         "thresholds": {
             "min_qualified_windows": args.min_qualified_windows,
@@ -134,12 +158,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "shadow_review_ready": shadow_review_ready,
             "deployable": False,
             "hard_blockers": hard_blockers,
+            "source_caveat_absorbed": source_caveat_absorbed(source_audit),
         },
         "guardrails": [
             "This gate is local planning/review evidence only.",
             "It does not launch remote jobs or approve deployment.",
             "A single good window cannot promote shadow without regime holdout coverage.",
             "Weak active windows must remain in the ledger as abstention holdouts.",
+            "Absorbed source caveats do not relax source gates; they only prove stale rows were blocked before admission.",
         ],
     }
 
@@ -150,6 +176,7 @@ def main() -> None:
     parser.add_argument("--repeat-scorecard", required=True)
     parser.add_argument("--regime-generalization-scorecard", required=True)
     parser.add_argument("--run-trigger-policy-scorecard")
+    parser.add_argument("--source-caveat-audit-scorecard")
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--min-qualified-windows", type=int, default=2)
     parser.add_argument("--min-active-abstain-windows", type=int, default=1)

@@ -68,6 +68,24 @@ def is_wait(card: dict[str, Any]) -> bool:
     return status(card).startswith("UNKNOWN") and "WAIT" in status(card)
 
 
+def body(card: dict[str, Any], key: str) -> dict[str, Any]:
+    raw = card.get(key)
+    return raw if isinstance(raw, dict) else {}
+
+
+def listify(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def source_caveat_absorbed(source_audit: dict[str, Any]) -> bool:
+    return bool(body(source_audit, "decision").get("source_caveat_absorbed"))
+
+
+def source_only_density_block(density: dict[str, Any], source_audit: dict[str, Any]) -> bool:
+    blockers = listify(body(density, "decision").get("hard_blockers"))
+    return source_caveat_absorbed(source_audit) and blockers == ["source_blocks_above_max"]
+
+
 def latest_history_window(history: dict[str, Any]) -> dict[str, Any]:
     windows = history.get("windows")
     if isinstance(windows, list) and windows:
@@ -93,9 +111,16 @@ def next_action_from_cards(
     prefix: dict[str, Any],
     next_decision: dict[str, Any],
     history: dict[str, Any],
+    source_audit: dict[str, Any],
 ) -> tuple[str, str, list[str]]:
     blockers: list[str] = []
-    if is_keep(history) or is_keep(next_decision) or is_keep(density) or is_keep(prefix):
+    if (
+        is_keep(history)
+        or is_keep(next_decision)
+        or is_keep(density)
+        or is_keep(prefix)
+        or source_only_density_block(density, source_audit)
+    ):
         return (
             "KEEP_SOFT_MAINLINE_RUN_TRIGGER_POLICY_READY_FOR_ONE_BOUNDED_SAMPLE_LOCAL_ONLY",
             "prepare_one_bounded_no_cancel_soft_mainline_remote_on_future_heartbeat_after_verifier",
@@ -174,18 +199,28 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     next_decision = load_json(args.next_run_decision_scorecard)
     history = load_json(args.density_history_scorecard)
     contrast = load_json(args.window_contrast_scorecard)
+    source_audit = load_json(args.source_caveat_audit_scorecard)
 
     card_status, next_action, hard_blockers = next_action_from_cards(
         density=density,
         prefix=prefix,
         next_decision=next_decision,
         history=history,
+        source_audit=source_audit,
     )
     history_summary = history.get("summary") if isinstance(history.get("summary"), dict) else {}
     history_decision = history.get("decision") if isinstance(history.get("decision"), dict) else {}
     next_decision_body = next_decision.get("decision") if isinstance(next_decision.get("decision"), dict) else {}
     contrast_decision = contrast.get("decision") if isinstance(contrast.get("decision"), dict) else {}
     latest_observed = observed_from_history(history) or observed_from_density(density)
+    density_observed = observed_from_density(density)
+    source_absorbed = source_caveat_absorbed(source_audit)
+    source_only_block = source_only_density_block(density, source_audit)
+    observed_source_value = density_observed.get("source_blocks")
+    if observed_source_value is None:
+        observed_source_value = latest_observed.get("source_blocks")
+    observed_source_blocks = inum(observed_source_value)
+    effective_source_blocks = 0 if source_absorbed else observed_source_blocks
 
     return {
         "artifact": "xuan_soft_mainline_run_trigger_policy_builder",
@@ -208,6 +243,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "window_contrast_scorecard": str(Path(args.window_contrast_scorecard).expanduser())
             if args.window_contrast_scorecard
             else None,
+            "source_caveat_audit_scorecard": str(Path(args.source_caveat_audit_scorecard).expanduser())
+            if args.source_caveat_audit_scorecard
+            else None,
         },
         "source_statuses": {
             "latest_density": status(density) or None,
@@ -215,6 +253,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "next_run_decision": status(next_decision) or None,
             "density_history": status(history) or None,
             "window_contrast": status(contrast) or None,
+            "source_caveat_audit": status(source_audit) or None,
         },
         "latest_observed_density": {
             "candidate_rows": inum(latest_observed.get("candidate_rows")),
@@ -227,7 +266,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "pair_pnl": fnum(latest_observed.get("pair_pnl")),
             "residual_qty_share": fnum(latest_observed.get("residual_qty_share")),
             "residual_cost_share": fnum(latest_observed.get("residual_cost_share")),
-            "source_blocks": inum(latest_observed.get("source_blocks")),
+            "source_blocks": observed_source_blocks,
+            "effective_source_blocks": effective_source_blocks,
+            "source_caveat_absorbed": source_absorbed,
+            "source_only_density_block_absorbed": source_only_block,
         },
         "history_summary": {
             "window_count": history_summary.get("window_count"),
@@ -269,6 +311,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "max_residual_qty_share": args.max_residual_qty_share,
             "max_residual_cost_share": args.max_residual_cost_share,
             "max_source_blocks": args.max_source_blocks,
+            "allow_absorbed_source_blocks": True,
         },
         "formal_shadow_window_target": {
             "accepted_actions": 25,
@@ -279,6 +322,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "max_residual_cost_share": 0.30,
             "max_rescue_l1_age_ms": 50,
             "max_source_blocks": 0,
+            "allow_absorbed_source_blocks": True,
         },
         "autoresearch_loop": [
             "observe current/future exact slugs and no-order events",
@@ -300,6 +344,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "shadow_ready": False,
             "deployable": False,
             "hard_blockers": hard_blockers,
+            "source_caveat_absorbed": source_absorbed,
+            "source_only_density_block_absorbed": source_only_block,
         },
         "guardrails": [
             "This policy is local planning evidence only.",
@@ -307,6 +353,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "Do not run longer than 1800s to compensate for weak rescue density.",
             "Do not return to ce25 hard gates as the mainline controller.",
             "Do not re-enable closeability deterioration cancel guard for this lane without a separate local proof.",
+            "Absorbed source blocks mean stale rows were rejected before admission; accepted and rescue paths must stay source-clean.",
             "Any future remote remains PM_DRY_RUN=1, one run per wake, and requires manifest verification.",
         ],
     }
@@ -319,6 +366,7 @@ def main() -> None:
     parser.add_argument("--next-run-decision-scorecard")
     parser.add_argument("--density-history-scorecard")
     parser.add_argument("--window-contrast-scorecard")
+    parser.add_argument("--source-caveat-audit-scorecard")
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--markdown-output")
     parser.add_argument("--min-prefix-minutes", type=float, default=10.0)

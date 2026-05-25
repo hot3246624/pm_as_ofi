@@ -72,6 +72,10 @@ def listify(value: Any) -> list[Any]:
     return value if isinstance(value, list) else []
 
 
+def source_caveat_absorbed(source_audit: dict[str, Any]) -> bool:
+    return bool(body(source_audit, "decision").get("source_caveat_absorbed"))
+
+
 def pick_status(
     *,
     shadow_gate: dict[str, Any],
@@ -120,6 +124,7 @@ def build_markdown(card: dict[str, Any]) -> str:
         f"- Qualified tradeable windows: `{gap['qualified_tradeable_windows']}` / `{gap['min_qualified_windows']}`.",
         f"- Active abstention holdouts: `{gap['active_abstain_windows']}` / `{gap['min_active_abstain_windows']}`.",
         f"- Clean strict rescue closes still needed by repeat gap: `{gap['repeat_remaining_strict_rescue_closes']}`.",
+        f"- Bridge accepted actions shortfall: `{gap['bridge_accepted_actions_shortfall']}`.",
         f"- Shadow blockers: `{', '.join(gap['shadow_gate_blockers']) or 'none'}`.",
         "",
         "## Next Qualifying Window Target",
@@ -129,7 +134,7 @@ def build_markdown(card: dict[str, Any]) -> str:
         f"- strict rescue closes >= `{floor['min_strict_rescue_closes']}`",
         f"- pair PnL >= `{floor['min_pair_pnl']}`",
         f"- residual qty/cost share <= `{floor['max_residual_qty_share']}` / `{floor['max_residual_cost_share']}`",
-        f"- rescue L1 age <= `{floor['max_rescue_l1_age_ms']}` ms and source blocks <= `{floor['max_source_blocks']}`",
+        f"- rescue L1 age <= `{floor['max_rescue_l1_age_ms']}` ms and source blocks <= `{floor['max_source_blocks']}` or absorbed before admission",
         "",
         "## Run Trigger",
         "",
@@ -147,12 +152,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     regime = load_json(args.regime_generalization_scorecard)
     run_trigger = load_json(args.run_trigger_policy_scorecard)
     repeat_gap = load_json(args.repeat_gap_scorecard)
+    source_audit = load_json(args.source_caveat_audit_scorecard)
+    bridge_gap = load_json(args.bridge_shadow_gap_scorecard)
 
     shadow_decision = body(shadow_gate, "decision")
     regime_summary = body(regime, "summary") or body(shadow_gate, "regime_summary")
     run_decision = body(run_trigger, "decision")
     repeat_remaining = body(repeat_gap, "remaining_gaps")
     repeat_floor = body(repeat_gap, "next_window_floor")
+    bridge_remaining = body(bridge_gap, "remaining_gaps")
+    source_absorbed = source_caveat_absorbed(source_audit)
 
     min_qualified = inum(body(shadow_gate, "thresholds").get("min_qualified_windows"), args.min_qualified_windows)
     min_active_abstain = inum(
@@ -164,6 +173,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     missing_qualified = max(0, min_qualified - qualified)
     missing_active_abstain = max(0, min_active_abstain - active_abstain)
     repeat_remaining_rescues = inum(repeat_remaining.get("total_strict_rescue_closes"))
+    bridge_accepted_shortfall = inum(bridge_remaining.get("accepted_actions"))
 
     gate_status, next_action = pick_status(
         shadow_gate=shadow_gate,
@@ -187,6 +197,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("missing_additional_qualified_tradeable_window")
     if missing_active_abstain:
         hard_blockers.append("missing_active_weak_abstention_holdout")
+    if args.source_caveat_audit_scorecard and not source_absorbed:
+        hard_blockers.append("source_caveat_audit_not_absorbed")
     hard_blockers = sorted(set(hard_blockers))
 
     # The repeat gap may need only five more rescues, but shadow review still
@@ -205,6 +217,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "max_rescue_net_pair_cost": fnum(repeat_floor.get("max_rescue_net_pair_cost"), args.max_rescue_net_pair_cost),
         "max_rescue_l1_age_ms": fnum(repeat_floor.get("max_rescue_l1_age_ms"), args.max_rescue_l1_age_ms),
         "max_source_blocks": args.max_source_blocks,
+        "allow_absorbed_source_blocks": True,
         "must_pass_per_window_gates": True,
     }
 
@@ -226,12 +239,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "repeat_gap_scorecard": str(Path(args.repeat_gap_scorecard).expanduser())
             if args.repeat_gap_scorecard
             else None,
+            "source_caveat_audit_scorecard": str(Path(args.source_caveat_audit_scorecard).expanduser())
+            if args.source_caveat_audit_scorecard
+            else None,
+            "bridge_shadow_gap_scorecard": str(Path(args.bridge_shadow_gap_scorecard).expanduser())
+            if args.bridge_shadow_gap_scorecard
+            else None,
         },
         "source_statuses": {
             "shadow_promotion_gate": status(shadow_gate) or None,
             "regime_generalization": status(regime) or None,
             "run_trigger_policy": status(run_trigger) or None,
             "repeat_gap": status(repeat_gap) or None,
+            "source_caveat_audit": status(source_audit) or None,
+            "bridge_shadow_gap": status(bridge_gap) or None,
         },
         "gap_summary": {
             "qualified_tradeable_windows": qualified,
@@ -241,8 +262,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "min_active_abstain_windows": min_active_abstain,
             "missing_active_abstain_windows": missing_active_abstain,
             "repeat_remaining_strict_rescue_closes": repeat_remaining_rescues,
+            "bridge_accepted_actions_shortfall": bridge_accepted_shortfall,
+            "bridge_gap_status": status(bridge_gap) or None,
             "shadow_gate_blockers": listify(shadow_decision.get("hard_blockers")),
             "run_trigger_blockers": listify(run_decision.get("hard_blockers")),
+        },
+        "source_caveat_summary": {
+            "provided": bool(args.source_caveat_audit_scorecard),
+            "absorbed": source_absorbed,
+            "source_block_rows": body(source_audit, "observed").get("source_block_rows"),
+            "accepted_l1_age_ms_max": body(source_audit, "observed").get("accepted_l1_age_ms_max"),
+            "rescue_l1_age_ms_max": body(source_audit, "observed").get("rescue_l1_age_ms_max"),
+            "strict_rescue_source_blocks": body(source_audit, "observed").get("strict_rescue_source_blocks"),
         },
         "next_qualified_window_target": next_window_target,
         "run_trigger_summary": {
@@ -265,12 +296,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "shadow_review_ready": is_keep(shadow_gate),
             "deployable": False,
             "hard_blockers": hard_blockers,
+            "source_caveat_absorbed": source_absorbed,
+            "bridge_accepted_actions_shortfall": bridge_accepted_shortfall,
         },
         "guardrails": [
             "This planner is local planning evidence only.",
             "It does not launch remote jobs or approve shadow.",
             "A fresh qualified window must pass per-window gates; aggregate arithmetic alone is insufficient.",
             "Do not widen economics, run longer than 1800s, or return to ce25 hard gates to manufacture density.",
+            "Absorbed source blocks do not count as accepted/rescue contamination.",
         ],
     }
     return rounded(card)
@@ -282,6 +316,8 @@ def main() -> None:
     parser.add_argument("--regime-generalization-scorecard", required=True)
     parser.add_argument("--run-trigger-policy-scorecard", required=True)
     parser.add_argument("--repeat-gap-scorecard", required=True)
+    parser.add_argument("--source-caveat-audit-scorecard")
+    parser.add_argument("--bridge-shadow-gap-scorecard")
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--markdown-output")
     parser.add_argument("--min-qualified-windows", type=int, default=2)
