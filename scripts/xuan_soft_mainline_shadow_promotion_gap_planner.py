@@ -81,6 +81,7 @@ def pick_status(
     shadow_gate: dict[str, Any],
     run_trigger: dict[str, Any],
     missing_qualified_windows: int,
+    bridge_accepted_short: bool,
 ) -> tuple[str, str]:
     if is_keep(shadow_gate):
         return (
@@ -96,6 +97,11 @@ def pick_status(
         return (
             "BLOCKED_SOFT_MAINLINE_SHADOW_PROMOTION_GAP_WAIT_FOR_FRESH_DENSITY_LOCAL_ONLY",
             "wait_for_fresh_prefix_or_preflight_density_signal_before_remote",
+        )
+    if bridge_accepted_short and missing_qualified_windows == 0:
+        return (
+            "UNKNOWN_SOFT_MAINLINE_SHADOW_PROMOTION_GAP_BRIDGE_ACCEPTED_SHORT_LOCAL_ONLY",
+            "prepare_one_bounded_cap25_soft_mainline_remote_on_future_heartbeat_after_verifier",
         )
     if missing_qualified_windows > 0:
         return (
@@ -126,6 +132,7 @@ def build_markdown(card: dict[str, Any]) -> str:
         f"- Clean strict rescue closes still needed by repeat gap: `{gap['repeat_remaining_strict_rescue_closes']}`.",
         f"- Bridge accepted actions shortfall: `{gap['bridge_accepted_actions_shortfall']}`.",
         f"- Shadow blockers: `{', '.join(gap['shadow_gate_blockers']) or 'none'}`.",
+        f"- Bridge interpretation active: `{decision['bridge_runtime_repeat_interpretation']}`.",
         "",
         "## Next Qualifying Window Target",
         "",
@@ -161,6 +168,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     repeat_remaining = body(repeat_gap, "remaining_gaps")
     repeat_floor = body(repeat_gap, "next_window_floor")
     bridge_remaining = body(bridge_gap, "remaining_gaps")
+    bridge_decision = body(bridge_gap, "decision")
+    bridge_thresholds = body(bridge_gap, "thresholds")
     source_absorbed = source_caveat_absorbed(source_audit)
 
     min_qualified = inum(body(shadow_gate, "thresholds").get("min_qualified_windows"), args.min_qualified_windows)
@@ -174,25 +183,35 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     missing_active_abstain = max(0, min_active_abstain - active_abstain)
     repeat_remaining_rescues = inum(repeat_remaining.get("total_strict_rescue_closes"))
     bridge_accepted_shortfall = inum(bridge_remaining.get("accepted_actions"))
+    bridge_accepted_short = (
+        bool(bridge_decision.get("bridge_accepted_only_gap"))
+        and bool(bridge_decision.get("small_accepted_gap"))
+        and bridge_accepted_shortfall > 0
+    )
+    bridge_rescue_gap_clear = inum(bridge_remaining.get("strict_rescue_closes")) == 0
+    bridge_runtime_repeat_interpretation = (
+        bridge_accepted_short
+        and missing_qualified == 0
+        and missing_active_abstain == 0
+        and is_keep(run_trigger)
+        and (not args.source_caveat_audit_scorecard or source_absorbed)
+    )
 
     gate_status, next_action = pick_status(
         shadow_gate=shadow_gate,
         run_trigger=run_trigger,
         missing_qualified_windows=missing_qualified,
+        bridge_accepted_short=bridge_runtime_repeat_interpretation,
     )
     if run_decision.get("next_action") and gate_status.startswith("BLOCKED"):
         next_action = str(run_decision["next_action"])
 
-    hard_blockers = sorted(
-        {
-            str(item)
-            for item in [
-                *listify(shadow_decision.get("hard_blockers")),
-                *listify(run_decision.get("hard_blockers")),
-            ]
-            if item
-        }
-    )
+    shadow_blockers = [str(item) for item in listify(shadow_decision.get("hard_blockers")) if item]
+    run_trigger_blockers = [str(item) for item in listify(run_decision.get("hard_blockers")) if item]
+    if bridge_runtime_repeat_interpretation:
+        hard_blockers = ["bridge_accepted_actions_shortfall"]
+    else:
+        hard_blockers = sorted({*shadow_blockers, *run_trigger_blockers})
     if missing_qualified:
         hard_blockers.append("missing_additional_qualified_tradeable_window")
     if missing_active_abstain:
@@ -203,10 +222,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     # The repeat gap may need only five more rescues, but shadow review still
     # requires the next window to pass the per-window sample gate.
-    min_rescues_for_next_window = max(
-        args.min_window_strict_rescue_closes,
-        inum(repeat_floor.get("min_strict_rescue_closes_to_clear_aggregate")),
-    )
+    if bridge_runtime_repeat_interpretation and bridge_rescue_gap_clear:
+        min_rescues_for_next_window = args.min_window_strict_rescue_closes
+    else:
+        min_rescues_for_next_window = max(
+            args.min_window_strict_rescue_closes,
+            inum(repeat_floor.get("min_strict_rescue_closes_to_clear_aggregate")),
+        )
     next_window_target = {
         "min_accepted_actions": inum(repeat_floor.get("min_accepted_actions"), args.min_window_accepted_actions),
         "min_fills": inum(repeat_floor.get("min_fills"), args.min_window_fills),
@@ -215,9 +237,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "max_residual_qty_share": fnum(repeat_floor.get("max_residual_qty_share"), args.max_residual_qty_share),
         "max_residual_cost_share": fnum(repeat_floor.get("max_residual_cost_share"), args.max_residual_cost_share),
         "max_rescue_net_pair_cost": fnum(repeat_floor.get("max_rescue_net_pair_cost"), args.max_rescue_net_pair_cost),
+        "max_rescue_surplus_net_pair_cost": fnum(bridge_thresholds.get("bridge_surplus_net_cap")),
+        "strict_rescue_min_pair_pnl_after": fnum(bridge_thresholds.get("bridge_min_pair_pnl_after")),
         "max_rescue_l1_age_ms": fnum(repeat_floor.get("max_rescue_l1_age_ms"), args.max_rescue_l1_age_ms),
         "max_source_blocks": args.max_source_blocks,
         "allow_absorbed_source_blocks": True,
+        "allow_explicit_surplus_rescues": bool(fnum(bridge_thresholds.get("bridge_surplus_net_cap"))),
         "must_pass_per_window_gates": True,
     }
 
@@ -263,9 +288,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "missing_active_abstain_windows": missing_active_abstain,
             "repeat_remaining_strict_rescue_closes": repeat_remaining_rescues,
             "bridge_accepted_actions_shortfall": bridge_accepted_shortfall,
+            "bridge_accepted_only_gap": bridge_accepted_short,
+            "bridge_runtime_repeat_interpretation": bridge_runtime_repeat_interpretation,
             "bridge_gap_status": status(bridge_gap) or None,
-            "shadow_gate_blockers": listify(shadow_decision.get("hard_blockers")),
-            "run_trigger_blockers": listify(run_decision.get("hard_blockers")),
+            "shadow_gate_blockers": shadow_blockers,
+            "run_trigger_blockers": run_trigger_blockers,
         },
         "source_caveat_summary": {
             "provided": bool(args.source_caveat_audit_scorecard),
@@ -298,6 +325,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "hard_blockers": hard_blockers,
             "source_caveat_absorbed": source_absorbed,
             "bridge_accepted_actions_shortfall": bridge_accepted_shortfall,
+            "bridge_runtime_repeat_interpretation": bridge_runtime_repeat_interpretation,
+            "legacy_runtime_repeat_blockers_explained_by_bridge": (
+                bridge_runtime_repeat_interpretation and set(shadow_blockers) <= {
+                    "runtime_shadow_readiness_not_keep",
+                    "repeat_window_scorer_not_keep",
+                }
+            ),
         },
         "guardrails": [
             "This planner is local planning evidence only.",
@@ -305,6 +339,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "A fresh qualified window must pass per-window gates; aggregate arithmetic alone is insufficient.",
             "Do not widen economics, run longer than 1800s, or return to ce25 hard gates to manufacture density.",
             "Absorbed source blocks do not count as accepted/rescue contamination.",
+            "Bridge interpretation does not weaken legacy runtime/repeat scorers; it explains their blockers through explicit-surplus bridge evidence.",
         ],
     }
     return rounded(card)
