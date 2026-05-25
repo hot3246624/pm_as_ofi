@@ -1,0 +1,37 @@
+{
+  "artifact": "xuan_observable_pre_action_rule_miner_feature_join_contract_smoke",
+  "checks": {
+    "bad_inventory_fails_closed": true,
+    "bad_runner_fails_closed": true,
+    "current_direct_export_not_claimed_ready": true,
+    "promotion_gate_false": true,
+    "real_source_contract_ready": true,
+    "strategy_evidence_false": true
+  },
+  "created_utc": "2026-05-25T19:25:36Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_FEATURE_JOIN_CONTRACT_SMOKE_PASS",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "strategy_evidence": false
+}
