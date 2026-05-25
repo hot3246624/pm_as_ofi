@@ -1,0 +1,283 @@
+{
+  "artifact": "xuan_strategy_discovery_grid_expansion_review",
+  "blockers": [],
+  "cap100_result": {
+    "config": {
+      "activation_window_s": [
+        3.0,
+        5.0,
+        7.5,
+        10.0,
+        15.0,
+        20.0
+      ],
+      "clip": 5.0,
+      "edges": [
+        0.055,
+        0.06,
+        0.065,
+        0.07,
+        0.075
+      ],
+      "fill_haircut": 0.25,
+      "leak_rates": [
+        0.005,
+        0.01,
+        0.02
+      ],
+      "max_residual_qty_rate": 0.04,
+      "min_opp_counts": [
+        1,
+        2
+      ],
+      "pair_fee_rate": 0.0283,
+      "residual_fee_rate": 0.0283,
+      "strict_l1_pair_cap": 1.0,
+      "window_s": 10.0
+    },
+    "filtered_row_count": 111,
+    "interpretation": "strict_l1_pair_cap=1.00 removes the usable strict-cache opportunity surface in this probe; it should not be used as the next training entry point.",
+    "qualified_count": 0,
+    "row_count": 185342,
+    "status": "DISCARD_CAP100_OVERSTRICT_EMPTY_INPUT"
+  },
+  "cap102_result": {
+    "config": {
+      "activation_window_s": [
+        3.0,
+        5.0,
+        7.5,
+        10.0,
+        15.0,
+        20.0
+      ],
+      "clip": 5.0,
+      "edges": [
+        0.055,
+        0.06,
+        0.065,
+        0.07,
+        0.075
+      ],
+      "fill_haircut": 0.25,
+      "leak_rates": [
+        0.005,
+        0.01,
+        0.02
+      ],
+      "max_residual_qty_rate": 0.04,
+      "min_opp_counts": [
+        1,
+        2
+      ],
+      "pair_fee_rate": 0.0283,
+      "residual_fee_rate": 0.0283,
+      "strict_l1_pair_cap": 1.02,
+      "window_s": 10.0
+    },
+    "qualified_count": 120,
+    "selected_by_holdout_worst_net": {
+      "activation_window_s": 20.0,
+      "covered_pair_actions": 4700,
+      "covered_residual_qty_rate": 0.009826,
+      "covered_worst_day": 51.773306,
+      "covered_worst_net_fee_after": 1416.566739,
+      "edge": 0.075,
+      "holdout_pair_actions": 900,
+      "holdout_residual_qty_rate": 0.010339,
+      "holdout_worst_day": 39.473779,
+      "holdout_worst_net_fee_after": 283.972185,
+      "leak_rate": 0.005,
+      "min_opp_count": 1
+    },
+    "selected_by_lowest_holdout_residual": {
+      "activation_window_s": 7.5,
+      "covered_pair_actions": 3079,
+      "covered_residual_qty_rate": 0.006493,
+      "covered_worst_day": 39.58179,
+      "covered_worst_net_fee_after": 1234.404225,
+      "edge": 0.075,
+      "holdout_pair_actions": 594,
+      "holdout_residual_qty_rate": 0.007087,
+      "holdout_worst_day": 28.988796,
+      "holdout_worst_net_fee_after": 243.278227,
+      "leak_rate": 0.005,
+      "min_opp_count": 1
+    },
+    "status": "UNKNOWN_ACTIVATION_REPAIR_LEAD",
+    "top_rows_by_holdout_worst_net": [
+      {
+        "activation_window_s": 20.0,
+        "covered_pair_actions": 4700,
+        "covered_residual_qty_rate": 0.009826,
+        "covered_worst_day": 51.773306,
+        "covered_worst_net_fee_after": 1416.566739,
+        "edge": 0.075,
+        "holdout_pair_actions": 900,
+        "holdout_residual_qty_rate": 0.010339,
+        "holdout_worst_day": 39.473779,
+        "holdout_worst_net_fee_after": 283.972185,
+        "leak_rate": 0.005,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 15.0,
+        "covered_pair_actions": 4314,
+        "covered_residual_qty_rate": 0.008423,
+        "covered_worst_day": 55.74549,
+        "covered_worst_net_fee_after": 1410.154078,
+        "edge": 0.075,
+        "holdout_pair_actions": 829,
+        "holdout_residual_qty_rate": 0.008862,
+        "holdout_worst_day": 39.644654,
+        "holdout_worst_net_fee_after": 277.963323,
+        "leak_rate": 0.005,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 10.0,
+        "covered_pair_actions": 3732,
+        "covered_residual_qty_rate": 0.00677,
+        "covered_worst_day": 51.372209,
+        "covered_worst_net_fee_after": 1364.104414,
+        "edge": 0.075,
+        "holdout_pair_actions": 726,
+        "holdout_residual_qty_rate": 0.007122,
+        "holdout_worst_day": 36.673035,
+        "holdout_worst_net_fee_after": 264.230781,
+        "leak_rate": 0.005,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 7.5,
+        "covered_pair_actions": 3079,
+        "covered_residual_qty_rate": 0.006493,
+        "covered_worst_day": 39.58179,
+        "covered_worst_net_fee_after": 1234.404225,
+        "edge": 0.075,
+        "holdout_pair_actions": 594,
+        "holdout_residual_qty_rate": 0.007087,
+        "holdout_worst_day": 28.988796,
+        "holdout_worst_net_fee_after": 243.278227,
+        "leak_rate": 0.005,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 15.0,
+        "covered_pair_actions": 4314,
+        "covered_residual_qty_rate": 0.016705,
+        "covered_worst_day": 47.240935,
+        "covered_worst_net_fee_after": 1224.984241,
+        "edge": 0.075,
+        "holdout_pair_actions": 829,
+        "holdout_residual_qty_rate": 0.017569,
+        "holdout_worst_day": 34.543644,
+        "holdout_worst_net_fee_after": 241.087071,
+        "leak_rate": 0.01,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 10.0,
+        "covered_pair_actions": 3732,
+        "covered_residual_qty_rate": 0.013449,
+        "covered_worst_day": 45.778642,
+        "covered_worst_net_fee_after": 1238.505152,
+        "edge": 0.075,
+        "holdout_pair_actions": 726,
+        "holdout_residual_qty_rate": 0.014143,
+        "holdout_worst_day": 33.419366,
+        "holdout_worst_net_fee_after": 238.894111,
+        "leak_rate": 0.01,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 20.0,
+        "covered_pair_actions": 4700,
+        "covered_residual_qty_rate": 0.009826,
+        "covered_worst_day": 41.790569,
+        "covered_worst_net_fee_after": 1172.518244,
+        "edge": 0.07,
+        "holdout_pair_actions": 900,
+        "holdout_residual_qty_rate": 0.010339,
+        "holdout_worst_day": 33.950908,
+        "holdout_worst_net_fee_after": 237.215256,
+        "leak_rate": 0.005,
+        "min_opp_count": 1
+      },
+      {
+        "activation_window_s": 20.0,
+        "covered_pair_actions": 4700,
+        "covered_residual_qty_rate": 0.019461,
+        "covered_worst_day": 40.738361,
+        "covered_worst_net_fee_after": 1176.847644,
+        "edge": 0.075,
+        "holdout_pair_actions": 900,
+        "holdout_residual_qty_rate": 0.020467,
+        "holdout_worst_day": 32.299972,
+        "holdout_worst_net_fee_after": 236.26125,
+        "leak_rate": 0.01,
+        "min_opp_count": 1
+      }
+    ]
+  },
+  "created_utc": "20260525T082124Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_STRATEGY_DISCOVERY_GRID_EXPANSION_CAP102_LEAD_READY",
+  "interpretation": {
+    "cap100": "discard as over-strict empty training surface",
+    "cap102": "keep as local train/holdout research lead; this is not no-order acceptance because the last fresh no-order run still failed normalized risk budget",
+    "ce25_prior_role": "use ce25 projected pair-cost/residual concepts as feature priors for future predicates, but do not use public-profile realized pair_cost as a live gate"
+  },
+  "next_executable_action": "Prepare an exact bounded no-order diagnostic proposal for the selected cap102 candidate only if the user approves it later; until then run local-only review comparing selected cap102 candidate against previous edge=0.07/window=7.5 no-order failure and do not start another shadow.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "GRID_EXPANSION_RESEARCH_LEAD_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "cap100_discarded": true,
+    "cap102_qualified_count": 120,
+    "no_order_diagnostic_allowed": false,
+    "selected_local_candidate": {
+      "activation_window_s": 20.0,
+      "covered_pair_actions": 4700,
+      "covered_residual_qty_rate": 0.009826,
+      "covered_worst_day": 51.773306,
+      "covered_worst_net_fee_after": 1416.566739,
+      "edge": 0.075,
+      "holdout_pair_actions": 900,
+      "holdout_residual_qty_rate": 0.010339,
+      "holdout_worst_day": 39.473779,
+      "holdout_worst_net_fee_after": 283.972185,
+      "leak_rate": 0.005,
+      "min_opp_count": 1
+    },
+    "status": "KEEP_STRATEGY_DISCOVERY_GRID_EXPANSION_CAP102_LEAD_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "source_inputs": {
+    "cap100_error": null,
+    "cap100_manifest": "xuan_research_artifacts/xuan_strategy_discovery_symmetric_activation_grid_expansion_20260525T062000Z/manifest.json",
+    "cap102_error": null,
+    "cap102_manifest": "xuan_research_artifacts/xuan_strategy_discovery_symmetric_activation_grid_expansion_cap102_20260525T062500Z/manifest.json",
+    "selector_error": null,
+    "selector_manifest": "xuan_research_artifacts/xuan_strategy_discovery_train_holdout_selector_20260525T061500Z/manifest.json"
+  }
+}

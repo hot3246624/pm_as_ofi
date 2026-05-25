@@ -1,0 +1,184 @@
+{
+  "artifact": "xuan_strategy_discovery_train_holdout_selector",
+  "blockers": [],
+  "candidate_queue": [
+    {
+      "evidence_status": "research_only_not_deployable",
+      "lane": "symmetric_activation_strict_cache_grid_expansion",
+      "next_command_template": "python3 scripts/xuan_symmetric_admission_activation_residual_stress_probe.py --edges 0.055,0.06,0.065,0.07,0.075 --leak-rates 0.005,0.01,0.02 --activation-window-s 3,5,7.5,10,15,20 --min-opp-counts 1,2 --strict-l1-pair-cap 1.00 --max-residual-qty-rate 0.04 --output-dir xuan_research_artifacts/<new-grid-artifact>",
+      "status": "READY_LOCAL_ONLY",
+      "why": "Only current lane with multi-day covered+holdout strict-cache evidence and a known fresh no-order risk-budget failure to optimize against."
+    },
+    {
+      "evidence_status": "not_strategy_evidence",
+      "lane": "ce25_projected_guard_train_holdout_transfer",
+      "next_command_template": null,
+      "status": "FEATURE_PRIOR_ONLY_INPUT_BLOCKED",
+      "why": "Projected pair-cost/residual diagnostics are implemented, but current worktree still lacks safe 72h ce25 daily-cohort evidence and authenticated liquidity/fair-probability truth."
+    },
+    {
+      "available_pullbacks": [],
+      "evidence_status": "not_strategy_evidence_until_real_pullback_scored",
+      "lane": "symmetric_activation_tail_attribution_real_pullback_scoring",
+      "next_command_template": null,
+      "status": "BLOCKED_REAL_PULLBACK_ABSENT",
+      "why": "Tail attribution summary is default-off/scored, but only smoke aggregates contain it right now."
+    }
+  ],
+  "ce25_feature_prior": {
+    "core_rule": "BTC/ETH/SOL 5m+15m projected_pair_cost<0.95 projected_residual<10%",
+    "hard_kill": "projected_pair_cost>=1.00 or residual>20% near close",
+    "must_not_use_as_live_criteria": [
+      "realized public-profile pair_cost bucket",
+      "single-day ce25 public PnL",
+      "fixture projected guard decisions",
+      "public-profile static price/asset/timeframe filter by itself"
+    ],
+    "no_order_diagnostic_allowed": false,
+    "spec_ready": true,
+    "starter_rule": "ETH/SOL 5m+15m projected_pair_cost<0.90 projected_residual<15%",
+    "status": "FEATURE_PRIOR_READY_NOT_EVIDENCE",
+    "strategy_evidence": false,
+    "summary_scorer_ready": true,
+    "use_in_discovery": [
+      "projected_pair_cost",
+      "projected_residual_rate",
+      "late-window completion-vs-initiation policy",
+      "ETH/SOL/BTC 5m/15m as a feature prior only"
+    ]
+  },
+  "contract": {
+    "allowed_discovery_labels": [
+      "post-action outcomes may be used only inside offline train scoring",
+      "frozen predicates must contain only pre-action fields before holdout evaluation",
+      "holdout evaluation must run without reselecting thresholds"
+    ],
+    "allowed_pre_action_feature_families": [
+      "opposite-side activation age/count",
+      "same/opp inventory qty and cost before action",
+      "projected pair cost and projected residual rate before action",
+      "source_sequence presence and source-link pre-action context",
+      "asset/timeframe/offset/time-to-expiry only when paired with a causal pre-action mechanism",
+      "fee/liquidity role fields only when they are explicitly available before action"
+    ],
+    "contract_name": "xuan_strategy_discovery_train_holdout_contract_v1",
+    "forbidden": [
+      "using realized pair_cost as live criteria",
+      "using future settlement labels as live criteria",
+      "single-day public-profile filters as strategy evidence",
+      "pure Polymarket price cap or static side/offset/timeframe deletion",
+      "D+ micro-deficit/ledger/tiny-deficit/closed-cycle/fill-to-balance failed families",
+      "starting SSH/shadow/canary/live/local agg/shared WS from this contract",
+      "raw/replay/full-store scans",
+      "private_truth_ready/deployable/promotion claims"
+    ],
+    "objective": {
+      "future_no_order_acceptance_is_separate": true,
+      "minimum_holdout_pair_actions": 200,
+      "minimum_train_pair_actions": 1000,
+      "primary": "positive train and holdout fee-adjusted/stress PnL with bounded residual",
+      "reject_if_holdout_worst_net_fee_after_nonpositive": true,
+      "reject_if_residual_rate_above_5pct_on_strict_cache": true
+    },
+    "promotion_gate": {
+      "deployable": false,
+      "g2_canary_ready": false,
+      "passed": false,
+      "private_truth_ready": false
+    },
+    "purpose": "Discover new strategies from train/holdout strict-cache evidence while treating public-profile accounts such as ce25 as feature priors, not proof."
+  },
+  "created_utc": "20260525T081727Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_STRATEGY_DISCOVERY_TRAIN_HOLDOUT_SELECTOR_READY",
+  "next_executable_action": "Run the selected local-only strict-cache grid expansion, then score frozen pre-action predicates on holdout without starting shadow/canary/live.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "TRAIN_HOLDOUT_DISCOVERY_SELECTION_NOT_PROMOTION_EVIDENCE"
+  },
+  "real_tail_attribution_pullbacks": [],
+  "research_ranking": {
+    "ce25_used_as_feature_prior": true,
+    "no_order_diagnostic_allowed": false,
+    "selected_lane": "symmetric_activation_strict_cache_grid_expansion",
+    "status": "KEEP_STRATEGY_DISCOVERY_TRAIN_HOLDOUT_SELECTOR_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "selected_next_lane": {
+    "evidence_status": "research_only_not_deployable",
+    "lane": "symmetric_activation_strict_cache_grid_expansion",
+    "next_command_template": "python3 scripts/xuan_symmetric_admission_activation_residual_stress_probe.py --edges 0.055,0.06,0.065,0.07,0.075 --leak-rates 0.005,0.01,0.02 --activation-window-s 3,5,7.5,10,15,20 --min-opp-counts 1,2 --strict-l1-pair-cap 1.00 --max-residual-qty-rate 0.04 --output-dir xuan_research_artifacts/<new-grid-artifact>",
+    "status": "READY_LOCAL_ONLY",
+    "why": "Only current lane with multi-day covered+holdout strict-cache evidence and a known fresh no-order risk-budget failure to optimize against."
+  },
+  "source_inputs": {
+    "ce25_guard_scorer_error": null,
+    "ce25_guard_scorer_manifest": "xuan_research_artifacts/xuan_ce25_projected_guard_summary_scorer_20260524T115000Z/manifest.json",
+    "ce25_guard_spec_error": null,
+    "ce25_guard_spec_manifest": "xuan_research_artifacts/xuan_ce25_projected_pair_cost_residual_guard_spec_20260524T104842Z/manifest.json",
+    "strategy_reset_error": null,
+    "strategy_reset_manifest": "xuan_research_artifacts/xuan_strategy_reset_next_lane_selector_20260524T162937Z/manifest.json",
+    "symmetric_completion_error": null,
+    "symmetric_completion_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_completion_20260525T022531Z/manifest.json",
+    "tail_gap_error": null,
+    "tail_gap_manifest": "xuan_research_artifacts/xuan_symmetric_activation_tail_gap_audit_20260525T030401Z/manifest.json"
+  },
+  "symmetric_activation_seed": {
+    "current_no_order_result": "UNKNOWN_RISK_BUDGET_FAIL",
+    "no_order_diagnostic_allowed": false,
+    "selected": {
+      "activation_window_s": 7.5,
+      "covered_pair_actions": 3079,
+      "covered_residual_qty_rate": 0.025476,
+      "covered_worst_day": 20.588189,
+      "covered_worst_net_fee_after": 778.801385,
+      "edge": 0.07,
+      "holdout_pair_actions": 594,
+      "holdout_residual_qty_rate": 0.02776,
+      "holdout_worst_day": 17.860534,
+      "holdout_worst_net_fee_after": 151.002955,
+      "leak_rate": 0.02,
+      "min_opp_count": 1,
+      "selection_score": [
+        151.002955,
+        17.860534,
+        594,
+        -0.02776
+      ],
+      "source_manifest": "xuan_research_artifacts/xuan_symmetric_activation_residual_stress_strict_count_boundary_20260519T1431Z/manifest.json",
+      "source_name": "strict_count_boundary_activation_residual_stress"
+    },
+    "status": "STRICT_CACHE_DISCOVERY_SEED_READY",
+    "strategy_evidence": false,
+    "tail_gap_instrumentation_target_ready": true,
+    "why_keep_as_training_seed": [
+      "has current-worktree covered and holdout strict-cache evidence",
+      "uses pre-action opposite-side activation rather than post-action outcomes",
+      "fresh no-order failure was risk-budget, not instrumentation failure or economic-negative failure"
+    ],
+    "why_not_deploy": [
+      "fresh no-order net_pair_cost_p90 exceeded 1.0",
+      "fresh no-order residual_qty_share exceeded 15%",
+      "fresh no-order pair_tail_loss_share exceeded 5%"
+    ]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "artifact": "xuan_strategy_discovery_train_holdout_selector_smoke",
+  "bad_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_strategy_discovery_train_holdout_selector_smoke_20260525T061500Z/bad/manifest.json",
+  "checks": {
+    "bad_blocked": true,
+    "bad_promotion_false": true,
+    "bad_unknown": true,
+    "ce25_not_strategy_evidence": true,
+    "ce25_prior_ready": true,
+    "ce25_queue_input_blocked": true,
+    "real_keep": true,
+    "real_no_no_order": true,
+    "real_promotion_false": true,
+    "real_tail_pullback_absent": true,
+    "selected_ready_local_only": true,
+    "selected_strict_cache_grid": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_STRATEGY_DISCOVERY_TRAIN_HOLDOUT_SELECTOR_SMOKE_PASS",
+  "real_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_strategy_discovery_train_holdout_selector_smoke_20260525T061500Z/real/manifest.json"
+}
