@@ -524,6 +524,8 @@ def main() -> None:
                 str(third_root),
                 "--scorecard-json",
                 str(paths["young_tiny_residual"]),
+                "--runtime-summary-scorecard",
+                str(paths["runtime_summary"]),
             ],
             [
                 sys.executable,

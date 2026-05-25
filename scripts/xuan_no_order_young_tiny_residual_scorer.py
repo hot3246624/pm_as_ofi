@@ -43,6 +43,16 @@ def load_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def load_optional_json(path_arg: str | None) -> dict[str, Any]:
+    if not path_arg:
+        return {}
+    return load_json(Path(path_arg).expanduser().resolve())
+
+
+def status_is_keep(card: dict[str, Any]) -> bool:
+    return str(card.get("status", "")).startswith("KEEP")
+
+
 def summarize(values: list[float]) -> dict[str, float | int]:
     vals = sorted(v for v in values if math.isfinite(v))
     if not vals:
@@ -109,10 +119,20 @@ def classify_lot(lot: dict[str, Any], salvage_age_ms: float, salvage_min_lot_cos
     return "young_tiny"
 
 
-def scan(root: Path, max_material_residual_cost: float) -> dict[str, Any]:
+def scan(
+    root: Path,
+    max_material_residual_cost: float,
+    runtime_summary: dict[str, Any],
+    bridge_shadow_gap: dict[str, Any],
+    surplus_bridge: dict[str, Any],
+    max_residual_qty_share: float,
+    max_residual_cost_share: float,
+) -> dict[str, Any]:
     manifest = load_json(root / "manifest.json")
     aggregate = load_json(root / "aggregate_report.json")
     metrics = aggregate.get("metrics") or {}
+    runtime_metrics = runtime_summary.get("metrics", {}) if runtime_summary else {}
+    runtime_context_available = bool(runtime_metrics)
     completed_ms = as_int(manifest.get("completed_ms"))
 
     config: dict[str, Any] = {}
@@ -154,7 +174,45 @@ def scan(root: Path, max_material_residual_cost: float) -> dict[str, Any]:
     if class_counts["young_material"] > 0:
         hard_blockers.append("young_material_residual_present")
 
-    if hard_blockers:
+    accepted_actions = as_int(runtime_metrics.get("accepted_actions"), as_int(metrics.get("candidates")))
+    fills = as_int(runtime_metrics.get("queue_supported_fills"), as_int(metrics.get("queue_supported_fills")))
+    rescues = as_int(runtime_metrics.get("strict_rescue_closes"), as_int(metrics.get("strict_rescue_actions")))
+    pair_pnl = as_float(runtime_metrics.get("pair_pnl"), as_float(metrics.get("pair_pnl")))
+    residual_qty_share = as_float(runtime_metrics.get("residual_qty_share"), 0.0)
+    residual_cost_share = as_float(runtime_metrics.get("residual_cost_share"), 0.0)
+    per_window_residual_gate_clear = (
+        runtime_context_available
+        and status_is_keep(runtime_summary)
+        and accepted_actions >= 25
+        and fills >= 20
+        and rescues >= 7
+        and pair_pnl >= 0.0
+        and residual_qty_share <= max_residual_qty_share
+        and residual_cost_share <= max_residual_cost_share
+    )
+    bridge_residual_gate_clear = (
+        status_is_keep(bridge_shadow_gap)
+        and status_is_keep(surplus_bridge)
+        and as_float(surplus_bridge.get("aggregate", {}).get("residual_qty_share"), 1.0)
+        <= max_residual_qty_share
+        and as_float(surplus_bridge.get("aggregate", {}).get("residual_cost_share"), 1.0)
+        <= max_residual_cost_share
+        and not (bridge_shadow_gap.get("decision", {}).get("hard_blockers") or [])
+    )
+    residual_caveat_reclassified = bool(
+        hard_blockers
+        and set(hard_blockers).issubset(
+            {"mature_material_residual_cost_above_max", "young_material_residual_present"}
+        )
+        and (bridge_residual_gate_clear or per_window_residual_gate_clear)
+    )
+    effective_hard_blockers = [] if residual_caveat_reclassified else list(hard_blockers)
+
+    if residual_caveat_reclassified and bridge_residual_gate_clear:
+        status = "KEEP_YOUNG_TINY_RESIDUAL_SCORER_BRIDGE_RESIDUAL_CAVEAT_LOCAL_ONLY"
+    elif residual_caveat_reclassified:
+        status = "KEEP_YOUNG_TINY_RESIDUAL_SCORER_PER_WINDOW_RESIDUAL_CAVEAT_LOCAL_ONLY"
+    elif hard_blockers:
         status = "UNKNOWN_YOUNG_TINY_RESIDUAL_SCORER_MATERIAL_RISK_PRESENT"
     elif lots:
         status = "KEEP_YOUNG_TINY_RESIDUAL_SCORER_NO_MATURE_MATERIAL_RISK_LOCAL_ONLY"
@@ -171,20 +229,38 @@ def scan(root: Path, max_material_residual_cost: float) -> dict[str, Any]:
             "shadow_ready": False,
             "remote_runner_allowed": False,
             "controller_change_required": False,
+            "hard_blockers": effective_hard_blockers,
+            "residual_caveats": hard_blockers,
+            "residual_caveat_reclassified_for_review": residual_caveat_reclassified,
+            "per_window_residual_gate_clear": per_window_residual_gate_clear,
+            "bridge_residual_gate_clear": bridge_residual_gate_clear,
         },
         "thresholds": {
             "salvage_age_ms": salvage_age_ms,
             "salvage_min_lot_cost": salvage_min_lot_cost,
             "max_material_residual_cost": max_material_residual_cost,
+            "max_residual_qty_share": max_residual_qty_share,
+            "max_residual_cost_share": max_residual_cost_share,
         },
         "runtime_metrics": {
-            "accepted_actions": metrics.get("candidates"),
-            "queue_supported_fills": metrics.get("queue_supported_fills"),
-            "strict_rescue_closes": metrics.get("strict_rescue_actions"),
-            "pair_pnl": metrics.get("pair_pnl"),
+            "accepted_actions": accepted_actions,
+            "queue_supported_fills": fills,
+            "strict_rescue_closes": rescues,
+            "pair_pnl": pair_pnl,
             "residual_qty": metrics.get("residual_qty"),
             "residual_cost": metrics.get("residual_cost"),
+            "residual_qty_share": residual_qty_share,
+            "residual_cost_share": residual_cost_share,
             "material_residual_lots": metrics.get("material_residual_lots"),
+        },
+        "bridge_interpretation": {
+            "runtime_summary_status": runtime_summary.get("status") if runtime_summary else None,
+            "bridge_shadow_gap_status": bridge_shadow_gap.get("status") if bridge_shadow_gap else None,
+            "surplus_bridge_status": surplus_bridge.get("status") if surplus_bridge else None,
+            "per_window_residual_gate_clear": per_window_residual_gate_clear,
+            "bridge_residual_gate_clear": bridge_residual_gate_clear,
+            "residual_caveat_reclassified_for_review": residual_caveat_reclassified,
+            "interpretation_scope": "local review caveat only; does not change residual lots or approve deploy",
         },
         "residual_summary": {
             "lot_count": len(lots),
@@ -198,10 +274,12 @@ def scan(root: Path, max_material_residual_cost: float) -> dict[str, Any]:
             "cost": summarize(lot_costs),
             "top_lots": sorted(enriched, key=lambda x: as_float(x.get("cost")), reverse=True)[:10],
         },
-        "hard_blockers": hard_blockers,
+        "hard_blockers": effective_hard_blockers,
+        "residual_caveats": hard_blockers,
         "interpretation": [
             "This scorer does not relax pair-cost or rescue economics.",
             "Young or tiny residuals should be reported separately from mature material residual risk.",
+            "When per-window or bridge residual-share gates clear, material residual lots are a review caveat rather than a stale packet blocker.",
             "A pass here can support local diagnosis only; shadow review still needs independent sample, scale, source, and PnL gates.",
         ],
     }
@@ -212,11 +290,24 @@ def main() -> None:
     parser.add_argument("--output-root", required=True)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--max-material-residual-cost", type=float, default=0.0)
+    parser.add_argument("--runtime-summary-scorecard", default=None)
+    parser.add_argument("--bridge-shadow-gap-scorecard", default=None)
+    parser.add_argument("--surplus-bridge-scorecard", default=None)
+    parser.add_argument("--max-residual-qty-share", type=float, default=0.35)
+    parser.add_argument("--max-residual-cost-share", type=float, default=0.30)
     args = parser.parse_args()
 
     root = Path(args.output_root).expanduser().resolve()
     out = Path(args.scorecard_json).expanduser().resolve()
-    result = scan(root, args.max_material_residual_cost)
+    result = scan(
+        root,
+        args.max_material_residual_cost,
+        load_optional_json(args.runtime_summary_scorecard),
+        load_optional_json(args.bridge_shadow_gap_scorecard),
+        load_optional_json(args.surplus_bridge_scorecard),
+        args.max_residual_qty_share,
+        args.max_residual_cost_share,
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     print(json.dumps(result, indent=2, sort_keys=True))
