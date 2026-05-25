@@ -1,0 +1,17 @@
+{
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_SUMMARY_SCORER_READY",
+  "promotion_gate": {
+    "passed": false
+  },
+  "research_ranking": {
+    "strategy_evidence": false
+  },
+  "score": {
+    "checks": {
+      "aggregate_parity": true,
+      "field_contract_ok": true,
+      "schema_ok": true,
+      "source_sequence_coverage_present": true
+    }
+  }
+}

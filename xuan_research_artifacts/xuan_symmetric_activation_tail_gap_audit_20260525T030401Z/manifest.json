@@ -1,0 +1,392 @@
+{
+  "artifact": "xuan_symmetric_activation_tail_gap_audit",
+  "audit_contract": {
+    "allowed_inputs": [
+      "allowlisted output/aggregate_report.json pullback",
+      "allowlisted output/*.summary.json-derived aggregate fields",
+      "shadow acceptance manifest",
+      "symmetric activation summary scorer manifest",
+      "symmetric activation acceptance adapter manifest",
+      "current committed source/spec files"
+    ],
+    "contract_name": "symmetric_activation_tail_gap_audit_v1",
+    "default_off": true,
+    "field_contract": {
+      "deployable": false,
+      "post_action_outcome_labels_included": false,
+      "private_truth_ready": false,
+      "promotion_gate_passed": false,
+      "realized_pair_cost_used_as_live_criteria": false,
+      "trading_behavior_changed": false
+    },
+    "forbidden_interpretations": [
+      "using realized pair_cost buckets as live criteria",
+      "adding a static side, price, or offset cap from this audit",
+      "reviving public-profile single-day filters",
+      "reviving D+ micro-deficit, ledger, tiny-deficit, static, cooldown, or fill-to-balance families",
+      "claiming private truth, deployability, canary readiness, or promotion readiness",
+      "starting SSH, shadow, canary, live, local agg, shared WS, or service processes",
+      "reading events JSONL, raw/replay stores, or full completion stores"
+    ],
+    "purpose": "Audit whether the failed no-order risk budget can be attributed to legal pre-action activation/source buckets and nominate instrumentation only."
+  },
+  "audit_schema_version": "symmetric_activation_tail_gap_audit_v1",
+  "created_utc": "20260525T032322Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_TAIL_GAP_AUDIT_INSTRUMENTATION_TARGET_READY",
+  "evaluation": {
+    "decision": "KEEP",
+    "decision_label": "KEEP_SYMMETRIC_ACTIVATION_TAIL_GAP_AUDIT_INSTRUMENTATION_TARGET_READY",
+    "failure_profile": {
+      "activation_summary_present": true,
+      "adapter_failed_only_on_shadow_risk_budget": true,
+      "economic_positive": true,
+      "material_residual_lots_failed": false,
+      "net_pair_cost_p90_failed": true,
+      "no_order_safety_ok": true,
+      "pair_tail_loss_share_failed": true,
+      "residual_cost_share_failed": false,
+      "residual_qty_share_failed": true,
+      "sample_size_ok": true,
+      "summary_field_contract_ok": true,
+      "summary_schema_ok": true,
+      "summary_scorer_ready": true,
+      "summary_source_sequence_coverage_present": true
+    },
+    "legal_concentration": {
+      "activation_candidate_counts": {
+        "admitted|candidate": {
+          "activation_not_required": 120.0,
+          "activation_required_activation_opp_age_0_1s": 43.0,
+          "activation_required_activation_opp_age_1_5s": 23.0,
+          "activation_required_activation_opp_age_5_15s": 55.0
+        },
+        "blocked|activation_opp_seen": {
+          "activation_required_activation_opp_age_15_60s": 95.0,
+          "activation_required_activation_opp_age_5_15s": 192.0,
+          "activation_required_missing_opp": 30.0
+        }
+      },
+      "activation_missing_tail_join_fields": [
+        "pair_cost_bucket_by_status_reason_activation_bucket",
+        "pair_cost_bucket_by_status_reason_side_offset_activation_bucket",
+        "residual_qty_by_status_reason_activation_bucket",
+        "residual_qty_by_status_reason_side_offset_activation_bucket",
+        "residual_cost_by_status_reason_activation_bucket",
+        "residual_cost_by_status_reason_side_offset_activation_bucket",
+        "pair_tail_loss_by_status_reason_activation_bucket",
+        "source_link_residual_tail_exemplars_by_activation_bucket"
+      ],
+      "high_pair_cost_by_offset_source_records_top": [
+        {
+          "key": "offset_ge_120",
+          "share": 0.65625,
+          "value": 21.0
+        },
+        {
+          "key": "offset_30_60",
+          "share": 0.15625,
+          "value": 5.0
+        },
+        {
+          "key": "offset_60_90",
+          "share": 0.125,
+          "value": 4.0
+        },
+        {
+          "key": "offset_0_30",
+          "share": 0.0625,
+          "value": 2.0
+        }
+      ],
+      "high_pair_cost_by_public_px_source_records_top": [
+        {
+          "key": "px_ge_0p55",
+          "share": 0.59375,
+          "value": 19.0
+        },
+        {
+          "key": "px_0p30_0p45",
+          "share": 0.28125,
+          "value": 9.0
+        },
+        {
+          "key": "px_0p48_0p55",
+          "share": 0.0625,
+          "value": 2.0
+        },
+        {
+          "key": "px_lt_0p30",
+          "share": 0.03125,
+          "value": 1.0
+        },
+        {
+          "key": "px_0p45_0p48",
+          "share": 0.03125,
+          "value": 1.0
+        }
+      ],
+      "high_pair_cost_pair_action_share": 0.207792,
+      "high_pair_cost_pair_actions": 16.0,
+      "pair_cost_bucket_total": 77.0,
+      "residual_low_px_qty_share": 0.825769,
+      "residual_side_cost": {
+        "NO": 0.890025,
+        "YES": 7.5935
+      },
+      "residual_side_qty": {
+        "NO": 7.4475,
+        "YES": 21.25
+      },
+      "residual_yes_cost_share": 0.895088,
+      "residual_yes_qty_share": 0.740483,
+      "source_link_tail_summary": {
+        "high_pair_cost_source_record_total": 32.0,
+        "high_pair_cost_source_side_offset_risk_direction_top": [
+          {
+            "key": "NO|offset_ge_120|repair_or_pairing_improving",
+            "share": 0.21875,
+            "value": 7.0
+          },
+          {
+            "key": "YES|offset_ge_120|repair_or_pairing_improving",
+            "share": 0.21875,
+            "value": 7.0
+          },
+          {
+            "key": "NO|offset_ge_120|risk_increasing",
+            "share": 0.125,
+            "value": 4.0
+          },
+          {
+            "key": "YES|offset_30_60|repair_or_pairing_improving",
+            "share": 0.09375,
+            "value": 3.0
+          },
+          {
+            "key": "YES|offset_ge_120|risk_increasing",
+            "share": 0.09375,
+            "value": 3.0
+          },
+          {
+            "key": "NO|offset_60_90|risk_increasing",
+            "share": 0.0625,
+            "value": 2.0
+          },
+          {
+            "key": "NO|offset_0_30|risk_increasing",
+            "share": 0.03125,
+            "value": 1.0
+          },
+          {
+            "key": "NO|offset_30_60|repair_or_pairing_improving",
+            "share": 0.03125,
+            "value": 1.0
+          }
+        ],
+        "residual_cost_by_source_side_offset_risk_direction_top": [
+          {
+            "key": "YES|offset_60_90|risk_increasing",
+            "share": 0.374255,
+            "value": 3.175
+          },
+          {
+            "key": "YES|offset_ge_120|repair_or_pairing_improving",
+            "share": 0.175546,
+            "value": 1.48925
+          },
+          {
+            "key": "YES|offset_ge_120|risk_increasing",
+            "share": 0.075647,
+            "value": 0.64175
+          },
+          {
+            "key": "YES|offset_0_30|repair_or_pairing_improving",
+            "share": 0.073672,
+            "value": 0.625
+          },
+          {
+            "key": "YES|offset_30_60|repair_or_pairing_improving",
+            "share": 0.063358,
+            "value": 0.5375
+          },
+          {
+            "key": "YES|offset_90_120|risk_increasing",
+            "share": 0.063358,
+            "value": 0.5375
+          },
+          {
+            "key": "YES|offset_90_120|repair_or_pairing_improving",
+            "share": 0.04273,
+            "value": 0.3625
+          },
+          {
+            "key": "NO|offset_0_30|risk_increasing",
+            "share": 0.029469,
+            "value": 0.25
+          }
+        ],
+        "residual_count_by_source_side_offset_risk_direction_top": [
+          {
+            "key": "YES|offset_60_90|risk_increasing",
+            "share": 0.291667,
+            "value": 7.0
+          },
+          {
+            "key": "YES|offset_ge_120|repair_or_pairing_improving",
+            "share": 0.125,
+            "value": 3.0
+          },
+          {
+            "key": "NO|offset_30_60|risk_increasing",
+            "share": 0.083333,
+            "value": 2.0
+          },
+          {
+            "key": "YES|offset_90_120|repair_or_pairing_improving",
+            "share": 0.083333,
+            "value": 2.0
+          },
+          {
+            "key": "YES|offset_ge_120|risk_increasing",
+            "share": 0.083333,
+            "value": 2.0
+          },
+          {
+            "key": "NO|offset_0_30|risk_increasing",
+            "share": 0.041667,
+            "value": 1.0
+          },
+          {
+            "key": "NO|offset_60_90|risk_increasing",
+            "share": 0.041667,
+            "value": 1.0
+          },
+          {
+            "key": "NO|offset_ge_120|repair_or_pairing_improving",
+            "share": 0.041667,
+            "value": 1.0
+          }
+        ],
+        "residual_qty_by_source_side_offset_risk_direction_top": [
+          {
+            "key": "YES|offset_60_90|risk_increasing",
+            "share": 0.304905,
+            "value": 8.75
+          },
+          {
+            "key": "YES|offset_ge_120|repair_or_pairing_improving",
+            "share": 0.122833,
+            "value": 3.525
+          },
+          {
+            "key": "NO|offset_30_60|risk_increasing",
+            "share": 0.087116,
+            "value": 2.5
+          },
+          {
+            "key": "YES|offset_90_120|repair_or_pairing_improving",
+            "share": 0.087116,
+            "value": 2.5
+          },
+          {
+            "key": "YES|offset_ge_120|risk_increasing",
+            "share": 0.051398,
+            "value": 1.475
+          },
+          {
+            "key": "NO|offset_0_30|risk_increasing",
+            "share": 0.043558,
+            "value": 1.25
+          },
+          {
+            "key": "NO|offset_60_90|risk_increasing",
+            "share": 0.043558,
+            "value": 1.25
+          },
+          {
+            "key": "NO|offset_ge_120|risk_increasing",
+            "share": 0.043558,
+            "value": 1.25
+          }
+        ]
+      }
+    },
+    "recommended_instrumentation_target": {
+      "behavior_change": false,
+      "default_off": true,
+      "explicitly_not_live_rules": [
+        "Do not trade on realized pair_cost buckets.",
+        "Do not add a YES/NO side cap.",
+        "Do not add public-price, offset, or static source caps from this audit.",
+        "Do not restart D+ micro-deficit/ledger/tiny-deficit/fill-to-balance/public-profile families."
+      ],
+      "name": "symmetric_activation_tail_attribution_summary_v1",
+      "purpose": "Join activation_bucket and activation age with pair-cost, pair-tail-loss, residual qty/cost, side, offset, source risk direction, and source_sequence coverage so a future pullback can explain risk-budget failures without static caps or future labels.",
+      "required_summary_fields": [
+        "pair_cost_bucket_by_status_reason_activation_bucket",
+        "pair_cost_bucket_by_status_reason_side_offset_activation_bucket",
+        "residual_qty_by_status_reason_activation_bucket",
+        "residual_qty_by_status_reason_side_offset_activation_bucket",
+        "residual_cost_by_status_reason_activation_bucket",
+        "residual_cost_by_status_reason_side_offset_activation_bucket",
+        "pair_tail_loss_by_status_reason_activation_bucket",
+        "source_link_residual_tail_exemplars_by_activation_bucket"
+      ]
+    },
+    "shadow_metrics": {
+      "candidates": 241.0,
+      "fee_adjusted_pair_pnl_proxy": 4.343122,
+      "material_residual_lots": 0.0,
+      "net_pair_cost_p90": 1.06,
+      "pair_actions": 77.0,
+      "pair_pnl": 4.494536,
+      "pair_tail_loss_share": 0.10400583,
+      "residual_cost": 8.483525,
+      "residual_cost_share": 0.1116134,
+      "residual_qty": 28.6975,
+      "residual_qty_share": 0.16572344
+    }
+  },
+  "inputs": {
+    "acceptance_adapter_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/acceptance_adapter/manifest.json",
+    "aggregate": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/remote_clean/output/aggregate_report.json",
+    "shadow_acceptance_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/shadow_acceptance/manifest.json",
+    "symmetric_activation_scorer_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/symmetric_activation_scorer/manifest.json"
+  },
+  "load_errors": {},
+  "next_executable_action": "Implement default-off symmetric_activation_tail_attribution_summary_v1 plus smoke, then score only future allowlisted pullbacks; do not start another no-order diagnostic from this audit alone.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "TAIL_GAP_AUDIT_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "no_order_diagnostic_allowed": false,
+    "notes": [
+      "This audit explains an UNKNOWN no-order result; it is not private truth.",
+      "Observed tail buckets may nominate instrumentation, not live trading filters.",
+      "research_ranking and promotion_gate remain separate."
+    ],
+    "status": "KEEP_SYMMETRIC_ACTIVATION_TAIL_GAP_AUDIT_INSTRUMENTATION_TARGET_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  }
+}

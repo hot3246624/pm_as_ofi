@@ -1,0 +1,72 @@
+{
+  "event_lite": {
+    "net_pair_cost_buckets": {
+      "pair_cost_0p95_1p00": 4,
+      "pair_cost_1p00_1p05": 5,
+      "pair_cost_gt_1p05": 3,
+      "pair_cost_lt_0p95": 8
+    },
+    "pair_cost_by_source_offset_bucket": {
+      "pair_cost_1p00_1p05": {
+        "offset_30_60": 1,
+        "offset_ge_120": 8
+      },
+      "pair_cost_gt_1p05": {
+        "offset_ge_120": 3
+      }
+    },
+    "pair_cost_by_source_public_px_bucket": {
+      "pair_cost_1p00_1p05": {
+        "px_0p30_0p45": 4,
+        "px_ge_0p55": 5
+      },
+      "pair_cost_gt_1p05": {
+        "px_ge_0p55": 3
+      }
+    },
+    "residual_lot_px_qty_buckets": {
+      "px_0p30_0p45": 2.5,
+      "px_ge_0p55": 2.5,
+      "px_lt_0p30": 7.0
+    },
+    "residual_lot_side_cost": {
+      "NO": 0.8,
+      "YES": 3.2
+    },
+    "residual_lot_side_qty": {
+      "NO": 3.0,
+      "YES": 9.0
+    },
+    "source_link_transition_diagnostics": {
+      "immediate_pair_cost_bucket_by_source_side_offset_risk_direction": {
+        "NO|offset_30_60|risk_increasing": {
+          "pair_cost_lt_0p95": 2
+        },
+        "YES|offset_ge_120|risk_increasing": {
+          "pair_cost_1p00_1p05": 4,
+          "pair_cost_gt_1p05": 2
+        }
+      },
+      "residual_cost_by_source_side_offset_risk_direction": {
+        "NO|offset_30_60|risk_increasing": 0.5,
+        "YES|offset_ge_120|risk_increasing": 2.5
+      },
+      "residual_count_by_source_side_offset_risk_direction": {
+        "NO|offset_30_60|risk_increasing": 1,
+        "YES|offset_ge_120|risk_increasing": 4
+      },
+      "residual_qty_by_source_side_offset_risk_direction": {
+        "NO|offset_30_60|risk_increasing": 2.0,
+        "YES|offset_ge_120|risk_increasing": 8.0
+      }
+    }
+  },
+  "metrics": {
+    "candidates": 140,
+    "net_pair_cost_proxy_p90": 1.08,
+    "pair_actions": 20,
+    "pair_pnl": 3.0,
+    "residual_cost": 4.0,
+    "residual_qty": 12.0
+  }
+}

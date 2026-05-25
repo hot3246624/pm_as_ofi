@@ -1,0 +1,16 @@
+{
+  "artifact": "xuan_symmetric_activation_tail_gap_audit_smoke",
+  "bad_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_tail_gap_audit_smoke_20260525T030401Z/bad/manifest.json",
+  "checks": {
+    "bad_no_promotion": true,
+    "bad_unknown": true,
+    "good_keep": true,
+    "good_no_shadow_allowed": true,
+    "good_not_strategy_evidence": true,
+    "good_promotion_false": true,
+    "good_target_named": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_TAIL_GAP_AUDIT_SMOKE_PASS",
+  "good_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_tail_gap_audit_smoke_20260525T030401Z/good/manifest.json"
+}

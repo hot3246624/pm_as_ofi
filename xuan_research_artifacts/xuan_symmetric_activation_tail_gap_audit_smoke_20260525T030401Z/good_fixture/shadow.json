@@ -1,0 +1,24 @@
+{
+  "acceptance_passed": false,
+  "checks": {
+    "no_order_safety_ok": true
+  },
+  "promotion_gate": {
+    "normalized_risk_budget": {
+      "material_residual_lots": 0,
+      "pair_tail_loss_share_of_pair_pnl": 0.08,
+      "residual_cost_share_of_filled_cost": 0.12,
+      "residual_qty_share_of_filled": 0.18
+    }
+  },
+  "trading_metrics": {
+    "candidates": 140,
+    "fee_adjusted_pair_pnl_proxy": 2.8,
+    "material_residual_lots": 0,
+    "net_pair_cost_p90": 1.08,
+    "pair_actions": 20,
+    "pair_pnl": 3.0,
+    "residual_cost": 4.0,
+    "residual_qty": 12.0
+  }
+}

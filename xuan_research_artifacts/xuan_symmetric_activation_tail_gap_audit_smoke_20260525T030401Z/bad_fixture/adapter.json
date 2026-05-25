@@ -1,0 +1,16 @@
+{
+  "adapter_evaluation": {
+    "shadow_acceptance_gate": {
+      "passed": false
+    },
+    "symmetric_activation_gate": {
+      "passed": true
+    }
+  },
+  "promotion_gate": {
+    "passed": false
+  },
+  "research_ranking": {
+    "strategy_evidence": false
+  }
+}
