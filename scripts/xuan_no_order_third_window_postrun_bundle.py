@@ -616,6 +616,24 @@ def main() -> None:
             ],
         ]
     )
+    if public_benchmark_path and "public_benchmark" in paths:
+        public_benchmark_command = [
+            sys.executable,
+            "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
+            "--public-benchmark-scorecard",
+            str(public_benchmark_path),
+            "--capital-roi-scorecard",
+            str(paths["capital"]),
+            "--runtime-scorecard",
+            str(paths["repeat"]),
+            "--scorecard-json",
+            str(paths["public_benchmark"]),
+        ]
+        if "bridge_shadow_gap" in paths:
+            public_benchmark_command.extend(["--bridge-shadow-gap-scorecard", str(paths["bridge_shadow_gap"])])
+        if "surplus_bridge" in paths:
+            public_benchmark_command.extend(["--surplus-bridge-scorecard", str(paths["surplus_bridge"])])
+        commands.append(public_benchmark_command)
     if contrast_reference_available:
         commands.append(
             [
@@ -659,28 +677,33 @@ def main() -> None:
                 str(output_dir / "SOFT_MAINLINE_SHADOW_PROMOTION_GAP.md"),
             ]
         )
-        commands.append(
-            [
-                sys.executable,
-                "scripts/xuan_soft_mainline_shadow_evidence_ledger.py",
-                "--regime-generalization-scorecard",
-                str(paths["regime_generalization"]),
-                "--shadow-promotion-gate-scorecard",
-                str(paths["shadow_promotion_gate"]),
-                "--shadow-promotion-gap-scorecard",
-                str(paths["shadow_promotion_gap"]),
-                "--run-trigger-policy-scorecard",
-                str(paths["run_trigger_policy"]),
-                "--repeat-gap-scorecard",
-                str(paths["gap"]),
-                "--scorecard-json",
-                str(paths["shadow_evidence_ledger"]),
-                "--csv-output",
-                str(output_dir / "soft_mainline_shadow_evidence_ledger.csv"),
-                "--markdown-output",
-                str(output_dir / "SOFT_MAINLINE_SHADOW_EVIDENCE_LEDGER.md"),
-            ]
-        )
+        shadow_evidence_ledger_command = [
+            sys.executable,
+            "scripts/xuan_soft_mainline_shadow_evidence_ledger.py",
+            "--regime-generalization-scorecard",
+            str(paths["regime_generalization"]),
+            "--shadow-promotion-gate-scorecard",
+            str(paths["shadow_promotion_gate"]),
+            "--shadow-promotion-gap-scorecard",
+            str(paths["shadow_promotion_gap"]),
+            "--run-trigger-policy-scorecard",
+            str(paths["run_trigger_policy"]),
+            "--repeat-gap-scorecard",
+            str(paths["gap"]),
+            "--young-tiny-residual-scorecard",
+            str(paths["young_tiny_residual"]),
+            "--scorecard-json",
+            str(paths["shadow_evidence_ledger"]),
+            "--csv-output",
+            str(output_dir / "soft_mainline_shadow_evidence_ledger.csv"),
+            "--markdown-output",
+            str(output_dir / "SOFT_MAINLINE_SHADOW_EVIDENCE_LEDGER.md"),
+        ]
+        if "public_benchmark" in paths:
+            shadow_evidence_ledger_command.extend(
+                ["--public-benchmark-comparison-scorecard", str(paths["public_benchmark"])]
+            )
+        commands.append(shadow_evidence_ledger_command)
         commands.append(
             [
                 sys.executable,
@@ -719,24 +742,6 @@ def main() -> None:
                 str(output_dir / "SOFT_MAINLINE_CAP25_DENSITY_TRIGGER.md"),
             ]
         )
-    if public_benchmark_path and "public_benchmark" in paths:
-        public_benchmark_command = [
-            sys.executable,
-            "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
-            "--public-benchmark-scorecard",
-            str(public_benchmark_path),
-            "--capital-roi-scorecard",
-            str(paths["capital"]),
-            "--runtime-scorecard",
-            str(paths["repeat"]),
-            "--scorecard-json",
-            str(paths["public_benchmark"]),
-        ]
-        if "bridge_shadow_gap" in paths:
-            public_benchmark_command.extend(["--bridge-shadow-gap-scorecard", str(paths["bridge_shadow_gap"])])
-        if "surplus_bridge" in paths:
-            public_benchmark_command.extend(["--surplus-bridge-scorecard", str(paths["surplus_bridge"])])
-        commands.append(public_benchmark_command)
     if public_benchmark_path and capacity_plan_path and "capacity_stage_public_benchmark" in paths:
         commands.append(
             [

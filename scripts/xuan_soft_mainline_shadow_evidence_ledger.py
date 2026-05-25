@@ -170,6 +170,7 @@ def write_csv(path: str | None, rows: list[dict[str, Any]]) -> None:
 def build_markdown(card: dict[str, Any]) -> str:
     summary = card["summary"]
     decision = card["decision"]
+    review = card.get("review_surface") or {}
     lines = [
         "# Soft-Mainline Shadow Evidence Ledger",
         "",
@@ -183,6 +184,9 @@ def build_markdown(card: dict[str, Any]) -> str:
         f"- Repeat reference pass windows listed: `{summary['repeat_reference_windows']}`.",
         f"- Missing qualified windows for shadow: `{summary['missing_qualified_tradeable_windows']}`.",
         f"- Remaining clean strict rescues from repeat gap: `{summary['repeat_remaining_strict_rescue_closes']}`.",
+        f"- Review surface clean: `{review.get('clean')}`.",
+        f"- Public benchmark status: `{review.get('public_benchmark_comparison')}`.",
+        f"- Young residual status: `{review.get('young_tiny_residual')}`.",
         "",
         "## Rows",
         "",
@@ -214,6 +218,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     shadow_gap = load_json(args.shadow_promotion_gap_scorecard)
     run_trigger = load_json(args.run_trigger_policy_scorecard)
     repeat_gap = load_json(args.repeat_gap_scorecard)
+    public_benchmark = load_json(args.public_benchmark_comparison_scorecard)
+    young_residual = load_json(args.young_tiny_residual_scorecard)
 
     rows = rows_from_regime(regime)
     reference = reference_row_from_repeat_gap(repeat_gap)
@@ -229,8 +235,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     repeat_refs = sum(1 for row in rows if row.get("role") == "repeat_reference_pass_window")
     missing_qualified = inum(shadow_gap_summary.get("missing_qualified_tradeable_windows"))
 
-    if is_keep(shadow_gate):
+    optional_review_cards = [card for card in (public_benchmark, young_residual) if card]
+    review_surface_clean = all(is_keep(card) for card in optional_review_cards)
+    if is_keep(shadow_gate) and review_surface_clean:
         ledger_status = "KEEP_SOFT_MAINLINE_SHADOW_EVIDENCE_LEDGER_SHADOW_GATE_CLEAR_LOCAL_ONLY"
+    elif is_keep(shadow_gate):
+        ledger_status = "UNKNOWN_SOFT_MAINLINE_SHADOW_EVIDENCE_LEDGER_REVIEW_SURFACE_CAVEAT_LOCAL_ONLY"
     elif status(shadow_gap).startswith("BLOCKED"):
         ledger_status = "BLOCKED_SOFT_MAINLINE_SHADOW_EVIDENCE_LEDGER_WAIT_FOR_FRESH_DENSITY_LOCAL_ONLY"
     else:
@@ -250,6 +260,16 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "shadow_promotion_gap_scorecard": str(Path(args.shadow_promotion_gap_scorecard).expanduser()),
                 "run_trigger_policy_scorecard": str(Path(args.run_trigger_policy_scorecard).expanduser()),
                 "repeat_gap_scorecard": str(Path(args.repeat_gap_scorecard).expanduser()),
+                "public_benchmark_comparison_scorecard": (
+                    str(Path(args.public_benchmark_comparison_scorecard).expanduser())
+                    if args.public_benchmark_comparison_scorecard
+                    else None
+                ),
+                "young_tiny_residual_scorecard": (
+                    str(Path(args.young_tiny_residual_scorecard).expanduser())
+                    if args.young_tiny_residual_scorecard
+                    else None
+                ),
             },
             "source_statuses": {
                 "regime_generalization": status(regime) or None,
@@ -257,6 +277,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "shadow_promotion_gap": status(shadow_gap) or None,
                 "run_trigger_policy": status(run_trigger) or None,
                 "repeat_gap": status(repeat_gap) or None,
+                "public_benchmark_comparison": status(public_benchmark) or None,
+                "young_tiny_residual": status(young_residual) or None,
+            },
+            "review_surface": {
+                "clean": review_surface_clean,
+                "public_benchmark_comparison": status(public_benchmark) or None,
+                "young_tiny_residual": status(young_residual) or None,
+                "public_benchmark_caveats": public_benchmark.get("hard_blockers") or [],
+                "young_residual_caveats": young_residual.get("residual_caveats")
+                or young_residual.get("hard_blockers")
+                or [],
+                "scope": "local review surface only; deployable remains false",
             },
             "summary": {
                 "rows": len(rows),
@@ -274,7 +306,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "next_action": next_action,
                 "remote_runner_allowed": False,
                 "research_only": True,
-                "shadow_review_ready": is_keep(shadow_gate),
+                "shadow_review_ready": is_keep(shadow_gate) and review_surface_clean,
+                "shadow_gate_ready": is_keep(shadow_gate),
+                "review_surface_clean": review_surface_clean,
                 "deployable": False,
                 "hard_blockers": body(shadow_gap, "decision").get("hard_blockers") or [],
             },
@@ -295,6 +329,8 @@ def main() -> None:
     parser.add_argument("--shadow-promotion-gap-scorecard", required=True)
     parser.add_argument("--run-trigger-policy-scorecard", required=True)
     parser.add_argument("--repeat-gap-scorecard", required=True)
+    parser.add_argument("--public-benchmark-comparison-scorecard")
+    parser.add_argument("--young-tiny-residual-scorecard")
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--csv-output")
     parser.add_argument("--markdown-output")
