@@ -145,6 +145,8 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
     bounded_policy = manifest.get("bounded_remote_run_policy", {})
     fair_price_admission = manifest.get("fair_price_admission", {})
     market_resolver_cache = manifest.get("market_resolver_cache", {})
+    target = manifest.get("target", {})
+    socket_access = manifest.get("shared_ingress_socket_access", {})
     parts = command_parts(remote_cmd)
     duration_value = option_value(remote_cmd, "--duration-s")
     duration_s = parse_duration_seconds(duration_value)
@@ -177,6 +179,32 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             hard_blockers.append("remote_launch_command_missing_stdin_detach")
         if "&& { (" not in remote_launch_cmd or "; }" not in remote_launch_cmd:
             hard_blockers.append("remote_launch_command_missing_foreground_pid_group")
+    remote_run_user = str(target.get("remote_run_user") or "")
+    remote_output_group = str(target.get("remote_output_group") or "")
+    if not remote_run_user:
+        hard_blockers.append("target_missing_remote_run_user")
+    if not remote_output_group:
+        hard_blockers.append("target_missing_remote_output_group")
+    if remote_run_user and f"sudo -u {shlex.quote(remote_run_user)} timeout" not in remote_launch_cmd:
+        hard_blockers.append("remote_launch_command_missing_socket_readable_run_user")
+    if (
+        remote_run_user
+        and remote_output_group
+        and f"sudo install -d -m 0775 -o {shlex.quote(remote_run_user)} -g {shlex.quote(remote_output_group)}"
+        not in remote_launch_cmd
+    ):
+        hard_blockers.append("remote_launch_command_missing_run_user_output_dir_prepare")
+    if socket_access.get("run_user") != remote_run_user:
+        hard_blockers.append("socket_access_run_user_mismatch")
+    if socket_access.get("output_dir_owner") != remote_run_user:
+        hard_blockers.append("socket_access_output_owner_mismatch")
+    if socket_access.get("output_dir_group") != remote_output_group:
+        hard_blockers.append("socket_access_output_group_mismatch")
+    if socket_access.get("output_dir_mode") != "0775":
+        hard_blockers.append("socket_access_output_mode_not_0775")
+    expected_socket_path = f"{str(target.get('shared_ingress_root') or '').rstrip('/')}/market.sock"
+    if socket_access.get("socket_path") != expected_socket_path:
+        hard_blockers.append("socket_access_path_mismatch")
     if duration_s is None:
         hard_blockers.append("remote_command_missing_duration_s")
     elif duration_s > args.max_dry_run_duration_s:
@@ -348,6 +376,17 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "remote_launch_command_has_wrapper_pid": "remote_wrapper_pid.txt" in remote_launch_cmd,
             "remote_launch_command_has_stdin_detach": "< /dev/null" in remote_launch_cmd,
             "remote_launch_command_has_foreground_pid_group": "&& { (" in remote_launch_cmd and "; }" in remote_launch_cmd,
+            "remote_launch_command_has_socket_readable_run_user": bool(
+                remote_run_user and f"sudo -u {shlex.quote(remote_run_user)} timeout" in remote_launch_cmd
+            ),
+            "remote_launch_command_prepares_run_user_output_dir": bool(
+                remote_run_user
+                and remote_output_group
+                and f"sudo install -d -m 0775 -o {shlex.quote(remote_run_user)} -g {shlex.quote(remote_output_group)}"
+                in remote_launch_cmd
+            ),
+            "socket_access_run_user": remote_run_user or None,
+            "socket_access_output_group": remote_output_group or None,
         },
         "decision": {
             "local_manifest_verified": not hard_blockers,

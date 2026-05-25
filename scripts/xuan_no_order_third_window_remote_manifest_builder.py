@@ -365,10 +365,18 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
 
     remote_command_template = shell_join(remote_command)
     remote_output_q = shlex.quote(remote_output_template)
+    remote_run_user = args.remote_run_user.strip()
+    remote_output_group = args.remote_output_group.strip()
+    if not remote_run_user:
+        raise SystemExit("--remote-run-user must be non-empty")
+    if not remote_output_group:
+        raise SystemExit("--remote-output-group must be non-empty")
+    remote_run_user_q = shlex.quote(remote_run_user)
+    remote_output_group_q = shlex.quote(remote_output_group)
     remote_launch_command_template = (
         f"cd {shlex.quote(args.remote_repo.rsplit('/', 1)[0])} && "
-        f"mkdir -p {remote_output_q} && "
-        f"{{ ( {remote_command_template} > {remote_output_q}/run_stdout.log "
+        f"sudo install -d -m 0775 -o {remote_run_user_q} -g {remote_output_group_q} {remote_output_q} && "
+        f"{{ ( sudo -u {remote_run_user_q} {remote_command_template} > {remote_output_q}/run_stdout.log "
         f"2> {remote_output_q}/run_stderr.log; "
         f"echo $? > {remote_output_q}/run_exit_code.txt ) "
         f"< /dev/null "
@@ -418,10 +426,20 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "repo_cache_mutation_allowed": False,
             "reason": "Keep remote repo read-only while allowing resolve_market_ids.py to cache current/future slugs.",
         },
+        "shared_ingress_socket_access": {
+            "socket_path": f"{args.shared_ingress_root.rstrip('/')}/market.sock",
+            "run_user": remote_run_user,
+            "output_dir_owner": remote_run_user,
+            "output_dir_group": remote_output_group,
+            "output_dir_mode": "0775",
+            "reason": "market.sock is owned by the shared-ingress service user; the no-order reader must use that user while writing only the xuan output dir.",
+        },
         "target": {
             "ssh_host": args.ssh_host,
             "fixed_ip": args.fixed_ip,
             "remote_user": args.remote_user,
+            "remote_run_user": remote_run_user,
+            "remote_output_group": remote_output_group,
             "remote_repo": args.remote_repo,
             "shared_ingress_root": args.shared_ingress_root,
             "remote_tool_dir": args.remote_tool_dir,
@@ -470,6 +488,8 @@ def main() -> None:
     parser.add_argument("--ssh-host", default="ec2-52-209-13-135.eu-west-1.compute.amazonaws.com")
     parser.add_argument("--fixed-ip", default="52.209.13.135")
     parser.add_argument("--remote-user", default="ubuntu")
+    parser.add_argument("--remote-run-user", default="pmofi")
+    parser.add_argument("--remote-output-group", default="ubuntu")
     parser.add_argument("--remote-repo", default="/srv/pm_as_ofi/repo")
     parser.add_argument("--shared-ingress-root", default="/srv/pm_as_ofi/shared-ingress-main")
     parser.add_argument("--shared-ingress-role", default="xuan-frontier-soft-closeability-runtime")
