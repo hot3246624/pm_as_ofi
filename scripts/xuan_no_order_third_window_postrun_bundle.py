@@ -206,6 +206,13 @@ def main() -> None:
     parser.add_argument("--capacity-stage", default="cap_25")
     parser.add_argument("--max-closeability-debt-per-slug", type=float, default=1.0)
     parser.add_argument(
+        "--bridge-base-roots",
+        nargs="*",
+        default=[
+            ".tmp_xuan/local_verifier_artifacts/no_order_soft_closeability_comparable_runtime_20260522T1705Z/remote_outputs"
+        ],
+    )
+    parser.add_argument(
         "--contrast-reference-runtime-summary",
         default=".tmp_xuan/scorecards/no_order_xuan-frontier-soft-mainline-explicit-surplus-no-cancel-20260525T0510Z_runtime_summary.json",
     )
@@ -250,6 +257,8 @@ def main() -> None:
         "shadow": scorecard_dir / f"no_order_{args.tag}_shadow_readiness.json",
         "repeat": scorecard_dir / f"no_order_{args.tag}_repeat_window_scorer.json",
         "gap": scorecard_dir / f"no_order_{args.tag}_repeat_window_gap_plan.json",
+        "surplus_bridge": scorecard_dir / f"no_order_{args.tag}_surplus_bridge.json",
+        "bridge_shadow_gap": scorecard_dir / f"no_order_{args.tag}_bridge_shadow_gap.json",
         "capital": scorecard_dir / f"no_order_{args.tag}_capital_reuse_roi.json",
         "packet": scorecard_dir / f"no_order_{args.tag}_shadow_review_packet.json",
     }
@@ -512,6 +521,30 @@ def main() -> None:
                 str(paths["repeat"]),
                 "--scorecard-json",
                 str(paths["gap"]),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_surplus_bridge_scorer.py",
+                "--base-roots",
+                *[str(Path(root).expanduser().resolve()) for root in args.bridge_base_roots],
+                "--bridge-roots",
+                str(third_root),
+                "--scorecard-json",
+                str(paths["surplus_bridge"]),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_bridge_shadow_gap_scorer.py",
+                "--bridge-scorecard",
+                str(paths["surplus_bridge"]),
+                "--latest-runtime-summary",
+                str(paths["runtime_summary"]),
+                "--latest-density-preflight",
+                str(paths["density_preflight"]),
+                "--scorecard-json",
+                str(paths["bridge_shadow_gap"]),
+                "--markdown-output",
+                str(output_dir / "SOFT_MAINLINE_BRIDGE_SHADOW_GAP.md"),
             ],
             [
                 sys.executable,

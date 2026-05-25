@@ -46,6 +46,8 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_soft_mainline_existing_window_candidate_scorer.py",
     "scripts/xuan_soft_mainline_cap25_reproduction_reviewer.py",
     "scripts/xuan_soft_mainline_cap25_density_trigger.py",
+    "scripts/xuan_soft_mainline_surplus_bridge_scorer.py",
+    "scripts/xuan_soft_mainline_bridge_shadow_gap_scorer.py",
 ]
 
 
