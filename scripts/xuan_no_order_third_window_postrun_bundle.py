@@ -227,6 +227,7 @@ def main() -> None:
         "runtime_summary": scorecard_dir / f"no_order_{args.tag}_runtime_summary.json",
         "event_diagnostics": scorecard_dir / f"no_order_{args.tag}_event_diagnostics.json",
         "density_preflight": scorecard_dir / f"no_order_{args.tag}_density_preflight_gate.json",
+        "density_prefix": scorecard_dir / f"no_order_{args.tag}_density_prefix_scorer.json",
         "lifecycle": scorecard_dir / f"no_order_{args.tag}_lifecycle_scorer.json",
         "comparison": scorecard_dir / f"no_order_{args.tag}_comparison_scorer.json",
         "concurrency": scorecard_dir / f"no_order_{args.tag}_concurrent_shared_ingress_scorer.json",
@@ -295,6 +296,14 @@ def main() -> None:
             str(paths["runtime_summary"]),
             "--scorecard-json",
             str(paths["density_preflight"]),
+        ],
+        [
+            sys.executable,
+            "scripts/xuan_soft_mainline_density_prefix_scorer.py",
+            "--output-root",
+            str(third_root),
+            "--scorecard-json",
+            str(paths["density_prefix"]),
         ],
         [
             sys.executable,
