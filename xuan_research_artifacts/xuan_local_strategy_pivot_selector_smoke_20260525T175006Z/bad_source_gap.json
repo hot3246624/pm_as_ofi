@@ -1,0 +1,19 @@
+{
+  "artifact": "bad_source_gap",
+  "decision_label": "KEEP_SOURCE_OPPORTUNITY_GAP_AUDIT_READY_MARKER_REPRODUCTION_GAP_NAMED",
+  "exact_gap_classification": [
+    "old_marker_threshold_sweep_possible"
+  ],
+  "no_order_marker_availability": {
+    "reason_source_coverage_available": true,
+    "source_link_presence_by_status": {
+      "source_sequence": {
+        "admitted|present": 1.0
+      }
+    },
+    "source_opportunity_marker_total": 0.0
+  },
+  "promotion_gate": {
+    "passed": false
+  }
+}

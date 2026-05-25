@@ -1,0 +1,25 @@
+{
+  "artifact": "xuan_local_strategy_pivot_selector_smoke",
+  "checks": {
+    "bad_missing_new_signal_gap_fails_closed": true,
+    "good_keeps_no_order_disallowed": true,
+    "good_selects_observable_pre_action_rule_miner": true,
+    "promotion_gate_false": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_LOCAL_STRATEGY_PIVOT_SELECTOR_SMOKE_PASS",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "side_effects": {
+    "events_jsonl_read": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "ssh_used": false
+  }
+}
