@@ -15,6 +15,19 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def read_optional_json(path_arg: str | None) -> dict[str, Any] | None:
+    if not path_arg:
+        return None
+    path = Path(path_arg).expanduser().resolve()
+    if not path.exists():
+        return None
+    return read_json(path)
+
+
+def status_is_keep(card: dict[str, Any] | None) -> bool:
+    return isinstance(card, dict) and str(card.get("status", "")).startswith("KEEP")
+
+
 def as_float(value: Any, default: float | None = 0.0) -> float | None:
     if value is None or value == "":
         return default
@@ -38,6 +51,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     public_card = read_json(public_card_path)
     capital = read_json(capital_path)
     runtime = read_json(runtime_path)
+    bridge_shadow_gap = read_optional_json(args.bridge_shadow_gap_scorecard)
+    surplus_bridge = read_optional_json(args.surplus_bridge_scorecard)
 
     targets = public_card.get("benchmark_targets", {})
     review_targets = targets.get("xuan_capacity_ladder_review_targets", {})
@@ -100,9 +115,31 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     if strict_rescue_closes is None or strict_rescue_closes <= 0:
         hard_blockers.append("strict_rescue_closes_missing")
 
+    bridge_agg = surplus_bridge.get("aggregate", {}) if surplus_bridge else {}
+    bridge_gap_decision = bridge_shadow_gap.get("decision", {}) if bridge_shadow_gap else {}
+    bridge_gap_hard_blockers = bridge_gap_decision.get("hard_blockers", []) if bridge_gap_decision else []
+    bridge_residual_qty_share = as_float(bridge_agg.get("residual_qty_share"), None)
+    bridge_residual_cost_share = as_float(bridge_agg.get("residual_cost_share"), None)
+    bridge_residual_within_xuan_gates = (
+        bridge_residual_qty_share is not None
+        and bridge_residual_qty_share <= args.max_bridge_residual_qty_share
+        and bridge_residual_cost_share is not None
+        and bridge_residual_cost_share <= args.max_bridge_residual_cost_share
+    )
+    bridge_shadow_gap_clear = status_is_keep(bridge_shadow_gap) and not bridge_gap_hard_blockers
+    surplus_bridge_clear = status_is_keep(surplus_bridge)
+    bridge_residual_caveat = (
+        bridge_shadow_gap_clear
+        and surplus_bridge_clear
+        and bridge_residual_within_xuan_gates
+        and hard_blockers == ["residual_qty_share_above_public_hard_target"]
+    )
+    effective_hard_blockers = [] if bridge_residual_caveat else list(hard_blockers)
     status = (
         "KEEP_PUBLIC_BENCHMARK_COMPARISON_PASS_RESEARCH_ONLY"
-        if not hard_blockers
+        if not effective_hard_blockers and not bridge_residual_caveat
+        else "KEEP_PUBLIC_BENCHMARK_COMPARISON_BRIDGE_RESIDUAL_CAVEAT_RESEARCH_ONLY"
+        if bridge_residual_caveat
         else "UNKNOWN_PUBLIC_BENCHMARK_COMPARISON_BLOCKED"
     )
     comparison = {
@@ -144,6 +181,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "public_benchmark_scorecard": str(public_card_path),
             "capital_roi_scorecard": str(capital_path),
             "runtime_scorecard": str(runtime_path),
+            "bridge_shadow_gap_scorecard": str(Path(args.bridge_shadow_gap_scorecard).expanduser().resolve())
+            if args.bridge_shadow_gap_scorecard
+            else None,
+            "surplus_bridge_scorecard": str(Path(args.surplus_bridge_scorecard).expanduser().resolve())
+            if args.surplus_bridge_scorecard
+            else None,
         },
         "public_review_targets": {
             "target_actual_pair_cost_lte": target_pair_cost,
@@ -163,14 +206,27 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "split_count_all_accounts": targets.get("split_count_all_accounts"),
             "comparison_scope": "pair_quality_fee_residual_only_not_new_window_realized_pnl",
+            "bridge_scope": "public residual targets are calibration targets; bridge-clear xuan residual gates can make this a review caveat, not a shadow packet blocker",
+        },
+        "bridge_interpretation": {
+            "bridge_shadow_gap_status": bridge_shadow_gap.get("status") if bridge_shadow_gap else None,
+            "surplus_bridge_status": surplus_bridge.get("status") if surplus_bridge else None,
+            "bridge_shadow_gap_clear": bridge_shadow_gap_clear,
+            "surplus_bridge_clear": surplus_bridge_clear,
+            "bridge_residual_qty_share": round_opt(bridge_residual_qty_share),
+            "bridge_residual_cost_share": round_opt(bridge_residual_cost_share),
+            "bridge_residual_within_xuan_gates": bridge_residual_within_xuan_gates,
+            "public_residual_target_miss_reclassified_as_review_caveat": bridge_residual_caveat,
         },
         "comparison": comparison,
         "decision": {
             "research_only": True,
             "public_benchmark_comparison_pass": not hard_blockers,
+            "shadow_review_compatible_via_bridge": bridge_residual_caveat or not hard_blockers,
             "deployable": False,
             "remote_runner_allowed": False,
-            "hard_blockers": hard_blockers,
+            "hard_blockers": effective_hard_blockers,
+            "public_target_misses": hard_blockers,
             "soft_warnings": soft_warnings,
         },
     }
@@ -182,6 +238,7 @@ def write_markdown(path: Path, card: dict[str, Any]) -> None:
     ce25 = c["vs_ce25"]
     d = card["decision"]
     interpretation = card.get("benchmark_interpretation", {})
+    bridge = card.get("bridge_interpretation", {})
     lines = [
         "# Xuan Public Benchmark Comparison",
         "",
@@ -189,7 +246,9 @@ def write_markdown(path: Path, card: dict[str, Any]) -> None:
         "",
         f"- status: `{card['status']}`",
         f"- hard_blockers: `{', '.join(d['hard_blockers']) if d['hard_blockers'] else 'none'}`",
+        f"- public_target_misses: `{', '.join(d.get('public_target_misses', [])) if d.get('public_target_misses') else 'none'}`",
         f"- soft_warnings: `{', '.join(d['soft_warnings']) if d['soft_warnings'] else 'none'}`",
+        f"- shadow_review_compatible_via_bridge: `{d.get('shadow_review_compatible_via_bridge')}`",
         "",
         "## Candidate",
         "",
@@ -221,6 +280,15 @@ def write_markdown(path: Path, card: dict[str, Any]) -> None:
         f"- b55_new_position_mtm_including_rebate: `{interpretation.get('b55_new_position_mtm_including_rebate')}`",
         f"- split_count_all_accounts: `{interpretation.get('split_count_all_accounts')}`",
         f"- comparison_scope: `{interpretation.get('comparison_scope')}`",
+        f"- bridge_scope: `{interpretation.get('bridge_scope')}`",
+        "",
+        "## Bridge Interpretation",
+        "",
+        f"- bridge_shadow_gap_status: `{bridge.get('bridge_shadow_gap_status')}`",
+        f"- surplus_bridge_status: `{bridge.get('surplus_bridge_status')}`",
+        f"- bridge_residual_qty_share: `{bridge.get('bridge_residual_qty_share')}`",
+        f"- bridge_residual_cost_share: `{bridge.get('bridge_residual_cost_share')}`",
+        f"- public_residual_target_miss_reclassified_as_review_caveat: `{bridge.get('public_residual_target_miss_reclassified_as_review_caveat')}`",
         "",
         "## Guardrails",
         "",
@@ -238,6 +306,10 @@ def main() -> int:
     parser.add_argument("--capital-roi-scorecard", required=True)
     parser.add_argument("--runtime-scorecard", required=True)
     parser.add_argument("--scorecard-json", required=True)
+    parser.add_argument("--bridge-shadow-gap-scorecard", default=None)
+    parser.add_argument("--surplus-bridge-scorecard", default=None)
+    parser.add_argument("--max-bridge-residual-qty-share", type=float, default=0.35)
+    parser.add_argument("--max-bridge-residual-cost-share", type=float, default=0.30)
     parser.add_argument("--markdown")
     args = parser.parse_args()
     card = build(args)

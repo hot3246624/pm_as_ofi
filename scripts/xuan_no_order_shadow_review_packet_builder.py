@@ -21,6 +21,31 @@ def read_json(path: Path) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
+def read_optional_json(path: Path | None) -> dict[str, Any] | None:
+    if path is None or not path.exists():
+        return None
+    return read_json(path)
+
+
+def optional_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    return Path(value).expanduser().resolve()
+
+
+def status_is_keep(card: dict[str, Any] | None) -> bool:
+    return isinstance(card, dict) and str(card.get("status", "")).startswith("KEEP")
+
+
+def decision_hard_blockers(card: dict[str, Any] | None) -> list[str]:
+    if not isinstance(card, dict):
+        return []
+    blockers = card.get("hard_blockers")
+    if blockers is None:
+        blockers = card.get("decision", {}).get("hard_blockers", [])
+    return list(blockers or [])
+
+
 def as_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None or value == "":
@@ -59,11 +84,14 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     profile_path = Path(args.profile_scorecard).expanduser().resolve()
     concurrency_path = Path(args.concurrency_scorecard).expanduser().resolve() if args.concurrency_scorecard else None
     capital_path = Path(args.capital_roi_scorecard).expanduser().resolve() if args.capital_roi_scorecard else None
-    public_benchmark_path = (
-        Path(args.public_benchmark_comparison_scorecard).expanduser().resolve()
-        if args.public_benchmark_comparison_scorecard
-        else None
-    )
+    public_benchmark_path = optional_path(args.public_benchmark_comparison_scorecard)
+    young_tiny_residual_path = optional_path(args.young_tiny_residual_scorecard)
+    surplus_bridge_path = optional_path(args.surplus_bridge_scorecard)
+    bridge_shadow_gap_path = optional_path(args.bridge_shadow_gap_scorecard)
+    shadow_promotion_gate_path = optional_path(args.shadow_promotion_gate_scorecard)
+    shadow_promotion_gap_path = optional_path(args.shadow_promotion_gap_scorecard)
+    shadow_evidence_ledger_path = optional_path(args.shadow_evidence_ledger_scorecard)
+    source_caveat_audit_path = optional_path(args.source_caveat_audit_scorecard)
 
     replay = read_json(replay_path)
     runtime = read_json(runtime_path)
@@ -72,11 +100,14 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     profile = read_json(profile_path)
     concurrency = read_json(concurrency_path) if concurrency_path and concurrency_path.exists() else None
     capital = read_json(capital_path) if capital_path and capital_path.exists() else None
-    public_benchmark = (
-        read_json(public_benchmark_path)
-        if public_benchmark_path and public_benchmark_path.exists()
-        else None
-    )
+    public_benchmark = read_optional_json(public_benchmark_path)
+    young_tiny_residual = read_optional_json(young_tiny_residual_path)
+    surplus_bridge = read_optional_json(surplus_bridge_path)
+    bridge_shadow_gap = read_optional_json(bridge_shadow_gap_path)
+    shadow_promotion_gate = read_optional_json(shadow_promotion_gate_path)
+    shadow_promotion_gap = read_optional_json(shadow_promotion_gap_path)
+    shadow_evidence_ledger = read_optional_json(shadow_evidence_ledger_path)
+    source_caveat_audit = read_optional_json(source_caveat_audit_path)
 
     replay_metrics = replay.get("metrics", {})
     replay_econ = replay_metrics.get("economics", {})
@@ -86,18 +117,57 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     next_floor = gap.get("next_window_floor", {})
     profile_body = profile.get("profile", {})
 
-    hard_blockers = list(repeat.get("hard_blockers", []))
+    legacy_repeat_blockers = sorted(set(repeat.get("hard_blockers", [])))
+    hard_blockers = list(legacy_repeat_blockers)
     concurrency_clean = True
+    concurrency_blockers: list[str] = []
     if concurrency is not None:
         concurrency_clean = concurrency.get("decision", {}).get("concurrent_shared_ingress_evidence_clean") is True
-        hard_blockers.extend(f"concurrency:{item}" for item in concurrency.get("hard_blockers", []))
+        concurrency_blockers = [f"concurrency:{item}" for item in concurrency.get("hard_blockers", [])]
+
+    bridge_cards = {
+        "surplus_bridge": surplus_bridge,
+        "bridge_shadow_gap": bridge_shadow_gap,
+        "shadow_promotion_gate": shadow_promotion_gate,
+        "shadow_promotion_gap": shadow_promotion_gap,
+        "shadow_evidence_ledger": shadow_evidence_ledger,
+    }
+    bridge_required_cards_present = all(card is not None for card in bridge_cards.values())
+    bridge_required_cards_keep = bridge_required_cards_present and all(status_is_keep(card) for card in bridge_cards.values())
+    bridge_hard_blockers = sorted(
+        {
+            f"{name}:{blocker}"
+            for name, card in bridge_cards.items()
+            for blocker in decision_hard_blockers(card)
+        }
+    )
+    bridge_shadow_ready = bridge_required_cards_keep and not bridge_hard_blockers
+    legacy_shadow_ready = repeat.get("decision", {}).get("shadow_review_ready") is True
+
+    if bridge_shadow_ready:
+        hard_blockers = list(concurrency_blockers)
+    else:
+        hard_blockers.extend(concurrency_blockers)
+        hard_blockers.extend(bridge_hard_blockers)
     hard_blockers = sorted(set(hard_blockers))
-    shadow_ready = repeat.get("decision", {}).get("shadow_review_ready") is True and concurrency_clean
-    packet_status = (
-        "KEEP_SHADOW_REVIEW_PACKET_READY_RESEARCH_ONLY"
-        if shadow_ready
+    shadow_ready = concurrency_clean and (legacy_shadow_ready or bridge_shadow_ready)
+    if shadow_ready and bridge_shadow_ready and not legacy_shadow_ready:
+        packet_status = "KEEP_SHADOW_REVIEW_PACKET_BRIDGE_READY_RESEARCH_ONLY"
+    elif shadow_ready:
+        packet_status = "KEEP_SHADOW_REVIEW_PACKET_READY_RESEARCH_ONLY"
+    else:
+        packet_status = (
+            "UNKNOWN_SHADOW_REVIEW_PACKET_PENDING_REPEAT_WINDOW_GAP"
+        )
+
+    public_target_misses = (
+        public_benchmark.get("decision", {}).get("public_target_misses")
+        if public_benchmark
         else "UNKNOWN_SHADOW_REVIEW_PACKET_PENDING_REPEAT_WINDOW_GAP"
     )
+    if not isinstance(public_target_misses, list):
+        public_target_misses = public_benchmark.get("decision", {}).get("hard_blockers", []) if public_benchmark else []
+    young_residual_caveats = decision_hard_blockers(young_tiny_residual)
 
     summary = {
         "replay_status": replay.get("status"),
@@ -108,10 +178,23 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "concurrency_status": concurrency.get("status") if concurrency else None,
         "capital_roi_status": capital.get("status") if capital else None,
         "public_benchmark_status": public_benchmark.get("status") if public_benchmark else None,
+        "young_tiny_residual_status": young_tiny_residual.get("status") if young_tiny_residual else None,
+        "surplus_bridge_status": surplus_bridge.get("status") if surplus_bridge else None,
+        "bridge_shadow_gap_status": bridge_shadow_gap.get("status") if bridge_shadow_gap else None,
+        "shadow_promotion_gate_status": shadow_promotion_gate.get("status") if shadow_promotion_gate else None,
+        "shadow_promotion_gap_status": shadow_promotion_gap.get("status") if shadow_promotion_gap else None,
+        "shadow_evidence_ledger_status": shadow_evidence_ledger.get("status") if shadow_evidence_ledger else None,
+        "source_caveat_audit_status": source_caveat_audit.get("status") if source_caveat_audit else None,
         "shadow_review_ready": shadow_ready,
+        "legacy_shadow_review_ready": legacy_shadow_ready,
+        "bridge_shadow_review_ready": bridge_shadow_ready,
+        "shadow_review_ready_source": "bridge" if bridge_shadow_ready and not legacy_shadow_ready else "legacy" if legacy_shadow_ready else None,
         "deployable": False,
         "remote_runner_allowed": False,
         "hard_blockers": hard_blockers,
+        "legacy_repeat_blockers_preserved": legacy_repeat_blockers,
+        "public_benchmark_caveats": public_target_misses,
+        "young_tiny_residual_caveats": young_residual_caveats,
     }
 
     packet_json = {
@@ -128,6 +211,13 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "public_benchmark_comparison_scorecard": str(public_benchmark_path)
             if public_benchmark_path
             else None,
+            "young_tiny_residual_scorecard": str(young_tiny_residual_path) if young_tiny_residual_path else None,
+            "surplus_bridge_scorecard": str(surplus_bridge_path) if surplus_bridge_path else None,
+            "bridge_shadow_gap_scorecard": str(bridge_shadow_gap_path) if bridge_shadow_gap_path else None,
+            "shadow_promotion_gate_scorecard": str(shadow_promotion_gate_path) if shadow_promotion_gate_path else None,
+            "shadow_promotion_gap_scorecard": str(shadow_promotion_gap_path) if shadow_promotion_gap_path else None,
+            "shadow_evidence_ledger_scorecard": str(shadow_evidence_ledger_path) if shadow_evidence_ledger_path else None,
+            "source_caveat_audit_scorecard": str(source_caveat_audit_path) if source_caveat_audit_path else None,
         },
         "replay_evidence": {
             "fee_after_with_rescue": as_float(replay_econ.get("fee_after_with_rescue")),
@@ -149,9 +239,24 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "strict_rescue_source_blocks": runtime_metrics.get("strict_rescue_source_blocks"),
         },
         "repeat_window": {
+            "legacy_shadow_review_ready": legacy_shadow_ready,
+            "legacy_hard_blockers": legacy_repeat_blockers,
             "aggregate": repeat_aggregate,
             "remaining_gaps": remaining_gaps,
             "next_window_floor": next_floor,
+        },
+        "bridge_shadow_evidence": {
+            "bridge_shadow_review_ready": bridge_shadow_ready,
+            "bridge_required_cards_present": bridge_required_cards_present,
+            "bridge_required_cards_keep": bridge_required_cards_keep,
+            "statuses": {name: card.get("status") if card else None for name, card in bridge_cards.items()},
+            "hard_blockers": bridge_hard_blockers,
+            "surplus_bridge_aggregate": surplus_bridge.get("aggregate", {}) if surplus_bridge else {},
+            "bridge_shadow_gap_remaining_gaps": bridge_shadow_gap.get("remaining_gaps", {}) if bridge_shadow_gap else {},
+            "shadow_promotion_gate_decision": shadow_promotion_gate.get("decision", {}) if shadow_promotion_gate else {},
+            "shadow_promotion_gap_decision": shadow_promotion_gap.get("decision", {}) if shadow_promotion_gap else {},
+            "shadow_evidence_ledger_summary": shadow_evidence_ledger.get("summary", {}) if shadow_evidence_ledger else {},
+            "source_caveat_audit_status": source_caveat_audit.get("status") if source_caveat_audit else None,
         },
         "concurrent_shared_ingress_evidence": {
             "status": concurrency.get("status") if concurrency else None,
@@ -161,10 +266,29 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         },
         "capital_reuse_roi": capital.get("aggregate", {}) if capital else {},
         "public_benchmark_comparison": public_benchmark.get("comparison", {}) if public_benchmark else {},
+        "review_caveats": {
+            "public_benchmark_status": public_benchmark.get("status") if public_benchmark else None,
+            "public_benchmark_caveats": public_target_misses,
+            "public_shadow_review_compatible_via_bridge": (
+                public_benchmark.get("decision", {}).get("shadow_review_compatible_via_bridge")
+                if public_benchmark
+                else None
+            ),
+            "young_tiny_residual_status": young_tiny_residual.get("status") if young_tiny_residual else None,
+            "young_tiny_residual_caveats": young_residual_caveats,
+            "young_tiny_bridge_interpretation": (
+                "bridge/per-window residual gates supersede this local diagnostic for shadow packet readiness"
+                if bridge_shadow_ready and young_residual_caveats
+                else None
+            ),
+        },
         "next_profile": profile_body,
         "decision": {
             "research_only": True,
             "shadow_review_ready": shadow_ready,
+            "bridge_shadow_review_ready": bridge_shadow_ready,
+            "legacy_shadow_review_ready": legacy_shadow_ready,
+            "legacy_runtime_repeat_blockers_explained_by_bridge": bridge_shadow_ready and not legacy_shadow_ready,
             "deployable": False,
             "remote_runner_allowed": False,
             "needs_explicit_remote_authorization_for_next_sample": True,
@@ -177,9 +301,31 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "## Status",
         metric_line("packet_status", packet_status),
         metric_line("shadow_review_ready", shadow_ready),
+        metric_line("shadow_review_ready_source", summary["shadow_review_ready_source"]),
+        metric_line("legacy_shadow_review_ready", legacy_shadow_ready),
+        metric_line("bridge_shadow_review_ready", bridge_shadow_ready),
         metric_line("deployable", False),
         metric_line("remote_runner_allowed", False),
         metric_line("hard_blockers", ", ".join(hard_blockers) if hard_blockers else "none"),
+        metric_line(
+            "legacy_repeat_blockers_preserved",
+            ", ".join(legacy_repeat_blockers) if legacy_repeat_blockers else "none",
+        ),
+        "",
+        "## Bridge-Aware Shadow Evidence",
+        metric_line("surplus_bridge_status", surplus_bridge.get("status") if surplus_bridge else None),
+        metric_line("bridge_shadow_gap_status", bridge_shadow_gap.get("status") if bridge_shadow_gap else None),
+        metric_line("shadow_promotion_gate_status", shadow_promotion_gate.get("status") if shadow_promotion_gate else None),
+        metric_line("shadow_promotion_gap_status", shadow_promotion_gap.get("status") if shadow_promotion_gap else None),
+        metric_line("shadow_evidence_ledger_status", shadow_evidence_ledger.get("status") if shadow_evidence_ledger else None),
+        metric_line("source_caveat_audit_status", source_caveat_audit.get("status") if source_caveat_audit else None),
+        metric_line("bridge_hard_blockers", ", ".join(bridge_hard_blockers) if bridge_hard_blockers else "none"),
+        metric_line("bridge_accepted_actions", surplus_bridge.get("aggregate", {}).get("accepted_actions") if surplus_bridge else None),
+        metric_line("bridge_fills", surplus_bridge.get("aggregate", {}).get("queue_supported_fills") if surplus_bridge else None),
+        metric_line("bridge_strict_rescue_closes", surplus_bridge.get("aggregate", {}).get("strict_rescue_closes") if surplus_bridge else None),
+        metric_line("bridge_pair_pnl", surplus_bridge.get("aggregate", {}).get("pair_pnl") if surplus_bridge else None),
+        metric_line("bridge_residual_qty_share", surplus_bridge.get("aggregate", {}).get("residual_qty_share") if surplus_bridge else None),
+        metric_line("bridge_residual_cost_share", surplus_bridge.get("aggregate", {}).get("residual_cost_share") if surplus_bridge else None),
         "",
         "## Capital-Reuse ROI",
         metric_line("status", capital.get("status") if capital else None),
@@ -245,6 +391,27 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         metric_line(
             "residual_qty_share_delta_vs_ce25",
             public_benchmark.get("comparison", {}).get("vs_ce25", {}).get("residual_qty_share_delta_vs_ce25") if public_benchmark else None,
+        ),
+        metric_line(
+            "public_benchmark_caveats",
+            ", ".join(public_target_misses) if public_target_misses else "none",
+        ),
+        metric_line(
+            "shadow_review_compatible_via_bridge",
+            public_benchmark.get("decision", {}).get("shadow_review_compatible_via_bridge") if public_benchmark else None,
+        ),
+        "",
+        "## Residual Diagnostic Caveats",
+        metric_line("young_tiny_residual_status", young_tiny_residual.get("status") if young_tiny_residual else None),
+        metric_line(
+            "young_tiny_residual_caveats",
+            ", ".join(young_residual_caveats) if young_residual_caveats else "none",
+        ),
+        metric_line(
+            "bridge_interpretation",
+            "bridge/per-window residual gates explain local residual diagnostic caveats"
+            if bridge_shadow_ready and young_residual_caveats
+            else None,
         ),
         "",
         "## Replay Evidence",
@@ -318,6 +485,13 @@ def main() -> None:
     parser.add_argument("--concurrency-scorecard", default=None)
     parser.add_argument("--capital-roi-scorecard", default=None)
     parser.add_argument("--public-benchmark-comparison-scorecard", default=None)
+    parser.add_argument("--young-tiny-residual-scorecard", default=None)
+    parser.add_argument("--surplus-bridge-scorecard", default=None)
+    parser.add_argument("--bridge-shadow-gap-scorecard", default=None)
+    parser.add_argument("--shadow-promotion-gate-scorecard", default=None)
+    parser.add_argument("--shadow-promotion-gap-scorecard", default=None)
+    parser.add_argument("--shadow-evidence-ledger-scorecard", default=None)
+    parser.add_argument("--source-caveat-audit-scorecard", default=None)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--scorecard-json", required=True)
     args = parser.parse_args()

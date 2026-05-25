@@ -718,20 +718,23 @@ def main() -> None:
             ]
         )
     if public_benchmark_path and "public_benchmark" in paths:
-        commands.append(
-            [
-                sys.executable,
-                "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
-                "--public-benchmark-scorecard",
-                str(public_benchmark_path),
-                "--capital-roi-scorecard",
-                str(paths["capital"]),
-                "--runtime-scorecard",
-                str(paths["repeat"]),
-                "--scorecard-json",
-                str(paths["public_benchmark"]),
-            ]
-        )
+        public_benchmark_command = [
+            sys.executable,
+            "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
+            "--public-benchmark-scorecard",
+            str(public_benchmark_path),
+            "--capital-roi-scorecard",
+            str(paths["capital"]),
+            "--runtime-scorecard",
+            str(paths["repeat"]),
+            "--scorecard-json",
+            str(paths["public_benchmark"]),
+        ]
+        if "bridge_shadow_gap" in paths:
+            public_benchmark_command.extend(["--bridge-shadow-gap-scorecard", str(paths["bridge_shadow_gap"])])
+        if "surplus_bridge" in paths:
+            public_benchmark_command.extend(["--surplus-bridge-scorecard", str(paths["surplus_bridge"])])
+        commands.append(public_benchmark_command)
     if public_benchmark_path and capacity_plan_path and "capacity_stage_public_benchmark" in paths:
         commands.append(
             [
@@ -777,6 +780,19 @@ def main() -> None:
     ]
     if "public_benchmark" in paths:
         packet_command.extend(["--public-benchmark-comparison-scorecard", str(paths["public_benchmark"])])
+    packet_command.extend(["--young-tiny-residual-scorecard", str(paths["young_tiny_residual"])])
+    if "surplus_bridge" in paths:
+        packet_command.extend(["--surplus-bridge-scorecard", str(paths["surplus_bridge"])])
+    if "bridge_shadow_gap" in paths:
+        packet_command.extend(["--bridge-shadow-gap-scorecard", str(paths["bridge_shadow_gap"])])
+    if "shadow_promotion_gate" in paths:
+        packet_command.extend(["--shadow-promotion-gate-scorecard", str(paths["shadow_promotion_gate"])])
+    if "shadow_promotion_gap" in paths:
+        packet_command.extend(["--shadow-promotion-gap-scorecard", str(paths["shadow_promotion_gap"])])
+    if "shadow_evidence_ledger" in paths:
+        packet_command.extend(["--shadow-evidence-ledger-scorecard", str(paths["shadow_evidence_ledger"])])
+    if "source_caveat_audit" in paths:
+        packet_command.extend(["--source-caveat-audit-scorecard", str(paths["source_caveat_audit"])])
     commands.append(packet_command)
 
     command_results = [run_command(command, cwd) for command in commands]
