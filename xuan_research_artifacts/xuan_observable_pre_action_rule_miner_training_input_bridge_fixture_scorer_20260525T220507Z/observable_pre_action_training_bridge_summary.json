@@ -1,0 +1,41 @@
+{
+  "deployable": false,
+  "events_jsonl_pulled": false,
+  "events_jsonl_read": false,
+  "feature_row_count": 10,
+  "fixture_only": true,
+  "future_labels_used_as_live_criteria": false,
+  "holdout_days": [
+    "2026-05-04",
+    "2026-05-05"
+  ],
+  "join_method_counts": {
+    "composite_fallback": 5,
+    "exact_id:source_seed_candidate_row_id": 5
+  },
+  "join_policy_version": "observable_pre_action_training_input_bridge_join_policy_v1",
+  "joined_row_count": 10,
+  "label_row_reuse_count": 0,
+  "offline_label_row_count": 10,
+  "post_action_labels_allowed_for_train_holdout_scoring": true,
+  "post_action_labels_allowed_in_live_predicate": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "raw_replay_or_full_store_scan": false,
+  "realized_pair_cost_used_as_live_criteria": false,
+  "schema_version": "observable_pre_action_training_bridge_summary_v1",
+  "split_counts": {
+    "holdout": 4,
+    "train": 6,
+    "unused": 0
+  },
+  "strategy_evidence": false,
+  "trading_behavior_changed": false,
+  "train_days": [
+    "2026-05-01",
+    "2026-05-02",
+    "2026-05-03"
+  ]
+}
