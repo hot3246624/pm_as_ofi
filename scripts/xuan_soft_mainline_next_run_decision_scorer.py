@@ -34,6 +34,11 @@ def status_is_blocked(card: dict[str, Any]) -> bool:
     return str(card.get("status") or "").startswith("BLOCKED")
 
 
+def status_is_waiting(card: dict[str, Any]) -> bool:
+    status = str(card.get("status") or "")
+    return status.startswith("UNKNOWN") and "WAIT" in status
+
+
 def summarize_window(prefix: dict[str, Any], density: dict[str, Any], label: str) -> dict[str, Any]:
     prefix_decision = prefix.get("decision") if isinstance(prefix.get("decision"), dict) else {}
     density_decision = density.get("decision") if isinstance(density.get("decision"), dict) else {}
@@ -45,6 +50,8 @@ def summarize_window(prefix: dict[str, Any], density: dict[str, Any], label: str
         "density_status": density.get("status"),
         "prefix_pass": status_is_keep(prefix),
         "density_pass": status_is_keep(density),
+        "prefix_waiting": status_is_waiting(prefix),
+        "density_waiting": status_is_waiting(density),
         "prefix_blocked": status_is_blocked(prefix),
         "density_blocked": status_is_blocked(density),
         "earliest_prefix_pass_minutes": prefix_decision.get("earliest_pass_minutes"),
@@ -84,10 +91,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     reference = summarize_window(reference_prefix, reference_density, "reference") if reference_prefix else None
 
     latest_ready = bool(latest["prefix_pass"] or latest["density_pass"])
+    latest_waiting = bool(latest["prefix_waiting"] or latest["density_waiting"])
     reference_ready = bool(reference and (reference["prefix_pass"] or reference["density_pass"]))
     hard_blockers: list[str] = []
     if not latest_ready:
         hard_blockers.append("latest_window_density_not_ready")
+    if latest["prefix_waiting"]:
+        hard_blockers.append("latest_prefix_waiting_for_min_decision")
+    if latest["density_waiting"]:
+        hard_blockers.append("latest_full_window_density_waiting")
     if latest["prefix_blocked"]:
         hard_blockers.append("latest_prefix_density_blocked")
     if latest["density_blocked"]:
@@ -97,6 +109,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         status = "KEEP_SOFT_MAINLINE_NEXT_RUN_DECISION_DENSITY_READY_LOCAL_ONLY"
         next_action = "prepare_one_bounded_no_cancel_soft_mainline_remote_on_future_heartbeat"
         recommendation = "latest density evidence supports considering one future 1800s dry-run after manifest verification"
+    elif latest_waiting:
+        status = "UNKNOWN_SOFT_MAINLINE_NEXT_RUN_DECISION_WAIT_FOR_PREFIX_MINUTES_LOCAL_ONLY"
+        next_action = "wait_for_min_decision_prefix_before_remote_decision"
+        recommendation = "latest partial density evidence is not old enough to judge; wait for min_decision_minutes before launching or blocking a full sample"
     elif reference_ready:
         status = "BLOCKED_SOFT_MAINLINE_NEXT_RUN_DECISION_WAIT_FOR_FRESH_DENSITY_SIGNAL_LOCAL_ONLY"
         next_action = "do_not_launch_full_remote_until_fresh_prefix_or_preflight_density_passes"
