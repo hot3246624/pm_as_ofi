@@ -118,6 +118,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     bridge = load_json(args.bridge_scorecard)
     runtime = load_json(args.latest_runtime_summary)
     density = load_json(args.latest_density_preflight)
+    source_audit = load_json(args.latest_source_caveat_audit)
     aggregate = body(bridge, "aggregate")
     thresholds = body(bridge, "thresholds")
     blockers = [str(item) for item in listify(bridge.get("hard_blockers")) if item]
@@ -171,11 +172,23 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     density_observed = body(density, "observed")
     runtime_metrics = body(runtime, "metrics")
     source_blocks = inum(density_observed.get("source_blocks"))
+    source_audit_status = status(source_audit)
+    source_audit_absorbed = bool(body(source_audit, "decision").get("source_caveat_absorbed"))
+    density_blockers = body(density, "decision").get("hard_blockers")
+    density_blockers = [str(item) for item in density_blockers] if isinstance(density_blockers, list) else []
     caveats: list[str] = []
     if source_blocks > args.max_source_blocks:
-        caveats.append("latest_density_source_blocks_above_max")
+        if source_audit_absorbed:
+            caveats.append("latest_density_source_blocks_absorbed_by_source_caveat_audit")
+        else:
+            caveats.append("latest_density_source_blocks_above_max")
     if status(density).startswith("BLOCKED"):
-        caveats.append("latest_density_preflight_not_keep")
+        if source_audit_absorbed and density_blockers == ["source_blocks_above_max"]:
+            caveats.append("latest_density_preflight_source_only_block_absorbed")
+        else:
+            caveats.append("latest_density_preflight_not_keep")
+    if args.latest_source_caveat_audit and not source_audit_absorbed:
+        caveats.append("latest_source_caveat_audit_not_absorbed")
     if runtime_metrics and fnum(runtime_metrics.get("rescue_net_pair_cost_max"), 0.0) > (
         fnum(thresholds.get("bridge_surplus_net_cap"), 1.02) or 1.02
     ):
@@ -194,11 +207,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "latest_density_preflight": str(Path(args.latest_density_preflight).expanduser())
             if args.latest_density_preflight
             else None,
+            "latest_source_caveat_audit": str(Path(args.latest_source_caveat_audit).expanduser())
+            if args.latest_source_caveat_audit
+            else None,
         },
         "source_statuses": {
             "bridge": status(bridge) or None,
             "latest_runtime_summary": status(runtime) or None,
             "latest_density_preflight": status(density) or None,
+            "latest_source_caveat_audit": source_audit_status or None,
         },
         "bridge_aggregate": aggregate,
         "thresholds": thresholds,
@@ -213,6 +230,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "bridge_repeat_gap_clear": bridge_clear,
             "bridge_accepted_only_gap": accepted_only,
             "small_accepted_gap": small_accepted_gap,
+            "latest_source_caveat_absorbed": source_audit_absorbed,
             "next_action": next_action,
             "hard_blockers": blockers,
             "soft_caveats": sorted(set(caveats)),
@@ -240,6 +258,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bridge-scorecard", required=True)
     parser.add_argument("--latest-runtime-summary")
     parser.add_argument("--latest-density-preflight")
+    parser.add_argument("--latest-source-caveat-audit")
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--markdown-output")
     parser.add_argument("--small-accepted-gap-max", type=int, default=5)
