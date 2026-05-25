@@ -198,6 +198,7 @@ def summarize_prefix(
 def build(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.output_root).expanduser().resolve()
     rows, bad_json = scan_events(root)
+    run_complete = (root / "run_exit_code.txt").exists() or (root / "aggregate_report.json").exists()
     if not rows:
         return {
             "artifact": "xuan_soft_mainline_density_prefix_scorer",
@@ -218,6 +219,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     t0 = rows[0][0]
     observed_duration_minutes = (rows[-1][0] - t0) / 60000.0
     prefix_minutes = sorted({float(item) for item in args.prefix_minutes})
+    if run_complete:
+        evaluable_prefix_minutes = prefix_minutes
+    else:
+        evaluable_prefix_minutes = [
+            minutes
+            for minutes in prefix_minutes
+            if minutes <= observed_duration_minutes + args.observed_duration_tolerance_minutes + 1e-12
+        ]
+    skipped_prefix_minutes = [minutes for minutes in prefix_minutes if minutes not in evaluable_prefix_minutes]
     prefixes = [
         summarize_prefix(
             rows=rows,
@@ -226,7 +236,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             args=args,
             bad_json=bad_json,
         )
-        for minutes in prefix_minutes
+        for minutes in evaluable_prefix_minutes
     ]
     decision_candidates = [
         item
@@ -235,19 +245,32 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     ]
     earliest_pass = decision_candidates[0] if decision_candidates else None
     final_prefix = prefixes[-1] if prefixes else None
-    hard_blockers = [] if earliest_pass else ["no_prefix_passed_density_gate_after_min_decision_minutes"]
-    status = (
-        "KEEP_SOFT_MAINLINE_DENSITY_PREFIX_SCORER_PASS_LOCAL_ONLY"
-        if earliest_pass
-        else "BLOCKED_SOFT_MAINLINE_DENSITY_PREFIX_SCORER_WEAK_RESCUE_DENSITY_LOCAL_ONLY"
+    waiting_for_min_decision = (
+        not run_complete
+        and observed_duration_minutes + args.observed_duration_tolerance_minutes < args.min_decision_minutes
     )
+    if earliest_pass:
+        hard_blockers = []
+        status = "KEEP_SOFT_MAINLINE_DENSITY_PREFIX_SCORER_PASS_LOCAL_ONLY"
+        recommendation = "same_profile_full_window_can_be_considered_on_future_heartbeat"
+    elif waiting_for_min_decision:
+        hard_blockers = ["observed_duration_below_min_decision_minutes"]
+        status = "UNKNOWN_SOFT_MAINLINE_DENSITY_PREFIX_SCORER_WAIT_FOR_MIN_DECISION_LOCAL_ONLY"
+        recommendation = "wait_for_min_decision_prefix_before_continue_or_abort"
+    else:
+        hard_blockers = ["no_prefix_passed_density_gate_after_min_decision_minutes"]
+        status = "BLOCKED_SOFT_MAINLINE_DENSITY_PREFIX_SCORER_WEAK_RESCUE_DENSITY_LOCAL_ONLY"
+        recommendation = "do_not_spend_full_1800s_sample_without_stronger_early_rescue_density"
     return {
         "artifact": "xuan_soft_mainline_density_prefix_scorer",
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "script": "scripts/xuan_soft_mainline_density_prefix_scorer.py",
         "status": status,
         "output_root": str(root),
+        "run_complete": run_complete,
         "observed_duration_minutes": observed_duration_minutes,
+        "prefix_minutes_evaluated": evaluable_prefix_minutes,
+        "prefix_minutes_skipped": skipped_prefix_minutes,
         "thresholds": {
             "full_window_minutes": args.full_window_minutes,
             "full_min_candidates": args.full_min_candidates,
@@ -263,6 +286,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "max_accepted_l1_age_ms": args.max_accepted_l1_age_ms,
             "max_rescue_l1_age_ms": args.max_rescue_l1_age_ms,
             "max_source_blocks": args.max_source_blocks,
+            "observed_duration_tolerance_minutes": args.observed_duration_tolerance_minutes,
         },
         "prefixes": prefixes,
         "earliest_passing_decision_prefix": earliest_pass,
@@ -275,11 +299,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "shadow_ready": False,
             "deployable": False,
             "hard_blockers": hard_blockers,
-            "recommendation": (
-                "same_profile_full_window_can_be_considered_on_future_heartbeat"
-                if earliest_pass
-                else "do_not_spend_full_1800s_sample_without_stronger_early_rescue_density"
-            ),
+            "recommendation": recommendation,
         },
         "guardrails": [
             "This scorer is local planning evidence only and does not launch remote jobs.",
@@ -308,6 +328,7 @@ def main() -> None:
     parser.add_argument("--max-accepted-l1-age-ms", type=float, default=1000.0)
     parser.add_argument("--max-rescue-l1-age-ms", type=float, default=50.0)
     parser.add_argument("--max-source-blocks", type=int, default=0)
+    parser.add_argument("--observed-duration-tolerance-minutes", type=float, default=0.25)
     args = parser.parse_args()
 
     card = build(args)
