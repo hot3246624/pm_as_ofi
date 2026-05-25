@@ -224,6 +224,15 @@ def main() -> None:
         "--contrast-reference-prefix-scorecard",
         default=".tmp_xuan/scorecards/xuan_soft_mainline_density_prefix_scorer_0510Z_duration_guard_regression_20260525T0932Z.json",
     )
+    parser.add_argument(
+        "--regime-holdout-window",
+        nargs=4,
+        action="append",
+        metavar=("LABEL", "RUNTIME_SUMMARY", "EVENT_DIAGNOSTICS", "PREFIX_SCORECARD"),
+        default=None,
+        help="Additional known weak/abstain window to include in regime generalization.",
+    )
+    parser.add_argument("--disable-default-regime-holdout", action="store_true")
     parser.add_argument("--disable-window-contrast", action="store_true")
     args = parser.parse_args()
     if args.prior_output_roots is None:
@@ -271,6 +280,19 @@ def main() -> None:
     contrast_reference_available = (
         not args.disable_window_contrast and all(path.exists() for path in contrast_reference_paths.values())
     )
+    default_regime_holdout = [
+        "soft_mainline_reference_weak_abstain_window",
+        ".tmp_xuan/scorecards/no_order_xuan-frontier-soft-mainline-explicit-surplus-no-cancel-20260525T0621Z_runtime_summary.json",
+        ".tmp_xuan/scorecards/xuan-frontier-soft-mainline-explicit-surplus-no-cancel-20260525T0621Z_event_diagnostics.json",
+        ".tmp_xuan/scorecards/xuan_soft_mainline_density_prefix_scorer_0621Z_duration_guard_regression_20260525T0932Z.json",
+    ]
+    regime_holdout_windows = [] if args.disable_default_regime_holdout else [default_regime_holdout]
+    regime_holdout_windows.extend(args.regime_holdout_window or [])
+    regime_holdout_windows = [
+        [window[0], *[str(Path(path).expanduser().resolve()) for path in window[1:]]]
+        for window in regime_holdout_windows
+        if all(Path(path).expanduser().resolve().exists() for path in window[1:])
+    ]
     if contrast_reference_available:
         paths["window_contrast"] = scorecard_dir / f"no_order_{args.tag}_window_contrast.json"
         paths["density_history"] = scorecard_dir / f"no_order_{args.tag}_density_history.json"
@@ -432,6 +454,11 @@ def main() -> None:
                 str(paths["runtime_summary"]),
                 str(paths["event_diagnostics"]),
                 str(paths["density_prefix"]),
+                *[
+                    item
+                    for window in regime_holdout_windows
+                    for item in ("--window", window[0], window[1], window[2], window[3])
+                ],
                 "--scorecard-json",
                 str(paths["regime_generalization"]),
                 "--markdown-output",
@@ -778,6 +805,15 @@ def main() -> None:
             "disabled_by_arg": args.disable_window_contrast,
             "paths": {key: str(path) for key, path in contrast_reference_paths.items()},
         },
+        "regime_holdout_windows": [
+            {
+                "label": window[0],
+                "runtime_summary": window[1],
+                "event_diagnostics": window[2],
+                "prefix_scorecard": window[3],
+            }
+            for window in regime_holdout_windows
+        ],
         "profile_cap_policy": {
             "target_rescue_net_cap": profile_body.get("target_rescue_net_cap"),
             "max_rescue_net_pair_cost": max_rescue_net_pair_cost,
