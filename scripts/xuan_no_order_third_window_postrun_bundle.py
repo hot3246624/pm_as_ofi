@@ -205,6 +205,19 @@ def main() -> None:
     parser.add_argument("--capacity-plan-scorecard", default=None)
     parser.add_argument("--capacity-stage", default="cap_25")
     parser.add_argument("--max-closeability-debt-per-slug", type=float, default=1.0)
+    parser.add_argument(
+        "--contrast-reference-runtime-summary",
+        default=".tmp_xuan/scorecards/no_order_xuan-frontier-soft-mainline-explicit-surplus-no-cancel-20260525T0510Z_runtime_summary.json",
+    )
+    parser.add_argument(
+        "--contrast-reference-event-diagnostics",
+        default=".tmp_xuan/scorecards/xuan-frontier-soft-mainline-explicit-surplus-no-cancel-20260525T0510Z_event_diagnostics.json",
+    )
+    parser.add_argument(
+        "--contrast-reference-prefix-scorecard",
+        default=".tmp_xuan/scorecards/xuan_soft_mainline_density_prefix_scorer_0510Z_duration_guard_regression_20260525T0932Z.json",
+    )
+    parser.add_argument("--disable-window-contrast", action="store_true")
     args = parser.parse_args()
     if args.prior_output_roots is None:
         args.prior_output_roots = [] if args.no_default_prior_output_roots else [
@@ -239,6 +252,16 @@ def main() -> None:
         "capital": scorecard_dir / f"no_order_{args.tag}_capital_reuse_roi.json",
         "packet": scorecard_dir / f"no_order_{args.tag}_shadow_review_packet.json",
     }
+    contrast_reference_paths = {
+        "runtime_summary": Path(args.contrast_reference_runtime_summary).expanduser().resolve(),
+        "event_diagnostics": Path(args.contrast_reference_event_diagnostics).expanduser().resolve(),
+        "prefix_scorecard": Path(args.contrast_reference_prefix_scorecard).expanduser().resolve(),
+    }
+    contrast_reference_available = (
+        not args.disable_window_contrast and all(path.exists() for path in contrast_reference_paths.values())
+    )
+    if contrast_reference_available:
+        paths["window_contrast"] = scorecard_dir / f"no_order_{args.tag}_window_contrast.json"
     public_benchmark_path = (
         Path(args.public_benchmark_scorecard).expanduser().resolve()
         if args.public_benchmark_scorecard
@@ -316,97 +339,129 @@ def main() -> None:
             "--scorecard-json",
             str(paths["next_run_decision"]),
         ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_strict_rescue_lifecycle_scorer.py",
-            "--output-root",
-            str(third_root),
-            "--scorecard-json",
-            str(paths["lifecycle"]),
-            "--min-rescue-rows",
-            "1",
-            "--max-action-l1-age-ms",
-            "1000",
-            "--max-rescue-l1-age-ms",
-            "50",
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_closeability_gate_comparison_scorer.py",
-            "--baseline-root",
-            str(Path(args.baseline_root).expanduser().resolve()),
-            "--candidate-root",
-            str(third_root),
-            "--scorecard-json",
-            str(paths["comparison"]),
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_young_tiny_residual_scorer.py",
-            "--output-root",
-            str(third_root),
-            "--scorecard-json",
-            str(paths["young_tiny_residual"]),
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_runtime_shadow_readiness_scorer.py",
-            "--output-root",
-            str(third_root),
-            "--scorecard-json",
-            str(paths["shadow"]),
-            "--young-tiny-residual-scorecard",
-            str(paths["young_tiny_residual"]),
-            "--max-closeability-debt-open-per-slug",
-            str(args.max_closeability_debt_per_slug),
-            "--max-closeability-debt-max-open-per-slug",
-            str(args.max_closeability_debt_per_slug),
-            "--max-rescue-net-pair-cost",
-            str(max_rescue_net_pair_cost),
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_concurrent_shared_ingress_scorer.py",
-            "--output-root",
-            str(third_root),
-            "--scorecard-json",
-            str(paths["concurrency"]),
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_runtime_repeat_window_scorer.py",
-            "--output-roots",
-            *[str(Path(root).expanduser().resolve()) for root in args.prior_output_roots],
-            str(third_root),
-            "--scorecard-json",
-            str(paths["repeat"]),
-            "--max-rescue-net-pair-cost",
-            str(max_rescue_net_pair_cost),
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_runtime_repeat_window_gap_planner.py",
-            "--repeat-scorecard",
-            str(paths["repeat"]),
-            "--scorecard-json",
-            str(paths["gap"]),
-        ],
-        [
-            sys.executable,
-            "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
-            *[
-                item
-                for root in [*[str(Path(root).expanduser().resolve()) for root in args.prior_output_roots], str(third_root)]
-                for item in ("--output-root", root)
-            ],
-            "--scorecard-json",
-            str(paths["capital"]),
-            "--round-notional",
-            str(profile_body.get("target_qty") or 300.0),
-            "--round-minutes",
-            "5",
-        ],
     ]
+    if contrast_reference_available:
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_window_contrast_scorer.py",
+                "--reference-runtime-summary",
+                str(contrast_reference_paths["runtime_summary"]),
+                "--reference-event-diagnostics",
+                str(contrast_reference_paths["event_diagnostics"]),
+                "--reference-prefix-scorecard",
+                str(contrast_reference_paths["prefix_scorecard"]),
+                "--latest-runtime-summary",
+                str(paths["runtime_summary"]),
+                "--latest-event-diagnostics",
+                str(paths["event_diagnostics"]),
+                "--latest-prefix-scorecard",
+                str(paths["density_prefix"]),
+                "--reference-label",
+                "soft_mainline_reference_good_window",
+                "--latest-label",
+                args.tag,
+                "--scorecard-json",
+                str(paths["window_contrast"]),
+            ]
+        )
+    commands.extend(
+        [
+            [
+                sys.executable,
+                "scripts/xuan_no_order_strict_rescue_lifecycle_scorer.py",
+                "--output-root",
+                str(third_root),
+                "--scorecard-json",
+                str(paths["lifecycle"]),
+                "--min-rescue-rows",
+                "1",
+                "--max-action-l1-age-ms",
+                "1000",
+                "--max-rescue-l1-age-ms",
+                "50",
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_closeability_gate_comparison_scorer.py",
+                "--baseline-root",
+                str(Path(args.baseline_root).expanduser().resolve()),
+                "--candidate-root",
+                str(third_root),
+                "--scorecard-json",
+                str(paths["comparison"]),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_young_tiny_residual_scorer.py",
+                "--output-root",
+                str(third_root),
+                "--scorecard-json",
+                str(paths["young_tiny_residual"]),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_runtime_shadow_readiness_scorer.py",
+                "--output-root",
+                str(third_root),
+                "--scorecard-json",
+                str(paths["shadow"]),
+                "--young-tiny-residual-scorecard",
+                str(paths["young_tiny_residual"]),
+                "--max-closeability-debt-open-per-slug",
+                str(args.max_closeability_debt_per_slug),
+                "--max-closeability-debt-max-open-per-slug",
+                str(args.max_closeability_debt_per_slug),
+                "--max-rescue-net-pair-cost",
+                str(max_rescue_net_pair_cost),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_concurrent_shared_ingress_scorer.py",
+                "--output-root",
+                str(third_root),
+                "--scorecard-json",
+                str(paths["concurrency"]),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_runtime_repeat_window_scorer.py",
+                "--output-roots",
+                *[str(Path(root).expanduser().resolve()) for root in args.prior_output_roots],
+                str(third_root),
+                "--scorecard-json",
+                str(paths["repeat"]),
+                "--max-rescue-net-pair-cost",
+                str(max_rescue_net_pair_cost),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_runtime_repeat_window_gap_planner.py",
+                "--repeat-scorecard",
+                str(paths["repeat"]),
+                "--scorecard-json",
+                str(paths["gap"]),
+            ],
+            [
+                sys.executable,
+                "scripts/xuan_no_order_capital_reuse_roi_scorer.py",
+                *[
+                    item
+                    for root in [
+                        *[str(Path(root).expanduser().resolve()) for root in args.prior_output_roots],
+                        str(third_root),
+                    ]
+                    for item in ("--output-root", root)
+                ],
+                "--scorecard-json",
+                str(paths["capital"]),
+                "--round-notional",
+                str(profile_body.get("target_qty") or 300.0),
+                "--round-minutes",
+                "5",
+            ],
+        ]
+    )
     if public_benchmark_path and "public_benchmark" in paths:
         commands.append(
             [
@@ -492,6 +547,11 @@ def main() -> None:
         "commands": command_results,
         "runtime_summary": runtime_summary,
         "profile_scorecard": str(Path(args.profile_scorecard).expanduser().resolve()),
+        "window_contrast_reference": {
+            "enabled": contrast_reference_available,
+            "disabled_by_arg": args.disable_window_contrast,
+            "paths": {key: str(path) for key, path in contrast_reference_paths.items()},
+        },
         "profile_cap_policy": {
             "target_rescue_net_cap": profile_body.get("target_rescue_net_cap"),
             "max_rescue_net_pair_cost": max_rescue_net_pair_cost,

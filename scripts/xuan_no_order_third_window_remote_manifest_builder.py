@@ -36,6 +36,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_soft_mainline_density_preflight_gate.py",
     "scripts/xuan_soft_mainline_density_prefix_scorer.py",
     "scripts/xuan_soft_mainline_next_run_decision_scorer.py",
+    "scripts/xuan_soft_mainline_window_contrast_scorer.py",
 ]
 
 
