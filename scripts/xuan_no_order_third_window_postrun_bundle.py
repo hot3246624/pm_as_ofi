@@ -269,6 +269,7 @@ def main() -> None:
         paths["shadow_promotion_gap"] = scorecard_dir / f"no_order_{args.tag}_shadow_promotion_gap.json"
         paths["shadow_evidence_ledger"] = scorecard_dir / f"no_order_{args.tag}_shadow_evidence_ledger.json"
         paths["existing_window_candidates"] = scorecard_dir / f"no_order_{args.tag}_existing_window_candidates.json"
+        paths["cap25_reproduction_review"] = scorecard_dir / f"no_order_{args.tag}_cap25_reproduction_review.json"
     public_benchmark_path = (
         Path(args.public_benchmark_scorecard).expanduser().resolve()
         if args.public_benchmark_scorecard
@@ -598,6 +599,16 @@ def main() -> None:
                 str(output_dir / "soft_mainline_existing_window_candidates.csv"),
                 "--markdown-output",
                 str(output_dir / "SOFT_MAINLINE_EXISTING_WINDOW_CANDIDATES.md"),
+            ]
+        )
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_cap25_reproduction_reviewer.py",
+                "--scorecard-json",
+                str(paths["cap25_reproduction_review"]),
+                "--markdown-output",
+                str(output_dir / "SOFT_MAINLINE_CAP25_REPRODUCTION_REVIEW.md"),
             ]
         )
     if public_benchmark_path and "public_benchmark" in paths:
