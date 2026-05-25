@@ -187,7 +187,7 @@ def write_runtime_summary(root: Path, output_path: Path) -> dict[str, Any]:
 def status_of(path: Path) -> str | None:
     if not path.exists():
         return None
-    return read_json(path).get("status")
+    return read_json(path).get("status") or "KEEP_SCORECARD_PRESENT_NO_STATUS_FIELD_LOCAL_ONLY"
 
 
 def main() -> None:
@@ -225,6 +225,8 @@ def main() -> None:
 
     paths = {
         "runtime_summary": scorecard_dir / f"no_order_{args.tag}_runtime_summary.json",
+        "event_diagnostics": scorecard_dir / f"no_order_{args.tag}_event_diagnostics.json",
+        "density_preflight": scorecard_dir / f"no_order_{args.tag}_density_preflight_gate.json",
         "lifecycle": scorecard_dir / f"no_order_{args.tag}_lifecycle_scorer.json",
         "comparison": scorecard_dir / f"no_order_{args.tag}_comparison_scorer.json",
         "concurrency": scorecard_dir / f"no_order_{args.tag}_concurrent_shared_ingress_scorer.json",
@@ -253,7 +255,47 @@ def main() -> None:
         )
 
     runtime_summary = write_runtime_summary(third_root, paths["runtime_summary"])
+    event_diagnostics_command = [
+        sys.executable,
+        "scripts/xuan_no_order_event_diagnostics_from_jsonl.py",
+        "--output-root",
+        str(third_root),
+        "--output-json",
+        str(paths["event_diagnostics"]),
+    ]
+    if profile_body.get("risk_seed_pair_completion_required_above_net_cap") is not None:
+        event_diagnostics_command.extend(
+            [
+                "--risk-seed-pair-completion-required-above-net-cap",
+                str(profile_body.get("risk_seed_pair_completion_required_above_net_cap")),
+            ]
+        )
+    if profile_body.get("risk_seed_pair_completion_required_above_fair_price_pair_cost") is not None:
+        event_diagnostics_command.extend(
+            [
+                "--risk-seed-pair-completion-required-above-fair-price-pair-cost",
+                str(profile_body.get("risk_seed_pair_completion_required_above_fair_price_pair_cost")),
+            ]
+        )
+    if profile_body.get("risk_seed_pair_completion_min_qty") is not None:
+        event_diagnostics_command.extend(
+            [
+                "--risk-seed-pair-completion-min-qty",
+                str(profile_body.get("risk_seed_pair_completion_min_qty")),
+            ]
+        )
     commands = [
+        event_diagnostics_command,
+        [
+            sys.executable,
+            "scripts/xuan_soft_mainline_density_preflight_gate.py",
+            "--event-diagnostics",
+            str(paths["event_diagnostics"]),
+            "--runtime-summary",
+            str(paths["runtime_summary"]),
+            "--scorecard-json",
+            str(paths["density_preflight"]),
+        ],
         [
             sys.executable,
             "scripts/xuan_no_order_strict_rescue_lifecycle_scorer.py",

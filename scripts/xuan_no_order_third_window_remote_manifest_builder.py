@@ -33,6 +33,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_no_order_public_benchmark_comparison_scorer.py",
     "scripts/xuan_capacity_stage_public_benchmark_gate.py",
     "scripts/xuan_no_order_event_diagnostics_from_jsonl.py",
+    "scripts/xuan_soft_mainline_density_preflight_gate.py",
 ]
 
 
