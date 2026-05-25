@@ -1,0 +1,1069 @@
+{
+  "artifact": "xuan_observable_pre_action_rule_miner_training_fixture_scorer",
+  "blockers": [],
+  "contract_name": "observable_pre_action_rule_miner_training_fixture_scorer_v1",
+  "created_utc": "2026-05-25T23:05:07Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_READY",
+  "deployable": false,
+  "fixture_only": true,
+  "inputs": {
+    "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_input_bridge_fixture_scorer_20260525T220507Z/observable_pre_action_training_bridge_joined_rows.jsonl",
+    "training_spec_manifest": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_spec_20260525T223507Z/manifest.json"
+  },
+  "next_executable_action": "Run observable_pre_action_rule_miner_real_input_inventory_v1 again or wait for a non-fixture feature-join pullback with bridge-joined rows; do not start no-order diagnostics automatically.",
+  "no_order_diagnostic_allowed": false,
+  "outputs": {
+    "frozen_rule_manifest": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_fixture_scorer_20260525T230507Z/frozen_observable_pre_action_rule_manifest.json"
+  },
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "training_fixture_scorer_only"
+  },
+  "research_ranking": "TRAINING_FIXTURE_SCORER_READY_NO_STRATEGY_EVIDENCE",
+  "safety": {
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "shadow_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "schema_version": 1,
+  "score": {
+    "best_metrics": {
+      "holdout_days": [
+        "2026-05-04",
+        "2026-05-05"
+      ],
+      "holdout_objective": 0.4,
+      "holdout_objective_per_row": 0.2,
+      "holdout_pair_pnl": 0.4,
+      "holdout_residual_cost": 0.0,
+      "holdout_rows": 2,
+      "selected_count": 4,
+      "selected_day_counts": {
+        "2026-05-01": 1,
+        "2026-05-02": 1,
+        "2026-05-04": 1,
+        "2026-05-05": 1
+      },
+      "selected_share_from_top_day": 0.25,
+      "train_days": [
+        "2026-05-01",
+        "2026-05-02"
+      ],
+      "train_objective": 0.4,
+      "train_objective_per_row": 0.2,
+      "train_pair_pnl": 0.4,
+      "train_residual_cost": 0.0,
+      "train_rows": 2
+    },
+    "best_predicate": {
+      "conditions": [
+        {
+          "field": "pre_seed_same_qty_bucket",
+          "op": "eq",
+          "value": "pre_seed_same_qty_zero"
+        }
+      ],
+      "predicate_expression": "pre_seed_same_qty_bucket == \"pre_seed_same_qty_zero\"",
+      "predicate_feature_names": [
+        "pre_seed_same_qty_bucket"
+      ]
+    },
+    "candidate_predicate_count": 29,
+    "candidate_preview": [
+      {
+        "blockers": [
+          "holdout_objective_not_positive",
+          "holdout_objective_degraded"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": 0.2,
+          "train_objective_per_row": 0.066667,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 0.4,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "status_before_action",
+              "op": "eq",
+              "value": "admitted"
+            }
+          ],
+          "predicate_expression": "status_before_action == \"admitted\"",
+          "predicate_feature_names": [
+            "status_before_action"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.6,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 1.2,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "status_before_action",
+              "op": "eq",
+              "value": "blocked"
+            }
+          ],
+          "predicate_expression": "status_before_action == \"blocked\"",
+          "predicate_feature_names": [
+            "status_before_action"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "holdout_objective_not_positive",
+          "holdout_objective_degraded"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": 0.2,
+          "train_objective_per_row": 0.066667,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 0.4,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "reason",
+              "op": "eq",
+              "value": "candidate"
+            }
+          ],
+          "predicate_expression": "reason == \"candidate\"",
+          "predicate_feature_names": [
+            "reason"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.6,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 1.2,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "reason",
+              "op": "eq",
+              "value": "target"
+            }
+          ],
+          "predicate_expression": "reason == \"target\"",
+          "predicate_feature_names": [
+            "reason"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.6,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 1.2,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "block_reason",
+              "op": "eq",
+              "value": "target"
+            }
+          ],
+          "predicate_expression": "block_reason == \"target\"",
+          "predicate_feature_names": [
+            "block_reason"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "holdout_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.0,
+          "holdout_objective_per_row": 0.0,
+          "holdout_pair_pnl": 0.8,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 4,
+          "selected_count": 10,
+          "selected_day_counts": {
+            "2026-05-01": 2,
+            "2026-05-02": 2,
+            "2026-05-03": 2,
+            "2026-05-04": 2,
+            "2026-05-05": 2
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.4,
+          "train_objective_per_row": -0.066667,
+          "train_pair_pnl": 1.2,
+          "train_residual_cost": 1.6,
+          "train_rows": 6
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "source_sequence_present",
+              "op": "eq",
+              "value": "True"
+            }
+          ],
+          "predicate_expression": "source_sequence_present == \"True\"",
+          "predicate_feature_names": [
+            "source_sequence_present"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.6,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 1.2,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "quote_intent_present",
+              "op": "eq",
+              "value": "False"
+            }
+          ],
+          "predicate_expression": "quote_intent_present == \"False\"",
+          "predicate_feature_names": [
+            "quote_intent_present"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "holdout_objective_not_positive",
+          "holdout_objective_degraded"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": 0.2,
+          "train_objective_per_row": 0.066667,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 0.4,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "quote_intent_present",
+              "op": "eq",
+              "value": "True"
+            }
+          ],
+          "predicate_expression": "quote_intent_present == \"True\"",
+          "predicate_feature_names": [
+            "quote_intent_present"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.6,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 1.2,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "source_order_present",
+              "op": "eq",
+              "value": "False"
+            }
+          ],
+          "predicate_expression": "source_order_present == \"False\"",
+          "predicate_feature_names": [
+            "source_order_present"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "holdout_objective_not_positive",
+          "holdout_objective_degraded"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": 0.2,
+          "train_objective_per_row": 0.066667,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 0.4,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "source_order_present",
+              "op": "eq",
+              "value": "True"
+            }
+          ],
+          "predicate_expression": "source_order_present == \"True\"",
+          "predicate_feature_names": [
+            "source_order_present"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "static_side_offset_only_predicate"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.6,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 1.2,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "side",
+              "op": "eq",
+              "value": "NO"
+            }
+          ],
+          "predicate_expression": "side == \"NO\"",
+          "predicate_feature_names": [
+            "side"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "holdout_objective_not_positive",
+          "holdout_objective_degraded",
+          "static_side_offset_only_predicate"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 5,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": 0.2,
+          "train_objective_per_row": 0.066667,
+          "train_pair_pnl": 0.6,
+          "train_residual_cost": 0.4,
+          "train_rows": 3
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "side",
+              "op": "eq",
+              "value": "YES"
+            }
+          ],
+          "predicate_expression": "side == \"YES\"",
+          "predicate_feature_names": [
+            "side"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "holdout_objective_not_positive",
+          "static_side_offset_only_predicate"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.0,
+          "holdout_objective_per_row": 0.0,
+          "holdout_pair_pnl": 0.8,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 4,
+          "selected_count": 10,
+          "selected_day_counts": {
+            "2026-05-01": 2,
+            "2026-05-02": 2,
+            "2026-05-03": 2,
+            "2026-05-04": 2,
+            "2026-05-05": 2
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.4,
+          "train_objective_per_row": -0.066667,
+          "train_pair_pnl": 1.2,
+          "train_residual_cost": 1.6,
+          "train_rows": 6
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "offset_bucket_derived_from_offset_s",
+              "op": "eq",
+              "value": "offset_30_60"
+            }
+          ],
+          "predicate_expression": "offset_bucket_derived_from_offset_s == \"offset_30_60\"",
+          "predicate_feature_names": [
+            "offset_bucket_derived_from_offset_s"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "holdout_objective_not_positive",
+          "static_side_offset_only_predicate"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.0,
+          "holdout_objective_per_row": 0.0,
+          "holdout_pair_pnl": 0.8,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 4,
+          "selected_count": 10,
+          "selected_day_counts": {
+            "2026-05-01": 2,
+            "2026-05-02": 2,
+            "2026-05-03": 2,
+            "2026-05-04": 2,
+            "2026-05-05": 2
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.4,
+          "train_objective_per_row": -0.066667,
+          "train_pair_pnl": 1.2,
+          "train_residual_cost": 1.6,
+          "train_rows": 6
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "offset_s_bucketized",
+              "op": "eq",
+              "value": "offset_30_60"
+            }
+          ],
+          "predicate_expression": "offset_s_bucketized == \"offset_30_60\"",
+          "predicate_feature_names": [
+            "offset_s_bucketized"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "holdout_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 6,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 2,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.333333,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.8,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.8,
+          "train_residual_cost": 1.6,
+          "train_rows": 4
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "pre_seed_same_qty_bucket",
+              "op": "eq",
+              "value": "pre_seed_same_qty_1_5"
+            }
+          ],
+          "predicate_expression": "pre_seed_same_qty_bucket == \"pre_seed_same_qty_1_5\"",
+          "predicate_feature_names": [
+            "pre_seed_same_qty_bucket"
+          ]
+        }
+      },
+      {
+        "blockers": [],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 4,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.25,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02"
+          ],
+          "train_objective": 0.4,
+          "train_objective_per_row": 0.2,
+          "train_pair_pnl": 0.4,
+          "train_residual_cost": 0.0,
+          "train_rows": 2
+        },
+        "passed": true,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "pre_seed_same_qty_bucket",
+              "op": "eq",
+              "value": "pre_seed_same_qty_zero"
+            }
+          ],
+          "predicate_expression": "pre_seed_same_qty_bucket == \"pre_seed_same_qty_zero\"",
+          "predicate_feature_names": [
+            "pre_seed_same_qty_bucket"
+          ]
+        }
+      },
+      {
+        "blockers": [],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 4,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.25,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02"
+          ],
+          "train_objective": 0.4,
+          "train_objective_per_row": 0.2,
+          "train_pair_pnl": 0.4,
+          "train_residual_cost": 0.0,
+          "train_rows": 2
+        },
+        "passed": true,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "pre_seed_opp_qty_bucket",
+              "op": "eq",
+              "value": "pre_seed_opp_qty_1_5"
+            }
+          ],
+          "predicate_expression": "pre_seed_opp_qty_bucket == \"pre_seed_opp_qty_1_5\"",
+          "predicate_feature_names": [
+            "pre_seed_opp_qty_bucket"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "holdout_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": -0.4,
+          "holdout_objective_per_row": -0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 2,
+          "selected_count": 6,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-03": 2,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.333333,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.8,
+          "train_objective_per_row": -0.2,
+          "train_pair_pnl": 0.8,
+          "train_residual_cost": 1.6,
+          "train_rows": 4
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "pre_seed_opp_qty_bucket",
+              "op": "eq",
+              "value": "pre_seed_opp_qty_zero"
+            }
+          ],
+          "predicate_expression": "pre_seed_opp_qty_bucket == \"pre_seed_opp_qty_zero\"",
+          "predicate_feature_names": [
+            "pre_seed_opp_qty_bucket"
+          ]
+        }
+      },
+      {
+        "blockers": [
+          "train_objective_not_positive",
+          "holdout_objective_not_positive"
+        ],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.0,
+          "holdout_objective_per_row": 0.0,
+          "holdout_pair_pnl": 0.8,
+          "holdout_residual_cost": 0.8,
+          "holdout_rows": 4,
+          "selected_count": 10,
+          "selected_day_counts": {
+            "2026-05-01": 2,
+            "2026-05-02": 2,
+            "2026-05-03": 2,
+            "2026-05-04": 2,
+            "2026-05-05": 2
+          },
+          "selected_share_from_top_day": 0.2,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02",
+            "2026-05-03"
+          ],
+          "train_objective": -0.4,
+          "train_objective_per_row": -0.066667,
+          "train_pair_pnl": 1.2,
+          "train_residual_cost": 1.6,
+          "train_rows": 6
+        },
+        "passed": false,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "pre_seed_open_qty_bucket",
+              "op": "eq",
+              "value": "pre_seed_open_qty_1_5"
+            }
+          ],
+          "predicate_expression": "pre_seed_open_qty_bucket == \"pre_seed_open_qty_1_5\"",
+          "predicate_feature_names": [
+            "pre_seed_open_qty_bucket"
+          ]
+        }
+      },
+      {
+        "blockers": [],
+        "metrics": {
+          "holdout_days": [
+            "2026-05-04",
+            "2026-05-05"
+          ],
+          "holdout_objective": 0.4,
+          "holdout_objective_per_row": 0.2,
+          "holdout_pair_pnl": 0.4,
+          "holdout_residual_cost": 0.0,
+          "holdout_rows": 2,
+          "selected_count": 4,
+          "selected_day_counts": {
+            "2026-05-01": 1,
+            "2026-05-02": 1,
+            "2026-05-04": 1,
+            "2026-05-05": 1
+          },
+          "selected_share_from_top_day": 0.25,
+          "train_days": [
+            "2026-05-01",
+            "2026-05-02"
+          ],
+          "train_objective": 0.4,
+          "train_objective_per_row": 0.2,
+          "train_pair_pnl": 0.4,
+          "train_residual_cost": 0.0,
+          "train_rows": 2
+        },
+        "passed": true,
+        "predicate": {
+          "conditions": [
+            {
+              "field": "pre_seed_deficit_qty_bucket_derived",
+              "op": "eq",
+              "value": "pre_seed_deficit_qty_1_5"
+            }
+          ],
+          "predicate_expression": "pre_seed_deficit_qty_bucket_derived == \"pre_seed_deficit_qty_1_5\"",
+          "predicate_feature_names": [
+            "pre_seed_deficit_qty_bucket_derived"
+          ]
+        }
+      }
+    ],
+    "joined_row_count": 10
+  },
+  "strategy_evidence": false
+}

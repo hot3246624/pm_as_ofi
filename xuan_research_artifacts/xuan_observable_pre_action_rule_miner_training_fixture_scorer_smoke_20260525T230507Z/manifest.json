@@ -1,0 +1,62 @@
+{
+  "artifact": "xuan_observable_pre_action_rule_miner_training_fixture_scorer_smoke",
+  "cases": {
+    "denominator_missing": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED",
+    "forbidden_live_feature": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED",
+    "good": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_READY",
+    "holdout_negative": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED",
+    "insufficient_support": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED",
+    "label_leakage": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED",
+    "private_claim": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED",
+    "single_day_concentration": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_FAIL_CLOSED"
+  },
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_FIXTURE_SCORER_SMOKE_READY",
+  "deployable": false,
+  "good_best_metrics": {
+    "holdout_days": [
+      "2026-05-04",
+      "2026-05-05"
+    ],
+    "holdout_objective": 0.4,
+    "holdout_objective_per_row": 0.2,
+    "holdout_pair_pnl": 0.4,
+    "holdout_residual_cost": 0.0,
+    "holdout_rows": 2,
+    "selected_count": 4,
+    "selected_day_counts": {
+      "2026-05-01": 1,
+      "2026-05-02": 1,
+      "2026-05-04": 1,
+      "2026-05-05": 1
+    },
+    "selected_share_from_top_day": 0.25,
+    "train_days": [
+      "2026-05-01",
+      "2026-05-02"
+    ],
+    "train_objective": 0.4,
+    "train_objective_per_row": 0.2,
+    "train_pair_pnl": 0.4,
+    "train_residual_cost": 0.0,
+    "train_rows": 2
+  },
+  "good_best_predicate": {
+    "conditions": [
+      {
+        "field": "pre_seed_same_qty_bucket",
+        "op": "eq",
+        "value": "pre_seed_same_qty_zero"
+      }
+    ],
+    "predicate_expression": "pre_seed_same_qty_bucket == \"pre_seed_same_qty_zero\"",
+    "predicate_feature_names": [
+      "pre_seed_same_qty_bucket"
+    ]
+  },
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "strategy_evidence": false
+}

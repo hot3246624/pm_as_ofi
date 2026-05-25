@@ -1,0 +1,143 @@
+{
+  "allowed_live_feature_families": [
+    "status_before_action",
+    "reason",
+    "block_reason",
+    "source_sequence_present",
+    "quote_intent_present",
+    "source_order_present",
+    "side",
+    "offset_bucket_derived_from_offset_s",
+    "offset_s_bucketized",
+    "pre_seed_same_qty_bucket",
+    "pre_seed_opp_qty_bucket",
+    "pre_seed_open_qty_bucket",
+    "pre_seed_deficit_qty_bucket_derived",
+    "pre_seed_same_cost_bucket",
+    "pre_seed_opp_cost_bucket",
+    "pre_seed_open_cost_bucket",
+    "candidate_qty_bucket",
+    "source_risk_direction"
+  ],
+  "created_from_training_spec": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_spec_20260525T223507Z/manifest.json",
+  "created_utc": "20260525T230912Z",
+  "deployable": false,
+  "forbidden_live_feature_families": [
+    "source_pair",
+    "source_residual",
+    "source_pair_qty",
+    "source_pair_cost",
+    "source_pair_pnl",
+    "source_residual_qty",
+    "source_residual_cost",
+    "source_residual_age_s",
+    "pair_outcome_bucket",
+    "residual_tail_outcome_bucket",
+    "realized_pair_cost",
+    "settlement",
+    "redeem",
+    "future_label",
+    "private_truth",
+    "public_profile_single_day_profit",
+    "static_side_offset_price_cap",
+    "dplus_failed_family_marker"
+  ],
+  "frozen_rule_id": "fixture_observable_pre_action_rule_v1",
+  "holdout_label_fields": [
+    "source_pair_qty",
+    "source_pair_cost",
+    "source_pair_pnl",
+    "source_residual_qty",
+    "source_residual_cost",
+    "source_residual_age_s",
+    "pair_outcome_bucket",
+    "residual_tail_outcome_bucket"
+  ],
+  "holdout_manifest": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_input_bridge_fixture_scorer_20260525T220507Z/observable_pre_action_training_bridge_joined_rows.jsonl",
+  "objective_metrics": {
+    "holdout_days": [
+      "2026-05-04",
+      "2026-05-05"
+    ],
+    "holdout_objective": 0.4,
+    "holdout_objective_per_row": 0.2,
+    "holdout_pair_pnl": 0.4,
+    "holdout_residual_cost": 0.0,
+    "holdout_rows": 2,
+    "selected_count": 4,
+    "selected_day_counts": {
+      "2026-05-01": 1,
+      "2026-05-02": 1,
+      "2026-05-04": 1,
+      "2026-05-05": 1
+    },
+    "selected_share_from_top_day": 0.25,
+    "train_days": [
+      "2026-05-01",
+      "2026-05-02"
+    ],
+    "train_objective": 0.4,
+    "train_objective_per_row": 0.2,
+    "train_pair_pnl": 0.4,
+    "train_residual_cost": 0.0,
+    "train_rows": 2
+  },
+  "predicate": {
+    "all": [
+      {
+        "field": "pre_seed_same_qty_bucket",
+        "op": "eq",
+        "value": "pre_seed_same_qty_zero"
+      }
+    ]
+  },
+  "predicate_expression": "pre_seed_same_qty_bucket == \"pre_seed_same_qty_zero\"",
+  "predicate_feature_names": [
+    "pre_seed_same_qty_bucket"
+  ],
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "fixture_training_scorer_only"
+  },
+  "rule_version": "fixture_v1",
+  "same_window_scope": {
+    "denominator_replay_not_run": true,
+    "requires_denominator_replay": true,
+    "rule_match_count_min": 20,
+    "same_window_denominator_count_min": 100,
+    "source_sequence_coverage_min": 0.95
+  },
+  "schema_version": "frozen_observable_pre_action_rule_manifest_v1",
+  "stability_gates": {
+    "fixture_only": true,
+    "holdout_objective_positive": true,
+    "single_day_concentration_ok": true,
+    "static_side_offset_public_price_cap": false,
+    "train_objective_positive": true
+  },
+  "train_holdout_split": {
+    "holdout_days": [
+      "2026-05-04",
+      "2026-05-05"
+    ],
+    "train_days": [
+      "2026-05-01",
+      "2026-05-02"
+    ]
+  },
+  "train_label_fields": [
+    "source_pair_qty",
+    "source_pair_cost",
+    "source_pair_pnl",
+    "source_residual_qty",
+    "source_residual_cost",
+    "source_residual_age_s",
+    "pair_outcome_bucket",
+    "residual_tail_outcome_bucket"
+  ],
+  "train_manifest": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_input_bridge_fixture_scorer_20260525T220507Z/observable_pre_action_training_bridge_joined_rows.jsonl",
+  "uses_future_labels": false,
+  "uses_only_pre_action_fields": true,
+  "uses_realized_pair_cost": false
+}
