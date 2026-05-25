@@ -262,6 +262,7 @@ def main() -> None:
     )
     if contrast_reference_available:
         paths["window_contrast"] = scorecard_dir / f"no_order_{args.tag}_window_contrast.json"
+        paths["density_history"] = scorecard_dir / f"no_order_{args.tag}_density_history.json"
     public_benchmark_path = (
         Path(args.public_benchmark_scorecard).expanduser().resolve()
         if args.public_benchmark_scorecard
@@ -363,6 +364,24 @@ def main() -> None:
                 args.tag,
                 "--scorecard-json",
                 str(paths["window_contrast"]),
+            ]
+        )
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_density_history_scorer.py",
+                "--window",
+                "soft_mainline_reference_good_window",
+                str(contrast_reference_paths["runtime_summary"]),
+                str(contrast_reference_paths["event_diagnostics"]),
+                str(contrast_reference_paths["prefix_scorecard"]),
+                "--window",
+                args.tag,
+                str(paths["runtime_summary"]),
+                str(paths["event_diagnostics"]),
+                str(paths["density_prefix"]),
+                "--scorecard-json",
+                str(paths["density_history"]),
             ]
         )
     commands.extend(
