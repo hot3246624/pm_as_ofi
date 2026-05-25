@@ -769,6 +769,39 @@ def merge_symmetric_activation_summary(dest: dict[str, Any], src: dict[str, Any]
             merge_nested_count_hist(dest.setdefault(key, {}), source)
 
 
+def merge_symmetric_activation_tail_attribution_summary(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    for key in ("schema_version", "field_contract"):
+        if key in src and key not in dest:
+            dest[key] = src[key]
+    for key in (
+        "pair_qty_sum_by_status_reason_activation_bucket",
+        "residual_qty_sum_by_status_reason_activation_bucket",
+        "residual_cost_sum_by_status_reason_activation_bucket",
+        "pair_tail_loss_sum_by_status_reason_activation_bucket",
+        "pair_qty_sum_by_status_reason_side_offset_activation_bucket",
+        "residual_qty_sum_by_status_reason_side_offset_activation_bucket",
+        "residual_cost_sum_by_status_reason_side_offset_activation_bucket",
+        "pair_tail_loss_sum_by_status_reason_side_offset_activation_bucket",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    for key in (
+        "pair_cost_bucket_by_status_reason_activation_bucket",
+        "source_sequence_presence_by_status_reason_activation_bucket",
+        "pair_cost_bucket_by_status_reason_side_offset_activation_bucket",
+        "source_sequence_presence_by_status_reason_side_offset_activation_bucket",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+    exemplars = src.get("residual_tail_exemplars_by_status_reason_activation_bucket")
+    if isinstance(exemplars, list):
+        dest.setdefault("residual_tail_exemplars_by_status_reason_activation_bucket", []).extend(
+            item for item in exemplars if isinstance(item, dict)
+        )
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -824,6 +857,7 @@ class RunnerConfig:
     source_opportunity_closed_cycle_marker_event_lite_summary: bool = False
     ce25_projected_guard_event_lite_summary: bool = False
     symmetric_activation_event_lite_summary: bool = False
+    symmetric_activation_tail_attribution_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -882,6 +916,11 @@ class VirtualOrder:
     pre_seed_opp_cost: float | None = None
     ledger_proxy_before: float | None = None
     ledger_proxy_after: float | None = None
+    activation_required: bool = False
+    activation_opp_age_ms: int | None = None
+    opposite_seen_ms: int | None = None
+    symmetric_activation_status: str = "admitted"
+    symmetric_activation_reason: str = "candidate"
     queue_credit: float = 0.0
     first_bid_touch_ms: int | None = None
     first_trade_touch_ms: int | None = None
@@ -913,6 +952,11 @@ class Lot:
     pre_seed_opp_cost: float | None = None
     ledger_proxy_before: float | None = None
     ledger_proxy_after: float | None = None
+    activation_required: bool = False
+    activation_opp_age_ms: int | None = None
+    opposite_seen_ms: int | None = None
+    symmetric_activation_status: str = "admitted"
+    symmetric_activation_reason: str = "candidate"
     source_pair_qty: float = 0.0
     source_pair_cost: float = 0.0
     source_pair_pnl: float = 0.0
@@ -1143,6 +1187,37 @@ class DPlusRunner:
             "activation_age_bucket_by_status_reason_activation_bucket": {},
             "source_sequence_presence_by_status_reason_activation_bucket": {},
             "residual_leak_stress_cost_sum_by_status_reason_activation_bucket": {},
+        }
+        self.event_lite_symmetric_activation_tail_attribution_summary: dict[str, Any] = {
+            "schema_version": "symmetric_activation_tail_attribution_summary_v1",
+            "field_contract": {
+                "default_off": True,
+                "source": "source_attributed_realized_pair_residual_tail_joined_to_pre_action_activation_context",
+                "status_reason_scope": ["admitted|candidate"],
+                "join_axes": [
+                    "status|reason|activation_bucket",
+                    "status|reason|side|offset_bucket|activation_bucket",
+                ],
+                "post_action_outcome_labels_included": False,
+                "realized_pair_cost_used_as_live_criteria": False,
+                "trading_behavior_changed": False,
+                "private_truth_ready": False,
+                "deployable": False,
+                "promotion_gate_passed": False,
+            },
+            "pair_qty_sum_by_status_reason_activation_bucket": {},
+            "pair_cost_bucket_by_status_reason_activation_bucket": {},
+            "residual_qty_sum_by_status_reason_activation_bucket": {},
+            "residual_cost_sum_by_status_reason_activation_bucket": {},
+            "pair_tail_loss_sum_by_status_reason_activation_bucket": {},
+            "source_sequence_presence_by_status_reason_activation_bucket": {},
+            "pair_qty_sum_by_status_reason_side_offset_activation_bucket": {},
+            "pair_cost_bucket_by_status_reason_side_offset_activation_bucket": {},
+            "residual_qty_sum_by_status_reason_side_offset_activation_bucket": {},
+            "residual_cost_sum_by_status_reason_side_offset_activation_bucket": {},
+            "pair_tail_loss_sum_by_status_reason_side_offset_activation_bucket": {},
+            "source_sequence_presence_by_status_reason_side_offset_activation_bucket": {},
+            "residual_tail_exemplars_by_status_reason_activation_bucket": [],
         }
         if self.cfg.source_opportunity_ledger_marker_event_lite_summary:
             self.event_lite_source_opportunity_markers["field_contract"][
@@ -2167,6 +2242,89 @@ class DPlusRunner:
             residual_leak_stress_cost,
         )
 
+    def symmetric_activation_keys_for_source(self, lot: Lot) -> tuple[str, str]:
+        activation_bucket = activation_state_bucket(
+            lot.activation_required,
+            lot.activation_opp_age_ms,
+            lot.opposite_seen_ms,
+        )
+        status_reason = f"{lot.symmetric_activation_status}|{lot.symmetric_activation_reason}"
+        side_offset_activation = f"{status_reason}|{lot.side}|{offset_bucket(lot.offset_s)}|{activation_bucket}"
+        return f"{status_reason}|{activation_bucket}", side_offset_activation
+
+    def record_symmetric_activation_tail_pair_source(self, lot: Lot, qty: float, net_pair_cost: float) -> None:
+        if not (self.cfg.event_lite_summary and self.cfg.symmetric_activation_tail_attribution_event_lite_summary):
+            return
+        status_reason_activation, side_offset_activation = self.symmetric_activation_keys_for_source(lot)
+        diag = self.event_lite_symmetric_activation_tail_attribution_summary
+        add_count(diag["pair_qty_sum_by_status_reason_activation_bucket"], status_reason_activation, qty)
+        add_nested_count(
+            diag["pair_cost_bucket_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            pair_cost_bucket(net_pair_cost),
+            qty,
+        )
+        add_count(diag["pair_tail_loss_sum_by_status_reason_activation_bucket"], status_reason_activation, max(0.0, (net_pair_cost - 1.0) * qty))
+        add_nested_count(
+            diag["source_sequence_presence_by_status_reason_activation_bucket"],
+            status_reason_activation,
+            "present" if lot.trigger_source_sequence_id is not None else "missing",
+            qty,
+        )
+        add_count(diag["pair_qty_sum_by_status_reason_side_offset_activation_bucket"], side_offset_activation, qty)
+        add_nested_count(
+            diag["pair_cost_bucket_by_status_reason_side_offset_activation_bucket"],
+            side_offset_activation,
+            pair_cost_bucket(net_pair_cost),
+            qty,
+        )
+        add_count(
+            diag["pair_tail_loss_sum_by_status_reason_side_offset_activation_bucket"],
+            side_offset_activation,
+            max(0.0, (net_pair_cost - 1.0) * qty),
+        )
+        add_nested_count(
+            diag["source_sequence_presence_by_status_reason_side_offset_activation_bucket"],
+            side_offset_activation,
+            "present" if lot.trigger_source_sequence_id is not None else "missing",
+            qty,
+        )
+
+    def symmetric_activation_tail_residual_exemplars(
+        self,
+        residual_lots: list[Lot],
+        summary_ts_ms: int,
+    ) -> list[dict[str, Any]]:
+        if not (self.cfg.event_lite_summary and self.cfg.symmetric_activation_tail_attribution_event_lite_summary):
+            return []
+        exemplars: list[dict[str, Any]] = []
+        for lot in residual_lots:
+            status_reason_activation, side_offset_activation = self.symmetric_activation_keys_for_source(lot)
+            exemplars.append(
+                {
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "lot_id": lot.id,
+                    "quote_intent_id": lot.quote_intent_id,
+                    "status_reason_activation_bucket": status_reason_activation,
+                    "status_reason_side_offset_activation_bucket": side_offset_activation,
+                    "side": lot.side,
+                    "offset_bucket": offset_bucket(lot.offset_s),
+                    "source_sequence_presence": "present" if lot.trigger_source_sequence_id is not None else "missing",
+                    "source_sequence_id": lot.trigger_source_sequence_id,
+                    "source_risk_direction": lot.source_risk_direction,
+                    "residual_qty": round(lot.qty, 6),
+                    "residual_cost": round(lot.cost, 6),
+                    "source_pair_qty": round(lot.source_pair_qty, 6),
+                    "source_pair_cost": round(lot.source_pair_cost, 6),
+                    "source_pair_pnl": round(lot.source_pair_pnl, 6),
+                    "residual_age_ms": max(0, summary_ts_ms - lot.fill_ms),
+                    "seed_px": lot.px,
+                    "trigger_px": lot.trigger_px,
+                }
+            )
+        return sorted(exemplars, key=lambda item: item.get("residual_cost", 0.0), reverse=True)[:20]
+
     def record_source_link_pair_transition(
         self,
         *,
@@ -2486,6 +2644,11 @@ class DPlusRunner:
             pre_seed_opp_cost=order.pre_seed_opp_cost,
             ledger_proxy_before=order.ledger_proxy_before,
             ledger_proxy_after=order.ledger_proxy_after,
+            activation_required=order.activation_required,
+            activation_opp_age_ms=order.activation_opp_age_ms,
+            opposite_seen_ms=order.opposite_seen_ms,
+            symmetric_activation_status=order.symmetric_activation_status,
+            symmetric_activation_reason=order.symmetric_activation_reason,
         )
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
@@ -2515,6 +2678,7 @@ class DPlusRunner:
                 source_lot.source_pair_qty += take
                 source_lot.source_pair_cost += take * pair_cost
                 source_lot.source_pair_pnl += pair_pnl
+                self.record_symmetric_activation_tail_pair_source(source_lot, take, pair_cost)
             a.qty -= take
             b.qty -= take
             matched_pair_id = f"{self.slug}:pair:{self.metrics.pair_actions}"
@@ -2574,6 +2738,7 @@ class DPlusRunner:
                 lot.source_pair_qty += take
                 lot.source_pair_cost += take * net_pair
                 lot.source_pair_pnl += take * (1.0 - net_pair)
+                self.record_symmetric_activation_tail_pair_source(lot, take, net_pair)
                 matched_pair_id = f"{self.slug}:salvage:{self.metrics.salvage_actions}"
                 self.record_source_link_pair_transition(qty=take, net_pair_cost=net_pair, sources=[lot])
                 self.record_pair_source_event_lite(
@@ -2859,6 +3024,11 @@ class DPlusRunner:
             pre_seed_same_cost=same_cost_before,
             pre_seed_opp_cost=opp_cost_before,
             ledger_proxy_before=ledger_proxy_before,
+            activation_required=risk_increasing_seed and self.cfg.activation_mode != "none",
+            activation_opp_age_ms=activation_opp_age_ms,
+            opposite_seen_ms=opposite_seen_ms,
+            symmetric_activation_status="admitted",
+            symmetric_activation_reason="candidate",
         )
         self.record_ce25_projected_guard_diagnostic(
             side=side,
@@ -3073,6 +3243,38 @@ class DPlusRunner:
                 summary["event_lite"]["ce25_projected_guard_summary"] = self.event_lite_ce25_projected_guard_summary
             if self.cfg.symmetric_activation_event_lite_summary:
                 summary["event_lite"]["symmetric_activation_summary"] = self.event_lite_symmetric_activation_summary
+            if self.cfg.symmetric_activation_tail_attribution_event_lite_summary:
+                tail_diag = json.loads(json.dumps(self.event_lite_symmetric_activation_tail_attribution_summary))
+                for lot in residual_lots:
+                    status_reason_activation, side_offset_activation = self.symmetric_activation_keys_for_source(lot)
+                    add_count(tail_diag["residual_qty_sum_by_status_reason_activation_bucket"], status_reason_activation, lot.qty)
+                    add_count(tail_diag["residual_cost_sum_by_status_reason_activation_bucket"], status_reason_activation, lot.cost)
+                    add_nested_count(
+                        tail_diag["source_sequence_presence_by_status_reason_activation_bucket"],
+                        status_reason_activation,
+                        "present" if lot.trigger_source_sequence_id is not None else "missing",
+                        lot.qty,
+                    )
+                    add_count(
+                        tail_diag["residual_qty_sum_by_status_reason_side_offset_activation_bucket"],
+                        side_offset_activation,
+                        lot.qty,
+                    )
+                    add_count(
+                        tail_diag["residual_cost_sum_by_status_reason_side_offset_activation_bucket"],
+                        side_offset_activation,
+                        lot.cost,
+                    )
+                    add_nested_count(
+                        tail_diag["source_sequence_presence_by_status_reason_side_offset_activation_bucket"],
+                        side_offset_activation,
+                        "present" if lot.trigger_source_sequence_id is not None else "missing",
+                        lot.qty,
+                    )
+                tail_diag["residual_tail_exemplars_by_status_reason_activation_bucket"] = (
+                    self.symmetric_activation_tail_residual_exemplars(residual_lots, summary_ts_ms)
+                )
+                summary["event_lite"]["symmetric_activation_tail_attribution_summary"] = tail_diag
         self.summary_path.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
 
 
@@ -3355,6 +3557,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                     event_lite.setdefault("symmetric_activation_summary", {}),
                     symmetric_activation,
                 )
+            symmetric_activation_tail = lite.get("symmetric_activation_tail_attribution_summary")
+            if isinstance(symmetric_activation_tail, dict):
+                merge_symmetric_activation_tail_attribution_summary(
+                    event_lite.setdefault("symmetric_activation_tail_attribution_summary", {}),
+                    symmetric_activation_tail,
+                )
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -3403,6 +3611,15 @@ def aggregate(out: Path) -> dict[str, Any]:
                 key=lambda item: item.get("source_residual_cost", 0.0) if isinstance(item, dict) else 0.0,
                 reverse=True,
             )[:50]
+        symmetric_activation_tail = event_lite.get("symmetric_activation_tail_attribution_summary")
+        if isinstance(symmetric_activation_tail, dict):
+            exemplars = symmetric_activation_tail.get("residual_tail_exemplars_by_status_reason_activation_bucket")
+            if isinstance(exemplars, list):
+                symmetric_activation_tail["residual_tail_exemplars_by_status_reason_activation_bucket"] = sorted(
+                    exemplars,
+                    key=lambda item: item.get("residual_cost", 0.0) if isinstance(item, dict) else 0.0,
+                    reverse=True,
+                )[:50]
         aggregate_report["event_lite"] = event_lite
     (out / "aggregate_report.json").write_text(json.dumps(aggregate_report, indent=2, sort_keys=True) + "\n")
     return aggregate_report
@@ -3482,6 +3699,7 @@ async def main() -> None:
     ap.add_argument("--source-opportunity-closed-cycle-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit closed-cycle pre-action marker denominators without changing behavior")
     ap.add_argument("--ce25-projected-guard-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off ce25 projected pair-cost/residual guard diagnostics without changing behavior")
     ap.add_argument("--symmetric-activation-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off symmetric activation projected pair-cost/residual diagnostics without changing behavior")
+    ap.add_argument("--symmetric-activation-tail-attribution-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off source-attributed realized pair/residual tail diagnostics joined to activation buckets without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -3530,6 +3748,7 @@ async def main() -> None:
         source_opportunity_closed_cycle_marker_event_lite_summary=args.source_opportunity_closed_cycle_marker_event_lite_summary,
         ce25_projected_guard_event_lite_summary=args.ce25_projected_guard_event_lite_summary,
         symmetric_activation_event_lite_summary=args.symmetric_activation_event_lite_summary,
+        symmetric_activation_tail_attribution_event_lite_summary=args.symmetric_activation_tail_attribution_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -3593,6 +3812,8 @@ async def main() -> None:
         raise SystemExit("--ce25-projected-guard-event-lite-summary requires --event-lite-summary")
     if cfg.symmetric_activation_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--symmetric-activation-event-lite-summary requires --event-lite-summary")
+    if cfg.symmetric_activation_tail_attribution_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--symmetric-activation-tail-attribution-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

@@ -1,0 +1,67 @@
+{
+  "artifact": "xuan_symmetric_activation_tail_attribution_summary_scorer",
+  "created_utc": "20260525T040434Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_TAIL_ATTRIBUTION_SUMMARY_SCORER_READY",
+  "default_aggregate": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_tail_attribution_summary_smoke_20260525T041000Z/default_off/aggregate_report.json",
+  "enabled_aggregate": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_tail_attribution_summary_smoke_20260525T041000Z/enabled/aggregate_report.json",
+  "enabled_summary_dir": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_tail_attribution_summary_smoke_20260525T041000Z/enabled",
+  "next_executable_action": "Use this scorer only on allowlisted local pullbacks that already include tail attribution summaries; do not treat scorer readiness as promotion evidence.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SCORER_READY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "no_order_diagnostic_allowed": false,
+    "status": "KEEP_SYMMETRIC_ACTIVATION_TAIL_ATTRIBUTION_SUMMARY_SCORER_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "blockers": [],
+    "checks": {
+      "aggregate_pair_parity": true,
+      "aggregate_residual_parity": true,
+      "default_off_summary_absent": true,
+      "enabled_summary_present": true,
+      "field_contract_ok": true,
+      "pair_cost_bucket_present": true,
+      "pair_qty_positive": true,
+      "pair_tail_loss_positive": true,
+      "residual_qty_positive": true,
+      "residual_tail_exemplar_present": true,
+      "schema_ok": true,
+      "side_offset_activation_residual_present": true,
+      "source_sequence_coverage_present": true
+    },
+    "summary": {
+      "activation_key": "admitted|candidate|activation_required_activation_opp_age_1_5s",
+      "aggregate_pair_total": 4.0,
+      "aggregate_residual_total": 1.5,
+      "pair_qty": 4.0,
+      "pair_tail_loss": 0.2,
+      "residual_qty": 1.5,
+      "summary_file_count": 1,
+      "summary_pair_total": 4.0,
+      "summary_residual_total": 1.5
+    }
+  }
+}

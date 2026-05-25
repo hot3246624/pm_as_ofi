@@ -1,0 +1,34 @@
+{
+  "artifact": "xuan_symmetric_activation_tail_attribution_summary_smoke",
+  "checks": {
+    "aggregate_pair_parity": true,
+    "aggregate_residual_parity": true,
+    "default_off_summary_absent": true,
+    "enabled_summary_present": true,
+    "post_action_outcome_labels_excluded": true,
+    "realized_pair_cost_not_live_criterion": true,
+    "runner_fixture_ready": true,
+    "scorer_ready": true,
+    "trading_behavior_changed": false
+  },
+  "created_utc": "20260525T041000Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_TAIL_ATTRIBUTION_SUMMARY_SMOKE_PASS",
+  "next_executable_action": "use the scorer on allowlisted local pullbacks that already contain symmetric_activation_tail_attribution_summary_v1; keep research_ranking and promotion_gate separate",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "scope": {
+    "events_jsonl_read": false,
+    "local_no_network_fixture": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_live_modified": false,
+    "ssh_used": false
+  }
+}

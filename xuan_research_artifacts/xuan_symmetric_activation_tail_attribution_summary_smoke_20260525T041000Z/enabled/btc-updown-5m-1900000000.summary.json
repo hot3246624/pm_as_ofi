@@ -1,0 +1,236 @@
+{
+  "blocked": {},
+  "book_ticks": 0,
+  "config": {
+    "activation_mode": "opp_seen",
+    "activation_window_s": 7.5,
+    "ce25_projected_guard_event_lite_summary": false,
+    "cooldown_ms": 5000,
+    "dust_qty": 1.0,
+    "edge": 0.04,
+    "event_lite_summary": true,
+    "fill_haircut": 0.25,
+    "fill_to_balance_diagnostic_event_lite_summary": false,
+    "imbalance_cost_cap": 1000000000.0,
+    "imbalance_qty_cap": 2.0,
+    "late_repair_after_s": null,
+    "late_repair_fill_to_balance_after_s": null,
+    "late_repair_only_after_s": null,
+    "late_target_after_s": null,
+    "late_target_qty": null,
+    "max_open_cost": 80.0,
+    "max_salvage_qty": 250.0,
+    "max_seed_qty": 60.0,
+    "micro_deficit_repair_guard": false,
+    "micro_deficit_repair_max_deficit_qty": 0.25,
+    "micro_deficit_repair_open_qty_cap": 1.0,
+    "order_ttl_ms": 120000,
+    "pair_source_event_lite_summary": false,
+    "pairing_only_when_residual": false,
+    "portfolio_ledger_event_lite_summary": false,
+    "queue_share": 0.5,
+    "salvage_age_ms": 10000000,
+    "salvage_min_lot_cost": 0.25,
+    "salvage_net_cap": 0.0,
+    "seed_l1_cap": 1.02,
+    "seed_offset_max_s": 120.0,
+    "seed_offset_min_s": 0.0,
+    "seed_px_hi": 0.9,
+    "seed_px_lo": 0.05,
+    "source_link_residual_tail_exemplars_event_lite_summary": false,
+    "source_link_transition_event_lite_summary": false,
+    "source_opportunity_closed_cycle_marker_event_lite_summary": false,
+    "source_opportunity_ledger_before_delta_marker_event_lite_summary": false,
+    "source_opportunity_ledger_marker_event_lite_summary": false,
+    "source_opportunity_marker_event_lite_summary": false,
+    "source_opportunity_marker_reason_source_event_lite_summary": false,
+    "symmetric_activation_event_lite_summary": false,
+    "symmetric_activation_tail_attribution_event_lite_summary": true,
+    "taker_fee_rate": 0.07,
+    "target_qty": 5.0
+  },
+  "event_lite": {
+    "block_by_reason_offset_bucket": {},
+    "block_by_reason_public_px_bucket": {},
+    "block_by_reason_side": {},
+    "candidate_offset_buckets": {},
+    "candidate_public_trade_px_buckets": {},
+    "candidate_qty_by_seed_px_bucket": {},
+    "candidate_seed_px_buckets": {},
+    "candidate_side_counts": {},
+    "fill_seed_px_buckets": {},
+    "fill_side_counts": {},
+    "net_pair_cost_buckets": {
+      "pair_cost_1p00_1p05": 1.0
+    },
+    "pair_cost_buckets": {
+      "pair_cost_1p00_1p05": 1.0
+    },
+    "residual_lot_px_qty_buckets": {
+      "px_0p30_0p45": 1.5
+    },
+    "residual_lot_side_cost": {
+      "YES": 0.6
+    },
+    "residual_lot_side_count": {
+      "YES": 1.0
+    },
+    "residual_lot_side_qty": {
+      "YES": 1.5
+    },
+    "symmetric_activation_tail_attribution_summary": {
+      "field_contract": {
+        "default_off": true,
+        "deployable": false,
+        "join_axes": [
+          "status|reason|activation_bucket",
+          "status|reason|side|offset_bucket|activation_bucket"
+        ],
+        "post_action_outcome_labels_included": false,
+        "private_truth_ready": false,
+        "promotion_gate_passed": false,
+        "realized_pair_cost_used_as_live_criteria": false,
+        "source": "source_attributed_realized_pair_residual_tail_joined_to_pre_action_activation_context",
+        "status_reason_scope": [
+          "admitted|candidate"
+        ],
+        "trading_behavior_changed": false
+      },
+      "pair_cost_bucket_by_status_reason_activation_bucket": {
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": {
+          "pair_cost_1p00_1p05": 4.0
+        }
+      },
+      "pair_cost_bucket_by_status_reason_side_offset_activation_bucket": {
+        "admitted|candidate|NO|offset_60_90|activation_required_activation_opp_age_1_5s": {
+          "pair_cost_1p00_1p05": 2.0
+        },
+        "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s": {
+          "pair_cost_1p00_1p05": 2.0
+        }
+      },
+      "pair_qty_sum_by_status_reason_activation_bucket": {
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": 4.0
+      },
+      "pair_qty_sum_by_status_reason_side_offset_activation_bucket": {
+        "admitted|candidate|NO|offset_60_90|activation_required_activation_opp_age_1_5s": 2.0,
+        "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s": 2.0
+      },
+      "pair_tail_loss_sum_by_status_reason_activation_bucket": {
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": 0.2
+      },
+      "pair_tail_loss_sum_by_status_reason_side_offset_activation_bucket": {
+        "admitted|candidate|NO|offset_60_90|activation_required_activation_opp_age_1_5s": 0.1,
+        "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s": 0.1
+      },
+      "residual_cost_sum_by_status_reason_activation_bucket": {
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": 0.6
+      },
+      "residual_cost_sum_by_status_reason_side_offset_activation_bucket": {
+        "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s": 0.6
+      },
+      "residual_qty_sum_by_status_reason_activation_bucket": {
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": 1.5
+      },
+      "residual_qty_sum_by_status_reason_side_offset_activation_bucket": {
+        "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s": 1.5
+      },
+      "residual_tail_exemplars_by_status_reason_activation_bucket": [
+        {
+          "condition_id": "btc-updown-5m-1900000000",
+          "lot_id": 3,
+          "offset_bucket": "offset_60_90",
+          "quote_intent_id": "fixture-3",
+          "residual_age_ms": 0,
+          "residual_cost": 0.6,
+          "residual_qty": 1.5,
+          "seed_px": 0.4,
+          "side": "YES",
+          "slug": "btc-updown-5m-1900000000",
+          "source_pair_cost": 0.0,
+          "source_pair_pnl": 0.0,
+          "source_pair_qty": 0.0,
+          "source_risk_direction": "risk_increasing",
+          "source_sequence_id": "seq-yes-residual",
+          "source_sequence_presence": "present",
+          "status_reason_activation_bucket": "admitted|candidate|activation_required_activation_opp_age_1_5s",
+          "status_reason_side_offset_activation_bucket": "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s",
+          "trigger_px": 0.45
+        }
+      ],
+      "schema_version": "symmetric_activation_tail_attribution_summary_v1",
+      "source_sequence_presence_by_status_reason_activation_bucket": {
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": {
+          "present": 5.5
+        }
+      },
+      "source_sequence_presence_by_status_reason_side_offset_activation_bucket": {
+        "admitted|candidate|NO|offset_60_90|activation_required_activation_opp_age_1_5s": {
+          "present": 2.0
+        },
+        "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s": {
+          "present": 3.5
+        }
+      }
+    }
+  },
+  "final": true,
+  "kind": "summary",
+  "metrics": {
+    "cancelled_orders": 0,
+    "candidates": 0,
+    "completion_cost": 0.0,
+    "completion_per_fill": 0.0,
+    "fill_rate": 0.0,
+    "fill_wait_p50_ms": null,
+    "fill_wait_p90_ms": null,
+    "filled_cost": 0.0,
+    "filled_qty": 0.0,
+    "late_repair_fill_to_balance_blocks": 0,
+    "late_repair_fill_to_balance_candidates": 0,
+    "late_repair_fill_to_balance_caps": 0,
+    "late_repair_fill_to_balance_qty_reduction": 0.0,
+    "material_residual_lots": 0,
+    "micro_deficit_repair_guard_blocks": 0,
+    "micro_deficit_repair_guard_candidates": 0,
+    "net_pair_cost_p50": 1.05,
+    "net_pair_cost_p90": 1.05,
+    "pair_actions": 1,
+    "pair_cost_p50": 1.05,
+    "pair_cost_p90": 1.05,
+    "pair_pnl": -0.1,
+    "pair_qty": 2.0,
+    "pair_wait_p50_ms": 8000.0,
+    "pair_wait_p90_ms": 8000.0,
+    "qty_pair_share_of_filled": 0.0,
+    "queue_supported_fills": 0,
+    "residual_cost": 0.6,
+    "residual_qty": 1.5,
+    "roi_on_filled_cost": 0.0,
+    "roi_on_seed_cost": 0.0,
+    "salvage_actions": 0,
+    "salvage_wait_p50_ms": null,
+    "salvage_wait_p90_ms": null,
+    "seed_cost": 0.0,
+    "seed_qty": 0.0,
+    "taker_fee": 0.0,
+    "touch_only_orders": 0
+  },
+  "script": "xuan_dplus_passive_passive_shadow_runner.py",
+  "sell_triggers": 0,
+  "slug": "btc-updown-5m-1900000000",
+  "top_residual_lots": [
+    {
+      "age_ms": -120318239376,
+      "cost": 0.6,
+      "lot_id": 3,
+      "px": 0.4,
+      "qty": 1.5,
+      "quote_intent_id": "fixture-3",
+      "side": "YES",
+      "source_order_id": 3
+    }
+  ],
+  "trade_ticks": 0,
+  "ts_ms": 1779681874624
+}

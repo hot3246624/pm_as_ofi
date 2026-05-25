@@ -1,0 +1,18 @@
+{
+  "artifact": "xuan_symmetric_activation_tail_attribution_summary_fixture",
+  "checks": {
+    "activation_pair_bucket_present": true,
+    "activation_pair_tail_loss_present": true,
+    "activation_residual_bucket_present": true,
+    "cli_requires_event_lite": true,
+    "default_off_summary_absent": true,
+    "enabled_summary_present": true,
+    "pair_actions_unchanged": true,
+    "residual_qty_unchanged": true,
+    "residual_tail_exemplar_present": true,
+    "side_offset_activation_present": true
+  },
+  "created_utc": "20260525T041000Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_TAIL_ATTRIBUTION_SUMMARY_FIXTURE_READY"
+}
