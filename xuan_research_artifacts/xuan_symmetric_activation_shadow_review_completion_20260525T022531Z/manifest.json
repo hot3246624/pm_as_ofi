@@ -1,0 +1,369 @@
+{
+  "acceptance_adapter": {
+    "adapter_evaluation": {
+      "blockers": [
+        "shadow_normal_shadow_acceptance_passed_false",
+        "shadow_net_pair_cost_p90_above_max",
+        "shadow_residual_qty_share_above_max",
+        "shadow_pair_tail_loss_share_above_max"
+      ],
+      "candidate_gate_passed": false,
+      "candidate_status": "ADAPTER_INPUT_FAIL_CLOSED",
+      "fixture": false,
+      "shadow_acceptance_gate": {
+        "blockers": [
+          "normal_shadow_acceptance_passed_false",
+          "net_pair_cost_p90_above_max",
+          "residual_qty_share_above_max",
+          "pair_tail_loss_share_above_max"
+        ],
+        "checks": {
+          "candidates_ok": true,
+          "fee_adjusted_pair_pnl_proxy_positive": true,
+          "material_residual_lots_ok": true,
+          "net_pair_cost_p90_ok": false,
+          "no_order_safety_ok": true,
+          "normal_acceptance_passed_not_false": false,
+          "pair_tail_loss_share_ok": false,
+          "residual_cost_share_ok": true,
+          "residual_qty_share_ok": false
+        },
+        "metrics": {
+          "candidates": 241,
+          "fee_adjusted_pair_pnl_proxy": 4.343122,
+          "material_residual_lots": 0,
+          "net_pair_cost_p90": 1.06,
+          "pair_tail_loss_share": 0.10400583,
+          "residual_cost_share": 0.1116134,
+          "residual_qty_share": 0.16572344
+        },
+        "passed": false
+      },
+      "symmetric_activation_gate": {
+        "blockers": [],
+        "checks": {
+          "admitted_activation_denominator_ok": true,
+          "aggregate_parity": true,
+          "blocked_activation_denominator_ok": true,
+          "field_contract_ok": true,
+          "schema_ok": true,
+          "source_sequence_coverage_present": true
+        },
+        "passed": true,
+        "summary": {
+          "admitted_activation_denominator": 23.0,
+          "aggregate_total": 558.0,
+          "blocked_activation_denominator": 30.0,
+          "summary_file_total": 558.0
+        }
+      }
+    },
+    "decision_label": "UNKNOWN_SYMMETRIC_ACTIVATION_ACCEPTANCE_ADAPTER_INPUTS_INSUFFICIENT",
+    "promotion_gate": {
+      "deployable": false,
+      "g2_canary_ready": false,
+      "hard_blockers": [
+        "private_truth_missing",
+        "deployable_evidence_missing",
+        "exact_user_approval_required_before_any_no_order_diagnostic"
+      ],
+      "normal_shadow_acceptance_gate_passed": false,
+      "passed": false,
+      "private_truth_ready": false,
+      "status": "ADAPTER_SPEC_READY_NOT_PROMOTION_EVIDENCE",
+      "symmetric_activation_gate_passed": true
+    },
+    "real_input_status": "UNKNOWN_ADAPTER_INPUT_FAIL_CLOSED",
+    "research_ranking": {
+      "adapter_candidate_gate_passed": false,
+      "no_order_diagnostic_allowed": false,
+      "notes": [
+        "Adapter readiness alone must not start a no-order diagnostic.",
+        "Synthetic fixtures and scorer readiness are not strategy evidence.",
+        "A real future pass would still be no-order research evidence, not private truth or deployable evidence."
+      ],
+      "status": "UNKNOWN_SYMMETRIC_ACTIVATION_ACCEPTANCE_ADAPTER_INPUTS_INSUFFICIENT",
+      "strategy_evidence": false,
+      "summary_scorer_ready": true
+    }
+  },
+  "artifact": "xuan_symmetric_activation_shadow_review_completion",
+  "created_utc": "2026-05-25T02:29:26Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_SYMMETRIC_ACTIVATION_NO_ORDER_REVIEW_RISK_BUDGET_FAIL",
+  "interpretation": {
+    "blockers": [
+      "net_pair_cost_p90_above_1p0",
+      "residual_qty_share_above_15pct",
+      "pair_tail_loss_share_above_5pct",
+      "conservative_risk_adjusted_pnl_proxy_negative"
+    ],
+    "not_canary_ready": true,
+    "not_deployable": true,
+    "not_instrumentation_failure": true,
+    "not_private_truth": true,
+    "not_total_failure": true,
+    "summary": "Sample size and fee-adjusted pair economics were positive, and symmetric activation instrumentation worked, but normalized risk budget failed."
+  },
+  "local_review": {
+    "acceptance_adapter_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/acceptance_adapter/manifest.json",
+    "adapter_candidate_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/adapter_candidate.json",
+    "shadow_acceptance_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/shadow_acceptance/manifest.json",
+    "symmetric_activation_scorer_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/local_review_20260525T022531Z/symmetric_activation_scorer/manifest.json"
+  },
+  "next_executable_action": "Implement local-only symmetric_activation_tail_gap_audit_v1 using only allowlisted aggregate/summary/scorer outputs to determine whether p90/residual failures concentrate in legal pre-action activation/source buckets; do not start another shadow.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RISK_BUDGET_FAIL_NOT_PROMOTION_EVIDENCE"
+  },
+  "pullback": {
+    "aggregate_report_pulled": true,
+    "allowlisted_only": true,
+    "events_jsonl_pulled": 0,
+    "manifest_pulled": true,
+    "remote_clean_dir": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/remote_clean",
+    "remote_events_jsonl_count_recorded_not_pulled": 13,
+    "runner_pid_pulled": true,
+    "stderr_pulled": true,
+    "stdout_pulled": true,
+    "summary_json_count": 26
+  },
+  "remote_run": {
+    "expected_finish_utc_approx": "2026-05-25T02:14:20Z",
+    "host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_symmetric_activation_review_edge007_actoppseen75_20260525T011338Z",
+    "runner_pid": 464497,
+    "started_utc_approx": "2026-05-25T01:14:20Z",
+    "user": "pmofi"
+  },
+  "research_ranking": {
+    "economic_pnl_positive": true,
+    "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE_SYMMETRIC_ACTIVATION",
+    "promotion_risk_budget_ok": false,
+    "sample_size_ok": true,
+    "strategy_evidence": false
+  },
+  "run_name": "symmetric_activation_residual_stress_no_order_review",
+  "schema_version": 1,
+  "scope": {
+    "allowlisted_pullback_only": true,
+    "bounded_ssh_polling_used": true,
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_read_or_pulled": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "redeems_sent": false,
+    "repo_sync_or_build_for_canary": false,
+    "second_shadow_started": false,
+    "service_or_systemd_control_used": false,
+    "shared_ingress_or_broker_modified": false
+  },
+  "shadow_acceptance": {
+    "acceptance_passed": false,
+    "checks": {
+      "market_scope_ok": true,
+      "no_order_safety_ok": true,
+      "paths_safe": true,
+      "pnl_metrics_ok": true,
+      "promotion_risk_budget_ok": false,
+      "report_present": true,
+      "report_shape_ok": true,
+      "residual_risk_ok": false,
+      "sample_size_ok": true
+    },
+    "failures": [
+      "shadow_trading_promotion_risk_budget_failed"
+    ],
+    "metric_failures": {
+      "legacy_absolute_reference": [
+        {
+          "actual": 28.6975,
+          "legacy_reference_max": 10.0,
+          "metric": "residual_qty"
+        },
+        {
+          "actual": 8.483525,
+          "legacy_reference_max": 5.0,
+          "metric": "residual_cost"
+        },
+        {
+          "actual": 1.06,
+          "legacy_reference_max": 1.0,
+          "metric": "net_pair_cost_p90"
+        }
+      ],
+      "pnl_metrics": [],
+      "promotion_risk_budget": [
+        {
+          "actual": 0.16572344,
+          "budget_type": "normalized_residual_qty",
+          "denominator": 173.165,
+          "metric": "residual_qty_share_of_filled",
+          "numerator": 28.6975,
+          "required_max": 0.15
+        },
+        {
+          "actual": 0.10400583,
+          "budget_type": "normalized_pair_tail_loss",
+          "fee_adjusted_pair_pnl_proxy": 4.343122,
+          "metric": "pair_tail_loss_share_of_pair_pnl",
+          "net_pair_cost_p90": 1.06,
+          "pair_tail_loss_proxy": 0.45171,
+          "required_max": 0.05,
+          "tail_fraction_assumption": 0.1
+        }
+      ],
+      "residual_risk": [
+        {
+          "actual": 0.16572344,
+          "budget_type": "normalized_residual_qty",
+          "denominator": 173.165,
+          "metric": "residual_qty_share_of_filled",
+          "numerator": 28.6975,
+          "required_max": 0.15
+        }
+      ],
+      "sample_size": []
+    },
+    "promotion_gate": {
+      "economic_pnl_ok": true,
+      "hard_blockers": [
+        "shadow_trading_promotion_risk_budget_failed"
+      ],
+      "legacy_absolute_reference": {
+        "breaches": [
+          {
+            "actual": 28.6975,
+            "legacy_reference_max": 10.0,
+            "metric": "residual_qty"
+          },
+          {
+            "actual": 8.483525,
+            "legacy_reference_max": 5.0,
+            "metric": "residual_cost"
+          },
+          {
+            "actual": 1.06,
+            "legacy_reference_max": 1.0,
+            "metric": "net_pair_cost_p90"
+          }
+        ],
+        "used_as_primary_promotion_gate": false
+      },
+      "normalized_risk_budget": {
+        "material_residual_lots": 0,
+        "max_material_residual_lots": 0,
+        "max_pair_tail_loss_share_of_pair_pnl": 0.05,
+        "max_residual_cost_share_of_filled_cost": 0.2,
+        "max_residual_qty_share_of_filled": 0.15,
+        "pair_tail_loss_share_of_pair_pnl": 0.10400583,
+        "residual_cost_share_of_filled_cost": 0.1116134,
+        "residual_qty_share_of_filled": 0.16572344
+      },
+      "passed": false,
+      "promotion_risk_budget_ok": false,
+      "required_before_g2_canary": true,
+      "sample_size_ok": true,
+      "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET"
+    },
+    "research_ranking": {
+      "conservative_stress_proxy_positive": false,
+      "economic_pnl_positive": true,
+      "fee_adjusted_pair_pnl_proxy": 4.343122,
+      "label": "TRADEOFF_ECON_POSITIVE_STRESS_PROXY_NEGATIVE",
+      "legacy_absolute_reference_breaches": [
+        {
+          "actual": 28.6975,
+          "legacy_reference_max": 10.0,
+          "metric": "residual_qty"
+        },
+        {
+          "actual": 8.483525,
+          "legacy_reference_max": 5.0,
+          "metric": "residual_cost"
+        },
+        {
+          "actual": 1.06,
+          "legacy_reference_max": 1.0,
+          "metric": "net_pair_cost_p90"
+        }
+      ],
+      "notes": [
+        "research ranking uses economic proxies first; sample and risk gates are reported separately",
+        "residual or pair-cost tail budget failures are TRADEOFF/BLOCKER evidence unless economic PnL turns negative",
+        "conservative stress proxy subtracts full residual_cost and pair-tail-loss proxy; source-of-truth settlement may differ"
+      ],
+      "pair_tail_loss_proxy": 0.45171,
+      "promotion_risk_budget_ok": false,
+      "residual_loss_proxy": 8.483525,
+      "risk_adjusted_pnl_proxy": -4.592113,
+      "sample_size_ok": true
+    },
+    "status": "FAIL_SHADOW_TRADING_PROMOTION_RISK_BUDGET",
+    "trading_metrics": {
+      "candidates": 241,
+      "conservative_risk_adjusted_pnl_proxy": -4.592113,
+      "fee_adjusted_pair_pnl_proxy": 4.343122,
+      "fill_rate": 0.5809128630705395,
+      "fill_wait_p50_ms": 36665.0,
+      "fill_wait_p90_ms": 67537.0,
+      "filled_cost": 76.008125,
+      "filled_qty": 173.165,
+      "markets": 26,
+      "material_residual_lots": 0,
+      "net_pair_cost_p50": 0.95,
+      "net_pair_cost_p90": 1.06,
+      "pair_actions": 77,
+      "pair_cost_p50": 0.95,
+      "pair_cost_p90": 1.06,
+      "pair_pnl": 4.494536,
+      "pair_qty": 75.285,
+      "pair_tail_loss_proxy": 0.45171,
+      "pair_tail_loss_share_of_pair_pnl": 0.10400583,
+      "pair_wait_p50_ms": 30951.0,
+      "pair_wait_p90_ms": 66010.0,
+      "qty_pair_share_of_filled": 0.8695175121993473,
+      "queue_supported_fills": 140,
+      "residual_cost": 8.483525,
+      "residual_cost_share_of_filled_cost": 0.1116134,
+      "residual_qty": 28.6975,
+      "residual_qty_share_of_filled": 0.16572344,
+      "roi_on_filled_cost": 0.059132309868188404,
+      "roi_on_seed_cost": 0.034638941349331834,
+      "taker_fee": 0.151414
+    }
+  },
+  "startup_manifest": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_driver_20260525T011338Z/manifest.json",
+  "symmetric_activation_summary": {
+    "checks": {
+      "admitted_activation_denominator_positive": true,
+      "aggregate_parity": true,
+      "blocked_activation_denominator_positive": true,
+      "default_off_summary_absent": true,
+      "enabled_summary_present": true,
+      "field_contract_ok": true,
+      "projected_pair_cost_bucket_present": true,
+      "schema_ok": true,
+      "source_sequence_coverage_present": true
+    },
+    "decision_label": "KEEP_SYMMETRIC_ACTIVATION_SUMMARY_SCORER_READY",
+    "promotion_gate": {
+      "deployable": false,
+      "g2_canary_ready": false,
+      "passed": false,
+      "private_truth_ready": false,
+      "status": "SCORER_READY_NOT_PROMOTION_EVIDENCE"
+    },
+    "summary": {
+      "admitted_activation_denominator": 23.0,
+      "aggregate_total": 558.0,
+      "blocked_activation_denominator": 30.0,
+      "summary_file_count": 26,
+      "summary_file_total": 558.0
+    }
+  }
+}
