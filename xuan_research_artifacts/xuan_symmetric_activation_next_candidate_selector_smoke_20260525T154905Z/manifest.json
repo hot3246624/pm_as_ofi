@@ -1,0 +1,29 @@
+{
+  "artifact": "xuan_symmetric_activation_next_candidate_selector_smoke",
+  "checks": {
+    "bad_scorer_unknown": true,
+    "economic_negative_discard": true,
+    "proposal_has_projected_tail_join_flag": true,
+    "proposal_requires_approval": true,
+    "real_selector_keep_proposal_ready": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_NEXT_CANDIDATE_SELECTOR_SMOKE_PASS",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "events_jsonl_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_live_modified": false,
+    "ssh_used": false
+  }
+}
