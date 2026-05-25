@@ -43,6 +43,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_soft_mainline_shadow_promotion_gate.py",
     "scripts/xuan_soft_mainline_shadow_promotion_gap_planner.py",
     "scripts/xuan_soft_mainline_shadow_evidence_ledger.py",
+    "scripts/xuan_soft_mainline_existing_window_candidate_scorer.py",
 ]
 
 
