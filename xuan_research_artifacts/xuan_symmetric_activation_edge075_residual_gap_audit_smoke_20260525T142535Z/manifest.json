@@ -1,0 +1,16 @@
+{
+  "artifact": "xuan_symmetric_activation_edge075_residual_gap_audit_smoke",
+  "bad_manifest": "xuan_research_artifacts/xuan_symmetric_activation_edge075_residual_gap_audit_smoke_20260525T142535Z/bad/manifest.json",
+  "checks": {
+    "bad_nonzero_rc": true,
+    "bad_unknown_or_discard": true,
+    "good_has_missing_join_fields": true,
+    "good_keep": true,
+    "good_no_promotion": true,
+    "scope_no_events": true,
+    "scope_no_shadow": true
+  },
+  "good_manifest": "xuan_research_artifacts/xuan_symmetric_activation_edge075_residual_gap_audit_smoke_20260525T142535Z/good/manifest.json",
+  "passed": true,
+  "schema_version": 1
+}

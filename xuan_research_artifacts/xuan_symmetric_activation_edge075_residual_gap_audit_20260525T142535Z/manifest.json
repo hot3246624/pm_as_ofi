@@ -1,0 +1,509 @@
+{
+  "artifact": "xuan_symmetric_activation_edge075_residual_gap_audit",
+  "audit_contract": {
+    "allowed_inputs": [
+      "allowlisted output/aggregate_report.json",
+      "allowlisted output/*.summary.json-derived aggregate fields",
+      "shadow acceptance manifest",
+      "symmetric activation summary scorer manifest",
+      "symmetric activation tail-attribution scorer manifest",
+      "acceptance adapter manifest"
+    ],
+    "contract_name": "symmetric_activation_edge075_residual_gap_audit_v1",
+    "field_contract": {
+      "deployable": false,
+      "post_action_outcome_labels_included": false,
+      "private_truth_ready": false,
+      "promotion_gate_passed": false,
+      "realized_pair_cost_used_as_live_criteria": false,
+      "trading_behavior_changed": false
+    },
+    "forbidden_interpretations": [
+      "future labels as live criteria",
+      "realized pair_cost as live criteria",
+      "static YES/NO side cap",
+      "static public-price cap",
+      "static offset cap",
+      "public-profile single-day filters",
+      "D+ failed micro-deficit/ledger/tiny-deficit/fill-to-balance families",
+      "private truth, deployable, canary, or promotion claims"
+    ],
+    "purpose": "Decide whether edge0.075/window20 residual failure has a legal local-only next target or should be discarded."
+  },
+  "audit_schema_version": "symmetric_activation_edge075_residual_gap_audit_v1",
+  "created_utc": "20260525T142840Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_EDGE075_RESIDUAL_GAP_PROJECTED_RESIDUAL_JOIN_TARGET_READY",
+  "evaluation": {
+    "decision": "KEEP",
+    "decision_label": "KEEP_SYMMETRIC_ACTIVATION_EDGE075_RESIDUAL_GAP_PROJECTED_RESIDUAL_JOIN_TARGET_READY",
+    "failure_profile": {
+      "activation_and_tail_scorers_keep": true,
+      "activation_gate_passed": true,
+      "economic_pnl_positive": true,
+      "normal_shadow_gate_passed": false,
+      "residual_cost_share_failed": true,
+      "residual_qty_share_failed": true,
+      "source_link_present": true,
+      "tail_summary_present": true
+    },
+    "legal_concentration": {
+      "admitted_candidate_count": 233.0,
+      "admitted_projected_residual_gt20_count": 81.0,
+      "admitted_projected_residual_gt20_share": 0.347639,
+      "pair_qty_by_activation_top": [
+        {
+          "key": "admitted|candidate|activation_not_required",
+          "share": 0.562568,
+          "value": 58.05
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_5_15s",
+          "share": 0.211048,
+          "value": 21.7775
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_1_5s",
+          "share": 0.143113,
+          "value": 14.7675
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_0_1s",
+          "share": 0.059043,
+          "value": 6.0925
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_15_60s",
+          "share": 0.024228,
+          "value": 2.5
+        }
+      ],
+      "projected_pair_cost_bucket_by_activation": {
+        "admitted|candidate|activation_not_required": {
+          "projected_pair_cost_0p90_0p95": 14.0,
+          "projected_pair_cost_0p95_1p00": 6.0,
+          "projected_pair_cost_gte_1p00": 27.0,
+          "projected_pair_cost_lt_0p90": 86.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_0_1s": {
+          "projected_pair_cost_0p90_0p95": 1.0,
+          "projected_pair_cost_lt_0p90": 9.0,
+          "projected_pair_cost_unknown": 6.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_15_60s": {
+          "projected_pair_cost_0p90_0p95": 1.0,
+          "projected_pair_cost_lt_0p90": 3.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": {
+          "projected_pair_cost_lt_0p90": 10.0,
+          "projected_pair_cost_unknown": 9.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_5_15s": {
+          "projected_pair_cost_0p90_0p95": 1.0,
+          "projected_pair_cost_0p95_1p00": 1.0,
+          "projected_pair_cost_gte_1p00": 1.0,
+          "projected_pair_cost_lt_0p90": 41.0,
+          "projected_pair_cost_unknown": 17.0
+        },
+        "blocked|activation_opp_seen|activation_required_activation_opp_age_15_60s": {
+          "projected_pair_cost_0p90_0p95": 4.0,
+          "projected_pair_cost_0p95_1p00": 1.0,
+          "projected_pair_cost_gte_1p00": 5.0,
+          "projected_pair_cost_lt_0p90": 22.0,
+          "projected_pair_cost_unknown": 12.0
+        },
+        "blocked|activation_opp_seen|activation_required_activation_opp_age_gt_60s": {
+          "projected_pair_cost_unknown": 6.0
+        },
+        "blocked|activation_opp_seen|activation_required_missing_opp": {
+          "projected_pair_cost_unknown": 24.0
+        }
+      },
+      "projected_residual_bucket_by_activation": {
+        "admitted|candidate|activation_not_required": {
+          "projected_residual_10_15pct": 1.0,
+          "projected_residual_15_20pct": 3.0,
+          "projected_residual_gt_20pct": 26.0,
+          "projected_residual_lt_10pct": 103.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_0_1s": {
+          "projected_residual_10_15pct": 1.0,
+          "projected_residual_15_20pct": 4.0,
+          "projected_residual_gt_20pct": 11.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_15_60s": {
+          "projected_residual_15_20pct": 1.0,
+          "projected_residual_gt_20pct": 3.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": {
+          "projected_residual_10_15pct": 3.0,
+          "projected_residual_15_20pct": 5.0,
+          "projected_residual_gt_20pct": 11.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_5_15s": {
+          "projected_residual_10_15pct": 19.0,
+          "projected_residual_15_20pct": 12.0,
+          "projected_residual_gt_20pct": 30.0
+        },
+        "blocked|activation_opp_seen|activation_required_activation_opp_age_15_60s": {
+          "projected_residual_10_15pct": 15.0,
+          "projected_residual_gt_20pct": 27.0,
+          "projected_residual_lt_10pct": 2.0
+        },
+        "blocked|activation_opp_seen|activation_required_activation_opp_age_gt_60s": {
+          "projected_residual_gt_20pct": 6.0
+        },
+        "blocked|activation_opp_seen|activation_required_missing_opp": {
+          "projected_residual_gt_20pct": 24.0
+        }
+      },
+      "residual_cost_by_activation_top": [
+        {
+          "key": "admitted|candidate|activation_not_required",
+          "share": 0.603528,
+          "value": 9.792551
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_5_15s",
+          "share": 0.287461,
+          "value": 4.6642
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_0_1s",
+          "share": 0.07858,
+          "value": 1.275
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_1_5s",
+          "share": 0.03043,
+          "value": 0.49375
+        }
+      ],
+      "residual_cost_by_side_offset_activation_top": [
+        {
+          "key": "admitted|candidate|YES|offset_ge_120|activation_not_required",
+          "share": 0.260265,
+          "value": 4.222938
+        },
+        {
+          "key": "admitted|candidate|YES|offset_ge_120|activation_required_activation_opp_age_5_15s",
+          "share": 0.155787,
+          "value": 2.527725
+        },
+        {
+          "key": "admitted|candidate|YES|offset_90_120|activation_not_required",
+          "share": 0.091345,
+          "value": 1.482113
+        },
+        {
+          "key": "admitted|candidate|NO|offset_30_60|activation_not_required",
+          "share": 0.07858,
+          "value": 1.275
+        },
+        {
+          "key": "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_5_15s",
+          "share": 0.07781,
+          "value": 1.2625
+        },
+        {
+          "key": "admitted|candidate|NO|offset_60_90|activation_not_required",
+          "share": 0.065483,
+          "value": 1.0625
+        },
+        {
+          "key": "admitted|candidate|YES|offset_60_90|activation_not_required",
+          "share": 0.05855,
+          "value": 0.95
+        },
+        {
+          "key": "admitted|candidate|NO|offset_90_120|activation_not_required",
+          "share": 0.049305,
+          "value": 0.8
+        },
+        {
+          "key": "admitted|candidate|YES|offset_0_30|activation_required_activation_opp_age_0_1s",
+          "share": 0.031971,
+          "value": 0.51875
+        },
+        {
+          "key": "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_1_5s",
+          "share": 0.03043,
+          "value": 0.49375
+        }
+      ],
+      "residual_qty_by_activation_top": [
+        {
+          "key": "admitted|candidate|activation_not_required",
+          "share": 0.546103,
+          "value": 23.75
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_5_15s",
+          "share": 0.310186,
+          "value": 13.49
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_0_1s",
+          "share": 0.114969,
+          "value": 5.0
+        },
+        {
+          "key": "admitted|candidate|activation_required_activation_opp_age_1_5s",
+          "share": 0.028742,
+          "value": 1.25
+        }
+      ],
+      "residual_qty_by_side_offset_activation_top": [
+        {
+          "key": "admitted|candidate|YES|offset_ge_120|activation_not_required",
+          "share": 0.228041,
+          "value": 9.9175
+        },
+        {
+          "key": "admitted|candidate|YES|offset_ge_120|activation_required_activation_opp_age_5_15s",
+          "share": 0.141527,
+          "value": 6.155
+        },
+        {
+          "key": "admitted|candidate|YES|offset_90_120|activation_not_required",
+          "share": 0.088124,
+          "value": 3.8325
+        },
+        {
+          "key": "admitted|candidate|NO|offset_30_60|activation_not_required",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "admitted|candidate|NO|offset_60_90|activation_not_required",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "admitted|candidate|NO|offset_90_120|activation_not_required",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "admitted|candidate|YES|offset_60_90|activation_not_required",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "admitted|candidate|YES|offset_60_90|activation_required_activation_opp_age_5_15s",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "admitted|candidate|NO|offset_60_90|activation_required_activation_opp_age_0_1s",
+          "share": 0.028742,
+          "value": 1.25
+        },
+        {
+          "key": "admitted|candidate|NO|offset_ge_120|activation_required_activation_opp_age_0_1s",
+          "share": 0.028742,
+          "value": 1.25
+        }
+      ],
+      "source_link_residual_cost_top": [
+        {
+          "key": "YES|offset_ge_120|repair_or_pairing_improving",
+          "share": 0.260266,
+          "value": 4.222938
+        },
+        {
+          "key": "YES|offset_ge_120|risk_increasing",
+          "share": 0.155787,
+          "value": 2.527725
+        },
+        {
+          "key": "YES|offset_60_90|risk_increasing",
+          "share": 0.10824,
+          "value": 1.75625
+        },
+        {
+          "key": "YES|offset_90_120|repair_or_pairing_improving",
+          "share": 0.091345,
+          "value": 1.482113
+        },
+        {
+          "key": "NO|offset_30_60|repair_or_pairing_improving",
+          "share": 0.07858,
+          "value": 1.275
+        },
+        {
+          "key": "NO|offset_60_90|repair_or_pairing_improving",
+          "share": 0.065483,
+          "value": 1.0625
+        },
+        {
+          "key": "YES|offset_60_90|repair_or_pairing_improving",
+          "share": 0.05855,
+          "value": 0.95
+        },
+        {
+          "key": "NO|offset_90_120|repair_or_pairing_improving",
+          "share": 0.049305,
+          "value": 0.8
+        }
+      ],
+      "source_link_residual_qty_top": [
+        {
+          "key": "YES|offset_ge_120|repair_or_pairing_improving",
+          "share": 0.228041,
+          "value": 9.9175
+        },
+        {
+          "key": "YES|offset_ge_120|risk_increasing",
+          "share": 0.141527,
+          "value": 6.155
+        },
+        {
+          "key": "YES|offset_90_120|repair_or_pairing_improving",
+          "share": 0.088124,
+          "value": 3.8325
+        },
+        {
+          "key": "YES|offset_60_90|risk_increasing",
+          "share": 0.086227,
+          "value": 3.75
+        },
+        {
+          "key": "NO|offset_30_60|repair_or_pairing_improving",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "NO|offset_60_90|repair_or_pairing_improving",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "NO|offset_90_120|repair_or_pairing_improving",
+          "share": 0.057484,
+          "value": 2.5
+        },
+        {
+          "key": "NO|offset_ge_120|risk_increasing",
+          "share": 0.057484,
+          "value": 2.5
+        }
+      ],
+      "source_sequence_by_activation": {
+        "admitted|candidate|activation_not_required": {
+          "present": 133.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_0_1s": {
+          "present": 16.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_15_60s": {
+          "present": 4.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_1_5s": {
+          "present": 19.0
+        },
+        "admitted|candidate|activation_required_activation_opp_age_5_15s": {
+          "present": 61.0
+        },
+        "blocked|activation_opp_seen|activation_required_activation_opp_age_15_60s": {
+          "present": 44.0
+        },
+        "blocked|activation_opp_seen|activation_required_activation_opp_age_gt_60s": {
+          "present": 6.0
+        },
+        "blocked|activation_opp_seen|activation_required_missing_opp": {
+          "present": 24.0
+        }
+      },
+      "top_residual_activation_share": 0.546103,
+      "top_residual_cost_activation_share": 0.603528,
+      "top_residual_cost_side_offset_share": 0.260265,
+      "top_residual_side_offset_share": 0.228041
+    },
+    "missing_legal_join_fields": [
+      "residual_qty_sum_by_status_reason_projected_residual_bucket",
+      "residual_cost_sum_by_status_reason_projected_residual_bucket",
+      "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket",
+      "pair_qty_sum_by_status_reason_projected_residual_bucket",
+      "source_sequence_presence_by_status_reason_projected_residual_bucket"
+    ],
+    "recommended_local_target": {
+      "behavior_change": false,
+      "default_off": true,
+      "explicitly_not": [
+        "not a YES/NO side cap",
+        "not an offset cap",
+        "not a public-price cap",
+        "not realized pair_cost as live criteria",
+        "not a shadow/canary/deploy approval"
+      ],
+      "name": "symmetric_activation_projected_residual_tail_join_summary_v1",
+      "purpose": "Join realized residual qty/cost and source_sequence coverage to pre-action projected_residual_rate_bucket and activation bucket, so the next review can tell whether residual failure comes from legally observable pre-action residual pressure.",
+      "required_fields": [
+        "residual_qty_sum_by_status_reason_projected_residual_bucket",
+        "residual_cost_sum_by_status_reason_projected_residual_bucket",
+        "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket",
+        "pair_qty_sum_by_status_reason_projected_residual_bucket",
+        "source_sequence_presence_by_status_reason_projected_residual_bucket"
+      ]
+    },
+    "shadow_metrics": {
+      "candidates": 233.0,
+      "fee_adjusted_pair_pnl_proxy": 4.579513,
+      "material_residual_lots": 0.0,
+      "net_pair_cost_p90": 0.99,
+      "pair_actions": 61.0,
+      "pair_pnl": 5.22675,
+      "pair_qty": 62.84,
+      "pair_tail_loss_share": 0.0,
+      "queue_supported_fills": 119.0,
+      "residual_cost": 16.2255,
+      "residual_cost_share": 0.26014802,
+      "residual_qty": 43.49,
+      "residual_qty_share": 0.29650083,
+      "risk_adjusted_pnl_proxy": -11.645987
+    }
+  },
+  "inputs": {
+    "acceptance_adapter": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/local_review_20260525T133422Z/symmetric_activation_acceptance_adapter_wrapped/manifest.json",
+    "activation_scorer": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/local_review_20260525T133422Z/symmetric_activation_summary_scorer/manifest.json",
+    "aggregate": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/remote_clean/output/aggregate_report.json",
+    "shadow_acceptance": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/local_review_20260525T133422Z/shadow_acceptance/manifest.json",
+    "tail_scorer": "xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/local_review_20260525T133422Z/symmetric_activation_tail_attribution_scorer_v3/manifest.json"
+  },
+  "load_errors": {},
+  "next_executable_action": "Implement default-off symmetric_activation_projected_residual_tail_join_summary_v1 plus smoke/scorer; do not start another no-order diagnostic.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RESIDUAL_GAP_AUDIT_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "no_order_diagnostic_allowed": false,
+    "notes": [
+      "This is local-only diagnosis of an UNKNOWN no-order result.",
+      "Projected residual joins may nominate instrumentation/spec work, not live filters.",
+      "research_ranking and promotion_gate remain separate."
+    ],
+    "status": "KEEP_SYMMETRIC_ACTIVATION_EDGE075_RESIDUAL_GAP_PROJECTED_RESIDUAL_JOIN_TARGET_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  }
+}
