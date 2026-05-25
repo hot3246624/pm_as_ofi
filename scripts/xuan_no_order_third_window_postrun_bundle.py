@@ -265,6 +265,7 @@ def main() -> None:
         paths["window_contrast"] = scorecard_dir / f"no_order_{args.tag}_window_contrast.json"
         paths["density_history"] = scorecard_dir / f"no_order_{args.tag}_density_history.json"
         paths["regime_generalization"] = scorecard_dir / f"no_order_{args.tag}_regime_generalization.json"
+        paths["shadow_promotion_gate"] = scorecard_dir / f"no_order_{args.tag}_shadow_promotion_gate.json"
     public_benchmark_path = (
         Path(args.public_benchmark_scorecard).expanduser().resolve()
         if args.public_benchmark_scorecard
@@ -527,6 +528,23 @@ def main() -> None:
             ],
         ]
     )
+    if contrast_reference_available:
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_shadow_promotion_gate.py",
+                "--runtime-shadow-scorecard",
+                str(paths["shadow"]),
+                "--repeat-scorecard",
+                str(paths["repeat"]),
+                "--regime-generalization-scorecard",
+                str(paths["regime_generalization"]),
+                "--run-trigger-policy-scorecard",
+                str(paths["run_trigger_policy"]),
+                "--scorecard-json",
+                str(paths["shadow_promotion_gate"]),
+            ]
+        )
     if public_benchmark_path and "public_benchmark" in paths:
         commands.append(
             [

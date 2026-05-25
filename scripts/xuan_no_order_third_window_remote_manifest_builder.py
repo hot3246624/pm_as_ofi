@@ -40,6 +40,7 @@ DEFAULT_STAGE_FILES = [
     "scripts/xuan_soft_mainline_density_history_scorer.py",
     "scripts/xuan_soft_mainline_run_trigger_policy_builder.py",
     "scripts/xuan_soft_mainline_regime_generalization_scorer.py",
+    "scripts/xuan_soft_mainline_shadow_promotion_gate.py",
 ]
 
 
