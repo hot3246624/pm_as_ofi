@@ -508,7 +508,7 @@ def build_manifest(args: argparse.Namespace) -> dict[str, Any]:
         "artifact": ARTIFACT,
         "schema_version": 1,
         "contract_name": CONTRACT_NAME,
-        "created_utc": utc_label(),
+        "created_utc": args.created_utc,
         "decision": decision,
         "decision_label": decision_label,
         "lane": "observable_pre_action_rule_miner_spec",
@@ -575,6 +575,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("xuan_research_artifacts") / f"{ARTIFACT}_{utc_label()}",
     )
+    parser.add_argument("--created-utc", default=utc_label())
     return parser.parse_args()
 
 

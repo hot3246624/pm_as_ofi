@@ -1,0 +1,37 @@
+{
+  "decision_label": "KEEP_FIXTURE_NO_ORDER_DENOMINATOR",
+  "no_order_denominator_summary": {
+    "available": true,
+    "gate_passed": true,
+    "marker_reproduced": true,
+    "frozen_rule_id": "fixture_rule_001",
+    "same_window_denominator_count": 30,
+    "admitted_count": 15,
+    "blocked_count": 15,
+    "source_sequence_coverage": 1.0,
+    "quote_intent_presence_rate": 1.0,
+    "source_order_presence_rate": 1.0,
+    "aggregate_parity": true,
+    "source_opportunity_marker_total": 30,
+    "candidates": 30
+  },
+  "train_holdout_split": {
+    "train_days": ["2026-05-01", "2026-05-02", "2026-05-03"],
+    "holdout_days": ["2026-05-04", "2026-05-05"]
+  },
+  "frozen_rule_contract": {
+    "predicate_fields": ["source_sequence_present", "source_risk_direction", "open_qty_bucket"],
+    "uses_only_pre_action_fields": true,
+    "uses_realized_pair_cost": false,
+    "uses_future_labels": false,
+    "train_holdout_gate_passed": true,
+    "train_selected_rows": 120,
+    "holdout_selected_rows": 60
+  },
+  "no_order_denominator_gate": {
+    "same_window_denominator_reproduced": true,
+    "same_window_denominator_count": 30,
+    "source_sequence_coverage": 1.0,
+    "aggregate_parity": true
+  }
+}

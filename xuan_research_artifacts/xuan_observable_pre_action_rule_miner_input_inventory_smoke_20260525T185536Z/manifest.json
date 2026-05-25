@@ -1,0 +1,33 @@
+{
+  "artifact": "xuan_observable_pre_action_rule_miner_input_inventory_smoke",
+  "bad_missing_denominator_decision": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_INPUT_INVENTORY_GAPS",
+  "bad_missing_source_decision": "UNKNOWN_OBSERVABLE_PRE_ACTION_RULE_MINER_INPUT_INVENTORY_GAPS",
+  "created_utc": "2026-05-25T18:55:36Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_INPUT_INVENTORY_SMOKE_PASS",
+  "good_fixture_decision": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_INPUT_INVENTORY_READY",
+  "good_validation_decision": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_SPEC_READY_FIXTURE_PASS_NOT_REAL",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "strategy_evidence": false
+}
