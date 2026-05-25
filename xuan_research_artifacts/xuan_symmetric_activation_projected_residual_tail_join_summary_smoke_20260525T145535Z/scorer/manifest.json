@@ -1,0 +1,66 @@
+{
+  "artifact": "xuan_symmetric_activation_projected_residual_tail_join_summary_scorer",
+  "created_utc": "20260525T153920Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_PROJECTED_RESIDUAL_TAIL_JOIN_SUMMARY_SCORER_READY",
+  "default_aggregate": "xuan_research_artifacts/xuan_symmetric_activation_projected_residual_tail_join_summary_smoke_20260525T145535Z/default_off/aggregate_report.json",
+  "enabled_aggregate": "xuan_research_artifacts/xuan_symmetric_activation_projected_residual_tail_join_summary_smoke_20260525T145535Z/enabled/aggregate_report.json",
+  "enabled_summary_dir": "xuan_research_artifacts/xuan_symmetric_activation_projected_residual_tail_join_summary_smoke_20260525T145535Z/enabled",
+  "next_executable_action": "Use this scorer only on allowlisted local pullbacks that already include projected residual tail-join summaries; do not treat scorer readiness as promotion evidence.",
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "SCORER_READY_NOT_PROMOTION_EVIDENCE"
+  },
+  "research_ranking": {
+    "no_order_diagnostic_allowed": false,
+    "status": "KEEP_SYMMETRIC_ACTIVATION_PROJECTED_RESIDUAL_TAIL_JOIN_SUMMARY_SCORER_READY",
+    "strategy_evidence": false
+  },
+  "schema_version": 1,
+  "scope": {
+    "canary_or_live_started": false,
+    "current_worktree_only": true,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_only": true,
+    "new_data_fetched": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "shadow_started": false,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "shared_ws_or_local_agg_or_service_started": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "blockers": [],
+    "checks": {
+      "aggregate_pair_parity": true,
+      "aggregate_residual_parity": true,
+      "default_off_summary_absent": true,
+      "enabled_summary_present": true,
+      "field_contract_ok": true,
+      "pair_qty_sum_by_status_reason_projected_residual_bucket_positive": true,
+      "residual_cost_sum_by_status_reason_projected_residual_bucket_positive": true,
+      "residual_qty_sum_by_status_reason_projected_residual_bucket_positive": true,
+      "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket_positive": true,
+      "schema_ok": true,
+      "source_sequence_coverage_present": true
+    },
+    "summary": {
+      "aggregate_pair_total": 4.0,
+      "aggregate_residual_total": 1.5,
+      "pair_qty_sum_by_status_reason_projected_residual_bucket": 4.0,
+      "residual_cost_sum_by_status_reason_projected_residual_bucket": 0.6,
+      "residual_qty_sum_by_status_reason_projected_residual_bucket": 1.5,
+      "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket": 1.5,
+      "source_sequence_total": 5.5,
+      "summary_file_count": 1,
+      "summary_pair_total": 4.0,
+      "summary_residual_total": 1.5
+    }
+  }
+}

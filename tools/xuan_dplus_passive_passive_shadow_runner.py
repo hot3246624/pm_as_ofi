@@ -802,6 +802,25 @@ def merge_symmetric_activation_tail_attribution_summary(dest: dict[str, Any], sr
         )
 
 
+def merge_symmetric_activation_projected_residual_tail_join_summary(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    for key in ("schema_version", "field_contract"):
+        if key in src and key not in dest:
+            dest[key] = src[key]
+    for key in (
+        "pair_qty_sum_by_status_reason_projected_residual_bucket",
+        "residual_qty_sum_by_status_reason_projected_residual_bucket",
+        "residual_cost_sum_by_status_reason_projected_residual_bucket",
+        "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    for key in ("source_sequence_presence_by_status_reason_projected_residual_bucket",):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+
+
 def event_time_ms(msg: dict[str, Any], fallback_ts_ms: int) -> int:
     value = msg.get("event_time_ms") or msg.get("market_event_time_ms") or msg.get("ts_ms")
     try:
@@ -858,6 +877,7 @@ class RunnerConfig:
     ce25_projected_guard_event_lite_summary: bool = False
     symmetric_activation_event_lite_summary: bool = False
     symmetric_activation_tail_attribution_event_lite_summary: bool = False
+    symmetric_activation_projected_residual_tail_join_event_lite_summary: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -921,6 +941,8 @@ class VirtualOrder:
     opposite_seen_ms: int | None = None
     symmetric_activation_status: str = "admitted"
     symmetric_activation_reason: str = "candidate"
+    symmetric_projected_pair_cost_bucket: str = "projected_pair_cost_unknown"
+    symmetric_projected_residual_bucket: str = "projected_residual_unknown"
     queue_credit: float = 0.0
     first_bid_touch_ms: int | None = None
     first_trade_touch_ms: int | None = None
@@ -957,6 +979,8 @@ class Lot:
     opposite_seen_ms: int | None = None
     symmetric_activation_status: str = "admitted"
     symmetric_activation_reason: str = "candidate"
+    symmetric_projected_pair_cost_bucket: str = "projected_pair_cost_unknown"
+    symmetric_projected_residual_bucket: str = "projected_residual_unknown"
     source_pair_qty: float = 0.0
     source_pair_cost: float = 0.0
     source_pair_pnl: float = 0.0
@@ -1218,6 +1242,29 @@ class DPlusRunner:
             "pair_tail_loss_sum_by_status_reason_side_offset_activation_bucket": {},
             "source_sequence_presence_by_status_reason_side_offset_activation_bucket": {},
             "residual_tail_exemplars_by_status_reason_activation_bucket": [],
+        }
+        self.event_lite_symmetric_activation_projected_residual_tail_join_summary: dict[str, Any] = {
+            "schema_version": "symmetric_activation_projected_residual_tail_join_summary_v1",
+            "field_contract": {
+                "default_off": True,
+                "source": "source_attributed_realized_pair_residual_tail_joined_to_pre_action_projected_residual_bucket",
+                "status_reason_scope": ["admitted|candidate"],
+                "join_axes": [
+                    "status|reason|projected_residual_bucket",
+                    "status|reason|side|offset_bucket|projected_residual_bucket",
+                ],
+                "post_action_outcome_labels_included": False,
+                "realized_pair_cost_used_as_live_criteria": False,
+                "trading_behavior_changed": False,
+                "private_truth_ready": False,
+                "deployable": False,
+                "promotion_gate_passed": False,
+            },
+            "pair_qty_sum_by_status_reason_projected_residual_bucket": {},
+            "residual_qty_sum_by_status_reason_projected_residual_bucket": {},
+            "residual_cost_sum_by_status_reason_projected_residual_bucket": {},
+            "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket": {},
+            "source_sequence_presence_by_status_reason_projected_residual_bucket": {},
         }
         if self.cfg.source_opportunity_ledger_marker_event_lite_summary:
             self.event_lite_source_opportunity_markers["field_contract"][
@@ -2252,6 +2299,30 @@ class DPlusRunner:
         side_offset_activation = f"{status_reason}|{lot.side}|{offset_bucket(lot.offset_s)}|{activation_bucket}"
         return f"{status_reason}|{activation_bucket}", side_offset_activation
 
+    def symmetric_activation_projected_residual_keys_for_source(self, lot: Lot) -> tuple[str, str]:
+        status_reason = f"{lot.symmetric_activation_status}|{lot.symmetric_activation_reason}"
+        projected_residual_bucket = lot.symmetric_projected_residual_bucket
+        side_offset_projected = (
+            f"{status_reason}|{lot.side}|{offset_bucket(lot.offset_s)}|{projected_residual_bucket}"
+        )
+        return f"{status_reason}|{projected_residual_bucket}", side_offset_projected
+
+    def record_symmetric_activation_projected_residual_pair_source(self, lot: Lot, qty: float) -> None:
+        if not (
+            self.cfg.event_lite_summary
+            and self.cfg.symmetric_activation_projected_residual_tail_join_event_lite_summary
+        ):
+            return
+        status_reason_projected, _side_offset_projected = self.symmetric_activation_projected_residual_keys_for_source(lot)
+        diag = self.event_lite_symmetric_activation_projected_residual_tail_join_summary
+        add_count(diag["pair_qty_sum_by_status_reason_projected_residual_bucket"], status_reason_projected, qty)
+        add_nested_count(
+            diag["source_sequence_presence_by_status_reason_projected_residual_bucket"],
+            status_reason_projected,
+            "present" if lot.trigger_source_sequence_id is not None else "missing",
+            qty,
+        )
+
     def record_symmetric_activation_tail_pair_source(self, lot: Lot, qty: float, net_pair_cost: float) -> None:
         if not (self.cfg.event_lite_summary and self.cfg.symmetric_activation_tail_attribution_event_lite_summary):
             return
@@ -2649,6 +2720,8 @@ class DPlusRunner:
             opposite_seen_ms=order.opposite_seen_ms,
             symmetric_activation_status=order.symmetric_activation_status,
             symmetric_activation_reason=order.symmetric_activation_reason,
+            symmetric_projected_pair_cost_bucket=order.symmetric_projected_pair_cost_bucket,
+            symmetric_projected_residual_bucket=order.symmetric_projected_residual_bucket,
         )
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
@@ -2678,6 +2751,7 @@ class DPlusRunner:
                 source_lot.source_pair_qty += take
                 source_lot.source_pair_cost += take * pair_cost
                 source_lot.source_pair_pnl += pair_pnl
+                self.record_symmetric_activation_projected_residual_pair_source(source_lot, take)
                 self.record_symmetric_activation_tail_pair_source(source_lot, take, pair_cost)
             a.qty -= take
             b.qty -= take
@@ -2738,6 +2812,7 @@ class DPlusRunner:
                 lot.source_pair_qty += take
                 lot.source_pair_cost += take * net_pair
                 lot.source_pair_pnl += take * (1.0 - net_pair)
+                self.record_symmetric_activation_projected_residual_pair_source(lot, take)
                 self.record_symmetric_activation_tail_pair_source(lot, take, net_pair)
                 matched_pair_id = f"{self.slug}:salvage:{self.metrics.salvage_actions}"
                 self.record_source_link_pair_transition(qty=take, net_pair_cost=net_pair, sources=[lot])
@@ -3001,6 +3076,16 @@ class DPlusRunner:
         opposite_trigger_ts_ms = (
             ts_ms - activation_opp_age_ms if activation_opp_age_ms is not None else opposite_seen_ms
         )
+        projected_context = self.ce25_projected_guard_context(
+            side=side,
+            offset_s=offset,
+            qty=qty,
+            seed_px=seed_px,
+            same_qty=same_qty,
+            opp_qty=opp_qty,
+            same_cost=same_cost_before,
+            opp_cost=opp_cost_before,
+        )
         order = VirtualOrder(
             id=self.next_order_id,
             quote_intent_id=quote_intent_id,
@@ -3029,6 +3114,12 @@ class DPlusRunner:
             opposite_seen_ms=opposite_seen_ms,
             symmetric_activation_status="admitted",
             symmetric_activation_reason="candidate",
+            symmetric_projected_pair_cost_bucket=ce25_projected_pair_cost_bucket(
+                projected_context.get("projected_pair_cost")
+            ),
+            symmetric_projected_residual_bucket=ce25_projected_residual_bucket(
+                projected_context.get("projected_residual_rate_on_bought_qty")
+            ),
         )
         self.record_ce25_projected_guard_diagnostic(
             side=side,
@@ -3243,6 +3334,42 @@ class DPlusRunner:
                 summary["event_lite"]["ce25_projected_guard_summary"] = self.event_lite_ce25_projected_guard_summary
             if self.cfg.symmetric_activation_event_lite_summary:
                 summary["event_lite"]["symmetric_activation_summary"] = self.event_lite_symmetric_activation_summary
+            if self.cfg.symmetric_activation_projected_residual_tail_join_event_lite_summary:
+                projected_tail_diag = json.loads(
+                    json.dumps(self.event_lite_symmetric_activation_projected_residual_tail_join_summary)
+                )
+                for lot in residual_lots:
+                    status_reason_projected, side_offset_projected = (
+                        self.symmetric_activation_projected_residual_keys_for_source(lot)
+                    )
+                    add_count(
+                        projected_tail_diag["residual_qty_sum_by_status_reason_projected_residual_bucket"],
+                        status_reason_projected,
+                        lot.qty,
+                    )
+                    add_count(
+                        projected_tail_diag["residual_cost_sum_by_status_reason_projected_residual_bucket"],
+                        status_reason_projected,
+                        lot.cost,
+                    )
+                    add_count(
+                        projected_tail_diag[
+                            "residual_qty_sum_by_status_reason_side_offset_projected_residual_bucket"
+                        ],
+                        side_offset_projected,
+                        lot.qty,
+                    )
+                    add_nested_count(
+                        projected_tail_diag[
+                            "source_sequence_presence_by_status_reason_projected_residual_bucket"
+                        ],
+                        status_reason_projected,
+                        "present" if lot.trigger_source_sequence_id is not None else "missing",
+                        lot.qty,
+                    )
+                summary["event_lite"]["symmetric_activation_projected_residual_tail_join_summary"] = (
+                    projected_tail_diag
+                )
             if self.cfg.symmetric_activation_tail_attribution_event_lite_summary:
                 tail_diag = json.loads(json.dumps(self.event_lite_symmetric_activation_tail_attribution_summary))
                 for lot in residual_lots:
@@ -3563,6 +3690,14 @@ def aggregate(out: Path) -> dict[str, Any]:
                     event_lite.setdefault("symmetric_activation_tail_attribution_summary", {}),
                     symmetric_activation_tail,
                 )
+            symmetric_activation_projected_residual_tail = lite.get(
+                "symmetric_activation_projected_residual_tail_join_summary"
+            )
+            if isinstance(symmetric_activation_projected_residual_tail, dict):
+                merge_symmetric_activation_projected_residual_tail_join_summary(
+                    event_lite.setdefault("symmetric_activation_projected_residual_tail_join_summary", {}),
+                    symmetric_activation_projected_residual_tail,
+                )
     candidates = totals.get("candidates", 0.0)
     fills = totals.get("queue_supported_fills", 0.0)
     filled_qty = totals.get("filled_qty", 0.0)
@@ -3700,6 +3835,7 @@ async def main() -> None:
     ap.add_argument("--ce25-projected-guard-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off ce25 projected pair-cost/residual guard diagnostics without changing behavior")
     ap.add_argument("--symmetric-activation-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off symmetric activation projected pair-cost/residual diagnostics without changing behavior")
     ap.add_argument("--symmetric-activation-tail-attribution-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off source-attributed realized pair/residual tail diagnostics joined to activation buckets without changing behavior")
+    ap.add_argument("--symmetric-activation-projected-residual-tail-join-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off realized residual/pair diagnostics joined to pre-action projected residual buckets without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -3749,6 +3885,7 @@ async def main() -> None:
         ce25_projected_guard_event_lite_summary=args.ce25_projected_guard_event_lite_summary,
         symmetric_activation_event_lite_summary=args.symmetric_activation_event_lite_summary,
         symmetric_activation_tail_attribution_event_lite_summary=args.symmetric_activation_tail_attribution_event_lite_summary,
+        symmetric_activation_projected_residual_tail_join_event_lite_summary=args.symmetric_activation_projected_residual_tail_join_event_lite_summary,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -3814,6 +3951,8 @@ async def main() -> None:
         raise SystemExit("--symmetric-activation-event-lite-summary requires --event-lite-summary")
     if cfg.symmetric_activation_tail_attribution_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--symmetric-activation-tail-attribution-event-lite-summary requires --event-lite-summary")
+    if cfg.symmetric_activation_projected_residual_tail_join_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--symmetric-activation-projected-residual-tail-join-event-lite-summary requires --event-lite-summary")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")
