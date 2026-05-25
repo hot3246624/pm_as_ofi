@@ -1,0 +1,15 @@
+{
+  "artifact": "xuan_observable_pre_action_feature_join_output_scorer_smoke",
+  "checks": {
+    "deployable_false": true,
+    "good_fixture_keep": true,
+    "missing_source_field_fail_closed": true,
+    "missing_source_summary_fail_closed": true,
+    "private_or_deployable_claim_fail_closed": true,
+    "private_truth_ready_false": true,
+    "promotion_gate_separated": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_OUTPUT_SCORER_SMOKE_PASS",
+  "schema_version": 1
+}
