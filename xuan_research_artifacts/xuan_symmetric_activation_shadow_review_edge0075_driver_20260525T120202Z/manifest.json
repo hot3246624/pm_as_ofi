@@ -1,0 +1,192 @@
+{
+  "acceptance_after_finish": {
+    "blocked_if": [
+      "safety/resource/transport/artifact corruption"
+    ],
+    "discard_if": [
+      "economic pnl negative",
+      "residual risk remains broad",
+      "future labels needed as live criteria",
+      "only forbidden families remain"
+    ],
+    "keep_requires": {
+      "aggregate_parity": true,
+      "candidates_gte": 100,
+      "deployable": false,
+      "fee_adjusted_pair_pnl_positive": true,
+      "material_residual_lots_eq": 0,
+      "net_pair_cost_p90_lte": 1.0,
+      "no_order_safety": true,
+      "nonzero_admitted_and_blocked_activation_denominators": true,
+      "pair_tail_loss_share_lte_pct": 5,
+      "private_truth_ready": false,
+      "promotion_gate_passed": false,
+      "research_ranking_and_promotion_gate_separated": true,
+      "residual_cost_share_lte_pct": 20,
+      "residual_qty_share_lte_pct": 15,
+      "source_sequence_coverage": true,
+      "symmetric_activation_summary_v1_present": true,
+      "symmetric_activation_tail_attribution_summary_v1_present": true
+    },
+    "unknown_if": [
+      "sample or denominators thin",
+      "risk budget fails"
+    ]
+  },
+  "allowlisted_future_pullback": [
+    "output/manifest.json",
+    "output/aggregate_report.json",
+    "output/*.summary.json",
+    "stdout.log",
+    "stderr.log",
+    "runner.pid",
+    "small sanity files"
+  ],
+  "artifact": "xuan_symmetric_activation_shadow_review_edge0075_driver",
+  "created_at_utc": "2026-05-25T12:22:44Z",
+  "decision": "KEEP",
+  "decision_label": "RUNNING_SYMMETRIC_ACTIVATION_EDGE0075_NO_ORDER_SHADOW_REVIEW",
+  "forbidden": {
+    "events_jsonl_pull_or_read": true,
+    "g2_canary": true,
+    "live_orders_cancels_redeems": true,
+    "observer_dry_run": true,
+    "raw_replay_full_store_scans": true,
+    "repo_sync_build_for_canary": true,
+    "second_shadow": true,
+    "shared_ingress_broker_env_live_writes": true,
+    "systemd_service_controls": true,
+    "user_ws_observer": true
+  },
+  "live_check": {
+    "aggregate_report_present": false,
+    "all_python_runner_count": 1,
+    "elapsed_s_at_check": 329,
+    "exact_run_dir_python_count": 1,
+    "output_manifest_present": true,
+    "passed": true,
+    "raw_log": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/live_check_20260525T120202Z.out",
+    "root_disk": "53%",
+    "root_inode": "2%",
+    "runner_pid_file": "483574",
+    "stderr_bytes": 0,
+    "stdout_bytes": 0,
+    "summary_count": 26
+  },
+  "next_executable_action": "bounded SSH poll PID 483574; if finished, pull back only allowlisted manifest/aggregate/summary/stdout/stderr/runner.pid/sanity files, then run shadow acceptance, symmetric activation summary scorer, symmetric activation tail attribution scorer, and acceptance adapter; do not pull/read events JSONL",
+  "preflight": {
+    "broker_manifest_age_s": 0,
+    "broker_manifest_present": "yes",
+    "chainlink_sock_present": "yes",
+    "exact_python_runner_count_before_start": "0",
+    "local_price_sock_present": "yes",
+    "market_sock_present": "yes",
+    "notes": "Earlier pgrep preflight variants matched their own SSH shell command and were ignored; exact2 uses [p]ython3 pattern and passed.",
+    "passed": true,
+    "raw_log": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/preflight_exact2_20260525T120202Z.out",
+    "resolve_market_ids_present": "yes",
+    "root_disk": "53%",
+    "root_inode": "2%",
+    "sudo_pmofi_ok": "yes"
+  },
+  "promotion_gate": {
+    "passed": false,
+    "reason": "startup/running diagnostic only; no completed no-order acceptance yet"
+  },
+  "proposal_source": {
+    "artifact": "xuan_research_artifacts/xuan_strategy_discovery_symmetric_activation_no_order_proposal_review_20260525T111500Z/manifest.json",
+    "commit": "dce29c69c8674f6f60e9fa7e04d4c59b2b830d3b",
+    "docs_entry": 388
+  },
+  "remote": {
+    "expected_finish_approx_utc": "2026-05-25T13:15:52Z",
+    "host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "hostname": "ip-172-31-37-43",
+    "run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_symmetric_activation_review_edge0075_actoppseen200_20260525T120202Z",
+    "run_user": "pmofi",
+    "runner_pid": 483574,
+    "started_approx_utc": "2026-05-25T12:15:52Z"
+  },
+  "run_config": {
+    "activation_mode": "opp_seen",
+    "activation_window_s": 20,
+    "disabled_families": [
+      "late-repair-only",
+      "fill-to-balance",
+      "micro-deficit repair guard",
+      "portfolio-ledger trading rule",
+      "source-opportunity marker families",
+      "public-profile single-day filters",
+      "live/canary/orders/cancels/redeems"
+    ],
+    "duration_s": 3600,
+    "edge": 0.075,
+    "enabled_summary_flags": [
+      "--event-lite-summary",
+      "--pair-source-event-lite-summary",
+      "--source-link-transition-event-lite-summary",
+      "--source-link-residual-tail-exemplars-event-lite-summary",
+      "--symmetric-activation-event-lite-summary",
+      "--symmetric-activation-tail-attribution-event-lite-summary"
+    ],
+    "environment": {
+      "PM_DRY_RUN": "true",
+      "PM_SHARED_INGRESS_ROLE": "client",
+      "PM_SHARED_INGRESS_ROOT": "/srv/pm_as_ofi/shared-ingress-main"
+    },
+    "imbalance_qty_cap": 1.25,
+    "max_open_cost": 80,
+    "prefix": "btc-updown-5m",
+    "repo": "/srv/pm_as_ofi/repo",
+    "round_offsets": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25
+    ],
+    "seed_offset_max_s": 300,
+    "target_qty": 5
+  },
+  "schema_version": "shadow_startup_manifest_v1",
+  "scope": {
+    "canary_ready": false,
+    "deployable": false,
+    "diagnostic_no_order_only": true,
+    "private_truth_ready": false,
+    "strategy_evidence": false
+  },
+  "startup": {
+    "no_repo_sync_build": true,
+    "runner_copy": "only current tools/xuan_dplus_passive_passive_shadow_runner.py copied into isolated remote run dir",
+    "scp_log": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/scp_runner_20260525T120202Z.out",
+    "start_log": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_symmetric_activation_shadow_review_edge0075_driver_20260525T120202Z/start_20260525T120202Z.out"
+  },
+  "user_approval": {
+    "approval_scope": "bounded no-order diagnostic only",
+    "approval_text": "\u6279\u51c6",
+    "approved": true,
+    "approved_exact_run": "xuan_research_symmetric_activation_review_edge0075_actoppseen200"
+  }
+}
