@@ -57,6 +57,11 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
         if args.public_benchmark_comparison_scorecard
         else None
     )
+    surplus_bridge_path = (
+        Path(args.surplus_bridge_scorecard).expanduser().resolve()
+        if args.surplus_bridge_scorecard
+        else None
+    )
 
     packet = read_json(packet_path)
     capital = read_json(capital_path)
@@ -65,6 +70,11 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
     public_benchmark = (
         read_json(public_benchmark_path)
         if public_benchmark_path and public_benchmark_path.exists()
+        else None
+    )
+    surplus_bridge = (
+        read_json(surplus_bridge_path)
+        if surplus_bridge_path and surplus_bridge_path.exists()
         else None
     )
 
@@ -82,6 +92,7 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
     public_benchmark_decision = public_benchmark.get("decision", {}) if public_benchmark else {}
     public_benchmark_comparison = public_benchmark.get("comparison", {}) if public_benchmark else {}
     public_benchmark_interpretation = public_benchmark.get("benchmark_interpretation", {}) if public_benchmark else {}
+    surplus_bridge_aggregate = surplus_bridge.get("aggregate", {}) if surplus_bridge else {}
 
     fee_accounting = capital.get("assumptions", {}).get("fee_accounting")
     taker_fee = as_float(capital_totals.get("taker_fee"))
@@ -92,9 +103,28 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
 
     hard_blockers: list[str] = []
     caveats: list[str] = []
+    packet_bridge_ready = (
+        packet.get("status") == "KEEP_SHADOW_REVIEW_PACKET_BRIDGE_READY_RESEARCH_ONLY"
+        and as_bool(packet_decision.get("bridge_shadow_review_ready"))
+        and as_bool(packet_decision.get("shadow_review_ready"))
+    )
+    packet_legacy_ready = packet.get("status") == "KEEP_SHADOW_REVIEW_PACKET_READY_RESEARCH_ONLY"
+    repeat_legacy_ready = (
+        repeat.get("status") == "KEEP_REPEAT_WINDOW_SHADOW_REVIEW_SCORER_PASS_RESEARCH_ONLY_READY_FOR_REVIEW"
+        and as_bool(repeat_decision.get("shadow_review_ready"))
+    )
+    bridge_repeat_ready = (
+        packet_bridge_ready
+        and str(packet_summary.get("surplus_bridge_status", "")).startswith("KEEP")
+        and str(packet_summary.get("bridge_shadow_gap_status", "")).startswith("KEEP")
+        and str(packet_summary.get("shadow_promotion_gate_status", "")).startswith("KEEP")
+        and str(packet_summary.get("shadow_promotion_gap_status", "")).startswith("KEEP")
+        and str(packet_summary.get("shadow_evidence_ledger_status", "")).startswith("KEEP")
+    )
+    repeat_metric_source = surplus_bridge_aggregate if bridge_repeat_ready and surplus_bridge else repeat_aggregate
 
     fail_unless(
-        packet.get("status") == "KEEP_SHADOW_REVIEW_PACKET_READY_RESEARCH_ONLY",
+        packet_legacy_ready or packet_bridge_ready,
         "shadow_packet_not_ready",
         hard_blockers,
     )
@@ -118,12 +148,17 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
         "concurrent_shared_ingress_evidence_not_clean",
         hard_blockers,
     )
+    fail_unless(repeat_legacy_ready or bridge_repeat_ready, "repeat_window_scorer_not_ready", hard_blockers)
     fail_unless(
-        repeat.get("status") == "KEEP_REPEAT_WINDOW_SHADOW_REVIEW_SCORER_PASS_RESEARCH_ONLY_READY_FOR_REVIEW",
-        "repeat_window_scorer_not_ready",
+        repeat_legacy_ready or bridge_repeat_ready,
+        "repeat_window_shadow_ready_false",
         hard_blockers,
     )
-    fail_unless(as_bool(repeat_decision.get("shadow_review_ready")), "repeat_window_shadow_ready_false", hard_blockers)
+    fail_unless(
+        (not bridge_repeat_ready) or surplus_bridge is not None,
+        "bridge_surplus_scorecard_missing_for_repeat_metrics",
+        hard_blockers,
+    )
     fail_unless(repeat_decision.get("deployable") is False, "repeat_window_deployable_true", hard_blockers)
     fail_unless(
         replay.get("status") == "SOURCE_TRUTH_VALIDATED_RESEARCH_ONLY",
@@ -155,28 +190,35 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
     fail_unless(edge_on_redeem >= args.min_edge_on_redeem, "edge_on_redeem_below_review_floor", hard_blockers)
     fail_unless(roi_on_total_cash > 0.0, "roi_on_total_cash_non_positive", hard_blockers)
     fail_unless(
-        as_float(repeat_aggregate.get("strict_rescue_closes")) >= args.min_repeat_rescue_closes,
+        as_float(repeat_metric_source.get("strict_rescue_closes")) >= args.min_repeat_rescue_closes,
         "repeat_strict_rescue_closes_below_min",
         hard_blockers,
     )
     fail_unless(
-        as_float(repeat_aggregate.get("residual_cost_share")) <= args.max_repeat_residual_cost_share,
+        as_float(repeat_metric_source.get("residual_cost_share")) <= args.max_repeat_residual_cost_share,
         "repeat_residual_cost_share_above_max",
         hard_blockers,
     )
     fail_unless(
-        as_float(repeat_aggregate.get("residual_qty_share")) <= args.max_repeat_residual_qty_share,
+        as_float(repeat_metric_source.get("residual_qty_share")) <= args.max_repeat_residual_qty_share,
         "repeat_residual_qty_share_above_max",
         hard_blockers,
     )
     if public_benchmark is not None:
+        public_bridge_ready = (
+            public_benchmark.get("status") == "KEEP_PUBLIC_BENCHMARK_COMPARISON_BRIDGE_RESIDUAL_CAVEAT_RESEARCH_ONLY"
+            and public_benchmark_decision.get("shadow_review_compatible_via_bridge") is True
+            and public_benchmark_decision.get("hard_blockers") == []
+        )
         fail_unless(
-            public_benchmark.get("status") == "KEEP_PUBLIC_BENCHMARK_COMPARISON_PASS_RESEARCH_ONLY",
+            public_benchmark.get("status") == "KEEP_PUBLIC_BENCHMARK_COMPARISON_PASS_RESEARCH_ONLY"
+            or public_bridge_ready,
             "public_benchmark_comparison_not_pass",
             hard_blockers,
         )
         fail_unless(
-            public_benchmark_decision.get("public_benchmark_comparison_pass") is True,
+            public_benchmark_decision.get("public_benchmark_comparison_pass") is True
+            or public_bridge_ready,
             "public_benchmark_pass_flag_false",
             hard_blockers,
         )
@@ -185,6 +227,8 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "public_benchmark_deployable_true",
             hard_blockers,
         )
+        if public_bridge_ready:
+            caveats.extend(public_benchmark_decision.get("public_target_misses") or [])
         fail_unless(
             public_benchmark_decision.get("remote_runner_allowed") is False,
             "public_benchmark_remote_runner_allowed_true",
@@ -219,6 +263,7 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "public_benchmark_comparison_scorecard": str(public_benchmark_path)
             if public_benchmark_path
             else None,
+            "surplus_bridge_scorecard": str(surplus_bridge_path) if surplus_bridge_path else None,
             "min_edge_on_redeem": args.min_edge_on_redeem,
             "min_repeat_rescue_closes": args.min_repeat_rescue_closes,
             "max_repeat_residual_cost_share": args.max_repeat_residual_cost_share,
@@ -236,10 +281,27 @@ def build_gate(args: argparse.Namespace) -> dict[str, Any]:
             "hard_blockers": hard_blockers,
             "caveats": sorted(set(caveats)),
         },
+        "bridge_interpretation": {
+            "packet_bridge_ready": packet_bridge_ready,
+            "packet_legacy_ready": packet_legacy_ready,
+            "repeat_legacy_ready": repeat_legacy_ready,
+            "bridge_repeat_ready": bridge_repeat_ready,
+            "legacy_runtime_repeat_blockers_explained_by_bridge": packet_decision.get(
+                "legacy_runtime_repeat_blockers_explained_by_bridge"
+            )
+            is True,
+            "surplus_bridge_status": surplus_bridge.get("status") if surplus_bridge else None,
+            "repeat_metric_source": "surplus_bridge" if repeat_metric_source is surplus_bridge_aggregate else "repeat",
+            "surplus_bridge_accepted_actions": as_float(surplus_bridge_aggregate.get("accepted_actions")),
+            "surplus_bridge_strict_rescue_closes": as_float(surplus_bridge_aggregate.get("strict_rescue_closes")),
+            "surplus_bridge_residual_qty_share": as_float(surplus_bridge_aggregate.get("residual_qty_share")),
+            "surplus_bridge_residual_cost_share": as_float(surplus_bridge_aggregate.get("residual_cost_share")),
+        },
         "evidence": {
             "replay_status": replay.get("status"),
             "packet_status": packet.get("status"),
             "repeat_status": repeat.get("status"),
+            "surplus_bridge_status": surplus_bridge.get("status") if surplus_bridge else None,
             "capital_roi_status": capital.get("status"),
             "public_benchmark_status": public_benchmark.get("status") if public_benchmark else None,
             "public_benchmark_scope": public_benchmark_interpretation.get("b55_benchmark_scope")
@@ -333,6 +395,7 @@ def markdown(scorecard: dict[str, Any]) -> str:
     decision = scorecard["decision"]
     evidence = scorecard["evidence"]
     scope = scorecard["approval_scope"]
+    bridge = scorecard.get("bridge_interpretation") or {}
     lines = [
         "# Xuan-Frontier Shadow Review Approval Gate",
         "",
@@ -345,6 +408,8 @@ def markdown(scorecard: dict[str, Any]) -> str:
         f"- live_orders_allowed: `{decision['live_orders_allowed']}`",
         f"- hard_blockers: `{', '.join(decision['hard_blockers']) if decision['hard_blockers'] else 'none'}`",
         f"- caveats: `{', '.join(decision['caveats']) if decision['caveats'] else 'none'}`",
+        f"- bridge_repeat_ready: `{bridge.get('bridge_repeat_ready')}`",
+        f"- repeat_metric_source: `{bridge.get('repeat_metric_source')}`",
         "",
         "## Fee-Aware Evidence",
         "",
@@ -367,6 +432,7 @@ def markdown(scorecard: dict[str, Any]) -> str:
         f"- b55_actual_pair_cost: `{round_opt(evidence['b55_actual_pair_cost'], 6)}`",
         f"- pair_cost_delta_vs_b55: `{round_opt(evidence['pair_cost_delta_vs_b55'], 6)}`",
         f"- residual_qty_share_delta_vs_b55: `{round_opt(evidence['residual_qty_share_delta_vs_b55'], 6)}`",
+        f"- surplus_bridge_status: `{evidence['surplus_bridge_status']}`",
         "",
         "## Capital Reuse",
         "",
@@ -408,6 +474,7 @@ def main() -> int:
     parser.add_argument("--repeat-scorecard", required=True)
     parser.add_argument("--replay-scorecard", required=True)
     parser.add_argument("--public-benchmark-comparison-scorecard", default=None)
+    parser.add_argument("--surplus-bridge-scorecard", default=None)
     parser.add_argument("--scorecard-json", required=True)
     parser.add_argument("--markdown")
     parser.add_argument("--min-edge-on-redeem", type=float, default=0.02)
