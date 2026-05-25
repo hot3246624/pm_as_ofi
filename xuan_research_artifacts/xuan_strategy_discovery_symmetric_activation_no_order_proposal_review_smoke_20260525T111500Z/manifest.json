@@ -1,0 +1,25 @@
+{
+  "artifact": "xuan_strategy_discovery_symmetric_activation_no_order_proposal_review_smoke",
+  "bad_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_strategy_discovery_symmetric_activation_no_order_proposal_review_smoke_20260525T111500Z/bad/manifest.json",
+  "checks": {
+    "approval_required": true,
+    "bad_promotion_false": true,
+    "bad_unknown": true,
+    "baseline_edge_07": true,
+    "cmd_dry_run": true,
+    "cmd_edge_075": true,
+    "cmd_tail_attribution": true,
+    "cmd_window_20": true,
+    "comparison_ready": true,
+    "no_order_not_allowed_now": true,
+    "post_eval_tail_scorer": true,
+    "real_keep": true,
+    "real_not_strategy_evidence": true,
+    "real_promotion_false": true,
+    "selected_edge_075": true,
+    "selected_window_20": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_SYMMETRIC_ACTIVATION_NO_ORDER_PROPOSAL_REVIEW_SMOKE_PASS",
+  "real_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_strategy_discovery_symmetric_activation_no_order_proposal_review_smoke_20260525T111500Z/real/manifest.json"
+}
