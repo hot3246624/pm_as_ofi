@@ -267,6 +267,7 @@ def main() -> None:
         paths["regime_generalization"] = scorecard_dir / f"no_order_{args.tag}_regime_generalization.json"
         paths["shadow_promotion_gate"] = scorecard_dir / f"no_order_{args.tag}_shadow_promotion_gate.json"
         paths["shadow_promotion_gap"] = scorecard_dir / f"no_order_{args.tag}_shadow_promotion_gap.json"
+        paths["shadow_evidence_ledger"] = scorecard_dir / f"no_order_{args.tag}_shadow_evidence_ledger.json"
     public_benchmark_path = (
         Path(args.public_benchmark_scorecard).expanduser().resolve()
         if args.public_benchmark_scorecard
@@ -562,6 +563,28 @@ def main() -> None:
                 str(paths["shadow_promotion_gap"]),
                 "--markdown-output",
                 str(output_dir / "SOFT_MAINLINE_SHADOW_PROMOTION_GAP.md"),
+            ]
+        )
+        commands.append(
+            [
+                sys.executable,
+                "scripts/xuan_soft_mainline_shadow_evidence_ledger.py",
+                "--regime-generalization-scorecard",
+                str(paths["regime_generalization"]),
+                "--shadow-promotion-gate-scorecard",
+                str(paths["shadow_promotion_gate"]),
+                "--shadow-promotion-gap-scorecard",
+                str(paths["shadow_promotion_gap"]),
+                "--run-trigger-policy-scorecard",
+                str(paths["run_trigger_policy"]),
+                "--repeat-gap-scorecard",
+                str(paths["gap"]),
+                "--scorecard-json",
+                str(paths["shadow_evidence_ledger"]),
+                "--csv-output",
+                str(output_dir / "soft_mainline_shadow_evidence_ledger.csv"),
+                "--markdown-output",
+                str(output_dir / "SOFT_MAINLINE_SHADOW_EVIDENCE_LEDGER.md"),
             ]
         )
     if public_benchmark_path and "public_benchmark" in paths:
