@@ -43,7 +43,12 @@ def pct(value: float | None, digits: int = 4) -> float | None:
 
 
 def find_stage(capacity_plan: dict[str, Any], stage_name: str) -> dict[str, Any]:
-    for stage in capacity_plan.get("ladder", []):
+    ladder = capacity_plan.get("ladder")
+    if not isinstance(ladder, list):
+        ladder = capacity_plan.get("capacity_ladder")
+    for stage in ladder if isinstance(ladder, list) else []:
+        if not isinstance(stage, dict):
+            continue
         if stage.get("stage") == stage_name:
             return stage
     raise SystemExit(f"stage not found in capacity plan: {stage_name}")
