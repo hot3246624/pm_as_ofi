@@ -248,6 +248,7 @@ def markdown(card: dict[str, Any]) -> str:
     o = card["observed"]
     p = card["prior_comparison"]
     e = card["event_diagnostics"]
+    i = card["interpretation"]
     lines = [
         "# Xuan Density-Preserving Pair-Completion Remote Result",
         "",
@@ -297,10 +298,12 @@ def markdown(card: dict[str, Any]) -> str:
         "",
         "## Interpretation",
         "",
-        "- This is not promotion evidence: the wrapper was killed with exit 137 and no aggregate report was produced.",
-        "- The local partial signal improved over 1510Z on accepted actions, fills, source cleanliness, bad JSON, and pair-completion pressure.",
-        "- The remaining blocker is rescue density: only 6 rescues versus a 7-rescue minimum, with rescue ratios below thresholds.",
-        "- Do not repeat the same profile or expand capacity until a local artifact resolves both the exit-137/aggregate path and rescue-density gap.",
+        f"- runtime_signal: `{i['runtime_signal']}`",
+        f"- promotion_signal: `{i['promotion_signal']}`",
+        f"- density_signal: `{i['density_signal']}`",
+        f"- source_signal: `{i['source_signal']}`",
+        "- This is not promotion evidence unless runtime, density, source, manifest, and pre-authorization gates all clear together.",
+        "- Do not repeat the same profile or expand capacity until a new local artifact resolves the remaining hard blockers.",
         "",
     ]
     return "\n".join(lines)
@@ -388,16 +391,64 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         remote_completed and postrun_complete and density_pass and source_clean and manifest_clean and preauth_clean
     )
 
+    rescue_density_blocked = any(
+        item
+        in {
+            "rescue_density_below_min",
+            "rescue_per_candidate_below_min",
+            "rescue_per_fill_below_min",
+        }
+        for item in density_blockers
+    )
+
     if remote_exit_code == 137 and not density_pass:
         card_status = "BLOCKED_SHADOW_REVIEW_DENSITY_PRESERVING_PAIR_COMPLETION_RESULT_EXIT_137_RESCUE_DENSITY_WEAK_LOCAL_ONLY"
     elif remote_exit_code and remote_exit_code != 0:
         card_status = "BLOCKED_SHADOW_REVIEW_DENSITY_PRESERVING_PAIR_COMPLETION_RESULT_REMOTE_EXIT_NONZERO_LOCAL_ONLY"
-    elif not density_pass:
+    elif not density_pass and rescue_density_blocked:
         card_status = "BLOCKED_SHADOW_REVIEW_DENSITY_PRESERVING_PAIR_COMPLETION_RESULT_RESCUE_DENSITY_WEAK_LOCAL_ONLY"
+    elif not density_pass:
+        card_status = "BLOCKED_SHADOW_REVIEW_DENSITY_PRESERVING_PAIR_COMPLETION_RESULT_DENSITY_GATE_BLOCKED_LOCAL_ONLY"
     elif full_window_promotion_evidence_valid:
         card_status = "KEEP_SHADOW_REVIEW_DENSITY_PRESERVING_PAIR_COMPLETION_RESULT_CLEAR_LOCAL_ONLY"
     else:
         card_status = "UNKNOWN_SHADOW_REVIEW_DENSITY_PRESERVING_PAIR_COMPLETION_RESULT_INCOMPLETE_LOCAL_ONLY"
+
+    if remote_exit_code == 0 and postrun_complete and not aggregate_missing:
+        runtime_signal = "completed_cleanly_with_aggregate"
+    elif wrapper_killed:
+        runtime_signal = "wrapper_killed"
+    elif remote_exit_code == 137:
+        runtime_signal = "exit_137"
+    elif remote_exit_code and remote_exit_code != 0:
+        runtime_signal = "remote_exit_nonzero"
+    elif aggregate_missing:
+        runtime_signal = "aggregate_missing"
+    else:
+        runtime_signal = "runtime_incomplete"
+
+    if full_window_promotion_evidence_valid:
+        promotion_signal = "valid_full_window_evidence"
+    elif hard_blockers:
+        promotion_signal = "blocked_by_" + ",".join(hard_blockers)
+    else:
+        promotion_signal = "incomplete_not_promotion"
+
+    if density_pass:
+        density_signal = "density_gate_passed"
+    elif density_recovered_partially:
+        density_signal = "partial_recovery_but_density_gate_blocked"
+    else:
+        density_signal = "density_gate_blocked"
+
+    if remote_exit_code != 0 or aggregate_missing:
+        next_action = "local_only_fix_runtime_or_aggregate_path_before_any_new_bounded_cap25_sample"
+    elif not density_pass:
+        next_action = "local_only_resolve_density_blockers_before_any_new_bounded_cap25_sample"
+    elif not source_clean or not manifest_clean or not preauth_clean:
+        next_action = "local_only_resolve_review_gate_blockers_before_any_new_bounded_cap25_sample"
+    else:
+        next_action = "local_only_interpret_clear_cap25_result_before_any_capacity_expansion"
 
     profile_body = body(profile, "profile")
     source_observed = body(source_audit, "observed")
@@ -458,9 +509,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "research_only": True,
             "do_not_run_remote_again_this_wake": True,
             "hard_blockers": hard_blockers,
-            "next_action": (
-                "local_only_fix_exit_137_aggregate_path_and_rescue_density_gap_before_any_new_bounded_cap25_sample"
-            ),
+            "next_action": next_action,
         },
         "observed": {
             "run_exit_code": remote_exit_code,
@@ -517,17 +566,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "strict_rescue_surplus_net_cap": profile_body.get("strict_rescue_surplus_net_cap"),
         },
         "interpretation": {
-            "promotion_signal": "invalid_full_window_evidence",
-            "runtime_signal": "exit_137_wrapper_killed_aggregate_missing",
-            "density_signal": "partial_recovery_but_rescue_density_still_weak",
+            "promotion_signal": promotion_signal,
+            "runtime_signal": runtime_signal,
+            "density_signal": density_signal,
             "residual_signal": "preflight_zero_but_not_promotion" if residual_preflight_zero else "residual_not_clear",
             "source_signal": "review_clean" if source_clean else "not_review_clean",
             "do_not_expand_capacity": True,
             "do_not_repeat_same_profile": True,
             "do_not_weaken_source_or_economic_gates": True,
-            "suggested_local_next_step": (
-                "diagnose local output/aggregate resource path and design a rescue-density-preserving cap25 variant"
-            ),
+            "suggested_local_next_step": next_action,
         },
     }
     return rounded(card)
