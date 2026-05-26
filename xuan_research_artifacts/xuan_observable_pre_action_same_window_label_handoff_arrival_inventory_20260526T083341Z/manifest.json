@@ -1,0 +1,65 @@
+{
+  "artifact": "xuan_observable_pre_action_same_window_label_handoff_arrival_inventory",
+  "blockers": [
+    "non_fixture_same_window_label_handoff_manifest_absent"
+  ],
+  "contract_name": "observable_pre_action_same_window_label_handoff_arrival_inventory_v1",
+  "created_utc": "2026-05-26T08:33:41Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_OBSERVABLE_PRE_ACTION_SAME_WINDOW_LABEL_HANDOFF_ARRIVAL_INVENTORY_NO_REAL_HANDOFF",
+  "deployable": false,
+  "lane": "observable_pre_action_same_window_label_handoff_arrival_inventory",
+  "next_executable_action": "Wait for a non-fixture same-window offline-label handoff manifest inside the current worktree; do not mine fixtures and do not start no-order diagnostics.",
+  "no_order_diagnostic_allowed": false,
+  "observations": {
+    "candidate_handoff_count": 0,
+    "candidate_handoffs": [],
+    "contract_decision_label": "KEEP_OBSERVABLE_PRE_ACTION_SAME_WINDOW_OFFLINE_LABEL_HANDOFF_CONTRACT_READY",
+    "prevalidation_ready_count": 0,
+    "validations": []
+  },
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "same_window_label_handoff_arrival_inventory_only"
+  },
+  "readiness": {
+    "blockers": [
+      "non_fixture_same_window_label_handoff_manifest_absent"
+    ],
+    "ready": false,
+    "ready_validations": [],
+    "validation_commands": []
+  },
+  "research_ranking": {
+    "handoff_ready": false,
+    "interpretation": "Arrival inventory only. KEEP means a same-window label handoff can enter local bridge validation; UNKNOWN means no real handoff has arrived. Neither is promotion evidence.",
+    "no_order_diagnostic_allowed": false,
+    "status": "UNKNOWN_OBSERVABLE_PRE_ACTION_SAME_WINDOW_LABEL_HANDOFF_ARRIVAL_INVENTORY_NO_REAL_HANDOFF",
+    "strategy_evidence": false
+  },
+  "safety": {
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "new_data_fetched": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_modified": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "schema_version": 1,
+  "source_inputs": {
+    "contract_manifest": "xuan_research_artifacts/xuan_observable_pre_action_same_window_offline_label_handoff_contract_20260526T065812Z/manifest.json",
+    "explicit_candidate_handoff_manifests": [],
+    "handoff_validator": "scripts/xuan_observable_pre_action_same_window_offline_label_handoff_contract.py"
+  },
+  "strategy_evidence": false
+}

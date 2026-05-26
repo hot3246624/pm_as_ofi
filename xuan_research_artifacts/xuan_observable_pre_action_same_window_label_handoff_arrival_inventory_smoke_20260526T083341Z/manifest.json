@@ -1,0 +1,22 @@
+{
+  "artifact": "xuan_observable_pre_action_same_window_label_handoff_arrival_inventory_smoke",
+  "checks": {
+    "default_no_real_handoff_unknown": true,
+    "explicit_good_handoff_keep": true,
+    "fixture_handoff_not_ready": true,
+    "forbidden_live_handoff_not_ready": true,
+    "missing_handoff_not_ready": true,
+    "old_non_overlap_not_ready": true,
+    "promotion_gate_separated": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_SAME_WINDOW_LABEL_HANDOFF_ARRIVAL_INVENTORY_SMOKE_READY",
+  "deployable": false,
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "schema_version": 1,
+  "strategy_evidence": false
+}
