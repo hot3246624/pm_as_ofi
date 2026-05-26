@@ -1,0 +1,156 @@
+{
+  "artifact": "xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory",
+  "blockers": [],
+  "candidate_bridge_output_count": 1,
+  "contract_name": "observable_pre_action_non_fixture_training_bridge_multiday_inventory_v1",
+  "created_utc": "20260526T154218Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MULTIDAY_READY",
+  "deployable": false,
+  "forbidden_blockers": [],
+  "inspected_candidates": [
+    {
+      "accepted": true,
+      "blockers": [],
+      "forbidden": [],
+      "joined_rows": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/manifest.json",
+      "metrics": {
+        "available_day_count": 5,
+        "available_days": [
+          "2026-05-21",
+          "2026-05-22",
+          "2026-05-23",
+          "2026-05-24",
+          "2026-05-25"
+        ],
+        "day_counts": {
+          "2026-05-21": 40,
+          "2026-05-22": 40,
+          "2026-05-23": 40,
+          "2026-05-24": 40,
+          "2026-05-25": 40
+        },
+        "holdout_days": [
+          "2026-05-24",
+          "2026-05-25"
+        ],
+        "label_row_reuse_count": 0,
+        "source_sequence_coverage": 1.0,
+        "split_counts": {
+          "holdout": 80,
+          "train": 120
+        },
+        "train_days": [
+          "2026-05-21",
+          "2026-05-22",
+          "2026-05-23"
+        ]
+      },
+      "row_count": 200,
+      "summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/observable_pre_action_training_bridge_summary.json",
+      "summary_joined_row_count": 200
+    }
+  ],
+  "lane": "observable_pre_action_non_fixture_training_bridge_multiday_inventory",
+  "next_executable_action": "Run the named offline training scorer on the ready joined rows, then denominator replay only after a frozen rule is produced.",
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "training_bridge_multiday_inventory_only"
+  },
+  "ready_candidate": {
+    "accepted": true,
+    "blockers": [],
+    "forbidden": [],
+    "joined_rows": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/observable_pre_action_training_bridge_joined_rows.jsonl",
+    "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/manifest.json",
+    "metrics": {
+      "available_day_count": 5,
+      "available_days": [
+        "2026-05-21",
+        "2026-05-22",
+        "2026-05-23",
+        "2026-05-24",
+        "2026-05-25"
+      ],
+      "day_counts": {
+        "2026-05-21": 40,
+        "2026-05-22": 40,
+        "2026-05-23": 40,
+        "2026-05-24": 40,
+        "2026-05-25": 40
+      },
+      "holdout_days": [
+        "2026-05-24",
+        "2026-05-25"
+      ],
+      "label_row_reuse_count": 0,
+      "source_sequence_coverage": 1.0,
+      "split_counts": {
+        "holdout": 80,
+        "train": 120
+      },
+      "train_days": [
+        "2026-05-21",
+        "2026-05-22",
+        "2026-05-23"
+      ]
+    },
+    "row_count": 200,
+    "summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/observable_pre_action_training_bridge_summary.json",
+    "summary_joined_row_count": 200
+  },
+  "research_ranking": {
+    "bridge_rows_materialized": true,
+    "interpretation": "Inventory readiness only. Non-fixture bridge rows remain offline research input; KEEP requires a ready train/holdout split and still cannot prove private truth, deployability, or promotion.",
+    "real_miner_input_ready": true,
+    "status": "KEEP_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MULTIDAY_READY",
+    "strategy_evidence": false
+  },
+  "safety": {
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_agg_or_shared_ws_started": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "accepted_bridge_output_count": 1,
+    "available_day_count": 5,
+    "available_days": [
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "day_counts": {
+      "2026-05-21": 40,
+      "2026-05-22": 40,
+      "2026-05-23": 40,
+      "2026-05-24": 40,
+      "2026-05-25": 40
+    },
+    "split_counts": {
+      "holdout": 80,
+      "train": 120
+    },
+    "total_joined_rows": 200
+  },
+  "strategy_evidence": false,
+  "validation_commands": [
+    "python3 scripts/xuan_observable_pre_action_rule_miner_training_fixture_scorer.py --joined-rows /Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory_smoke_20260526T151842Z/fixtures/complete/observable_pre_action_training_bridge_joined_rows.jsonl --output-dir xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_fixture_scorer_${TS}",
+    "python3 scripts/xuan_observable_pre_action_rule_miner_denominator_replay_fixture_scorer.py --candidate-rows ${feature_rows} --source-link-summary ${source_link_summary} --feature-join-manifest ${feature_join_manifest} --frozen-rule-manifest ${frozen_rule_manifest} --same-window-aggregate-summary ${same_window_aggregate_summary} --output-dir xuan_research_artifacts/xuan_observable_pre_action_rule_miner_denominator_replay_fixture_scorer_${TS}"
+  ]
+}
