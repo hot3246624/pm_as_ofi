@@ -1,0 +1,177 @@
+{
+  "approval": {
+    "approval_message": "批准，确认！",
+    "approved_run_name": "xuan_research_observable_pre_action_same_window_label_handoff_20260526T110803Z",
+    "user_explicitly_approved_exact_bounded_run": true
+  },
+  "artifact": "xuan_observable_pre_action_same_window_label_handoff_driver",
+  "created_utc": "2026-05-26T11:17:13Z",
+  "decision": "RUNNING",
+  "decision_label": "RUNNING_OBSERVABLE_PRE_ACTION_SAME_WINDOW_LABEL_HANDOFF_NO_ORDER_DIAGNOSTIC",
+  "latest_live_check": {
+    "aggregate_feature_join_manifest_present": false,
+    "aggregate_label_handoff_present": false,
+    "aggregate_report_present": false,
+    "all_pmofi_runner_count": 1,
+    "exact_run_dir_python_count": 1,
+    "feature_join_slug_manifest_count": 26,
+    "label_csv_slug_count": 26,
+    "label_handoff_slug_count": 26,
+    "log": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/live_check_initial_retry_20260526T110803Z.out",
+    "output_manifest_present": true,
+    "pid_alive": true,
+    "root_disk_used": "58%",
+    "root_inode_used": "2%",
+    "runner_pid_file": "522389",
+    "stderr_size": 0,
+    "stdout_size": 0,
+    "summary_json_count": 26
+  },
+  "next_executable_action": "Bounded SSH poll PID 522389 and do not start a second runner. If finished, pull back only allowlisted manifest/aggregate/summary/observable_pre_action feature-join outputs/same-window offline label handoff outputs/stdout/stderr/runner.pid/sanity files; do not pull or read events JSONL. Then run feature-join output scorer, same-window offline-label handoff contract validator, arrival inventory, and bridge feasibility chain.",
+  "pass_fail_after_finish": {
+    "blocked_if": [
+      "safety/resource/transport/artifact corruption"
+    ],
+    "discard_if": [
+      "handoff output requires events JSONL/raw/replay/full store",
+      "behavior changed",
+      "source_pair/source_residual labels used as live predicate",
+      "realized pair_cost used as live criterion",
+      "private/deployable/promotion claim"
+    ],
+    "keep_requires": [
+      "no_order_safety",
+      "observable_pre_action_candidate_rows.jsonl present",
+      "observable_pre_action_source_link_summary.json present",
+      "observable_pre_action_feature_join_manifest.json present",
+      "observable_pre_action_same_window_offline_labels.csv present",
+      "same_window_aggregate_summary.json present",
+      "observable_pre_action_same_window_offline_label_handoff.json present",
+      "feature-join scorer KEEP",
+      "same-window offline-label handoff validator KEEP",
+      "join coverage >= 95%",
+      "joined rows >= 100",
+      "research_ranking/promotion_gate separated",
+      "private_truth_ready=false",
+      "deployable=false",
+      "promotion_gate.passed=false"
+    ],
+    "unknown_if": [
+      "sample/denominators are thin",
+      "feature rows or labels are incomplete",
+      "handoff validates but downstream bridge/miner input remains missing"
+    ]
+  },
+  "preflight": {
+    "active_pmofi_python_runner_count_before_start": 0,
+    "active_same_window_label_handoff_runner_count_before_start": 0,
+    "broker_manifest_age_s": 0,
+    "helper_present": "/srv/pm_as_ofi/repo/scripts/resolve_market_ids.py",
+    "host": "ip-172-31-37-43",
+    "preflight_log": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/preflight_20260526T110803Z.out",
+    "root_disk_used": "58%",
+    "root_inode_used": "2%",
+    "shared_ingress_present": [
+      "/srv/pm_as_ofi/shared-ingress-main/broker_manifest.json",
+      "/srv/pm_as_ofi/shared-ingress-main/market.sock",
+      "/srv/pm_as_ofi/shared-ingress-main/chainlink.sock",
+      "/srv/pm_as_ofi/shared-ingress-main/local_price.sock"
+    ],
+    "sudo_pmofi_ok": true
+  },
+  "promotion_gate": {
+    "deployable": false,
+    "g2_canary_ready": false,
+    "passed": false,
+    "private_truth_ready": false,
+    "status": "RUNNING_DIAGNOSTIC_NOT_PROMOTION_EVIDENCE"
+  },
+  "remote": {
+    "expected_finish_around_utc": "2026-05-26T12:16:12Z",
+    "host": "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com",
+    "run_dir": "/srv/pm_as_ofi/xuan_research_runs/xuan_research_observable_pre_action_same_window_label_handoff_20260526T110803Z",
+    "runner_pid": 522389,
+    "started_around_utc": "2026-05-26T11:16:12Z"
+  },
+  "run_config": {
+    "PM_DRY_RUN": true,
+    "PM_SHARED_INGRESS_ROLE": "client",
+    "PM_SHARED_INGRESS_ROOT": "/srv/pm_as_ofi/shared-ingress-main",
+    "activation_mode": "none",
+    "disabled_families": [
+      "symmetric activation",
+      "late-repair",
+      "fill-to-balance",
+      "micro-deficit repair guard",
+      "portfolio-ledger trading rule",
+      "source-opportunity marker families",
+      "public-profile single-day filters",
+      "live/canary/orders/cancels/redeems"
+    ],
+    "duration_s": 3600,
+    "edge": 0.075,
+    "enabled_summary_flags": [
+      "--event-lite-summary",
+      "--source-link-transition-event-lite-summary",
+      "--observable-pre-action-rule-miner-feature-join-output",
+      "--observable-pre-action-same-window-offline-label-handoff-output"
+    ],
+    "imbalance_qty_cap": 1.25,
+    "max_open_cost": 80,
+    "prefix": "btc-updown-5m",
+    "repo": "/srv/pm_as_ofi/repo",
+    "round_offsets": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25
+    ],
+    "seed_offset_max_s": 300,
+    "target_qty": 5
+  },
+  "schema_version": 1,
+  "scope": {
+    "bounded_ssh_used_for_preflight_start_poll_only": true,
+    "canary_or_live_started": false,
+    "current_worktree_only_local_artifacts": true,
+    "dry_run_no_order": true,
+    "events_jsonl_read_or_pulled": false,
+    "new_shadow_started": true,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scanned": false,
+    "repo_sync_or_build_for_canary": false,
+    "runner_count_started": 1,
+    "shared_ingress_or_broker_or_live_modified": false,
+    "systemd_or_service_control_used": false
+  },
+  "startup_hygiene": {
+    "copied_current_runner_only": true,
+    "initial_start_before_directory_retry_started_runner": false,
+    "initial_start_before_directory_retry_failed_before_cd": true,
+    "repo_sync_or_build_performed": false,
+    "runner_pid_polluted": false,
+    "second_runner_started": false
+  }
+}
