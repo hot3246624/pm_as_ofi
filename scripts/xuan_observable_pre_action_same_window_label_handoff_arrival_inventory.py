@@ -132,6 +132,11 @@ def fixture_like_path(path: Path) -> bool:
     return any(marker in lowered for marker in markers)
 
 
+def resolve_handoff_path(raw: Any, base_dir: Path) -> Path:
+    path = Path(str(raw))
+    return path if path.is_absolute() else base_dir / path
+
+
 def discover_candidates(root: Path, explicit: list[Path] | None, only_explicit: bool) -> list[Path]:
     candidates = set(explicit or [])
     if only_explicit:
@@ -204,7 +209,7 @@ def inspect_candidate(path: Path, root: Path) -> dict[str, Any]:
     if missing_files:
         blockers.append("candidate_required_file_keys_missing")
     for key, raw in files.items():
-        path_value = Path(str(raw))
+        path_value = resolve_handoff_path(raw, path.parent)
         ok, reason = path_safe(path_value, root)
         if not ok:
             blockers.append(f"candidate_file_{key}_{reason}")

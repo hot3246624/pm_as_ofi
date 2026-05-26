@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import csv
 import json
 import os
 import re
@@ -886,6 +887,7 @@ class RunnerConfig:
     symmetric_activation_tail_attribution_event_lite_summary: bool = False
     symmetric_activation_projected_residual_tail_join_event_lite_summary: bool = False
     observable_pre_action_rule_miner_feature_join_output: bool = False
+    observable_pre_action_same_window_offline_label_handoff_output: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
         if (
@@ -1063,7 +1065,16 @@ class DPlusRunner:
         self.observable_pre_action_feature_join_manifest_path = (
             out_dir / f"{slug}.observable_pre_action_feature_join_manifest.json"
         )
+        self.observable_pre_action_offline_label_csv_path = (
+            out_dir / f"{slug}.observable_pre_action_same_window_offline_labels.csv"
+        )
+        self.observable_pre_action_same_window_handoff_manifest_path = (
+            out_dir / f"{slug}.observable_pre_action_same_window_offline_label_handoff.json"
+        )
         self.observable_pre_action_candidate_rows: list[dict[str, Any]] = []
+        self.observable_pre_action_offline_label_base_rows: list[dict[str, Any]] = []
+        self.observable_pre_action_offline_label_source_order_ids: list[int | None] = []
+        self.all_lots: list[Lot] = []
         self.event_lite_candidate_seed_px_buckets: dict[str, float] = {}
         self.event_lite_candidate_public_trade_px_buckets: dict[str, float] = {}
         self.event_lite_candidate_side_counts: dict[str, float] = {}
@@ -1653,45 +1664,58 @@ class DPlusRunner:
             pre_seed_deficit_qty = (
                 None if same_qty is None or opp_qty is None else round(max(0.0, opp_qty - same_qty), 8)
             )
-            self.observable_pre_action_candidate_rows.append(
-                {
-                    "schema_version": "observable_pre_action_candidate_row_v1",
-                    "condition_id": self.condition_id,
-                    "market_slug": self.slug,
-                    "day_id": day_id_from_ts_ms(quote_ts_ms),
-                    "quote_ts_ms": quote_ts_ms,
-                    "side": side_key,
-                    "offset_s": round(offset_s, 6) if offset_s is not None else None,
-                    "offset_bucket": offset_key,
-                    "status_before_action": status,
-                    "reason": reason,
-                    "block_reason": reason if status == "blocked" else None,
-                    "source_sequence_present": source_sequence_id is not None,
-                    "quote_intent_present": bool(quote_intent_id),
-                    "source_order_present": source_order_id is not None,
-                    "source_sequence_id_policy": "present_redacted" if source_sequence_id is not None else "missing",
-                    "quote_intent_id_policy": "present_redacted" if quote_intent_id else "missing",
-                    "source_order_id_policy": "present_redacted" if source_order_id is not None else "missing",
-                    "pre_seed_same_qty": round(same_qty, 8) if same_qty is not None else None,
-                    "pre_seed_opp_qty": round(opp_qty, 8) if opp_qty is not None else None,
-                    "pre_seed_same_cost": round(same_cost, 8) if same_cost is not None else None,
-                    "pre_seed_opp_cost": round(opp_cost, 8) if opp_cost is not None else None,
-                    "pre_seed_open_qty": pre_seed_open_qty,
-                    "pre_seed_open_cost": pre_seed_open_cost,
-                    "pre_seed_deficit_qty": pre_seed_deficit_qty,
-                    "candidate_qty": round(row_qty, 8) if row_qty is not None else None,
-                    "pre_seed_same_qty_bucket": qty_bucket("same_qty", same_qty),
-                    "pre_seed_opp_qty_bucket": qty_bucket("opp_qty", opp_qty),
-                    "pre_seed_open_qty_bucket": qty_bucket("open_qty", pre_seed_open_qty),
-                    "pre_seed_deficit_qty_bucket": qty_bucket("deficit", pre_seed_deficit_qty),
-                    "candidate_qty_bucket": qty_bucket("candidate_qty", row_qty),
-                    "source_risk_direction": risk_direction,
-                    "side_offset_risk_direction": cross_key,
-                    "post_action_outcome_labels_included": False,
-                    "realized_pair_cost_used_as_live_criteria": False,
-                    "trading_behavior_changed": False,
-                }
+            source_seed_candidate_row_id = (
+                f"{self.condition_id}:{self.slug}:candidate:{len(self.observable_pre_action_candidate_rows) + 1}"
             )
+            source_seed_action_id = (
+                f"{self.condition_id}:{self.slug}:order:{source_order_id}" if source_order_id is not None else ""
+            )
+            row = {
+                "schema_version": "observable_pre_action_candidate_row_v1",
+                "condition_id": self.condition_id,
+                "market_slug": self.slug,
+                "day_id": day_id_from_ts_ms(quote_ts_ms),
+                "quote_ts_ms": quote_ts_ms,
+                "side": side_key,
+                "offset_s": round(offset_s, 6) if offset_s is not None else None,
+                "offset_bucket": offset_key,
+                "status_before_action": status,
+                "reason": reason,
+                "block_reason": reason if status == "blocked" else None,
+                "source_sequence_present": source_sequence_id is not None,
+                "quote_intent_present": bool(quote_intent_id),
+                "source_order_present": source_order_id is not None,
+                "source_sequence_id_policy": "present_redacted" if source_sequence_id is not None else "missing",
+                "quote_intent_id_policy": "present_redacted" if quote_intent_id else "missing",
+                "source_order_id_policy": "present_redacted" if source_order_id is not None else "missing",
+                "pre_seed_same_qty": round(same_qty, 8) if same_qty is not None else None,
+                "pre_seed_opp_qty": round(opp_qty, 8) if opp_qty is not None else None,
+                "pre_seed_same_cost": round(same_cost, 8) if same_cost is not None else None,
+                "pre_seed_opp_cost": round(opp_cost, 8) if opp_cost is not None else None,
+                "pre_seed_open_qty": pre_seed_open_qty,
+                "pre_seed_open_cost": pre_seed_open_cost,
+                "pre_seed_deficit_qty": pre_seed_deficit_qty,
+                "candidate_qty": round(row_qty, 8) if row_qty is not None else None,
+                "pre_seed_same_qty_bucket": qty_bucket("same_qty", same_qty),
+                "pre_seed_opp_qty_bucket": qty_bucket("opp_qty", opp_qty),
+                "pre_seed_open_qty_bucket": qty_bucket("open_qty", pre_seed_open_qty),
+                "pre_seed_deficit_qty_bucket": qty_bucket("deficit", pre_seed_deficit_qty),
+                "candidate_qty_bucket": qty_bucket("candidate_qty", row_qty),
+                "source_risk_direction": risk_direction,
+                "side_offset_risk_direction": cross_key,
+                "post_action_outcome_labels_included": False,
+                "realized_pair_cost_used_as_live_criteria": False,
+                "trading_behavior_changed": False,
+            }
+            if self.cfg.observable_pre_action_same_window_offline_label_handoff_output:
+                row["source_seed_candidate_row_id"] = source_seed_candidate_row_id
+                row["source_seed_action_id"] = source_seed_action_id
+            self.observable_pre_action_candidate_rows.append(row)
+            if self.cfg.observable_pre_action_same_window_offline_label_handoff_output:
+                self.observable_pre_action_offline_label_base_rows.append(
+                    self.observable_pre_action_offline_label_base_row(row)
+                )
+                self.observable_pre_action_offline_label_source_order_ids.append(source_order_id)
 
     def record_source_opportunity_marker(
         self,
@@ -2639,6 +2663,134 @@ class DPlusRunner:
             )
         return summary
 
+    def observable_pre_action_offline_label_base_row(self, feature_row: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "source_seed_candidate_row_id": feature_row.get("source_seed_candidate_row_id") or "",
+            "source_seed_action_id": feature_row.get("source_seed_action_id") or "",
+            "condition_id": feature_row.get("condition_id"),
+            "slug": feature_row.get("market_slug"),
+            "day": feature_row.get("day_id"),
+            "ts_ms": feature_row.get("quote_ts_ms"),
+            "trigger_ts_ms": feature_row.get("quote_ts_ms"),
+            "side": feature_row.get("side"),
+            "offset_s": feature_row.get("offset_s"),
+            "source_risk_direction": feature_row.get("source_risk_direction"),
+            "pre_seed_same_qty": feature_row.get("pre_seed_same_qty"),
+            "pre_seed_opp_qty": feature_row.get("pre_seed_opp_qty"),
+            "pre_seed_same_cost": feature_row.get("pre_seed_same_cost"),
+            "pre_seed_opp_cost": feature_row.get("pre_seed_opp_cost"),
+            "pre_seed_open_qty": feature_row.get("pre_seed_open_qty"),
+            "pre_seed_open_cost": feature_row.get("pre_seed_open_cost"),
+            "seed_qty": feature_row.get("candidate_qty"),
+            "trigger_size": feature_row.get("candidate_qty"),
+            "source_pair_qty": 0.0,
+            "source_pair_cost": 0.0,
+            "source_pair_pnl": 0.0,
+            "source_residual_qty": 0.0,
+            "source_residual_cost": 0.0,
+            "source_residual_age_s": 0.0,
+            "pair_outcome_bucket": "source_pair_zero",
+            "residual_tail_outcome_bucket": "source_residual_zero",
+            "outcome_labels_are_post_action": True,
+            "pre_action_field_policy": "Only observable pre-action feature fields may be used in frozen predicates.",
+            "post_action_label_policy": "source_pair/source_residual fields are offline train/holdout labels only.",
+            "live_rule_safety_policy": (
+                "post-action source_pair/source_residual labels are forbidden in live predicates; "
+                "labels are train/holdout-only, not private truth, not deployable, not promotion evidence"
+            ),
+        }
+
+    def observable_pre_action_offline_label_rows(self, summary_ts_ms: int) -> list[dict[str, Any]]:
+        by_order: dict[int, dict[str, float]] = {}
+        for lot in self.all_lots:
+            item = by_order.setdefault(
+                lot.source_order_id,
+                {
+                    "source_pair_qty": 0.0,
+                    "source_pair_cost": 0.0,
+                    "source_pair_pnl": 0.0,
+                    "source_residual_qty": 0.0,
+                    "source_residual_cost": 0.0,
+                    "source_residual_age_s": 0.0,
+                },
+            )
+            item["source_pair_qty"] += lot.source_pair_qty
+            item["source_pair_cost"] += lot.source_pair_cost
+            item["source_pair_pnl"] += lot.source_pair_pnl
+            residual_qty = max(0.0, lot.qty)
+            residual_cost = max(0.0, lot.cost)
+            item["source_residual_qty"] += residual_qty
+            item["source_residual_cost"] += residual_cost
+            if residual_qty > DUST:
+                item["source_residual_age_s"] = max(
+                    item["source_residual_age_s"],
+                    max(0.0, (summary_ts_ms - lot.fill_ms) / 1000.0),
+                )
+        rows: list[dict[str, Any]] = []
+        for base, source_order_id in zip(
+            self.observable_pre_action_offline_label_base_rows,
+            self.observable_pre_action_offline_label_source_order_ids,
+        ):
+            row = dict(base)
+            if source_order_id is not None and source_order_id in by_order:
+                row.update({key: round(value, 8) for key, value in by_order[source_order_id].items()})
+            pair_qty = float(row.get("source_pair_qty") or 0.0)
+            pair_pnl = float(row.get("source_pair_pnl") or 0.0)
+            residual_cost = float(row.get("source_residual_cost") or 0.0)
+            if pair_qty <= DUST:
+                row["pair_outcome_bucket"] = "source_pair_zero"
+            elif pair_pnl >= 0:
+                row["pair_outcome_bucket"] = "source_pair_positive"
+            else:
+                row["pair_outcome_bucket"] = "source_pair_negative"
+            if residual_cost <= DUST:
+                row["residual_tail_outcome_bucket"] = "source_residual_zero"
+            elif residual_cost <= 1.0:
+                row["residual_tail_outcome_bucket"] = "source_residual_cost_0_1"
+            elif residual_cost <= 3.0:
+                row["residual_tail_outcome_bucket"] = "source_residual_cost_1_3"
+            else:
+                row["residual_tail_outcome_bucket"] = "source_residual_cost_gt_3"
+            rows.append(row)
+        return rows
+
+    def write_observable_pre_action_same_window_label_handoff_outputs(self, summary_ts_ms: int, final: bool) -> None:
+        if not self.cfg.observable_pre_action_same_window_offline_label_handoff_output:
+            return
+        self.out_dir.mkdir(parents=True, exist_ok=True)
+        rows = self.observable_pre_action_offline_label_rows(summary_ts_ms)
+        with self.observable_pre_action_offline_label_csv_path.open("w", newline="") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=observable_pre_action_offline_label_csv_fields(),
+                extrasaction="ignore",
+            )
+            writer.writeheader()
+            for row in rows:
+                writer.writerow(row)
+        manifest = {
+            "schema_version": "observable_pre_action_same_window_offline_label_handoff_v1",
+            "handoff_id": f"{self.slug}:same_window_offline_label_handoff",
+            "fixture": False,
+            "strategy_evidence": False,
+            "scope": observable_pre_action_same_window_label_handoff_scope(),
+            "provenance": observable_pre_action_same_window_label_handoff_provenance(),
+            "label_policy": observable_pre_action_same_window_label_policy(),
+            "files": {
+                "feature_join_candidate_rows": self.observable_pre_action_candidate_rows_path.name,
+                "feature_join_source_link_summary": self.observable_pre_action_source_link_summary_path.name,
+                "feature_join_manifest": self.observable_pre_action_feature_join_manifest_path.name,
+                "same_window_aggregate_summary": "same_window_aggregate_summary.json",
+                "offline_label_csv": self.observable_pre_action_offline_label_csv_path.name,
+            },
+            "row_count": len(rows),
+            "final": final,
+            "promotion_gate": {"passed": False, "private_truth_ready": False, "deployable": False},
+        }
+        self.observable_pre_action_same_window_handoff_manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+        )
+
     def write_observable_pre_action_feature_join_outputs(self, summary_ts_ms: int, final: bool) -> None:
         if not self.cfg.observable_pre_action_rule_miner_feature_join_output:
             return
@@ -2681,6 +2833,7 @@ class DPlusRunner:
         self.observable_pre_action_feature_join_manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n"
         )
+        self.write_observable_pre_action_same_window_label_handoff_outputs(summary_ts_ms, final)
 
     def source_link_residual_tail_exemplars(self, residual_lots: list[Lot], summary_ts_ms: int) -> list[dict[str, Any]]:
         if not (self.cfg.event_lite_summary and self.cfg.source_link_residual_tail_exemplars_event_lite_summary):
@@ -2919,6 +3072,7 @@ class DPlusRunner:
         )
         self.next_lot_id += 1
         self.lots[order.side].append(lot)
+        self.all_lots.append(lot)
         self.record_event_lite_fill(order.side, order.px)
         self.emit({"kind": "queue_supported_fill", "slug": self.slug, "condition_id": self.condition_id, "ts_ms": ts_ms, "fill_ts_ms": ts_ms, "event_time_ms": trigger_event_time_ms, "order_id": order.id, "quote_intent_id": order.quote_intent_id, "lot_id": lot.id, "side": order.side, "source": "no_order_public_trade_queue_proxy", "seed_px": order.px, "price": order.px, "size": order.qty, "qty": order.qty, "queue_share": self.cfg.queue_share, "queue_credit": order.queue_credit, "trade_px": trade_px, "trade_size": trade_size, "trigger_ts_ms": ts_ms, "trigger_source_sequence_id": trigger_source_sequence_id, "source_sequence_id": trigger_source_sequence_id, "market_md_source_sequence_id": trigger_source_sequence_id, "placed_ts_ms": order.created_ms, "accepted_ts_ms": order.accepted_ms, "opposite_trigger_ts_ms": order.opposite_trigger_ts_ms, "fill_wait_ms": ts_ms - order.created_ms})
 
@@ -3738,6 +3892,82 @@ def observable_pre_action_feature_join_field_contract() -> dict[str, Any]:
     }
 
 
+def observable_pre_action_offline_label_csv_fields() -> list[str]:
+    return [
+        "source_seed_candidate_row_id",
+        "source_seed_action_id",
+        "condition_id",
+        "slug",
+        "day",
+        "ts_ms",
+        "trigger_ts_ms",
+        "side",
+        "offset_s",
+        "source_risk_direction",
+        "pre_seed_same_qty",
+        "pre_seed_opp_qty",
+        "pre_seed_same_cost",
+        "pre_seed_opp_cost",
+        "pre_seed_open_qty",
+        "pre_seed_open_cost",
+        "seed_qty",
+        "trigger_size",
+        "source_pair_qty",
+        "source_pair_cost",
+        "source_pair_pnl",
+        "source_residual_qty",
+        "source_residual_cost",
+        "source_residual_age_s",
+        "pair_outcome_bucket",
+        "residual_tail_outcome_bucket",
+        "outcome_labels_are_post_action",
+        "pre_action_field_policy",
+        "post_action_label_policy",
+        "live_rule_safety_policy",
+    ]
+
+
+def observable_pre_action_same_window_label_policy() -> dict[str, Any]:
+    return {
+        "source_pair_source_residual_labels_are_post_action": True,
+        "labels_allowed_for_train_holdout_scoring": True,
+        "labels_allowed_in_live_predicate": False,
+        "realized_pair_cost_allowed_as_live_criteria": False,
+    }
+
+
+def observable_pre_action_same_window_label_handoff_scope() -> dict[str, Any]:
+    return {
+        "current_worktree_only": True,
+        "local_only": True,
+        "new_data_fetched": False,
+        "external_worktree_read": False,
+        "ssh_used": False,
+        "shadow_started": False,
+        "canary_or_live_started": False,
+        "events_jsonl_read": False,
+        "events_jsonl_pulled": False,
+        "raw_replay_or_full_store_scanned": False,
+        "shared_ingress_or_broker_or_live_modified": False,
+        "shared_ws_or_local_agg_or_service_started": False,
+        "orders_cancels_redeems_sent": False,
+        "trading_behavior_changed": False,
+    }
+
+
+def observable_pre_action_same_window_label_handoff_provenance() -> dict[str, Any]:
+    return {
+        "generated_from_in_memory_no_order_runner_state": True,
+        "events_jsonl_read": False,
+        "events_jsonl_pulled": False,
+        "raw_replay_or_full_store_scanned": False,
+        "external_worktree_read": False,
+        "ssh_used_by_validator": False,
+        "orders_cancels_redeems_sent": False,
+        "trading_behavior_changed": False,
+    }
+
+
 def aggregate_observable_pre_action_feature_join_outputs(out: Path) -> dict[str, Any] | None:
     per_slug_manifests = sorted(out.glob("*.observable_pre_action_feature_join_manifest.json"))
     if not per_slug_manifests:
@@ -3853,6 +4083,67 @@ def aggregate_observable_pre_action_feature_join_outputs(out: Path) -> dict[str,
     }
     feature_join_manifest_path.write_text(json.dumps(feature_join_manifest, indent=2, sort_keys=True) + "\n")
     return feature_join_manifest
+
+
+def aggregate_observable_pre_action_same_window_label_handoff_outputs(
+    out: Path,
+    aggregate_report: dict[str, Any],
+) -> dict[str, Any] | None:
+    per_slug_label_paths = sorted(out.glob("*.observable_pre_action_same_window_offline_labels.csv"))
+    if not per_slug_label_paths:
+        return None
+    offline_label_csv_path = out / "observable_pre_action_same_window_offline_labels.csv"
+    fieldnames = observable_pre_action_offline_label_csv_fields()
+    row_count = 0
+    with offline_label_csv_path.open("w", newline="") as dest:
+        writer = csv.DictWriter(dest, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for path in per_slug_label_paths:
+            with path.open(newline="") as src:
+                reader = csv.DictReader(src)
+                for row in reader:
+                    writer.writerow(row)
+                    row_count += 1
+    same_window_aggregate_summary_path = out / "same_window_aggregate_summary.json"
+    same_window_aggregate_summary = {
+        "schema_version": "same_window_aggregate_summary_v1",
+        "created_ms": now_ms(),
+        "aggregate_report_path": "aggregate_report.json",
+        "feature_join_manifest_path": "observable_pre_action_feature_join_manifest.json",
+        "offline_label_csv_path": offline_label_csv_path.name,
+        "offline_label_row_count": row_count,
+        "metrics": aggregate_report.get("metrics", {}),
+        "slugs": aggregate_report.get("slugs"),
+        "strategy_evidence": False,
+        "private_truth_ready": False,
+        "deployable": False,
+        "promotion_gate": {"passed": False},
+    }
+    same_window_aggregate_summary_path.write_text(
+        json.dumps(same_window_aggregate_summary, indent=2, sort_keys=True) + "\n"
+    )
+    handoff_manifest_path = out / "observable_pre_action_same_window_offline_label_handoff.json"
+    handoff_manifest = {
+        "schema_version": "observable_pre_action_same_window_offline_label_handoff_v1",
+        "handoff_id": "observable_pre_action_same_window_offline_label_handoff",
+        "fixture": False,
+        "strategy_evidence": False,
+        "scope": observable_pre_action_same_window_label_handoff_scope(),
+        "provenance": observable_pre_action_same_window_label_handoff_provenance(),
+        "label_policy": observable_pre_action_same_window_label_policy(),
+        "files": {
+            "feature_join_candidate_rows": "observable_pre_action_candidate_rows.jsonl",
+            "feature_join_source_link_summary": "observable_pre_action_source_link_summary.json",
+            "feature_join_manifest": "observable_pre_action_feature_join_manifest.json",
+            "same_window_aggregate_summary": same_window_aggregate_summary_path.name,
+            "offline_label_csv": offline_label_csv_path.name,
+        },
+        "row_count": row_count,
+        "per_slug_label_files": [path.name for path in per_slug_label_paths],
+        "promotion_gate": {"passed": False, "private_truth_ready": False, "deployable": False},
+    }
+    handoff_manifest_path.write_text(json.dumps(handoff_manifest, indent=2, sort_keys=True) + "\n")
+    return handoff_manifest
 
 
 def aggregate(out: Path) -> dict[str, Any]:
@@ -4062,6 +4353,13 @@ def aggregate(out: Path) -> dict[str, Any]:
     observable_pre_action_feature_join_manifest = aggregate_observable_pre_action_feature_join_outputs(out)
     if isinstance(observable_pre_action_feature_join_manifest, dict):
         aggregate_report["observable_pre_action_feature_join_manifest"] = observable_pre_action_feature_join_manifest
+    observable_pre_action_same_window_handoff_manifest = (
+        aggregate_observable_pre_action_same_window_label_handoff_outputs(out, aggregate_report)
+    )
+    if isinstance(observable_pre_action_same_window_handoff_manifest, dict):
+        aggregate_report["observable_pre_action_same_window_offline_label_handoff_manifest"] = (
+            observable_pre_action_same_window_handoff_manifest
+        )
     if event_lite_seen:
         top_sources = event_lite.get("top_high_cost_pair_sources")
         if isinstance(top_sources, list):
@@ -4171,6 +4469,7 @@ async def main() -> None:
     ap.add_argument("--symmetric-activation-tail-attribution-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off source-attributed realized pair/residual tail diagnostics joined to activation buckets without changing behavior")
     ap.add_argument("--symmetric-activation-projected-residual-tail-join-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off realized residual/pair diagnostics joined to pre-action projected residual buckets without changing behavior")
     ap.add_argument("--observable-pre-action-rule-miner-feature-join-output", action="store_true", help="with --event-lite-summary and --source-link-transition-event-lite-summary, write default-off materialized observable pre-action candidate rows without changing behavior")
+    ap.add_argument("--observable-pre-action-same-window-offline-label-handoff-output", action="store_true", help="with observable pre-action feature-join output, write default-off same-window offline source_pair/source_residual label handoff files without changing behavior")
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
@@ -4222,6 +4521,7 @@ async def main() -> None:
         symmetric_activation_tail_attribution_event_lite_summary=args.symmetric_activation_tail_attribution_event_lite_summary,
         symmetric_activation_projected_residual_tail_join_event_lite_summary=args.symmetric_activation_projected_residual_tail_join_event_lite_summary,
         observable_pre_action_rule_miner_feature_join_output=args.observable_pre_action_rule_miner_feature_join_output,
+        observable_pre_action_same_window_offline_label_handoff_output=args.observable_pre_action_same_window_offline_label_handoff_output,
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
@@ -4294,6 +4594,9 @@ async def main() -> None:
             raise SystemExit("--observable-pre-action-rule-miner-feature-join-output requires --event-lite-summary")
         if not cfg.source_link_transition_event_lite_summary:
             raise SystemExit("--observable-pre-action-rule-miner-feature-join-output requires --source-link-transition-event-lite-summary")
+    if cfg.observable_pre_action_same_window_offline_label_handoff_output:
+        if not cfg.observable_pre_action_rule_miner_feature_join_output:
+            raise SystemExit("--observable-pre-action-same-window-offline-label-handoff-output requires --observable-pre-action-rule-miner-feature-join-output")
     profile_late_repair_after_s = parse_float_csv(args.profile_late_repair_after_s)
     if any(value <= 0 for value in profile_late_repair_after_s):
         raise SystemExit("--profile-late-repair-after-s values must be positive")

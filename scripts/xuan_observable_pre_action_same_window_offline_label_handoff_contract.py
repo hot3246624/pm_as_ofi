@@ -514,11 +514,22 @@ def validate_scope(scope: dict[str, Any]) -> list[str]:
     return blockers
 
 
-def load_required_path(files: dict[str, Any], key: str, root: Path, allow_fixture_paths: bool) -> tuple[Path | None, list[str]]:
+def resolve_handoff_path(raw: Any, base_dir: Path) -> Path:
+    path = Path(str(raw))
+    return path if path.is_absolute() else base_dir / path
+
+
+def load_required_path(
+    files: dict[str, Any],
+    key: str,
+    root: Path,
+    allow_fixture_paths: bool,
+    base_dir: Path,
+) -> tuple[Path | None, list[str]]:
     raw = files.get(key)
     if not raw:
         return None, [f"{key}_path_missing"]
-    path = Path(str(raw))
+    path = resolve_handoff_path(raw, base_dir)
     ok, reason = path_safe(path, root)
     blockers: list[str] = []
     if not ok:
@@ -672,9 +683,10 @@ def validate_handoff(args: argparse.Namespace, root: Path) -> tuple[dict[str, An
 
     files = as_dict(handoff.get("files"))
     allow_fixture_paths = bool(args.allow_fixture_paths_for_smoke)
+    handoff_base_dir = args.handoff_manifest.parent
     paths: dict[str, Path] = {}
     for key in REQUIRED_FILE_KEYS:
-        path, path_blockers = load_required_path(files, key, root, allow_fixture_paths)
+        path, path_blockers = load_required_path(files, key, root, allow_fixture_paths, handoff_base_dir)
         blockers.extend(path_blockers)
         if path is not None:
             paths[key] = path
