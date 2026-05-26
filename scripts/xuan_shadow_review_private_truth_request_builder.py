@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Build an owner-scoped private-truth reconciliation request.
+"""Build an owner-scoped future private-truth pipeline request.
 
 This local-only helper converts the remaining private_truth_not_ready caveat
-into a concrete data request and pass/fail contract. It reads only local
-scorecards and aggregate metrics. It does not scan raw/replay stores, launch
-remote jobs, approve deploy, or approve live orders.
+into a concrete future-execution data request and pass/fail contract. Historical
+shadow/no-order runs do not have owner orders, fills, inventory deltas, redeem
+events, or actual charged fees, so they cannot be backfilled into owner-private
+truth. They remain replay/source-truth and shadow-intent evidence only.
+
+The request produced here is for the future owner execution pipeline. It reads
+only local scorecards and aggregate metrics. It does not scan raw/replay stores,
+launch remote jobs, approve deploy, or approve live orders.
 """
 
 from __future__ import annotations
@@ -198,6 +203,11 @@ def request_schema() -> dict[str, list[str]]:
 def validation_contract() -> dict[str, Any]:
     return {
         "required_tables": list(request_schema().keys()),
+        "scope_boundary": [
+            "Historical shadow/no-order dry-runs have no owner orders, fills, inventory deltas, redeem events, or actual owner fees.",
+            "Historical shadow evidence must remain replay/source-truth, public/proxy evidence, and shadow intent ledger evidence.",
+            "Owner-private-truth validation starts only after a future controlled owner execution produces owner-side records.",
+        ],
         "join_keys": [
             "owner_account_or_wallet",
             "condition_id or market_id",
@@ -207,18 +217,19 @@ def validation_contract() -> dict[str, Any]:
             "event_ts_ms/fill_ts_ms with millisecond precision",
         ],
         "required_reconciliations": [
-            "Every owner fill links to exactly one order lifecycle row or is explicitly marked unmatched with reason.",
-            "Inventory before/after rows reproduce fills, redeems, residual qty, residual cost, and pair PnL.",
-            "Fee model reproduces strict rescue taker fees and pair PnL within rounding tolerance.",
+            "For future owner execution only, every owner fill links to exactly one order lifecycle row or is explicitly marked unmatched with reason.",
+            "For future owner execution only, inventory before/after rows reproduce fills, redeems, residual qty, residual cost, and pair PnL.",
+            "For future owner execution only, actual maker/taker role, fee params, fee amount, cash delta, and inventory delta reproduce after-fee PnL within rounding tolerance.",
             "No public/proxy truth row is counted as owner private truth.",
             "No dry-run/no-order simulated action is counted as a private owner fill.",
-            "Unmatched owner rows and unmatched local evidence rows are reported as blockers, not silently dropped.",
+            "Historical shadow fills/residual/PnL are not required to match owner fills because no owner execution existed.",
+            "Unmatched future owner rows and unmatched future local evidence rows are reported as blockers, not silently dropped.",
         ],
         "expected_verdicts": [
             "KEEP_PRIVATE_TRUTH_RECONCILIATION_PASS_RESEARCH_ONLY",
             "UNKNOWN_PRIVATE_TRUTH_RECONCILIATION_PARTIAL_COVERAGE",
             "DISCARD_PRIVATE_TRUTH_RECONCILIATION_MISMATCH",
-            "BLOCKED_PRIVATE_TRUTH_RECONCILIATION_NO_OWNER_TRUTH",
+            "BLOCKED_PRIVATE_TRUTH_RECONCILIATION_NO_FUTURE_OWNER_EXECUTION_TRUTH",
         ],
     }
 
@@ -228,7 +239,7 @@ def markdown(card: dict[str, Any]) -> str:
     current = card["current_truth_boundary"]
     bridge = card["bridge_aggregate"]
     lines = [
-        "# Xuan Shadow Review Private Truth Request",
+        "# Xuan Shadow Review Future Owner Truth Pipeline Request",
         "",
         f"Status: `{card['status']}`",
         "",
@@ -247,6 +258,8 @@ def markdown(card: dict[str, Any]) -> str:
         f"- replay/source truth status: `{current['replay_source_truth_status']}`",
         f"- private truth table counts: `{json.dumps(current['private_truth_table_counts'], sort_keys=True)}`",
         "- The current bridge approval is research-only. It does not prove owner private order/fill/inventory truth.",
+        "- Historical shadow/no-order evidence has no owner orders/fills/inventory/redeem events to backfill.",
+        "- Owner-private-truth reconciliation starts only after a future controlled owner execution creates owner-side records.",
         "",
         "## Bridge Evidence To Reconcile",
         "",
@@ -270,12 +283,18 @@ def markdown(card: dict[str, Any]) -> str:
             "",
             *(f"- {item}" for item in card["validation_contract"]["required_reconciliations"]),
             "",
+            "## Historical Boundary",
+            "",
+            "- Do not request historical owner fills for shadow/no-order runs; they do not exist.",
+            "- Do not mark historical shadow/no-order runs as `private_truth_ready=true`.",
+            "- Treat historical evidence as replay/source-truth validation, public/proxy evidence, and shadow intent ledger only.",
+            "",
             "## Non-Goals",
             "",
             "- Do not deploy or restart services.",
             "- Do not send live orders.",
             "- Do not mutate shared ingress, raw/replay, collectors, or production executors.",
-            "- Do not treat this request as private truth validation.",
+            "- Do not treat this request as historical private truth validation.",
             "",
         ]
     )
@@ -309,6 +328,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     private_truth_ready = replay_private_truth_ready_flag and any(
         fnum(value, 0.0) for value in counts.values()
     )
+    owner_execution_observed = any(fnum(value, 0.0) for value in counts.values())
+    historical_shadow_owner_truth_applicable = False
     caveats = [str(item) for item in listify(caveat_decision.get("caveats"))]
     has_private_caveat = "private_truth_not_ready" in caveats
     request_ready = is_keep(caveat_gap) and is_keep(approval) and has_private_caveat
@@ -320,9 +341,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     if not has_private_caveat and not private_truth_ready:
         hard_blockers.append("private_truth_caveat_missing_but_truth_not_ready")
     card_status = (
-        "KEEP_SHADOW_REVIEW_PRIVATE_TRUTH_REQUEST_READY_LOCAL_ONLY"
+        "KEEP_SHADOW_REVIEW_FUTURE_OWNER_TRUTH_PIPELINE_REQUEST_READY_LOCAL_ONLY"
         if request_ready and not hard_blockers
-        else "UNKNOWN_SHADOW_REVIEW_PRIVATE_TRUTH_REQUEST_BLOCKED_LOCAL_ONLY"
+        else "UNKNOWN_SHADOW_REVIEW_FUTURE_OWNER_TRUTH_PIPELINE_REQUEST_BLOCKED_LOCAL_ONLY"
     )
     return rounded(
         {
@@ -350,7 +371,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             },
             "decision": {
                 "private_truth_request_ready": request_ready and not hard_blockers,
+                "future_owner_truth_pipeline_request_ready": request_ready and not hard_blockers,
                 "private_truth_ready": private_truth_ready,
+                "historical_shadow_owner_truth_applicable": historical_shadow_owner_truth_applicable,
+                "historical_shadow_private_truth_backfill_required": False,
+                "owner_execution_observed": owner_execution_observed,
                 "research_shadow_review_ready": bool(
                     approval_decision.get("shadow_review_approval_ready")
                 ),
@@ -364,7 +389,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "remaining_live_deploy_blockers": ["private_truth_not_ready"]
                 if not private_truth_ready
                 else [],
-                "next_action": "send_owner_private_truth_request_or_wait_for_owner_dataset",
+                "next_action": "prepare_future_owner_truth_schema_collector_before_any_owner_execution",
             },
             "current_truth_boundary": {
                 "replay_source_truth_status": status(replay),
@@ -373,6 +398,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "private_truth_table_counts": counts,
                 "public_or_replay_truth_is_private_truth": False,
                 "no_order_dry_run_can_prove_private_truth": False,
+                "historical_shadow_owner_truth_status": "not_applicable_no_owner_execution",
+                "historical_shadow_evidence_classes": [
+                    "replay/source-truth validation",
+                    "public/proxy evidence",
+                    "shadow intent ledger",
+                ],
+                "future_owner_execution_required_for_private_truth": True,
             },
             "bridge_aggregate": {
                 "accepted_actions": surplus_aggregate.get("accepted_actions"),
@@ -414,11 +446,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             "validation_contract": validation_contract(),
             "owner_request_scope": {
                 "allowed": [
-                    "read-only owner order/fill/inventory export",
-                    "read-only reconciliation scorecard",
+                    "future owner truth schema design",
+                    "future owner order/fill/inventory/redeem collector readiness",
+                    "future read-only owner order/fill/inventory export after controlled owner execution exists",
+                    "future read-only reconciliation scorecard after controlled owner execution exists",
                     "aggregate metric comparison against listed scorecards",
                 ],
                 "not_allowed": [
+                    "requesting nonexistent historical owner fills for no-order shadow runs",
+                    "marking historical shadow/no-order runs private_truth_ready",
                     "live_orders",
                     "production_deploy",
                     "service_restart",
