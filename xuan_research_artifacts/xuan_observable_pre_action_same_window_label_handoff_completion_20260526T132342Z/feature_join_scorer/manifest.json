@@ -1,0 +1,50 @@
+{
+  "artifact": "xuan_observable_pre_action_feature_join_output_scorer",
+  "blockers": [],
+  "contract_name": "observable_pre_action_feature_join_output_scorer_v1",
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_OUTPUT_SCORER_READY",
+  "deployable": false,
+  "inputs": {
+    "candidate_rows_path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/observable_pre_action_candidate_rows.jsonl",
+    "feature_join_manifest_path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/observable_pre_action_feature_join_manifest.json",
+    "source_link_summary_path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/observable_pre_action_source_link_summary.json"
+  },
+  "next_executable_action": "Implement observable_pre_action_rule_miner_denominator_replay_scorer_spec_v1 local-only: define how a frozen predicate consumes feature-join rows and same-window summaries to produce observable_pre_action_no_order_denominator_summary.json and an input manifest, fail-closed before any no-order diagnostic.",
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "local_feature_join_output_scorer_only"
+  },
+  "research_ranking": "SCORER_READY_NO_STRATEGY_EVIDENCE",
+  "safety": {
+    "broker_modified": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false
+  },
+  "score": {
+    "manifest_candidate_row_count": 4195,
+    "row_count": 4195,
+    "source_sequence_presence_by_status": {
+      "admitted": {
+        "present": 217.0
+      },
+      "blocked": {
+        "present": 3978.0
+      }
+    },
+    "source_summary_row_count": 4195,
+    "status_values": [
+      "admitted",
+      "blocked"
+    ]
+  },
+  "strategy_evidence": false
+}

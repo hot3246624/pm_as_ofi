@@ -1,0 +1,214 @@
+{
+  "artifact": "xuan_observable_pre_action_same_window_offline_label_handoff_contract",
+  "blockers": [],
+  "contract": {
+    "fail_closed_conditions": [
+      "handoff_schema_mismatch",
+      "fixture_or_smoke_handoff_as_real",
+      "events_jsonl_or_raw_replay_path",
+      "outside_current_worktree_path",
+      "feature_rows_or_label_csv_missing_required_fields",
+      "source_pair_or_source_residual_label_allowed_in_live_predicate",
+      "realized_pair_cost_used_as_live_criteria",
+      "day_slug_condition_overlap_absent",
+      "exact_id_and_strict_composite_join_coverage_below_min",
+      "ambiguous_or_duplicate_join_matches_present",
+      "private_truth_deployable_or_promotion_claim"
+    ],
+    "label_policy": {
+      "labels_allowed_for_train_holdout_scoring": true,
+      "labels_allowed_in_live_predicate": false,
+      "realized_pair_cost_allowed_as_live_criteria": false,
+      "source_pair_source_residual_labels_are_post_action": true
+    },
+    "minimums": {
+      "min_condition_overlap_count": 1,
+      "min_day_overlap_count": 1,
+      "min_join_coverage": 0.95,
+      "min_joined_rows": 100,
+      "min_slug_overlap_count": 1,
+      "min_source_sequence_coverage": 0.95
+    },
+    "required_files": {
+      "feature_join_candidate_rows": "observable_pre_action_candidate_rows.jsonl",
+      "feature_join_manifest": "observable_pre_action_feature_join_manifest.json",
+      "feature_join_source_link_summary": "observable_pre_action_source_link_summary.json",
+      "offline_label_csv": "same-window offline source_pair/source_residual label CSV",
+      "same_window_aggregate_summary": "same_window_aggregate_summary.json"
+    },
+    "required_join_keys": {
+      "exact_id_preferred": [
+        "source_seed_candidate_row_id",
+        "source_seed_action_id"
+      ],
+      "strict_composite_fallback": [
+        "condition_id",
+        "market_slug/slug",
+        "day_id/day",
+        "side",
+        "source_risk_direction",
+        "quote_ts_ms within tolerance of ts_ms or trigger_ts_ms",
+        "offset_s",
+        "pre_seed_same_qty",
+        "pre_seed_opp_qty",
+        "pre_seed_same_cost",
+        "pre_seed_opp_cost",
+        "pre_seed_open_qty",
+        "pre_seed_open_cost",
+        "candidate_qty against seed_qty or trigger_size"
+      ]
+    },
+    "schema_version": "observable_pre_action_same_window_offline_label_handoff_v1",
+    "validation_commands_template": [
+      "python3 scripts/xuan_observable_pre_action_same_window_offline_label_handoff_contract.py --handoff-manifest ${same_window_offline_label_handoff_manifest} --output-dir xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_completion_20260526T132342Z/same_window_contract/validation/00_same_window_label_handoff",
+      "python3 scripts/xuan_feature_join_offline_label_bridge_feasibility_audit.py --feature-rows ${feature_join_candidate_rows} --feature-scorer-manifest ${feature_join_scorer_manifest} --offline-label-csv ${offline_label_csv} --bridge-contract-manifest ${bridge_contract_manifest} --output-dir xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_completion_20260526T132342Z/same_window_contract/validation/01_bridge_feasibility"
+    ],
+    "validation_order": [
+      "same_window_offline_label_handoff_contract_validator",
+      "feature_join_output_scorer",
+      "feature_join_offline_label_bridge_feasibility_audit",
+      "training_input_bridge_scorer",
+      "offline_training_scorer",
+      "denominator_replay_scorer",
+      "observable_pre_action_rule_miner_spec",
+      "real_input_inventory_v2"
+    ]
+  },
+  "contract_name": "observable_pre_action_same_window_offline_label_handoff_contract_v1",
+  "created_utc": "2026-05-26T13:30:26Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_SAME_WINDOW_OFFLINE_LABEL_HANDOFF_READY",
+  "deployable": false,
+  "handoff_manifest": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/observable_pre_action_same_window_offline_label_handoff.json",
+  "handoff_observations": {
+    "feature_join_manifest": {
+      "blockers": [],
+      "path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/observable_pre_action_feature_join_manifest.json",
+      "ready": true,
+      "schema_version": "observable_pre_action_feature_join_manifest_v1"
+    },
+    "feature_join_source_link_summary": {
+      "blockers": [],
+      "path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/observable_pre_action_source_link_summary.json",
+      "ready": true,
+      "schema_version": "observable_pre_action_source_link_summary_v1"
+    },
+    "feature_rows": {
+      "exact_id_present_counts": {
+        "source_seed_action_id": 217,
+        "source_seed_candidate_row_id": 4195
+      },
+      "field_count": 37,
+      "row_count": 4195,
+      "status_counts": {
+        "admitted": 217,
+        "blocked": 3978
+      }
+    },
+    "joinability": {
+      "composite_base_key_overlap_count": 4195,
+      "composite_joined": 0,
+      "exact_joined": 4195,
+      "join_coverage": 1.0,
+      "joined_rows": 4195,
+      "multiple_composite_matches": 0,
+      "multiple_exact_matches": 0,
+      "zero_composite_matches": 0,
+      "zero_exact_matches": 0
+    },
+    "offline_label_csv": {
+      "exact_id_present_counts": {
+        "source_seed_action_id": 217,
+        "source_seed_candidate_row_id": 4195
+      },
+      "field_count": 30,
+      "row_count": 4195
+    },
+    "overlap": {
+      "condition_overlap_count": 14,
+      "day_overlap": [
+        "2026-05-26"
+      ],
+      "feature_day_sample": [
+        "2026-05-26"
+      ],
+      "feature_slug_count": 14,
+      "label_day_sample": [
+        "2026-05-26"
+      ],
+      "label_slug_count": 14,
+      "slug_overlap_count": 14
+    },
+    "same_window_aggregate_summary": {
+      "blockers": [],
+      "path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_driver_20260526T110803Z/remote_clean/output/same_window_aggregate_summary.json",
+      "ready": true,
+      "schema_version": "same_window_aggregate_summary_v1"
+    }
+  },
+  "handoff_status": "HANDOFF_READY",
+  "lane": "observable_pre_action_same_window_offline_label_handoff_contract",
+  "next_executable_action": "Run feature_join_offline_label_bridge_feasibility_audit and then training bridge scorer on this same-window label handoff; do not start no-order diagnostics automatically.",
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "same_window_offline_label_handoff_contract_only"
+  },
+  "research_ranking": {
+    "handoff_ready": true,
+    "interpretation": "Contract/handoff validation only. KEEP handoff permits local bridge scoring, not promotion or deployment.",
+    "no_order_diagnostic_allowed": false,
+    "status": "KEEP_OBSERVABLE_PRE_ACTION_SAME_WINDOW_OFFLINE_LABEL_HANDOFF_READY",
+    "strategy_evidence": false
+  },
+  "safety": {
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "new_data_fetched": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shadow_started": false,
+    "shared_ingress_modified": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "schema_version": 1,
+  "strategy_evidence": false,
+  "supporting_contracts_and_scorers": {
+    "bridge_contract": {
+      "blockers": [],
+      "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_INPUT_BRIDGE_CONTRACT_READY",
+      "expected_decision_label": "KEEP_OBSERVABLE_PRE_ACTION_RULE_MINER_TRAINING_INPUT_BRIDGE_CONTRACT_READY",
+      "path": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_input_bridge_contract_20260525T213507Z/manifest.json",
+      "ready": true
+    },
+    "bridge_feasibility_audit": {
+      "blockers": [],
+      "decision_label": "UNKNOWN_FEATURE_JOIN_OFFLINE_LABEL_BRIDGE_INPUT_CONTRACT_GAPS",
+      "expected_decision_label": "UNKNOWN_FEATURE_JOIN_OFFLINE_LABEL_BRIDGE_INPUT_CONTRACT_GAPS",
+      "path": "xuan_research_artifacts/xuan_feature_join_offline_label_bridge_feasibility_audit_20260526T053411Z/manifest.json",
+      "ready": true
+    },
+    "feature_handoff_completion": {
+      "blockers": [],
+      "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_HANDOFF_READY_REAL_MINER_INPUT_UNKNOWN",
+      "expected_decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_HANDOFF_READY_REAL_MINER_INPUT_UNKNOWN",
+      "path": "xuan_research_artifacts/xuan_observable_pre_action_feature_join_handoff_completion_20260526T041336Z/manifest.json",
+      "ready": true
+    },
+    "feature_join_scorer": {
+      "blockers": [],
+      "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_OUTPUT_SCORER_READY",
+      "expected_decision_label": "KEEP_OBSERVABLE_PRE_ACTION_FEATURE_JOIN_OUTPUT_SCORER_READY",
+      "path": "xuan_research_artifacts/xuan_observable_pre_action_same_window_label_handoff_completion_20260526T132342Z/feature_join_scorer/manifest.json",
+      "ready": true
+    }
+  }
+}
