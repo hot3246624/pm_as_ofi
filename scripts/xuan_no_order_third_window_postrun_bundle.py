@@ -190,6 +190,14 @@ def status_of(path: Path) -> str | None:
     return read_json(path).get("status") or "KEEP_SCORECARD_PRESENT_NO_STATUS_FIELD_LOCAL_ONLY"
 
 
+def profile_from_scorecard(card: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    for field in ("profile", "candidate_profile"):
+        value = card.get(field)
+        if isinstance(value, dict) and value:
+            return value, field
+    return {}, None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--third-output-root", required=True)
@@ -249,7 +257,7 @@ def main() -> None:
     scorecard_dir = Path(args.scorecard_json).expanduser().resolve().parent
     scorecard_dir.mkdir(parents=True, exist_ok=True)
     profile_card = read_json(Path(args.profile_scorecard).expanduser().resolve())
-    profile_body = profile_card.get("profile", {})
+    profile_body, profile_source_field = profile_from_scorecard(profile_card)
     max_rescue_net_pair_cost = as_float(profile_body.get("strict_rescue_salvage_net_cap"), 0.95)
 
     paths = {
@@ -825,6 +833,7 @@ def main() -> None:
         "commands": command_results,
         "runtime_summary": runtime_summary,
         "profile_scorecard": str(Path(args.profile_scorecard).expanduser().resolve()),
+        "profile_source_field": profile_source_field,
         "window_contrast_reference": {
             "enabled": contrast_reference_available,
             "disabled_by_arg": args.disable_window_contrast,

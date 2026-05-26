@@ -76,6 +76,14 @@ def metric_line(label: str, value: Any) -> str:
     return f"- {label}: {fmt(value)}"
 
 
+def profile_from_scorecard(card: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+    for field in ("profile", "candidate_profile"):
+        value = card.get(field)
+        if isinstance(value, dict) and value:
+            return value, field
+    return {}, None
+
+
 def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     replay_path = Path(args.replay_scorecard).expanduser().resolve()
     runtime_path = Path(args.runtime_scorecard).expanduser().resolve()
@@ -115,7 +123,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
     repeat_aggregate = repeat.get("aggregate", {})
     remaining_gaps = gap.get("remaining_gaps", {})
     next_floor = gap.get("next_window_floor", {})
-    profile_body = profile.get("profile", {})
+    profile_body, profile_source_field = profile_from_scorecard(profile)
 
     legacy_repeat_blockers = sorted(set(repeat.get("hard_blockers", [])))
     hard_blockers = list(legacy_repeat_blockers)
@@ -195,6 +203,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "legacy_repeat_blockers_preserved": legacy_repeat_blockers,
         "public_benchmark_caveats": public_target_misses,
         "young_tiny_residual_caveats": young_residual_caveats,
+        "profile_source_field": profile_source_field,
     }
 
     packet_json = {
@@ -456,6 +465,7 @@ def build_packet(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         metric_line("pair_pnl_needed", remaining_gaps.get("total_pair_pnl")),
         "",
         "## Next Same-Profile Sample",
+        metric_line("profile_source_field", profile_source_field),
         metric_line("duration_s", profile_body.get("duration_s")),
         metric_line("round_offsets", profile_body.get("round_offsets")),
         metric_line("soft_cap", profile_body.get("soft_cap")),
