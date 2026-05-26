@@ -1,0 +1,325 @@
+{
+  "artifact": "xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory",
+  "blockers": [
+    "train_day_diversity_below_min",
+    "train_rows_below_min"
+  ],
+  "contract_name": "observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_v1",
+  "created_utc": "20260526T170213Z",
+  "decision": "DISCARD",
+  "decision_label": "DISCARD_OBSERVABLE_PRE_ACTION_MULTIDAY_SAME_WINDOW_LABEL_HANDOFF_ARRIVAL_INVENTORY_FORBIDDEN_INPUT",
+  "deployable": false,
+  "forbidden_blockers": [
+    "source_0:summary_post_action_labels_allowed_in_live_predicate_not_false"
+  ],
+  "inputs": {
+    "accumulation_contract_manifest": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_accumulation_contract_20260526T160213Z/manifest.json",
+    "explicit_bridge_summaries": [
+      "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-21/observable_pre_action_training_bridge_summary.json",
+      "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_summary.json",
+      "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_summary.json",
+      "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_summary.json",
+      "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_summary.json"
+    ],
+    "only_explicit": true
+  },
+  "inspected_candidates": [
+    {
+      "accepted_pre_global": false,
+      "blockers": [],
+      "exact_id_readiness": {
+        "available_days": [
+          "2026-05-21"
+        ],
+        "blockers": [
+          "source_forbidden_blockers_present"
+        ],
+        "candidate_exact_id_missing_count": 0,
+        "candidate_exact_id_present_count": 40,
+        "duplicate_action_exact_id_count": 0,
+        "duplicate_candidate_exact_id_count": 0,
+        "duplicate_label_index_count": 0,
+        "exact_id_ready": false,
+        "handoff_id": "handoff-2026-05-21",
+        "label_index_missing_count": 0,
+        "row_count": 40,
+        "source_sequence_coverage": 1.0,
+        "summary_day_counts": {
+          "2026-05-21": 40
+        }
+      },
+      "forbidden": [
+        "summary_post_action_labels_allowed_in_live_predicate_not_false"
+      ],
+      "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-21/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-21/manifest.json",
+      "row_count": 40,
+      "source_handoff_id": "handoff-2026-05-21",
+      "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-21/observable_pre_action_training_bridge_summary.json",
+      "summary_day_counts": {
+        "2026-05-21": 40
+      },
+      "summary_joined_row_count": 40
+    },
+    {
+      "accepted_pre_global": true,
+      "blockers": [],
+      "exact_id_readiness": {
+        "available_days": [
+          "2026-05-22"
+        ],
+        "blockers": [],
+        "candidate_exact_id_missing_count": 0,
+        "candidate_exact_id_present_count": 40,
+        "duplicate_action_exact_id_count": 0,
+        "duplicate_candidate_exact_id_count": 0,
+        "duplicate_label_index_count": 0,
+        "exact_id_ready": true,
+        "handoff_id": "handoff-2026-05-22",
+        "label_index_missing_count": 0,
+        "row_count": 40,
+        "source_sequence_coverage": 1.0,
+        "summary_day_counts": {
+          "2026-05-22": 40
+        }
+      },
+      "forbidden": [],
+      "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/manifest.json",
+      "row_count": 40,
+      "source_handoff_id": "handoff-2026-05-22",
+      "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_summary.json",
+      "summary_day_counts": {
+        "2026-05-22": 40
+      },
+      "summary_joined_row_count": 40
+    },
+    {
+      "accepted_pre_global": true,
+      "blockers": [],
+      "exact_id_readiness": {
+        "available_days": [
+          "2026-05-23"
+        ],
+        "blockers": [],
+        "candidate_exact_id_missing_count": 0,
+        "candidate_exact_id_present_count": 40,
+        "duplicate_action_exact_id_count": 0,
+        "duplicate_candidate_exact_id_count": 0,
+        "duplicate_label_index_count": 0,
+        "exact_id_ready": true,
+        "handoff_id": "handoff-2026-05-23",
+        "label_index_missing_count": 0,
+        "row_count": 40,
+        "source_sequence_coverage": 1.0,
+        "summary_day_counts": {
+          "2026-05-23": 40
+        }
+      },
+      "forbidden": [],
+      "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/manifest.json",
+      "row_count": 40,
+      "source_handoff_id": "handoff-2026-05-23",
+      "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_summary.json",
+      "summary_day_counts": {
+        "2026-05-23": 40
+      },
+      "summary_joined_row_count": 40
+    },
+    {
+      "accepted_pre_global": true,
+      "blockers": [],
+      "exact_id_readiness": {
+        "available_days": [
+          "2026-05-24"
+        ],
+        "blockers": [],
+        "candidate_exact_id_missing_count": 0,
+        "candidate_exact_id_present_count": 40,
+        "duplicate_action_exact_id_count": 0,
+        "duplicate_candidate_exact_id_count": 0,
+        "duplicate_label_index_count": 0,
+        "exact_id_ready": true,
+        "handoff_id": "handoff-2026-05-24",
+        "label_index_missing_count": 0,
+        "row_count": 40,
+        "source_sequence_coverage": 1.0,
+        "summary_day_counts": {
+          "2026-05-24": 40
+        }
+      },
+      "forbidden": [],
+      "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/manifest.json",
+      "row_count": 40,
+      "source_handoff_id": "handoff-2026-05-24",
+      "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_summary.json",
+      "summary_day_counts": {
+        "2026-05-24": 40
+      },
+      "summary_joined_row_count": 40
+    },
+    {
+      "accepted_pre_global": true,
+      "blockers": [],
+      "exact_id_readiness": {
+        "available_days": [
+          "2026-05-25"
+        ],
+        "blockers": [],
+        "candidate_exact_id_missing_count": 0,
+        "candidate_exact_id_present_count": 40,
+        "duplicate_action_exact_id_count": 0,
+        "duplicate_candidate_exact_id_count": 0,
+        "duplicate_label_index_count": 0,
+        "exact_id_ready": true,
+        "handoff_id": "handoff-2026-05-25",
+        "label_index_missing_count": 0,
+        "row_count": 40,
+        "source_sequence_coverage": 1.0,
+        "summary_day_counts": {
+          "2026-05-25": 40
+        }
+      },
+      "forbidden": [],
+      "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/manifest.json",
+      "row_count": 40,
+      "source_handoff_id": "handoff-2026-05-25",
+      "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_summary.json",
+      "summary_day_counts": {
+        "2026-05-25": 40
+      },
+      "summary_joined_row_count": 40
+    }
+  ],
+  "lane": "observable_pre_action_multiday_same_window_label_handoff_arrival_inventory",
+  "next_executable_action": "Discard forbidden/private/deployable/live-label bridge arrivals; do not mine or replay them.",
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "multiday_same_window_label_handoff_arrival_inventory_only"
+  },
+  "readiness": {
+    "accumulator_input_ready": false,
+    "exact_id_ready_bridge_outputs": [
+      {
+        "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_joined_rows.jsonl",
+        "source_handoff_id": "handoff-2026-05-22",
+        "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_summary.json"
+      },
+      {
+        "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_joined_rows.jsonl",
+        "source_handoff_id": "handoff-2026-05-23",
+        "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_summary.json"
+      },
+      {
+        "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_joined_rows.jsonl",
+        "source_handoff_id": "handoff-2026-05-24",
+        "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_summary.json"
+      },
+      {
+        "joined_rows": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_joined_rows.jsonl",
+        "source_handoff_id": "handoff-2026-05-25",
+        "summary": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_summary.json"
+      }
+    ],
+    "validation_commands": [
+      "python3 scripts/xuan_observable_pre_action_multiday_same_window_label_handoff_accumulator.py --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_summary.json --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_summary.json --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_summary.json --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_summary.json --output-dir ${accumulator_output_dir}",
+      "python3 scripts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory.py --only-explicit --bridge-summary ${accumulated_bridge_summary} --output-dir ${inventory_output_dir}",
+      "python3 scripts/xuan_observable_pre_action_rule_miner_training_fixture_scorer.py --joined-rows ${accumulated_joined_rows} --output-dir ${training_output_dir}"
+    ]
+  },
+  "research_ranking": {
+    "accumulator_input_ready": false,
+    "arrival_inventory_ready": false,
+    "interpretation": "Arrival inventory readiness only. KEEP means enough local exact-id-ready same-window bridge outputs can enter the accumulator; it remains offline research input, not strategy evidence or promotion.",
+    "real_miner_input_ready": false,
+    "status": "DISCARD_OBSERVABLE_PRE_ACTION_MULTIDAY_SAME_WINDOW_LABEL_HANDOFF_ARRIVAL_INVENTORY_FORBIDDEN_INPUT",
+    "strategy_evidence": false
+  },
+  "safety": {
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_agg_or_shared_ws_started": false,
+    "new_no_order_diagnostic_started": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "accepted_exact_id_ready_bridge_output_count": 4,
+    "accumulator_available_day_count": 4,
+    "accumulator_available_days": [
+      "2026-05-22",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "accumulator_day_counts": {
+      "2026-05-22": 40,
+      "2026-05-23": 40,
+      "2026-05-24": 40,
+      "2026-05-25": 40
+    },
+    "accumulator_handoff_count": 4,
+    "accumulator_holdout_days": [
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "accumulator_holdout_rows": 80,
+    "accumulator_output_row_count_if_ready": 160,
+    "accumulator_source_sequence_coverage": 1.0,
+    "accumulator_split_counts": {
+      "holdout": 80,
+      "train": 80
+    },
+    "accumulator_train_days": [
+      "2026-05-22",
+      "2026-05-23"
+    ],
+    "accumulator_train_rows": 80,
+    "available_day_count": 5,
+    "available_days": [
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "candidate_bridge_output_count": 5,
+    "candidate_exact_id_missing_count": 0,
+    "candidate_exact_id_present_count": 200,
+    "day_counts": {
+      "2026-05-21": 40,
+      "2026-05-22": 40,
+      "2026-05-23": 40,
+      "2026-05-24": 40,
+      "2026-05-25": 40
+    },
+    "distinct_handoff_count": 4,
+    "total_joined_rows": 200
+  },
+  "strategy_evidence": false,
+  "supporting_contract": {
+    "blockers": [],
+    "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_MULTIDAY_SAME_WINDOW_LABEL_HANDOFF_ACCUMULATION_CONTRACT_READY",
+    "path": "xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_accumulation_contract_20260526T160213Z/manifest.json",
+    "ready": true
+  },
+  "validation_commands": [
+    "python3 scripts/xuan_observable_pre_action_multiday_same_window_label_handoff_accumulator.py --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-22/observable_pre_action_training_bridge_summary.json --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-23/observable_pre_action_training_bridge_summary.json --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-24/observable_pre_action_training_bridge_summary.json --bridge-summary xuan_research_artifacts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory_smoke_20260526T170213Z/fixtures/forbidden_live/handoff-2026-05-25/observable_pre_action_training_bridge_summary.json --output-dir ${accumulator_output_dir}",
+    "python3 scripts/xuan_observable_pre_action_non_fixture_training_bridge_multiday_inventory.py --only-explicit --bridge-summary ${accumulated_bridge_summary} --output-dir ${inventory_output_dir}",
+    "python3 scripts/xuan_observable_pre_action_rule_miner_training_fixture_scorer.py --joined-rows ${accumulated_joined_rows} --output-dir ${training_output_dir}"
+  ]
+}
