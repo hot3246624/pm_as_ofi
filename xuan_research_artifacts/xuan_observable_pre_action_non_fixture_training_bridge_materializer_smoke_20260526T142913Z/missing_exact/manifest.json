@@ -1,0 +1,90 @@
+{
+  "artifact": "xuan_observable_pre_action_non_fixture_training_bridge_materializer",
+  "blockers": [
+    "feature_row_0_candidate_exact_id_missing"
+  ],
+  "contract_name": "observable_pre_action_non_fixture_training_bridge_materializer_v1",
+  "created_utc": "20260526T150117Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZER_FAIL_CLOSED",
+  "deployable": false,
+  "inputs": {
+    "bridge_contract_manifest": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_input_bridge_contract_20260525T213507Z/manifest.json",
+    "feature_join_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/fixtures/missing_exact/observable_pre_action_feature_join_manifest.json",
+    "feature_rows": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/fixtures/missing_exact/observable_pre_action_candidate_rows.jsonl",
+    "handoff_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/fixtures/missing_exact/observable_pre_action_same_window_offline_label_handoff.json",
+    "offline_label_csv": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/fixtures/missing_exact/observable_pre_action_same_window_offline_labels.csv",
+    "same_window_aggregate_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/fixtures/missing_exact/same_window_aggregate_summary.json",
+    "source_link_summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/fixtures/missing_exact/observable_pre_action_source_link_summary.json",
+    "training_spec_manifest": "xuan_research_artifacts/xuan_observable_pre_action_rule_miner_training_spec_20260525T223507Z/manifest.json"
+  },
+  "lane": "observable_pre_action_non_fixture_training_bridge_materialization",
+  "materialized": false,
+  "next_executable_action": "Fix materialization blockers before training or denominator replay.",
+  "no_order_diagnostic_allowed": false,
+  "outputs": {
+    "joined_rows": null,
+    "summary": null
+  },
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "non_fixture_training_bridge_materializer_only"
+  },
+  "readiness_blockers": [],
+  "research_ranking": {
+    "bridge_rows_materialized": false,
+    "interpretation": "Materialized bridge rows are offline research input only. KEEP requires enough train/holdout diversity; UNKNOWN can still include safe joined rows but cannot feed real mining yet.",
+    "real_miner_input_ready": false,
+    "status": "UNKNOWN_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZER_FAIL_CLOSED",
+    "strategy_evidence": false
+  },
+  "safety": {
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "cancels_sent": false,
+    "events_jsonl_pulled": false,
+    "events_jsonl_read": false,
+    "external_worktree_read": false,
+    "local_agg_or_shared_ws_started": false,
+    "orders_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "redeems_sent": false,
+    "service_control_used": false,
+    "shared_ingress_modified": false,
+    "ssh_used": false,
+    "trading_behavior_changed": false
+  },
+  "score": {
+    "available_days": [
+      "2026-05-21",
+      "2026-05-22",
+      "2026-05-23",
+      "2026-05-24",
+      "2026-05-25"
+    ],
+    "exact_id_counts": {
+      "feature_action_ids": 100,
+      "feature_candidate_ids": 199,
+      "label_action_ids": 100,
+      "label_candidate_ids": 200
+    },
+    "join_coverage": 0.995,
+    "join_method_counts": {
+      "exact_id:source_seed_candidate_row_id": 199
+    },
+    "joined_row_count": 199,
+    "materialized": false,
+    "source_sequence_coverage": 1.0,
+    "split_counts": {
+      "holdout": 80,
+      "train": 119,
+      "unused": 0
+    }
+  },
+  "strategy_evidence": false,
+  "validation_commands": [
+    "python3 scripts/xuan_observable_pre_action_rule_miner_training_fixture_scorer.py --joined-rows ${joined_rows} --output-dir ${training_output_dir}",
+    "python3 scripts/xuan_observable_pre_action_rule_miner_denominator_replay_fixture_scorer.py --candidate-rows ${feature_rows} --source-link-summary ${source_link_summary} --feature-join-manifest ${feature_join_manifest} --frozen-rule-manifest ${frozen_rule_manifest} --same-window-aggregate-summary ${same_window_aggregate_summary} --output-dir ${denominator_output_dir}"
+  ]
+}

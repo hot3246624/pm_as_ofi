@@ -1,0 +1,54 @@
+{
+  "artifact": "xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke",
+  "case_decisions": {
+    "complete": "KEEP_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZED_READY",
+    "duplicate_label": "UNKNOWN_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZER_FAIL_CLOSED",
+    "forbidden_policy": "DISCARD_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_FORBIDDEN_POLICY",
+    "missing_exact": "UNKNOWN_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZER_FAIL_CLOSED",
+    "single_day": "UNKNOWN_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZED_TRAIN_HOLDOUT_GAPS"
+  },
+  "checks": {
+    "complete_keep": true,
+    "complete_outputs_present": true,
+    "duplicate_label_fail_closed": true,
+    "forbidden_policy_discard": true,
+    "missing_exact_fail_closed": true,
+    "no_private_deployable_promotion_claim": true,
+    "single_day_unknown_materialized": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_OBSERVABLE_PRE_ACTION_NON_FIXTURE_TRAINING_BRIDGE_MATERIALIZER_SMOKE_PASS",
+  "deployable": false,
+  "outputs": {
+    "complete": {
+      "joined_rows": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/complete/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/complete/manifest.json",
+      "summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/complete/observable_pre_action_training_bridge_summary.json"
+    },
+    "duplicate_label": {
+      "joined_rows": null,
+      "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/duplicate_label/manifest.json",
+      "summary": null
+    },
+    "forbidden_policy": {
+      "joined_rows": null,
+      "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/forbidden_policy/manifest.json",
+      "summary": null
+    },
+    "missing_exact": {
+      "joined_rows": null,
+      "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/missing_exact/manifest.json",
+      "summary": null
+    },
+    "single_day": {
+      "joined_rows": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/single_day/observable_pre_action_training_bridge_joined_rows.jsonl",
+      "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/single_day/manifest.json",
+      "summary": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_observable_pre_action_non_fixture_training_bridge_materializer_smoke_20260526T142913Z/single_day/observable_pre_action_training_bridge_summary.json"
+    }
+  },
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "strategy_evidence": false
+}

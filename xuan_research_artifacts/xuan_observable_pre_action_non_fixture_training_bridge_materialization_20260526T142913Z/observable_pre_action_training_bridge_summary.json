@@ -1,0 +1,45 @@
+{
+  "available_days": [
+    "2026-05-26"
+  ],
+  "deployable": false,
+  "events_jsonl_pulled": false,
+  "events_jsonl_read": false,
+  "exact_id_counts": {
+    "feature_action_ids": 217,
+    "feature_candidate_ids": 4195,
+    "label_action_ids": 217,
+    "label_candidate_ids": 4195
+  },
+  "feature_row_count": 4195,
+  "fixture_only": false,
+  "future_labels_used_as_live_criteria": false,
+  "holdout_days": [],
+  "join_coverage": 1.0,
+  "join_method_counts": {
+    "exact_id:source_seed_candidate_row_id": 4195
+  },
+  "join_policy_version": "observable_pre_action_training_input_bridge_join_policy_v1",
+  "joined_row_count": 4195,
+  "label_row_reuse_count": 0,
+  "materializer_contract": "observable_pre_action_non_fixture_training_bridge_materializer_v1",
+  "offline_label_row_count": 4195,
+  "post_action_labels_allowed_for_train_holdout_scoring": true,
+  "post_action_labels_allowed_in_live_predicate": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "raw_replay_or_full_store_scan": false,
+  "realized_pair_cost_used_as_live_criteria": false,
+  "schema_version": "observable_pre_action_training_bridge_summary_v1",
+  "source_sequence_coverage": 1.0,
+  "split_counts": {
+    "holdout": 0,
+    "train": 0,
+    "unused": 4195
+  },
+  "strategy_evidence": false,
+  "trading_behavior_changed": false,
+  "train_days": []
+}
