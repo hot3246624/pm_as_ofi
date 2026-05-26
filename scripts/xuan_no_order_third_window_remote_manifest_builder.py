@@ -161,6 +161,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     profile_path = Path(args.profile_scorecard).expanduser().resolve()
     profile_card = read_json(profile_path)
     profile = profile_card.get("profile", {})
+    profile_source_field = "profile"
+    if not isinstance(profile, dict) or not profile:
+        profile = profile_card.get("candidate_profile", {})
+        profile_source_field = "candidate_profile"
+    if not isinstance(profile, dict) or not profile:
+        raise SystemExit(f"{profile_path} did not contain a usable profile or candidate_profile object")
     profile_status = str(profile_card.get("status") or "")
     profile_family = str(profile.get("profile_family") or "")
     reset_repeat_roots = profile_status.startswith("RESIDUAL_GUARD") or profile_family == "residual_guard"
@@ -409,6 +415,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "status": "THIRD_WINDOW_REMOTE_STAGING_MANIFEST_READY_LOCAL_ONLY",
         "profile_scorecard": str(profile_path),
+        "profile_source_field": profile_source_field,
         "profile_status": profile_status,
         "public_benchmark_scorecard": str(public_benchmark_path) if public_benchmark_path else None,
         "capacity_plan_scorecard": str(capacity_plan_path) if capacity_plan_path else None,
