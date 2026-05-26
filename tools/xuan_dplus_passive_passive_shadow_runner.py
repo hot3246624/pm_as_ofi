@@ -512,6 +512,7 @@ class RunnerConfig:
     fair_price_max_row_age_ms: int | None = None
     write_normalized_lifecycle: bool = False
     write_rescue_block_diagnostics: bool = False
+    rescue_block_diagnostics_max_per_slug: int | None = None
     allow_concurrent_shared_ingress_readers: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
@@ -661,6 +662,8 @@ class DPlusRunner:
         self.activation_last_seen_ms: dict[str, int | None] = {"YES": None, "NO": None}
         self.events_path = out_dir / f"{slug}.events.jsonl"
         self.summary_path = out_dir / f"{slug}.summary.json"
+        self.rescue_block_diagnostics_written = 0
+        self.rescue_block_diagnostics_suppressed: dict[str, int] = {}
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -680,6 +683,19 @@ class DPlusRunner:
     def emit(self, obj: dict[str, Any]) -> None:
         with self.events_path.open("a") as f:
             f.write(json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n")
+
+    def emit_rescue_block_diagnostic(self, obj: dict[str, Any]) -> None:
+        if not self.cfg.write_rescue_block_diagnostics:
+            return
+        limit = self.cfg.rescue_block_diagnostics_max_per_slug
+        reason = str(obj.get("block_reason") or "<missing>")
+        if limit is not None and self.rescue_block_diagnostics_written >= limit:
+            self.rescue_block_diagnostics_suppressed[reason] = (
+                self.rescue_block_diagnostics_suppressed.get(reason, 0) + 1
+            )
+            return
+        self.rescue_block_diagnostics_written += 1
+        self.emit(obj)
 
     def block(self, reason: str) -> None:
         self.blocked[reason] = self.blocked.get(reason, 0) + 1
@@ -1109,14 +1125,16 @@ class DPlusRunner:
                 if self.cfg.strict_rescue_require_book_source and self.book_source_sequence_id is None:
                     self.metrics.strict_rescue_source_blocks += 1
                     self.block("strict_rescue_missing_book_source")
-                    if self.cfg.write_rescue_block_diagnostics:
-                        self.emit({**diag_base, "block_reason": "strict_rescue_missing_book_source"})
+                    self.emit_rescue_block_diagnostic(
+                        {**diag_base, "block_reason": "strict_rescue_missing_book_source"}
+                    )
                     continue
                 if self.cfg.strict_rescue_require_l2_source and self.book_l2_source_sequence_id is None:
                     self.metrics.strict_rescue_source_blocks += 1
                     self.block("strict_rescue_missing_l2_source")
-                    if self.cfg.write_rescue_block_diagnostics:
-                        self.emit({**diag_base, "block_reason": "strict_rescue_missing_l2_source"})
+                    self.emit_rescue_block_diagnostic(
+                        {**diag_base, "block_reason": "strict_rescue_missing_l2_source"}
+                    )
                     continue
                 if (
                     self.cfg.strict_rescue_l1_age_max_ms is not None
@@ -1124,8 +1142,7 @@ class DPlusRunner:
                     and book_age_ms > self.cfg.strict_rescue_l1_age_max_ms
                 ):
                     self.block("strict_rescue_l1_age")
-                    if self.cfg.write_rescue_block_diagnostics:
-                        self.emit({**diag_base, "block_reason": "strict_rescue_l1_age"})
+                    self.emit_rescue_block_diagnostic({**diag_base, "block_reason": "strict_rescue_l1_age"})
                     continue
             ask = raw_ask + (self.cfg.strict_rescue_close_ask_slip if strict_rescue_active else 0.0)
             fee = fee_per_share(ask, self.cfg.taker_fee_rate)
@@ -1136,8 +1153,8 @@ class DPlusRunner:
                 lot = lots[lot_idx]
                 age = ts_ms - lot.fill_ms
                 if age < self.cfg.salvage_age_ms:
-                    if strict_rescue_active and self.cfg.write_rescue_block_diagnostics:
-                        self.emit(
+                    if strict_rescue_active:
+                        self.emit_rescue_block_diagnostic(
                             {
                                 **diag_base,
                                 "block_reason": "strict_rescue_lot_age_or_min_cost",
@@ -1153,8 +1170,8 @@ class DPlusRunner:
                         )
                     break
                 if lot.cost < self.cfg.salvage_min_lot_cost:
-                    if strict_rescue_active and self.cfg.write_rescue_block_diagnostics:
-                        self.emit(
+                    if strict_rescue_active:
+                        self.emit_rescue_block_diagnostic(
                             {
                                 **diag_base,
                                 "block_reason": "strict_rescue_lot_age_or_min_cost",
@@ -1175,18 +1192,17 @@ class DPlusRunner:
                     break
                 if strict_rescue_active and self.cfg.strict_rescue_max_wait_ms is not None and age > self.cfg.strict_rescue_max_wait_ms:
                     self.block("strict_rescue_max_wait")
-                    if self.cfg.write_rescue_block_diagnostics:
-                        self.emit(
-                            {
-                                **diag_base,
-                                "block_reason": "strict_rescue_max_wait",
-                                "lot_index": lot_idx,
-                                "lot_age_ms": age,
-                                "strict_rescue_max_wait_ms": self.cfg.strict_rescue_max_wait_ms,
-                                "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
-                                "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
-                            }
-                        )
+                    self.emit_rescue_block_diagnostic(
+                        {
+                            **diag_base,
+                            "block_reason": "strict_rescue_max_wait",
+                            "lot_index": lot_idx,
+                            "lot_age_ms": age,
+                            "strict_rescue_max_wait_ms": self.cfg.strict_rescue_max_wait_ms,
+                            "strict_rescue_skip_low_cost_lots": self.cfg.strict_rescue_skip_low_cost_lots,
+                            "strict_rescue_skipped_low_cost_lots": skipped_low_cost_lots,
+                        }
+                    )
                     break
                 gross_pair = lot.px + ask
                 net_pair = gross_pair + fee
@@ -1213,8 +1229,8 @@ class DPlusRunner:
                             block_reason = "strict_rescue_surplus_net_cap"
                         else:
                             block_reason = "strict_rescue_pair_pnl_floor"
-                    if strict_rescue_active and self.cfg.write_rescue_block_diagnostics:
-                        self.emit(
+                    if strict_rescue_active:
+                        self.emit_rescue_block_diagnostic(
                             {
                                 **diag_base,
                                 "block_reason": block_reason,
@@ -2192,6 +2208,13 @@ class DPlusRunner:
             "source_linkage": self.source_linkage,
             "blocked": self.blocked,
             "config": self.cfg.__dict__,
+            "rescue_block_diagnostics": {
+                "enabled": self.cfg.write_rescue_block_diagnostics,
+                "max_per_slug": self.cfg.rescue_block_diagnostics_max_per_slug,
+                "written": self.rescue_block_diagnostics_written,
+                "suppressed": sum(self.rescue_block_diagnostics_suppressed.values()),
+                "suppressed_by_reason": self.rescue_block_diagnostics_suppressed,
+            },
             "metrics": {
                 "candidates": m.candidates,
                 "queue_supported_fills": m.queue_supported_fills,
@@ -2556,6 +2579,12 @@ async def main() -> None:
     ap.add_argument("--write-normalized-lifecycle", action="store_true")
     ap.add_argument("--write-rescue-block-diagnostics", action="store_true")
     ap.add_argument(
+        "--rescue-block-diagnostics-max-per-slug",
+        type=int,
+        default=None,
+        help="When rescue block diagnostics are enabled, cap verbose strict_rescue_block JSONL rows per market and aggregate the rest in summary.json.",
+    )
+    ap.add_argument(
         "--allow-concurrent-shared-ingress-readers",
         action="store_true",
         help="Record explicit audit metadata for running as one of multiple read-only shared-ingress clients.",
@@ -2635,6 +2664,7 @@ async def main() -> None:
         fair_price_max_row_age_ms=args.fair_price_max_row_age_ms,
         write_normalized_lifecycle=args.write_normalized_lifecycle,
         write_rescue_block_diagnostics=args.write_rescue_block_diagnostics,
+        rescue_block_diagnostics_max_per_slug=args.rescue_block_diagnostics_max_per_slug,
         allow_concurrent_shared_ingress_readers=args.allow_concurrent_shared_ingress_readers,
     )
     if cfg.imbalance_qty_cap <= cfg.dust_qty:
@@ -2643,6 +2673,8 @@ async def main() -> None:
         raise SystemExit(f"--late-target-qty must exceed dust_qty={cfg.dust_qty}; otherwise the late window cannot seed")
     if cfg.activation_window_s <= 0:
         raise SystemExit("--activation-window-s must be positive")
+    if cfg.rescue_block_diagnostics_max_per_slug is not None and cfg.rescue_block_diagnostics_max_per_slug < 0:
+        raise SystemExit("--rescue-block-diagnostics-max-per-slug must be non-negative")
     if cfg.risk_seed_closeability_net_cap is not None and cfg.risk_seed_closeability_net_cap <= 0:
         raise SystemExit("--risk-seed-closeability-net-cap must be positive")
     if cfg.risk_seed_closeability_soft_net_cap is not None and cfg.risk_seed_closeability_soft_net_cap <= 0:

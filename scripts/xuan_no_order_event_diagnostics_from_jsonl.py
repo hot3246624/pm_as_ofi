@@ -114,6 +114,10 @@ def scan(
     source_total = 0
     bad_json = 0
     raw_line_count = 0
+    rescue_diag_written = 0
+    rescue_diag_suppressed = 0
+    rescue_diag_suppressed_by_reason: Counter[str] = Counter()
+    rescue_diag_max_per_slug_values: set[int] = set()
     stats: dict[str, list[float]] = {}
 
     for path in event_files:
@@ -332,6 +336,38 @@ def scan(
                     add_stat(stats, "surplus_budget_projected_unpaired_cost", obj.get("surplus_budget_projected_unpaired_cost"))
                     add_stat(stats, "surplus_budget_allowed", obj.get("surplus_budget_allowed"))
 
+    for summary_path in sorted(root.glob("*.summary.json")):
+        try:
+            summary = json.loads(summary_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if not isinstance(summary, dict):
+            continue
+        slug = str(summary.get("slug") or summary_path.name.replace(".summary.json", ""))
+        rescue_diag = summary.get("rescue_block_diagnostics")
+        if not isinstance(rescue_diag, dict):
+            continue
+        rescue_diag_written += int(as_float(rescue_diag.get("written")) or 0)
+        suppressed = int(as_float(rescue_diag.get("suppressed")) or 0)
+        rescue_diag_suppressed += suppressed
+        max_per_slug = as_float(rescue_diag.get("max_per_slug"))
+        if max_per_slug is not None:
+            rescue_diag_max_per_slug_values.add(int(max_per_slug))
+        by_reason = rescue_diag.get("suppressed_by_reason")
+        if not isinstance(by_reason, dict):
+            continue
+        for reason, count_raw in by_reason.items():
+            count = int(as_float(count_raw) or 0)
+            if count <= 0:
+                continue
+            reason_text = str(reason or "<missing>")
+            rescue_diag_suppressed_by_reason[reason_text] += count
+            strict_rescue_block_reasons[reason_text] += count
+            block_reason_counts[reason_text] += count
+            kind_reason_counts["strict_rescue_block"][reason_text] += count
+            per_slug_reason_counts[slug][reason_text] += count
+            per_slug_strict_reason_counts[slug][reason_text] += count
+
     out: dict[str, Any] = {
         "artifact": "remote_event_diagnostics",
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -378,6 +414,13 @@ def scan(
         "cancel_reasons": dict(cancel_reasons.most_common()),
         "strict_rescue_block_reasons": dict(strict_rescue_block_reasons.most_common()),
         "strict_rescue_block_components": dict(strict_rescue_block_components.most_common()),
+        "strict_rescue_block_diagnostics": {
+            "written": rescue_diag_written,
+            "suppressed": rescue_diag_suppressed,
+            "suppressed_by_reason": dict(rescue_diag_suppressed_by_reason.most_common()),
+            "max_per_slug_values": sorted(rescue_diag_max_per_slug_values),
+            "capped": rescue_diag_suppressed > 0,
+        },
         "strict_rescue_lot_age_min_cost_classes": dict(strict_rescue_lot_age_min_cost_classes.most_common()),
         "strict_rescue_close_skipped_low_cost_lots": dict(strict_rescue_close_skipped_low_cost_lots.most_common()),
     }

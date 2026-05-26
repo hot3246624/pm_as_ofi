@@ -236,6 +236,13 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("remote_command_missing_normalized_lifecycle")
     if "--write-rescue-block-diagnostics" not in remote_cmd:
         hard_blockers.append("remote_command_missing_rescue_diagnostics")
+    rescue_diag_cap = profile.get("rescue_block_diagnostics_max_per_slug")
+    if rescue_diag_cap is not None and not option_matches(
+        remote_cmd,
+        "--rescue-block-diagnostics-max-per-slug",
+        rescue_diag_cap,
+    ):
+        hard_blockers.append("remote_command_rescue_diagnostics_cap_does_not_match_profile")
     if "--allow-concurrent-shared-ingress-readers" not in remote_cmd:
         hard_blockers.append("remote_command_missing_concurrent_reader_evidence_flag")
     if fair_price_admission.get("enabled") is True:
@@ -369,6 +376,10 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "remote_command_has_normalized_lifecycle": "--write-normalized-lifecycle" in remote_cmd,
             "remote_command_has_rescue_diagnostics": "--write-rescue-block-diagnostics" in remote_cmd,
+            "remote_command_rescue_diagnostics_max_per_slug": option_value(
+                remote_cmd,
+                "--rescue-block-diagnostics-max-per-slug",
+            ),
             "remote_command_has_concurrent_reader_evidence_flag": "--allow-concurrent-shared-ingress-readers" in remote_cmd,
             "remote_command_has_closeability_cancel_guard": "--risk-seed-cancel-on-closeability-net-cap" in remote_cmd,
             "fair_price_admission_enabled": fair_price_admission.get("enabled") is True,

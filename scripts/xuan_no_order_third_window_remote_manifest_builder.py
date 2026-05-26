@@ -294,6 +294,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "--write-rescue-block-diagnostics",
         "--allow-concurrent-shared-ingress-readers",
     ]
+    append_option(
+        remote_command,
+        "--rescue-block-diagnostics-max-per-slug",
+        profile.get("rescue_block_diagnostics_max_per_slug"),
+    )
     if args.market_slugs:
         remote_command.extend(["--market-slugs", args.market_slugs])
     else:

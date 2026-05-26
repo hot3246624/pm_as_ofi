@@ -93,6 +93,7 @@ def markdown(card: dict[str, Any]) -> str:
         f"- risk_seed_pending_opp_credit: `{p['risk_seed_pending_opp_credit']}`",
         f"- surplus_budget_max_abs_unpaired_cost: `{p['surplus_budget_max_abs_unpaired_cost']}`",
         f"- strict_rescue_surplus_net_cap: `{p['strict_rescue_surplus_net_cap']}`",
+        f"- rescue_block_diagnostics_max_per_slug: `{p['rescue_block_diagnostics_max_per_slug']}`",
         "",
         "## Guardrails",
         "",
@@ -108,6 +109,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     plan = load_json(args.plan_scorecard)
     hypothesis = body(plan, "next_profile_hypothesis")
     profile = dict(body(hypothesis, "primary_profile_overrides"))
+    profile.setdefault("rescue_block_diagnostics_max_per_slug", args.rescue_block_diagnostics_max_per_slug)
 
     hard_blockers: list[str] = []
     if not is_keep(plan):
@@ -138,6 +140,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         hard_blockers.append("surplus_budget_relaxed")
     if fnum(profile.get("strict_rescue_surplus_net_cap"), 9.0) > args.max_strict_rescue_surplus_net_cap:
         hard_blockers.append("strict_rescue_surplus_net_cap_relaxed")
+    if fnum(profile.get("rescue_block_diagnostics_max_per_slug"), 0.0) <= 0:
+        hard_blockers.append("rescue_block_diagnostics_cap_missing")
+    if fnum(profile.get("rescue_block_diagnostics_max_per_slug"), 10**12) > args.max_rescue_block_diagnostics_per_slug:
+        hard_blockers.append("rescue_block_diagnostics_cap_too_high")
     for key in (
         "source_quality_require_l1_source",
         "source_quality_require_l2_source",
@@ -202,6 +208,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "proposed": profile.get("risk_seed_pending_opp_credit"),
                 "reason": "do not credit unfilled opposite intent as risk protection",
             },
+            {
+                "field": "rescue_block_diagnostics_max_per_slug",
+                "proposed": profile.get("rescue_block_diagnostics_max_per_slug"),
+                "reason": "preserve strict-rescue block diagnostics without repeating the 1654Z JSONL volume that likely caused exit 137",
+            },
         ],
         "profile": profile,
         "safety": {
@@ -231,6 +242,8 @@ def main() -> int:
     parser.add_argument("--min-pair-completion-pnl-after", type=float, default=0.01)
     parser.add_argument("--max-surplus-budget-abs-unpaired-cost", type=float, default=1.44)
     parser.add_argument("--max-strict-rescue-surplus-net-cap", type=float, default=1.02)
+    parser.add_argument("--rescue-block-diagnostics-max-per-slug", type=int, default=5000)
+    parser.add_argument("--max-rescue-block-diagnostics-per-slug", type=int, default=10000)
     args = parser.parse_args()
 
     card = build(args)
