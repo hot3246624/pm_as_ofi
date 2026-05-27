@@ -1,0 +1,202 @@
+{
+  "artifact": "xuan_backtest_v1_hype_lead_prefix_source_preflight_review",
+  "blockers": [
+    "candidate_filter_exact_runtime_adapter_absent"
+  ],
+  "candidate_filter_runtime_mapping": {
+    "candidate_filter_exact_runtime_supported": false,
+    "exact_supported_params": [
+      "price_lo/price_hi",
+      "offset_lo/offset_hi",
+      "max_l1_pair_ask"
+    ],
+    "mapping": [
+      {
+        "backtest_param": "price_lo/price_hi",
+        "candidate_value": "0.5..0.55",
+        "runner_support": true,
+        "runner_surface": "--seed-px-lo/--seed-px-hi",
+        "status": "exact"
+      },
+      {
+        "backtest_param": "offset_lo/offset_hi",
+        "candidate_value": "0.0..30.0",
+        "runner_support": true,
+        "runner_surface": "seed_offset_min_s default plus --seed-offset-max-s",
+        "status": "exact"
+      },
+      {
+        "backtest_param": "max_l1_pair_ask",
+        "candidate_value": "1.1",
+        "runner_support": true,
+        "runner_surface": "--seed-l1-cap",
+        "status": "exact"
+      },
+      {
+        "backtest_param": "size_lo/size_hi",
+        "candidate_value": "50.0..150.0",
+        "runner_support": false,
+        "runner_surface": "missing exact public trade size range CLI",
+        "status": "missing"
+      },
+      {
+        "backtest_param": "max_l1_immediate_pair",
+        "candidate_value": "2.0",
+        "runner_support": false,
+        "runner_surface": "missing exact immediate pair cap CLI",
+        "status": "missing"
+      },
+      {
+        "backtest_param": "side_alignment",
+        "candidate_value": "high",
+        "runner_support": false,
+        "runner_surface": "missing exact side alignment CLI",
+        "status": "missing"
+      },
+      {
+        "backtest_param": "pnl_cost_source",
+        "candidate_value": "pair_ask",
+        "runner_support": false,
+        "runner_surface": "missing explicit pnl cost source CLI",
+        "status": "missing"
+      },
+      {
+        "backtest_param": "candidate_key/filter manifest",
+        "candidate_value": "30cfee296e1d0912f78109dd",
+        "runner_support": false,
+        "runner_surface": "missing exact backtest V1 candidate filter manifest/key CLI",
+        "status": "missing"
+      }
+    ],
+    "missing_or_partial_params": [
+      "size_lo/size_hi",
+      "max_l1_immediate_pair",
+      "side_alignment",
+      "pnl_cost_source",
+      "candidate_key/filter manifest"
+    ]
+  },
+  "contract_name": "xuan_backtest_v1_hype_lead_prefix_source_preflight_review_v1",
+  "created_utc": "20260527T015241Z",
+  "decision": "UNKNOWN",
+  "decision_label": "UNKNOWN_BACKTEST_V1_HYPE_LEAD_PREFIX_SOURCE_PREFLIGHT_CANDIDATE_FILTER_GAPS",
+  "deployable": false,
+  "downstream_contract_review": {
+    "accumulator": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "arrival_inventory": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "downstream_contracts_supported": true,
+    "materializer": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "same_window_contract": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "training_scorer": {
+      "missing_patterns": [],
+      "ok": true
+    }
+  },
+  "forbidden_blockers": [],
+  "future_preflight_commands_required_before_approved_diagnostic": [
+    "python3 -m py_compile scripts/resolve_market_ids.py tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "python3 scripts/xuan_backtest_v1_hype_lead_prefix_source_preflight_review.py --proposal-manifest xuan_research_artifacts/xuan_backtest_v1_hype_lead_same_window_handoff_proposal_20260527T011815Z/manifest.json --output-dir ${preflight_output_dir}",
+    "python3 scripts/resolve_market_ids.py --prefix hype-updown-5m --round-offset 0 --format env --cache-path ${market_resolver_cache}",
+    "python3 scripts/resolve_market_ids.py --prefix hype-updown-5m --round-offset 1 --format env --cache-path ${market_resolver_cache}",
+    "Only after exact approval and successful preflight: bounded no-order runner with --event-lite-summary --source-link-transition-event-lite-summary --observable-pre-action-rule-miner-feature-join-output --observable-pre-action-same-window-offline-label-handoff-output"
+  ],
+  "inputs": {
+    "accumulator_source": "scripts/xuan_observable_pre_action_multiday_same_window_label_handoff_accumulator.py",
+    "arrival_inventory_source": "scripts/xuan_observable_pre_action_multiday_same_window_label_handoff_arrival_inventory.py",
+    "contract_source": "scripts/xuan_observable_pre_action_same_window_offline_label_handoff_contract.py",
+    "materializer_source": "scripts/xuan_observable_pre_action_non_fixture_training_bridge_materializer.py",
+    "proposal_manifest": "xuan_research_artifacts/xuan_backtest_v1_hype_lead_same_window_handoff_proposal_20260527T011815Z/manifest.json",
+    "resolver_source": "scripts/resolve_market_ids.py",
+    "runner_source": "tools/xuan_dplus_passive_passive_shadow_runner.py",
+    "training_source": "scripts/xuan_observable_pre_action_rule_miner_training_fixture_scorer.py"
+  },
+  "lead": {
+    "asset": "HYPE",
+    "candidate_key": "30cfee296e1d0912f78109dd",
+    "market_prefix": "hype-updown-5m",
+    "proposal_decision_label": "KEEP_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_READY_APPROVAL_REQUIRED"
+  },
+  "next_executable_action": "Specify or implement the missing exact candidate-filter runtime adapter before any HYPE diagnostic; do not start no-order automatically.",
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "reason": "prefix_source_preflight_only_candidate_filter_exact_runtime_gaps"
+  },
+  "proposal_approval_required_in_thread": true,
+  "research_ranking": {
+    "candidate_filter_exact_runtime_supported": false,
+    "downstream_contracts_supported": true,
+    "handoff_proposal_ready": true,
+    "prefix_source_preflight_review_complete": true,
+    "real_miner_input_ready": false,
+    "resolver_prefix_source_supported": true,
+    "runner_same_window_handoff_source_supported": true,
+    "status": "UNKNOWN_BACKTEST_V1_HYPE_LEAD_PREFIX_SOURCE_PREFLIGHT_CANDIDATE_FILTER_GAPS",
+    "strategy_evidence": false
+  },
+  "resolver_review": {
+    "generic_prefix_source_supported": true,
+    "missing_patterns": [],
+    "required_patterns": [
+      "def slug_from_prefix(prefix: str, round_offset: int)",
+      "g.add_argument(\"--prefix\")",
+      "slug = ns.slug or slug_from_prefix(ns.prefix, ns.round_offset)",
+      "def print_market(market: ResolvedMarket, fmt: str)",
+      "export POLYMARKET_MARKET_SLUG=",
+      "export POLYMARKET_YES_ASSET_ID=",
+      "export POLYMARKET_NO_ASSET_ID=",
+      "cache_get(cache_path, slug)"
+    ],
+    "resolver_source_supported": true
+  },
+  "runner_review": {
+    "aggregate_outputs": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "generic_prefix_cli": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "row_level_exact_ids": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "runner_handoff_source_supported": true,
+    "safety_contract": {
+      "missing_patterns": [],
+      "ok": true
+    },
+    "same_window_output_flags": {
+      "missing_patterns": [],
+      "ok": true
+    }
+  },
+  "safety": {
+    "aws_or_remote_read": false,
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "events_jsonl_read": false,
+    "market_resolver_executed": false,
+    "new_no_order_diagnostic_started": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "shared_ingress_modified": false,
+    "systemd_or_service_control_used": false,
+    "trading_behavior_changed": false
+  },
+  "strategy_evidence": false
+}
