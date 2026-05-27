@@ -305,6 +305,15 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         "--rescue-block-diagnostics-max-per-slug",
         profile.get("rescue_block_diagnostics_max_per_slug"),
     )
+    if profile.get("write_tail_mark_snapshots") is True:
+        remote_command.append("--write-tail-mark-snapshots")
+        append_option(remote_command, "--tail-mark-snapshot-min-age-s", profile.get("tail_mark_snapshot_min_age_s"))
+        append_option(remote_command, "--tail-mark-snapshot-max-per-lot", profile.get("tail_mark_snapshot_max_per_lot"))
+        append_option(
+            remote_command,
+            "--tail-mark-snapshot-min-interval-s",
+            profile.get("tail_mark_snapshot_min_interval_s"),
+        )
     if args.market_slugs:
         remote_command.extend(["--market-slugs", args.market_slugs])
     else:

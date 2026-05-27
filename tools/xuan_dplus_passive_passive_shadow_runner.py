@@ -513,6 +513,10 @@ class RunnerConfig:
     write_normalized_lifecycle: bool = False
     write_rescue_block_diagnostics: bool = False
     rescue_block_diagnostics_max_per_slug: int | None = None
+    write_tail_mark_snapshots: bool = False
+    tail_mark_snapshot_min_age_ms: int = 30_000
+    tail_mark_snapshot_max_per_lot: int = 4
+    tail_mark_snapshot_min_interval_ms: int = 60_000
     allow_concurrent_shared_ingress_readers: bool = False
 
     def target_for(self, offset_s: float | None) -> float:
@@ -664,6 +668,86 @@ class DPlusRunner:
         self.summary_path = out_dir / f"{slug}.summary.json"
         self.rescue_block_diagnostics_written = 0
         self.rescue_block_diagnostics_suppressed: dict[str, int] = {}
+        self.tail_mark_snapshots_written_by_lot: dict[str, int] = {}
+        self.tail_mark_snapshot_last_ms_by_lot: dict[str, int] = {}
+
+    def emit_tail_mark_snapshots(
+        self,
+        ts_ms: int,
+        held_side: str,
+        comp_side: str,
+        lots: list[Lot],
+        raw_ask: float,
+        book_age_ms: int | None,
+        l2_age_ms: int | None,
+    ) -> None:
+        if not self.cfg.write_tail_mark_snapshots:
+            return
+        if raw_ask <= 0 or self.cfg.tail_mark_snapshot_max_per_lot <= 0:
+            return
+        comp_ask = raw_ask + (
+            self.cfg.strict_rescue_close_ask_slip if self.cfg.strict_rescue_mode != "none" else 0.0
+        )
+        fee = fee_per_share(comp_ask, self.cfg.taker_fee_rate)
+        for lot in lots:
+            age_ms = ts_ms - lot.fill_ms
+            if age_ms < self.cfg.tail_mark_snapshot_min_age_ms:
+                continue
+            qid = lot.quote_intent_id
+            written = self.tail_mark_snapshots_written_by_lot.get(qid, 0)
+            if written >= self.cfg.tail_mark_snapshot_max_per_lot:
+                continue
+            last_ms = self.tail_mark_snapshot_last_ms_by_lot.get(qid)
+            if last_ms is not None and ts_ms - last_ms < self.cfg.tail_mark_snapshot_min_interval_ms:
+                continue
+            gross_pair_cost = lot.px + comp_ask
+            net_pair_cost = gross_pair_cost + fee
+            mark_value_no_fee = max(0.0, lot.qty * (1.0 - comp_ask))
+            mark_value_after_fee = max(0.0, lot.qty * (1.0 - comp_ask - fee))
+            self.tail_mark_snapshots_written_by_lot[qid] = written + 1
+            self.tail_mark_snapshot_last_ms_by_lot[qid] = ts_ms
+            self.emit(
+                {
+                    "kind": "residual_tail_mark_snapshot",
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "ts_ms": ts_ms,
+                    "held_side": held_side,
+                    "comp_side": comp_side,
+                    "quote_intent_id": qid,
+                    "source_lot_id": lot.id,
+                    "source_order_id": lot.source_order_id,
+                    "source_lot_sequence_id": lot.source_sequence_id,
+                    "source_lot_event_time_ms": lot.source_event_time_ms,
+                    "lot_qty": lot.qty,
+                    "lot_px": lot.px,
+                    "lot_cost": lot.cost,
+                    "lot_age_ms": age_ms,
+                    "raw_comp_ask": raw_ask,
+                    "comp_ask": comp_ask,
+                    "fee_per_share": fee,
+                    "gross_pair_cost": gross_pair_cost,
+                    "net_pair_cost": net_pair_cost,
+                    "mark_value_no_fee": round(mark_value_no_fee, 12),
+                    "mark_value_after_fee": round(mark_value_after_fee, 12),
+                    "mark_recovery_rate_no_fee": mark_value_no_fee / lot.cost if lot.cost else None,
+                    "mark_recovery_rate_after_fee": mark_value_after_fee / lot.cost if lot.cost else None,
+                    "pair_pnl_if_closed_after_fee": round(lot.qty * (1.0 - net_pair_cost), 12),
+                    "snapshot_index_for_lot": written + 1,
+                    "tail_mark_snapshot_min_age_ms": self.cfg.tail_mark_snapshot_min_age_ms,
+                    "tail_mark_snapshot_max_per_lot": self.cfg.tail_mark_snapshot_max_per_lot,
+                    "tail_mark_snapshot_min_interval_ms": self.cfg.tail_mark_snapshot_min_interval_ms,
+                    "source_sequence_id": self.book_source_sequence_id,
+                    "market_md_source_sequence_id": self.book_source_sequence_id,
+                    "book_event_time_ms": self.book_event_time_ms,
+                    "strict_rescue_l1_age_ms": book_age_ms,
+                    "strict_rescue_l1_age_max_ms": self.cfg.strict_rescue_l1_age_max_ms,
+                    "strict_rescue_l2_required": self.cfg.strict_rescue_require_l2_source,
+                    "strict_rescue_l2_source_sequence_id": self.book_l2_source_sequence_id,
+                    "strict_rescue_l2_event_time_ms": self.book_l2_event_time_ms,
+                    "strict_rescue_l2_age_ms": l2_age_ms,
+                }
+            )
 
     def quote_intent_id(self, order_id: int) -> str:
         return f"{self.slug}:quote:{order_id}"
@@ -1121,6 +1205,7 @@ class DPlusRunner:
                 "oldest_lot_id": lots[0].id if lots else None,
                 "oldest_quote_intent_id": lots[0].quote_intent_id if lots else None,
             }
+            self.emit_tail_mark_snapshots(ts_ms, held_side, comp_side, lots, raw_ask, book_age_ms, l2_age_ms)
             if strict_rescue_active:
                 if self.cfg.strict_rescue_require_book_source and self.book_source_sequence_id is None:
                     self.metrics.strict_rescue_source_blocks += 1
@@ -2215,6 +2300,15 @@ class DPlusRunner:
                 "suppressed": sum(self.rescue_block_diagnostics_suppressed.values()),
                 "suppressed_by_reason": self.rescue_block_diagnostics_suppressed,
             },
+            "tail_mark_snapshots": {
+                "enabled": self.cfg.write_tail_mark_snapshots,
+                "min_age_ms": self.cfg.tail_mark_snapshot_min_age_ms,
+                "max_per_lot": self.cfg.tail_mark_snapshot_max_per_lot,
+                "min_interval_ms": self.cfg.tail_mark_snapshot_min_interval_ms,
+                "written": sum(self.tail_mark_snapshots_written_by_lot.values()),
+                "tracked_lots": len(self.tail_mark_snapshots_written_by_lot),
+                "written_by_lot": self.tail_mark_snapshots_written_by_lot,
+            },
             "metrics": {
                 "candidates": m.candidates,
                 "queue_supported_fills": m.queue_supported_fills,
@@ -2585,6 +2679,29 @@ async def main() -> None:
         help="When rescue block diagnostics are enabled, cap verbose strict_rescue_block JSONL rows per market and aggregate the rest in summary.json.",
     )
     ap.add_argument(
+        "--write-tail-mark-snapshots",
+        action="store_true",
+        help="Write sparse residual_tail_mark_snapshot diagnostics for mature residual lots without changing runner decisions.",
+    )
+    ap.add_argument(
+        "--tail-mark-snapshot-min-age-s",
+        type=float,
+        default=30.0,
+        help="Minimum lot age before residual_tail_mark_snapshot diagnostics are eligible.",
+    )
+    ap.add_argument(
+        "--tail-mark-snapshot-max-per-lot",
+        type=int,
+        default=4,
+        help="Maximum residual_tail_mark_snapshot diagnostics per quote_intent_id.",
+    )
+    ap.add_argument(
+        "--tail-mark-snapshot-min-interval-s",
+        type=float,
+        default=60.0,
+        help="Minimum interval between residual_tail_mark_snapshot diagnostics for the same quote_intent_id.",
+    )
+    ap.add_argument(
         "--allow-concurrent-shared-ingress-readers",
         action="store_true",
         help="Record explicit audit metadata for running as one of multiple read-only shared-ingress clients.",
@@ -2665,6 +2782,10 @@ async def main() -> None:
         write_normalized_lifecycle=args.write_normalized_lifecycle,
         write_rescue_block_diagnostics=args.write_rescue_block_diagnostics,
         rescue_block_diagnostics_max_per_slug=args.rescue_block_diagnostics_max_per_slug,
+        write_tail_mark_snapshots=args.write_tail_mark_snapshots,
+        tail_mark_snapshot_min_age_ms=int(args.tail_mark_snapshot_min_age_s * 1000),
+        tail_mark_snapshot_max_per_lot=args.tail_mark_snapshot_max_per_lot,
+        tail_mark_snapshot_min_interval_ms=int(args.tail_mark_snapshot_min_interval_s * 1000),
         allow_concurrent_shared_ingress_readers=args.allow_concurrent_shared_ingress_readers,
     )
     if cfg.imbalance_qty_cap <= cfg.dust_qty:
@@ -2675,6 +2796,12 @@ async def main() -> None:
         raise SystemExit("--activation-window-s must be positive")
     if cfg.rescue_block_diagnostics_max_per_slug is not None and cfg.rescue_block_diagnostics_max_per_slug < 0:
         raise SystemExit("--rescue-block-diagnostics-max-per-slug must be non-negative")
+    if cfg.tail_mark_snapshot_min_age_ms < 0:
+        raise SystemExit("--tail-mark-snapshot-min-age-s must be non-negative")
+    if cfg.tail_mark_snapshot_max_per_lot < 0:
+        raise SystemExit("--tail-mark-snapshot-max-per-lot must be non-negative")
+    if cfg.tail_mark_snapshot_min_interval_ms < 0:
+        raise SystemExit("--tail-mark-snapshot-min-interval-s must be non-negative")
     if cfg.risk_seed_closeability_net_cap is not None and cfg.risk_seed_closeability_net_cap <= 0:
         raise SystemExit("--risk-seed-closeability-net-cap must be positive")
     if cfg.risk_seed_closeability_soft_net_cap is not None and cfg.risk_seed_closeability_soft_net_cap <= 0:

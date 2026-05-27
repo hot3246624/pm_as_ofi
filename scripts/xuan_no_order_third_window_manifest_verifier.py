@@ -243,6 +243,17 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
         rescue_diag_cap,
     ):
         hard_blockers.append("remote_command_rescue_diagnostics_cap_does_not_match_profile")
+    if profile.get("write_tail_mark_snapshots") is True:
+        if "--write-tail-mark-snapshots" not in remote_cmd:
+            hard_blockers.append("remote_command_missing_tail_mark_snapshots")
+        for profile_key, option in (
+            ("tail_mark_snapshot_min_age_s", "--tail-mark-snapshot-min-age-s"),
+            ("tail_mark_snapshot_max_per_lot", "--tail-mark-snapshot-max-per-lot"),
+            ("tail_mark_snapshot_min_interval_s", "--tail-mark-snapshot-min-interval-s"),
+        ):
+            expected = profile.get(profile_key)
+            if expected is not None and not option_matches(remote_cmd, option, expected):
+                hard_blockers.append(f"remote_command_{profile_key}_does_not_match_profile")
     if "--allow-concurrent-shared-ingress-readers" not in remote_cmd:
         hard_blockers.append("remote_command_missing_concurrent_reader_evidence_flag")
     if fair_price_admission.get("enabled") is True:
@@ -379,6 +390,19 @@ def verify(args: argparse.Namespace) -> dict[str, Any]:
             "remote_command_rescue_diagnostics_max_per_slug": option_value(
                 remote_cmd,
                 "--rescue-block-diagnostics-max-per-slug",
+            ),
+            "remote_command_has_tail_mark_snapshots": "--write-tail-mark-snapshots" in remote_cmd,
+            "remote_command_tail_mark_snapshot_min_age_s": option_value(
+                remote_cmd,
+                "--tail-mark-snapshot-min-age-s",
+            ),
+            "remote_command_tail_mark_snapshot_max_per_lot": option_value(
+                remote_cmd,
+                "--tail-mark-snapshot-max-per-lot",
+            ),
+            "remote_command_tail_mark_snapshot_min_interval_s": option_value(
+                remote_cmd,
+                "--tail-mark-snapshot-min-interval-s",
             ),
             "remote_command_has_concurrent_reader_evidence_flag": "--allow-concurrent-shared-ingress-readers" in remote_cmd,
             "remote_command_has_closeability_cancel_guard": "--risk-seed-cancel-on-closeability-net-cap" in remote_cmd,
