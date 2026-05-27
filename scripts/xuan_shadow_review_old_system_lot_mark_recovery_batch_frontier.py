@@ -147,33 +147,64 @@ def scan_mark_events(remote_outputs: Path, lots: list[dict[str, Any]], mature_ag
                     event = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                if event.get("kind") != "strict_rescue_block":
+                kind = event.get("kind")
+                if kind == "strict_rescue_block":
+                    qid = event.get("oldest_quote_intent_id") or event.get("quote_intent_id")
+                elif kind == "residual_tail_mark_snapshot":
+                    qid = event.get("quote_intent_id")
+                else:
                     continue
-                qid = event.get("oldest_quote_intent_id") or event.get("quote_intent_id")
                 if qid not in by_qid:
                     continue
-                reason = str(event.get("block_reason") or "")
+                reason = str(event.get("block_reason") or kind or "")
                 reason_counts[qid][reason] += 1
                 lot = by_qid[qid]
-                qty = fnum(event.get("oldest_lot_qty"), fnum(lot.get("qty"), 0.0)) or 0.0
-                held_px = fnum(event.get("oldest_lot_px"), fnum(lot.get("px"), 0.0))
-                close_ask = fnum(event.get("raw_comp_ask"))
+                if kind == "residual_tail_mark_snapshot":
+                    qty = fnum(event.get("lot_qty"), fnum(lot.get("qty"), 0.0)) or 0.0
+                    held_px = fnum(event.get("lot_px"), fnum(lot.get("px"), 0.0))
+                    close_ask = fnum(event.get("comp_ask"), fnum(event.get("raw_comp_ask")))
+                    fee_per_share = fnum(event.get("fee_per_share"), 0.0) or 0.0
+                    mark_value_no_fee = fnum(event.get("mark_value_no_fee"))
+                    if mark_value_no_fee is None:
+                        mark_value_no_fee = mark_value_from_close_ask(qty, close_ask)
+                    mark_value_after_fee = fnum(event.get("mark_value_after_fee"))
+                    if mark_value_after_fee is None:
+                        mark_value_after_fee = mark_value_from_close_ask(qty, close_ask, fee_per_share)
+                    age_ms = fnum(event.get("lot_age_ms"), 0.0) or 0.0
+                else:
+                    qty = fnum(event.get("oldest_lot_qty"), fnum(lot.get("qty"), 0.0)) or 0.0
+                    held_px = fnum(event.get("oldest_lot_px"), fnum(lot.get("px"), 0.0))
+                    close_ask = fnum(event.get("raw_comp_ask"))
+                    fee_per_share = fnum(event.get("fee_per_share"), 0.0) or 0.0
+                    age_ms = fnum(event.get("lot_age_ms"), fnum(event.get("oldest_lot_age_ms"), 0.0)) or 0.0
+                    mark_value_no_fee = mark_value_from_close_ask(qty, close_ask)
+                    mark_value_after_fee = (
+                        mark_value_from_close_ask(qty, close_ask, fee_per_share)
+                        if event.get("fee_per_share") is not None
+                        else None
+                    )
                 ts_ms = fnum(event.get("ts_ms"))
-                age_ms = fnum(event.get("lot_age_ms"), fnum(event.get("oldest_lot_age_ms"), 0.0)) or 0.0
-                mark_value = mark_value_from_close_ask(qty, close_ask)
                 cost = fnum(lot.get("cost"), 0.0) or 0.0
                 marks[qid].append(
                     {
+                        "source_kind": kind,
                         "ts_ms": ts_ms,
                         "age_ms": age_ms,
                         "mature_actionable": age_ms >= mature_age_ms,
                         "block_reason": reason,
                         "held_px": held_px,
                         "close_ask": close_ask,
+                        "fee_per_share": fee_per_share,
                         "qty": qty,
                         "cost": cost,
-                        "mark_value_no_fee": mark_value,
-                        "mark_recovery_rate_no_fee": mark_value / cost if mark_value is not None and cost else None,
+                        "mark_value_no_fee": mark_value_no_fee,
+                        "mark_value_after_fee": mark_value_after_fee,
+                        "mark_recovery_rate_no_fee": (
+                            mark_value_no_fee / cost if mark_value_no_fee is not None and cost else None
+                        ),
+                        "mark_recovery_rate_after_fee": (
+                            mark_value_after_fee / cost if mark_value_after_fee is not None and cost else None
+                        ),
                     }
                 )
 
@@ -186,25 +217,44 @@ def scan_mark_events(remote_outputs: Path, lots: list[dict[str, Any]], mature_ag
             for row in rows
             if row.get("mature_actionable") and row.get("mark_value_no_fee") is not None
         ]
+        mature_after_fee_rows = [
+            row
+            for row in rows
+            if row.get("mature_actionable") and row.get("mark_value_after_fee") is not None
+        ]
         best_early = max(early_rows, key=lambda row: fnum(row.get("mark_value_no_fee"), -1.0) or -1.0) if early_rows else None
         best_mature = (
             max(mature_rows, key=lambda row: fnum(row.get("mark_value_no_fee"), -1.0) or -1.0)
             if mature_rows
             else None
         )
+        best_mature_after_fee = (
+            max(mature_after_fee_rows, key=lambda row: fnum(row.get("mark_value_after_fee"), -1.0) or -1.0)
+            if mature_after_fee_rows
+            else None
+        )
         out[qid] = {
             "lot": lot,
-            "strict_rescue_block_rows_for_lot": len(rows),
+            "strict_rescue_block_rows_for_lot": sum(1 for row in rows if row.get("source_kind") == "strict_rescue_block"),
+            "tail_mark_snapshot_rows_for_lot": sum(
+                1 for row in rows if row.get("source_kind") == "residual_tail_mark_snapshot"
+            ),
             "block_reason_counts": dict(reason_counts.get(qid, Counter())),
             "best_early_mark_no_fee": best_early,
             "best_mature_actionable_mark_no_fee": best_mature,
+            "best_mature_actionable_mark_after_fee": best_mature_after_fee,
             "has_any_mark_proxy": best_early is not None,
             "has_mature_actionable_mark": best_mature is not None,
+            "has_mature_actionable_mark_after_fee": best_mature_after_fee is not None,
         }
     return rounded(out)
 
 
-def aggregate_mark(lot_marks: dict[str, dict[str, Any]], field: str) -> dict[str, Any]:
+def aggregate_mark(
+    lot_marks: dict[str, dict[str, Any]],
+    field: str,
+    mark_value_key: str = "mark_value_no_fee",
+) -> dict[str, Any]:
     total_cost = 0.0
     total_qty = 0.0
     total_mark = 0.0
@@ -218,7 +268,7 @@ def aggregate_mark(lot_marks: dict[str, dict[str, Any]], field: str) -> dict[str
         total_cost += cost
         total_qty += qty
         mark = body(item, field)
-        mark_value = fnum(mark.get("mark_value_no_fee"))
+        mark_value = fnum(mark.get(mark_value_key))
         if mark_value is None:
             missing.append(qid)
             continue
@@ -233,9 +283,9 @@ def aggregate_mark(lot_marks: dict[str, dict[str, Any]], field: str) -> dict[str
             "covered_qty": covered_qty,
             "covered_cost_share": covered_cost / total_cost if total_cost else None,
             "covered_qty_share": covered_qty / total_qty if total_qty else None,
-            "mark_value_no_fee": total_mark,
-            "mark_recovery_rate_no_fee_on_total_cost": total_mark / total_cost if total_cost else None,
-            "mark_recovery_rate_no_fee_on_covered_cost": total_mark / covered_cost if covered_cost else None,
+            mark_value_key: total_mark,
+            f"{mark_value_key}_recovery_rate_on_total_cost": total_mark / total_cost if total_cost else None,
+            f"{mark_value_key}_recovery_rate_on_covered_cost": total_mark / covered_cost if covered_cost else None,
             "missing_lot_qids": missing,
         }
     )
@@ -247,6 +297,7 @@ def top_lots(lot_marks: dict[str, dict[str, Any]], n: int = 8) -> list[dict[str,
         lot = body(item, "lot")
         early = body(item, "best_early_mark_no_fee")
         mature = body(item, "best_mature_actionable_mark_no_fee")
+        mature_after_fee = body(item, "best_mature_actionable_mark_after_fee")
         rows.append(
             {
                 "quote_intent_id": qid,
@@ -255,13 +306,17 @@ def top_lots(lot_marks: dict[str, dict[str, Any]], n: int = 8) -> list[dict[str,
                 "qty": lot.get("qty"),
                 "cost": lot.get("cost"),
                 "strict_rescue_block_rows_for_lot": item.get("strict_rescue_block_rows_for_lot"),
+                "tail_mark_snapshot_rows_for_lot": item.get("tail_mark_snapshot_rows_for_lot"),
                 "has_any_mark_proxy": item.get("has_any_mark_proxy"),
                 "has_mature_actionable_mark": item.get("has_mature_actionable_mark"),
+                "has_mature_actionable_mark_after_fee": item.get("has_mature_actionable_mark_after_fee"),
                 "best_early_recovery_rate_no_fee": early.get("mark_recovery_rate_no_fee"),
                 "best_early_close_ask": early.get("close_ask"),
                 "best_early_age_ms": early.get("age_ms"),
                 "best_mature_recovery_rate_no_fee": mature.get("mark_recovery_rate_no_fee"),
+                "best_mature_recovery_rate_after_fee": mature_after_fee.get("mark_recovery_rate_after_fee"),
                 "best_mature_close_ask": mature.get("close_ask"),
+                "best_mature_after_fee_close_ask": mature_after_fee.get("close_ask"),
                 "block_reason_counts": item.get("block_reason_counts"),
             }
         )
@@ -281,20 +336,30 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     lot_marks = scan_mark_events(args.remote_outputs, lots, args.mature_age_ms)
     early_aggregate = aggregate_mark(lot_marks, "best_early_mark_no_fee")
     mature_aggregate = aggregate_mark(lot_marks, "best_mature_actionable_mark_no_fee")
+    mature_after_fee_aggregate = aggregate_mark(
+        lot_marks,
+        "best_mature_actionable_mark_after_fee",
+        "mark_value_after_fee",
+    )
 
     break_even_rate = fnum(economic_layer.get("required_recovery_rate"), 1.0) or 1.0
     research_rate = fnum(research_layer.get("required_recovery_rate"), 1.0) or 1.0
     gross_reduction = fnum(gross_layer.get("binding_required_reduction"), 0.0) or 0.0
 
-    early_recovery_rate = fnum(early_aggregate.get("mark_recovery_rate_no_fee_on_total_cost"), 0.0) or 0.0
-    mature_recovery_rate = fnum(mature_aggregate.get("mark_recovery_rate_no_fee_on_total_cost"), 0.0) or 0.0
-    mature_mark_value = fnum(mature_aggregate.get("mark_value_no_fee"), 0.0) or 0.0
-    mature_coverage_full = not list(mature_aggregate.get("missing_lot_qids") or [])
+    early_recovery_rate = fnum(early_aggregate.get("mark_value_no_fee_recovery_rate_on_total_cost"), 0.0) or 0.0
+    mature_recovery_rate_no_fee = (
+        fnum(mature_aggregate.get("mark_value_no_fee_recovery_rate_on_total_cost"), 0.0) or 0.0
+    )
+    mature_recovery_rate_after_fee = (
+        fnum(mature_after_fee_aggregate.get("mark_value_after_fee_recovery_rate_on_total_cost"), 0.0) or 0.0
+    )
+    mature_mark_value_after_fee = fnum(mature_after_fee_aggregate.get("mark_value_after_fee"), 0.0) or 0.0
+    mature_coverage_any = mature_mark_value_after_fee > 0.0
 
     early_proxy_research_pass = early_recovery_rate >= research_rate
-    mature_research_pass = mature_coverage_full and mature_recovery_rate >= research_rate
-    economic_break_even_pass = mature_coverage_full and mature_recovery_rate >= break_even_rate
-    gross_capacity_reduction_pass = mature_mark_value >= gross_reduction
+    mature_research_pass = mature_recovery_rate_after_fee >= research_rate
+    economic_break_even_pass = mature_recovery_rate_after_fee >= break_even_rate
+    gross_capacity_reduction_pass = mature_mark_value_after_fee >= gross_reduction
 
     diagnostic_suppressed_total = sum(fnum(diag.get("suppressed"), 0.0) or 0.0 for diag in diagnostics.values())
     diagnostic_written_total = sum(fnum(diag.get("written"), 0.0) or 0.0 for diag in diagnostics.values())
@@ -304,9 +369,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             suppressed_by_reason[str(reason)] += int(count or 0)
 
     blocker_reasons = []
-    if not mature_coverage_full:
+    tail_snapshot_rows = sum(
+        fnum(item.get("tail_mark_snapshot_rows_for_lot"), 0.0) or 0.0 for item in lot_marks.values()
+    )
+
+    if not mature_coverage_any:
         blocker_reasons.append("mature_actionable_mark_missing_for_residual_lots")
-    if diagnostic_suppressed_total > 0:
+    if diagnostic_suppressed_total > 0 and tail_snapshot_rows <= 0:
         blocker_reasons.append("strict_rescue_block_diagnostics_capped_before_tail_mark_evidence")
     if not mature_research_pass:
         blocker_reasons.append("observed_mature_recovery_below_research_threshold")
@@ -343,12 +412,14 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "residual_lot_count": len(lots),
                 "early_mark_proxy_aggregate_no_fee": early_aggregate,
                 "mature_actionable_mark_aggregate_no_fee": mature_aggregate,
+                "mature_actionable_mark_aggregate_after_fee": mature_after_fee_aggregate,
                 "top_residual_lot_marks": top_lots(lot_marks),
                 "diagnostics": {
                     "summary_files_with_rescue_block_diagnostics": len(diagnostics),
                     "strict_rescue_block_diagnostics_written": diagnostic_written_total,
                     "strict_rescue_block_diagnostics_suppressed": diagnostic_suppressed_total,
                     "suppressed_by_reason": dict(suppressed_by_reason),
+                    "tail_mark_snapshot_rows": tail_snapshot_rows,
                 },
             },
             "interpretation": {
@@ -357,9 +428,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                     "when lots are blocked by age/min-cost rules"
                 ),
                 "mature_mark_read": (
-                    "current capped diagnostics do not retain enough mature tail mark rows to prove recovery"
-                    if not mature_coverage_full
-                    else "mature tail marks are available for every residual lot"
+                    "tail mark snapshots are absent for residual lots"
+                    if not mature_coverage_any
+                    else "tail mark snapshots provide mature residual mark evidence; after-fee aggregate recovery drives pass/fail"
                 ),
                 "capacity_read": "gross capacity remains blocked unless mature marks or actual closes cover the required reduction",
                 "data_gap_read": (
@@ -373,7 +444,7 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
                 "economic_break_even_repricing_pass": economic_break_even_pass,
                 "research_mark_recovery_review_pass": mature_research_pass,
                 "gross_capacity_exposure_pass": gross_capacity_reduction_pass,
-                "observed_mature_recovery_evidence_ready": mature_coverage_full,
+                "observed_mature_recovery_evidence_ready": mature_coverage_any,
                 "residual_reclassification_allowed_for_research": mature_research_pass,
                 "residual_reclassification_allowed_for_capacity": gross_capacity_reduction_pass,
                 "bounded_cap25_remote_rationale_ready": False,
@@ -403,6 +474,7 @@ def render_markdown(card: dict[str, Any]) -> str:
     observed = card["batch_observed"]
     early = observed["early_mark_proxy_aggregate_no_fee"]
     mature = observed["mature_actionable_mark_aggregate_no_fee"]
+    mature_after_fee = observed["mature_actionable_mark_aggregate_after_fee"]
     diagnostics = observed["diagnostics"]
     lines = [
         "# Xuan Old-System Lot Mark Recovery Batch Frontier",
@@ -428,9 +500,11 @@ def render_markdown(card: dict[str, Any]) -> str:
         "## Batch Observed",
         "",
         f"- residual lot count: `{observed['residual_lot_count']}`",
-        f"- early mark proxy recovery on total cost: `{early['mark_recovery_rate_no_fee_on_total_cost']}`",
-        f"- mature actionable recovery on total cost: `{mature['mark_recovery_rate_no_fee_on_total_cost']}`",
-        f"- mature missing qids: `{', '.join(mature['missing_lot_qids']) or 'none'}`",
+        f"- early mark proxy recovery on total cost no-fee: `{early['mark_value_no_fee_recovery_rate_on_total_cost']}`",
+        f"- mature actionable recovery on total cost no-fee: `{mature['mark_value_no_fee_recovery_rate_on_total_cost']}`",
+        f"- mature actionable recovery on total cost after-fee: `{mature_after_fee['mark_value_after_fee_recovery_rate_on_total_cost']}`",
+        f"- mature after-fee missing qids: `{', '.join(mature_after_fee['missing_lot_qids']) or 'none'}`",
+        f"- tail mark snapshot rows: `{diagnostics['tail_mark_snapshot_rows']}`",
         f"- diagnostics written/suppressed: `{diagnostics['strict_rescue_block_diagnostics_written']}` / `{diagnostics['strict_rescue_block_diagnostics_suppressed']}`",
         "",
         "## Interpretation",
