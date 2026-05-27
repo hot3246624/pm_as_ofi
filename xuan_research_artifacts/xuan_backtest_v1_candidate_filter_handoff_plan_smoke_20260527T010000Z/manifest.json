@@ -1,0 +1,28 @@
+{
+  "artifact": "xuan_backtest_v1_candidate_filter_handoff_plan_smoke",
+  "case_decisions": {
+    "complete": "KEEP_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_READY_PRIVATE_BLOCKED",
+    "forbidden_columns": "DISCARD_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_FORBIDDEN_INPUT",
+    "no_candidates": "UNKNOWN_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_GAPS",
+    "private_ready": "DISCARD_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_FORBIDDEN_INPUT",
+    "raw_evidence": "DISCARD_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_FORBIDDEN_INPUT"
+  },
+  "checks": {
+    "complete_keep": true,
+    "complete_lead_hype": true,
+    "complete_private_blocked": true,
+    "forbidden_columns_discard": true,
+    "no_candidates_unknown": true,
+    "no_deployable_claim": true,
+    "private_ready_discard": true,
+    "raw_evidence_discard": true
+  },
+  "decision": "KEEP",
+  "decision_label": "KEEP_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_SMOKE_PASS",
+  "deployable": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false
+  },
+  "strategy_evidence": false
+}

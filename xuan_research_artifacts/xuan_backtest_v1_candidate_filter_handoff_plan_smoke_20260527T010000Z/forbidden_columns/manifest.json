@@ -1,0 +1,251 @@
+{
+  "artifact": "xuan_backtest_v1_candidate_filter_handoff_plan",
+  "blockers": [],
+  "candidate_filter": {
+    "accepted_candidate_count": 2,
+    "input_candidate_count": 2,
+    "min_experiment_count": 2,
+    "rejected_candidates": [],
+    "selected_candidates": [
+      {
+        "asset": "HYPE",
+        "audit_rank": 1,
+        "audit_status": "SEARCH_SAFE_READY_PRIVATE_BLOCKED",
+        "avg_queue_pnl": -0.05,
+        "best_queue_pnl": -0.05,
+        "candidate_key": "leadkey",
+        "deployable_ready": false,
+        "experiment_count": 2,
+        "experiment_labels": "deep_v1;formal_latest",
+        "max_seen_matrix_count": 3,
+        "private_promotion_gate_pass": false,
+        "private_truth_ready_count": 0,
+        "promotion_blockers": "owner_private_truth_missing_for_deployable_promotion",
+        "search_safe_gate_pass": true
+      },
+      {
+        "asset": "DOGE",
+        "audit_rank": 2,
+        "audit_status": "SEARCH_SAFE_READY_PRIVATE_BLOCKED",
+        "avg_queue_pnl": -0.05,
+        "best_queue_pnl": -0.05,
+        "candidate_key": "secondkey",
+        "deployable_ready": false,
+        "experiment_count": 2,
+        "experiment_labels": "deep_v1;formal_latest",
+        "max_seen_matrix_count": 3,
+        "private_promotion_gate_pass": false,
+        "private_truth_ready_count": 0,
+        "promotion_blockers": "owner_private_truth_missing_for_deployable_promotion",
+        "search_safe_gate_pass": true
+      }
+    ]
+  },
+  "contract_name": "xuan_backtest_v1_candidate_filter_handoff_plan_v1",
+  "created_utc": "20260527T010000Z",
+  "decision": "DISCARD",
+  "decision_label": "DISCARD_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_FORBIDDEN_INPUT",
+  "deployable": false,
+  "forbidden_blockers": [
+    "audit_manifest_forbidden_candidate_columns_present"
+  ],
+  "handoff_plan": {
+    "label_policy": {
+      "future_labels_allowed_as_live_criteria": false,
+      "labels_allowed_for_train_holdout_scoring": true,
+      "labels_allowed_in_live_predicate": false,
+      "realized_pair_cost_allowed_as_live_criteria": false
+    },
+    "lead_asset": "HYPE",
+    "lead_candidate_key": "leadkey",
+    "minimum_window": {
+      "holdout_days": 2,
+      "holdout_rows": 50,
+      "source_sequence_coverage": 0.95,
+      "train_days": 3,
+      "train_rows": 100
+    },
+    "required_files": [
+      "observable_pre_action_candidate_rows.jsonl",
+      "observable_pre_action_source_link_summary.json",
+      "observable_pre_action_feature_join_manifest.json",
+      "observable_pre_action_same_window_offline_labels.csv",
+      "same_window_aggregate_summary.json",
+      "observable_pre_action_same_window_offline_label_handoff.json",
+      "observable_pre_action_training_bridge_joined_rows.jsonl",
+      "observable_pre_action_training_bridge_summary.json"
+    ],
+    "required_row_fields": [
+      "source_handoff_id",
+      "source_seed_candidate_row_id",
+      "source_seed_action_id",
+      "day_id",
+      "condition_id",
+      "market_slug",
+      "status_before_action",
+      "side",
+      "offset_s",
+      "source_sequence_present",
+      "source_pair_qty",
+      "source_pair_cost",
+      "source_pair_pnl",
+      "source_residual_qty",
+      "source_residual_cost"
+    ],
+    "safe_generation_note": "Generate future same-window handoffs for this asset/candidate only through a bounded no-order diagnostic or already approved local materialization that writes row-level exact ids. Do not use raw/replay scans, public-profile single-day filters, live orders, or owner-private claims.",
+    "validation_order": [
+      "same-window handoff contract validator",
+      "non-fixture training bridge materializer",
+      "multiday same-window label handoff arrival inventory",
+      "multiday same-window label handoff accumulator",
+      "offline training scorer",
+      "denominator replay scorer after frozen rule only"
+    ]
+  },
+  "inputs": {
+    "audit_manifest": "xuan_research_artifacts/xuan_backtest_v1_candidate_filter_handoff_plan_smoke_20260527T010000Z/fixtures/forbidden_columns/BACKTEST_CANDIDATE_AUDIT_PACK_MANIFEST.json",
+    "candidate_audit_pack_csv": "xuan_research_artifacts/xuan_backtest_v1_candidate_filter_handoff_plan_smoke_20260527T010000Z/fixtures/forbidden_columns/backtest_candidate_audit_pack.csv",
+    "candidate_audit_pack_evidence_csv": "xuan_research_artifacts/xuan_backtest_v1_candidate_filter_handoff_plan_smoke_20260527T010000Z/fixtures/forbidden_columns/backtest_candidate_audit_pack_evidence.csv",
+    "suite_manifest": "xuan_research_artifacts/xuan_backtest_v1_candidate_filter_handoff_plan_smoke_20260527T010000Z/fixtures/forbidden_columns/BACKTEST_EXPERIMENT_SUITE_MANIFEST.json"
+  },
+  "lead_candidate": {
+    "asset": "HYPE",
+    "audit_rank": 1,
+    "audit_status": "SEARCH_SAFE_READY_PRIVATE_BLOCKED",
+    "avg_queue_pnl": -0.05,
+    "best_queue_pnl": -0.05,
+    "candidate_key": "leadkey",
+    "deployable_ready": false,
+    "experiment_count": 2,
+    "experiment_labels": "deep_v1;formal_latest",
+    "max_seen_matrix_count": 3,
+    "private_promotion_gate_pass": false,
+    "private_truth_ready_count": 0,
+    "promotion_blockers": "owner_private_truth_missing_for_deployable_promotion",
+    "search_safe_gate_pass": true
+  },
+  "lead_candidate_evidence": [
+    {
+      "audit_status": "EVIDENCE_ONLY",
+      "experiment_label": "deep_v1",
+      "job_id": "validate_0001_hype_leadkey",
+      "ok": true,
+      "private_truth_ready": false,
+      "public_or_proxy_truth_only": true,
+      "queue_avg_pnl": "-0.05",
+      "queue_best_pnl": "-0.05",
+      "requires_owner_private_truth": false,
+      "requires_raw": false,
+      "requires_remote": false,
+      "search_safe_validation_ready": true,
+      "source_truth_ready": true,
+      "validation_fingerprint": "validation-leadkey-deep_v1",
+      "validation_manifest": "xuan_research_artifacts/xuan_backtest_v1_candidate_filter_handoff_plan_smoke_20260527T010000Z/fixtures/forbidden_columns/leadkey_deep_v1_1_VALIDATION_MANIFEST.json",
+      "validation_manifest_ok": true,
+      "validation_manifest_private_truth_ready": false,
+      "validation_scope": {
+        "allowed_layers": [
+          "replay_source_truth",
+          "public_proxy_evidence",
+          "search_safe_lineage"
+        ],
+        "private_truth_ready_on_completion": false,
+        "requires_owner_private_truth": false,
+        "requires_raw": false,
+        "requires_remote": false
+      }
+    },
+    {
+      "audit_status": "EVIDENCE_ONLY",
+      "experiment_label": "formal_latest",
+      "job_id": "validate_0002_hype_leadkey",
+      "ok": true,
+      "private_truth_ready": false,
+      "public_or_proxy_truth_only": true,
+      "queue_avg_pnl": "-0.05",
+      "queue_best_pnl": "-0.05",
+      "requires_owner_private_truth": false,
+      "requires_raw": false,
+      "requires_remote": false,
+      "search_safe_validation_ready": true,
+      "source_truth_ready": true,
+      "validation_fingerprint": "validation-leadkey-formal_latest",
+      "validation_manifest": "xuan_research_artifacts/xuan_backtest_v1_candidate_filter_handoff_plan_smoke_20260527T010000Z/fixtures/forbidden_columns/leadkey_formal_latest_2_VALIDATION_MANIFEST.json",
+      "validation_manifest_ok": true,
+      "validation_manifest_private_truth_ready": false,
+      "validation_scope": {
+        "allowed_layers": [
+          "replay_source_truth",
+          "public_proxy_evidence",
+          "search_safe_lineage"
+        ],
+        "private_truth_ready_on_completion": false,
+        "requires_owner_private_truth": false,
+        "requires_raw": false,
+        "requires_remote": false
+      }
+    }
+  ],
+  "next_executable_action": "Fix forbidden/private/promotion/scope issues before using the backtest audit pack.",
+  "no_order_diagnostic_allowed": false,
+  "private_truth_ready": false,
+  "promotion_gate": {
+    "passed": false,
+    "private_promotion_ready_count": 0,
+    "reason": "backtest_v1_candidate_filter_private_blocked_only"
+  },
+  "research_ranking": {
+    "backtest_candidate_filter_ready": false,
+    "candidate_assets": {
+      "candidate_assets": [
+        "DOGE",
+        "HYPE"
+      ],
+      "candidate_count_by_asset": {
+        "DOGE": 1,
+        "HYPE": 1
+      },
+      "expected_assets": [
+        "BNB",
+        "BTC",
+        "DOGE",
+        "ETH",
+        "HYPE",
+        "SOL",
+        "XRP"
+      ],
+      "missing_candidate_assets": [
+        "BNB",
+        "BTC",
+        "ETH",
+        "SOL",
+        "XRP"
+      ]
+    },
+    "interpretation": "Backtest V1 audit pack is a search-safe proxy candidate filter. Leads remain private-blocked and must not be treated as owner private truth, deployable rules, or promotion evidence.",
+    "lead_asset": "HYPE",
+    "lead_candidate_key": "leadkey",
+    "real_miner_input_ready": false,
+    "status": "DISCARD_BACKTEST_V1_CANDIDATE_FILTER_HANDOFF_PLAN_FORBIDDEN_INPUT",
+    "strategy_evidence": false
+  },
+  "safety": {
+    "aws_or_remote_read": false,
+    "broker_modified": false,
+    "canary_or_live_started": false,
+    "events_jsonl_read": false,
+    "new_no_order_diagnostic_started": false,
+    "orders_cancels_redeems_sent": false,
+    "raw_replay_or_full_store_scan": false,
+    "shared_ingress_modified": false,
+    "systemd_or_service_control_used": false,
+    "trading_behavior_changed": false
+  },
+  "strategy_evidence": false,
+  "suite": {
+    "candidate_audit_pack_fingerprint": "fingerprint-forbidden_columns",
+    "ok": true,
+    "readiness_fingerprint": "readiness-forbidden_columns",
+    "suite_fingerprint": "suite-forbidden_columns"
+  }
+}
