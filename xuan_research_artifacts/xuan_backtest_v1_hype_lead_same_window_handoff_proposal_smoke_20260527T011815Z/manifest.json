@@ -1,0 +1,24 @@
+{
+  "artifact": "xuan_backtest_v1_hype_lead_same_window_handoff_proposal_smoke",
+  "case_decisions": {
+    "complete": "KEEP_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_READY_APPROVAL_REQUIRED",
+    "inconsistent_params": "UNKNOWN_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_GAPS",
+    "missing_params": "UNKNOWN_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_GAPS",
+    "plan_not_keep": "UNKNOWN_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_GAPS",
+    "private_claim": "DISCARD_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_FORBIDDEN_INPUT",
+    "raw_remote": "DISCARD_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_FORBIDDEN_INPUT",
+    "wrong_asset": "UNKNOWN_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_GAPS"
+  },
+  "contract_name": "xuan_backtest_v1_hype_lead_same_window_handoff_proposal_smoke_v1",
+  "created_utc": "20260527T011815Z",
+  "decision": "KEEP",
+  "decision_label": "KEEP_BACKTEST_V1_HYPE_LEAD_SAME_WINDOW_HANDOFF_PROPOSAL_SMOKE_PASS",
+  "promotion_gate": {
+    "passed": false
+  },
+  "safety": {
+    "events_jsonl_read": false,
+    "new_no_order_diagnostic_started": false,
+    "raw_replay_or_full_store_scan": false
+  }
+}
