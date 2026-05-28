@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 
-STAMP = "20260528T1133Z"
+STAMP = "20260528T1203Z"
 
 POLY_BT_ROOT = Path("/Users/hot/web3Scientist/poly_backtest_data")
 CONTRACT_ROOT = POLY_BT_ROOT / "derived/contract_examples"
@@ -32,6 +32,10 @@ DEFAULT_BTC_CANARY = Path(
     "xuan_shadow_review_backtest_v1_btc_canary_readiness_gate_20260528T0922Z.json"
 )
 DEFAULT_BTC_PARITY = CONTRACT_ROOT / "backtest_v1_btc_parity_latest/BACKTEST_V1_BTC_PARITY_GATE.json"
+DEFAULT_SEMANTIC_ALIGNMENT = (
+    CONTRACT_ROOT
+    / "btc_parity_semantic_alignment_latest/BTC_PARITY_SEMANTIC_ALIGNMENT_EXPERIMENT.json"
+)
 DEFAULT_STRATEGY_READINESS = (
     CONTRACT_ROOT / "xuan_backtest_v1_strategy_readiness_latest/XUAN_BACKTEST_V1_STRATEGY_READINESS_GATE.json"
 )
@@ -177,6 +181,7 @@ def build_preflight(
     import_stub: dict[str, Any],
     btc_canary: dict[str, Any],
     btc_parity: dict[str, Any],
+    semantic_alignment: dict[str, Any],
     strategy: dict[str, Any],
     refresh: dict[str, Any],
     capital: dict[str, Any],
@@ -213,9 +218,20 @@ def build_preflight(
             "status": "BLOCKED",
             "evidence": {
                 "btc_parity_status": btc_parity.get("status"),
+                "semantic_alignment_status": semantic_alignment.get("status"),
                 "blockers": btc_parity.get("blockers") or [],
                 "source_semantics_contract_id_present": has_top_level_id(btc_parity, "source_semantics_contract_id"),
                 "source_dataset_fingerprint_present": has_top_level_id(btc_parity, "source_dataset_fingerprint"),
+            },
+        },
+        {
+            "gate": "btc_semantic_alignment_proven",
+            "status": "PASS" if body(semantic_alignment, "decision").get("parity_proven") else "BLOCKED",
+            "evidence": {
+                "status": semantic_alignment.get("status"),
+                "summary": body(semantic_alignment, "summary"),
+                "criteria": body(body(semantic_alignment, "decision"), "criteria"),
+                "reason": body(semantic_alignment, "decision").get("reason"),
             },
         },
         {
@@ -297,13 +313,14 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
     import_stub = load_json(args.import_stub)
     btc_canary = load_json(args.btc_canary)
     btc_parity = maybe_json(args.btc_parity)
+    semantic_alignment = maybe_json(args.semantic_alignment)
     strategy = maybe_json(args.strategy_readiness)
     refresh = maybe_json(args.refresh_summary)
     capital = maybe_json(args.capital_ledger)
     rescore = maybe_json(args.completion_rescore)
     bridge = maybe_json(args.xuan_bridge)
     preflight = build_preflight(
-        import_stub, btc_canary, btc_parity, strategy, refresh, capital, rescore, bridge
+        import_stub, btc_canary, btc_parity, semantic_alignment, strategy, refresh, capital, rescore, bridge
     )
     hard_blockers = [row["gate"] for row in preflight if row.get("status") == "BLOCKED"]
     new_useful_outputs = [
@@ -312,6 +329,13 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
             "status": btc_parity.get("status"),
             "useful": True,
             "clears_import_preflight": False,
+        },
+        {
+            "artifact": "btc_parity_semantic_alignment_latest",
+            "status": semantic_alignment.get("status"),
+            "useful": True,
+            "clears_import_preflight": False,
+            "reason": "semantic alignment experiment was run but did not prove parity under explicit thresholds",
         },
         {
             "artifact": "xuan_capital_ledger_latest",
@@ -345,6 +369,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
                 "import_stub": str(args.import_stub),
                 "btc_canary": str(args.btc_canary),
                 "btc_parity": str(args.btc_parity),
+                "semantic_alignment": str(args.semantic_alignment),
                 "strategy_readiness": str(args.strategy_readiness),
                 "refresh_summary": str(args.refresh_summary),
                 "capital_ledger": str(args.capital_ledger),
@@ -375,6 +400,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
             "hard_blockers_before_any_import": hard_blockers,
             "status_summary": {
                 "btc_parity_status": btc_parity.get("status"),
+                "semantic_alignment_status": semantic_alignment.get("status"),
                 "strategy_readiness_status": strategy.get("status"),
                 "refresh_status": refresh.get("status"),
                 "capital_ledger_status": capital.get("status"),
@@ -383,6 +409,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
             },
             "warnings": [
                 "Refreshed research artifacts are useful but not import authorization.",
+                "BTC semantic alignment experiment remains blocked and does not establish old/new source equivalence.",
                 "Global capital ledger cannot size BTC low_residual_core_pair_v1 canary.",
                 "Research rescore top CSV lacks import metadata fields.",
                 "No owner private truth exists in historical V1/L2 outputs.",
@@ -441,6 +468,7 @@ def main() -> int:
     parser.add_argument("--import-stub", type=Path, default=DEFAULT_IMPORT_STUB)
     parser.add_argument("--btc-canary", type=Path, default=DEFAULT_BTC_CANARY)
     parser.add_argument("--btc-parity", type=Path, default=DEFAULT_BTC_PARITY)
+    parser.add_argument("--semantic-alignment", type=Path, default=DEFAULT_SEMANTIC_ALIGNMENT)
     parser.add_argument("--strategy-readiness", type=Path, default=DEFAULT_STRATEGY_READINESS)
     parser.add_argument("--refresh-summary", type=Path, default=DEFAULT_REFRESH_SUMMARY)
     parser.add_argument("--capital-ledger", type=Path, default=DEFAULT_CAPITAL_LEDGER)
