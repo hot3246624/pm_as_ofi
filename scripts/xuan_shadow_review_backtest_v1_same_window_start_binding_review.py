@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Any
 
 
-STAMP = "20260528T1643Z"
+STAMP = "20260529T0525Z"
 
 REPO = Path("/Users/hot/web3Scientist/pm_as_ofi-xuan-frontier")
 POLY_BT_ROOT = Path("/Users/hot/web3Scientist/poly_backtest_data")
@@ -326,10 +326,14 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
         and runner_config.get("remote_runner_allowed") is False
         and runner_config.get("candidate_import_allowed") is False
     )
+    source = body(runner_config, "candidate_source")
     target_scope_match = (
         candidate_summary["target_asset_only"]
         and candidate_summary["target_candidate_count_match"]
-        and TARGET_FILTER_NAME in str(runner_config.get("candidate_source", {}))
+        and (
+            source.get("filter_name") == TARGET_FILTER_NAME
+            or TARGET_FILTER_NAME in str(runner_config.get("candidate_source", {}))
+        )
     )
     live_selector_bound = config_has_live_selector(runner_config)
     owner_truth_binding_ready = config_owner_truth_binding_ready(runner_config)
@@ -341,6 +345,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
         and start_preflight.get("validation_errors") == []
         and btc_canary.get("canary_preflight_ready") is True
     )
+    historical_binding_only = candidate_summary["historical_only"] and not live_selector_bound
     runtime_binding_ready = (
         manual_approval_captured
         and conflict_clear
@@ -348,7 +353,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
         and research_preflight_accepted
         and executable_backend_ready
         and target_scope_match
-        and not candidate_summary["historical_only"]
+        and not historical_binding_only
         and live_selector_bound
         and owner_truth_binding_ready
     )
@@ -364,7 +369,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
         remaining_blockers.append("start_command_backend_script_missing")
     if not target_scope_match:
         remaining_blockers.append("runtime_config_not_bound_to_target_btc_le3pct_filter")
-    if candidate_summary["historical_only"]:
+    if historical_binding_only:
         remaining_blockers.append("candidate_binding_uses_historical_rows_not_live_selector")
     if not live_selector_bound:
         remaining_blockers.append("runtime_market_selection_contract_missing")
@@ -372,11 +377,16 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
         remaining_blockers.append("owner_truth_collection_runtime_binding_missing")
     if not research_preflight_accepted:
         remaining_blockers.append("research_preflight_not_accepted")
+    status = (
+        "KEEP_SHADOW_REVIEW_BACKTEST_V1_SAME_WINDOW_RUNTIME_BINDING_READY_START_NOT_RUN_LOCAL_ONLY"
+        if runtime_binding_ready
+        else "BLOCKED_SHADOW_REVIEW_BACKTEST_V1_SAME_WINDOW_START_BINDING_NOT_EXECUTABLE_LOCAL_ONLY"
+    )
 
     return clean(
         {
             "artifact": "xuan_shadow_review_backtest_v1_same_window_start_binding_review",
-            "status": "BLOCKED_SHADOW_REVIEW_BACKTEST_V1_SAME_WINDOW_START_BINDING_NOT_EXECUTABLE_LOCAL_ONLY",
+            "status": status,
             "created_utc": STAMP,
             "script": "scripts/xuan_shadow_review_backtest_v1_same_window_start_binding_review.py",
             "inputs": {
@@ -404,7 +414,8 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
                 "xuan_side_live_selector_preview_ready": live_preview["preview_ready"],
                 "start_command_backend_exists": executable_backend_ready,
                 "target_btc_le3pct_filter_bound": target_scope_match,
-                "historical_candidate_binding_only": candidate_summary["historical_only"],
+                "historical_candidate_binding_only": historical_binding_only,
+                "historical_research_filter_contract_present": candidate_summary["historical_only"],
                 "live_runtime_market_selector_bound": live_selector_bound,
                 "owner_truth_collection_runtime_binding_ready": owner_truth_binding_ready,
                 "runtime_binding_ready": runtime_binding_ready,
@@ -414,7 +425,11 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
                 "deployable": False,
                 "live_orders_allowed": False,
                 "private_truth_ready": False,
-                "next_lane": "fix_executable_backend_and_live_btc_runtime_selector_before_any_shadow_start",
+                "next_lane": (
+                    "manual_final_start_decision_required_before_running_no_order_backend"
+                    if runtime_binding_ready
+                    else "fix_executable_backend_and_live_btc_runtime_selector_before_any_shadow_start"
+                ),
             },
             "fresh_active_runner_conflicts": conflicts,
             "command_preview_review": command_status,
@@ -453,9 +468,7 @@ def build_card(args: argparse.Namespace) -> dict[str, Any]:
             },
             "warnings": [
                 "Manual approval is captured, but it only clears the approval blocker.",
-                "The colleague packet is useful engineering preflight material, but the preview command points to a missing script in this repo.",
-                "The runner config still binds historical candidate rows instead of a current/future BTC 5m market selector.",
-                "The runner config scope is BTC+ETH tier-A <=5pct, not the selected BTC <=3pct tiny-canary filter.",
+                "A historical research filter binding is acceptable only when a separate current/future live_market_selector is present.",
                 "No shadow/canary was started and no import/live/remote action is authorized by this review.",
             ],
         }
@@ -477,6 +490,7 @@ def render_markdown(card: dict[str, Any]) -> str:
         f"- start_command_backend_exists: `{decision.get('start_command_backend_exists')}`",
         f"- target_btc_le3pct_filter_bound: `{decision.get('target_btc_le3pct_filter_bound')}`",
         f"- live_runtime_market_selector_bound: `{decision.get('live_runtime_market_selector_bound')}`",
+        f"- owner_truth_collection_runtime_binding_ready: `{decision.get('owner_truth_collection_runtime_binding_ready')}`",
         f"- runtime_binding_ready: `{decision.get('runtime_binding_ready')}`",
         f"- same_window_shadow_start_ready: `{decision.get('same_window_shadow_start_ready')}`",
         "",
@@ -487,12 +501,12 @@ def render_markdown(card: dict[str, Any]) -> str:
         "- The colleague preflight has dry/no-order safety checks and no live/import/order path enabled.",
         f"- A xuan-side live BTC market selector preview resolved `{live_preview.get('resolved_count')}` future-offset markets.",
         "",
-        "## Blocking Findings",
+        "## Binding Findings",
         "",
         f"- Start command script: `{command.get('script_path')}` exists=`{command.get('script_exists')}`.",
         f"- Candidate binding rows: `{candidate.get('row_count')}`, assets=`{candidate.get('asset_values')}`, historical_only=`{candidate.get('historical_only')}`.",
-        "- The runtime config is not bound to `btc_same_window_residual_share_le_3pct_v1`.",
-        "- The runtime config does not define a current/future market-selection contract.",
+        f"- Target BTC <=3pct filter bound: `{decision.get('target_btc_le3pct_filter_bound')}`.",
+        f"- Current/future market selector bound: `{decision.get('live_runtime_market_selector_bound')}`.",
         "",
         "## Remaining Blockers",
         "",
@@ -504,7 +518,7 @@ def render_markdown(card: dict[str, Any]) -> str:
             "",
             "## Interpretation",
             "",
-            "The backtest-side packet is a useful start-preflight artifact, but it is not an executable no-order shadow binding yet. It should not be started until the backend script exists, the target BTC <=3pct filter is bound, and live BTC market discovery replaces historical rows.",
+            "This review can clear the local runtime-binding contract, but it still does not start the backend or authorize import/live/remote actions. A future start must use fresh conflict checks and preserve all no-order safety flags.",
             "",
         ]
     )
