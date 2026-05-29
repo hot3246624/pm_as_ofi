@@ -249,15 +249,28 @@ def resolve_live_market_preview(artifact_dir: Path, prefix: str, offsets: list[i
             "--format",
             "json",
         ]
-        result = subprocess.run(
-            cmd,
-            cwd=REPO,
-            env=env,
-            text=True,
-            capture_output=True,
-            timeout=30,
-            check=False,
-        )
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=REPO,
+                env=env,
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            errors.append(
+                {
+                    "round_offset": offset,
+                    "returncode": None,
+                    "timeout_s": exc.timeout,
+                    "stderr_tail": (exc.stderr or "")[-500:] if isinstance(exc.stderr, str) else "",
+                    "stdout_tail": (exc.stdout or "")[-500:] if isinstance(exc.stdout, str) else "",
+                    "error": "market_resolver_timeout",
+                }
+            )
+            continue
         if result.returncode != 0:
             errors.append(
                 {
