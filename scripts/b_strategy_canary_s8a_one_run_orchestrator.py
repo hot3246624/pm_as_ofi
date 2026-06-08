@@ -803,6 +803,9 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
         failures.append("PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
     if not args.no_submit and args.order_primitive_source_sha256 == "b" * 64:
         failures.append("PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
+    if not args.no_submit:
+        failures.append("S9E_FINAL_S7W_RECOVERY_COLLATERAL_RECONCILIATION_NOT_BOUND_FOR_EFFECTFUL_EXECUTE")
+        failures.append("BROAD_S8A_EFFECTFUL_RUN_REMAINS_BLOCKED_ZERO_ORDER")
 
     runtime = Path(args.runtime_bin)
     plan = Path(args.one_run_plan_json)
@@ -1024,6 +1027,7 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
             "review_only_no_submit": args.no_submit,
             "effectful_execution_permitted": False,
             "execution_performed": not args.no_submit and not failures,
+            "broad_effectful_execute_blocked_until_s7w_final_reconciliation": not args.no_submit,
             "orders_submitted": total_orders,
             "cancels_submitted": total_cancels,
             "signing_performed": signing_performed,
