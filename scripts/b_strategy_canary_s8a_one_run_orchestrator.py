@@ -41,6 +41,7 @@ S8P_PACKET_SHA256 = "f99af862f56774a2c09578fc11c1ba24b462f4b21ffd4538e8e478ad117
 S8Q_PACKET_SHA256 = "9d076bd3e7889ff79b73801d9a575e2d925a240750c1392bb168474b427b417d"
 S8Y_PACKET_SHA256 = "972bc47a39601cbced054c02c8c56e6b3d4cb6ae1e66a3d76a489b93426a6686"
 S8Y_REMOTE_RESULT_SHA256 = "90cec9f0a9ac1da8c23979b43b8c7236d98837745a4ed137f4fdcc64fc0b6e63"
+EXACT_APPROVED_RECEIPT_TIER = "EXACT_APPROVED_PRIMITIVE_RECEIPT"
 
 
 def utc_now() -> str:
@@ -278,6 +279,83 @@ def one_run_summary_failures(summary: Any) -> list[str]:
         failures.append("ONE_RUN_GROSS_SPEND_CAP_EXCEEDED")
     if float(summary.get("realized_session_loss_usdc", 999.0)) > 15.0:
         failures.append("ONE_RUN_REALIZED_LOSS_CAP_EXCEEDED")
+    return failures
+
+
+def s9g_s7w_final_reconciliation_failures(evidence: Any, args: argparse.Namespace) -> list[str]:
+    failures: list[str] = []
+    if not isinstance(evidence, dict):
+        return ["S9G_FINAL_RECONCILIATION_EVIDENCE_NOT_OBJECT"]
+
+    condition_id = evidence.get("condition_id")
+    if not isinstance(condition_id, str) or not condition_id:
+        failures.append("S9G_CONDITION_ID_MISSING")
+    if evidence.get("source") != "s9g_s7w_final_reconciliation_wrapper":
+        failures.append("S9G_SOURCE_MISMATCH")
+    if evidence.get("s7w_run_result_linter_sha256") != S7W_RESULT_SHA256:
+        failures.append("S9G_S7W_RESULT_HASH_MISMATCH")
+    if evidence.get("exact_approval_sha256") != args.exact_approval_sha256:
+        failures.append("S9G_EXACT_APPROVAL_HASH_MISMATCH")
+    if evidence.get("expected_exact_approval_sha256") != args.expected_exact_approval_sha256:
+        failures.append("S9G_EXPECTED_EXACT_APPROVAL_HASH_MISMATCH")
+    if evidence.get("approval_scope") != args.approval_scope or args.approval_scope != SCOPE:
+        failures.append("S9G_APPROVAL_SCOPE_MISMATCH")
+
+    if evidence.get("recovery_receipt_proof_tier") != EXACT_APPROVED_RECEIPT_TIER:
+        failures.append("S9G_RECOVERY_RECEIPT_TIER_NOT_EXACT_APPROVED")
+    if not hash64(evidence.get("recovery_receipt_sha256")):
+        failures.append("S9G_RECOVERY_RECEIPT_HASH_INVALID")
+    if not evidence.get("receipt_id"):
+        failures.append("S9G_RECEIPT_ID_MISSING")
+    if int(evidence.get("submitted_recovery_tx_count", -1)) != 1:
+        failures.append("S9G_RECOVERY_TX_COUNT_NOT_ONE")
+    if int(evidence.get("submitted_order_count_during_recovery", -1)) != 0:
+        failures.append("S9G_RECOVERY_ORDER_COUNT_NON_ZERO")
+    if int(evidence.get("submitted_cancel_count_during_recovery", -1)) != 0:
+        failures.append("S9G_RECOVERY_CANCEL_COUNT_NON_ZERO")
+
+    if not hash64(evidence.get("collateral_pre_observation_sha256")):
+        failures.append("S9G_COLLATERAL_PRE_OBSERVATION_HASH_INVALID")
+    if not hash64(evidence.get("collateral_post_observation_sha256")):
+        failures.append("S9G_COLLATERAL_POST_OBSERVATION_HASH_INVALID")
+    if as_finite_float(evidence.get("collateral_delta_usdc"), 0.0) <= 0.0:
+        failures.append("S9G_COLLATERAL_DELTA_NOT_POSITIVE")
+    if evidence.get("positive_collateral_delta") is not True:
+        failures.append("S9G_POSITIVE_COLLATERAL_DELTA_FLAG_MISSING")
+
+    if evidence.get("local_ledger_condition_id") != condition_id:
+        failures.append("S9G_LOCAL_LEDGER_CONDITION_MISMATCH")
+    if evidence.get("external_position_condition_id") != condition_id:
+        failures.append("S9G_EXTERNAL_POSITION_CONDITION_MISMATCH")
+    if evidence.get("local_ledger_external_position_aligned") is not True:
+        failures.append("S9G_LEDGER_EXTERNAL_POSITION_NOT_ALIGNED")
+    if evidence.get("receipt_factory_conversion_passed") is not True:
+        failures.append("S9G_RECEIPT_FACTORY_CONVERSION_MISSING")
+    if evidence.get("verified_recovery_event_created") is not True:
+        failures.append("S9G_VERIFIED_RECOVERY_EVENT_MISSING")
+    if evidence.get("inventory_sync_draft_review_only") is not True:
+        failures.append("S9G_INVENTORY_SYNC_DRAFT_NOT_REVIEW_ONLY")
+    if evidence.get("no_open_order_remainder") is not True:
+        failures.append("S9G_OPEN_ORDER_REMAINDER_PRESENT")
+    if as_finite_float(evidence.get("open_order_remainder_qty_shares"), 1.0) != 0.0:
+        failures.append("S9G_OPEN_ORDER_REMAINDER_QTY_NON_ZERO")
+    if evidence.get("residual_exposure_zero") is not True:
+        failures.append("S9G_RESIDUAL_EXPOSURE_ZERO_FLAG_MISSING")
+    if as_finite_float(evidence.get("residual_exposure_qty_shares"), 1.0) != 0.0:
+        failures.append("S9G_RESIDUAL_EXPOSURE_QTY_NON_ZERO")
+
+    if evidence.get("secret_values_read") is not False or evidence.get("secret_values_printed") is not False:
+        failures.append("S9G_SECRET_ACCESS_OR_PRINT_DETECTED")
+    if evidence.get("raw_signature_output") is not False:
+        failures.append("S9G_RAW_SIGNATURE_OUTPUT_DETECTED")
+    if evidence.get("shared_ingress_dependency") is not False:
+        failures.append("S9G_SHARED_INGRESS_DEPENDENCY_DETECTED")
+    if evidence.get("uses_c_artifacts") is not False:
+        failures.append("S9G_C_ARTIFACTS_DETECTED")
+    if evidence.get("funding_live_latest_or_deploy_touched") is not False:
+        failures.append("S9G_FUNDING_LIVE_LATEST_OR_DEPLOY_TOUCHED")
+    if evidence.get("effectful_execution_permitted_by_wrapper") is not False:
+        failures.append("S9G_WRAPPER_PERMITS_EFFECTFUL_EXECUTION")
     return failures
 
 
@@ -804,7 +882,7 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
     if not args.no_submit and args.order_primitive_source_sha256 == "b" * 64:
         failures.append("PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
     if not args.no_submit:
-        failures.append("S9E_FINAL_S7W_RECOVERY_COLLATERAL_RECONCILIATION_NOT_BOUND_FOR_EFFECTFUL_EXECUTE")
+        failures.append("S9G_RUNTIME_GENERATED_S7W_FINAL_RECONCILIATION_NOT_BOUND_FOR_EFFECTFUL_EXECUTE")
         failures.append("BROAD_S8A_EFFECTFUL_RUN_REMAINS_BLOCKED_ZERO_ORDER")
 
     runtime = Path(args.runtime_bin)
@@ -821,6 +899,24 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
     plan_payload = load_json(plan) if plan.exists() else {}
     plan_failures, loop_state = full_loop_contract_plan_failures(plan_payload)
     failures.extend(plan_failures)
+    s9g_reconciliation_preview: dict[str, Any] | None = None
+    if args.no_submit:
+        reconciliation_path = Path(args.s7w_final_reconciliation_json)
+        if not reconciliation_path.exists():
+            failures.append("S9G_FINAL_RECONCILIATION_JSON_MISSING")
+        else:
+            reconciliation_sha = sha256_file(reconciliation_path)
+            if reconciliation_sha != args.expected_s7w_final_reconciliation_sha256:
+                failures.append("S9G_FINAL_RECONCILIATION_SHA256_MISMATCH")
+            reconciliation_evidence = load_json(reconciliation_path)
+            s9g_failures = s9g_s7w_final_reconciliation_failures(reconciliation_evidence, args)
+            failures.extend(s9g_failures)
+            s9g_reconciliation_preview = {
+                "path": str(reconciliation_path),
+                "sha256": reconciliation_sha,
+                "passed": not s9g_failures,
+                "failures": s9g_failures,
+            }
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1039,6 +1135,75 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
             "completed_rounds": completed_rounds,
             "gross_quote_spend_usdc": gross_quote_spend_usdc,
             "realized_session_loss_usdc": realized_session_loss_usdc,
+            "s9g_final_reconciliation_preview": s9g_reconciliation_preview,
+            "failures": failures,
+            "secret_values_read": False,
+            "secret_values_printed": False,
+            "raw_signature_output": False,
+        }
+    )
+    print_json(payload)
+    return 0 if not failures else 2
+
+
+def s9g_s7w_reconciliation_preview(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    if args.reviewed_host != REVIEWED_HOST:
+        failures.append("REVIEWED_HOST_MISMATCH")
+    if args.rest_url != OFFICIAL_CLOB_REST_URL:
+        failures.append("REST_URL_MUST_BE_OFFICIAL_CLOB")
+    if args.approval_scope != SCOPE:
+        failures.append("APPROVAL_SCOPE_MISMATCH")
+    if not hash64(args.exact_approval_sha256) or args.exact_approval_sha256 != args.expected_exact_approval_sha256:
+        failures.append("EXACT_APPROVAL_SHA256_MISMATCH_OR_INVALID")
+    if not args.no_submit:
+        failures.append("NO_SUBMIT_REQUIRED")
+    if args.execute_approved:
+        failures.append("EXECUTE_APPROVED_FORBIDDEN_IN_S9G_REVIEW")
+    if args.print_secret or args.print_raw_signature:
+        failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
+    if args.use_shared_ingress or args.use_c_artifacts:
+        failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
+    if args.allow_online_tuning or args.allow_candidate_import:
+        failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
+
+    reconciliation_path = Path(args.s7w_final_reconciliation_json)
+    if not reconciliation_path.exists():
+        failures.append("S9G_FINAL_RECONCILIATION_JSON_MISSING")
+        reconciliation_sha = None
+        evidence: Any = {}
+    else:
+        reconciliation_sha = sha256_file(reconciliation_path)
+        evidence = load_json(reconciliation_path)
+        if reconciliation_sha != args.expected_s7w_final_reconciliation_sha256:
+            failures.append("S9G_FINAL_RECONCILIATION_SHA256_MISMATCH")
+        failures.extend(s9g_s7w_final_reconciliation_failures(evidence, args))
+
+    payload = base_payload(
+        "PASS_S9G_S7W_FINAL_RECONCILIATION_WRAPPER_PREVIEW"
+        if not failures
+        else "BLOCK_S9G_S7W_FINAL_RECONCILIATION_WRAPPER_FAIL_CLOSED"
+    )
+    payload.update(
+        {
+            "schema_version": "B_STRATEGY_CANARY_S9G_S7W_FINAL_RECONCILIATION_WRAPPER_PREVIEW_v1",
+            "review_only_no_submit": True,
+            "s7w_final_reconciliation_wrapper_ready": not failures,
+            "broad_effectful_execute_ready": False,
+            "ready_for_fresh_exact_approval": False,
+            "ready_for_fresh_exact_approval_reason": (
+                "S9G validates the required final S7W receipt/collateral/ledger "
+                "evidence shape. Broad effectful approval still requires the "
+                "runtime to generate this evidence from the current run, not a "
+                "review fixture."
+            ),
+            "s7w_final_reconciliation_path": str(reconciliation_path),
+            "s7w_final_reconciliation_sha256": reconciliation_sha,
+            "evidence_condition_id": evidence.get("condition_id") if isinstance(evidence, dict) else None,
+            "evidence_receipt_tier": evidence.get("recovery_receipt_proof_tier") if isinstance(evidence, dict) else None,
+            "collateral_delta_usdc": evidence.get("collateral_delta_usdc") if isinstance(evidence, dict) else None,
+            "no_open_order_remainder": evidence.get("no_open_order_remainder") if isinstance(evidence, dict) else None,
+            "residual_exposure_zero": evidence.get("residual_exposure_zero") if isinstance(evidence, dict) else None,
             "failures": failures,
             "secret_values_read": False,
             "secret_values_printed": False,
@@ -1341,6 +1506,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "no-submit-orchestration-preview",
             "full-loop-contract-preview",
             "s9a-execute-wrapper-preview",
+            "s9g-s7w-reconciliation-preview",
             "execute",
         ),
         required=True,
@@ -1357,6 +1523,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="scripts/fixtures/s8a_order_status_fill_evidence_preview.json",
     )
     parser.add_argument("--expected-order-status-fill-evidence-sha256", required=False)
+    parser.add_argument(
+        "--s7w-final-reconciliation-json",
+        default="scripts/fixtures/s9g_s7w_final_reconciliation_evidence_preview.json",
+    )
+    parser.add_argument("--expected-s7w-final-reconciliation-sha256", required=False)
     parser.add_argument("--output-dir", default=".tmp_xuan/s8r_one_run_orchestrator_preview")
     parser.add_argument("--exact-approval-sha256", default="a" * 64)
     parser.add_argument("--expected-exact-approval-sha256", default="a" * 64)
@@ -1400,8 +1571,18 @@ def main(argv: list[str]) -> int:
         if not args.expected_one_run_plan_sha256:
             args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
         return s9a_execute_wrapper_preview(args)
+    if args.mode == "s9g-s7w-reconciliation-preview":
+        if not args.expected_s7w_final_reconciliation_sha256:
+            args.expected_s7w_final_reconciliation_sha256 = sha256_file(
+                Path(args.s7w_final_reconciliation_json)
+            )
+        return s9g_s7w_reconciliation_preview(args)
     if not args.expected_one_run_plan_sha256:
         args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
+    if not args.expected_s7w_final_reconciliation_sha256:
+        args.expected_s7w_final_reconciliation_sha256 = sha256_file(
+            Path(args.s7w_final_reconciliation_json)
+        )
     return s9c_approved_loop_execute(args)
 
 
