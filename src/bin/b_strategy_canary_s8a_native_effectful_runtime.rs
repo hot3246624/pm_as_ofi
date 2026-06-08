@@ -13,8 +13,10 @@ use pm_as_ofi::polymarket::clob_v2::{
 use pm_as_ofi::polymarket::executor::init_clob_client;
 use pm_as_ofi::polymarket::messages::TradeDirection;
 use pm_as_ofi::polymarket::s8a_order_adapter::{
+    apply_s8a_fill_to_inventory, S8aAdapterOrderAction, S8aFillEvent, S8aInventory,
     S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES, S8A_MARKET_BUY_MIN_NOTIONAL_USDC,
-    S8A_MARKET_SELL_MIN_ORDER_SIZE_SHARES, S8A_SEED_PX_HI, S8A_SEED_PX_LO,
+    S8A_MARKET_SELL_MIN_ORDER_SIZE_SHARES, S8A_MAX_ROUNDS, S8A_PER_ROUND_THEORETICAL_MAX_LOSS_USDC,
+    S8A_SEED_PX_HI, S8A_SEED_PX_LO, S8A_SESSION_HARD_LOSS_CAP_USDC,
 };
 use pm_as_ofi::polymarket::types::Side;
 use polymarket_client_sdk::auth::Credentials;
@@ -35,6 +37,7 @@ enum Mode {
     PreviewNoApproval,
     NoOrderAuthPreview,
     ExactApprovedOrderPathPreview,
+    OneRunDriverPreview,
     Execute,
 }
 
@@ -45,6 +48,8 @@ struct Args {
     rest_url: String,
     prepared_order_json: Option<PathBuf>,
     expected_prepared_order_sha256: Option<String>,
+    one_run_plan_json: Option<PathBuf>,
+    expected_one_run_plan_sha256: Option<String>,
     exact_approval_sha256: Option<String>,
     expected_exact_approval_sha256: Option<String>,
     approval_scope: String,
@@ -82,6 +87,66 @@ struct PreparedOrder {
     source_guard_500_passed: bool,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OneRunStrategyScope {
+    market_family: String,
+    fixed_policy: String,
+    source_guard_500_required: bool,
+    online_tuning_allowed: bool,
+    strategy_discovery_allowed: bool,
+    candidate_import_allowed: bool,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OneRunCaps {
+    max_round_count: u32,
+    session_hard_loss_cap_usdc: f64,
+    per_round_theoretical_max_loss_usdc: f64,
+    max_active_market_count: u32,
+    max_total_order_submissions: u32,
+    max_cumulative_gross_quote_spend_usdc: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OneRunAttempt {
+    prepared_order: PreparedOrder,
+    actual_filled_qty_shares: f64,
+    avg_fill_price: f64,
+    order_id_or_failure_recorded: bool,
+    filled_qty_from_exchange_or_order_status: bool,
+    close_round_after_attempt: bool,
+    s7w_reconciliation_passed: bool,
+    exact_approved_receipt_tier_required: bool,
+    positive_collateral_delta_required_for_recovery: bool,
+    no_open_order_remainder: bool,
+    residual_exposure_zero: bool,
+    realized_loss_delta_usdc: f64,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct OneRunPlan {
+    source: String,
+    effectful_execution_permitted: bool,
+    runtime_accepts_only_prepared_orders: bool,
+    exact_approval_hash_bound_to_every_submit: bool,
+    exact_approval_scope_bound_to_every_submit: bool,
+    runtime_order_result_ledger_enabled: bool,
+    actual_filled_qty_ledger_updates_inventory: bool,
+    submitted_size_counts_as_inventory: bool,
+    partial_fill_threshold_enabled: bool,
+    forced_complement_allowed: bool,
+    s7w_reconciliation_bound_to_run_result: bool,
+    review_only_fixture_receipts_accepted: bool,
+    opens_ws: bool,
+    shared_ingress_dependency: bool,
+    uses_c_artifacts: bool,
+    secret_or_raw_signature_output_allowed: bool,
+    funding_live_latest_or_deploy_requested: bool,
+    strategy_scope: OneRunStrategyScope,
+    caps: OneRunCaps,
+    attempts: Vec<OneRunAttempt>,
+}
+
 fn hash64(value: Option<&str>) -> bool {
     value.is_some_and(|v| v.len() == 64 && v.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
@@ -115,6 +180,7 @@ fn parse_args() -> Result<Args> {
                     "preview-no-approval" => Mode::PreviewNoApproval,
                     "no-order-auth-preview" => Mode::NoOrderAuthPreview,
                     "exact-approved-order-path-preview" => Mode::ExactApprovedOrderPathPreview,
+                    "one-run-driver-preview" => Mode::OneRunDriverPreview,
                     "execute" => Mode::Execute,
                     _ => return Err(anyhow!("unknown mode {raw}")),
                 });
@@ -140,6 +206,18 @@ fn parse_args() -> Result<Args> {
                     Some(it.next().ok_or_else(|| {
                         anyhow!("--expected-prepared-order-sha256 requires value")
                     })?);
+            }
+            "--one-run-plan-json" => {
+                args.one_run_plan_json =
+                    Some(PathBuf::from(it.next().ok_or_else(|| {
+                        anyhow!("--one-run-plan-json requires value")
+                    })?));
+            }
+            "--expected-one-run-plan-sha256" => {
+                args.expected_one_run_plan_sha256 = Some(
+                    it.next()
+                        .ok_or_else(|| anyhow!("--expected-one-run-plan-sha256 requires value"))?,
+                );
             }
             "--exact-approval-sha256" => {
                 args.exact_approval_sha256 = Some(
@@ -219,6 +297,41 @@ fn load_prepared_order(
     Some((parsed, Some(actual_sha)))
 }
 
+fn load_one_run_plan(
+    args: &Args,
+    failures: &mut Vec<&'static str>,
+) -> Option<(OneRunPlan, String)> {
+    let Some(path) = args.one_run_plan_json.as_ref() else {
+        failures.push("ONE_RUN_PLAN_JSON_REQUIRED");
+        return None;
+    };
+    let actual_sha = match sha256_file(path) {
+        Ok(value) => value,
+        Err(_) => {
+            failures.push("ONE_RUN_PLAN_JSON_UNREADABLE");
+            return None;
+        }
+    };
+    if args
+        .expected_one_run_plan_sha256
+        .as_deref()
+        .is_some_and(|expected| expected != actual_sha)
+    {
+        failures.push("ONE_RUN_PLAN_SHA256_MISMATCH");
+    }
+    let parsed = match fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<OneRunPlan>(&raw).ok())
+    {
+        Some(value) => value,
+        None => {
+            failures.push("ONE_RUN_PLAN_JSON_INVALID");
+            return None;
+        }
+    };
+    Some((parsed, actual_sha))
+}
+
 fn validate_common(args: &Args, failures: &mut Vec<&'static str>) {
     if args.reviewed_host != REVIEWED_HOST {
         failures.push("REVIEWED_HOST_MISMATCH");
@@ -250,6 +363,215 @@ fn validate_common(args: &Args, failures: &mut Vec<&'static str>) {
     if args.allow_online_tuning || args.allow_candidate_import {
         failures.push("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT");
     }
+}
+
+fn validate_one_run_plan(plan: &OneRunPlan, failures: &mut Vec<&'static str>) -> serde_json::Value {
+    if plan.source != "native_s8a_one_run_driver" {
+        failures.push("ONE_RUN_PLAN_SOURCE_MISMATCH");
+    }
+    if plan.effectful_execution_permitted {
+        failures.push("ONE_RUN_PLAN_MUST_BE_REVIEW_ONLY");
+    }
+    if !plan.runtime_accepts_only_prepared_orders {
+        failures.push("ONE_RUN_DRIVER_MUST_ACCEPT_ONLY_PREPARED_ORDERS");
+    }
+    if !plan.exact_approval_hash_bound_to_every_submit {
+        failures.push("EXACT_APPROVAL_HASH_NOT_BOUND_TO_EVERY_SUBMIT");
+    }
+    if !plan.exact_approval_scope_bound_to_every_submit {
+        failures.push("EXACT_APPROVAL_SCOPE_NOT_BOUND_TO_EVERY_SUBMIT");
+    }
+    if !plan.runtime_order_result_ledger_enabled {
+        failures.push("RUNTIME_ORDER_RESULT_LEDGER_MISSING");
+    }
+    if !plan.actual_filled_qty_ledger_updates_inventory {
+        failures.push("ACTUAL_FILLED_QTY_LEDGER_MISSING");
+    }
+    if plan.submitted_size_counts_as_inventory {
+        failures.push("SUBMITTED_SIZE_COUNTS_AS_INVENTORY");
+    }
+    if plan.partial_fill_threshold_enabled {
+        failures.push("PARTIAL_FILL_THRESHOLD_ENABLED");
+    }
+    if plan.forced_complement_allowed {
+        failures.push("FORCED_COMPLEMENT_ALLOWED");
+    }
+    if !plan.s7w_reconciliation_bound_to_run_result {
+        failures.push("S7W_RECONCILIATION_NOT_BOUND_TO_RUN_RESULT");
+    }
+    if plan.review_only_fixture_receipts_accepted {
+        failures.push("REVIEW_ONLY_FIXTURE_RECEIPTS_ACCEPTED");
+    }
+    if plan.opens_ws {
+        failures.push("RUNTIME_DRIVER_MUST_NOT_OPEN_WS");
+    }
+    if plan.shared_ingress_dependency || plan.uses_c_artifacts {
+        failures.push("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED");
+    }
+    if plan.secret_or_raw_signature_output_allowed {
+        failures.push("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED");
+    }
+    if plan.funding_live_latest_or_deploy_requested {
+        failures.push("FUNDING_LIVE_LATEST_OR_DEPLOY_REQUESTED");
+    }
+    if plan.strategy_scope.market_family != "btc-5min" {
+        failures.push("ONE_RUN_MARKET_FAMILY_MUST_BE_BTC_5MIN");
+    }
+    if plan.strategy_scope.fixed_policy != "cool5_imb1.25_source_guard_500" {
+        failures.push("ONE_RUN_FIXED_POLICY_MISMATCH");
+    }
+    if !plan.strategy_scope.source_guard_500_required {
+        failures.push("SOURCE_GUARD_500_REQUIRED");
+    }
+    if plan.strategy_scope.online_tuning_allowed
+        || plan.strategy_scope.strategy_discovery_allowed
+        || plan.strategy_scope.candidate_import_allowed
+    {
+        failures.push("ONLINE_TUNING_STRATEGY_DISCOVERY_OR_CANDIDATE_IMPORT_ALLOWED");
+    }
+    if plan.caps.max_round_count != S8A_MAX_ROUNDS {
+        failures.push("MAX_ROUND_COUNT_MISMATCH");
+    }
+    if (plan.caps.session_hard_loss_cap_usdc - S8A_SESSION_HARD_LOSS_CAP_USDC).abs() > 1e-9 {
+        failures.push("SESSION_HARD_LOSS_CAP_MISMATCH");
+    }
+    if (plan.caps.per_round_theoretical_max_loss_usdc - S8A_PER_ROUND_THEORETICAL_MAX_LOSS_USDC)
+        .abs()
+        > 1e-9
+    {
+        failures.push("PER_ROUND_THEORETICAL_MAX_LOSS_MISMATCH");
+    }
+    if plan.caps.max_active_market_count != 1 {
+        failures.push("MAX_ACTIVE_MARKET_COUNT_MISMATCH");
+    }
+    if plan.caps.max_total_order_submissions != 9 {
+        failures.push("MAX_TOTAL_ORDER_SUBMISSIONS_MISMATCH");
+    }
+    if plan.caps.max_cumulative_gross_quote_spend_usdc > 18.0 + 1e-9 {
+        failures.push("MAX_CUMULATIVE_GROSS_QUOTE_SPEND_TOO_HIGH");
+    }
+    if plan.attempts.is_empty() {
+        failures.push("ONE_RUN_ATTEMPTS_EMPTY");
+    }
+    if plan.attempts.len() > plan.caps.max_total_order_submissions as usize {
+        failures.push("ONE_RUN_ATTEMPTS_EXCEED_ORDER_CAP");
+    }
+
+    let mut inventory = S8aInventory::default();
+    let mut active_condition: Option<String> = None;
+    let mut completed_rounds = 0_u32;
+    let mut gross_quote_spend_usdc = 0.0_f64;
+    let mut realized_session_loss_usdc = 0.0_f64;
+    let mut closed_round_count = 0_u32;
+
+    for attempt in &plan.attempts {
+        validate_prepared_order(&attempt.prepared_order, failures);
+        if attempt.prepared_order.execution_permitted {
+            failures.push("PREPARED_ORDER_EXECUTION_MUST_BE_FALSE_BEFORE_RUNTIME");
+        }
+        if attempt.actual_filled_qty_shares < 0.0 || !attempt.actual_filled_qty_shares.is_finite() {
+            failures.push("ONE_RUN_INVALID_ACTUAL_FILLED_QTY");
+        }
+        if !attempt.avg_fill_price.is_finite()
+            || attempt.avg_fill_price < 0.0
+            || attempt.avg_fill_price > 1.0
+        {
+            failures.push("ONE_RUN_INVALID_AVG_FILL_PRICE");
+        }
+        if !attempt.order_id_or_failure_recorded {
+            failures.push("ORDER_ID_OR_FAILURE_NOT_RECORDED_PER_ATTEMPT");
+        }
+        if !attempt.filled_qty_from_exchange_or_order_status {
+            failures.push("FILLED_QTY_NOT_EXCHANGE_OR_ORDER_STATUS_OBSERVED");
+        }
+        if active_condition
+            .as_ref()
+            .is_some_and(|condition| condition != &attempt.prepared_order.condition_id)
+        {
+            failures.push("ACTIVE_MARKET_CONDITION_MISMATCH");
+        }
+        if active_condition.is_none() {
+            active_condition = Some(attempt.prepared_order.condition_id.clone());
+        }
+        let fill = S8aFillEvent {
+            side: match attempt.prepared_order.side.as_str() {
+                "YES" => Side::Yes,
+                "NO" => Side::No,
+                _ => Side::Yes,
+            },
+            action: match attempt.prepared_order.action.as_str() {
+                "BUY" => S8aAdapterOrderAction::Buy,
+                "SELL" => S8aAdapterOrderAction::Sell,
+                _ => S8aAdapterOrderAction::Buy,
+            },
+            submitted_size_shares: match attempt.prepared_order.amount.unit.as_str() {
+                "SHARES" => attempt.prepared_order.amount.value,
+                _ => 0.0,
+            },
+            actual_filled_qty_shares: attempt.actual_filled_qty_shares,
+            avg_fill_price: attempt.avg_fill_price,
+        };
+        match apply_s8a_fill_to_inventory(inventory, fill) {
+            Ok(next) => {
+                inventory = next;
+                if attempt.prepared_order.action == "BUY" {
+                    gross_quote_spend_usdc +=
+                        attempt.actual_filled_qty_shares * attempt.avg_fill_price;
+                }
+            }
+            Err(_) => failures.push("ONE_RUN_INVENTORY_UPDATE_FAILED"),
+        }
+        if inventory.residual_qty() > S8A_PER_ROUND_THEORETICAL_MAX_LOSS_USDC + 1e-9 {
+            failures.push("ACTIVE_ROUND_RISK_EXCEEDS_PER_ROUND_CAP");
+        }
+        if gross_quote_spend_usdc > plan.caps.max_cumulative_gross_quote_spend_usdc + 1e-9 {
+            failures.push("CUMULATIVE_GROSS_QUOTE_SPEND_CAP_EXCEEDED");
+        }
+        if !attempt.realized_loss_delta_usdc.is_finite() || attempt.realized_loss_delta_usdc < 0.0 {
+            failures.push("INVALID_REALIZED_LOSS_DELTA");
+        }
+        if attempt.close_round_after_attempt {
+            if !attempt.s7w_reconciliation_passed {
+                failures.push("ROUND_CLOSE_WITHOUT_S7W_RECONCILIATION");
+            }
+            if !attempt.exact_approved_receipt_tier_required {
+                failures.push("EXACT_APPROVED_RECEIPT_TIER_NOT_REQUIRED");
+            }
+            if !attempt.positive_collateral_delta_required_for_recovery {
+                failures.push("POSITIVE_COLLATERAL_DELTA_NOT_REQUIRED_FOR_RECOVERY");
+            }
+            if !attempt.no_open_order_remainder {
+                failures.push("OPEN_ORDER_REMAINDER_NOT_REQUIRED");
+            }
+            if !attempt.residual_exposure_zero || inventory.residual_qty() > 1e-9 {
+                failures.push("ROUND_CLOSE_WITH_RESIDUAL_EXPOSURE");
+            }
+            completed_rounds += 1;
+            if completed_rounds > S8A_MAX_ROUNDS {
+                failures.push("MAX_ROUNDS_EXCEEDED");
+            }
+            realized_session_loss_usdc += attempt.realized_loss_delta_usdc;
+            if realized_session_loss_usdc > S8A_SESSION_HARD_LOSS_CAP_USDC + 1e-9 {
+                failures.push("SESSION_HARD_LOSS_CAP_EXCEEDED");
+            }
+            inventory = S8aInventory::default();
+            active_condition = None;
+            closed_round_count += 1;
+        }
+    }
+    if closed_round_count == 0 {
+        failures.push("NO_ROUND_CLOSURE_PATH");
+    }
+    json!({
+        "attempt_count": plan.attempts.len(),
+        "closed_round_count": closed_round_count,
+        "gross_quote_spend_usdc": gross_quote_spend_usdc,
+        "realized_session_loss_usdc": realized_session_loss_usdc,
+        "final_yes_qty": inventory.yes_qty,
+        "final_no_qty": inventory.no_qty,
+        "final_residual_qty": inventory.residual_qty(),
+        "active_condition_id": active_condition
+    })
 }
 
 fn validate_prepared_order(order: &PreparedOrder, failures: &mut Vec<&'static str>) {
@@ -565,6 +887,45 @@ async fn main() -> Result<()> {
             } else {
                 std::process::exit(2);
             }
+        }
+        Mode::OneRunDriverPreview => {
+            let mut failures = Vec::new();
+            validate_common(&args, &mut failures);
+            if !args.no_submit {
+                failures.push("NO_SUBMIT_REQUIRED_IN_ONE_RUN_DRIVER_PREVIEW");
+            }
+            let loaded = load_one_run_plan(&args, &mut failures);
+            let mut summary = json!({});
+            let mut one_run_plan_sha256 = None;
+            if let Some((plan, sha256)) = loaded.as_ref() {
+                one_run_plan_sha256 = Some(sha256.clone());
+                summary = validate_one_run_plan(plan, &mut failures);
+            }
+            if !failures.is_empty() {
+                print_payload(
+                    base_payload("BLOCK_S8A_ONE_RUN_DRIVER_PREVIEW_FAIL_CLOSED"),
+                    json!({
+                        "orders_submitted": 0,
+                        "signing_performed": false,
+                        "raw_signature_output": false,
+                        "one_run_plan_sha256": one_run_plan_sha256,
+                        "one_run_summary": summary,
+                        "failures": failures
+                    }),
+                );
+                std::process::exit(2);
+            }
+            print_payload(
+                base_payload("PASS_S8A_ONE_RUN_DRIVER_PREVIEW_NO_SUBMIT"),
+                json!({
+                    "orders_submitted": 0,
+                    "signing_performed": false,
+                    "raw_signature_output": false,
+                    "one_run_plan_sha256": one_run_plan_sha256,
+                    "one_run_summary": summary
+                }),
+            );
+            Ok(())
         }
         Mode::ExactApprovedOrderPathPreview | Mode::Execute => {
             let mut failures = Vec::new();
