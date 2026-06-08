@@ -55,3 +55,22 @@ Each run writes:
 The decision register includes `preferred_input_csv` only when a ready input is
 found. Automations may run the maker-shadow pipeline on that preferred file,
 but must keep all status at local research/no-order proxy level.
+
+## Current Local Finding
+
+The current default materializer and inventory path is precise but blocked by
+source availability:
+
+- Default materializer run excluding `smoke`/`fixture` saw 0 source files and
+  materialized 0 rows.
+- A diagnostic `--include-smoke` run saw local synthetic event/activity files,
+  which confirms the converter path works, but those files remain excluded from
+  evidence.
+- Inventory over the default materialized CSV, `data/inputs`, `evidence`, and
+  `xuan_research_artifacts` found `ready_input_count = 0`.
+
+The next executable research step is not parameter tuning. It is to place a
+non-smoke/non-fixture BTC 5m public event or public-activity row export into a
+bounded local input path. Public-activity rows must include a market slug and
+must be `source_side = SELL`; BUY rows are not post-only maker bid touch
+evidence.

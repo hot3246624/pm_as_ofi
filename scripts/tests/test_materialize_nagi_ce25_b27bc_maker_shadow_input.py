@@ -70,6 +70,107 @@ class NagiCe25B27bcMakerShadowMaterializerTests(unittest.TestCase):
             paths = materializer_mod.iter_event_paths([root], include_smoke=True, max_files=10)
             self.assertEqual(paths, [real / "b.events.jsonl", smoke / "a.events.jsonl"])
 
+    def test_materializes_btc5m_public_activity_sell_touch(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_activity_") as tmp:
+            path = Path(tmp) / "real_public_activity_entry_rows.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "asset": "BTC",
+                                "timeframe": "5m",
+                                "market_slug": "btc-updown-5m-1900000000",
+                                "condition_id": "cond",
+                                "quote_ts": 1900000250,
+                                "time_to_expiry_s": 45,
+                                "outcome": "YES",
+                                "source_side": "SELL",
+                                "source_type": "public_profile",
+                                "trade_id": "trade-1",
+                                "polymarket_price": 0.42,
+                                "size": 12,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rows, summary = materializer_mod.materialize_public_activity_file(
+                path,
+                max_rows_per_file=100,
+            )
+            self.assertEqual(summary["source_format"], "public_activity_entry_rows")
+            self.assertEqual(summary["materialized_rows"], 1)
+            self.assertEqual(rows[0]["slug"], "btc-updown-5m-1900000000")
+            self.assertEqual(rows[0]["remaining_s"], 45.0)
+            self.assertEqual(rows[0]["public_taker_side"], "SELL")
+            self.assertEqual(rows[0]["yes_bid"], 0.42)
+            self.assertEqual(rows[0]["public_trade_qty"], 12.0)
+            self.assertEqual(rows[0]["visible_depth_qty"], 12.0)
+            self.assertEqual(
+                rows[0]["materialized_depth_source"],
+                "public_activity_sell_size_proxy_not_l2_depth",
+            )
+            self.assertEqual(rows[0]["maker_truth"], "public_activity_queue_proxy_only")
+
+    def test_public_activity_buy_rows_are_not_queue_touch(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_activity_buy_") as tmp:
+            path = Path(tmp) / "real_public_activity_entry_rows.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "asset": "BTC",
+                                "timeframe": "5m",
+                                "market_slug": "btc-updown-5m-1900000000",
+                                "quote_ts": 1900000250,
+                                "outcome": "YES",
+                                "source_side": "BUY",
+                                "polymarket_price": 0.42,
+                                "size": 12,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rows, summary = materializer_mod.materialize_public_activity_file(
+                path,
+                max_rows_per_file=100,
+            )
+            self.assertEqual(summary["materialized_rows"], 0)
+            self.assertEqual(rows, [])
+
+    def test_public_activity_rows_require_market_slug(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_activity_slug_") as tmp:
+            path = Path(tmp) / "real_public_activity_entry_rows.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "asset": "BTC",
+                                "timeframe": "5m",
+                                "quote_ts": 1900000250,
+                                "outcome": "YES",
+                                "source_side": "SELL",
+                                "polymarket_price": 0.42,
+                                "size": 12,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            rows, summary = materializer_mod.materialize_public_activity_file(
+                path,
+                max_rows_per_file=100,
+            )
+            self.assertEqual(summary["materialized_rows"], 0)
+            self.assertEqual(rows, [])
+
     def test_cli_writes_csv_and_manifest(self):
         with tempfile.TemporaryDirectory(prefix="nagi_materializer_cli_") as tmp:
             root = Path(tmp)
@@ -114,6 +215,55 @@ class NagiCe25B27bcMakerShadowMaterializerTests(unittest.TestCase):
                 rows = list(csv.DictReader(f))
             self.assertEqual(len(rows), 1)
             self.assertEqual(rows[0]["side"], "NO")
+
+    def test_cli_writes_public_activity_manifest_counts(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_cli_activity_") as tmp:
+            root = Path(tmp)
+            input_dir = root / "activity"
+            input_dir.mkdir()
+            activity_path = input_dir / "real_public_activity_entry_rows.json"
+            activity_path.write_text(
+                json.dumps(
+                    {
+                        "rows": [
+                            {
+                                "asset": "BTC",
+                                "timeframe": "5m",
+                                "market_slug": "btc-updown-5m-1900000000",
+                                "quote_ts": 1900000250,
+                                "outcome": "DOWN",
+                                "source_side": "SELL",
+                                "polymarket_price": 0.58,
+                                "size": 9,
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out = root / "out"
+            old_argv = sys.argv
+            sys.argv = [
+                "materialize_nagi_ce25_b27bc_maker_shadow_input.py",
+                "--root",
+                str(input_dir),
+                "--output-dir",
+                str(out),
+            ]
+            try:
+                rc = materializer_mod.main()
+            finally:
+                sys.argv = old_argv
+            self.assertEqual(rc, 0)
+            manifest = json.loads((out / "manifest.json").read_text())
+            self.assertEqual(manifest["source_files_seen"], 1)
+            self.assertEqual(manifest["event_files_seen"], 0)
+            self.assertEqual(manifest["public_activity_files_seen"], 1)
+            self.assertEqual(manifest["materialized_rows"], 1)
+            with (out / "nagi_ce25_b27bc_maker_shadow_input.csv").open(newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(rows[0]["side"], "NO")
+            self.assertEqual(rows[0]["public_taker_side"], "SELL")
 
 
 if __name__ == "__main__":

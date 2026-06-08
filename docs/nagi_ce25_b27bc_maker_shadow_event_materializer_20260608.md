@@ -3,8 +3,9 @@
 ## Purpose
 
 The maker-shadow pipeline consumes CSV, but current local artifacts often arrive
-as event JSONL. The event materializer converts bounded local `*.events.jsonl`
-files into a maker-shadow input CSV:
+as event JSONL or exported public-activity rows. The event materializer converts
+bounded local `*.events.jsonl` files and `public_activity*rows*.json` files into
+a maker-shadow input CSV:
 
 ```text
 scripts/materialize_nagi_ce25_b27bc_maker_shadow_input.py
@@ -31,16 +32,33 @@ The materializer reads public-trade candidate events with fields such as:
 - `public_trade_px`
 - `public_trade_size`
 
+It also reads public-activity row exports with fields such as:
+
+- `market_slug`
+- `asset`
+- `timeframe`
+- `quote_ts`
+- `time_to_expiry_s`
+- `outcome`
+- `source_side`
+- `polymarket_price`
+- `size`
+
+For public-activity rows, only BTC 5m rows with `source_side = SELL` are
+materialized. BUY rows are not public sell-touch evidence for a post-only maker
+bid and are intentionally ignored.
+
 It writes:
 
 - `nagi_ce25_b27bc_maker_shadow_input.csv`
 - `manifest.json`
 
 The output includes `visible_depth_qty`, but that value is explicitly sourced
-from `public_trade_size` and labeled:
+from public trade/activity size and labeled as one of:
 
 ```text
 public_trade_size_proxy_not_l2_depth
+public_activity_sell_size_proxy_not_l2_depth
 ```
 
 This means the output is a queue-proxy input, not L2 depth truth and not maker

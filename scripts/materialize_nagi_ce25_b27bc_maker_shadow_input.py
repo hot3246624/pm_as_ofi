@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Materialize local event JSONL into maker-shadow input CSV.
+"""Materialize local public event/activity rows into maker-shadow input CSV.
 
 This converter is local-only and review-only. It reads already-local
-``*.events.jsonl`` files, extracts public-trade candidate rows, and writes a
-CSV that can be checked by ``inventory_nagi_ce25_b27bc_maker_shadow_inputs.py``
-and then consumed by ``run_nagi_ce25_b27bc_maker_shadow.py``.
+``*.events.jsonl`` and public-activity rows JSON files, extracts public-trade
+candidate rows, and writes a CSV that can be checked by
+``inventory_nagi_ce25_b27bc_maker_shadow_inputs.py`` and then consumed by
+``run_nagi_ce25_b27bc_maker_shadow.py``.
 
 By default, paths containing smoke/fixture are excluded so synthetic artifacts
 cannot become strategy evidence accidentally.
@@ -39,6 +40,7 @@ OUTPUT_FIELDS = [
     "side",
     "yes_bid",
     "no_bid",
+    "public_taker_side",
     "public_trade_px",
     "public_trade_qty",
     "queue_visible_qty",
@@ -107,6 +109,28 @@ def iter_event_paths(roots: Iterable[Path], *, include_smoke: bool, max_files: i
     return paths
 
 
+def iter_public_activity_paths(roots: Iterable[Path], *, include_smoke: bool, max_files: int) -> list[Path]:
+    paths: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        candidates: list[Path]
+        if root.is_file():
+            candidates = [root] if root.suffix.lower() == ".json" else []
+        else:
+            candidates = sorted(root.rglob("*.json"))
+        for path in candidates:
+            name = path.name.lower()
+            if "public_activity" not in name or "rows" not in name:
+                continue
+            if is_excluded_path(path, include_smoke=include_smoke):
+                continue
+            paths.append(path)
+            if len(paths) >= max_files:
+                return paths
+    return paths
+
+
 def slug_round_start(slug: str) -> int | None:
     tail = slug.rsplit("-", 1)[-1] if slug else ""
     return int(tail) if tail.isdigit() else None
@@ -164,6 +188,7 @@ def materialize_event(obj: dict[str, Any], *, source_path: Path, line_no: int) -
             "ts_ms": ts_ms,
             "remaining_s": remaining_seconds(obj),
             "side": "YES" if side in {"YES", "UP"} else "NO",
+            "public_taker_side": obj.get("public_taker_side") or "",
             "public_trade_px": public_trade_px if public_trade_px is not None else "",
             "public_trade_qty": public_trade_size,
             # This is a public-trade-size proxy, not L2 truth. It lets the
@@ -182,6 +207,65 @@ def materialize_event(obj: dict[str, Any], *, source_path: Path, line_no: int) -
     other_bid = to_float(obj.get("no_bid" if side_bid_field(side) == "yes_bid" else "yes_bid"))
     if other_bid is not None:
         out["no_bid" if side_bid_field(side) == "yes_bid" else "yes_bid"] = other_bid
+    return out
+
+
+def materialize_public_activity_row(
+    obj: dict[str, Any], *, source_path: Path, row_no: int
+) -> dict[str, Any] | None:
+    slug = str(obj.get("market_slug") or obj.get("slug") or "")
+    if not slug:
+        return None
+    asset = str(obj.get("asset") or "").upper()
+    timeframe = str(obj.get("timeframe") or "").lower()
+    if "btc-updown-5m" not in slug.lower() and not (asset == "BTC" and timeframe == "5m"):
+        return None
+    side = str(obj.get("outcome") or obj.get("side") or "").upper()
+    if side not in {"YES", "NO", "UP", "DOWN"}:
+        return None
+    source_side = str(obj.get("source_side") or obj.get("taker_side") or "").upper()
+    if source_side != "SELL":
+        return None
+    qty = to_float(obj.get("size") or obj.get("qty") or obj.get("public_trade_qty"))
+    price = to_float(obj.get("polymarket_price") or obj.get("price") or obj.get("public_trade_px"))
+    quote_ts = to_int(obj.get("quote_ts") or obj.get("ts") or obj.get("timestamp"))
+    if qty is None or qty <= 0 or price is None or price <= 0 or quote_ts is None:
+        return None
+
+    ts_ms = quote_ts * 1000 if quote_ts < 10_000_000_000 else quote_ts
+    remaining_s = to_float(obj.get("time_to_expiry_s") or obj.get("remaining_s"))
+    if remaining_s is None:
+        end_ts = to_int(obj.get("market_end_ts") or obj.get("end_ts"))
+        if end_ts is not None:
+            end_ms = end_ts * 1000 if end_ts < 10_000_000_000 else end_ts
+            remaining_s = max(0.0, (end_ms - ts_ms) / 1000.0)
+
+    out = {field: "" for field in OUTPUT_FIELDS}
+    normalized_side = "YES" if side in {"YES", "UP"} else "NO"
+    out.update(
+        {
+            "source_path": str(source_path),
+            "source_line": row_no,
+            "source_kind": "public_activity_entry_row",
+            "source": obj.get("source_type") or "public_activity",
+            "source_sequence_id": obj.get("trade_id") or obj.get("source_transaction_hash") or "",
+            "window_id": dt.datetime.fromtimestamp(ts_ms / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d"),
+            "slug": slug,
+            "condition_id": obj.get("condition_id") or slug,
+            "ts_ms": ts_ms,
+            "remaining_s": remaining_s,
+            "side": normalized_side,
+            "public_taker_side": "SELL",
+            "public_trade_px": price,
+            "public_trade_qty": qty,
+            "queue_visible_qty": qty,
+            "visible_depth_qty": qty,
+            "materialized_depth_source": "public_activity_sell_size_proxy_not_l2_depth",
+            "maker_truth": "public_activity_queue_proxy_only",
+            "own_telemetry": False,
+        }
+    )
+    out[side_bid_field(normalized_side)] = price
     return out
 
 
@@ -216,6 +300,39 @@ def materialize_file(path: Path, *, max_rows_per_file: int) -> tuple[list[dict[s
     }
 
 
+def materialize_public_activity_file(
+    path: Path, *, max_rows_per_file: int
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    parsed = 0
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        payload = None
+    source_rows = []
+    if isinstance(payload, dict) and isinstance(payload.get("rows"), list):
+        source_rows = payload["rows"]
+    elif isinstance(payload, list):
+        source_rows = payload
+    for idx, obj in enumerate(source_rows, start=1):
+        if len(rows) >= max_rows_per_file:
+            break
+        if not isinstance(obj, dict):
+            continue
+        parsed += 1
+        row = materialize_public_activity_row(obj, source_path=path, row_no=idx)
+        if row is not None:
+            rows.append(row)
+    return rows, {
+        "path": str(path),
+        "sha256": sha256_file(path),
+        "parsed_json_rows": parsed,
+        "materialized_rows": len(rows),
+        "invalid_json_rows": 0 if payload is not None else 1,
+        "source_format": "public_activity_entry_rows",
+    }
+
+
 def write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -235,7 +352,7 @@ def parse_args() -> argparse.Namespace:
         "--root",
         action="append",
         default=None,
-        help="Event JSONL file or directory root. Defaults to xuan_research_artifacts and logs.",
+        help="Event/activity file or directory root. Defaults to xuan_research_artifacts and logs.",
     )
     p.add_argument("--output-dir", default=None)
     p.add_argument("--include-smoke", action="store_true")
@@ -248,11 +365,24 @@ def main() -> int:
     args = parse_args()
     roots = [Path(p) for p in (args.root or ["xuan_research_artifacts", "logs"])]
     out = Path(args.output_dir) if args.output_dir else default_output_dir()
-    paths = iter_event_paths(roots, include_smoke=args.include_smoke, max_files=args.max_files)
+    event_paths = iter_event_paths(roots, include_smoke=args.include_smoke, max_files=args.max_files)
+    remaining_file_budget = max(0, args.max_files - len(event_paths))
+    activity_paths = iter_public_activity_paths(
+        roots,
+        include_smoke=args.include_smoke,
+        max_files=remaining_file_budget,
+    )
     all_rows: list[dict[str, Any]] = []
     source_summaries: list[dict[str, Any]] = []
-    for path in paths:
+    for path in event_paths:
         rows, summary = materialize_file(path, max_rows_per_file=max(1, args.max_rows_per_file))
+        all_rows.extend(rows)
+        source_summaries.append(summary)
+    for path in activity_paths:
+        rows, summary = materialize_public_activity_file(
+            path,
+            max_rows_per_file=max(1, args.max_rows_per_file),
+        )
         all_rows.extend(rows)
         source_summaries.append(summary)
     out.mkdir(parents=True, exist_ok=True)
@@ -272,7 +402,9 @@ def main() -> int:
         },
         "roots": [str(root) for root in roots],
         "include_smoke": bool(args.include_smoke),
-        "event_files_seen": len(paths),
+        "source_files_seen": len(event_paths) + len(activity_paths),
+        "event_files_seen": len(event_paths),
+        "public_activity_files_seen": len(activity_paths),
         "materialized_rows": len(all_rows),
         "output_csv": str(csv_path),
         "depth_source": "public_trade_size_proxy_not_l2_depth",
@@ -290,7 +422,9 @@ def main() -> int:
                 "status": MATERIALIZER_STATUS,
                 "output_dir": str(out),
                 "output_csv": str(csv_path),
-                "event_files_seen": len(paths),
+                "source_files_seen": len(event_paths) + len(activity_paths),
+                "event_files_seen": len(event_paths),
+                "public_activity_files_seen": len(activity_paths),
                 "materialized_rows": len(all_rows),
                 "include_smoke": bool(args.include_smoke),
             },
