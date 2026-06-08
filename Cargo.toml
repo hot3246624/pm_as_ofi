@@ -59,3 +59,7 @@ path = "src/bin/probe_clob_v2.rs"
 [[bin]]
 name = "xuan_b27_dplus_user_ws_observer"
 path = "src/bin/xuan_b27_dplus_user_ws_observer.rs"
+
+[[bin]]
+name = "b_strategy_canary_s8a_native_effectful_runtime"
+path = "src/bin/b_strategy_canary_s8a_native_effectful_runtime.rs"
