@@ -41,7 +41,10 @@ Outputs:
 
 Input discovery:
 
+- `scripts/materialize_nagi_ce25_b27bc_maker_shadow_input.py`
 - `scripts/inventory_nagi_ce25_b27bc_maker_shadow_inputs.py`
+- Converts bounded local event JSONL to CSV when non-smoke/non-fixture events
+  are present.
 - Scans bounded local CSV samples.
 - Reports whether files are pipeline-compatible and whether sampled rows contain
   CE25-gated, public-touch, >=5-share maker-shadow opportunities.

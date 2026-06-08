@@ -1,0 +1,120 @@
+import csv
+import importlib.util
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+
+def load_module():
+    scripts_dir = Path(__file__).resolve().parents[1]
+    module_path = scripts_dir / "materialize_nagi_ce25_b27bc_maker_shadow_input.py"
+    spec = importlib.util.spec_from_file_location(
+        "materialize_nagi_ce25_b27bc_maker_shadow_input", module_path
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+materializer_mod = load_module()
+
+
+class NagiCe25B27bcMakerShadowMaterializerTests(unittest.TestCase):
+    def test_materializes_btc5m_public_trade_event(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_") as tmp:
+            path = Path(tmp) / "btc-updown-5m-1900000000.events.jsonl"
+            path.write_text(
+                json.dumps(
+                    {
+                        "kind": "candidate",
+                        "source": "no_order_public_trade_candidate",
+                        "slug": "btc-updown-5m-1900000000",
+                        "condition_id": "cond",
+                        "ts_ms": 1900000250000,
+                        "offset_s": 250,
+                        "side": "YES",
+                        "price": 0.42,
+                        "no_bid": 0.56,
+                        "public_trade_px": 0.43,
+                        "public_trade_size": 20,
+                        "source_sequence_id": "seq-1",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            rows, summary = materializer_mod.materialize_file(path, max_rows_per_file=100)
+            self.assertEqual(summary["materialized_rows"], 1)
+            self.assertEqual(rows[0]["slug"], "btc-updown-5m-1900000000")
+            self.assertEqual(rows[0]["remaining_s"], 50)
+            self.assertEqual(rows[0]["yes_bid"], 0.42)
+            self.assertEqual(rows[0]["public_trade_qty"], 20.0)
+            self.assertEqual(rows[0]["visible_depth_qty"], 20.0)
+            self.assertEqual(rows[0]["materialized_depth_source"], "public_trade_size_proxy_not_l2_depth")
+
+    def test_default_path_filter_excludes_smoke_and_fixture(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_filter_") as tmp:
+            root = Path(tmp)
+            smoke = root / "some_smoke_dir"
+            real = root / "real_dir"
+            smoke.mkdir()
+            real.mkdir()
+            (smoke / "a.events.jsonl").write_text("{}\n", encoding="utf-8")
+            (real / "b.events.jsonl").write_text("{}\n", encoding="utf-8")
+            paths = materializer_mod.iter_event_paths([root], include_smoke=False, max_files=10)
+            self.assertEqual(paths, [real / "b.events.jsonl"])
+            paths = materializer_mod.iter_event_paths([root], include_smoke=True, max_files=10)
+            self.assertEqual(paths, [real / "b.events.jsonl", smoke / "a.events.jsonl"])
+
+    def test_cli_writes_csv_and_manifest(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_cli_") as tmp:
+            root = Path(tmp)
+            input_dir = root / "events"
+            input_dir.mkdir()
+            event_path = input_dir / "btc-updown-5m-1900000000.events.jsonl"
+            event_path.write_text(
+                json.dumps(
+                    {
+                        "kind": "candidate",
+                        "slug": "btc-updown-5m-1900000000",
+                        "ts_ms": 1900000250000,
+                        "offset_s": 250,
+                        "side": "NO",
+                        "price": 0.56,
+                        "yes_bid": 0.42,
+                        "public_trade_px": 0.57,
+                        "public_trade_size": 30,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            out = root / "out"
+            old_argv = sys.argv
+            sys.argv = [
+                "materialize_nagi_ce25_b27bc_maker_shadow_input.py",
+                "--root",
+                str(input_dir),
+                "--output-dir",
+                str(out),
+            ]
+            try:
+                rc = materializer_mod.main()
+            finally:
+                sys.argv = old_argv
+            self.assertEqual(rc, 0)
+            manifest = json.loads((out / "manifest.json").read_text())
+            self.assertEqual(manifest["materialized_rows"], 1)
+            self.assertFalse(manifest["non_claims"]["order_execution"])
+            with (out / "nagi_ce25_b27bc_maker_shadow_input.csv").open(newline="", encoding="utf-8") as f:
+                rows = list(csv.DictReader(f))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["side"], "NO")
+
+
+if __name__ == "__main__":
+    unittest.main()
