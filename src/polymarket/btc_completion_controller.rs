@@ -1250,6 +1250,7 @@ pub struct BtcCompletionS8aEffectfulRuntimeReadinessEvidence {
     pub wrapper_supports_exact_order_path: bool,
     pub exact_order_path_requires_approval_hash: bool,
     pub exact_order_path_rejects_missing_or_mismatched_approval: bool,
+    pub uses_native_s8a_order_adapter: bool,
     pub limit_order_min_size_shares: f64,
     pub limit_entry_order_size_shares: f64,
     pub market_buy_min_notional_usdc: f64,
@@ -1310,6 +1311,7 @@ pub enum BtcCompletionS8aEffectfulRuntimeReadinessBlockReason {
     ExactOrderPathUnavailable,
     ExactOrderPathMissingApprovalHashGate,
     ExactOrderPathDoesNotRejectApprovalMismatch,
+    NativeS8aOrderAdapterMissing,
     InvalidLimitOrderMinimums,
     InvalidMarketBuyMinimumNotional,
     MarketBuyAmountUnitNotUsdc,
@@ -1374,6 +1376,7 @@ impl BtcCompletionS8aEffectfulRuntimeReadinessBlockReason {
             Self::ExactOrderPathDoesNotRejectApprovalMismatch => {
                 "BLOCK_EXACT_ORDER_PATH_DOES_NOT_REJECT_APPROVAL_MISMATCH"
             }
+            Self::NativeS8aOrderAdapterMissing => "BLOCK_NATIVE_S8A_ORDER_ADAPTER_MISSING",
             Self::InvalidLimitOrderMinimums => "BLOCK_INVALID_LIMIT_ORDER_MINIMUMS",
             Self::InvalidMarketBuyMinimumNotional => "BLOCK_INVALID_MARKET_BUY_MINIMUM_NOTIONAL",
             Self::MarketBuyAmountUnitNotUsdc => "BLOCK_MARKET_BUY_AMOUNT_UNIT_NOT_USDC",
@@ -2913,6 +2916,11 @@ pub fn review_btc_completion_s8a_effectful_runtime_readiness(
             BtcCompletionS8aEffectfulRuntimeReadinessBlockReason::ExactOrderPathDoesNotRejectApprovalMismatch,
         );
     }
+    if !evidence.uses_native_s8a_order_adapter {
+        block_reasons.push(
+            BtcCompletionS8aEffectfulRuntimeReadinessBlockReason::NativeS8aOrderAdapterMissing,
+        );
+    }
     if (evidence.limit_order_min_size_shares - BTC_COMPLETION_S8A_LIMIT_MIN_ORDER_SIZE_SHARES).abs()
         > 1e-9
         || (evidence.limit_entry_order_size_shares - BTC_COMPLETION_S8A_LIMIT_MIN_ORDER_SIZE_SHARES)
@@ -3111,6 +3119,7 @@ pub fn review_btc_completion_s8a_effectful_runtime_readiness(
         && evidence.order_amount_units_verified_from_official_order_docs;
 
     let native_s8a_runtime_bound = evidence.wrapper_supports_exact_order_path
+        && evidence.uses_native_s8a_order_adapter
         && order_minimums_bound
         && evidence.live_public_buy_signal_source_bound
         && evidence.btc_5m_target_derivation_bound
@@ -4597,6 +4606,21 @@ mod tests {
     }
 
     #[test]
+    fn s8a_effectful_runtime_readiness_requires_native_s8a_order_adapter() {
+        let mut evidence = complete_s8a_effectful_runtime_readiness();
+        evidence.uses_native_s8a_order_adapter = false;
+
+        let review = review_btc_completion_s8a_effectful_runtime_readiness(&evidence);
+
+        assert!(!review.runtime_ready_for_exact_approval_request);
+        assert!(!review.native_s8a_runtime_bound);
+        assert!(review.block_reasons.contains(
+            &BtcCompletionS8aEffectfulRuntimeReadinessBlockReason::NativeS8aOrderAdapterMissing
+        ));
+        assert!(!review.effectful_execution_permitted);
+    }
+
+    #[test]
     fn s7k_large_sample_fixture_matches_controller_decisions() {
         let fixture: Value = serde_json::from_str(include_str!(
             "fixtures/btc_completion_controller_s7k_large_sample.json"
@@ -5016,6 +5040,7 @@ mod tests {
             wrapper_supports_exact_order_path: true,
             exact_order_path_requires_approval_hash: true,
             exact_order_path_rejects_missing_or_mismatched_approval: true,
+            uses_native_s8a_order_adapter: true,
             limit_order_min_size_shares: BTC_COMPLETION_S8A_LIMIT_MIN_ORDER_SIZE_SHARES,
             limit_entry_order_size_shares: BTC_COMPLETION_S8A_LIMIT_MIN_ORDER_SIZE_SHARES,
             market_buy_min_notional_usdc: BTC_COMPLETION_S8A_MARKET_BUY_MIN_NOTIONAL_USDC,
