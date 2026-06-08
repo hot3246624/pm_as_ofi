@@ -5,6 +5,7 @@
 //! encodes the S8A-specific venue-order unit contract so the future effectful
 //! wrapper does not reuse legacy executor market-buy share semantics.
 
+use crate::polymarket::btc_completion_controller::BtcCompletionControllerReview;
 use crate::polymarket::types::Side;
 
 pub const S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT: bool = false;
@@ -80,6 +81,7 @@ pub struct S8aNativeOrderAdapterRequest {
     pub market_buy_notional_usdc: Option<f64>,
     pub market_sell_size_shares: Option<f64>,
     pub controller_admission_passed: bool,
+    pub controller_review_execution_permitted: bool,
     pub source_guard_500_passed: bool,
     pub no_forced_complement: bool,
     pub official_order_minimums_verified: bool,
@@ -96,6 +98,7 @@ pub enum S8aNativeOrderAdapterBlockReason {
     MissingConditionId,
     MissingTokenId,
     ControllerAdmissionMissing,
+    ControllerReviewPermitsExecution,
     SourceGuard500Missing,
     ForcedComplementRequested,
     OfficialOrderMinimumsNotVerified,
@@ -120,6 +123,7 @@ impl S8aNativeOrderAdapterBlockReason {
             Self::MissingConditionId => "BLOCK_MISSING_CONDITION_ID",
             Self::MissingTokenId => "BLOCK_MISSING_TOKEN_ID",
             Self::ControllerAdmissionMissing => "BLOCK_CONTROLLER_ADMISSION_MISSING",
+            Self::ControllerReviewPermitsExecution => "BLOCK_CONTROLLER_REVIEW_PERMITS_EXECUTION",
             Self::SourceGuard500Missing => "BLOCK_SOURCE_GUARD_500_MISSING",
             Self::ForcedComplementRequested => "BLOCK_FORCED_COMPLEMENT_REQUESTED",
             Self::OfficialOrderMinimumsNotVerified => "BLOCK_OFFICIAL_ORDER_MINIMUMS_NOT_VERIFIED",
@@ -181,6 +185,9 @@ pub fn review_s8a_native_order_adapter(
     }
     if !request.controller_admission_passed {
         block_reasons.push(S8aNativeOrderAdapterBlockReason::ControllerAdmissionMissing);
+    }
+    if request.controller_review_execution_permitted {
+        block_reasons.push(S8aNativeOrderAdapterBlockReason::ControllerReviewPermitsExecution);
     }
     if !request.source_guard_500_passed {
         block_reasons.push(S8aNativeOrderAdapterBlockReason::SourceGuard500Missing);
@@ -256,6 +263,77 @@ pub fn review_s8a_native_order_adapter(
         block_reasons,
         effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aControllerAdmissionAdapterContext {
+    pub yes_token_id: String,
+    pub no_token_id: String,
+    pub official_order_minimums_verified: bool,
+    pub fresh_exact_approval_hash_present: bool,
+    pub approval_scope_matches_s8a: bool,
+    pub effectful_submission_requested: bool,
+    pub prints_secret_or_raw_signature: bool,
+    pub uses_shared_ingress_or_shared_ws: bool,
+    pub uses_c_artifacts: bool,
+}
+
+pub fn review_s8a_limit_entry_from_controller_admission(
+    controller_review: &BtcCompletionControllerReview,
+    context: &S8aControllerAdmissionAdapterContext,
+) -> S8aNativeOrderAdapterReview {
+    let Some(intent) = controller_review.intent.as_ref() else {
+        return review_s8a_native_order_adapter(&S8aNativeOrderAdapterRequest {
+            condition_id: String::new(),
+            token_id: String::new(),
+            side: Side::Yes,
+            action: S8aAdapterOrderAction::Buy,
+            order_kind: S8aAdapterOrderKind::Limit,
+            limit_price: None,
+            limit_size_shares: Some(S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES),
+            market_buy_notional_usdc: None,
+            market_sell_size_shares: None,
+            controller_admission_passed: false,
+            controller_review_execution_permitted: controller_review.execution_permitted,
+            source_guard_500_passed: false,
+            no_forced_complement: true,
+            official_order_minimums_verified: context.official_order_minimums_verified,
+            fresh_exact_approval_hash_present: context.fresh_exact_approval_hash_present,
+            approval_scope_matches_s8a: context.approval_scope_matches_s8a,
+            effectful_submission_requested: context.effectful_submission_requested,
+            prints_secret_or_raw_signature: context.prints_secret_or_raw_signature,
+            uses_shared_ingress_or_shared_ws: context.uses_shared_ingress_or_shared_ws,
+            uses_c_artifacts: context.uses_c_artifacts,
+        });
+    };
+
+    let token_id = match intent.side {
+        Side::Yes => context.yes_token_id.clone(),
+        Side::No => context.no_token_id.clone(),
+    };
+
+    review_s8a_native_order_adapter(&S8aNativeOrderAdapterRequest {
+        condition_id: intent.condition_id.clone(),
+        token_id,
+        side: intent.side,
+        action: S8aAdapterOrderAction::Buy,
+        order_kind: S8aAdapterOrderKind::Limit,
+        limit_price: Some(intent.price),
+        limit_size_shares: Some(S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES),
+        market_buy_notional_usdc: None,
+        market_sell_size_shares: None,
+        controller_admission_passed: true,
+        controller_review_execution_permitted: controller_review.execution_permitted,
+        source_guard_500_passed: true,
+        no_forced_complement: true,
+        official_order_minimums_verified: context.official_order_minimums_verified,
+        fresh_exact_approval_hash_present: context.fresh_exact_approval_hash_present,
+        approval_scope_matches_s8a: context.approval_scope_matches_s8a,
+        effectful_submission_requested: context.effectful_submission_requested,
+        prints_secret_or_raw_signature: context.prints_secret_or_raw_signature,
+        uses_shared_ingress_or_shared_ws: context.uses_shared_ingress_or_shared_ws,
+        uses_c_artifacts: context.uses_c_artifacts,
+    })
 }
 
 fn limit_buy_order(
@@ -504,6 +582,11 @@ pub fn review_s8a_new_round_gate(state: &S8aSessionState) -> S8aSessionGateRevie
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polymarket::btc_completion_controller::{
+        review_btc_completion_candidate, BtcCompletionCandidate, BtcCompletionConditionState,
+        BtcCompletionControllerConfig, BtcCompletionControllerReview, BtcCompletionControllerState,
+        BtcCompletionResearchIntent,
+    };
 
     fn base_request() -> S8aNativeOrderAdapterRequest {
         S8aNativeOrderAdapterRequest {
@@ -517,6 +600,7 @@ mod tests {
             market_buy_notional_usdc: None,
             market_sell_size_shares: None,
             controller_admission_passed: true,
+            controller_review_execution_permitted: false,
             source_guard_500_passed: true,
             no_forced_complement: true,
             official_order_minimums_verified: true,
@@ -526,6 +610,43 @@ mod tests {
             prints_secret_or_raw_signature: false,
             uses_shared_ingress_or_shared_ws: false,
             uses_c_artifacts: false,
+        }
+    }
+
+    fn adapter_context() -> S8aControllerAdmissionAdapterContext {
+        S8aControllerAdmissionAdapterContext {
+            yes_token_id: "token-yes".to_string(),
+            no_token_id: "token-no".to_string(),
+            official_order_minimums_verified: true,
+            fresh_exact_approval_hash_present: true,
+            approval_scope_matches_s8a: true,
+            effectful_submission_requested: true,
+            prints_secret_or_raw_signature: false,
+            uses_shared_ingress_or_shared_ws: false,
+            uses_c_artifacts: false,
+        }
+    }
+
+    fn btc_candidate(condition_id: &str, side: Side, ts_ms: u64) -> BtcCompletionCandidate {
+        BtcCompletionCandidate {
+            asset: "BTC".to_string(),
+            event_kind: "public_trade".to_string(),
+            public_trade_taker_side: "BUY".to_string(),
+            condition_id: condition_id.to_string(),
+            slug: "btc-updown-5m-s8a-fixture".to_string(),
+            ts_ms,
+            offset_s: 10.0,
+            time_to_end_s: Some(250.0),
+            side,
+            public_trade_price: 0.49,
+            l1_pair_ask: 1.01,
+            l1_pair_available_qty: 25.0,
+            buy_available_qty: 25.0,
+            strict_l1_age_ms: Some(10),
+            strict_l2_age_ms: None,
+            public_trade_recv_lag_ms: Some(10),
+            forbidden_decision_fields_present: false,
+            snapshot_index_used_as_rank: false,
         }
     }
 
@@ -619,6 +740,110 @@ mod tests {
             .block_reasons
             .contains(&S8aNativeOrderAdapterBlockReason::ForcedComplementRequested));
         assert!(review.prepared_order.is_none());
+    }
+
+    #[test]
+    fn controller_admission_maps_to_native_five_share_limit_order() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let controller_review = review_btc_completion_candidate(
+            &cfg,
+            &state,
+            &btc_candidate("0xcondition", Side::Yes, 1_000),
+        );
+
+        let adapter_review = review_s8a_limit_entry_from_controller_admission(
+            &controller_review,
+            &adapter_context(),
+        );
+
+        assert!(adapter_review.native_adapter_ready_for_exact_runtime);
+        assert!(adapter_review.official_order_units_bound);
+        let order = adapter_review.prepared_order.expect("prepared S8A order");
+        assert_eq!(order.token_id, "token-yes");
+        assert_eq!(order.amount, S8aVenueAmount::Shares(5.0));
+        assert_eq!(order.limit_price, Some(0.435));
+        assert!(!order.execution_permitted);
+    }
+
+    #[test]
+    fn blocked_controller_admission_never_maps_to_order() {
+        let controller_review = BtcCompletionControllerReview {
+            intent: None,
+            block_reason: None,
+            execution_permitted: false,
+        };
+
+        let adapter_review = review_s8a_limit_entry_from_controller_admission(
+            &controller_review,
+            &adapter_context(),
+        );
+
+        assert!(!adapter_review.native_adapter_ready_for_exact_runtime);
+        assert!(adapter_review
+            .block_reasons
+            .contains(&S8aNativeOrderAdapterBlockReason::ControllerAdmissionMissing));
+        assert!(adapter_review.prepared_order.is_none());
+    }
+
+    #[test]
+    fn controller_review_with_execution_permission_is_rejected() {
+        let controller_review = BtcCompletionControllerReview {
+            intent: Some(BtcCompletionResearchIntent {
+                condition_id: "0xcondition".to_string(),
+                slug: "btc-updown-5m-s8a-fixture".to_string(),
+                ts_ms: 1_000,
+                side: Side::No,
+                price: 0.445,
+                qty: 5.0,
+                execution_permitted: false,
+            }),
+            block_reason: None,
+            execution_permitted: true,
+        };
+
+        let adapter_review = review_s8a_limit_entry_from_controller_admission(
+            &controller_review,
+            &adapter_context(),
+        );
+
+        assert!(!adapter_review.native_adapter_ready_for_exact_runtime);
+        assert!(adapter_review
+            .block_reasons
+            .contains(&S8aNativeOrderAdapterBlockReason::ControllerReviewPermitsExecution));
+        assert!(adapter_review.prepared_order.is_none());
+    }
+
+    #[test]
+    fn s8a_controller_uses_actual_partial_fill_inventory_for_next_admission() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let mut state = BtcCompletionControllerState::default();
+        state.set_condition_state(
+            "0xcondition",
+            BtcCompletionConditionState {
+                yes_qty: 3.0,
+                no_qty: 0.0,
+                last_accept_ts_ms: Some(1_000),
+            },
+        );
+
+        let same_side = review_btc_completion_candidate(
+            &cfg,
+            &state,
+            &btc_candidate("0xcondition", Side::Yes, 7_000),
+        );
+        let complement = review_btc_completion_candidate(
+            &cfg,
+            &state,
+            &btc_candidate("0xcondition", Side::No, 7_000),
+        );
+
+        assert!(same_side.intent.is_none());
+        assert_eq!(
+            same_side.block_reason.map(|reason| reason.as_str()),
+            Some("BLOCK_INVENTORY_IMBALANCE_WOULD_EXCEED_CAP")
+        );
+        assert!(complement.intent.is_some());
     }
 
     #[test]
