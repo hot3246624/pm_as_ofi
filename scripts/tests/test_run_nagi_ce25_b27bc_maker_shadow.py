@@ -390,6 +390,86 @@ class NagiCe25B27bcMakerShadowTests(unittest.TestCase):
         self.assertIn("open_rejected_per_market_residual_budget", events)
         self.assertNotIn("queue_proxy_open", events)
 
+    def test_first_side_hazard_rejects_yes_price_band(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000001",
+                "ts_ms": "2000",
+                "remaining_s": "44",
+                "side": "NO",
+                "no_bid": "0.42",
+                "public_taker_side": "SELL",
+                "no_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(reject_yes_open_in_price_bands=("35_50",))
+        )
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertIn("open_rejected_first_side_hazard", events)
+        self.assertEqual(events.count("queue_proxy_open"), 1)
+
+    def test_first_side_hazard_rejects_yes_after_up_residual_event(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "17000",
+                "remaining_s": "29",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000001",
+                "ts_ms": "18000",
+                "remaining_s": "28",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(
+                residual_discount_s=15.0,
+                reject_yes_open_after_up_residual_events=1,
+            )
+        )
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertIn("residual_discount", events)
+        self.assertIn("open_rejected_first_side_hazard", events)
+
     def test_limit_order_minimum_requires_five_shares(self):
         rows = [
             {
