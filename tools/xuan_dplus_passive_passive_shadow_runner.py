@@ -104,6 +104,13 @@ def parse_float_csv(raw: str | None) -> list[float]:
     return out
 
 
+def fnum(value: Any) -> float:
+    try:
+        return 0.0 if value is None else float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def profile_name_for_late_repair(value: float) -> str:
     text = ("%g" % value).replace("-", "m").replace(".", "p")
     return f"repair{text}"
