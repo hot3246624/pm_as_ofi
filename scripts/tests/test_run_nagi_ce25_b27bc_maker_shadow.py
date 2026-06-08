@@ -267,6 +267,85 @@ class NagiCe25B27bcMakerShadowTests(unittest.TestCase):
         self.assertIn("open_rejected_side_profile_filter", events)
         self.assertIn("queue_proxy_open", events)
 
+    def test_pre_open_opposite_support_requires_prior_supported_opposite_touch(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "NO",
+                "no_bid": "0.50",
+                "public_taker_side": "SELL",
+                "no_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "2000",
+                "remaining_s": "44",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(
+                require_opposite_support_before_open=True,
+                opposite_support_lookback_s=15.0,
+                opposite_support_min_qty=5.0,
+                opposite_support_pair_cost_cap=0.95,
+            )
+        )
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertEqual(events.count("open_rejected_no_recent_opposite_support"), 1)
+        self.assertEqual(events.count("queue_proxy_open"), 1)
+        open_event = next(event for event in pipeline.events if event["event"] == "queue_proxy_open")
+        self.assertEqual(open_event["opposite_support_side"], "NO")
+        self.assertAlmostEqual(open_event["opposite_support_pair_cost"], 0.92)
+
+    def test_pre_open_opposite_support_rejects_stale_or_expensive_support(self):
+        stale_rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "NO",
+                "no_bid": "0.50",
+                "public_taker_side": "SELL",
+                "no_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "70000",
+                "remaining_s": "0",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(
+                require_opposite_support_before_open=True,
+                opposite_support_lookback_s=15.0,
+                opposite_support_min_qty=5.0,
+                opposite_support_pair_cost_cap=0.95,
+            )
+        )
+        pipeline.run(stale_rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertEqual(events.count("queue_proxy_open"), 0)
+        self.assertGreaterEqual(events.count("open_rejected_no_recent_opposite_support"), 2)
+
     def test_limit_order_minimum_requires_five_shares(self):
         rows = [
             {

@@ -375,6 +375,10 @@ class PipelineConfig:
     quarantine_after_residual_discount: bool = False
     allowed_coverage_gates: tuple[str, ...] = ()
     allowed_open_sides: tuple[str, ...] = ()
+    require_opposite_support_before_open: bool = False
+    opposite_support_lookback_s: float = 0.0
+    opposite_support_min_qty: float = 5.0
+    opposite_support_pair_cost_cap: float = 0.995
     bad_pair_cost_target: float = 0.35
     residual_rate_target: float = 0.12
     min_markets_for_review: int = 100
@@ -402,6 +406,15 @@ class ActiveLot:
 
     def age_s(self, ts_ms: int) -> float:
         return max(0.0, (ts_ms - self.opened_ts_ms) / 1000.0)
+
+
+@dataclass
+class OppositeSupportTouch:
+    side: str
+    bid_px: float
+    ts_ms: int
+    fillable_qty: float
+    touch_reason: str
 
 
 @dataclass
@@ -524,6 +537,7 @@ class MakerShadowPipeline:
         self.cfg = cfg
         self.active: dict[str, ActiveLot] = {}
         self.quarantined_markets: set[str] = set()
+        self.support_history: dict[str, list[OppositeSupportTouch]] = {}
         self.events: list[dict[str, Any]] = []
         self.windows: dict[str, WindowStats] = {}
 
@@ -561,17 +575,21 @@ class MakerShadowPipeline:
         stats.note_gate(decision.gate_id)
         if not decision.allowed:
             self.emit_base(row, ts_ms, "coverage_rejected", decision, side, bid_px, {})
+            self.record_opposite_support(row, ts_ms, side, bid_px)
             return
         stats.opportunities += 1
         stats.opportunity_markets.add(slug)
         if slug in self.active:
             self.emit_base(row, ts_ms, "open_skipped_active_residual", decision, side, bid_px, {})
+            self.record_opposite_support(row, ts_ms, side, bid_px)
             return
         if had_active_lot:
             self.emit_base(row, ts_ms, "open_skipped_completion_row", decision, side, bid_px, {})
+            self.record_opposite_support(row, ts_ms, side, bid_px)
             return
         if slug in self.quarantined_markets:
             self.emit_base(row, ts_ms, "open_rejected_residual_quarantine", decision, side, bid_px, {})
+            self.record_opposite_support(row, ts_ms, side, bid_px)
             return
         if self.cfg.allowed_coverage_gates and decision.gate_id not in self.cfg.allowed_coverage_gates:
             self.emit_base(
@@ -583,6 +601,7 @@ class MakerShadowPipeline:
                 bid_px,
                 {"allowed_coverage_gates": list(self.cfg.allowed_coverage_gates)},
             )
+            self.record_opposite_support(row, ts_ms, side, bid_px)
             return
         if self.cfg.allowed_open_sides and side not in self.cfg.allowed_open_sides:
             self.emit_base(
@@ -594,8 +613,10 @@ class MakerShadowPipeline:
                 bid_px,
                 {"allowed_open_sides": list(self.cfg.allowed_open_sides)},
             )
+            self.record_opposite_support(row, ts_ms, side, bid_px)
             return
         self.try_open(row, ts_ms, decision, side, bid_px)
+        self.record_opposite_support(row, ts_ms, side, bid_px)
 
     def l2_quality_ok(self, row: dict[str, Any]) -> tuple[bool, str]:
         age_ms = infer_age_ms(row)
@@ -606,6 +627,83 @@ class MakerShadowPipeline:
             return False, "align_lag_exceeds_gate"
         return True, "ok"
 
+    def record_opposite_support(
+        self,
+        row: dict[str, Any],
+        ts_ms: int,
+        side: str | None,
+        bid_px: float | None,
+    ) -> None:
+        if side is None or bid_px is None or bid_px <= 0:
+            return
+        quality_ok, _ = self.l2_quality_ok(row)
+        if not quality_ok:
+            return
+        visible_depth = infer_visible_depth_qty(row, side)
+        fillable_qty = visible_depth * self.cfg.queue_conversion / max(self.cfg.queue_ahead_multiplier, 1e-9)
+        touched, touch_reason = infer_public_sell_touch(row, bid_px)
+        if not touched or fillable_qty < self.cfg.opposite_support_min_qty:
+            return
+        slug = infer_slug(row)
+        if not slug:
+            return
+        history = self.support_history.setdefault(slug, [])
+        max_lookback_ms = max(self.cfg.opposite_support_lookback_s, 0.0) * 1000.0
+        if max_lookback_ms > 0:
+            history[:] = [touch for touch in history if ts_ms - touch.ts_ms <= max_lookback_ms]
+        history.append(
+            OppositeSupportTouch(
+                side=side,
+                bid_px=bid_px,
+                ts_ms=ts_ms,
+                fillable_qty=fillable_qty,
+                touch_reason=touch_reason,
+            )
+        )
+
+    def recent_opposite_support(
+        self,
+        row: dict[str, Any],
+        ts_ms: int,
+        side: str,
+        bid_px: float,
+    ) -> tuple[bool, dict[str, Any]]:
+        if not self.cfg.require_opposite_support_before_open:
+            return True, {}
+        slug = infer_slug(row)
+        max_age_s = max(self.cfg.opposite_support_lookback_s, 0.0)
+        if not slug or max_age_s <= 0:
+            return False, {"reason": "opposite_support_gate_unconfigured_or_missing_slug"}
+        support_side = opposite_side(side)
+        support_rows = []
+        for touch in self.support_history.get(slug, []):
+            age_s = max(0.0, (ts_ms - touch.ts_ms) / 1000.0)
+            pair_cost = bid_px + touch.bid_px
+            if (
+                touch.side == support_side
+                and age_s <= max_age_s + 1e-9
+                and touch.fillable_qty >= self.cfg.opposite_support_min_qty
+                and pair_cost <= self.cfg.opposite_support_pair_cost_cap + 1e-12
+            ):
+                support_rows.append((age_s, pair_cost, touch))
+        if not support_rows:
+            return False, {
+                "reason": "no_recent_opposite_support",
+                "opposite_support_side": support_side,
+                "opposite_support_lookback_s": max_age_s,
+                "opposite_support_min_qty": self.cfg.opposite_support_min_qty,
+                "opposite_support_pair_cost_cap": self.cfg.opposite_support_pair_cost_cap,
+            }
+        age_s, pair_cost, touch = min(support_rows, key=lambda item: (item[0], item[1]))
+        return True, {
+            "opposite_support_side": support_side,
+            "opposite_support_age_s": age_s,
+            "opposite_support_px": touch.bid_px,
+            "opposite_support_pair_cost": pair_cost,
+            "opposite_support_fillable_qty": touch.fillable_qty,
+            "opposite_support_touch_reason": touch.touch_reason,
+        }
+
     def try_open(
         self,
         row: dict[str, Any],
@@ -615,6 +713,18 @@ class MakerShadowPipeline:
         bid_px: float | None,
     ) -> None:
         if side is None or bid_px is None or bid_px <= 0:
+            return
+        support_ok, support_payload = self.recent_opposite_support(row, ts_ms, side, bid_px)
+        if not support_ok:
+            self.emit_base(
+                row,
+                ts_ms,
+                "open_rejected_no_recent_opposite_support",
+                decision,
+                side,
+                bid_px,
+                support_payload,
+            )
             return
         if self.cfg.suppress_yes_first_open and side == "YES":
             self.emit_base(
@@ -704,6 +814,7 @@ class MakerShadowPipeline:
                 "shadow_qty": qty,
                 "fee_rate": 0.0,
                 "maker_truth": "public_queue_proxy_only",
+                **support_payload,
             },
         )
 
@@ -1005,6 +1116,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--quarantine-after-residual-discount", action="store_true")
     p.add_argument("--allowed-coverage-gate", action="append", default=[])
     p.add_argument("--allowed-open-side", action="append", default=[])
+    p.add_argument("--require-opposite-support-before-open", action="store_true")
+    p.add_argument("--opposite-support-lookback-s", type=float, default=PipelineConfig.opposite_support_lookback_s)
+    p.add_argument("--opposite-support-min-qty", type=float, default=PipelineConfig.opposite_support_min_qty)
+    p.add_argument("--opposite-support-pair-cost-cap", type=float, default=PipelineConfig.opposite_support_pair_cost_cap)
     p.add_argument("--bad-pair-cost-target", type=float, default=PipelineConfig.bad_pair_cost_target)
     p.add_argument("--residual-rate-target", type=float, default=PipelineConfig.residual_rate_target)
     p.add_argument("--min-markets-for-review", type=int, default=PipelineConfig.min_markets_for_review)
@@ -1028,6 +1143,10 @@ def main() -> int:
         quarantine_after_residual_discount=args.quarantine_after_residual_discount,
         allowed_coverage_gates=tuple(args.allowed_coverage_gate),
         allowed_open_sides=tuple(args.allowed_open_side),
+        require_opposite_support_before_open=args.require_opposite_support_before_open,
+        opposite_support_lookback_s=args.opposite_support_lookback_s,
+        opposite_support_min_qty=args.opposite_support_min_qty,
+        opposite_support_pair_cost_cap=args.opposite_support_pair_cost_cap,
         bad_pair_cost_target=args.bad_pair_cost_target,
         residual_rate_target=args.residual_rate_target,
         min_markets_for_review=args.min_markets_for_review,
