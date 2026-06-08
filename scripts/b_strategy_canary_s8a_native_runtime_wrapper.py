@@ -35,6 +35,13 @@ S8B_SCOUT_TO_NATIVE_ADAPTER_PACKET_SHA256 = "4501c1a8b808c6517f39fd826972cc022d9
 
 SCOPE = "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME"
 REVIEWED_HOST = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com"
+PREPARED_ORDER_SOURCE = "native_s8a_adapter"
+ORDER_PRIMITIVE_NAME = "clob_v2.build_signed_limit_order_v2/post_order_v2"
+S8A_LIMIT_ENTRY_SIZE_SHARES = 5.0
+S8A_SEED_PX_LO = 0.05
+S8A_SEED_PX_HI = 0.80
+S8A_MARKET_BUY_MIN_NOTIONAL_USDC = 1.0
+S8A_MARKET_SELL_MIN_SIZE_SHARES = 5.0
 
 
 def sha256_file(path: Path) -> str:
@@ -49,6 +56,83 @@ def hash64(value: str | None) -> bool:
     if value is None or len(value) != 64:
         return False
     return all(ch in "0123456789abcdefABCDEF" for ch in value)
+
+
+def load_json_file(path: Path) -> dict:
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise ValueError("prepared order payload must be a JSON object")
+    return data
+
+
+def optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return None
+    return parsed
+
+
+def prepared_order_shape_failures(order: dict) -> list[str]:
+    failures: list[str] = []
+    if order.get("source") != PREPARED_ORDER_SOURCE:
+        failures.append("PREPARED_ORDER_SOURCE_NOT_NATIVE_S8A_ADAPTER")
+    if not str(order.get("condition_id", "")).strip():
+        failures.append("PREPARED_ORDER_MISSING_CONDITION_ID")
+    if not str(order.get("token_id", "")).strip():
+        failures.append("PREPARED_ORDER_MISSING_TOKEN_ID")
+    if order.get("side") not in ("YES", "NO"):
+        failures.append("PREPARED_ORDER_SIDE_NOT_YES_OR_NO")
+    if order.get("action") not in ("BUY", "SELL"):
+        failures.append("PREPARED_ORDER_ACTION_NOT_BUY_OR_SELL")
+    if order.get("order_type") not in ("GTC", "FAK"):
+        failures.append("PREPARED_ORDER_TYPE_NOT_GTC_OR_FAK")
+    if order.get("execution_permitted") is not False:
+        failures.append("PREPARED_ORDER_EXECUTION_MUST_BE_FALSE_IN_PREVIEW")
+    if order.get("natural_controller_admission") is not True:
+        failures.append("PREPARED_ORDER_MISSING_NATURAL_CONTROLLER_ADMISSION")
+    if order.get("forced_complement") is not False:
+        failures.append("PREPARED_ORDER_FORCED_COMPLEMENT_NOT_FALSE")
+    if order.get("source_guard_500_passed") is not True:
+        failures.append("PREPARED_ORDER_SOURCE_GUARD_500_NOT_PASSED")
+
+    amount = order.get("amount")
+    if not isinstance(amount, dict):
+        failures.append("PREPARED_ORDER_AMOUNT_NOT_OBJECT")
+        amount = {}
+    amount_unit = amount.get("unit")
+    amount_value = optional_float(amount.get("value"))
+    action = order.get("action")
+    order_type = order.get("order_type")
+
+    if order_type == "GTC":
+        if action != "BUY":
+            failures.append("S8A_LIMIT_ENTRY_MUST_BE_BUY")
+        if amount_unit != "SHARES":
+            failures.append("S8A_LIMIT_ENTRY_AMOUNT_UNIT_MUST_BE_SHARES")
+        if amount_value is None or abs(amount_value - S8A_LIMIT_ENTRY_SIZE_SHARES) > 1e-9:
+            failures.append("S8A_LIMIT_ENTRY_SIZE_MUST_BE_5_SHARES")
+        limit_price = optional_float(order.get("limit_price"))
+        if limit_price is None:
+            failures.append("S8A_LIMIT_ENTRY_PRICE_MISSING_OR_INVALID")
+        elif not (S8A_SEED_PX_LO <= limit_price <= S8A_SEED_PX_HI):
+            failures.append("S8A_LIMIT_ENTRY_PRICE_OUTSIDE_SEED_BAND")
+    elif order_type == "FAK" and action == "BUY":
+        if amount_unit != "USDC_NOTIONAL":
+            failures.append("S8A_MARKET_BUY_AMOUNT_UNIT_MUST_BE_USDC_NOTIONAL")
+        if amount_value is None or amount_value + 1e-9 < S8A_MARKET_BUY_MIN_NOTIONAL_USDC:
+            failures.append("S8A_MARKET_BUY_NOTIONAL_BELOW_1_USDC")
+    elif order_type == "FAK" and action == "SELL":
+        if amount_unit != "SHARES":
+            failures.append("S8A_MARKET_SELL_AMOUNT_UNIT_MUST_BE_SHARES")
+        if amount_value is None or amount_value + 1e-9 < S8A_MARKET_SELL_MIN_SIZE_SHARES:
+            failures.append("S8A_MARKET_SELL_SIZE_BELOW_5_SHARES")
+    return failures
 
 
 def contract_payload(status: str) -> dict:
@@ -131,6 +215,9 @@ def contract_payload(status: str) -> dict:
             "no_order_auth_preview_prints_secret_or_raw_signature": False,
             "exact_order_path_requires_approval_hash": True,
             "exact_order_path_rejects_mismatched_approval": True,
+            "exact_order_path_requires_native_prepared_order_json": True,
+            "exact_order_path_requires_order_primitive_source_hash": True,
+            "exact_order_path_order_primitive_name": ORDER_PRIMITIVE_NAME,
             "execute_mode_available_in_review_wrapper": False,
         },
         "s7w_reconciliation": {
@@ -193,10 +280,29 @@ def exact_order_path_preview(args: argparse.Namespace) -> int:
         failures.append("APPROVAL_SCOPE_MISMATCH")
     if not args.no_submit:
         failures.append("NO_SUBMIT_REQUIRED_IN_PREVIEW")
+    if args.order_primitive_name != ORDER_PRIMITIVE_NAME:
+        failures.append("ORDER_PRIMITIVE_NAME_MISMATCH")
+    if not hash64(args.order_primitive_source_sha256):
+        failures.append("ORDER_PRIMITIVE_SOURCE_SHA256_NOT_64HEX")
     if args.print_secret or args.print_raw_signature:
         failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
     if args.use_shared_ingress or args.use_c_artifacts:
         failures.append("FORBIDDEN_DEPENDENCY_REQUESTED")
+    prepared_order: dict | None = None
+    prepared_order_sha256: str | None = None
+    if args.prepared_order_json is None:
+        failures.append("PREPARED_ORDER_JSON_REQUIRED")
+    else:
+        try:
+            prepared_order = load_json_file(args.prepared_order_json)
+            prepared_order_sha256 = sha256_file(args.prepared_order_json)
+            if args.expected_prepared_order_sha256 and (
+                prepared_order_sha256 != args.expected_prepared_order_sha256
+            ):
+                failures.append("PREPARED_ORDER_SHA256_MISMATCH")
+            failures.extend(prepared_order_shape_failures(prepared_order))
+        except (OSError, ValueError, json.JSONDecodeError):
+            failures.append("PREPARED_ORDER_JSON_UNREADABLE_OR_INVALID")
     payload = contract_payload(
         "PASS_EXACT_APPROVED_ORDER_PATH_PREVIEW_NO_SUBMIT"
         if not failures
@@ -208,6 +314,13 @@ def exact_order_path_preview(args: argparse.Namespace) -> int:
         "approval_hash_matches_expected": args.expected_exact_approval_sha256
         == args.exact_approval_sha256,
         "no_submit": args.no_submit,
+        "prepared_order_sha256": prepared_order_sha256,
+        "prepared_order_shape_valid": prepared_order is not None
+        and not prepared_order_shape_failures(prepared_order),
+        "prepared_order": prepared_order,
+        "order_primitive_name": args.order_primitive_name,
+        "order_primitive_source_sha256": args.order_primitive_source_sha256,
+        "order_primitive_source_hash_valid": hash64(args.order_primitive_source_sha256),
         "orders_submitted": 0,
         "signing_performed": False,
         "failures": failures,
@@ -234,6 +347,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--exact-approval-sha256")
     parser.add_argument("--expected-exact-approval-sha256")
     parser.add_argument("--approval-scope", default=SCOPE)
+    parser.add_argument("--prepared-order-json", type=Path)
+    parser.add_argument("--expected-prepared-order-sha256")
+    parser.add_argument("--order-primitive-name")
+    parser.add_argument("--order-primitive-source-sha256")
     parser.add_argument("--no-submit", action="store_true")
     parser.add_argument("--print-secret", action="store_true")
     parser.add_argument("--print-raw-signature", action="store_true")
