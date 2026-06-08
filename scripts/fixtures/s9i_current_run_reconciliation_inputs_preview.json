@@ -1,0 +1,89 @@
+{
+  "approval_scope": "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME_S8X",
+  "collateral_observations": {
+    "delta_usdc": 0.42,
+    "positive_delta": true,
+    "post_observation_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "pre_observation_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "exact_approval_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "expected_exact_approval_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "external_position_snapshot": {
+    "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "matches_local_ledger": true,
+    "residual_exposure_qty_shares": 0.0
+  },
+  "final_state": {
+    "funding_live_latest_or_deploy_touched": false,
+    "no_open_order_remainder": true,
+    "open_order_remainder_qty_shares": 0.0,
+    "raw_signature_output": false,
+    "residual_exposure_qty_shares": 0.0,
+    "residual_exposure_zero": true,
+    "secret_values_printed": false,
+    "secret_values_read": false,
+    "shared_ingress_dependency": false,
+    "uses_c_artifacts": false
+  },
+  "local_ledger_snapshot": {
+    "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "inventory_sync_draft_review_only": true,
+    "no_qty": 5.0,
+    "residual_exposure_qty_shares": 0.0,
+    "yes_qty": 5.0
+  },
+  "order_status_fill_evidence": [
+    {
+      "action": "BUY",
+      "actual_filled_qty_shares": 5.0,
+      "avg_fill_price": 0.435,
+      "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "filled_qty_from_exchange_or_order_status": true,
+      "forced_complement_after_fill": false,
+      "open_order_remainder_qty_shares": 0.0,
+      "order_id": "0xs9i-preview-yes-order",
+      "order_status": "MATCHED",
+      "partial_fill_threshold_used": false,
+      "prints_secret_or_raw_signature": false,
+      "side": "YES",
+      "status_source": "ORDER_STATUS_API",
+      "submitted_size_counts_as_inventory": false,
+      "submitted_size_shares": 5.0,
+      "uses_c_artifacts": false,
+      "uses_shared_ingress_or_shared_ws": false
+    },
+    {
+      "action": "BUY",
+      "actual_filled_qty_shares": 5.0,
+      "avg_fill_price": 0.445,
+      "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+      "filled_qty_from_exchange_or_order_status": true,
+      "forced_complement_after_fill": false,
+      "open_order_remainder_qty_shares": 0.0,
+      "order_id": "0xs9i-preview-no-order",
+      "order_status": "MATCHED",
+      "partial_fill_threshold_used": false,
+      "prints_secret_or_raw_signature": false,
+      "side": "NO",
+      "status_source": "ORDER_STATUS_API",
+      "submitted_size_counts_as_inventory": false,
+      "submitted_size_shares": 5.0,
+      "uses_c_artifacts": false,
+      "uses_shared_ingress_or_shared_ws": false
+    }
+  ],
+  "recovery_receipt": {
+    "path": "COMPLETE_SET_MERGE",
+    "proof_tier": "EXACT_APPROVED_PRIMITIVE_RECEIPT",
+    "receipt_factory_conversion_passed": true,
+    "receipt_id": "s9i-preview-exact-approved-receipt-id",
+    "receipt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "submitted_cancel_count_during_recovery": 0,
+    "submitted_order_count_during_recovery": 0,
+    "submitted_recovery_tx_count": 1,
+    "verified_recovery_event_created": true
+  },
+  "s7w_run_result_linter_sha256": "b2490770fe7cfaea6671f660eb4349a78ab43695b97811a8c1b8bf393662dea2",
+  "source": "s9i_current_run_reconciliation_inputs"
+}
