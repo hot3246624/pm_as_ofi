@@ -7,8 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use alloy::primitives::{Address, B256, U256};
 use anyhow::{anyhow, Context, Result};
 use pm_as_ofi::polymarket::clob_v2::{
-    build_signed_limit_order_v2, builder_code_from_env, infer_signature_type, post_order_v2,
-    v2_contract_config, OrderSizingV2, V2OrderContext,
+    build_signed_limit_order_v2, builder_code_from_env, cancel_order_v2, fetch_order_status_v2,
+    fetch_trades_for_market_asset_v2, infer_signature_type, post_order_v2, v2_contract_config,
+    OrderSizingV2, V2OrderContext,
 };
 use pm_as_ofi::polymarket::executor::init_clob_client;
 use pm_as_ofi::polymarket::messages::TradeDirection;
@@ -28,7 +29,11 @@ use pm_as_ofi::polymarket::{
     s8a_order_adapter::S8A_NATIVE_RUNTIME_SCOPE,
 };
 use polymarket_client_sdk::auth::Credentials;
+use polymarket_client_sdk::clob::types::response::{
+    OpenOrderResponse, PostOrderResponse, TradeResponse,
+};
 use polymarket_client_sdk::clob::types::{OrderStatusType, OrderType};
+use rust_decimal::prelude::ToPrimitive;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::Digest;
@@ -375,7 +380,7 @@ fn parse_args() -> Result<Args> {
 fn load_prepared_order(
     args: &Args,
     failures: &mut Vec<&'static str>,
-) -> Option<(PreparedOrder, Option<String>)> {
+) -> Option<(PreparedOrder, String)> {
     let Some(path) = args.prepared_order_json.as_ref() else {
         failures.push("PREPARED_ORDER_JSON_REQUIRED");
         return None;
@@ -404,7 +409,7 @@ fn load_prepared_order(
             return None;
         }
     };
-    Some((parsed, Some(actual_sha)))
+    Some((parsed, actual_sha))
 }
 
 fn load_one_run_plan(
@@ -1152,7 +1157,112 @@ fn fill_event_payload(fill: &S8aFillEvent) -> serde_json::Value {
     })
 }
 
-async fn execute(args: &Args, order: &PreparedOrder) -> Result<serde_json::Value> {
+fn sdk_status_to_observed(status: &OrderStatusType) -> S8aObservedOrderStatus {
+    match status {
+        OrderStatusType::Live => S8aObservedOrderStatus::Live,
+        OrderStatusType::Matched => S8aObservedOrderStatus::Matched,
+        OrderStatusType::Canceled => S8aObservedOrderStatus::Cancelled,
+        OrderStatusType::Delayed | OrderStatusType::Unmatched => S8aObservedOrderStatus::Live,
+        OrderStatusType::Unknown(_) => S8aObservedOrderStatus::Failed,
+        _ => S8aObservedOrderStatus::Failed,
+    }
+}
+
+fn decimal_to_f64_lossy(value: rust_decimal::Decimal) -> f64 {
+    value.to_f64().unwrap_or(0.0)
+}
+
+fn submitted_size_from_prepared(order: &PreparedOrder) -> f64 {
+    match order.amount.unit.as_str() {
+        "SHARES" => order.amount.value,
+        _ => 0.0,
+    }
+}
+
+fn filled_qty_from_post_response(order: &PreparedOrder, response: &PostOrderResponse) -> f64 {
+    match order.action.as_str() {
+        "BUY" => decimal_to_f64_lossy(response.taking_amount),
+        "SELL" => decimal_to_f64_lossy(response.making_amount),
+        _ => 0.0,
+    }
+}
+
+fn filled_qty_from_order_status(status: &OpenOrderResponse) -> f64 {
+    decimal_to_f64_lossy(status.size_matched)
+}
+
+fn open_remainder_from_order_status(status: &OpenOrderResponse) -> f64 {
+    (decimal_to_f64_lossy(status.original_size) - decimal_to_f64_lossy(status.size_matched))
+        .max(0.0)
+}
+
+fn trade_belongs_to_order(trade: &TradeResponse, order_id: &str) -> bool {
+    trade.taker_order_id == order_id
+        || trade
+            .maker_orders
+            .iter()
+            .any(|maker| maker.order_id == order_id)
+}
+
+fn trade_fill_summary(trades: &[TradeResponse], order_id: &str) -> Option<(f64, f64)> {
+    let mut qty = 0.0_f64;
+    let mut notional = 0.0_f64;
+    for trade in trades
+        .iter()
+        .filter(|trade| trade_belongs_to_order(trade, order_id))
+    {
+        let size = decimal_to_f64_lossy(trade.size);
+        let price = decimal_to_f64_lossy(trade.price);
+        if size > 0.0 && price.is_finite() {
+            qty += size;
+            notional += size * price;
+        }
+    }
+    (qty > 0.0).then_some((qty, notional / qty))
+}
+
+fn status_fill_evidence_payload(evidence: &S8aOrderStatusFillEvidence) -> serde_json::Value {
+    json!({
+        "prepared_order_sha256": evidence.prepared_order_sha256,
+        "exact_approval_sha256": evidence.exact_approval_sha256,
+        "expected_exact_approval_sha256": evidence.expected_exact_approval_sha256,
+        "exact_approval_hash_bound_to_order": evidence.exact_approval_hash_bound_to_order,
+        "prepared_order_hash_bound_to_order": evidence.prepared_order_hash_bound_to_order,
+        "approval_scope_matches_s8a": evidence.approval_scope_matches_s8a,
+        "order_id": evidence.order_id,
+        "failure_recorded": evidence.failure_recorded,
+        "status_source": evidence.status_source.as_str(),
+        "order_status": evidence.order_status.as_str(),
+        "condition_id": evidence.condition_id,
+        "token_id": evidence.token_id,
+        "side": evidence.side.as_str(),
+        "action": match evidence.action {
+            S8aAdapterOrderAction::Buy => "BUY",
+            S8aAdapterOrderAction::Sell => "SELL",
+        },
+        "condition_token_side_action_match_prepared_order": evidence.condition_token_side_action_match_prepared_order,
+        "submitted_size_shares": evidence.submitted_size_shares,
+        "actual_filled_qty_shares": evidence.actual_filled_qty_shares,
+        "avg_fill_price": evidence.avg_fill_price,
+        "open_order_remainder_qty_shares": evidence.open_order_remainder_qty_shares,
+        "filled_qty_from_exchange_or_order_status": evidence.filled_qty_from_exchange_or_order_status,
+        "submitted_size_counts_as_inventory": evidence.submitted_size_counts_as_inventory,
+        "partial_fill_threshold_used": evidence.partial_fill_threshold_used,
+        "forced_complement_after_fill": evidence.forced_complement_after_fill,
+        "no_open_order_remainder_required": evidence.no_open_order_remainder_required,
+        "prints_secret_or_raw_signature": evidence.prints_secret_or_raw_signature,
+        "uses_shared_ingress_or_shared_ws": evidence.uses_shared_ingress_or_shared_ws,
+        "uses_c_artifacts": evidence.uses_c_artifacts,
+        "funding_live_latest_or_deploy_requested": evidence.funding_live_latest_or_deploy_requested,
+        "effectful_execution_requested_in_review": evidence.effectful_execution_requested_in_review
+    })
+}
+
+async fn execute(
+    args: &Args,
+    order: &PreparedOrder,
+    prepared_order_sha256: &str,
+) -> Result<serde_json::Value> {
     if !args.execute_approved {
         return Err(anyhow!("--execute-approved is required for execute mode"));
     }
@@ -1228,17 +1338,173 @@ async fn execute(args: &Args, order: &PreparedOrder) -> Result<serde_json::Value
             response.error_msg
         ));
     }
+
+    let market = B256::from_str(order.condition_id.trim()).context("invalid condition id")?;
+    let initial_order_status = fetch_order_status_v2(&client, &response.order_id)
+        .await
+        .ok();
+    let mut final_order_status = initial_order_status.clone();
+    let mut open_remainder_qty = initial_order_status
+        .as_ref()
+        .map(open_remainder_from_order_status)
+        .unwrap_or(0.0);
+    let mut observed_status = initial_order_status
+        .as_ref()
+        .map(|status| sdk_status_to_observed(&status.status))
+        .unwrap_or_else(|| sdk_status_to_observed(&response.status));
+
+    let mut cancel_submitted = false;
+    let mut cancel_payload = json!(null);
+    if open_remainder_qty > 1e-9 && matches!(observed_status, S8aObservedOrderStatus::Live) {
+        cancel_submitted = true;
+        match cancel_order_v2(&client, &response.order_id).await {
+            Ok(cancel_response) => {
+                let canceled = cancel_response
+                    .canceled
+                    .iter()
+                    .any(|order_id| order_id == &response.order_id);
+                if canceled {
+                    open_remainder_qty = 0.0;
+                    observed_status = S8aObservedOrderStatus::Cancelled;
+                }
+                cancel_payload = json!({
+                    "attempted": true,
+                    "canceled": cancel_response.canceled,
+                    "not_canceled": cancel_response.not_canceled,
+                    "open_remainder_cleared_by_cancel": canceled
+                });
+                if let Ok(status_after_cancel) =
+                    fetch_order_status_v2(&client, &response.order_id).await
+                {
+                    open_remainder_qty = open_remainder_from_order_status(&status_after_cancel);
+                    observed_status = sdk_status_to_observed(&status_after_cancel.status);
+                    final_order_status = Some(status_after_cancel);
+                }
+            }
+            Err(err) => {
+                cancel_payload = json!({
+                    "attempted": true,
+                    "error": err.to_string(),
+                    "open_remainder_cleared_by_cancel": false
+                });
+            }
+        }
+    }
+
+    let trades_result = fetch_trades_for_market_asset_v2(&client, market, token_id).await;
+    let (trades, trades_error) = match trades_result {
+        Ok(trades) => (trades, None),
+        Err(err) => (Vec::new(), Some(err.to_string())),
+    };
+    let trade_summary = trade_fill_summary(&trades, &response.order_id);
+
+    let status_for_fill = final_order_status
+        .as_ref()
+        .or(initial_order_status.as_ref());
+    let status_fill_qty = status_for_fill
+        .map(filled_qty_from_order_status)
+        .unwrap_or(0.0);
+    let post_fill_qty = filled_qty_from_post_response(order, &response);
+    let (actual_filled_qty, avg_fill_price, status_source) =
+        if let Some((trade_qty, trade_avg_price)) = trade_summary {
+            (
+                trade_qty,
+                Some(trade_avg_price),
+                S8aOrderStatusEvidenceSource::TradeFillApi,
+            )
+        } else if let Some(order_status) = status_for_fill {
+            (
+                status_fill_qty,
+                (status_fill_qty > 0.0).then_some(decimal_to_f64_lossy(order_status.price)),
+                S8aOrderStatusEvidenceSource::OrderStatusApi,
+            )
+        } else {
+            (
+                post_fill_qty,
+                (post_fill_qty > 0.0).then_some(
+                    order.limit_price.ok_or_else(|| {
+                        anyhow!("missing limit price for post-order fill evidence")
+                    })?,
+                ),
+                S8aOrderStatusEvidenceSource::PostOrderResponse,
+            )
+        };
+
+    let prepared = s8a_prepared_order_from_payload(order)?;
+    let exact_approval_sha256 = args
+        .exact_approval_sha256
+        .clone()
+        .ok_or_else(|| anyhow!("missing exact approval hash"))?;
+    let expected_exact_approval_sha256 = args
+        .expected_exact_approval_sha256
+        .clone()
+        .ok_or_else(|| anyhow!("missing expected exact approval hash"))?;
+    let fill_evidence = S8aOrderStatusFillEvidence {
+        prepared_order_sha256: prepared_order_sha256.to_string(),
+        exact_approval_sha256,
+        expected_exact_approval_sha256,
+        exact_approval_hash_bound_to_order: true,
+        prepared_order_hash_bound_to_order: true,
+        approval_scope_matches_s8a: args.approval_scope == SCOPE,
+        order_id: Some(response.order_id.clone()),
+        failure_recorded: false,
+        status_source,
+        order_status: observed_status,
+        condition_id: order.condition_id.clone(),
+        token_id: order.token_id.clone(),
+        side: side_from_str(&order.side)?,
+        action: adapter_action_from_str(&order.action)?,
+        condition_token_side_action_match_prepared_order: true,
+        submitted_size_shares: submitted_size_from_prepared(order),
+        actual_filled_qty_shares: actual_filled_qty,
+        avg_fill_price,
+        open_order_remainder_qty_shares: open_remainder_qty,
+        filled_qty_from_exchange_or_order_status: true,
+        submitted_size_counts_as_inventory: false,
+        partial_fill_threshold_used: false,
+        forced_complement_after_fill: false,
+        no_open_order_remainder_required: true,
+        prints_secret_or_raw_signature: false,
+        uses_shared_ingress_or_shared_ws: false,
+        uses_c_artifacts: false,
+        funding_live_latest_or_deploy_requested: false,
+        effectful_execution_requested_in_review: false,
+    };
+    let fill_review = review_s8a_order_status_fill_evidence(&prepared, &fill_evidence);
+    let post_run_reconciliation_passed = fill_review.block_reasons.is_empty();
+
     Ok(json!({
+        "orders_submitted_effectful": 1,
+        "cancel_submissions_effectful": if cancel_submitted { 1 } else { 0 },
         "order_id": response.order_id,
-        "status": format!("{:?}", response.status),
+        "post_order_status": format!("{:?}", response.status),
+        "observed_order_status": fill_evidence.order_status.as_str(),
         "success": response.success,
         "taking_amount": response.taking_amount,
         "making_amount": response.making_amount,
+        "trade_ids": response.trade_ids,
         "side": side_from_str(&order.side)?.as_str(),
         "action": order.action,
         "order_type": order.order_type,
         "submitted_size_shares": order.amount.value,
         "submitted_limit_price": order.limit_price,
+        "actual_filled_qty_shares": actual_filled_qty,
+        "avg_fill_price": avg_fill_price,
+        "open_order_remainder_qty_shares": open_remainder_qty,
+        "cancel_result": cancel_payload,
+        "trades_checked": trades.len(),
+        "trades_query_error": trades_error,
+        "order_status_fill_evidence": status_fill_evidence_payload(&fill_evidence),
+        "s8s_fill_evidence_review": {
+            "event": fill_review.event,
+            "block_reasons": fill_review.block_reasons.iter().map(|reason| reason.as_str()).collect::<Vec<_>>(),
+            "actual_filled_qty_ledger_ready": fill_review.actual_filled_qty_ledger_ready,
+            "filled_qty_from_exchange_or_order_status_only": fill_review.filled_qty_from_exchange_or_order_status_only,
+            "no_open_order_remainder": fill_review.no_open_order_remainder,
+            "effectful_execution_permitted": fill_review.effectful_execution_permitted,
+            "fill_event": fill_review.fill_event.as_ref().map(fill_event_payload)
+        },
+        "post_run_reconciliation_passed": post_run_reconciliation_passed,
         "raw_signature_output": false
     }))
 }
@@ -1410,7 +1676,7 @@ async fn main() -> Result<()> {
 
             if !failures.is_empty() {
                 print_payload(
-                    base_payload("BLOCK_S8P_LIVE_SCOUT_TO_ORDER_PREVIEW_FAIL_CLOSED"),
+                    base_payload("BLOCK_S8Y_LIVE_SCOUT_TO_ORDER_PREVIEW_FAIL_CLOSED"),
                     json!({
                         "orders_submitted": 0,
                         "signing_performed": false,
@@ -1426,7 +1692,7 @@ async fn main() -> Result<()> {
                 std::process::exit(2);
             }
             print_payload(
-                base_payload("PASS_S8P_LIVE_SCOUT_TO_ORDER_PREVIEW_NO_SUBMIT"),
+                base_payload("PASS_S8Y_LIVE_SCOUT_TO_ORDER_PREVIEW_NO_SUBMIT"),
                 json!({
                     "orders_submitted": 0,
                     "signing_performed": false,
@@ -1495,7 +1761,7 @@ async fn main() -> Result<()> {
             if let (Some((order, order_sha)), Some((evidence, evidence_sha))) =
                 (loaded_order.as_ref(), loaded_evidence.as_ref())
             {
-                prepared_order_sha256 = order_sha.clone();
+                prepared_order_sha256 = Some(order_sha.clone());
                 order_status_fill_evidence_sha256 = Some(evidence_sha.clone());
                 validate_prepared_order(order, &mut failures);
                 match s8a_prepared_order_from_payload(order) {
@@ -1591,18 +1857,40 @@ async fn main() -> Result<()> {
                 );
                 return Ok(());
             }
-            match execute(&args, &order).await {
+            match execute(&args, &order, &prepared_order_sha256).await {
                 Ok(exec_payload) => {
+                    let post_run_reconciliation_passed = exec_payload
+                        .get("post_run_reconciliation_passed")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    let orders_submitted = exec_payload
+                        .get("orders_submitted_effectful")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1);
+                    let cancel_submissions = exec_payload
+                        .get("cancel_submissions_effectful")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(0);
+                    let status = if post_run_reconciliation_passed {
+                        "PASS_S8Y_NATIVE_RUNTIME_ORDER_SUBMITTED_AND_RECONCILED"
+                    } else {
+                        "BLOCK_S8Y_NATIVE_RUNTIME_POST_SUBMIT_RECONCILIATION_FAILED"
+                    };
                     print_payload(
-                        base_payload("PASS_S8A_NATIVE_RUNTIME_ORDER_SUBMITTED"),
+                        base_payload(status),
                         json!({
-                            "orders_submitted": 1,
+                            "orders_submitted": orders_submitted,
+                            "cancel_submissions": cancel_submissions,
                             "signing_performed": true,
                             "raw_signature_output": false,
                             "execution_result": exec_payload
                         }),
                     );
-                    Ok(())
+                    if post_run_reconciliation_passed {
+                        Ok(())
+                    } else {
+                        std::process::exit(2);
+                    }
                 }
                 Err(err) => {
                     print_payload(
