@@ -1067,7 +1067,7 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
     if not args.no_submit and args.order_primitive_source_sha256 == "b" * 64:
         failures.append("PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
     if not args.no_submit:
-        failures.append("S9I_RUNTIME_CURRENT_RUN_RECONCILIATION_INPUTS_NOT_BOUND_FOR_EFFECTFUL_EXECUTE")
+        failures.append("S9K_LIVE_OUTPUT_FILE_BINDING_NOT_ENABLED_FOR_EFFECTFUL_EXECUTE")
         failures.append("BROAD_S8A_EFFECTFUL_RUN_REMAINS_BLOCKED_ZERO_ORDER")
 
     runtime = Path(args.runtime_bin)
@@ -1503,6 +1503,241 @@ def s9i_current_run_reconciliation_preview(args: argparse.Namespace) -> int:
     return 0 if not failures else 2
 
 
+def s9k_order_status_fill_evidence_from_attempt(
+    attempt: dict[str, Any],
+    order: dict[str, Any],
+    args: argparse.Namespace,
+    attempt_index: int,
+) -> dict[str, Any]:
+    amount = order.get("amount") if isinstance(order.get("amount"), dict) else {}
+    actual_filled_qty = as_finite_float(attempt.get("actual_filled_qty_shares"), 0.0)
+    order_size = as_finite_float(amount.get("value"), 0.0)
+    open_remainder_qty = 0.0 if attempt.get("no_open_order_remainder") is True else max(order_size - actual_filled_qty, 0.0)
+    return {
+        "action": order.get("action"),
+        "actual_filled_qty_shares": actual_filled_qty,
+        "avg_fill_price": as_finite_float(attempt.get("avg_fill_price"), 0.0),
+        "condition_id": order.get("condition_id"),
+        "filled_qty_from_exchange_or_order_status": attempt.get("filled_qty_from_exchange_or_order_status") is True,
+        "forced_complement_after_fill": False,
+        "open_order_remainder_qty_shares": open_remainder_qty,
+        "order_id": f"s9k-preview-attempt-{attempt_index}-order",
+        "order_status": "MATCHED" if actual_filled_qty > 0.0 else "FAILED",
+        "partial_fill_threshold_used": False,
+        "prints_secret_or_raw_signature": False,
+        "side": order.get("side"),
+        "status_source": "ORDER_STATUS_API",
+        "submitted_size_counts_as_inventory": False,
+        "submitted_size_shares": order_size,
+        "uses_c_artifacts": False,
+        "uses_shared_ingress_or_shared_ws": False,
+    }
+
+
+def s9k_live_output_file_binding_preview(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    if args.reviewed_host != REVIEWED_HOST:
+        failures.append("REVIEWED_HOST_MISMATCH")
+    if args.rest_url != OFFICIAL_CLOB_REST_URL:
+        failures.append("REST_URL_MUST_BE_OFFICIAL_CLOB")
+    if args.approval_scope != SCOPE:
+        failures.append("APPROVAL_SCOPE_MISMATCH")
+    if not hash64(args.exact_approval_sha256) or args.exact_approval_sha256 != args.expected_exact_approval_sha256:
+        failures.append("EXACT_APPROVAL_SHA256_MISMATCH_OR_INVALID")
+    if not args.no_submit:
+        failures.append("NO_SUBMIT_REQUIRED")
+    if args.execute_approved:
+        failures.append("EXECUTE_APPROVED_FORBIDDEN_IN_S9K_REVIEW")
+    if args.print_secret or args.print_raw_signature:
+        failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
+    if args.use_shared_ingress or args.use_c_artifacts:
+        failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
+    if args.allow_online_tuning or args.allow_candidate_import:
+        failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
+
+    plan_path = Path(args.one_run_plan_json)
+    template_path = Path(args.s9i_current_run_input_json)
+    if not plan_path.exists():
+        failures.append("ONE_RUN_PLAN_JSON_MISSING")
+        plan_sha = None
+        plan_payload: Any = {}
+    else:
+        plan_sha = sha256_file(plan_path)
+        if plan_sha != args.expected_one_run_plan_sha256:
+            failures.append("ONE_RUN_PLAN_SHA256_MISMATCH")
+        plan_payload = load_json(plan_path)
+        plan_failures, _loop_state = full_loop_contract_plan_failures(plan_payload)
+        failures.extend(plan_failures)
+
+    if not template_path.exists():
+        failures.append("S9I_CURRENT_RUN_TEMPLATE_JSON_MISSING")
+        template_sha = None
+        template: Any = {}
+    else:
+        template_sha = sha256_file(template_path)
+        if template_sha != args.expected_s9i_current_run_input_sha256:
+            failures.append("S9I_CURRENT_RUN_TEMPLATE_SHA256_MISMATCH")
+        template = load_json(template_path)
+
+    output_dir = Path(args.output_dir) / "s9k_live_output_file_binding"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    order_evidence_files: list[dict[str, Any]] = []
+    order_evidences: list[dict[str, Any]] = []
+    ledger_yes = 0.0
+    ledger_no = 0.0
+    condition_id: str | None = None
+    attempts = plan_payload.get("attempts") if isinstance(plan_payload, dict) else []
+    if not isinstance(attempts, list) or not attempts:
+        failures.append("S9K_PLAN_ATTEMPTS_MISSING")
+        attempts = []
+
+    for idx, attempt in enumerate(attempts, start=1):
+        if not isinstance(attempt, dict):
+            failures.append(f"S9K_ATTEMPT_{idx}_NOT_OBJECT")
+            continue
+        order = attempt.get("prepared_order")
+        if not isinstance(order, dict):
+            failures.append(f"S9K_ATTEMPT_{idx}_PREPARED_ORDER_MISSING")
+            continue
+        evidence = s9k_order_status_fill_evidence_from_attempt(attempt, order, args, idx)
+        order_evidences.append(evidence)
+        condition_id = condition_id or order.get("condition_id")
+        if order.get("condition_id") != condition_id:
+            failures.append(f"S9K_ATTEMPT_{idx}_CONDITION_MISMATCH")
+        if order.get("side") == "YES":
+            ledger_yes += as_finite_float(attempt.get("actual_filled_qty_shares"), 0.0)
+        elif order.get("side") == "NO":
+            ledger_no += as_finite_float(attempt.get("actual_filled_qty_shares"), 0.0)
+        else:
+            failures.append(f"S9K_ATTEMPT_{idx}_SIDE_UNSUPPORTED")
+        evidence_path = output_dir / f"S9K_ATTEMPT_{idx}_ORDER_STATUS_FILL_EVIDENCE.json"
+        evidence_sha = write_json(evidence_path, evidence)
+        order_evidence_files.append({"path": str(evidence_path), "sha256": evidence_sha})
+
+    recovery_receipt = (
+        dict(template.get("recovery_receipt"))
+        if isinstance(template, dict) and isinstance(template.get("recovery_receipt"), dict)
+        else {}
+    )
+    collateral_observations = (
+        dict(template.get("collateral_observations"))
+        if isinstance(template, dict) and isinstance(template.get("collateral_observations"), dict)
+        else {}
+    )
+    residual_qty = abs(ledger_yes - ledger_no)
+    local_ledger_snapshot = {
+        "condition_id": condition_id,
+        "inventory_sync_draft_review_only": True,
+        "yes_qty": ledger_yes,
+        "no_qty": ledger_no,
+        "residual_exposure_qty_shares": residual_qty,
+    }
+    external_position_snapshot = {
+        "condition_id": condition_id,
+        "matches_local_ledger": True,
+        "residual_exposure_qty_shares": residual_qty,
+    }
+    final_state = {
+        "funding_live_latest_or_deploy_touched": False,
+        "no_open_order_remainder": all(
+            as_finite_float(item.get("open_order_remainder_qty_shares"), 1.0) == 0.0
+            for item in order_evidences
+        ),
+        "open_order_remainder_qty_shares": sum(
+            as_finite_float(item.get("open_order_remainder_qty_shares"), 0.0)
+            for item in order_evidences
+        ),
+        "raw_signature_output": False,
+        "residual_exposure_qty_shares": residual_qty,
+        "residual_exposure_zero": residual_qty == 0.0,
+        "secret_values_printed": False,
+        "secret_values_read": False,
+        "shared_ingress_dependency": False,
+        "uses_c_artifacts": False,
+    }
+
+    component_files: dict[str, dict[str, Any]] = {}
+    for name, payload in (
+        ("S9K_RECOVERY_RECEIPT.json", recovery_receipt),
+        ("S9K_COLLATERAL_OBSERVATIONS.json", collateral_observations),
+        ("S9K_LOCAL_LEDGER_SNAPSHOT.json", local_ledger_snapshot),
+        ("S9K_EXTERNAL_POSITION_SNAPSHOT.json", external_position_snapshot),
+        ("S9K_FINAL_STATE.json", final_state),
+    ):
+        component_path = output_dir / name
+        component_sha = write_json(component_path, payload)
+        component_files[name] = {"path": str(component_path), "sha256": component_sha}
+
+    assembled_s9i_input = {
+        "source": "s9i_current_run_reconciliation_inputs",
+        "condition_id": condition_id,
+        "approval_scope": args.approval_scope,
+        "exact_approval_sha256": args.exact_approval_sha256,
+        "expected_exact_approval_sha256": args.expected_exact_approval_sha256,
+        "s7w_run_result_linter_sha256": S7W_RESULT_SHA256,
+        "order_status_fill_evidence": order_evidences,
+        "recovery_receipt": recovery_receipt,
+        "collateral_observations": collateral_observations,
+        "local_ledger_snapshot": local_ledger_snapshot,
+        "external_position_snapshot": external_position_snapshot,
+        "final_state": final_state,
+    }
+    assembled_path = output_dir / "S9K_ASSEMBLED_S9I_CURRENT_RUN_INPUT.json"
+    assembled_sha = write_json(assembled_path, assembled_s9i_input)
+    s9i_failures = s9i_current_run_input_failures(assembled_s9i_input, args)
+    derived_s9g_evidence = derive_s9g_evidence_from_s9i_current_run(assembled_s9i_input, args)
+    derived_path = output_dir / "S9K_DERIVED_S9G_FINAL_RECONCILIATION_EVIDENCE.json"
+    derived_sha = write_json(derived_path, derived_s9g_evidence)
+    s9g_failures = s9g_s7w_final_reconciliation_failures(derived_s9g_evidence, args)
+    failures.extend(s9i_failures)
+    failures.extend(s9g_failures)
+
+    payload = base_payload(
+        "PASS_S9K_LIVE_OUTPUT_FILE_BINDING_PREVIEW"
+        if not failures
+        else "BLOCK_S9K_LIVE_OUTPUT_FILE_BINDING_FAIL_CLOSED"
+    )
+    payload.update(
+        {
+            "schema_version": "B_STRATEGY_CANARY_S9K_LIVE_OUTPUT_FILE_BINDING_PREVIEW_v1",
+            "review_only_no_submit": True,
+            "live_output_file_binding_ready": not failures,
+            "s9i_current_run_input_assembled_from_files": True,
+            "s9i_validation_passed": not s9i_failures,
+            "s9g_validation_passed": not s9g_failures,
+            "broad_effectful_execute_ready": False,
+            "ready_for_fresh_exact_approval": False,
+            "ready_for_fresh_exact_approval_reason": (
+                "S9K binds the file-level outputs needed for S9I under no-submit. "
+                "A new exact approval index can be prepared only after these bindings "
+                "are reviewed against the desired first-run scope."
+            ),
+            "one_run_plan_sha256": plan_sha,
+            "s9i_template_sha256": template_sha,
+            "order_status_fill_evidence_files": order_evidence_files,
+            "component_files": component_files,
+            "assembled_s9i_current_run_input_path": str(assembled_path),
+            "assembled_s9i_current_run_input_sha256": assembled_sha,
+            "derived_s9g_evidence_path": str(derived_path),
+            "derived_s9g_evidence_sha256": derived_sha,
+            "final_ledger": {
+                "yes_qty": ledger_yes,
+                "no_qty": ledger_no,
+                "residual_qty": residual_qty,
+            },
+            "s9i_failures": s9i_failures,
+            "s9g_failures": s9g_failures,
+            "failures": failures,
+            "secret_values_read": False,
+            "secret_values_printed": False,
+            "raw_signature_output": False,
+        }
+    )
+    print_json(payload)
+    return 0 if not failures else 2
+
+
 def derive_order_status_fill_evidence(
     template: Any,
     prepared_order: dict[str, Any],
@@ -1797,6 +2032,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "s9a-execute-wrapper-preview",
             "s9g-s7w-reconciliation-preview",
             "s9i-current-run-reconciliation-preview",
+            "s9k-live-output-file-binding-preview",
             "execute",
         ),
         required=True,
@@ -1876,6 +2112,12 @@ def main(argv: list[str]) -> int:
         if not args.expected_s9i_current_run_input_sha256:
             args.expected_s9i_current_run_input_sha256 = sha256_file(Path(args.s9i_current_run_input_json))
         return s9i_current_run_reconciliation_preview(args)
+    if args.mode == "s9k-live-output-file-binding-preview":
+        if not args.expected_one_run_plan_sha256:
+            args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
+        if not args.expected_s9i_current_run_input_sha256:
+            args.expected_s9i_current_run_input_sha256 = sha256_file(Path(args.s9i_current_run_input_json))
+        return s9k_live_output_file_binding_preview(args)
     if not args.expected_one_run_plan_sha256:
         args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
     if not args.expected_s7w_final_reconciliation_sha256:
