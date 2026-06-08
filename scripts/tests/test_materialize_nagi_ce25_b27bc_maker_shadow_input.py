@@ -171,6 +171,111 @@ class NagiCe25B27bcMakerShadowMaterializerTests(unittest.TestCase):
             self.assertEqual(summary["materialized_rows"], 0)
             self.assertEqual(rows, [])
 
+    def test_materializes_raw_activity_trade_rows_sell_touch(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_raw_activity_") as tmp:
+            path = Path(tmp) / "activity_trade_rows.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "type": "TRADE",
+                            "transactionHash": "tx-1",
+                            "conditionId": "cond",
+                            "slug": "btc-updown-5m-1900000000",
+                            "timestamp": 1900000250,
+                            "outcome": "Up",
+                            "side": "SELL",
+                            "price": 0.41,
+                            "size": 8,
+                            "usdcSize": 3.28,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            paths = materializer_mod.iter_public_activity_paths(
+                [Path(tmp)],
+                include_smoke=False,
+                max_files=10,
+            )
+            self.assertEqual(paths, [path])
+            rows, summary = materializer_mod.materialize_public_activity_file(
+                path,
+                max_rows_per_file=100,
+            )
+            self.assertEqual(summary["materialized_rows"], 1)
+            self.assertEqual(rows[0]["source_sequence_id"], "tx-1")
+            self.assertEqual(rows[0]["condition_id"], "cond")
+            self.assertEqual(rows[0]["side"], "YES")
+            self.assertEqual(rows[0]["public_taker_side"], "SELL")
+            self.assertEqual(rows[0]["public_trade_px"], 0.41)
+            self.assertEqual(rows[0]["public_trade_qty"], 8.0)
+
+    def test_materializes_raw_activity_trade_rows_account_buy_proxy(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_raw_activity_buy_") as tmp:
+            path = Path(tmp) / "activity_trade_rows.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "type": "TRADE",
+                            "transactionHash": "tx-2",
+                            "conditionId": "cond",
+                            "slug": "btc-updown-5m-1900000000",
+                            "timestamp": 1900000250,
+                            "outcome": "Down",
+                            "side": "BUY",
+                            "price": 0.59,
+                            "size": 11,
+                            "proxyWallet": "0xbf337426aa856996b8bb79b238345dd1a0276bf7",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows, summary = materializer_mod.materialize_public_activity_file(
+                path,
+                max_rows_per_file=100,
+            )
+            self.assertEqual(summary["materialized_rows"], 1)
+            self.assertEqual(rows[0]["side"], "NO")
+            self.assertEqual(rows[0]["public_account_side"], "BUY")
+            self.assertEqual(rows[0]["public_taker_side"], "")
+            self.assertEqual(rows[0]["public_trade_px"], 0.59)
+            self.assertEqual(rows[0]["public_trade_qty"], 11.0)
+            self.assertEqual(
+                rows[0]["materialized_depth_source"],
+                "public_account_buy_size_proxy_not_l2_depth",
+            )
+            self.assertEqual(rows[0]["maker_truth"], "public_account_buy_proxy_only")
+
+    def test_raw_activity_non_trade_rows_are_ignored(self):
+        with tempfile.TemporaryDirectory(prefix="nagi_materializer_raw_activity_type_") as tmp:
+            path = Path(tmp) / "activity_trade_rows.json"
+            path.write_text(
+                json.dumps(
+                    [
+                        {
+                            "type": "MERGE",
+                            "conditionId": "cond",
+                            "slug": "btc-updown-5m-1900000000",
+                            "timestamp": 1900000250,
+                            "outcome": "Up",
+                            "side": "SELL",
+                            "price": 0.41,
+                            "size": 8,
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rows, summary = materializer_mod.materialize_public_activity_file(
+                path,
+                max_rows_per_file=100,
+            )
+            self.assertEqual(summary["materialized_rows"], 0)
+            self.assertEqual(rows, [])
+
     def test_cli_writes_csv_and_manifest(self):
         with tempfile.TemporaryDirectory(prefix="nagi_materializer_cli_") as tmp:
             root = Path(tmp)

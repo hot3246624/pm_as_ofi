@@ -2,8 +2,9 @@
 """Materialize local public event/activity rows into maker-shadow input CSV.
 
 This converter is local-only and review-only. It reads already-local
-``*.events.jsonl`` and public-activity rows JSON files, extracts public-trade
-candidate rows, and writes a CSV that can be checked by
+``*.events.jsonl``, ``public_activity*rows*.json``, and
+``activity_trade_rows.json`` files, extracts public-trade candidate rows, and
+writes a CSV that can be checked by
 ``inventory_nagi_ce25_b27bc_maker_shadow_inputs.py`` and then consumed by
 ``run_nagi_ce25_b27bc_maker_shadow.py``.
 
@@ -40,6 +41,7 @@ OUTPUT_FIELDS = [
     "side",
     "yes_bid",
     "no_bid",
+    "public_account_side",
     "public_taker_side",
     "public_trade_px",
     "public_trade_qty",
@@ -121,7 +123,9 @@ def iter_public_activity_paths(roots: Iterable[Path], *, include_smoke: bool, ma
             candidates = sorted(root.rglob("*.json"))
         for path in candidates:
             name = path.name.lower()
-            if "public_activity" not in name or "rows" not in name:
+            is_public_activity_rows = "public_activity" in name and "rows" in name
+            is_raw_activity_trade_rows = name == "activity_trade_rows.json"
+            if not is_public_activity_rows and not is_raw_activity_trade_rows:
                 continue
             if is_excluded_path(path, include_smoke=include_smoke):
                 continue
@@ -213,7 +217,10 @@ def materialize_event(obj: dict[str, Any], *, source_path: Path, line_no: int) -
 def materialize_public_activity_row(
     obj: dict[str, Any], *, source_path: Path, row_no: int
 ) -> dict[str, Any] | None:
-    slug = str(obj.get("market_slug") or obj.get("slug") or "")
+    activity_type = str(obj.get("type") or obj.get("activity_type") or "").upper()
+    if activity_type and activity_type != "TRADE":
+        return None
+    slug = str(obj.get("market_slug") or obj.get("slug") or obj.get("eventSlug") or "")
     if not slug:
         return None
     asset = str(obj.get("asset") or "").upper()
@@ -223,8 +230,20 @@ def materialize_public_activity_row(
     side = str(obj.get("outcome") or obj.get("side") or "").upper()
     if side not in {"YES", "NO", "UP", "DOWN"}:
         return None
-    source_side = str(obj.get("source_side") or obj.get("taker_side") or "").upper()
-    if source_side != "SELL":
+    source_side = str(
+        obj.get("source_side")
+        or obj.get("taker_side")
+        or obj.get("trade_side")
+        or (obj.get("side") if obj.get("outcome") else "")
+    ).upper()
+    if source_side not in {"SELL", "BUY"}:
+        return None
+    is_account_buy_proxy = source_side == "BUY" and (
+        source_path.name == "activity_trade_rows.json"
+        or obj.get("proxyWallet")
+        or obj.get("account")
+    )
+    if source_side == "BUY" and not is_account_buy_proxy:
         return None
     qty = to_float(obj.get("size") or obj.get("qty") or obj.get("public_trade_qty"))
     price = to_float(obj.get("polymarket_price") or obj.get("price") or obj.get("public_trade_px"))
@@ -248,20 +267,35 @@ def materialize_public_activity_row(
             "source_line": row_no,
             "source_kind": "public_activity_entry_row",
             "source": obj.get("source_type") or "public_activity",
-            "source_sequence_id": obj.get("trade_id") or obj.get("source_transaction_hash") or "",
+            "source_sequence_id": (
+                obj.get("trade_id")
+                or obj.get("transactionHash")
+                or obj.get("transaction_hash")
+                or obj.get("source_transaction_hash")
+                or ""
+            ),
             "window_id": dt.datetime.fromtimestamp(ts_ms / 1000, tz=dt.timezone.utc).strftime("%Y-%m-%d"),
             "slug": slug,
-            "condition_id": obj.get("condition_id") or slug,
+            "condition_id": obj.get("condition_id") or obj.get("conditionId") or slug,
             "ts_ms": ts_ms,
             "remaining_s": remaining_s,
             "side": normalized_side,
-            "public_taker_side": "SELL",
+            "public_account_side": "BUY" if is_account_buy_proxy else "",
+            "public_taker_side": "SELL" if source_side == "SELL" else "",
             "public_trade_px": price,
             "public_trade_qty": qty,
             "queue_visible_qty": qty,
             "visible_depth_qty": qty,
-            "materialized_depth_source": "public_activity_sell_size_proxy_not_l2_depth",
-            "maker_truth": "public_activity_queue_proxy_only",
+            "materialized_depth_source": (
+                "public_account_buy_size_proxy_not_l2_depth"
+                if is_account_buy_proxy
+                else "public_activity_sell_size_proxy_not_l2_depth"
+            ),
+            "maker_truth": (
+                "public_account_buy_proxy_only"
+                if is_account_buy_proxy
+                else "public_activity_queue_proxy_only"
+            ),
             "own_telemetry": False,
         }
     )
