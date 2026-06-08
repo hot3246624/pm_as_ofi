@@ -106,6 +106,13 @@ impl BtcCompletionControllerConfig {
             max_public_trade_recv_lag_ms: 500,
         }
     }
+
+    pub fn s8a_size5_runtime_default() -> Self {
+        let mut cfg = Self::s7e_research_default();
+        cfg.seed_qty = 5.0;
+        cfg.imbalance_qty_cap = 5.0;
+        cfg
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -148,6 +155,14 @@ impl BtcCompletionControllerState {
             .get(condition_id)
             .copied()
             .unwrap_or_default()
+    }
+
+    pub fn set_condition_state(
+        &mut self,
+        condition_id: impl Into<String>,
+        state: BtcCompletionConditionState,
+    ) {
+        self.by_condition.insert(condition_id.into(), state);
     }
 
     pub fn record_accepted(&mut self, intent: &BtcCompletionResearchIntent) {
