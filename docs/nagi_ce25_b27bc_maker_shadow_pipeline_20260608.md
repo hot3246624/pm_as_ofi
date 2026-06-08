@@ -43,10 +43,16 @@ Input discovery:
 
 - `scripts/materialize_nagi_ce25_b27bc_maker_shadow_input.py`
 - `scripts/inventory_nagi_ce25_b27bc_maker_shadow_inputs.py`
-- Converts bounded local event JSONL and public-activity row exports to CSV
-  when non-smoke/non-fixture inputs are present.
+- Converts bounded local event JSONL, `public_activity*rows*.json`, and
+  `activity_trade_rows.json` exports to CSV when non-smoke/non-fixture inputs
+  are present.
 - For public-activity rows, only BTC 5m `source_side = SELL` rows are treated
-  as maker bid public-touch proxy; BUY rows are rejected.
+  as maker bid public-touch proxy; raw activity rows must be `type = TRADE`
+  and `side = SELL` for public sell-touch proxy.
+- Raw account activity rows from `activity_trade_rows.json` with `type = TRADE`
+  and `side = BUY` are allowed only as public account buy proxy. They can seed
+  NAGI/CE25 imitation backtests but do not prove maker fill, queue priority, or
+  private execution truth.
 - Scans bounded local CSV samples.
 - Reports whether files are pipeline-compatible and whether sampled rows contain
   CE25-gated, public-touch, >=5-share maker-shadow opportunities.

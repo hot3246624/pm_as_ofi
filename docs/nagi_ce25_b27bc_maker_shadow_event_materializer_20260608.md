@@ -4,8 +4,8 @@
 
 The maker-shadow pipeline consumes CSV, but current local artifacts often arrive
 as event JSONL or exported public-activity rows. The event materializer converts
-bounded local `*.events.jsonl` files and `public_activity*rows*.json` files into
-a maker-shadow input CSV:
+bounded local `*.events.jsonl`, `public_activity*rows*.json`, and
+`activity_trade_rows.json` files into a maker-shadow input CSV:
 
 ```text
 scripts/materialize_nagi_ce25_b27bc_maker_shadow_input.py
@@ -35,18 +35,23 @@ The materializer reads public-trade candidate events with fields such as:
 It also reads public-activity row exports with fields such as:
 
 - `market_slug`
+- `slug` / `eventSlug`
 - `asset`
 - `timeframe`
-- `quote_ts`
+- `quote_ts` / `timestamp`
 - `time_to_expiry_s`
 - `outcome`
-- `source_side`
-- `polymarket_price`
+- `source_side` or raw activity `side`
+- `polymarket_price` / `price`
 - `size`
+- `type`
 
-For public-activity rows, only BTC 5m rows with `source_side = SELL` are
-materialized. BUY rows are not public sell-touch evidence for a post-only maker
-bid and are intentionally ignored.
+For public-activity rows, BTC 5m `source_side = SELL` rows are materialized as
+public sell-touch proxy. Raw account activity rows from `activity_trade_rows.json`
+are also accepted when `type = TRADE` and `side = BUY`, but only as
+`public_account_buy_proxy_only`: they mark the public account's observed buy
+point and size, not a maker fill, not queue priority, and not taker/maker truth.
+Generic BUY rows outside that account-activity export shape are ignored.
 
 It writes:
 
@@ -59,6 +64,7 @@ from public trade/activity size and labeled as one of:
 ```text
 public_trade_size_proxy_not_l2_depth
 public_activity_sell_size_proxy_not_l2_depth
+public_account_buy_size_proxy_not_l2_depth
 ```
 
 This means the output is a queue-proxy input, not L2 depth truth and not maker
