@@ -16,7 +16,7 @@
           "unit": "SHARES",
           "value": 5.0
         },
-        "condition_id": "btc-updown-5m-s8a-preview-condition",
+        "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
         "execution_permitted": false,
         "forced_complement": false,
         "limit_price": 0.435,
@@ -25,7 +25,7 @@
         "side": "YES",
         "source": "native_s8a_adapter",
         "source_guard_500_passed": true,
-        "token_id": "btc-updown-5m-s8a-preview-yes-token"
+        "token_id": "1000000000000000000000000000000000000000000000000000000000000001"
       },
       "realized_loss_delta_usdc": 0.0,
       "residual_exposure_zero": false,
@@ -46,7 +46,7 @@
           "unit": "SHARES",
           "value": 5.0
         },
-        "condition_id": "btc-updown-5m-s8a-preview-condition",
+        "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
         "execution_permitted": false,
         "forced_complement": false,
         "limit_price": 0.445,
@@ -55,7 +55,7 @@
         "side": "NO",
         "source": "native_s8a_adapter",
         "source_guard_500_passed": true,
-        "token_id": "btc-updown-5m-s8a-preview-no-token"
+        "token_id": "1000000000000000000000000000000000000000000000000000000000000002"
       },
       "realized_loss_delta_usdc": 0.0,
       "residual_exposure_zero": true,

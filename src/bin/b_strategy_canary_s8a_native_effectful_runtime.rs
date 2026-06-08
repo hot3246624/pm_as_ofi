@@ -13,12 +13,18 @@ use pm_as_ofi::polymarket::clob_v2::{
 use pm_as_ofi::polymarket::executor::init_clob_client;
 use pm_as_ofi::polymarket::messages::TradeDirection;
 use pm_as_ofi::polymarket::s8a_order_adapter::{
-    apply_s8a_fill_to_inventory, S8aAdapterOrderAction, S8aFillEvent, S8aInventory,
+    apply_s8a_fill_to_inventory, review_s8a_scout_snapshot_for_limit_entry, S8aAdapterOrderAction,
+    S8aControllerAdmissionAdapterContext, S8aFillEvent, S8aInventory, S8aPreparedVenueOrder,
+    S8aScoutAdmissionSnapshot, S8aScoutBookSideSnapshot, S8aScoutPublicBuyTrade,
     S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES, S8A_MARKET_BUY_MIN_NOTIONAL_USDC,
     S8A_MARKET_SELL_MIN_ORDER_SIZE_SHARES, S8A_MAX_ROUNDS, S8A_PER_ROUND_THEORETICAL_MAX_LOSS_USDC,
     S8A_SEED_PX_HI, S8A_SEED_PX_LO, S8A_SESSION_HARD_LOSS_CAP_USDC,
 };
 use pm_as_ofi::polymarket::types::Side;
+use pm_as_ofi::polymarket::{
+    btc_completion_controller::{BtcCompletionControllerConfig, BtcCompletionControllerState},
+    s8a_order_adapter::S8A_NATIVE_RUNTIME_SCOPE,
+};
 use polymarket_client_sdk::auth::Credentials;
 use polymarket_client_sdk::clob::types::{OrderStatusType, OrderType};
 use serde::{Deserialize, Serialize};
@@ -26,7 +32,7 @@ use serde_json::json;
 use sha2::Digest;
 use uuid::Uuid;
 
-const SCOPE: &str = "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME_S8H";
+const SCOPE: &str = S8A_NATIVE_RUNTIME_SCOPE;
 const REVIEWED_HOST: &str = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com";
 const OFFICIAL_CLOB_REST_URL: &str = "https://clob.polymarket.com";
 const ORDER_PRIMITIVE_NAME: &str = "clob_v2.build_signed_limit_order_v2/post_order_v2";
@@ -37,6 +43,7 @@ enum Mode {
     PreviewNoApproval,
     NoOrderAuthPreview,
     ExactApprovedOrderPathPreview,
+    LiveScoutToOrderPreview,
     OneRunDriverPreview,
     Execute,
 }
@@ -48,6 +55,8 @@ struct Args {
     rest_url: String,
     prepared_order_json: Option<PathBuf>,
     expected_prepared_order_sha256: Option<String>,
+    scout_snapshot_json: Option<PathBuf>,
+    expected_scout_snapshot_sha256: Option<String>,
     one_run_plan_json: Option<PathBuf>,
     expected_one_run_plan_sha256: Option<String>,
     exact_approval_sha256: Option<String>,
@@ -147,6 +156,43 @@ struct OneRunPlan {
     attempts: Vec<OneRunAttempt>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct ScoutBookSideSnapshotInput {
+    token_id: String,
+    best_ask: Option<f64>,
+    top5_ask_qty: f64,
+    book_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ScoutPublicBuyTradeInput {
+    side: String,
+    taker_side: String,
+    price: f64,
+    size: f64,
+    event_ts_ms: u64,
+    observed_ts_ms: u64,
+    recv_lag_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct ScoutAdmissionSnapshotInput {
+    asset: String,
+    event_reason: String,
+    slug: String,
+    condition_id: String,
+    yes: ScoutBookSideSnapshotInput,
+    no: ScoutBookSideSnapshotInput,
+    latest_public_buy_trade: Option<ScoutPublicBuyTradeInput>,
+    offset_s: f64,
+    time_to_end_s: Option<f64>,
+    forbidden_decision_fields_present: bool,
+    snapshot_index_used_as_rank: bool,
+    source_is_b_owned_direct_public_ws: bool,
+    shared_ingress_dependency: bool,
+    b_owned_direct_public_ws_connection_count: u32,
+}
+
 fn hash64(value: Option<&str>) -> bool {
     value.is_some_and(|v| v.len() == 64 && v.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
@@ -180,6 +226,7 @@ fn parse_args() -> Result<Args> {
                     "preview-no-approval" => Mode::PreviewNoApproval,
                     "no-order-auth-preview" => Mode::NoOrderAuthPreview,
                     "exact-approved-order-path-preview" => Mode::ExactApprovedOrderPathPreview,
+                    "live-scout-to-order-preview" => Mode::LiveScoutToOrderPreview,
                     "one-run-driver-preview" => Mode::OneRunDriverPreview,
                     "execute" => Mode::Execute,
                     _ => return Err(anyhow!("unknown mode {raw}")),
@@ -205,6 +252,18 @@ fn parse_args() -> Result<Args> {
                 args.expected_prepared_order_sha256 =
                     Some(it.next().ok_or_else(|| {
                         anyhow!("--expected-prepared-order-sha256 requires value")
+                    })?);
+            }
+            "--scout-snapshot-json" => {
+                args.scout_snapshot_json =
+                    Some(PathBuf::from(it.next().ok_or_else(|| {
+                        anyhow!("--scout-snapshot-json requires value")
+                    })?));
+            }
+            "--expected-scout-snapshot-sha256" => {
+                args.expected_scout_snapshot_sha256 =
+                    Some(it.next().ok_or_else(|| {
+                        anyhow!("--expected-scout-snapshot-sha256 requires value")
                     })?);
             }
             "--one-run-plan-json" => {
@@ -330,6 +389,131 @@ fn load_one_run_plan(
         }
     };
     Some((parsed, actual_sha))
+}
+
+fn load_scout_snapshot(
+    args: &Args,
+    failures: &mut Vec<&'static str>,
+) -> Option<(S8aScoutAdmissionSnapshot, String)> {
+    let Some(path) = args.scout_snapshot_json.as_ref() else {
+        failures.push("SCOUT_SNAPSHOT_JSON_REQUIRED");
+        return None;
+    };
+    let actual_sha = match sha256_file(path) {
+        Ok(value) => value,
+        Err(_) => {
+            failures.push("SCOUT_SNAPSHOT_JSON_UNREADABLE");
+            return None;
+        }
+    };
+    if args
+        .expected_scout_snapshot_sha256
+        .as_deref()
+        .is_some_and(|expected| expected != actual_sha)
+    {
+        failures.push("SCOUT_SNAPSHOT_SHA256_MISMATCH");
+    }
+    let parsed = match fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ScoutAdmissionSnapshotInput>(&raw).ok())
+    {
+        Some(value) => value,
+        None => {
+            failures.push("SCOUT_SNAPSHOT_JSON_INVALID");
+            return None;
+        }
+    };
+
+    if !looks_like_condition_id(&parsed.condition_id) {
+        failures.push("SCOUT_SNAPSHOT_CONDITION_ID_NOT_HASH_SHAPED");
+    }
+    if !is_decimal_token_id(&parsed.yes.token_id) || !is_decimal_token_id(&parsed.no.token_id) {
+        failures.push("SCOUT_SNAPSHOT_TOKEN_ID_NOT_DECIMAL");
+    }
+
+    let latest_public_buy_trade = match parsed.latest_public_buy_trade {
+        Some(trade) => Some(S8aScoutPublicBuyTrade {
+            side: match side_from_str(&trade.side) {
+                Ok(side) => side,
+                Err(_) => {
+                    failures.push("SCOUT_SNAPSHOT_TRADE_SIDE_INVALID");
+                    Side::Yes
+                }
+            },
+            taker_side: trade.taker_side,
+            price: trade.price,
+            size: trade.size,
+            event_ts_ms: trade.event_ts_ms,
+            observed_ts_ms: trade.observed_ts_ms,
+            recv_lag_ms: trade.recv_lag_ms,
+        }),
+        None => None,
+    };
+
+    Some((
+        S8aScoutAdmissionSnapshot {
+            asset: parsed.asset,
+            event_reason: parsed.event_reason,
+            slug: parsed.slug,
+            condition_id: parsed.condition_id,
+            yes: S8aScoutBookSideSnapshot {
+                token_id: parsed.yes.token_id,
+                best_ask: parsed.yes.best_ask,
+                top5_ask_qty: parsed.yes.top5_ask_qty,
+                book_age_ms: parsed.yes.book_age_ms,
+            },
+            no: S8aScoutBookSideSnapshot {
+                token_id: parsed.no.token_id,
+                best_ask: parsed.no.best_ask,
+                top5_ask_qty: parsed.no.top5_ask_qty,
+                book_age_ms: parsed.no.book_age_ms,
+            },
+            latest_public_buy_trade,
+            offset_s: parsed.offset_s,
+            time_to_end_s: parsed.time_to_end_s,
+            forbidden_decision_fields_present: parsed.forbidden_decision_fields_present,
+            snapshot_index_used_as_rank: parsed.snapshot_index_used_as_rank,
+            source_is_b_owned_direct_public_ws: parsed.source_is_b_owned_direct_public_ws,
+            shared_ingress_dependency: parsed.shared_ingress_dependency,
+            b_owned_direct_public_ws_connection_count: parsed
+                .b_owned_direct_public_ws_connection_count,
+        },
+        actual_sha,
+    ))
+}
+
+fn is_decimal_token_id(value: &str) -> bool {
+    !value.trim().is_empty() && value.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn looks_like_condition_id(value: &str) -> bool {
+    let trimmed = value.trim();
+    trimmed.len() == 66
+        && trimmed.starts_with("0x")
+        && trimmed[2..].chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+fn prepared_order_to_payload(order: &S8aPreparedVenueOrder) -> serde_json::Value {
+    json!({
+        "source": "native_s8a_adapter",
+        "condition_id": order.condition_id,
+        "token_id": order.token_id,
+        "side": order.side.as_str(),
+        "action": match order.action {
+            S8aAdapterOrderAction::Buy => "BUY",
+            S8aAdapterOrderAction::Sell => "SELL",
+        },
+        "order_type": order.order_type.as_str(),
+        "limit_price": order.limit_price,
+        "amount": {
+            "unit": order.amount.unit(),
+            "value": order.amount.value(),
+        },
+        "execution_permitted": order.execution_permitted,
+        "natural_controller_admission": true,
+        "forced_complement": false,
+        "source_guard_500_passed": true
+    })
 }
 
 fn validate_common(args: &Args, failures: &mut Vec<&'static str>) {
@@ -583,6 +767,12 @@ fn validate_prepared_order(order: &PreparedOrder, failures: &mut Vec<&'static st
     }
     if order.token_id.trim().is_empty() {
         failures.push("PREPARED_ORDER_MISSING_TOKEN_ID");
+    }
+    if !is_decimal_token_id(&order.token_id) {
+        failures.push("PREPARED_ORDER_TOKEN_ID_NOT_DECIMAL");
+    }
+    if !looks_like_condition_id(&order.condition_id) {
+        failures.push("PREPARED_ORDER_CONDITION_ID_NOT_HASH_SHAPED");
     }
     if !matches!(order.side.as_str(), "YES" | "NO") {
         failures.push("PREPARED_ORDER_SIDE_NOT_YES_OR_NO");
@@ -887,6 +1077,146 @@ async fn main() -> Result<()> {
             } else {
                 std::process::exit(2);
             }
+        }
+        Mode::LiveScoutToOrderPreview => {
+            let mut failures = Vec::new();
+            validate_common(&args, &mut failures);
+            if !args.no_submit {
+                failures.push("NO_SUBMIT_REQUIRED_IN_LIVE_SCOUT_TO_ORDER_PREVIEW");
+            }
+            let loaded = load_scout_snapshot(&args, &mut failures);
+            let mut scout_snapshot_sha256 = None;
+            let mut candidate_payload = json!(null);
+            let mut controller_payload = json!(null);
+            let mut adapter_payload = json!(null);
+            let mut prepared_order_payload = json!(null);
+
+            if let Some((snapshot, sha256)) = loaded.as_ref() {
+                scout_snapshot_sha256 = Some(sha256.clone());
+                let context = S8aControllerAdmissionAdapterContext {
+                    yes_token_id: snapshot.yes.token_id.clone(),
+                    no_token_id: snapshot.no.token_id.clone(),
+                    official_order_minimums_verified: true,
+                    fresh_exact_approval_hash_present: hash64(
+                        args.exact_approval_sha256.as_deref(),
+                    ),
+                    approval_scope_matches_s8a: args.approval_scope == SCOPE,
+                    effectful_submission_requested: true,
+                    prints_secret_or_raw_signature: args.print_secret || args.print_raw_signature,
+                    uses_shared_ingress_or_shared_ws: args.use_shared_ingress,
+                    uses_c_artifacts: args.use_c_artifacts,
+                };
+                let review = review_s8a_scout_snapshot_for_limit_entry(
+                    &BtcCompletionControllerConfig::s8a_size5_runtime_default(),
+                    &BtcCompletionControllerState::default(),
+                    snapshot,
+                    &context,
+                );
+                if !review.scout_source_bound {
+                    failures.push("SCOUT_SOURCE_NOT_BOUND");
+                }
+                if !review.controller_and_adapter_bound {
+                    failures.push("CONTROLLER_ADAPTER_NOT_BOUND");
+                }
+                if review.prepared_order.is_none() {
+                    failures.push("PREPARED_ORDER_NOT_PRODUCED_FROM_LIVE_SCOUT");
+                }
+
+                candidate_payload = review
+                    .candidate
+                    .as_ref()
+                    .map(|candidate| {
+                        json!({
+                            "asset": candidate.asset,
+                            "event_kind": candidate.event_kind,
+                            "public_trade_taker_side": candidate.public_trade_taker_side,
+                            "condition_id": candidate.condition_id,
+                            "slug": candidate.slug,
+                            "ts_ms": candidate.ts_ms,
+                            "offset_s": candidate.offset_s,
+                            "time_to_end_s": candidate.time_to_end_s,
+                            "side": candidate.side.as_str(),
+                            "public_trade_price": candidate.public_trade_price,
+                            "l1_pair_ask": candidate.l1_pair_ask,
+                            "l1_pair_available_qty": candidate.l1_pair_available_qty,
+                            "buy_available_qty": candidate.buy_available_qty,
+                            "strict_l1_age_ms": candidate.strict_l1_age_ms,
+                            "public_trade_recv_lag_ms": candidate.public_trade_recv_lag_ms,
+                            "forbidden_decision_fields_present": candidate.forbidden_decision_fields_present,
+                            "snapshot_index_used_as_rank": candidate.snapshot_index_used_as_rank
+                        })
+                    })
+                    .unwrap_or_else(|| json!(null));
+                controller_payload = review
+                    .controller_review
+                    .as_ref()
+                    .map(|controller| {
+                        json!({
+                            "intent_present": controller.intent.is_some(),
+                            "intent": controller.intent.as_ref().map(|intent| json!({
+                                "condition_id": intent.condition_id,
+                                "slug": intent.slug,
+                                "ts_ms": intent.ts_ms,
+                                "side": intent.side.as_str(),
+                                "price": intent.price,
+                                "qty": intent.qty,
+                                "execution_permitted": intent.execution_permitted
+                            })),
+                            "block_reason": controller.block_reason.map(|reason| reason.as_str()),
+                            "execution_permitted": controller.execution_permitted
+                        })
+                    })
+                    .unwrap_or_else(|| json!(null));
+                adapter_payload = review
+                    .adapter_review
+                    .as_ref()
+                    .map(|adapter| {
+                        json!({
+                            "native_adapter_ready_for_exact_runtime": adapter.native_adapter_ready_for_exact_runtime,
+                            "official_order_units_bound": adapter.official_order_units_bound,
+                            "block_reasons": adapter.block_reasons.iter().map(|reason| reason.as_str()).collect::<Vec<_>>(),
+                            "effectful_execution_permitted": adapter.effectful_execution_permitted
+                        })
+                    })
+                    .unwrap_or_else(|| json!(null));
+                prepared_order_payload = review
+                    .prepared_order
+                    .as_ref()
+                    .map(prepared_order_to_payload)
+                    .unwrap_or_else(|| json!(null));
+            }
+
+            if !failures.is_empty() {
+                print_payload(
+                    base_payload("BLOCK_S8P_LIVE_SCOUT_TO_ORDER_PREVIEW_FAIL_CLOSED"),
+                    json!({
+                        "orders_submitted": 0,
+                        "signing_performed": false,
+                        "raw_signature_output": false,
+                        "scout_snapshot_sha256": scout_snapshot_sha256,
+                        "candidate": candidate_payload,
+                        "controller": controller_payload,
+                        "adapter": adapter_payload,
+                        "prepared_order": prepared_order_payload,
+                        "failures": failures
+                    }),
+                );
+                std::process::exit(2);
+            }
+            print_payload(
+                base_payload("PASS_S8P_LIVE_SCOUT_TO_ORDER_PREVIEW_NO_SUBMIT"),
+                json!({
+                    "orders_submitted": 0,
+                    "signing_performed": false,
+                    "raw_signature_output": false,
+                    "scout_snapshot_sha256": scout_snapshot_sha256,
+                    "candidate": candidate_payload,
+                    "controller": controller_payload,
+                    "adapter": adapter_payload,
+                    "prepared_order": prepared_order_payload
+                }),
+            );
+            Ok(())
         }
         Mode::OneRunDriverPreview => {
             let mut failures = Vec::new();
