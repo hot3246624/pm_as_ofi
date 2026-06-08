@@ -669,6 +669,42 @@ def merge_source_link_transition_diagnostics(dest: dict[str, Any], src: dict[str
             merge_nested_count_hist(dest.setdefault(key, {}), source)
 
 
+def merge_completion_residual_diagnostics(dest: dict[str, Any], src: dict[str, Any]) -> None:
+    for key in ("schema_version", "field_contract"):
+        if key in src and key not in dest:
+            dest[key] = src[key]
+    for key in (
+        "residual_qty_by_completion_status",
+        "residual_cost_by_completion_status",
+        "residual_count_by_completion_status",
+        "residual_qty_by_completion_reason",
+        "residual_cost_by_completion_reason",
+        "residual_count_by_completion_reason",
+        "residual_qty_by_reason_side_offset_risk",
+        "residual_cost_by_reason_side_offset_risk",
+        "residual_count_by_reason_side_offset_risk",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_count_hist(dest.setdefault(key, {}), source)
+    for key in (
+        "net_pair_cost_bucket_by_reason",
+        "net_pair_cost_bucket_by_reason_side_offset_risk",
+        "completion_age_bucket_by_reason",
+        "completion_age_bucket_by_reason_side_offset_risk",
+        "completion_ask_px_bucket_by_reason",
+        "source_sequence_presence_by_reason",
+    ):
+        source = src.get(key)
+        if isinstance(source, dict):
+            merge_nested_count_hist(dest.setdefault(key, {}), source)
+    blockers = src.get("top_completion_residual_blockers")
+    if isinstance(blockers, list):
+        dest.setdefault("top_completion_residual_blockers", []).extend(
+            item for item in blockers if isinstance(item, dict)
+        )
+
+
 def merge_source_opportunity_marker_summary(dest: dict[str, Any], src: dict[str, Any]) -> None:
     if src.get("schema_version"):
         dest["schema_version"] = src.get("schema_version")
@@ -904,12 +940,19 @@ class RunnerConfig:
     salvage_age_ms: int = 30_000
     salvage_min_lot_cost: float = 0.25
     max_salvage_qty: float = 250.0
+    final_salvage_on_summary: bool = False
     rolling_entry_quality_admission_guard: bool = False
     rolling_entry_quality_seed_price_max: float = 0.32
     rolling_entry_quality_pair_cost_max: float = 1.02
     rolling_entry_quality_max_open_qty_before_seed: float = 1.25
     rolling_entry_quality_min_seed_side_mid_delta_15s: float = 0.02
     rolling_entry_quality_min_seed_trade_imbalance_30s: float = -1000.0
+    late_pair_ask_pressure_guard: bool = False
+    late_pair_ask_pressure_after_s: float = 100.0
+    late_pair_ask_pressure_risk_increasing_after_s: float | None = None
+    late_pair_ask_pressure_repair_improving_after_s: float | None = None
+    late_pair_ask_pressure_max_pair_ask: float = 1.00
+    late_pair_ask_pressure_inventory_mode: str = "all"
     limit_order_min_shares_guard: bool = False
     limit_order_min_shares: float = 5.0
     event_lite_summary: bool = False
@@ -918,6 +961,7 @@ class RunnerConfig:
     portfolio_ledger_event_lite_summary: bool = False
     source_link_transition_event_lite_summary: bool = False
     source_link_residual_tail_exemplars_event_lite_summary: bool = False
+    completion_residual_diagnostic_event_lite_summary: bool = False
     source_opportunity_marker_event_lite_summary: bool = False
     source_opportunity_marker_reason_source_event_lite_summary: bool = False
     source_opportunity_ledger_marker_event_lite_summary: bool = False
@@ -2795,6 +2839,132 @@ class DPlusRunner:
         )
         return diag
 
+    def completion_residual_diagnostics(self, residual_lots: list[Lot], summary_ts_ms: int) -> dict[str, Any]:
+        diag: dict[str, Any] = {
+            "schema_version": "completion_residual_diagnostics_v1",
+            "field_contract": {
+                "default_off": True,
+                "trading_behavior_changed": False,
+                "uses_private_truth": False,
+                "reads_credentials": False,
+                "orders_or_cancels_or_sells_or_redeems": False,
+                "classification": (
+                    "why a residual lot remained uncompleted under the configured pnl-preserving salvage constraints"
+                ),
+            },
+            "slug": self.slug,
+            "condition_id": self.condition_id,
+            "salvage_net_cap": self.cfg.salvage_net_cap,
+            "salvage_age_ms": self.cfg.salvage_age_ms,
+            "salvage_min_lot_cost": self.cfg.salvage_min_lot_cost,
+            "max_salvage_qty": self.cfg.max_salvage_qty,
+            "residual_qty_by_completion_status": {},
+            "residual_cost_by_completion_status": {},
+            "residual_count_by_completion_status": {},
+            "residual_qty_by_completion_reason": {},
+            "residual_cost_by_completion_reason": {},
+            "residual_count_by_completion_reason": {},
+            "residual_qty_by_reason_side_offset_risk": {},
+            "residual_cost_by_reason_side_offset_risk": {},
+            "residual_count_by_reason_side_offset_risk": {},
+            "net_pair_cost_bucket_by_reason": {},
+            "net_pair_cost_bucket_by_reason_side_offset_risk": {},
+            "completion_age_bucket_by_reason": {},
+            "completion_age_bucket_by_reason_side_offset_risk": {},
+            "completion_ask_px_bucket_by_reason": {},
+            "source_sequence_presence_by_reason": {},
+            "top_completion_residual_blockers": [],
+        }
+        blockers: list[dict[str, Any]] = []
+        for lot in residual_lots:
+            comp_side = opp(lot.side)
+            comp_ask = side_ask(self.book, comp_side)
+            fee = fee_per_share(comp_ask, self.cfg.taker_fee_rate) if comp_ask > 0 else 0.0
+            net_pair_cost = lot.px + comp_ask + fee if comp_ask > 0 else None
+            age_ms = summary_ts_ms - lot.fill_ms
+            if comp_ask <= 0:
+                status = "no_completion"
+                reason = "no_completion_missing_live_ask"
+            elif self.cfg.salvage_net_cap <= 0:
+                status = "no_completion"
+                reason = "no_completion_salvage_disabled"
+            elif age_ms < self.cfg.salvage_age_ms:
+                status = "no_completion"
+                reason = "no_completion_age_lt_min"
+            elif lot.cost < self.cfg.salvage_min_lot_cost:
+                status = "no_completion"
+                reason = "no_completion_lot_cost_lt_min"
+            elif net_pair_cost is not None and net_pair_cost > self.cfg.salvage_net_cap + 1e-12:
+                status = "no_completion"
+                reason = "no_completion_net_pair_cost_gt_cap"
+            else:
+                status = "completion_eligible"
+                reason = "completion_eligible_unpaired"
+
+            side_offset_risk = side_offset_risk_key(lot.side, lot.offset_s, lot.source_risk_direction)
+            reason_cross = f"{reason}|{side_offset_risk}"
+            add_count(diag["residual_qty_by_completion_status"], status, lot.qty)
+            add_count(diag["residual_cost_by_completion_status"], status, lot.cost)
+            add_count(diag["residual_count_by_completion_status"], status)
+            add_count(diag["residual_qty_by_completion_reason"], reason, lot.qty)
+            add_count(diag["residual_cost_by_completion_reason"], reason, lot.cost)
+            add_count(diag["residual_count_by_completion_reason"], reason)
+            add_count(diag["residual_qty_by_reason_side_offset_risk"], reason_cross, lot.qty)
+            add_count(diag["residual_cost_by_reason_side_offset_risk"], reason_cross, lot.cost)
+            add_count(diag["residual_count_by_reason_side_offset_risk"], reason_cross)
+            add_nested_count(diag["net_pair_cost_bucket_by_reason"], reason, pair_cost_bucket(net_pair_cost))
+            add_nested_count(
+                diag["net_pair_cost_bucket_by_reason_side_offset_risk"],
+                reason_cross,
+                pair_cost_bucket(net_pair_cost),
+            )
+            add_nested_count(diag["completion_age_bucket_by_reason"], reason, age_ms_bucket("completion_age", age_ms))
+            add_nested_count(
+                diag["completion_age_bucket_by_reason_side_offset_risk"],
+                reason_cross,
+                age_ms_bucket("completion_age", age_ms),
+            )
+            add_nested_count(diag["completion_ask_px_bucket_by_reason"], reason, px_bucket(comp_ask))
+            add_nested_count(
+                diag["source_sequence_presence_by_reason"],
+                reason,
+                "present" if lot.trigger_source_sequence_id is not None else "missing",
+            )
+            blockers.append(
+                {
+                    "slug": self.slug,
+                    "condition_id": self.condition_id,
+                    "lot_id": lot.id,
+                    "quote_intent_id": lot.quote_intent_id,
+                    "source_order_id": lot.source_order_id,
+                    "side": lot.side,
+                    "comp_side": comp_side,
+                    "status": status,
+                    "reason": reason,
+                    "qty": round(lot.qty, 6),
+                    "residual_cost": round(lot.cost, 6),
+                    "held_px": lot.px,
+                    "comp_ask": round(comp_ask, 6) if comp_ask > 0 else None,
+                    "fee_per_share": round(fee, 6) if comp_ask > 0 else None,
+                    "net_pair_cost": round(net_pair_cost, 6) if net_pair_cost is not None else None,
+                    "net_pair_cost_bucket": pair_cost_bucket(net_pair_cost),
+                    "age_ms": age_ms,
+                    "offset_s": lot.offset_s,
+                    "source_risk_direction": lot.source_risk_direction,
+                    "source_sequence_presence": "present" if lot.trigger_source_sequence_id is not None else "missing",
+                    "source_sequence_id": lot.trigger_source_sequence_id,
+                    "source_pair_qty": round(lot.source_pair_qty, 6),
+                    "source_pair_cost": round(lot.source_pair_cost, 6),
+                    "source_pair_pnl": round(lot.source_pair_pnl, 6),
+                }
+            )
+        diag["top_completion_residual_blockers"] = sorted(
+            blockers,
+            key=lambda item: item.get("residual_cost", 0.0) if isinstance(item, dict) else 0.0,
+            reverse=True,
+        )[:20]
+        return diag
+
     def observable_pre_action_feature_join_field_contract(self) -> dict[str, Any]:
         return {
             "schema_version": "observable_pre_action_feature_join_field_contract_v1",
@@ -3551,6 +3721,34 @@ class DPlusRunner:
             self.record_activation_seen(side, ts_ms)
             return
         risk_increasing_seed = same_qty + self.cfg.dust_qty >= opp_qty
+        late_pair_ask_pressure_after_s = self.cfg.late_pair_ask_pressure_after_s
+        if risk_increasing_seed and self.cfg.late_pair_ask_pressure_risk_increasing_after_s is not None:
+            late_pair_ask_pressure_after_s = self.cfg.late_pair_ask_pressure_risk_increasing_after_s
+        if (
+            not risk_increasing_seed
+            and self.cfg.late_pair_ask_pressure_repair_improving_after_s is not None
+        ):
+            late_pair_ask_pressure_after_s = self.cfg.late_pair_ask_pressure_repair_improving_after_s
+        if (
+            self.cfg.late_pair_ask_pressure_guard
+            and offset is not None
+            and offset >= late_pair_ask_pressure_after_s
+            and l1_pair >= self.cfg.late_pair_ask_pressure_max_pair_ask - 1e-12
+            and (
+                self.cfg.late_pair_ask_pressure_inventory_mode == "all"
+                or (
+                    self.cfg.late_pair_ask_pressure_inventory_mode == "risk_increasing"
+                    and risk_increasing_seed
+                )
+                or (
+                    self.cfg.late_pair_ask_pressure_inventory_mode == "repair_or_pairing_improving"
+                    and not risk_increasing_seed
+                )
+            )
+        ):
+            block_seed("late_pair_ask_pressure", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
+            self.record_activation_seen(side, ts_ms)
+            return
         activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
         if risk_increasing_seed and not activation_ok:
             blocked_quote_intent_id = self.blocked_quote_intent_id(side, ts_ms)
@@ -3911,6 +4109,8 @@ class DPlusRunner:
                 self.metrics.cancelled_orders += 1
                 if order.first_bid_touch_ms or order.first_trade_touch_ms:
                     self.metrics.touch_only_orders += 1
+            if self.cfg.final_salvage_on_summary:
+                self.try_salvage(summary_ts_ms)
         residual_lots = [lot for side in ("YES", "NO") for lot in self.lots[side] if lot.qty > DUST]
         residual_qty = sum(lot.qty for lot in residual_lots)
         residual_cost = sum(lot.cost for lot in residual_lots)
@@ -4032,6 +4232,11 @@ class DPlusRunner:
                 summary["event_lite"]["source_link_transition_diagnostics"] = self.source_link_transition_diagnostics(residual_lots)
             if self.cfg.source_link_residual_tail_exemplars_event_lite_summary:
                 summary["event_lite"]["source_link_residual_tail_exemplars"] = self.source_link_residual_tail_exemplars(
+                    residual_lots,
+                    summary_ts_ms,
+                )
+            if self.cfg.completion_residual_diagnostic_event_lite_summary:
+                summary["event_lite"]["completion_residual_diagnostics"] = self.completion_residual_diagnostics(
                     residual_lots,
                     summary_ts_ms,
                 )
@@ -4714,6 +4919,12 @@ def aggregate(out: Path) -> dict[str, Any]:
                         if "slug" not in item:
                             item = {**item, "slug": s.get("slug")}
                         top_tail.append(item)
+            completion_diag = lite.get("completion_residual_diagnostics")
+            if isinstance(completion_diag, dict):
+                merge_completion_residual_diagnostics(
+                    event_lite.setdefault("completion_residual_diagnostics", {}),
+                    completion_diag,
+                )
             source_opportunity_marker = lite.get("source_opportunity_marker_summary")
             if isinstance(source_opportunity_marker, dict):
                 merge_source_opportunity_marker_summary(
@@ -4804,6 +5015,15 @@ def aggregate(out: Path) -> dict[str, Any]:
                 key=lambda item: item.get("source_residual_cost", 0.0) if isinstance(item, dict) else 0.0,
                 reverse=True,
             )[:50]
+        completion_diag = event_lite.get("completion_residual_diagnostics")
+        if isinstance(completion_diag, dict):
+            blockers = completion_diag.get("top_completion_residual_blockers")
+            if isinstance(blockers, list):
+                completion_diag["top_completion_residual_blockers"] = sorted(
+                    blockers,
+                    key=lambda item: item.get("residual_cost", 0.0) if isinstance(item, dict) else 0.0,
+                    reverse=True,
+                )[:50]
         symmetric_activation_tail = event_lite.get("symmetric_activation_tail_attribution_summary")
         if isinstance(symmetric_activation_tail, dict):
             exemplars = symmetric_activation_tail.get("residual_tail_exemplars_by_status_reason_activation_bucket")
@@ -4885,6 +5105,7 @@ async def main() -> None:
     ap.add_argument("--portfolio-ledger-event-lite-summary", action="store_true", help="with --event-lite-summary, emit per-condition paired-inventory and residual risk-adjusted ledger diagnostics")
     ap.add_argument("--source-link-transition-event-lite-summary", action="store_true", help="with --event-lite-summary, emit candidate transition source-link diagnostics for admitted/blocked/pair/residual paths")
     ap.add_argument("--source-link-residual-tail-exemplars-event-lite-summary", action="store_true", help="with --event-lite-summary, emit top residual source exemplars with action-level source/pair/residual fields")
+    ap.add_argument("--completion-residual-diagnostic-event-lite-summary", action="store_true", help="with --event-lite-summary, emit default-off residual no-completion reason diagnostics under pnl-preserving salvage constraints")
     ap.add_argument("--source-opportunity-marker-event-lite-summary", action="store_true", help="with --event-lite-summary, emit admitted/blocked opportunity denominators by pre-action open/deficit/source-risk buckets")
     ap.add_argument("--source-opportunity-marker-reason-source-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit exact status/reason/marker source coverage without raw ids or post-action labels")
     ap.add_argument("--source-opportunity-ledger-marker-event-lite-summary", action="store_true", help="with --source-opportunity-marker-event-lite-summary, emit ledger-after marker denominators without changing behavior")
@@ -4899,12 +5120,19 @@ async def main() -> None:
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
+    ap.add_argument("--final-salvage-on-summary", action="store_true", help="default-off replay finalization pass: run salvage once before final residual accounting")
     ap.add_argument("--rolling-entry-quality-admission-guard", action="store_true", help="default-off candidate-time admission guard using rolling public book/trade features")
     ap.add_argument("--rolling-entry-quality-seed-price-max", type=float, default=0.32)
     ap.add_argument("--rolling-entry-quality-pair-cost-max", type=float, default=1.02)
     ap.add_argument("--rolling-entry-quality-max-open-qty-before-seed", type=float, default=1.25)
     ap.add_argument("--rolling-entry-quality-min-seed-side-mid-delta-15s", type=float, default=0.02)
     ap.add_argument("--rolling-entry-quality-min-seed-trade-imbalance-30s", type=float, default=-1000.0)
+    ap.add_argument("--late-pair-ask-pressure-guard", action="store_true", help="default-off late-window guard: block seeds when YES+NO asks are already too expensive")
+    ap.add_argument("--late-pair-ask-pressure-after-s", type=float, default=100.0)
+    ap.add_argument("--late-pair-ask-pressure-risk-increasing-after-s", type=float, default=None)
+    ap.add_argument("--late-pair-ask-pressure-repair-improving-after-s", type=float, default=None)
+    ap.add_argument("--late-pair-ask-pressure-max-pair-ask", type=float, default=1.00)
+    ap.add_argument("--late-pair-ask-pressure-inventory-mode", choices=["all", "risk_increasing", "repair_or_pairing_improving"], default="all")
     ap.add_argument("--limit-order-min-shares-guard", action="store_true", help="default-off venue-shape guard: block limit-order intents below the configured share minimum")
     ap.add_argument("--limit-order-min-shares", type=float, default=5.0)
     args = ap.parse_args()
@@ -4945,6 +5173,7 @@ async def main() -> None:
         portfolio_ledger_event_lite_summary=args.portfolio_ledger_event_lite_summary,
         source_link_transition_event_lite_summary=args.source_link_transition_event_lite_summary,
         source_link_residual_tail_exemplars_event_lite_summary=args.source_link_residual_tail_exemplars_event_lite_summary,
+        completion_residual_diagnostic_event_lite_summary=args.completion_residual_diagnostic_event_lite_summary,
         source_opportunity_marker_event_lite_summary=args.source_opportunity_marker_event_lite_summary,
         source_opportunity_marker_reason_source_event_lite_summary=args.source_opportunity_marker_reason_source_event_lite_summary,
         source_opportunity_ledger_marker_event_lite_summary=args.source_opportunity_ledger_marker_event_lite_summary,
@@ -4959,12 +5188,19 @@ async def main() -> None:
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
+        final_salvage_on_summary=args.final_salvage_on_summary,
         rolling_entry_quality_admission_guard=args.rolling_entry_quality_admission_guard,
         rolling_entry_quality_seed_price_max=args.rolling_entry_quality_seed_price_max,
         rolling_entry_quality_pair_cost_max=args.rolling_entry_quality_pair_cost_max,
         rolling_entry_quality_max_open_qty_before_seed=args.rolling_entry_quality_max_open_qty_before_seed,
         rolling_entry_quality_min_seed_side_mid_delta_15s=args.rolling_entry_quality_min_seed_side_mid_delta_15s,
         rolling_entry_quality_min_seed_trade_imbalance_30s=args.rolling_entry_quality_min_seed_trade_imbalance_30s,
+        late_pair_ask_pressure_guard=args.late_pair_ask_pressure_guard,
+        late_pair_ask_pressure_after_s=args.late_pair_ask_pressure_after_s,
+        late_pair_ask_pressure_risk_increasing_after_s=args.late_pair_ask_pressure_risk_increasing_after_s,
+        late_pair_ask_pressure_repair_improving_after_s=args.late_pair_ask_pressure_repair_improving_after_s,
+        late_pair_ask_pressure_max_pair_ask=args.late_pair_ask_pressure_max_pair_ask,
+        late_pair_ask_pressure_inventory_mode=args.late_pair_ask_pressure_inventory_mode,
         limit_order_min_shares_guard=args.limit_order_min_shares_guard,
         limit_order_min_shares=args.limit_order_min_shares,
     )
@@ -4990,6 +5226,14 @@ async def main() -> None:
         raise SystemExit("--activation-window-s must be positive")
     if cfg.limit_order_min_shares <= cfg.dust_qty:
         raise SystemExit("--limit-order-min-shares must exceed dust_qty")
+    if cfg.late_pair_ask_pressure_after_s < 0:
+        raise SystemExit("--late-pair-ask-pressure-after-s must be non-negative")
+    if cfg.late_pair_ask_pressure_risk_increasing_after_s is not None and cfg.late_pair_ask_pressure_risk_increasing_after_s < 0:
+        raise SystemExit("--late-pair-ask-pressure-risk-increasing-after-s must be non-negative")
+    if cfg.late_pair_ask_pressure_repair_improving_after_s is not None and cfg.late_pair_ask_pressure_repair_improving_after_s < 0:
+        raise SystemExit("--late-pair-ask-pressure-repair-improving-after-s must be non-negative")
+    if cfg.late_pair_ask_pressure_max_pair_ask <= 0:
+        raise SystemExit("--late-pair-ask-pressure-max-pair-ask must be positive")
     if cfg.pair_source_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--pair-source-event-lite-summary requires --event-lite-summary")
     if cfg.fill_to_balance_diagnostic_event_lite_summary:
@@ -5003,6 +5247,8 @@ async def main() -> None:
         raise SystemExit("--source-link-transition-event-lite-summary requires --event-lite-summary")
     if cfg.source_link_residual_tail_exemplars_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--source-link-residual-tail-exemplars-event-lite-summary requires --event-lite-summary")
+    if cfg.completion_residual_diagnostic_event_lite_summary and not cfg.event_lite_summary:
+        raise SystemExit("--completion-residual-diagnostic-event-lite-summary requires --event-lite-summary")
     if cfg.source_opportunity_marker_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--source-opportunity-marker-event-lite-summary requires --event-lite-summary")
     if cfg.source_opportunity_marker_reason_source_event_lite_summary:
