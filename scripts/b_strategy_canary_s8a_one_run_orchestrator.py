@@ -610,6 +610,156 @@ def full_loop_contract_preview(args: argparse.Namespace) -> int:
     return 0 if not failures else 2
 
 
+def canonical_json_sha256(payload: Any) -> str:
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return sha256_bytes(data)
+
+
+def s9a_execute_wrapper_preview(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    if args.reviewed_host != REVIEWED_HOST:
+        failures.append("REVIEWED_HOST_MISMATCH")
+    if args.rest_url != OFFICIAL_CLOB_REST_URL:
+        failures.append("REST_URL_MUST_BE_OFFICIAL_CLOB")
+    if args.approval_scope != SCOPE:
+        failures.append("APPROVAL_SCOPE_MISMATCH")
+    if args.order_primitive_name != ORDER_PRIMITIVE_NAME:
+        failures.append("ORDER_PRIMITIVE_NAME_MISMATCH")
+    if not hash64(args.exact_approval_sha256) or args.exact_approval_sha256 != args.expected_exact_approval_sha256:
+        failures.append("EXACT_APPROVAL_SHA256_MISMATCH_OR_INVALID")
+    if not hash64(args.order_primitive_source_sha256):
+        failures.append("ORDER_PRIMITIVE_SOURCE_SHA256_NOT_64HEX")
+    if not args.no_submit:
+        failures.append("NO_SUBMIT_REQUIRED")
+    if args.execute_approved:
+        failures.append("EXECUTE_APPROVED_FORBIDDEN_IN_S9A_PREVIEW")
+    if args.print_secret or args.print_raw_signature:
+        failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
+    if args.use_shared_ingress or args.use_c_artifacts:
+        failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
+    if args.allow_online_tuning or args.allow_candidate_import:
+        failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
+
+    runtime = Path(args.runtime_bin)
+    plan = Path(args.one_run_plan_json)
+    if not runtime.exists():
+        failures.append("RUNTIME_BIN_MISSING")
+    if not plan.exists():
+        failures.append("ONE_RUN_PLAN_JSON_MISSING")
+
+    plan_sha = sha256_file(plan) if plan.exists() else None
+    if plan_sha != args.expected_one_run_plan_sha256:
+        failures.append("ONE_RUN_PLAN_SHA256_MISMATCH")
+
+    plan_payload = load_json(plan) if plan.exists() else {}
+    plan_failures, loop_state = full_loop_contract_plan_failures(plan_payload)
+    failures.extend(plan_failures)
+
+    submit_plan: list[dict[str, Any]] = []
+    if isinstance(plan_payload, dict) and isinstance(plan_payload.get("attempts"), list):
+        realized_loss_before = 0.0
+        active_condition_id: str | None = None
+        gross_quote_spend_before = 0.0
+        orders_before = 0
+        completed_rounds_before = 0
+        for idx, attempt in enumerate(plan_payload["attempts"], start=1):
+            order = attempt.get("prepared_order") if isinstance(attempt, dict) else None
+            if not isinstance(order, dict):
+                continue
+            condition_id = order.get("condition_id")
+            amount = order.get("amount") if isinstance(order.get("amount"), dict) else {}
+            order_size = as_finite_float(amount.get("value"))
+            limit_price = as_finite_float(order.get("limit_price"))
+            prepared_order_sha = canonical_json_sha256(order)
+            pre_submit_failures: list[str] = []
+            if completed_rounds_before >= 3:
+                pre_submit_failures.append("MAX_ROUNDS_COMPLETED")
+            if realized_loss_before + 5.0 > 15.0 + 1e-9:
+                pre_submit_failures.append("PRE_ENTRY_LOSS_CAP")
+            if active_condition_id is not None and active_condition_id != condition_id:
+                pre_submit_failures.append("ACTIVE_MARKET_CAP")
+            if orders_before >= 9:
+                pre_submit_failures.append("TOTAL_ORDER_SUBMISSION_CAP")
+            projected_spend = gross_quote_spend_before + max(order_size, 0.0) * max(limit_price, 0.0)
+            if projected_spend > 18.0 + 1e-9:
+                pre_submit_failures.append("PROJECTED_GROSS_QUOTE_SPEND_CAP")
+            if order.get("forced_complement") is not False:
+                pre_submit_failures.append("FORCED_COMPLEMENT")
+            if order.get("natural_controller_admission") is not True:
+                pre_submit_failures.append("NOT_NATURAL_ADMISSION")
+
+            submit_plan.append(
+                {
+                    "attempt_index": idx,
+                    "condition_id": condition_id,
+                    "side": order.get("side"),
+                    "prepared_order_sha256": prepared_order_sha,
+                    "pre_submit_gate_passed": not pre_submit_failures,
+                    "pre_submit_failures": pre_submit_failures,
+                    "future_runtime_execute_argv_template": [
+                        str(runtime),
+                        "--mode",
+                        "execute",
+                        "--prepared-order-json",
+                        f"<S9A_ATTEMPT_{idx}_HASH_BOUND_PREPARED_ORDER.json>",
+                        "--expected-prepared-order-sha256",
+                        prepared_order_sha,
+                        *exact_args(args),
+                        "--execute-approved",
+                    ],
+                    "post_submit_required_evidence": [
+                        "order_id_or_failure_recorded",
+                        "order_status_or_trades_evidence",
+                        "open_remainder_cancel_or_no_remainder_evidence",
+                        "actual_filled_qty_from_exchange_only",
+                        "local_inventory_update_from_actual_filled_qty_only",
+                        "s7w_close_reconciliation_when_round_closes",
+                    ],
+                }
+            )
+            if pre_submit_failures:
+                failures.append(f"ATTEMPT_{idx}_PRE_SUBMIT_GATE_FAIL")
+            active_condition_id = condition_id if not attempt.get("close_round_after_attempt") else None
+            gross_quote_spend_before += max(as_finite_float(attempt.get("actual_filled_qty_shares")), 0.0) * max(
+                as_finite_float(attempt.get("avg_fill_price")),
+                0.0,
+            )
+            realized_loss_before += max(as_finite_float(attempt.get("realized_loss_delta_usdc"), 0.0), 0.0)
+            orders_before += 1
+            if attempt.get("close_round_after_attempt"):
+                completed_rounds_before += 1
+
+    payload = base_payload(
+        "PASS_S9A_EXECUTE_WRAPPER_BINDING_PREVIEW"
+        if not failures
+        else "BLOCK_S9A_EXECUTE_WRAPPER_BINDING_PREVIEW"
+    )
+    payload.update(
+        {
+            "schema_version": "B_STRATEGY_CANARY_S9A_EXECUTE_WRAPPER_BINDING_PREVIEW_v1",
+            "review_only_no_submit": True,
+            "execute_wrapper_binding_preview_ready": not failures,
+            "effectful_execute_wrapper_enabled_now": False,
+            "ready_for_fresh_exact_approval": False,
+            "ready_for_fresh_exact_approval_reason": (
+                "S9A binds future per-attempt runtime execute calls to pre-submit caps and "
+                "post-submit filled_qty evidence, but this preview intentionally does not "
+                "execute the child runtime. Remote no-submit gates and an explicit fresh "
+                "approval index are still required before any effectful path."
+            ),
+            "one_run_plan_sha256": plan_sha,
+            "loop_state_machine": loop_state,
+            "future_submit_plan": submit_plan,
+            "failures": failures,
+            "secret_values_read": False,
+            "secret_values_printed": False,
+            "raw_signature_output": False,
+        }
+    )
+    print_json(payload)
+    return 0 if not failures else 2
+
+
 def derive_order_status_fill_evidence(
     template: Any,
     prepared_order: dict[str, Any],
@@ -901,6 +1051,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "preview-no-approval",
             "no-submit-orchestration-preview",
             "full-loop-contract-preview",
+            "s9a-execute-wrapper-preview",
             "execute",
         ),
         required=True,
@@ -956,6 +1107,10 @@ def main(argv: list[str]) -> int:
         if not args.expected_one_run_plan_sha256:
             args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
         return full_loop_contract_preview(args)
+    if args.mode == "s9a-execute-wrapper-preview":
+        if not args.expected_one_run_plan_sha256:
+            args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
+        return s9a_execute_wrapper_preview(args)
     payload = base_payload("BLOCK_S8Z_EXECUTE_MODE_REQUIRES_FULL_ONE_RUN_LOOP_BINDING_EXIT_66")
     payload.update(
         {
