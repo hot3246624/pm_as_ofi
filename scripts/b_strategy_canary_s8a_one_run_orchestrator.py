@@ -73,7 +73,7 @@ def write_json(path: Path, payload: Any) -> str:
 
 def base_payload(status: str) -> dict[str, Any]:
     return {
-        "schema_version": "B_STRATEGY_CANARY_S8R_ONE_RUN_ORCHESTRATOR_v1",
+        "schema_version": "B_STRATEGY_CANARY_S8T_ONE_RUN_ORCHESTRATOR_WITH_FILL_EVIDENCE_v1",
         "status": status,
         "generated_at": utc_now(),
         "scope": SCOPE,
@@ -134,6 +134,7 @@ def base_payload(status: str) -> dict[str, Any]:
             "no_order_auth_preview_required": True,
             "exact_order_path_preview_no_submit_required": True,
             "live_scout_to_order_preview_no_submit_required": True,
+            "order_status_fill_evidence_preview_no_submit_required": True,
             "one_run_driver_preview_no_submit_required": True,
             "execute_without_execute_approved_must_fail_closed": True,
         },
@@ -264,6 +265,42 @@ def one_run_summary_failures(summary: Any) -> list[str]:
     return failures
 
 
+def derive_order_status_fill_evidence(
+    template: Any,
+    prepared_order: dict[str, Any],
+    prepared_order_sha256: str,
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    evidence = dict(template) if isinstance(template, dict) else {}
+    amount = prepared_order.get("amount") if isinstance(prepared_order.get("amount"), dict) else {}
+    evidence.update(
+        {
+            "prepared_order_sha256": prepared_order_sha256,
+            "exact_approval_sha256": args.exact_approval_sha256,
+            "expected_exact_approval_sha256": args.expected_exact_approval_sha256,
+            "approval_scope_matches_s8a": args.approval_scope == SCOPE,
+            "condition_id": prepared_order.get("condition_id"),
+            "token_id": prepared_order.get("token_id"),
+            "side": prepared_order.get("side"),
+            "action": prepared_order.get("action"),
+            "condition_token_side_action_match_prepared_order": True,
+            "submitted_size_shares": float(amount.get("value", 0.0)) if amount.get("unit") == "SHARES" else 0.0,
+            "filled_qty_from_exchange_or_order_status": True,
+            "submitted_size_counts_as_inventory": False,
+            "partial_fill_threshold_used": False,
+            "forced_complement_after_fill": False,
+            "prints_secret_or_raw_signature": False,
+            "uses_shared_ingress_or_shared_ws": False,
+            "uses_c_artifacts": False,
+            "funding_live_latest_or_deploy_requested": False,
+            "effectful_execution_requested_in_review": False,
+        }
+    )
+    if evidence.get("avg_fill_price") is None and prepared_order.get("limit_price") is not None:
+        evidence["avg_fill_price"] = prepared_order["limit_price"]
+    return evidence
+
+
 def no_submit_orchestration_preview(args: argparse.Namespace) -> int:
     failures: list[str] = []
     if args.reviewed_host != REVIEWED_HOST:
@@ -292,17 +329,30 @@ def no_submit_orchestration_preview(args: argparse.Namespace) -> int:
         failures.append("RUNTIME_BIN_MISSING")
     scout = Path(args.scout_snapshot_json)
     plan = Path(args.one_run_plan_json)
+    order_status_fill_evidence_template = Path(args.order_status_fill_evidence_json)
     if not scout.exists():
         failures.append("SCOUT_SNAPSHOT_JSON_MISSING")
     if not plan.exists():
         failures.append("ONE_RUN_PLAN_JSON_MISSING")
+    if not order_status_fill_evidence_template.exists():
+        failures.append("ORDER_STATUS_FILL_EVIDENCE_JSON_MISSING")
 
     scout_sha = sha256_file(scout) if scout.exists() else None
     plan_sha = sha256_file(plan) if plan.exists() else None
+    order_status_fill_evidence_template_sha = (
+        sha256_file(order_status_fill_evidence_template)
+        if order_status_fill_evidence_template.exists()
+        else None
+    )
     if scout_sha != args.expected_scout_snapshot_sha256:
         failures.append("SCOUT_SNAPSHOT_SHA256_MISMATCH")
     if plan_sha != args.expected_one_run_plan_sha256:
         failures.append("ONE_RUN_PLAN_SHA256_MISMATCH")
+    if (
+        args.expected_order_status_fill_evidence_sha256
+        and order_status_fill_evidence_template_sha != args.expected_order_status_fill_evidence_sha256
+    ):
+        failures.append("ORDER_STATUS_FILL_EVIDENCE_TEMPLATE_SHA256_MISMATCH")
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -370,6 +420,41 @@ def no_submit_orchestration_preview(args: argparse.Namespace) -> int:
         )
         assert_no_submit_child("EXACT_ORDER_PATH_PREVIEW", children[-1], 0, failures)
 
+        order_status_fill_evidence = derive_order_status_fill_evidence(
+            load_json(order_status_fill_evidence_template),
+            prepared_order,
+            prepared_order_sha,
+            args,
+        )
+        order_status_fill_evidence_path = (
+            output_dir / "S8T_ORDER_STATUS_FILL_EVIDENCE_FROM_PREPARED_ORDER.json"
+        )
+        order_status_fill_evidence_sha = write_json(
+            order_status_fill_evidence_path, order_status_fill_evidence
+        )
+
+        children.append(
+            run_child(
+                "order_status_fill_evidence_preview",
+                [
+                    str(runtime),
+                    "--mode",
+                    "order-status-fill-evidence-preview",
+                    "--prepared-order-json",
+                    str(prepared_order_path),
+                    "--expected-prepared-order-sha256",
+                    prepared_order_sha,
+                    "--order-status-fill-evidence-json",
+                    str(order_status_fill_evidence_path),
+                    "--expected-order-status-fill-evidence-sha256",
+                    order_status_fill_evidence_sha,
+                    *exact_args(args),
+                    "--no-submit",
+                ],
+            )
+        )
+        assert_no_submit_child("ORDER_STATUS_FILL_EVIDENCE_PREVIEW", children[-1], 0, failures)
+
         children.append(
             run_child(
                 "one_run_driver_preview",
@@ -411,6 +496,8 @@ def no_submit_orchestration_preview(args: argparse.Namespace) -> int:
     else:
         prepared_order_path = None
         prepared_order_sha = None
+        order_status_fill_evidence_path = None
+        order_status_fill_evidence_sha = None
 
     child_summaries = [
         {
@@ -427,22 +514,28 @@ def no_submit_orchestration_preview(args: argparse.Namespace) -> int:
     ]
 
     payload = base_payload(
-        "PASS_S8R_ONE_RUN_ORCHESTRATOR_NO_SUBMIT_PREVIEW"
+        "PASS_S8T_ONE_RUN_ORCHESTRATOR_WITH_FILL_EVIDENCE_NO_SUBMIT_PREVIEW"
         if not failures
-        else "BLOCK_S8R_ONE_RUN_ORCHESTRATOR_FAIL_CLOSED"
+        else "BLOCK_S8T_ONE_RUN_ORCHESTRATOR_WITH_FILL_EVIDENCE_FAIL_CLOSED"
     )
     payload.update(
         {
             "review_only_no_submit": True,
             "ready_for_fresh_exact_approval": False,
             "ready_for_fresh_exact_approval_reason": (
-                "S8R has bound preview/orchestration gates. Fresh approval still requires "
-                "a separate S8S order-status/fill-evidence adapter before effectful run."
+                "S8T binds preview/orchestration and order-status/fill-evidence gates. "
+                "Fresh approval still requires remote S8T no-submit provisioning and "
+                "a final exact approval index."
             ),
             "scout_snapshot_sha256": scout_sha,
             "one_run_plan_sha256": plan_sha,
+            "order_status_fill_evidence_template_sha256": order_status_fill_evidence_template_sha,
             "prepared_order_from_live_scout_path": str(prepared_order_path) if prepared_order_path else None,
             "prepared_order_from_live_scout_sha256": prepared_order_sha,
+            "order_status_fill_evidence_from_prepared_order_path": (
+                str(order_status_fill_evidence_path) if order_status_fill_evidence_path else None
+            ),
+            "order_status_fill_evidence_from_prepared_order_sha256": order_status_fill_evidence_sha,
             "child_previews": child_summaries,
             "failures": failures,
             "secret_values_read": False,
@@ -468,6 +561,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--expected-scout-snapshot-sha256", required=False)
     parser.add_argument("--one-run-plan-json", default="scripts/fixtures/s8a_one_run_driver_preview_plan.json")
     parser.add_argument("--expected-one-run-plan-sha256", required=False)
+    parser.add_argument(
+        "--order-status-fill-evidence-json",
+        default="scripts/fixtures/s8a_order_status_fill_evidence_preview.json",
+    )
+    parser.add_argument("--expected-order-status-fill-evidence-sha256", required=False)
     parser.add_argument("--output-dir", default=".tmp_xuan/s8r_one_run_orchestrator_preview")
     parser.add_argument("--exact-approval-sha256", default="a" * 64)
     parser.add_argument("--expected-exact-approval-sha256", default="a" * 64)
@@ -498,6 +596,10 @@ def main(argv: list[str]) -> int:
             args.expected_scout_snapshot_sha256 = sha256_file(Path(args.scout_snapshot_json))
         if not args.expected_one_run_plan_sha256:
             args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
+        if not args.expected_order_status_fill_evidence_sha256:
+            args.expected_order_status_fill_evidence_sha256 = sha256_file(
+                Path(args.order_status_fill_evidence_json)
+            )
         return no_submit_orchestration_preview(args)
     print_json(base_payload("BLOCK_S8R_EXECUTE_MODE_REQUIRES_FUTURE_FILLED_QTY_STATUS_ADAPTER_EXIT_66"))
     return 66

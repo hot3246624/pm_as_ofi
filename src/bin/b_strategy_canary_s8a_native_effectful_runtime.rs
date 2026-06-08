@@ -13,10 +13,12 @@ use pm_as_ofi::polymarket::clob_v2::{
 use pm_as_ofi::polymarket::executor::init_clob_client;
 use pm_as_ofi::polymarket::messages::TradeDirection;
 use pm_as_ofi::polymarket::s8a_order_adapter::{
-    apply_s8a_fill_to_inventory, review_s8a_scout_snapshot_for_limit_entry, S8aAdapterOrderAction,
-    S8aControllerAdmissionAdapterContext, S8aFillEvent, S8aInventory, S8aPreparedVenueOrder,
-    S8aScoutAdmissionSnapshot, S8aScoutBookSideSnapshot, S8aScoutPublicBuyTrade,
-    S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES, S8A_MARKET_BUY_MIN_NOTIONAL_USDC,
+    apply_s8a_fill_to_inventory, review_s8a_order_status_fill_evidence,
+    review_s8a_scout_snapshot_for_limit_entry, S8aAdapterOrderAction,
+    S8aControllerAdmissionAdapterContext, S8aFillEvent, S8aInventory, S8aObservedOrderStatus,
+    S8aOrderStatusEvidenceSource, S8aOrderStatusFillEvidence, S8aPreparedVenueOrder,
+    S8aScoutAdmissionSnapshot, S8aScoutBookSideSnapshot, S8aScoutPublicBuyTrade, S8aVenueAmount,
+    S8aVenueOrderType, S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES, S8A_MARKET_BUY_MIN_NOTIONAL_USDC,
     S8A_MARKET_SELL_MIN_ORDER_SIZE_SHARES, S8A_MAX_ROUNDS, S8A_PER_ROUND_THEORETICAL_MAX_LOSS_USDC,
     S8A_SEED_PX_HI, S8A_SEED_PX_LO, S8A_SESSION_HARD_LOSS_CAP_USDC,
 };
@@ -45,6 +47,7 @@ enum Mode {
     ExactApprovedOrderPathPreview,
     LiveScoutToOrderPreview,
     OneRunDriverPreview,
+    OrderStatusFillEvidencePreview,
     Execute,
 }
 
@@ -59,6 +62,8 @@ struct Args {
     expected_scout_snapshot_sha256: Option<String>,
     one_run_plan_json: Option<PathBuf>,
     expected_one_run_plan_sha256: Option<String>,
+    order_status_fill_evidence_json: Option<PathBuf>,
+    expected_order_status_fill_evidence_sha256: Option<String>,
     exact_approval_sha256: Option<String>,
     expected_exact_approval_sha256: Option<String>,
     approval_scope: String,
@@ -193,6 +198,39 @@ struct ScoutAdmissionSnapshotInput {
     b_owned_direct_public_ws_connection_count: u32,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct OrderStatusFillEvidenceInput {
+    prepared_order_sha256: String,
+    exact_approval_sha256: String,
+    expected_exact_approval_sha256: String,
+    exact_approval_hash_bound_to_order: bool,
+    prepared_order_hash_bound_to_order: bool,
+    approval_scope_matches_s8a: bool,
+    order_id: Option<String>,
+    failure_recorded: bool,
+    status_source: String,
+    order_status: String,
+    condition_id: String,
+    token_id: String,
+    side: String,
+    action: String,
+    condition_token_side_action_match_prepared_order: bool,
+    submitted_size_shares: f64,
+    actual_filled_qty_shares: f64,
+    avg_fill_price: Option<f64>,
+    open_order_remainder_qty_shares: f64,
+    filled_qty_from_exchange_or_order_status: bool,
+    submitted_size_counts_as_inventory: bool,
+    partial_fill_threshold_used: bool,
+    forced_complement_after_fill: bool,
+    no_open_order_remainder_required: bool,
+    prints_secret_or_raw_signature: bool,
+    uses_shared_ingress_or_shared_ws: bool,
+    uses_c_artifacts: bool,
+    funding_live_latest_or_deploy_requested: bool,
+    effectful_execution_requested_in_review: bool,
+}
+
 fn hash64(value: Option<&str>) -> bool {
     value.is_some_and(|v| v.len() == 64 && v.chars().all(|ch| ch.is_ascii_hexdigit()))
 }
@@ -228,6 +266,7 @@ fn parse_args() -> Result<Args> {
                     "exact-approved-order-path-preview" => Mode::ExactApprovedOrderPathPreview,
                     "live-scout-to-order-preview" => Mode::LiveScoutToOrderPreview,
                     "one-run-driver-preview" => Mode::OneRunDriverPreview,
+                    "order-status-fill-evidence-preview" => Mode::OrderStatusFillEvidencePreview,
                     "execute" => Mode::Execute,
                     _ => return Err(anyhow!("unknown mode {raw}")),
                 });
@@ -277,6 +316,18 @@ fn parse_args() -> Result<Args> {
                     it.next()
                         .ok_or_else(|| anyhow!("--expected-one-run-plan-sha256 requires value"))?,
                 );
+            }
+            "--order-status-fill-evidence-json" => {
+                args.order_status_fill_evidence_json =
+                    Some(PathBuf::from(it.next().ok_or_else(|| {
+                        anyhow!("--order-status-fill-evidence-json requires value")
+                    })?));
+            }
+            "--expected-order-status-fill-evidence-sha256" => {
+                args.expected_order_status_fill_evidence_sha256 =
+                    Some(it.next().ok_or_else(|| {
+                        anyhow!("--expected-order-status-fill-evidence-sha256 requires value")
+                    })?);
             }
             "--exact-approval-sha256" => {
                 args.exact_approval_sha256 = Some(
@@ -477,6 +528,106 @@ fn load_scout_snapshot(
             shared_ingress_dependency: parsed.shared_ingress_dependency,
             b_owned_direct_public_ws_connection_count: parsed
                 .b_owned_direct_public_ws_connection_count,
+        },
+        actual_sha,
+    ))
+}
+
+fn load_order_status_fill_evidence(
+    args: &Args,
+    failures: &mut Vec<&'static str>,
+) -> Option<(S8aOrderStatusFillEvidence, String)> {
+    let Some(path) = args.order_status_fill_evidence_json.as_ref() else {
+        failures.push("ORDER_STATUS_FILL_EVIDENCE_JSON_REQUIRED");
+        return None;
+    };
+    let actual_sha = match sha256_file(path) {
+        Ok(value) => value,
+        Err(_) => {
+            failures.push("ORDER_STATUS_FILL_EVIDENCE_JSON_UNREADABLE");
+            return None;
+        }
+    };
+    if args
+        .expected_order_status_fill_evidence_sha256
+        .as_deref()
+        .is_some_and(|expected| expected != actual_sha)
+    {
+        failures.push("ORDER_STATUS_FILL_EVIDENCE_SHA256_MISMATCH");
+    }
+    let parsed = match fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<OrderStatusFillEvidenceInput>(&raw).ok())
+    {
+        Some(value) => value,
+        None => {
+            failures.push("ORDER_STATUS_FILL_EVIDENCE_JSON_INVALID");
+            return None;
+        }
+    };
+
+    let side = match side_from_str(&parsed.side) {
+        Ok(side) => side,
+        Err(_) => {
+            failures.push("ORDER_STATUS_FILL_EVIDENCE_SIDE_INVALID");
+            Side::Yes
+        }
+    };
+    let action = match adapter_action_from_str(&parsed.action) {
+        Ok(action) => action,
+        Err(_) => {
+            failures.push("ORDER_STATUS_FILL_EVIDENCE_ACTION_INVALID");
+            S8aAdapterOrderAction::Buy
+        }
+    };
+    let status_source = match order_status_source_from_str(&parsed.status_source) {
+        Ok(source) => source,
+        Err(_) => {
+            failures.push("ORDER_STATUS_FILL_EVIDENCE_SOURCE_INVALID");
+            S8aOrderStatusEvidenceSource::OrderStatusApi
+        }
+    };
+    let order_status = match observed_order_status_from_str(&parsed.order_status) {
+        Ok(status) => status,
+        Err(_) => {
+            failures.push("ORDER_STATUS_FILL_EVIDENCE_STATUS_INVALID");
+            S8aObservedOrderStatus::Failed
+        }
+    };
+
+    Some((
+        S8aOrderStatusFillEvidence {
+            prepared_order_sha256: parsed.prepared_order_sha256,
+            exact_approval_sha256: parsed.exact_approval_sha256,
+            expected_exact_approval_sha256: parsed.expected_exact_approval_sha256,
+            exact_approval_hash_bound_to_order: parsed.exact_approval_hash_bound_to_order,
+            prepared_order_hash_bound_to_order: parsed.prepared_order_hash_bound_to_order,
+            approval_scope_matches_s8a: parsed.approval_scope_matches_s8a,
+            order_id: parsed.order_id,
+            failure_recorded: parsed.failure_recorded,
+            status_source,
+            order_status,
+            condition_id: parsed.condition_id,
+            token_id: parsed.token_id,
+            side,
+            action,
+            condition_token_side_action_match_prepared_order: parsed
+                .condition_token_side_action_match_prepared_order,
+            submitted_size_shares: parsed.submitted_size_shares,
+            actual_filled_qty_shares: parsed.actual_filled_qty_shares,
+            avg_fill_price: parsed.avg_fill_price,
+            open_order_remainder_qty_shares: parsed.open_order_remainder_qty_shares,
+            filled_qty_from_exchange_or_order_status: parsed
+                .filled_qty_from_exchange_or_order_status,
+            submitted_size_counts_as_inventory: parsed.submitted_size_counts_as_inventory,
+            partial_fill_threshold_used: parsed.partial_fill_threshold_used,
+            forced_complement_after_fill: parsed.forced_complement_after_fill,
+            no_open_order_remainder_required: parsed.no_open_order_remainder_required,
+            prints_secret_or_raw_signature: parsed.prints_secret_or_raw_signature,
+            uses_shared_ingress_or_shared_ws: parsed.uses_shared_ingress_or_shared_ws,
+            uses_c_artifacts: parsed.uses_c_artifacts,
+            funding_live_latest_or_deploy_requested: parsed.funding_live_latest_or_deploy_requested,
+            effectful_execution_requested_in_review: parsed.effectful_execution_requested_in_review,
         },
         actual_sha,
     ))
@@ -922,12 +1073,83 @@ fn direction_from_str(action: &str) -> Result<TradeDirection> {
     }
 }
 
+fn adapter_action_from_str(action: &str) -> Result<S8aAdapterOrderAction> {
+    match action {
+        "BUY" => Ok(S8aAdapterOrderAction::Buy),
+        "SELL" => Ok(S8aAdapterOrderAction::Sell),
+        _ => Err(anyhow!("invalid adapter action")),
+    }
+}
+
 fn order_type_from_str(order_type: &str) -> Result<OrderType> {
     match order_type {
         "GTC" => Ok(OrderType::GTC),
         "FAK" => Ok(OrderType::FAK),
         _ => Err(anyhow!("unsupported order type")),
     }
+}
+
+fn s8a_venue_order_type_from_str(order_type: &str) -> Result<S8aVenueOrderType> {
+    match order_type {
+        "GTC" => Ok(S8aVenueOrderType::Gtc),
+        "FAK" => Ok(S8aVenueOrderType::Fak),
+        _ => Err(anyhow!("unsupported S8A venue order type")),
+    }
+}
+
+fn order_status_source_from_str(source: &str) -> Result<S8aOrderStatusEvidenceSource> {
+    match source {
+        "POST_ORDER_RESPONSE" => Ok(S8aOrderStatusEvidenceSource::PostOrderResponse),
+        "ORDER_STATUS_API" => Ok(S8aOrderStatusEvidenceSource::OrderStatusApi),
+        "TRADE_FILL_API" => Ok(S8aOrderStatusEvidenceSource::TradeFillApi),
+        _ => Err(anyhow!("unsupported order status evidence source")),
+    }
+}
+
+fn observed_order_status_from_str(status: &str) -> Result<S8aObservedOrderStatus> {
+    match status {
+        "LIVE" => Ok(S8aObservedOrderStatus::Live),
+        "MATCHED" => Ok(S8aObservedOrderStatus::Matched),
+        "FILLED" => Ok(S8aObservedOrderStatus::Filled),
+        "CANCELLED" => Ok(S8aObservedOrderStatus::Cancelled),
+        "REJECTED" => Ok(S8aObservedOrderStatus::Rejected),
+        "FAILED" => Ok(S8aObservedOrderStatus::Failed),
+        _ => Err(anyhow!("unsupported observed order status")),
+    }
+}
+
+fn s8a_venue_amount_from_prepared(order: &PreparedOrder) -> Result<S8aVenueAmount> {
+    match order.amount.unit.as_str() {
+        "SHARES" => Ok(S8aVenueAmount::Shares(order.amount.value)),
+        "USDC_NOTIONAL" => Ok(S8aVenueAmount::UsdcNotional(order.amount.value)),
+        _ => Err(anyhow!("unsupported prepared order amount unit")),
+    }
+}
+
+fn s8a_prepared_order_from_payload(order: &PreparedOrder) -> Result<S8aPreparedVenueOrder> {
+    Ok(S8aPreparedVenueOrder {
+        condition_id: order.condition_id.clone(),
+        token_id: order.token_id.clone(),
+        side: side_from_str(&order.side)?,
+        action: adapter_action_from_str(&order.action)?,
+        order_type: s8a_venue_order_type_from_str(&order.order_type)?,
+        limit_price: order.limit_price,
+        amount: s8a_venue_amount_from_prepared(order)?,
+        execution_permitted: order.execution_permitted,
+    })
+}
+
+fn fill_event_payload(fill: &S8aFillEvent) -> serde_json::Value {
+    json!({
+        "side": fill.side.as_str(),
+        "action": match fill.action {
+            S8aAdapterOrderAction::Buy => "BUY",
+            S8aAdapterOrderAction::Sell => "SELL",
+        },
+        "submitted_size_shares": fill.submitted_size_shares,
+        "actual_filled_qty_shares": fill.actual_filled_qty_shares,
+        "avg_fill_price": fill.avg_fill_price
+    })
 }
 
 async fn execute(args: &Args, order: &PreparedOrder) -> Result<serde_json::Value> {
@@ -1253,6 +1475,82 @@ async fn main() -> Result<()> {
                     "raw_signature_output": false,
                     "one_run_plan_sha256": one_run_plan_sha256,
                     "one_run_summary": summary
+                }),
+            );
+            Ok(())
+        }
+        Mode::OrderStatusFillEvidencePreview => {
+            let mut failures = Vec::new();
+            validate_common(&args, &mut failures);
+            if !args.no_submit {
+                failures.push("NO_SUBMIT_REQUIRED_IN_ORDER_STATUS_FILL_EVIDENCE_PREVIEW");
+            }
+
+            let loaded_order = load_prepared_order(&args, &mut failures);
+            let loaded_evidence = load_order_status_fill_evidence(&args, &mut failures);
+            let mut prepared_order_sha256 = None;
+            let mut order_status_fill_evidence_sha256 = None;
+            let mut review_payload = json!(null);
+
+            if let (Some((order, order_sha)), Some((evidence, evidence_sha))) =
+                (loaded_order.as_ref(), loaded_evidence.as_ref())
+            {
+                prepared_order_sha256 = order_sha.clone();
+                order_status_fill_evidence_sha256 = Some(evidence_sha.clone());
+                validate_prepared_order(order, &mut failures);
+                match s8a_prepared_order_from_payload(order) {
+                    Ok(prepared) => {
+                        let review = review_s8a_order_status_fill_evidence(&prepared, evidence);
+                        if !review.block_reasons.is_empty() {
+                            failures.push("ORDER_STATUS_FILL_EVIDENCE_REVIEW_BLOCKED");
+                        }
+                        review_payload = json!({
+                            "event": review.event,
+                            "block_reasons": review.block_reasons.iter().map(|reason| reason.as_str()).collect::<Vec<_>>(),
+                            "order_id_or_failure_recorded": review.order_id_or_failure_recorded,
+                            "exact_approval_bound": review.exact_approval_bound,
+                            "prepared_order_bound": review.prepared_order_bound,
+                            "status_source": evidence.status_source.as_str(),
+                            "order_status": evidence.order_status.as_str(),
+                            "filled_qty_from_exchange_or_order_status_only": review.filled_qty_from_exchange_or_order_status_only,
+                            "submitted_size_counts_as_inventory": evidence.submitted_size_counts_as_inventory,
+                            "partial_fill_threshold_used": evidence.partial_fill_threshold_used,
+                            "forced_complement_after_fill": evidence.forced_complement_after_fill,
+                            "no_open_order_remainder": review.no_open_order_remainder,
+                            "actual_filled_qty_ledger_ready": review.actual_filled_qty_ledger_ready,
+                            "effectful_execution_permitted": review.effectful_execution_permitted,
+                            "fill_event": review.fill_event.as_ref().map(fill_event_payload)
+                        });
+                    }
+                    Err(_) => failures.push("PREPARED_ORDER_TO_S8A_CONVERSION_FAILED"),
+                }
+            }
+
+            if !failures.is_empty() {
+                print_payload(
+                    base_payload("BLOCK_S8S_ORDER_STATUS_FILL_EVIDENCE_PREVIEW_FAIL_CLOSED"),
+                    json!({
+                        "orders_submitted": 0,
+                        "signing_performed": false,
+                        "raw_signature_output": false,
+                        "prepared_order_sha256": prepared_order_sha256,
+                        "order_status_fill_evidence_sha256": order_status_fill_evidence_sha256,
+                        "review": review_payload,
+                        "failures": failures
+                    }),
+                );
+                std::process::exit(2);
+            }
+
+            print_payload(
+                base_payload("PASS_S8S_ORDER_STATUS_FILL_EVIDENCE_PREVIEW_NO_SUBMIT"),
+                json!({
+                    "orders_submitted": 0,
+                    "signing_performed": false,
+                    "raw_signature_output": false,
+                    "prepared_order_sha256": prepared_order_sha256,
+                    "order_status_fill_evidence_sha256": order_status_fill_evidence_sha256,
+                    "review": review_payload
                 }),
             );
             Ok(())
