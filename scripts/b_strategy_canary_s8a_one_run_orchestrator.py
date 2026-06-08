@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -67,6 +68,14 @@ def load_json(path: Path) -> Any:
         return json.load(f)
 
 
+def as_finite_float(value: Any, default: float = math.nan) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
+
 def write_json(path: Path, payload: Any) -> str:
     path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8") + b"\n"
@@ -113,6 +122,8 @@ def base_payload(status: str) -> dict[str, Any]:
             "max_active_market": 1,
             "max_active_capital_lock_usdc": 6.0,
             "max_cumulative_gross_quote_spend_usdc": 18.0,
+            "max_initial_buy_submissions": 6,
+            "max_emergency_exit_or_hedge_submissions": 3,
             "max_total_order_submissions": 9,
             "max_cancel_count": 6,
             "max_recovery_tx_count": 3,
@@ -268,6 +279,335 @@ def one_run_summary_failures(summary: Any) -> list[str]:
     if float(summary.get("realized_session_loss_usdc", 999.0)) > 15.0:
         failures.append("ONE_RUN_REALIZED_LOSS_CAP_EXCEEDED")
     return failures
+
+
+def full_loop_contract_plan_failures(plan: Any) -> tuple[list[str], dict[str, Any]]:
+    failures: list[str] = []
+    state: dict[str, Any] = {
+        "attempts_seen": 0,
+        "orders_planned": 0,
+        "initial_buy_submissions_planned": 0,
+        "completed_rounds": 0,
+        "active_condition_id": None,
+        "realized_session_loss_usdc": 0.0,
+        "gross_quote_spend_usdc": 0.0,
+        "max_active_capital_lock_usdc_seen": 0.0,
+        "max_active_round_risk_at_work_usdc_seen": 0.0,
+        "inventory_by_condition": {},
+        "transitions": [],
+    }
+    if not isinstance(plan, dict):
+        return ["FULL_LOOP_PLAN_NOT_OBJECT"], state
+
+    if plan.get("source") != "native_s8a_one_run_driver":
+        failures.append("FULL_LOOP_PLAN_SOURCE_MISMATCH")
+    if plan.get("effectful_execution_permitted") is not False:
+        failures.append("FULL_LOOP_PLAN_MUST_BE_REVIEW_ONLY")
+    if plan.get("runtime_accepts_only_prepared_orders") is not True:
+        failures.append("FULL_LOOP_RUNTIME_MUST_ACCEPT_ONLY_PREPARED_ORDERS")
+    if plan.get("runtime_order_result_ledger_enabled") is not True:
+        failures.append("FULL_LOOP_RUNTIME_ORDER_RESULT_LEDGER_NOT_ENABLED")
+    if plan.get("actual_filled_qty_ledger_updates_inventory") is not True:
+        failures.append("FULL_LOOP_ACTUAL_FILLED_QTY_LEDGER_NOT_BOUND")
+    if plan.get("submitted_size_counts_as_inventory") is not False:
+        failures.append("FULL_LOOP_SUBMITTED_SIZE_COUNTS_AS_INVENTORY")
+    if plan.get("partial_fill_threshold_enabled") is not False:
+        failures.append("FULL_LOOP_PARTIAL_FILL_THRESHOLD_ENABLED")
+    if plan.get("forced_complement_allowed") is not False:
+        failures.append("FULL_LOOP_FORCED_COMPLEMENT_ALLOWED")
+    if plan.get("s7w_reconciliation_bound_to_run_result") is not True:
+        failures.append("FULL_LOOP_S7W_RECONCILIATION_NOT_BOUND")
+    if plan.get("shared_ingress_dependency") is not False or plan.get("uses_c_artifacts") is not False:
+        failures.append("FULL_LOOP_FORBIDDEN_SOURCE_DEPENDENCY")
+    if plan.get("secret_or_raw_signature_output_allowed") is not False:
+        failures.append("FULL_LOOP_SECRET_OR_RAW_SIGNATURE_OUTPUT_ALLOWED")
+    if plan.get("funding_live_latest_or_deploy_requested") is not False:
+        failures.append("FULL_LOOP_FUNDING_LIVE_LATEST_DEPLOY_REQUESTED")
+
+    strategy_scope = plan.get("strategy_scope")
+    if not isinstance(strategy_scope, dict):
+        failures.append("FULL_LOOP_STRATEGY_SCOPE_MISSING")
+    else:
+        expected_strategy = {
+            "market_family": "btc-5min",
+            "fixed_policy": "cool5_imb1.25_source_guard_500",
+            "source_guard_500_required": True,
+            "online_tuning_allowed": False,
+            "strategy_discovery_allowed": False,
+            "candidate_import_allowed": False,
+        }
+        for key, expected in expected_strategy.items():
+            if strategy_scope.get(key) != expected:
+                failures.append(f"FULL_LOOP_STRATEGY_{key.upper()}_MISMATCH")
+
+    caps = plan.get("caps")
+    if not isinstance(caps, dict):
+        failures.append("FULL_LOOP_CAPS_MISSING")
+        caps = {}
+    if int(caps.get("max_round_count", -1)) != 3:
+        failures.append("FULL_LOOP_MAX_ROUND_COUNT_MISMATCH")
+    if as_finite_float(caps.get("session_hard_loss_cap_usdc")) != 15.0:
+        failures.append("FULL_LOOP_SESSION_LOSS_CAP_MISMATCH")
+    if as_finite_float(caps.get("per_round_theoretical_max_loss_usdc")) != 5.0:
+        failures.append("FULL_LOOP_PER_ROUND_THEORETICAL_LOSS_MISMATCH")
+    if int(caps.get("max_active_market_count", -1)) != 1:
+        failures.append("FULL_LOOP_ACTIVE_MARKET_CAP_MISMATCH")
+    if as_finite_float(caps.get("max_cumulative_gross_quote_spend_usdc")) != 18.0:
+        failures.append("FULL_LOOP_GROSS_QUOTE_SPEND_CAP_MISMATCH")
+    if int(caps.get("max_total_order_submissions", -1)) != 9:
+        failures.append("FULL_LOOP_TOTAL_ORDER_SUBMISSION_CAP_MISMATCH")
+
+    attempts = plan.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        return failures + ["FULL_LOOP_ATTEMPTS_MISSING"], state
+
+    inventory: dict[str, dict[str, float]] = {}
+    cost_by_condition: dict[str, float] = {}
+    active_condition_id: str | None = None
+    realized_session_loss_usdc = 0.0
+    gross_quote_spend_usdc = 0.0
+    completed_rounds = 0
+    planned_order_count = 0
+    initial_buy_count = 0
+
+    for idx, attempt in enumerate(attempts, start=1):
+        state["attempts_seen"] = idx
+        if not isinstance(attempt, dict):
+            failures.append(f"ATTEMPT_{idx}_NOT_OBJECT")
+            continue
+        order = attempt.get("prepared_order")
+        failures.extend(f"ATTEMPT_{idx}_{failure}" for failure in prepared_order_failures(order))
+        if not isinstance(order, dict):
+            continue
+
+        condition_id = order.get("condition_id")
+        side = order.get("side")
+        action = order.get("action")
+        amount = order.get("amount") if isinstance(order.get("amount"), dict) else {}
+        order_size = as_finite_float(amount.get("value"))
+        actual_filled_qty = as_finite_float(attempt.get("actual_filled_qty_shares"))
+        avg_fill_price = as_finite_float(attempt.get("avg_fill_price"))
+        realized_loss_delta = as_finite_float(attempt.get("realized_loss_delta_usdc"), 0.0)
+        close_round = bool(attempt.get("close_round_after_attempt"))
+
+        if not isinstance(condition_id, str) or not condition_id:
+            failures.append(f"ATTEMPT_{idx}_CONDITION_ID_MISSING")
+            continue
+        if active_condition_id is not None and condition_id != active_condition_id:
+            failures.append(f"ATTEMPT_{idx}_ACTIVE_MARKET_CAP_WOULD_BE_EXCEEDED")
+        if active_condition_id is None:
+            if realized_session_loss_usdc + 5.0 > 15.0 + 1e-9:
+                failures.append(f"ATTEMPT_{idx}_PRE_ENTRY_LOSS_CAP_BLOCK_MISSING")
+            active_condition_id = condition_id
+
+        if action == "BUY":
+            initial_buy_count += 1
+        planned_order_count += 1
+        if planned_order_count > 9:
+            failures.append(f"ATTEMPT_{idx}_TOTAL_ORDER_SUBMISSION_CAP_EXCEEDED")
+        if initial_buy_count > 6:
+            failures.append(f"ATTEMPT_{idx}_INITIAL_BUY_SUBMISSION_CAP_EXCEEDED")
+        if completed_rounds >= 3:
+            failures.append(f"ATTEMPT_{idx}_MAX_ROUNDS_ALREADY_COMPLETED")
+        if order_size != 5.0:
+            failures.append(f"ATTEMPT_{idx}_ORDER_SIZE_NOT_5")
+        if actual_filled_qty < 0.0 or actual_filled_qty > order_size + 1e-9:
+            failures.append(f"ATTEMPT_{idx}_ACTUAL_FILLED_QTY_OUT_OF_RANGE")
+        if actual_filled_qty > 0.0 and avg_fill_price < 0.0:
+            failures.append(f"ATTEMPT_{idx}_AVG_FILL_PRICE_INVALID")
+        if attempt.get("filled_qty_from_exchange_or_order_status") is not True:
+            failures.append(f"ATTEMPT_{idx}_FILLED_QTY_NOT_EXCHANGE_DERIVED")
+        if attempt.get("order_id_or_failure_recorded") is not True:
+            failures.append(f"ATTEMPT_{idx}_ORDER_ID_OR_FAILURE_NOT_RECORDED")
+        if attempt.get("no_open_order_remainder") is not True:
+            failures.append(f"ATTEMPT_{idx}_OPEN_ORDER_REMAINDER_NOT_CLEARED")
+
+        condition_inventory = inventory.setdefault(condition_id, {"YES": 0.0, "NO": 0.0})
+        cost_by_condition.setdefault(condition_id, 0.0)
+        filled_qty = max(actual_filled_qty, 0.0)
+        fill_cost = filled_qty * max(avg_fill_price, 0.0)
+        gross_quote_spend_usdc += fill_cost
+        cost_by_condition[condition_id] += fill_cost
+        if gross_quote_spend_usdc > 18.0 + 1e-9:
+            failures.append(f"ATTEMPT_{idx}_GROSS_QUOTE_SPEND_CAP_EXCEEDED")
+        if side in ("YES", "NO"):
+            condition_inventory[side] += filled_qty
+        else:
+            failures.append(f"ATTEMPT_{idx}_SIDE_UNSUPPORTED")
+
+        residual_qty = abs(condition_inventory["YES"] - condition_inventory["NO"])
+        paired_qty = min(condition_inventory["YES"], condition_inventory["NO"])
+        active_round_risk_at_work_usdc = residual_qty
+        active_capital_lock_usdc = cost_by_condition[condition_id]
+        state["max_active_round_risk_at_work_usdc_seen"] = max(
+            state["max_active_round_risk_at_work_usdc_seen"],
+            active_round_risk_at_work_usdc,
+        )
+        state["max_active_capital_lock_usdc_seen"] = max(
+            state["max_active_capital_lock_usdc_seen"],
+            active_capital_lock_usdc,
+        )
+        if active_round_risk_at_work_usdc > 5.0 + 1e-9:
+            failures.append(f"ATTEMPT_{idx}_ACTIVE_ROUND_RISK_CAP_EXCEEDED")
+        if active_capital_lock_usdc > 6.0 + 1e-9:
+            failures.append(f"ATTEMPT_{idx}_ACTIVE_CAPITAL_LOCK_CAP_EXCEEDED")
+
+        realized_session_loss_usdc += max(realized_loss_delta, 0.0)
+        if realized_session_loss_usdc > 15.0 + 1e-9:
+            failures.append(f"ATTEMPT_{idx}_REALIZED_SESSION_LOSS_CAP_EXCEEDED")
+
+        if close_round:
+            if residual_qty > 1e-9:
+                failures.append(f"ATTEMPT_{idx}_CLOSE_ROUND_WITH_RESIDUAL_EXPOSURE")
+            if attempt.get("s7w_reconciliation_passed") is not True:
+                failures.append(f"ATTEMPT_{idx}_S7W_RECONCILIATION_NOT_PASSED_ON_CLOSE")
+            if attempt.get("exact_approved_receipt_tier_required") is not True:
+                failures.append(f"ATTEMPT_{idx}_EXACT_APPROVED_RECEIPT_TIER_NOT_REQUIRED_ON_CLOSE")
+            if attempt.get("positive_collateral_delta_required_for_recovery") is not True:
+                failures.append(f"ATTEMPT_{idx}_POSITIVE_COLLATERAL_DELTA_NOT_REQUIRED_ON_CLOSE")
+            completed_rounds += 1
+            active_condition_id = None
+
+        state["transitions"].append(
+            {
+                "attempt_index": idx,
+                "condition_id": condition_id,
+                "side": side,
+                "action": action,
+                "actual_filled_qty_shares": actual_filled_qty,
+                "submitted_size_counted_as_inventory": False,
+                "yes_qty": condition_inventory["YES"],
+                "no_qty": condition_inventory["NO"],
+                "paired_qty": paired_qty,
+                "residual_qty": residual_qty,
+                "active_round_risk_at_work_usdc": active_round_risk_at_work_usdc,
+                "active_capital_lock_usdc": active_capital_lock_usdc,
+                "completed_rounds_after_attempt": completed_rounds,
+                "close_round_after_attempt": close_round,
+            }
+        )
+
+    state.update(
+        {
+            "orders_planned": planned_order_count,
+            "initial_buy_submissions_planned": initial_buy_count,
+            "completed_rounds": completed_rounds,
+            "active_condition_id": active_condition_id,
+            "realized_session_loss_usdc": realized_session_loss_usdc,
+            "gross_quote_spend_usdc": gross_quote_spend_usdc,
+            "inventory_by_condition": inventory,
+        }
+    )
+    if completed_rounds < 1:
+        failures.append("FULL_LOOP_NO_CLOSED_ROUND_IN_PLAN")
+    return failures, state
+
+
+def full_loop_contract_preview(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    if args.reviewed_host != REVIEWED_HOST:
+        failures.append("REVIEWED_HOST_MISMATCH")
+    if args.rest_url != OFFICIAL_CLOB_REST_URL:
+        failures.append("REST_URL_MUST_BE_OFFICIAL_CLOB")
+    if args.approval_scope != SCOPE:
+        failures.append("APPROVAL_SCOPE_MISMATCH")
+    if args.order_primitive_name != ORDER_PRIMITIVE_NAME:
+        failures.append("ORDER_PRIMITIVE_NAME_MISMATCH")
+    if not hash64(args.exact_approval_sha256) or args.exact_approval_sha256 != args.expected_exact_approval_sha256:
+        failures.append("EXACT_APPROVAL_SHA256_MISMATCH_OR_INVALID")
+    if not hash64(args.order_primitive_source_sha256):
+        failures.append("ORDER_PRIMITIVE_SOURCE_SHA256_NOT_64HEX")
+    if not args.no_submit:
+        failures.append("NO_SUBMIT_REQUIRED")
+    if args.execute_approved:
+        failures.append("EXECUTE_APPROVED_FORBIDDEN_IN_CONTRACT_PREVIEW")
+    if args.print_secret or args.print_raw_signature:
+        failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
+    if args.use_shared_ingress or args.use_c_artifacts:
+        failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
+    if args.allow_online_tuning or args.allow_candidate_import:
+        failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
+
+    runtime = Path(args.runtime_bin)
+    plan = Path(args.one_run_plan_json)
+    if not runtime.exists():
+        failures.append("RUNTIME_BIN_MISSING")
+    if not plan.exists():
+        failures.append("ONE_RUN_PLAN_JSON_MISSING")
+
+    plan_sha = sha256_file(plan) if plan.exists() else None
+    if plan_sha != args.expected_one_run_plan_sha256:
+        failures.append("ONE_RUN_PLAN_SHA256_MISMATCH")
+
+    plan_payload = load_json(plan) if plan.exists() else {}
+    plan_failures, loop_state = full_loop_contract_plan_failures(plan_payload)
+    failures.extend(plan_failures)
+
+    children: list[dict[str, Any]] = []
+    if not failures:
+        children.append(
+            run_child(
+                "one_run_driver_preview_contract_crosscheck",
+                [
+                    str(runtime),
+                    "--mode",
+                    "one-run-driver-preview",
+                    "--one-run-plan-json",
+                    str(plan),
+                    "--expected-one-run-plan-sha256",
+                    args.expected_one_run_plan_sha256,
+                    *exact_args(args),
+                    "--no-submit",
+                ],
+            )
+        )
+        assert_no_submit_child("ONE_RUN_DRIVER_PREVIEW_CONTRACT_CROSSCHECK", children[-1], 0, failures)
+        one_run_payload = children[-1].get("stdout_json") or {}
+        failures.extend(one_run_summary_failures(one_run_payload.get("one_run_summary")))
+
+    child_summaries = [
+        {
+            "label": child["label"],
+            "returncode": child["returncode"],
+            "status": child_status(child),
+            "orders_submitted": child_orders(child),
+            "signing_performed": child_signing(child),
+            "stdout_sha256": child["stdout_sha256"],
+            "stderr_sha256": child["stderr_sha256"],
+            "stdout_parse_error": child["stdout_parse_error"],
+        }
+        for child in children
+    ]
+
+    payload = base_payload(
+        "PASS_S8AA_FULL_ONE_RUN_LOOP_CONTRACT_PREVIEW"
+        if not failures
+        else "BLOCK_S8AA_FULL_ONE_RUN_LOOP_CONTRACT_FAIL_CLOSED"
+    )
+    payload.update(
+        {
+            "schema_version": "B_STRATEGY_CANARY_S8AA_FULL_ONE_RUN_LOOP_CONTRACT_PREVIEW_v1",
+            "review_only_no_submit": True,
+            "full_one_run_loop_contract_preview_ready": not failures,
+            "full_one_run_loop_execute_ready": False,
+            "ready_for_fresh_exact_approval": False,
+            "ready_for_fresh_exact_approval_reason": (
+                "S8AA validates the full-loop state-machine contract and S8Y primitive "
+                "binding under no-submit. A broad S8A exact approval still requires "
+                "remote no-submit gates for this contract and an execute wrapper that "
+                "calls the S8Y closed-loop primitive only after fresh authorization."
+            ),
+            "one_run_plan_sha256": plan_sha,
+            "loop_state_machine": loop_state,
+            "child_previews": child_summaries,
+            "failures": failures,
+            "secret_values_read": False,
+            "secret_values_printed": False,
+            "raw_signature_output": False,
+        }
+    )
+    print_json(payload)
+    return 0 if not failures else 2
 
 
 def derive_order_status_fill_evidence(
@@ -556,7 +896,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--mode",
-        choices=("review-only", "preview-no-approval", "no-submit-orchestration-preview", "execute"),
+        choices=(
+            "review-only",
+            "preview-no-approval",
+            "no-submit-orchestration-preview",
+            "full-loop-contract-preview",
+            "execute",
+        ),
         required=True,
     )
     parser.add_argument("--runtime-bin", default="target/debug/b_strategy_canary_s8a_native_effectful_runtime")
@@ -606,6 +952,10 @@ def main(argv: list[str]) -> int:
                 Path(args.order_status_fill_evidence_json)
             )
         return no_submit_orchestration_preview(args)
+    if args.mode == "full-loop-contract-preview":
+        if not args.expected_one_run_plan_sha256:
+            args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
+        return full_loop_contract_preview(args)
     payload = base_payload("BLOCK_S8Z_EXECUTE_MODE_REQUIRES_FULL_ONE_RUN_LOOP_BINDING_EXIT_66")
     payload.update(
         {
