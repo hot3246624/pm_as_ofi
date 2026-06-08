@@ -104,6 +104,13 @@ def parse_float_csv(raw: str | None) -> list[float]:
     return out
 
 
+def fnum(value: Any) -> float:
+    try:
+        return 0.0 if value is None else float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def profile_name_for_late_repair(value: float) -> str:
     text = ("%g" % value).replace("-", "m").replace(".", "p")
     return f"repair{text}"
@@ -127,6 +134,32 @@ def px_bucket(px: float | None) -> str:
     if px < 0.55:
         return "px_0p48_0p55"
     return "px_ge_0p55"
+
+
+def spread_bucket(spread: float | None) -> str:
+    if spread is None or spread < 0:
+        return "spread_unknown"
+    if spread <= 0.01 + 1e-12:
+        return "spread_le_0p01"
+    if spread <= 0.03 + 1e-12:
+        return "spread_0p01_0p03"
+    if spread <= 0.05 + 1e-12:
+        return "spread_0p03_0p05"
+    return "spread_gt_0p05"
+
+
+def px_delta_bucket(delta: float | None) -> str:
+    if delta is None:
+        return "px_delta_unknown"
+    if delta <= -0.05:
+        return "px_delta_lte_m0p05"
+    if delta <= -0.02:
+        return "px_delta_m0p05_m0p02"
+    if delta < 0.02:
+        return "px_delta_m0p02_0p02"
+    if delta < 0.05:
+        return "px_delta_0p02_0p05"
+    return "px_delta_gte_0p05"
 
 
 def offset_bucket(offset_s: float | None) -> str:
@@ -871,6 +904,12 @@ class RunnerConfig:
     salvage_age_ms: int = 30_000
     salvage_min_lot_cost: float = 0.25
     max_salvage_qty: float = 250.0
+    rolling_entry_quality_admission_guard: bool = False
+    rolling_entry_quality_seed_price_max: float = 0.32
+    rolling_entry_quality_pair_cost_max: float = 1.02
+    rolling_entry_quality_max_open_qty_before_seed: float = 1.25
+    rolling_entry_quality_min_seed_side_mid_delta_15s: float = 0.02
+    rolling_entry_quality_min_seed_trade_imbalance_30s: float = -1000.0
     event_lite_summary: bool = False
     pair_source_event_lite_summary: bool = False
     fill_to_balance_diagnostic_event_lite_summary: bool = False
@@ -1048,6 +1087,8 @@ class DPlusRunner:
         self.metrics = Metrics()
         self.book_ticks = 0
         self.trade_ticks = 0
+        self.entry_quality_book_history: list[dict[str, float | int]] = []
+        self.entry_quality_trade_history: list[dict[str, float | int | str]] = []
         self.sell_triggers = 0
         self.blocked: dict[str, int] = {}
         self.next_order_id = 1
@@ -1446,6 +1487,88 @@ class DPlusRunner:
         with self.events_path.open("a") as f:
             f.write(json.dumps(obj, separators=(",", ":"), sort_keys=True) + "\n")
 
+    def prune_entry_quality_history(self, ts_ms: int) -> None:
+        cutoff = ts_ms - 60_000
+        self.entry_quality_book_history = [
+            row for row in self.entry_quality_book_history if int(row.get("ts_ms") or 0) >= cutoff
+        ]
+        self.entry_quality_trade_history = [
+            row for row in self.entry_quality_trade_history if int(row.get("ts_ms") or 0) >= cutoff
+        ]
+
+    def record_entry_quality_book_tick(self, ts_ms: int) -> None:
+        self.entry_quality_book_history.append(
+            {
+                "ts_ms": ts_ms,
+                "yes_bid": float(self.book.get("yes_bid") or 0.0),
+                "yes_ask": float(self.book.get("yes_ask") or 0.0),
+                "no_bid": float(self.book.get("no_bid") or 0.0),
+                "no_ask": float(self.book.get("no_ask") or 0.0),
+            }
+        )
+        self.prune_entry_quality_history(ts_ms)
+
+    def record_entry_quality_trade_tick(self, ts_ms: int, side: str | None, px: float, size: float) -> None:
+        if side in {"YES", "NO"}:
+            self.entry_quality_trade_history.append(
+                {"ts_ms": ts_ms, "side": side, "px": float(px), "size": max(0.0, float(size))}
+            )
+        self.prune_entry_quality_history(ts_ms)
+
+    @staticmethod
+    def entry_quality_side_mid(book: dict[str, float | int], side: str | None) -> float | None:
+        if side == "YES":
+            bid = float(book.get("yes_bid") or 0.0)
+            ask = float(book.get("yes_ask") or 0.0)
+        elif side == "NO":
+            bid = float(book.get("no_bid") or 0.0)
+            ask = float(book.get("no_ask") or 0.0)
+        else:
+            return None
+        if bid <= 0 or ask <= 0:
+            return None
+        return round((bid + ask) / 2.0, 8)
+
+    def entry_quality_snapshot(self, side: str | None, ts_ms: int | None) -> dict[str, Any]:
+        if side not in {"YES", "NO"} or ts_ms is None:
+            return {}
+        self.prune_entry_quality_history(ts_ms)
+        current_mid = self.entry_quality_side_mid(
+            {
+                "yes_bid": float(self.book.get("yes_bid") or 0.0),
+                "yes_ask": float(self.book.get("yes_ask") or 0.0),
+                "no_bid": float(self.book.get("no_bid") or 0.0),
+                "no_ask": float(self.book.get("no_ask") or 0.0),
+            },
+            side,
+        )
+        out: dict[str, Any] = {}
+        for horizon_s in (5, 10, 15, 30):
+            cutoff = ts_ms - horizon_s * 1000
+            candidates = [row for row in self.entry_quality_book_history if int(row.get("ts_ms") or 0) >= cutoff]
+            baseline = candidates[0] if candidates else (self.entry_quality_book_history[0] if self.entry_quality_book_history else None)
+            baseline_mid = self.entry_quality_side_mid(baseline or {}, side)
+            delta = None if current_mid is None or baseline_mid is None else round(current_mid - baseline_mid, 8)
+            out[f"side_mid_delta_{horizon_s}s"] = delta
+            side_trades = [
+                row
+                for row in self.entry_quality_trade_history
+                if int(row.get("ts_ms") or 0) >= cutoff and row.get("side") == side
+            ]
+            opp_trades = [
+                row
+                for row in self.entry_quality_trade_history
+                if int(row.get("ts_ms") or 0) >= cutoff and row.get("side") == opp(side)
+            ]
+            side_qty = round(sum(float(row.get("size") or 0.0) for row in side_trades), 8)
+            opp_qty = round(sum(float(row.get("size") or 0.0) for row in opp_trades), 8)
+            out[f"side_trade_qty_{horizon_s}s"] = side_qty
+            out[f"opp_trade_qty_{horizon_s}s"] = opp_qty
+            out[f"trade_qty_imbalance_{horizon_s}s"] = round(side_qty - opp_qty, 8)
+            out[f"side_trade_count_{horizon_s}s"] = len(side_trades)
+            out[f"opp_trade_count_{horizon_s}s"] = len(opp_trades)
+        return out
+
     def block(
         self,
         reason: str,
@@ -1494,6 +1617,12 @@ class DPlusRunner:
             source_sequence_id=source_sequence_id,
             quote_ts_ms=quote_ts_ms,
             feature_join_candidate_qty=qty,
+            public_trade_px=public_trade_px,
+            yes_bid=self.book.get("yes_bid"),
+            yes_ask=self.book.get("yes_ask"),
+            no_bid=self.book.get("no_bid"),
+            no_ask=self.book.get("no_ask"),
+            entry_quality_snapshot=self.entry_quality_snapshot(side, quote_ts_ms),
         )
         self.record_source_opportunity_marker(
             status="blocked",
@@ -1575,6 +1704,16 @@ class DPlusRunner:
         opp_cost: float | None,
         ledger_proxy_before: float | None,
         ledger_proxy_after: float | None = None,
+        seed_px: float | None = None,
+        public_trade_px: float | None = None,
+        l1_pair_ask: float | None = None,
+        edge: float | None = None,
+        queue_share: float | None = None,
+        yes_bid: float | None = None,
+        yes_ask: float | None = None,
+        no_bid: float | None = None,
+        no_ask: float | None = None,
+        entry_quality_snapshot: dict[str, Any] | None = None,
         quote_intent_id: str | None = None,
         source_order_id: int | None = None,
         source_sequence_id: Any | None = None,
@@ -1664,6 +1803,28 @@ class DPlusRunner:
             pre_seed_deficit_qty = (
                 None if same_qty is None or opp_qty is None else round(max(0.0, opp_qty - same_qty), 8)
             )
+            pre_seed_opp_avg_cost = (
+                None if opp_cost is None or opp_qty is None or opp_qty <= 0 else round(opp_cost / opp_qty, 8)
+            )
+            candidate_projected_pair_cost = (
+                None
+                if row_qty is None or seed_px is None or pre_seed_opp_avg_cost is None
+                else round(seed_px + pre_seed_opp_avg_cost, 8)
+            )
+            side_bid = None
+            side_ask_value = None
+            if side_key == "YES":
+                side_bid = yes_bid
+                side_ask_value = yes_ask
+            elif side_key == "NO":
+                side_bid = no_bid
+                side_ask_value = no_ask
+            side_spread = (
+                None
+                if side_bid is None or side_ask_value is None or side_bid <= 0 or side_ask_value <= 0
+                else round(side_ask_value - side_bid, 8)
+            )
+            eq = entry_quality_snapshot or {}
             source_seed_candidate_row_id = (
                 f"{self.condition_id}:{self.slug}:candidate:{len(self.observable_pre_action_candidate_rows) + 1}"
             )
@@ -1692,10 +1853,52 @@ class DPlusRunner:
                 "pre_seed_opp_qty": round(opp_qty, 8) if opp_qty is not None else None,
                 "pre_seed_same_cost": round(same_cost, 8) if same_cost is not None else None,
                 "pre_seed_opp_cost": round(opp_cost, 8) if opp_cost is not None else None,
+                "pre_seed_opp_avg_cost": pre_seed_opp_avg_cost,
                 "pre_seed_open_qty": pre_seed_open_qty,
                 "pre_seed_open_cost": pre_seed_open_cost,
                 "pre_seed_deficit_qty": pre_seed_deficit_qty,
                 "candidate_qty": round(row_qty, 8) if row_qty is not None else None,
+                "candidate_seed_px": round(seed_px, 8) if seed_px is not None else None,
+                "candidate_seed_px_bucket": px_bucket(seed_px),
+                "candidate_public_trade_px": round(public_trade_px, 8) if public_trade_px is not None else None,
+                "candidate_public_trade_px_bucket": px_bucket(public_trade_px),
+                "candidate_l1_pair_ask": round(l1_pair_ask, 8) if l1_pair_ask is not None else None,
+                "candidate_l1_pair_ask_bucket": ce25_projected_pair_cost_bucket(l1_pair_ask),
+                "candidate_edge": round(edge, 8) if edge is not None else None,
+                "candidate_queue_share": round(queue_share, 8) if queue_share is not None else None,
+                "candidate_yes_bid": round(yes_bid, 8) if yes_bid is not None else None,
+                "candidate_yes_ask": round(yes_ask, 8) if yes_ask is not None else None,
+                "candidate_no_bid": round(no_bid, 8) if no_bid is not None else None,
+                "candidate_no_ask": round(no_ask, 8) if no_ask is not None else None,
+                "candidate_side_bid": round(side_bid, 8) if side_bid is not None else None,
+                "candidate_side_ask": round(side_ask_value, 8) if side_ask_value is not None else None,
+                "candidate_side_spread": side_spread,
+                "candidate_side_spread_bucket": spread_bucket(side_spread),
+                "entry_quality_side_mid_delta_5s": eq.get("side_mid_delta_5s"),
+                "entry_quality_side_mid_delta_5s_bucket": px_delta_bucket(eq.get("side_mid_delta_5s")),
+                "entry_quality_side_mid_delta_15s": eq.get("side_mid_delta_15s"),
+                "entry_quality_side_mid_delta_15s_bucket": px_delta_bucket(eq.get("side_mid_delta_15s")),
+                "entry_quality_side_mid_delta_30s": eq.get("side_mid_delta_30s"),
+                "entry_quality_side_mid_delta_30s_bucket": px_delta_bucket(eq.get("side_mid_delta_30s")),
+                "entry_quality_side_trade_qty_10s": eq.get("side_trade_qty_10s"),
+                "entry_quality_opp_trade_qty_10s": eq.get("opp_trade_qty_10s"),
+                "entry_quality_trade_qty_imbalance_10s": eq.get("trade_qty_imbalance_10s"),
+                "entry_quality_trade_qty_imbalance_10s_bucket": qty_bucket(
+                    "trade_imbalance", eq.get("trade_qty_imbalance_10s")
+                ),
+                "entry_quality_side_trade_qty_30s": eq.get("side_trade_qty_30s"),
+                "entry_quality_opp_trade_qty_30s": eq.get("opp_trade_qty_30s"),
+                "entry_quality_trade_qty_imbalance_30s": eq.get("trade_qty_imbalance_30s"),
+                "entry_quality_trade_qty_imbalance_30s_bucket": qty_bucket(
+                    "trade_imbalance", eq.get("trade_qty_imbalance_30s")
+                ),
+                "candidate_projected_pair_cost_from_pre_seed_opp_avg": candidate_projected_pair_cost,
+                "candidate_projected_pair_cost_bucket": ce25_projected_pair_cost_bucket(
+                    candidate_projected_pair_cost
+                ),
+                "ledger_proxy_before": round(ledger_proxy_before, 8) if ledger_proxy_before is not None else None,
+                "ledger_proxy_after": round(ledger_proxy_after, 8) if ledger_proxy_after is not None else None,
+                "ledger_proxy_after_bucket": ledger_proxy_bucket(ledger_proxy_after),
                 "pre_seed_same_qty_bucket": qty_bucket("same_qty", same_qty),
                 "pre_seed_opp_qty_bucket": qty_bucket("opp_qty", opp_qty),
                 "pre_seed_open_qty_bucket": qty_bucket("open_qty", pre_seed_open_qty),
@@ -1705,6 +1908,9 @@ class DPlusRunner:
                 "side_offset_risk_direction": cross_key,
                 "post_action_outcome_labels_included": False,
                 "realized_pair_cost_used_as_live_criteria": False,
+                "candidate_projected_pair_cost_used_as_live_criteria": False,
+                "ledger_proxy_after_used_as_live_criteria": False,
+                "entry_quality_field_instrumentation_trading_behavior_changed": False,
                 "trading_behavior_changed": False,
             }
             if self.cfg.observable_pre_action_same_window_offline_label_handoff_output:
@@ -2596,6 +2802,9 @@ class DPlusRunner:
             "raw_replay_or_full_store_scan": False,
             "post_action_outcome_labels_included": False,
             "realized_pair_cost_used_as_live_criteria": False,
+            "candidate_projected_pair_cost_used_as_live_criteria": False,
+            "ledger_proxy_after_used_as_live_criteria": False,
+            "entry_quality_field_instrumentation_trading_behavior_changed": False,
             "trading_behavior_changed": False,
             "strategy_evidence": False,
             "private_truth_ready": False,
@@ -2618,6 +2827,17 @@ class DPlusRunner:
             "pre_seed_open_qty_bucket_by_status_reason": {},
             "pre_seed_deficit_qty_bucket_by_status_reason": {},
             "source_risk_direction_by_status_reason": {},
+            "candidate_seed_px_bucket_by_status_reason": {},
+            "candidate_public_trade_px_bucket_by_status_reason": {},
+            "candidate_l1_pair_ask_bucket_by_status_reason": {},
+            "candidate_side_spread_bucket_by_status_reason": {},
+            "entry_quality_side_mid_delta_5s_bucket_by_status_reason": {},
+            "entry_quality_side_mid_delta_15s_bucket_by_status_reason": {},
+            "entry_quality_side_mid_delta_30s_bucket_by_status_reason": {},
+            "entry_quality_trade_qty_imbalance_10s_bucket_by_status_reason": {},
+            "entry_quality_trade_qty_imbalance_30s_bucket_by_status_reason": {},
+            "candidate_projected_pair_cost_bucket_by_status_reason": {},
+            "ledger_proxy_after_bucket_by_status_reason": {},
             "field_contract": self.observable_pre_action_feature_join_field_contract(),
         }
         for row in self.observable_pre_action_candidate_rows:
@@ -2660,6 +2880,61 @@ class DPlusRunner:
                 summary["source_risk_direction_by_status_reason"],
                 status_reason,
                 str(row.get("source_risk_direction") or "unknown"),
+            )
+            add_nested_count(
+                summary["candidate_seed_px_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("candidate_seed_px_bucket") or "none"),
+            )
+            add_nested_count(
+                summary["candidate_public_trade_px_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("candidate_public_trade_px_bucket") or "none"),
+            )
+            add_nested_count(
+                summary["candidate_l1_pair_ask_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("candidate_l1_pair_ask_bucket") or "projected_pair_cost_unknown"),
+            )
+            add_nested_count(
+                summary["candidate_side_spread_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("candidate_side_spread_bucket") or "spread_unknown"),
+            )
+            add_nested_count(
+                summary["entry_quality_side_mid_delta_5s_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("entry_quality_side_mid_delta_5s_bucket") or "px_delta_unknown"),
+            )
+            add_nested_count(
+                summary["entry_quality_side_mid_delta_15s_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("entry_quality_side_mid_delta_15s_bucket") or "px_delta_unknown"),
+            )
+            add_nested_count(
+                summary["entry_quality_side_mid_delta_30s_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("entry_quality_side_mid_delta_30s_bucket") or "px_delta_unknown"),
+            )
+            add_nested_count(
+                summary["entry_quality_trade_qty_imbalance_10s_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("entry_quality_trade_qty_imbalance_10s_bucket") or "trade_imbalance_unknown"),
+            )
+            add_nested_count(
+                summary["entry_quality_trade_qty_imbalance_30s_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("entry_quality_trade_qty_imbalance_30s_bucket") or "trade_imbalance_unknown"),
+            )
+            add_nested_count(
+                summary["candidate_projected_pair_cost_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("candidate_projected_pair_cost_bucket") or "projected_pair_cost_unknown"),
+            )
+            add_nested_count(
+                summary["ledger_proxy_after_bucket_by_status_reason"],
+                status_reason,
+                str(row.get("ledger_proxy_after_bucket") or "ledger_proxy_unknown"),
             )
         return summary
 
@@ -3189,6 +3464,7 @@ class DPlusRunner:
             "no_bid": float(msg.get("no_bid") or 0.0),
             "no_ask": float(msg.get("no_ask") or 0.0),
         }
+        self.record_entry_quality_book_tick(ts_ms)
         self.mark_touches(ts_ms)
         self.cancel_expired(ts_ms)
         self.pair_inventory(ts_ms)
@@ -3204,6 +3480,7 @@ class DPlusRunner:
         offset = self.offset_s(ts_ms)
         trigger_source_sequence_id = source_sequence_id(msg)
         trigger_event_time_ms = event_time_ms(msg, ts_ms)
+        self.record_entry_quality_trade_tick(ts_ms, side, px, size)
 
         def block_seed(reason: str, **kwargs: Any) -> None:
             self.block(
@@ -3367,6 +3644,61 @@ class DPlusRunner:
             )
             self.record_activation_seen(side, ts_ms)
             return
+
+        if self.cfg.rolling_entry_quality_admission_guard:
+            entry_quality = self.entry_quality_snapshot(side, ts_ms)
+            projected_pair_cost = (
+                None
+                if opp_qty <= 0
+                else seed_px + (opp_cost_before / max(opp_qty, 1e-9))
+            )
+            total_open_qty = max(0.0, same_qty) + max(0.0, opp_qty)
+            if opp_qty > 0 and projected_pair_cost is not None and projected_pair_cost > self.cfg.rolling_entry_quality_pair_cost_max + 1e-12:
+                block_seed(
+                    "rolling_entry_quality_projected_pair_cost",
+                    target_qty=target_qty,
+                    imbalance_room=imbalance_room,
+                    opposite_seen_ms=opposite_seen_ms,
+                )
+                self.record_activation_seen(side, ts_ms)
+                return
+            if opp_qty <= DUST:
+                if seed_px > self.cfg.rolling_entry_quality_seed_price_max + 1e-12:
+                    block_seed(
+                        "rolling_entry_quality_seed_price",
+                        target_qty=target_qty,
+                        imbalance_room=imbalance_room,
+                        opposite_seen_ms=opposite_seen_ms,
+                    )
+                    self.record_activation_seen(side, ts_ms)
+                    return
+                if total_open_qty > self.cfg.rolling_entry_quality_max_open_qty_before_seed + 1e-12:
+                    block_seed(
+                        "rolling_entry_quality_open_qty",
+                        target_qty=target_qty,
+                        imbalance_room=imbalance_room,
+                        opposite_seen_ms=opposite_seen_ms,
+                    )
+                    self.record_activation_seen(side, ts_ms)
+                    return
+                if fnum(entry_quality.get("side_mid_delta_15s")) < self.cfg.rolling_entry_quality_min_seed_side_mid_delta_15s:
+                    block_seed(
+                        "rolling_entry_quality_side_mid_delta_15s",
+                        target_qty=target_qty,
+                        imbalance_room=imbalance_room,
+                        opposite_seen_ms=opposite_seen_ms,
+                    )
+                    self.record_activation_seen(side, ts_ms)
+                    return
+                if fnum(entry_quality.get("trade_qty_imbalance_30s")) < self.cfg.rolling_entry_quality_min_seed_trade_imbalance_30s:
+                    block_seed(
+                        "rolling_entry_quality_trade_imbalance_30s",
+                        target_qty=target_qty,
+                        imbalance_room=imbalance_room,
+                        opposite_seen_ms=opposite_seen_ms,
+                    )
+                    self.record_activation_seen(side, ts_ms)
+                    return
 
         room_cost = self.cfg.max_open_cost - self.total_open_cost()
         base_qty = min(self.cfg.max_seed_qty, size * self.cfg.fill_haircut, target_qty - same_qty, room_cost / max(seed_px, 1e-9), imbalance_room)
@@ -3537,6 +3869,16 @@ class DPlusRunner:
             opp_cost=opp_cost_before,
             ledger_proxy_before=ledger_proxy_before,
             ledger_proxy_after=ledger_proxy_after,
+            seed_px=seed_px,
+            public_trade_px=px,
+            l1_pair_ask=l1_pair,
+            edge=self.cfg.edge,
+            queue_share=self.cfg.queue_share,
+            yes_bid=self.book.get("yes_bid"),
+            yes_ask=yes_ask,
+            no_bid=self.book.get("no_bid"),
+            no_ask=no_ask,
+            entry_quality_snapshot=self.entry_quality_snapshot(side, ts_ms),
             quote_intent_id=quote_intent_id,
             source_order_id=order.id,
             source_sequence_id=trigger_source_sequence_id,
@@ -3884,6 +4226,9 @@ def observable_pre_action_feature_join_field_contract() -> dict[str, Any]:
         "raw_replay_or_full_store_scan": False,
         "post_action_outcome_labels_included": False,
         "realized_pair_cost_used_as_live_criteria": False,
+        "candidate_projected_pair_cost_used_as_live_criteria": False,
+        "ledger_proxy_after_used_as_live_criteria": False,
+        "entry_quality_field_instrumentation_trading_behavior_changed": False,
         "trading_behavior_changed": False,
         "strategy_evidence": False,
         "private_truth_ready": False,
@@ -3988,6 +4333,17 @@ def aggregate_observable_pre_action_feature_join_outputs(out: Path) -> dict[str,
         "pre_seed_open_qty_bucket_by_status_reason": {},
         "pre_seed_deficit_qty_bucket_by_status_reason": {},
         "source_risk_direction_by_status_reason": {},
+        "candidate_seed_px_bucket_by_status_reason": {},
+        "candidate_public_trade_px_bucket_by_status_reason": {},
+        "candidate_l1_pair_ask_bucket_by_status_reason": {},
+        "candidate_side_spread_bucket_by_status_reason": {},
+        "entry_quality_side_mid_delta_5s_bucket_by_status_reason": {},
+        "entry_quality_side_mid_delta_15s_bucket_by_status_reason": {},
+        "entry_quality_side_mid_delta_30s_bucket_by_status_reason": {},
+        "entry_quality_trade_qty_imbalance_10s_bucket_by_status_reason": {},
+        "entry_quality_trade_qty_imbalance_30s_bucket_by_status_reason": {},
+        "candidate_projected_pair_cost_bucket_by_status_reason": {},
+        "ledger_proxy_after_bucket_by_status_reason": {},
         "field_contract": observable_pre_action_feature_join_field_contract(),
     }
     source_manifest_paths: list[str] = []
@@ -4052,6 +4408,61 @@ def aggregate_observable_pre_action_feature_join_outputs(out: Path) -> dict[str,
                     source_summary["source_risk_direction_by_status_reason"],
                     status_reason,
                     str(row.get("source_risk_direction") or "unknown"),
+                )
+                add_nested_count(
+                    source_summary["candidate_seed_px_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("candidate_seed_px_bucket") or "none"),
+                )
+                add_nested_count(
+                    source_summary["candidate_public_trade_px_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("candidate_public_trade_px_bucket") or "none"),
+                )
+                add_nested_count(
+                    source_summary["candidate_l1_pair_ask_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("candidate_l1_pair_ask_bucket") or "projected_pair_cost_unknown"),
+                )
+                add_nested_count(
+                    source_summary["candidate_side_spread_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("candidate_side_spread_bucket") or "spread_unknown"),
+                )
+                add_nested_count(
+                    source_summary["entry_quality_side_mid_delta_5s_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("entry_quality_side_mid_delta_5s_bucket") or "px_delta_unknown"),
+                )
+                add_nested_count(
+                    source_summary["entry_quality_side_mid_delta_15s_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("entry_quality_side_mid_delta_15s_bucket") or "px_delta_unknown"),
+                )
+                add_nested_count(
+                    source_summary["entry_quality_side_mid_delta_30s_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("entry_quality_side_mid_delta_30s_bucket") or "px_delta_unknown"),
+                )
+                add_nested_count(
+                    source_summary["entry_quality_trade_qty_imbalance_10s_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("entry_quality_trade_qty_imbalance_10s_bucket") or "trade_imbalance_unknown"),
+                )
+                add_nested_count(
+                    source_summary["entry_quality_trade_qty_imbalance_30s_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("entry_quality_trade_qty_imbalance_30s_bucket") or "trade_imbalance_unknown"),
+                )
+                add_nested_count(
+                    source_summary["candidate_projected_pair_cost_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("candidate_projected_pair_cost_bucket") or "projected_pair_cost_unknown"),
+                )
+                add_nested_count(
+                    source_summary["ledger_proxy_after_bucket_by_status_reason"],
+                    status_reason,
+                    str(row.get("ledger_proxy_after_bucket") or "ledger_proxy_unknown"),
                 )
     source_summary["row_count"] = row_count
     source_summary["slug_count"] = slug_count
@@ -4473,6 +4884,12 @@ async def main() -> None:
     ap.add_argument("--salvage-net-cap", type=float, default=0.95)
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
+    ap.add_argument("--rolling-entry-quality-admission-guard", action="store_true", help="default-off candidate-time admission guard using rolling public book/trade features")
+    ap.add_argument("--rolling-entry-quality-seed-price-max", type=float, default=0.32)
+    ap.add_argument("--rolling-entry-quality-pair-cost-max", type=float, default=1.02)
+    ap.add_argument("--rolling-entry-quality-max-open-qty-before-seed", type=float, default=1.25)
+    ap.add_argument("--rolling-entry-quality-min-seed-side-mid-delta-15s", type=float, default=0.02)
+    ap.add_argument("--rolling-entry-quality-min-seed-trade-imbalance-30s", type=float, default=-1000.0)
     args = ap.parse_args()
 
     if (args.late_target_after_s is None) != (args.late_target_qty is None):
@@ -4525,6 +4942,12 @@ async def main() -> None:
         salvage_net_cap=args.salvage_net_cap,
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
+        rolling_entry_quality_admission_guard=args.rolling_entry_quality_admission_guard,
+        rolling_entry_quality_seed_price_max=args.rolling_entry_quality_seed_price_max,
+        rolling_entry_quality_pair_cost_max=args.rolling_entry_quality_pair_cost_max,
+        rolling_entry_quality_max_open_qty_before_seed=args.rolling_entry_quality_max_open_qty_before_seed,
+        rolling_entry_quality_min_seed_side_mid_delta_15s=args.rolling_entry_quality_min_seed_side_mid_delta_15s,
+        rolling_entry_quality_min_seed_trade_imbalance_30s=args.rolling_entry_quality_min_seed_trade_imbalance_30s,
     )
     if cfg.imbalance_qty_cap <= cfg.dust_qty:
         raise SystemExit(f"--imbalance-qty-cap must exceed dust_qty={cfg.dust_qty}; otherwise every seed is blocked")
