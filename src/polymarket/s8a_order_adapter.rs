@@ -5,11 +5,15 @@
 //! encodes the S8A-specific venue-order unit contract so the future effectful
 //! wrapper does not reuse legacy executor market-buy share semantics.
 
-use crate::polymarket::btc_completion_controller::BtcCompletionControllerReview;
+use crate::polymarket::btc_completion_controller::{
+    review_btc_completion_candidate, BtcCompletionCandidate, BtcCompletionControllerConfig,
+    BtcCompletionControllerReview, BtcCompletionControllerState,
+};
 use crate::polymarket::types::Side;
 
 pub const S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT: bool = false;
 pub const S8A_NATIVE_ORDER_ADAPTER_REVIEW_EVENT: &str = "s8a_native_order_adapter_review";
+pub const S8A_SCOUT_ADMISSION_REVIEW_EVENT: &str = "s8a_scout_admission_review";
 pub const S8A_SESSION_GATE_REVIEW_EVENT: &str = "s8a_session_gate_review";
 pub const S8A_LIMIT_MIN_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES: f64 = 5.0;
@@ -336,6 +340,228 @@ pub fn review_s8a_limit_entry_from_controller_admission(
     })
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aScoutBookSideSnapshot {
+    pub token_id: String,
+    pub best_ask: Option<f64>,
+    pub top5_ask_qty: f64,
+    pub book_age_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aScoutPublicBuyTrade {
+    pub side: Side,
+    pub taker_side: String,
+    pub price: f64,
+    pub size: f64,
+    pub event_ts_ms: u64,
+    pub observed_ts_ms: u64,
+    pub recv_lag_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aScoutAdmissionSnapshot {
+    pub asset: String,
+    pub event_reason: String,
+    pub slug: String,
+    pub condition_id: String,
+    pub yes: S8aScoutBookSideSnapshot,
+    pub no: S8aScoutBookSideSnapshot,
+    pub latest_public_buy_trade: Option<S8aScoutPublicBuyTrade>,
+    pub offset_s: f64,
+    pub time_to_end_s: Option<f64>,
+    pub forbidden_decision_fields_present: bool,
+    pub snapshot_index_used_as_rank: bool,
+    pub source_is_b_owned_direct_public_ws: bool,
+    pub shared_ingress_dependency: bool,
+    pub b_owned_direct_public_ws_connection_count: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aScoutAdmissionBlockReason {
+    NonBtcAsset,
+    MissingConditionId,
+    MissingTokenMapping,
+    MissingPublicBuyTrade,
+    NonBuyPublicTrade,
+    InvalidPublicTradePrice,
+    InvalidPublicTradeSize,
+    InvalidOffset,
+    InvalidBookAsk,
+    InvalidBookAge,
+    TokenMappingMismatch,
+    NonBOwnedDirectPublicWsSource,
+    SharedIngressDependency,
+    TooManyBOwnedDirectPublicWs,
+}
+
+impl S8aScoutAdmissionBlockReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::NonBtcAsset => "BLOCK_NON_BTC_ASSET",
+            Self::MissingConditionId => "BLOCK_MISSING_CONDITION_ID",
+            Self::MissingTokenMapping => "BLOCK_MISSING_TOKEN_MAPPING",
+            Self::MissingPublicBuyTrade => "BLOCK_MISSING_PUBLIC_BUY_TRADE",
+            Self::NonBuyPublicTrade => "BLOCK_NON_BUY_PUBLIC_TRADE",
+            Self::InvalidPublicTradePrice => "BLOCK_INVALID_PUBLIC_TRADE_PRICE",
+            Self::InvalidPublicTradeSize => "BLOCK_INVALID_PUBLIC_TRADE_SIZE",
+            Self::InvalidOffset => "BLOCK_INVALID_OFFSET",
+            Self::InvalidBookAsk => "BLOCK_INVALID_BOOK_ASK",
+            Self::InvalidBookAge => "BLOCK_INVALID_BOOK_AGE",
+            Self::TokenMappingMismatch => "BLOCK_TOKEN_MAPPING_MISMATCH",
+            Self::NonBOwnedDirectPublicWsSource => "BLOCK_NON_B_OWNED_DIRECT_PUBLIC_WS_SOURCE",
+            Self::SharedIngressDependency => "BLOCK_SHARED_INGRESS_DEPENDENCY",
+            Self::TooManyBOwnedDirectPublicWs => "BLOCK_TOO_MANY_B_OWNED_DIRECT_PUBLIC_WS",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aScoutAdmissionReview {
+    pub event: &'static str,
+    pub block_reasons: Vec<S8aScoutAdmissionBlockReason>,
+    pub candidate: Option<BtcCompletionCandidate>,
+    pub controller_review: Option<BtcCompletionControllerReview>,
+    pub adapter_review: Option<S8aNativeOrderAdapterReview>,
+    pub prepared_order: Option<S8aPreparedVenueOrder>,
+    pub scout_source_bound: bool,
+    pub controller_and_adapter_bound: bool,
+    pub effectful_execution_permitted: bool,
+}
+
+pub fn review_s8a_scout_snapshot_for_limit_entry(
+    cfg: &BtcCompletionControllerConfig,
+    state: &BtcCompletionControllerState,
+    snapshot: &S8aScoutAdmissionSnapshot,
+    context: &S8aControllerAdmissionAdapterContext,
+) -> S8aScoutAdmissionReview {
+    let mut block_reasons = Vec::new();
+
+    if snapshot.asset.trim() != "BTC" {
+        block_reasons.push(S8aScoutAdmissionBlockReason::NonBtcAsset);
+    }
+    if snapshot.condition_id.trim().is_empty() {
+        block_reasons.push(S8aScoutAdmissionBlockReason::MissingConditionId);
+    }
+    if snapshot.yes.token_id.trim().is_empty() || snapshot.no.token_id.trim().is_empty() {
+        block_reasons.push(S8aScoutAdmissionBlockReason::MissingTokenMapping);
+    }
+    if snapshot.yes.token_id != context.yes_token_id || snapshot.no.token_id != context.no_token_id
+    {
+        block_reasons.push(S8aScoutAdmissionBlockReason::TokenMappingMismatch);
+    }
+    if !snapshot.source_is_b_owned_direct_public_ws {
+        block_reasons.push(S8aScoutAdmissionBlockReason::NonBOwnedDirectPublicWsSource);
+    }
+    if snapshot.shared_ingress_dependency {
+        block_reasons.push(S8aScoutAdmissionBlockReason::SharedIngressDependency);
+    }
+    if snapshot.b_owned_direct_public_ws_connection_count > 1 {
+        block_reasons.push(S8aScoutAdmissionBlockReason::TooManyBOwnedDirectPublicWs);
+    }
+    if !snapshot.offset_s.is_finite() || snapshot.offset_s < 0.0 {
+        block_reasons.push(S8aScoutAdmissionBlockReason::InvalidOffset);
+    }
+
+    let yes_ask = snapshot.yes.best_ask.unwrap_or(f64::NAN);
+    let no_ask = snapshot.no.best_ask.unwrap_or(f64::NAN);
+    if !yes_ask.is_finite() || yes_ask <= 0.0 || !no_ask.is_finite() || no_ask <= 0.0 {
+        block_reasons.push(S8aScoutAdmissionBlockReason::InvalidBookAsk);
+    }
+    let strict_l1_age_ms = match (snapshot.yes.book_age_ms, snapshot.no.book_age_ms) {
+        (Some(yes_age), Some(no_age)) => Some(yes_age.max(no_age)),
+        _ => {
+            block_reasons.push(S8aScoutAdmissionBlockReason::InvalidBookAge);
+            None
+        }
+    };
+
+    let Some(trade) = snapshot.latest_public_buy_trade.as_ref() else {
+        block_reasons.push(S8aScoutAdmissionBlockReason::MissingPublicBuyTrade);
+        return S8aScoutAdmissionReview {
+            event: S8A_SCOUT_ADMISSION_REVIEW_EVENT,
+            scout_source_bound: false,
+            controller_and_adapter_bound: false,
+            block_reasons,
+            candidate: None,
+            controller_review: None,
+            adapter_review: None,
+            prepared_order: None,
+            effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+        };
+    };
+
+    if trade.taker_side.trim() != "BUY" {
+        block_reasons.push(S8aScoutAdmissionBlockReason::NonBuyPublicTrade);
+    }
+    if !trade.price.is_finite() || trade.price <= 0.0 || trade.price >= 1.0 {
+        block_reasons.push(S8aScoutAdmissionBlockReason::InvalidPublicTradePrice);
+    }
+    if !trade.size.is_finite() || trade.size <= 0.0 {
+        block_reasons.push(S8aScoutAdmissionBlockReason::InvalidPublicTradeSize);
+    }
+
+    let recv_lag_ms = trade
+        .recv_lag_ms
+        .or_else(|| trade.observed_ts_ms.checked_sub(trade.event_ts_ms));
+
+    let candidate = if block_reasons.is_empty() {
+        Some(BtcCompletionCandidate {
+            asset: snapshot.asset.clone(),
+            event_kind: "public_trade".to_string(),
+            public_trade_taker_side: trade.taker_side.clone(),
+            condition_id: snapshot.condition_id.clone(),
+            slug: snapshot.slug.clone(),
+            ts_ms: trade.observed_ts_ms,
+            offset_s: snapshot.offset_s,
+            time_to_end_s: snapshot.time_to_end_s,
+            side: trade.side,
+            public_trade_price: trade.price,
+            l1_pair_ask: yes_ask + no_ask,
+            l1_pair_available_qty: snapshot.yes.top5_ask_qty.min(snapshot.no.top5_ask_qty),
+            buy_available_qty: match trade.side {
+                Side::Yes => snapshot.yes.top5_ask_qty,
+                Side::No => snapshot.no.top5_ask_qty,
+            },
+            strict_l1_age_ms,
+            strict_l2_age_ms: None,
+            public_trade_recv_lag_ms: recv_lag_ms,
+            forbidden_decision_fields_present: snapshot.forbidden_decision_fields_present,
+            snapshot_index_used_as_rank: snapshot.snapshot_index_used_as_rank,
+        })
+    } else {
+        None
+    };
+
+    let controller_review = candidate
+        .as_ref()
+        .map(|candidate| review_btc_completion_candidate(cfg, state, candidate));
+    let adapter_review = controller_review
+        .as_ref()
+        .map(|review| review_s8a_limit_entry_from_controller_admission(review, context));
+    let prepared_order = adapter_review
+        .as_ref()
+        .and_then(|review| review.prepared_order.clone());
+    let controller_and_adapter_bound = controller_review
+        .as_ref()
+        .is_some_and(|review| review.intent.is_some())
+        && adapter_review
+            .as_ref()
+            .is_some_and(|review| review.native_adapter_ready_for_exact_runtime);
+
+    S8aScoutAdmissionReview {
+        event: S8A_SCOUT_ADMISSION_REVIEW_EVENT,
+        scout_source_bound: block_reasons.is_empty(),
+        controller_and_adapter_bound,
+        block_reasons,
+        candidate,
+        controller_review,
+        adapter_review,
+        prepared_order,
+        effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+    }
+}
+
 fn limit_buy_order(
     request: &S8aNativeOrderAdapterRequest,
     block_reasons: &mut Vec<S8aNativeOrderAdapterBlockReason>,
@@ -650,6 +876,43 @@ mod tests {
         }
     }
 
+    fn scout_snapshot(side: Side) -> S8aScoutAdmissionSnapshot {
+        S8aScoutAdmissionSnapshot {
+            asset: "BTC".to_string(),
+            event_reason: "last_trade_price".to_string(),
+            slug: "btc-updown-5m-s8a-fixture".to_string(),
+            condition_id: "0xcondition".to_string(),
+            yes: S8aScoutBookSideSnapshot {
+                token_id: "token-yes".to_string(),
+                best_ask: Some(0.50),
+                top5_ask_qty: 25.0,
+                book_age_ms: Some(10),
+            },
+            no: S8aScoutBookSideSnapshot {
+                token_id: "token-no".to_string(),
+                best_ask: Some(0.51),
+                top5_ask_qty: 25.0,
+                book_age_ms: Some(12),
+            },
+            latest_public_buy_trade: Some(S8aScoutPublicBuyTrade {
+                side,
+                taker_side: "BUY".to_string(),
+                price: 0.49,
+                size: 5.0,
+                event_ts_ms: 1_000,
+                observed_ts_ms: 1_010,
+                recv_lag_ms: Some(10),
+            }),
+            offset_s: 10.0,
+            time_to_end_s: Some(250.0),
+            forbidden_decision_fields_present: false,
+            snapshot_index_used_as_rank: false,
+            source_is_b_owned_direct_public_ws: true,
+            shared_ingress_dependency: false,
+            b_owned_direct_public_ws_connection_count: 1,
+        }
+    }
+
     #[test]
     fn limit_entry_uses_five_share_gtc_and_never_permits_execution_in_adapter() {
         let review = review_s8a_native_order_adapter(&base_request());
@@ -764,6 +1027,84 @@ mod tests {
         assert_eq!(order.amount, S8aVenueAmount::Shares(5.0));
         assert_eq!(order.limit_price, Some(0.435));
         assert!(!order.execution_permitted);
+    }
+
+    #[test]
+    fn trade_enhanced_scout_snapshot_maps_to_controller_and_native_adapter() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+
+        let review = review_s8a_scout_snapshot_for_limit_entry(
+            &cfg,
+            &state,
+            &scout_snapshot(Side::Yes),
+            &adapter_context(),
+        );
+
+        assert!(review.scout_source_bound);
+        assert!(review.controller_and_adapter_bound);
+        assert!(!review.effectful_execution_permitted);
+        assert_eq!(
+            review
+                .candidate
+                .as_ref()
+                .map(|candidate| candidate.l1_pair_ask),
+            Some(1.01)
+        );
+        let order = review.prepared_order.expect("prepared S8A order");
+        assert_eq!(order.token_id, "token-yes");
+        assert_eq!(order.order_type, S8aVenueOrderType::Gtc);
+        assert_eq!(order.amount, S8aVenueAmount::Shares(5.0));
+        assert_eq!(order.limit_price, Some(0.435));
+    }
+
+    #[test]
+    fn scout_snapshot_blocks_shared_ingress_or_multiple_b_ws_before_controller() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let mut snapshot = scout_snapshot(Side::Yes);
+        snapshot.shared_ingress_dependency = true;
+        snapshot.b_owned_direct_public_ws_connection_count = 2;
+
+        let review =
+            review_s8a_scout_snapshot_for_limit_entry(&cfg, &state, &snapshot, &adapter_context());
+
+        assert!(!review.scout_source_bound);
+        assert!(review.controller_review.is_none());
+        assert!(review.prepared_order.is_none());
+        assert!(review
+            .block_reasons
+            .contains(&S8aScoutAdmissionBlockReason::SharedIngressDependency));
+        assert!(review
+            .block_reasons
+            .contains(&S8aScoutAdmissionBlockReason::TooManyBOwnedDirectPublicWs));
+    }
+
+    #[test]
+    fn scout_snapshot_uses_recv_lag_source_guard_and_fails_closed_in_controller() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let mut snapshot = scout_snapshot(Side::No);
+        snapshot
+            .latest_public_buy_trade
+            .as_mut()
+            .expect("trade")
+            .recv_lag_ms = Some(501);
+
+        let review =
+            review_s8a_scout_snapshot_for_limit_entry(&cfg, &state, &snapshot, &adapter_context());
+
+        assert!(review.scout_source_bound);
+        assert!(!review.controller_and_adapter_bound);
+        assert_eq!(
+            review
+                .controller_review
+                .as_ref()
+                .and_then(|controller| controller.block_reason)
+                .map(|reason| reason.as_str()),
+            Some("BLOCK_PUBLIC_TRADE_RECV_LAG_TOO_HIGH")
+        );
+        assert!(review.prepared_order.is_none());
     }
 
     #[test]
