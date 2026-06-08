@@ -17,6 +17,11 @@ pub const S8A_SCOUT_ADMISSION_REVIEW_EVENT: &str = "s8a_scout_admission_review";
 pub const S8A_SESSION_GATE_REVIEW_EVENT: &str = "s8a_session_gate_review";
 pub const S8A_RUNTIME_LOOP_BINDING_REVIEW_EVENT: &str = "s8a_runtime_loop_binding_review";
 pub const S8A_RUNTIME_ORCHESTRATION_PREVIEW_EVENT: &str = "s8a_runtime_orchestration_preview";
+pub const S8A_RUNTIME_WRAPPER_PREFLIGHT_REVIEW_EVENT: &str = "s8a_runtime_wrapper_preflight_review";
+pub const S8A_REVIEWED_HOST: &str = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com";
+pub const S8A_OFFICIAL_CLOB_REST_URL: &str = "https://clob.polymarket.com";
+pub const S8A_NATIVE_RUNTIME_SCOPE: &str =
+    "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME";
 pub const S8A_LIMIT_MIN_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_MARKET_BUY_MIN_NOTIONAL_USDC: f64 = 1.0;
@@ -1288,6 +1293,307 @@ pub fn review_s8a_runtime_orchestration_preview(
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRuntimeWrapperPreflightEvidence {
+    pub reviewed_host: String,
+    pub official_rest_url: String,
+    pub approval_scope: String,
+    pub s8g_packet_sha256: String,
+    pub s8g_result_sha256: String,
+    pub s8e_packet_sha256: String,
+    pub s8e_result_sha256: String,
+    pub local_runtime_source_sha256: String,
+    pub remote_runtime_source_sha256: String,
+    pub local_adapter_source_sha256: String,
+    pub remote_adapter_source_sha256: String,
+    pub prepared_order_fixture_sha256: String,
+    pub fresh_ssh_preflight_performed: bool,
+    pub fresh_ssh_preflight_age_ms: u64,
+    pub max_fresh_ssh_preflight_age_ms: u64,
+    pub preview_without_approval_exit_code: i32,
+    pub no_order_auth_preview_passed: bool,
+    pub exact_order_path_preview_passed: bool,
+    pub exact_order_path_preview_no_submit: bool,
+    pub execute_mode_requires_execute_approved: bool,
+    pub execute_without_execute_approved_exits_nonzero: bool,
+    pub no_secret_or_raw_signature_output: bool,
+    pub no_order_cancel_merge_redeem_performed: bool,
+    pub remote_b_process_table_clean: bool,
+    pub runtime_opens_ws: bool,
+    pub b_owned_direct_public_ws_connection_count: u32,
+    pub shared_ingress_dependency: bool,
+    pub uses_c_artifacts: bool,
+    pub online_tuning_allowed: bool,
+    pub strategy_discovery_allowed: bool,
+    pub candidate_import_allowed: bool,
+    pub funding_live_latest_or_deploy_requested: bool,
+    pub effectful_execution_requested_in_review: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aRuntimeWrapperPreflightBlockReason {
+    OrchestrationPreviewNotReady,
+    ReviewedHostMismatch,
+    OfficialRestUrlMismatch,
+    ApprovalScopeMismatch,
+    InvalidS8gPacketHash,
+    InvalidS8gResultHash,
+    InvalidS8ePacketHash,
+    InvalidS8eResultHash,
+    InvalidRuntimeSourceHash,
+    InvalidAdapterSourceHash,
+    RuntimeSourceHashMismatch,
+    AdapterSourceHashMismatch,
+    InvalidPreparedOrderFixtureHash,
+    FreshSshPreflightMissing,
+    FreshSshPreflightStale,
+    PreviewWithoutApprovalExitNot66,
+    NoOrderAuthPreviewNotPassed,
+    ExactOrderPathPreviewNotPassed,
+    ExactOrderPathPreviewAllowsSubmit,
+    ExecuteModeDoesNotRequireExecuteApproved,
+    ExecuteWithoutExecuteApprovedDidNotFailClosed,
+    SecretOrRawSignatureOutputAllowed,
+    OrderCancelMergeRedeemPerformedInReview,
+    RemoteBProcessTableNotClean,
+    RuntimeOpensWs,
+    TooManyBOwnedDirectPublicWs,
+    SharedIngressDependency,
+    CArtifactsRequested,
+    OnlineTuningAllowed,
+    StrategyDiscoveryAllowed,
+    CandidateImportRequested,
+    FundingLiveLatestOrDeployRequested,
+    EffectfulExecutionRequestedInReview,
+}
+
+impl S8aRuntimeWrapperPreflightBlockReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OrchestrationPreviewNotReady => "BLOCK_ORCHESTRATION_PREVIEW_NOT_READY",
+            Self::ReviewedHostMismatch => "BLOCK_REVIEWED_HOST_MISMATCH",
+            Self::OfficialRestUrlMismatch => "BLOCK_OFFICIAL_REST_URL_MISMATCH",
+            Self::ApprovalScopeMismatch => "BLOCK_APPROVAL_SCOPE_MISMATCH",
+            Self::InvalidS8gPacketHash => "BLOCK_INVALID_S8G_PACKET_HASH",
+            Self::InvalidS8gResultHash => "BLOCK_INVALID_S8G_RESULT_HASH",
+            Self::InvalidS8ePacketHash => "BLOCK_INVALID_S8E_PACKET_HASH",
+            Self::InvalidS8eResultHash => "BLOCK_INVALID_S8E_RESULT_HASH",
+            Self::InvalidRuntimeSourceHash => "BLOCK_INVALID_RUNTIME_SOURCE_HASH",
+            Self::InvalidAdapterSourceHash => "BLOCK_INVALID_ADAPTER_SOURCE_HASH",
+            Self::RuntimeSourceHashMismatch => "BLOCK_RUNTIME_SOURCE_HASH_MISMATCH",
+            Self::AdapterSourceHashMismatch => "BLOCK_ADAPTER_SOURCE_HASH_MISMATCH",
+            Self::InvalidPreparedOrderFixtureHash => "BLOCK_INVALID_PREPARED_ORDER_FIXTURE_HASH",
+            Self::FreshSshPreflightMissing => "BLOCK_FRESH_SSH_PREFLIGHT_MISSING",
+            Self::FreshSshPreflightStale => "BLOCK_FRESH_SSH_PREFLIGHT_STALE",
+            Self::PreviewWithoutApprovalExitNot66 => "BLOCK_PREVIEW_WITHOUT_APPROVAL_EXIT_NOT_66",
+            Self::NoOrderAuthPreviewNotPassed => "BLOCK_NO_ORDER_AUTH_PREVIEW_NOT_PASSED",
+            Self::ExactOrderPathPreviewNotPassed => "BLOCK_EXACT_ORDER_PATH_PREVIEW_NOT_PASSED",
+            Self::ExactOrderPathPreviewAllowsSubmit => {
+                "BLOCK_EXACT_ORDER_PATH_PREVIEW_ALLOWS_SUBMIT"
+            }
+            Self::ExecuteModeDoesNotRequireExecuteApproved => {
+                "BLOCK_EXECUTE_MODE_DOES_NOT_REQUIRE_EXECUTE_APPROVED"
+            }
+            Self::ExecuteWithoutExecuteApprovedDidNotFailClosed => {
+                "BLOCK_EXECUTE_WITHOUT_EXECUTE_APPROVED_DID_NOT_FAIL_CLOSED"
+            }
+            Self::SecretOrRawSignatureOutputAllowed => {
+                "BLOCK_SECRET_OR_RAW_SIGNATURE_OUTPUT_ALLOWED"
+            }
+            Self::OrderCancelMergeRedeemPerformedInReview => {
+                "BLOCK_ORDER_CANCEL_MERGE_REDEEM_PERFORMED_IN_REVIEW"
+            }
+            Self::RemoteBProcessTableNotClean => "BLOCK_REMOTE_B_PROCESS_TABLE_NOT_CLEAN",
+            Self::RuntimeOpensWs => "BLOCK_RUNTIME_OPENS_WS",
+            Self::TooManyBOwnedDirectPublicWs => "BLOCK_TOO_MANY_B_OWNED_DIRECT_PUBLIC_WS",
+            Self::SharedIngressDependency => "BLOCK_SHARED_INGRESS_DEPENDENCY",
+            Self::CArtifactsRequested => "BLOCK_C_ARTIFACTS_REQUESTED",
+            Self::OnlineTuningAllowed => "BLOCK_ONLINE_TUNING_ALLOWED",
+            Self::StrategyDiscoveryAllowed => "BLOCK_STRATEGY_DISCOVERY_ALLOWED",
+            Self::CandidateImportRequested => "BLOCK_CANDIDATE_IMPORT_REQUESTED",
+            Self::FundingLiveLatestOrDeployRequested => {
+                "BLOCK_FUNDING_LIVE_LATEST_OR_DEPLOY_REQUESTED"
+            }
+            Self::EffectfulExecutionRequestedInReview => {
+                "BLOCK_EFFECTFUL_EXECUTION_REQUESTED_IN_REVIEW"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRuntimeWrapperPreflightReview {
+    pub event: &'static str,
+    pub block_reasons: Vec<S8aRuntimeWrapperPreflightBlockReason>,
+    pub wrapper_preflight_ready_for_fresh_exact_approval_request: bool,
+    pub orchestration_preview_ready: bool,
+    pub source_hashes_bound: bool,
+    pub preview_gates_bound: bool,
+    pub remote_preflight_bound: bool,
+    pub forbidden_paths_absent: bool,
+    pub effectful_execution_permitted: bool,
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit())
+}
+
+pub fn review_s8a_runtime_wrapper_preflight(
+    orchestration: &S8aRuntimeOrchestrationPreviewReview,
+    evidence: &S8aRuntimeWrapperPreflightEvidence,
+) -> S8aRuntimeWrapperPreflightReview {
+    let mut block_reasons = Vec::new();
+    if !orchestration.orchestration_ready_for_fresh_exact_approval {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::OrchestrationPreviewNotReady);
+    }
+    if evidence.reviewed_host != S8A_REVIEWED_HOST {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::ReviewedHostMismatch);
+    }
+    if evidence.official_rest_url != S8A_OFFICIAL_CLOB_REST_URL {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::OfficialRestUrlMismatch);
+    }
+    if evidence.approval_scope != S8A_NATIVE_RUNTIME_SCOPE {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::ApprovalScopeMismatch);
+    }
+    if !is_sha256_hex(&evidence.s8g_packet_sha256) {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidS8gPacketHash);
+    }
+    if !is_sha256_hex(&evidence.s8g_result_sha256) {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidS8gResultHash);
+    }
+    if !is_sha256_hex(&evidence.s8e_packet_sha256) {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidS8ePacketHash);
+    }
+    if !is_sha256_hex(&evidence.s8e_result_sha256) {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidS8eResultHash);
+    }
+    if !is_sha256_hex(&evidence.local_runtime_source_sha256)
+        || !is_sha256_hex(&evidence.remote_runtime_source_sha256)
+    {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidRuntimeSourceHash);
+    }
+    if !is_sha256_hex(&evidence.local_adapter_source_sha256)
+        || !is_sha256_hex(&evidence.remote_adapter_source_sha256)
+    {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidAdapterSourceHash);
+    }
+    if evidence.local_runtime_source_sha256 != evidence.remote_runtime_source_sha256 {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::RuntimeSourceHashMismatch);
+    }
+    if evidence.local_adapter_source_sha256 != evidence.remote_adapter_source_sha256 {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::AdapterSourceHashMismatch);
+    }
+    if !is_sha256_hex(&evidence.prepared_order_fixture_sha256) {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::InvalidPreparedOrderFixtureHash);
+    }
+    if !evidence.fresh_ssh_preflight_performed {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::FreshSshPreflightMissing);
+    }
+    if evidence.fresh_ssh_preflight_age_ms > evidence.max_fresh_ssh_preflight_age_ms {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::FreshSshPreflightStale);
+    }
+    if evidence.preview_without_approval_exit_code != 66 {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::PreviewWithoutApprovalExitNot66);
+    }
+    if !evidence.no_order_auth_preview_passed {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::NoOrderAuthPreviewNotPassed);
+    }
+    if !evidence.exact_order_path_preview_passed {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::ExactOrderPathPreviewNotPassed);
+    }
+    if !evidence.exact_order_path_preview_no_submit {
+        block_reasons
+            .push(S8aRuntimeWrapperPreflightBlockReason::ExactOrderPathPreviewAllowsSubmit);
+    }
+    if !evidence.execute_mode_requires_execute_approved {
+        block_reasons
+            .push(S8aRuntimeWrapperPreflightBlockReason::ExecuteModeDoesNotRequireExecuteApproved);
+    }
+    if !evidence.execute_without_execute_approved_exits_nonzero {
+        block_reasons.push(
+            S8aRuntimeWrapperPreflightBlockReason::ExecuteWithoutExecuteApprovedDidNotFailClosed,
+        );
+    }
+    if !evidence.no_secret_or_raw_signature_output {
+        block_reasons
+            .push(S8aRuntimeWrapperPreflightBlockReason::SecretOrRawSignatureOutputAllowed);
+    }
+    if !evidence.no_order_cancel_merge_redeem_performed {
+        block_reasons
+            .push(S8aRuntimeWrapperPreflightBlockReason::OrderCancelMergeRedeemPerformedInReview);
+    }
+    if !evidence.remote_b_process_table_clean {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::RemoteBProcessTableNotClean);
+    }
+    if evidence.runtime_opens_ws {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::RuntimeOpensWs);
+    }
+    if evidence.b_owned_direct_public_ws_connection_count > 1 {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::TooManyBOwnedDirectPublicWs);
+    }
+    if evidence.shared_ingress_dependency {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::SharedIngressDependency);
+    }
+    if evidence.uses_c_artifacts {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::CArtifactsRequested);
+    }
+    if evidence.online_tuning_allowed {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::OnlineTuningAllowed);
+    }
+    if evidence.strategy_discovery_allowed {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::StrategyDiscoveryAllowed);
+    }
+    if evidence.candidate_import_allowed {
+        block_reasons.push(S8aRuntimeWrapperPreflightBlockReason::CandidateImportRequested);
+    }
+    if evidence.funding_live_latest_or_deploy_requested {
+        block_reasons
+            .push(S8aRuntimeWrapperPreflightBlockReason::FundingLiveLatestOrDeployRequested);
+    }
+    if evidence.effectful_execution_requested_in_review {
+        block_reasons
+            .push(S8aRuntimeWrapperPreflightBlockReason::EffectfulExecutionRequestedInReview);
+    }
+
+    let orchestration_preview_ready = orchestration.orchestration_ready_for_fresh_exact_approval;
+    let source_hashes_bound = is_sha256_hex(&evidence.local_runtime_source_sha256)
+        && evidence.local_runtime_source_sha256 == evidence.remote_runtime_source_sha256
+        && is_sha256_hex(&evidence.local_adapter_source_sha256)
+        && evidence.local_adapter_source_sha256 == evidence.remote_adapter_source_sha256;
+    let preview_gates_bound = evidence.preview_without_approval_exit_code == 66
+        && evidence.no_order_auth_preview_passed
+        && evidence.exact_order_path_preview_passed
+        && evidence.exact_order_path_preview_no_submit
+        && evidence.execute_mode_requires_execute_approved
+        && evidence.execute_without_execute_approved_exits_nonzero;
+    let remote_preflight_bound = evidence.fresh_ssh_preflight_performed
+        && evidence.fresh_ssh_preflight_age_ms <= evidence.max_fresh_ssh_preflight_age_ms
+        && evidence.remote_b_process_table_clean
+        && !evidence.runtime_opens_ws
+        && evidence.b_owned_direct_public_ws_connection_count <= 1;
+    let forbidden_paths_absent = evidence.no_secret_or_raw_signature_output
+        && evidence.no_order_cancel_merge_redeem_performed
+        && !evidence.shared_ingress_dependency
+        && !evidence.uses_c_artifacts
+        && !evidence.online_tuning_allowed
+        && !evidence.strategy_discovery_allowed
+        && !evidence.candidate_import_allowed
+        && !evidence.funding_live_latest_or_deploy_requested
+        && !evidence.effectful_execution_requested_in_review;
+
+    S8aRuntimeWrapperPreflightReview {
+        event: S8A_RUNTIME_WRAPPER_PREFLIGHT_REVIEW_EVENT,
+        wrapper_preflight_ready_for_fresh_exact_approval_request: block_reasons.is_empty(),
+        block_reasons,
+        orchestration_preview_ready,
+        source_hashes_bound,
+        preview_gates_bound,
+        remote_preflight_bound,
+        forbidden_paths_absent,
+        effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1451,6 +1757,89 @@ mod tests {
             total_order_submissions: 0,
             cancel_count: 0,
             recovery_tx_count: 0,
+        }
+    }
+
+    fn hex64(ch: char) -> String {
+        std::iter::repeat(ch).take(64).collect()
+    }
+
+    fn clean_s8a_orchestration_review() -> S8aRuntimeOrchestrationPreviewReview {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let steps = vec![
+            S8aRuntimeOrchestrationPreviewStep {
+                snapshot: scout_snapshot_at(Side::Yes, 1_010),
+                observed_fill: Some(S8aFillEvent {
+                    side: Side::Yes,
+                    action: S8aAdapterOrderAction::Buy,
+                    submitted_size_shares: 5.0,
+                    actual_filled_qty_shares: 5.0,
+                    avg_fill_price: 0.435,
+                }),
+                close_round_after_step: false,
+                s7w_reconciliation_passed: false,
+                realized_loss_delta_usdc: 0.0,
+            },
+            S8aRuntimeOrchestrationPreviewStep {
+                snapshot: scout_snapshot_at(Side::No, 7_010),
+                observed_fill: Some(S8aFillEvent {
+                    side: Side::No,
+                    action: S8aAdapterOrderAction::Buy,
+                    submitted_size_shares: 5.0,
+                    actual_filled_qty_shares: 5.0,
+                    avg_fill_price: 0.445,
+                }),
+                close_round_after_step: true,
+                s7w_reconciliation_passed: true,
+                realized_loss_delta_usdc: 0.0,
+            },
+        ];
+        review_s8a_runtime_orchestration_preview(
+            &cfg,
+            &BtcCompletionControllerState::default(),
+            clean_s8a_session_state(),
+            S8aInventory::default(),
+            &steps,
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+        )
+    }
+
+    fn clean_s8a_wrapper_preflight_evidence() -> S8aRuntimeWrapperPreflightEvidence {
+        S8aRuntimeWrapperPreflightEvidence {
+            reviewed_host: S8A_REVIEWED_HOST.to_string(),
+            official_rest_url: S8A_OFFICIAL_CLOB_REST_URL.to_string(),
+            approval_scope: S8A_NATIVE_RUNTIME_SCOPE.to_string(),
+            s8g_packet_sha256: hex64('a'),
+            s8g_result_sha256: hex64('b'),
+            s8e_packet_sha256: hex64('c'),
+            s8e_result_sha256: hex64('d'),
+            local_runtime_source_sha256: hex64('e'),
+            remote_runtime_source_sha256: hex64('e'),
+            local_adapter_source_sha256: hex64('f'),
+            remote_adapter_source_sha256: hex64('f'),
+            prepared_order_fixture_sha256: hex64('1'),
+            fresh_ssh_preflight_performed: true,
+            fresh_ssh_preflight_age_ms: 1_000,
+            max_fresh_ssh_preflight_age_ms: 300_000,
+            preview_without_approval_exit_code: 66,
+            no_order_auth_preview_passed: true,
+            exact_order_path_preview_passed: true,
+            exact_order_path_preview_no_submit: true,
+            execute_mode_requires_execute_approved: true,
+            execute_without_execute_approved_exits_nonzero: true,
+            no_secret_or_raw_signature_output: true,
+            no_order_cancel_merge_redeem_performed: true,
+            remote_b_process_table_clean: true,
+            runtime_opens_ws: false,
+            b_owned_direct_public_ws_connection_count: 1,
+            shared_ingress_dependency: false,
+            uses_c_artifacts: false,
+            online_tuning_allowed: false,
+            strategy_discovery_allowed: false,
+            candidate_import_allowed: false,
+            funding_live_latest_or_deploy_requested: false,
+            effectful_execution_requested_in_review: false,
         }
     }
 
@@ -2135,5 +2524,176 @@ mod tests {
             .contains(&S8aRuntimeOrchestrationPreviewBlockReason::RoundCloseWithResidualExposure));
         assert_eq!(review.final_inventory.yes_qty, 3.0);
         assert_eq!(review.final_inventory.residual_qty(), 3.0);
+    }
+
+    #[test]
+    fn s8h_wrapper_preflight_accepts_clean_review_only_shape() {
+        let orchestration = clean_s8a_orchestration_review();
+        let evidence = clean_s8a_wrapper_preflight_evidence();
+
+        let review = review_s8a_runtime_wrapper_preflight(&orchestration, &evidence);
+
+        assert!(review.wrapper_preflight_ready_for_fresh_exact_approval_request);
+        assert!(review.block_reasons.is_empty());
+        assert!(review.orchestration_preview_ready);
+        assert!(review.source_hashes_bound);
+        assert!(review.preview_gates_bound);
+        assert!(review.remote_preflight_bound);
+        assert!(review.forbidden_paths_absent);
+        assert!(!review.effectful_execution_permitted);
+    }
+
+    #[test]
+    fn s8h_wrapper_preflight_rejects_blocked_orchestration() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let blocked_orchestration = review_s8a_runtime_orchestration_preview(
+            &cfg,
+            &BtcCompletionControllerState::default(),
+            clean_s8a_session_state(),
+            S8aInventory::default(),
+            &[],
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+        );
+
+        let review = review_s8a_runtime_wrapper_preflight(
+            &blocked_orchestration,
+            &clean_s8a_wrapper_preflight_evidence(),
+        );
+
+        assert!(!review.wrapper_preflight_ready_for_fresh_exact_approval_request);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::OrchestrationPreviewNotReady));
+        assert!(!review.orchestration_preview_ready);
+    }
+
+    #[test]
+    fn s8h_wrapper_preflight_rejects_hash_preview_and_remote_drift() {
+        let orchestration = clean_s8a_orchestration_review();
+        let mut evidence = clean_s8a_wrapper_preflight_evidence();
+        evidence.reviewed_host = "ubuntu@example.invalid".to_string();
+        evidence.official_rest_url = "https://example.invalid".to_string();
+        evidence.approval_scope = "WRONG_SCOPE".to_string();
+        evidence.s8g_packet_sha256 = "not-a-hash".to_string();
+        evidence.remote_runtime_source_sha256 = hex64('2');
+        evidence.remote_adapter_source_sha256 = hex64('3');
+        evidence.prepared_order_fixture_sha256 = "short".to_string();
+        evidence.fresh_ssh_preflight_performed = false;
+        evidence.fresh_ssh_preflight_age_ms = 600_001;
+        evidence.preview_without_approval_exit_code = 0;
+        evidence.no_order_auth_preview_passed = false;
+        evidence.exact_order_path_preview_passed = false;
+        evidence.exact_order_path_preview_no_submit = false;
+        evidence.execute_mode_requires_execute_approved = false;
+        evidence.execute_without_execute_approved_exits_nonzero = false;
+        evidence.remote_b_process_table_clean = false;
+        evidence.runtime_opens_ws = true;
+        evidence.b_owned_direct_public_ws_connection_count = 2;
+
+        let review = review_s8a_runtime_wrapper_preflight(&orchestration, &evidence);
+
+        assert!(!review.wrapper_preflight_ready_for_fresh_exact_approval_request);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::ReviewedHostMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::OfficialRestUrlMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::ApprovalScopeMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::InvalidS8gPacketHash));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::RuntimeSourceHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::AdapterSourceHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::InvalidPreparedOrderFixtureHash));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::FreshSshPreflightMissing));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::FreshSshPreflightStale));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::PreviewWithoutApprovalExitNot66));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::NoOrderAuthPreviewNotPassed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::ExactOrderPathPreviewNotPassed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::ExactOrderPathPreviewAllowsSubmit));
+        assert!(review.block_reasons.contains(
+            &S8aRuntimeWrapperPreflightBlockReason::ExecuteModeDoesNotRequireExecuteApproved
+        ));
+        assert!(review.block_reasons.contains(
+            &S8aRuntimeWrapperPreflightBlockReason::ExecuteWithoutExecuteApprovedDidNotFailClosed
+        ));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::RemoteBProcessTableNotClean));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::RuntimeOpensWs));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::TooManyBOwnedDirectPublicWs));
+    }
+
+    #[test]
+    fn s8h_wrapper_preflight_rejects_forbidden_paths_in_review() {
+        let orchestration = clean_s8a_orchestration_review();
+        let mut evidence = clean_s8a_wrapper_preflight_evidence();
+        evidence.no_secret_or_raw_signature_output = false;
+        evidence.no_order_cancel_merge_redeem_performed = false;
+        evidence.shared_ingress_dependency = true;
+        evidence.uses_c_artifacts = true;
+        evidence.online_tuning_allowed = true;
+        evidence.strategy_discovery_allowed = true;
+        evidence.candidate_import_allowed = true;
+        evidence.funding_live_latest_or_deploy_requested = true;
+        evidence.effectful_execution_requested_in_review = true;
+
+        let review = review_s8a_runtime_wrapper_preflight(&orchestration, &evidence);
+
+        assert!(!review.wrapper_preflight_ready_for_fresh_exact_approval_request);
+        assert!(!review.forbidden_paths_absent);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::SecretOrRawSignatureOutputAllowed));
+        assert!(review.block_reasons.contains(
+            &S8aRuntimeWrapperPreflightBlockReason::OrderCancelMergeRedeemPerformedInReview
+        ));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::SharedIngressDependency));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::CArtifactsRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::OnlineTuningAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::StrategyDiscoveryAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::CandidateImportRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::FundingLiveLatestOrDeployRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeWrapperPreflightBlockReason::EffectfulExecutionRequestedInReview));
     }
 }
