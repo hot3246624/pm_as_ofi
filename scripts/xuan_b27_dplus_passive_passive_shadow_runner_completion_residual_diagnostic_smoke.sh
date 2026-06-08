@@ -142,6 +142,32 @@ assert final_salvage_summary["metrics"]["salvage_actions"] == 1
 assert final_salvage_summary["metrics"]["pair_actions"] == 1
 assert final_salvage_summary["event_lite"]["completion_residual_diagnostics"]["residual_qty_by_completion_reason"] == {}
 
+market_min_runner, market_min_summary, _ = run_case(
+    "enabled_market_min_quote_guard",
+    mod.replace(
+        enabled_cfg,
+        final_salvage_on_summary=True,
+        market_order_min_quote_guard=True,
+        market_order_min_quote=1.0,
+    ),
+    side="YES",
+    px=0.30,
+    yes_ask=0.50,
+    no_ask=0.17,
+)
+market_min_diag = market_min_summary["event_lite"]["completion_residual_diagnostics"]
+assert market_min_summary["metrics"]["residual_qty"] == 5.0
+assert market_min_summary["metrics"]["salvage_actions"] == 0
+assert market_min_summary["blocked"]["market_order_min_quote"] == 1
+assert market_min_diag["residual_qty_by_completion_reason"]["no_completion_market_order_quote_lt_min"] == 5.0
+assert market_min_diag["top_completion_residual_blockers"][0]["completion_quote_notional"] == 0.85
+assert market_min_diag["top_completion_residual_blockers"][0]["market_order_min_quote"] == 1.0
+assert any(
+    json.loads(line).get("kind") == "fak_salvage_block"
+    and json.loads(line).get("reason") == "market_order_min_quote_lt_min"
+    for line in market_min_runner.events_path.read_text().splitlines()
+)
+
 late_guard_out = out_dir / "late_pair_ask_pressure_guard"
 late_guard_out.mkdir(parents=True, exist_ok=True)
 late_guard_cfg = mod.RunnerConfig(
@@ -265,6 +291,26 @@ assert "--completion-residual-diagnostic-event-lite-summary requires --event-lit
     invalid.stdout + invalid.stderr
 )
 
+invalid_market_min = subprocess.run(
+    [
+        sys.executable,
+        str(tool_path),
+        "--output-dir",
+        str(out_dir / "invalid_market_order_min_quote"),
+        "--market-order-min-quote",
+        "0",
+    ],
+    cwd=root,
+    text=True,
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    check=False,
+)
+assert invalid_market_min.returncode != 0
+assert "--market-order-min-quote must be positive" in (
+    invalid_market_min.stdout + invalid_market_min.stderr
+)
+
 manifest = {
     "artifact": "xuan_b27_dplus_passive_passive_shadow_runner_completion_residual_diagnostic_smoke",
     "status": "PASS",
@@ -278,10 +324,12 @@ manifest = {
         "missing_ask_residual_classified": True,
         "completion_eligible_residual_classified": True,
         "final_salvage_on_summary_clears_eligible_residual": True,
+        "market_order_min_quote_guard_blocks_sub_min_fak_completion": True,
         "late_pair_ask_pressure_guard_blocks_late_expensive_pair_ask": True,
         "late_low_price_risk_guard_blocks_late_low_price_expensive_pair_ask": True,
         "aggregate_merges_completion_residual_diagnostics": True,
         "cli_requires_event_lite": True,
+        "cli_validates_market_order_min_quote": True,
     },
     "side_effects": {
         "network_used": False,
@@ -299,6 +347,7 @@ manifest = {
         "missing_ask_summary": str(missing_runner.summary_path),
         "eligible_summary": str(eligible_runner.summary_path),
         "final_salvage_summary": str(final_salvage_runner.summary_path),
+        "market_min_quote_guard_summary": str(market_min_runner.summary_path),
         "late_pair_ask_pressure_guard_summary": str(late_guard_runner.summary_path),
         "late_low_price_risk_guard_summary": str(late_low_risk_runner.summary_path),
         "multi_aggregate_report": str(multi_out / "aggregate_report.json"),

@@ -941,6 +941,8 @@ class RunnerConfig:
     salvage_min_lot_cost: float = 0.25
     max_salvage_qty: float = 250.0
     final_salvage_on_summary: bool = False
+    market_order_min_quote_guard: bool = False
+    market_order_min_quote: float = 1.0
     rolling_entry_quality_admission_guard: bool = False
     rolling_entry_quality_seed_price_max: float = 0.32
     rolling_entry_quality_pair_cost_max: float = 1.02
@@ -1141,6 +1143,7 @@ class DPlusRunner:
         self.entry_quality_trade_history: list[dict[str, float | int | str]] = []
         self.sell_triggers = 0
         self.blocked: dict[str, int] = {}
+        self.market_order_min_quote_blocked_keys: set[tuple[int, str, float, float]] = set()
         self.next_order_id = 1
         self.next_lot_id = 1
         self.last_seed_ms = -(10**18)
@@ -2862,6 +2865,8 @@ class DPlusRunner:
             "salvage_age_ms": self.cfg.salvage_age_ms,
             "salvage_min_lot_cost": self.cfg.salvage_min_lot_cost,
             "max_salvage_qty": self.cfg.max_salvage_qty,
+            "market_order_min_quote_guard": self.cfg.market_order_min_quote_guard,
+            "market_order_min_quote": self.cfg.market_order_min_quote,
             "residual_qty_by_completion_status": {},
             "residual_cost_by_completion_status": {},
             "residual_count_by_completion_status": {},
@@ -2885,6 +2890,7 @@ class DPlusRunner:
             comp_ask = side_ask(self.book, comp_side)
             fee = fee_per_share(comp_ask, self.cfg.taker_fee_rate) if comp_ask > 0 else 0.0
             net_pair_cost = lot.px + comp_ask + fee if comp_ask > 0 else None
+            completion_quote_notional = lot.qty * comp_ask if comp_ask > 0 else None
             age_ms = summary_ts_ms - lot.fill_ms
             if comp_ask <= 0:
                 status = "no_completion"
@@ -2901,6 +2907,13 @@ class DPlusRunner:
             elif net_pair_cost is not None and net_pair_cost > self.cfg.salvage_net_cap + 1e-12:
                 status = "no_completion"
                 reason = "no_completion_net_pair_cost_gt_cap"
+            elif (
+                self.cfg.market_order_min_quote_guard
+                and completion_quote_notional is not None
+                and completion_quote_notional < self.cfg.market_order_min_quote - 1e-12
+            ):
+                status = "no_completion"
+                reason = "no_completion_market_order_quote_lt_min"
             else:
                 status = "completion_eligible"
                 reason = "completion_eligible_unpaired"
@@ -2949,6 +2962,10 @@ class DPlusRunner:
                     "residual_cost": round(lot.cost, 6),
                     "held_px": lot.px,
                     "comp_ask": round(comp_ask, 6) if comp_ask > 0 else None,
+                    "completion_quote_notional": round(completion_quote_notional, 6)
+                    if completion_quote_notional is not None
+                    else None,
+                    "market_order_min_quote": self.cfg.market_order_min_quote,
                     "fee_per_share": round(fee, 6) if comp_ask > 0 else None,
                     "net_pair_cost": round(net_pair_cost, 6) if net_pair_cost is not None else None,
                     "net_pair_cost_bucket": pair_cost_bucket(net_pair_cost),
@@ -3594,6 +3611,31 @@ class DPlusRunner:
                 if net_pair > self.cfg.salvage_net_cap + 1e-12:
                     break
                 take = min(lot.qty, self.cfg.max_salvage_qty - paired)
+                quote_notional = take * ask
+                if self.cfg.market_order_min_quote_guard and quote_notional < self.cfg.market_order_min_quote - 1e-12:
+                    block_key = (lot.id, comp_side, round(take, 6), round(ask, 6))
+                    if block_key not in self.market_order_min_quote_blocked_keys:
+                        self.market_order_min_quote_blocked_keys.add(block_key)
+                        self.blocked["market_order_min_quote"] = self.blocked.get("market_order_min_quote", 0) + 1
+                        self.emit(
+                            {
+                                "kind": "fak_salvage_block",
+                                "slug": self.slug,
+                                "condition_id": self.condition_id,
+                                "ts_ms": ts_ms,
+                                "quote_intent_id": lot.quote_intent_id,
+                                "held_side": held_side,
+                                "comp_side": comp_side,
+                                "reason": "market_order_min_quote_lt_min",
+                                "qty": take,
+                                "comp_ask": ask,
+                                "quote_notional": quote_notional,
+                                "market_order_min_quote": self.cfg.market_order_min_quote,
+                                "net_pair_cost": net_pair,
+                                "age_ms": age,
+                            }
+                        )
+                    break
                 paired += take
                 self.metrics.salvage_actions += 1
                 self.metrics.salvage_qty += take
@@ -5136,6 +5178,8 @@ async def main() -> None:
     ap.add_argument("--salvage-age-s", type=float, default=30.0)
     ap.add_argument("--salvage-min-lot-cost", type=float, default=0.25)
     ap.add_argument("--final-salvage-on-summary", action="store_true", help="default-off replay finalization pass: run salvage once before final residual accounting")
+    ap.add_argument("--market-order-min-quote-guard", action="store_true", help="default-off venue-shape guard: block FAK/taker completion notional below the configured quote minimum")
+    ap.add_argument("--market-order-min-quote", type=float, default=1.0)
     ap.add_argument("--rolling-entry-quality-admission-guard", action="store_true", help="default-off candidate-time admission guard using rolling public book/trade features")
     ap.add_argument("--rolling-entry-quality-seed-price-max", type=float, default=0.32)
     ap.add_argument("--rolling-entry-quality-pair-cost-max", type=float, default=1.02)
@@ -5208,6 +5252,8 @@ async def main() -> None:
         salvage_age_ms=int(args.salvage_age_s * 1000),
         salvage_min_lot_cost=args.salvage_min_lot_cost,
         final_salvage_on_summary=args.final_salvage_on_summary,
+        market_order_min_quote_guard=args.market_order_min_quote_guard,
+        market_order_min_quote=args.market_order_min_quote,
         rolling_entry_quality_admission_guard=args.rolling_entry_quality_admission_guard,
         rolling_entry_quality_seed_price_max=args.rolling_entry_quality_seed_price_max,
         rolling_entry_quality_pair_cost_max=args.rolling_entry_quality_pair_cost_max,
@@ -5249,6 +5295,8 @@ async def main() -> None:
         raise SystemExit("--activation-window-s must be positive")
     if cfg.limit_order_min_shares <= cfg.dust_qty:
         raise SystemExit("--limit-order-min-shares must exceed dust_qty")
+    if cfg.market_order_min_quote <= 0:
+        raise SystemExit("--market-order-min-quote must be positive")
     if cfg.late_pair_ask_pressure_after_s < 0:
         raise SystemExit("--late-pair-ask-pressure-after-s must be non-negative")
     if cfg.late_pair_ask_pressure_risk_increasing_after_s is not None and cfg.late_pair_ask_pressure_risk_increasing_after_s < 0:
