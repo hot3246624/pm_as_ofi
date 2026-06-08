@@ -379,6 +379,8 @@ class PipelineConfig:
     opposite_support_lookback_s: float = 0.0
     opposite_support_min_qty: float = 5.0
     opposite_support_pair_cost_cap: float = 0.995
+    per_market_residual_budget_usdc: float = 0.0
+    max_open_cost_usdc: float = 0.0
     bad_pair_cost_target: float = 0.35
     residual_rate_target: float = 0.12
     min_markets_for_review: int = 100
@@ -538,6 +540,7 @@ class MakerShadowPipeline:
         self.active: dict[str, ActiveLot] = {}
         self.quarantined_markets: set[str] = set()
         self.support_history: dict[str, list[OppositeSupportTouch]] = {}
+        self.market_finalized_residual_cost: dict[str, float] = {}
         self.events: list[dict[str, Any]] = []
         self.windows: dict[str, WindowStats] = {}
 
@@ -783,6 +786,49 @@ class MakerShadowPipeline:
             self.stats(window_key_for_row(row, ts_ms)).touch_only += 1
             return
         qty = min(requested_qty, fillable_qty)
+        if self.cfg.max_open_cost_usdc > 0.0:
+            cost_capped_qty = self.cfg.max_open_cost_usdc / bid_px
+            qty = min(qty, cost_capped_qty)
+            if qty < self.cfg.min_shadow_qty:
+                self.emit_base(
+                    row,
+                    ts_ms,
+                    "open_rejected_max_open_cost_below_minimum",
+                    decision,
+                    side,
+                    bid_px,
+                    {
+                        "touch_reason": touch_reason,
+                        "visible_depth_qty": visible_depth,
+                        "requested_qty": requested_qty,
+                        "fillable_qty_proxy": fillable_qty,
+                        "max_open_cost_usdc": self.cfg.max_open_cost_usdc,
+                        "limit_order_min_shares": self.cfg.min_shadow_qty,
+                    },
+                )
+                return
+        projected_open_cost = qty * bid_px
+        if self.cfg.per_market_residual_budget_usdc > 0.0:
+            prior_residual_cost = self.market_finalized_residual_cost.get(infer_slug(row), 0.0)
+            if prior_residual_cost + projected_open_cost > self.cfg.per_market_residual_budget_usdc + 1e-12:
+                self.emit_base(
+                    row,
+                    ts_ms,
+                    "open_rejected_per_market_residual_budget",
+                    decision,
+                    side,
+                    bid_px,
+                    {
+                        "touch_reason": touch_reason,
+                        "visible_depth_qty": visible_depth,
+                        "requested_qty": requested_qty,
+                        "fillable_qty_proxy": fillable_qty,
+                        "projected_open_cost": projected_open_cost,
+                        "prior_market_residual_cost": prior_residual_cost,
+                        "per_market_residual_budget_usdc": self.cfg.per_market_residual_budget_usdc,
+                    },
+                )
+                return
         condition_id = str(row.get("condition_id") or row.get("conditionId") or "")
         window_key = window_key_for_row(row, ts_ms)
         self.active[infer_slug(row)] = ActiveLot(
@@ -932,7 +978,11 @@ class MakerShadowPipeline:
     def finalize_residual(self, lot: ActiveLot, *, reason: str) -> None:
         stats = self.stats(lot.window_key)
         stats.residual_qty += lot.qty
-        stats.residual_cost += lot.qty * lot.first_px
+        residual_cost = lot.qty * lot.first_px
+        stats.residual_cost += residual_cost
+        self.market_finalized_residual_cost[lot.slug] = (
+            self.market_finalized_residual_cost.get(lot.slug, 0.0) + residual_cost
+        )
         if reason == "hard_timeout":
             stats.residual_timeouts += 1
         self.emit(
@@ -944,7 +994,7 @@ class MakerShadowPipeline:
                 "window_key": lot.window_key,
                 "first_side": lot.side,
                 "residual_qty": lot.qty,
-                "residual_cost": lot.qty * lot.first_px,
+                "residual_cost": residual_cost,
                 "reason": reason,
                 "risk_flag": "up_first_down_residual" if lot.side == "YES" else "",
                 "maker_truth": "public_queue_proxy_only",
@@ -1120,6 +1170,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--opposite-support-lookback-s", type=float, default=PipelineConfig.opposite_support_lookback_s)
     p.add_argument("--opposite-support-min-qty", type=float, default=PipelineConfig.opposite_support_min_qty)
     p.add_argument("--opposite-support-pair-cost-cap", type=float, default=PipelineConfig.opposite_support_pair_cost_cap)
+    p.add_argument("--per-market-residual-budget-usdc", type=float, default=PipelineConfig.per_market_residual_budget_usdc)
+    p.add_argument("--max-open-cost-usdc", type=float, default=PipelineConfig.max_open_cost_usdc)
     p.add_argument("--bad-pair-cost-target", type=float, default=PipelineConfig.bad_pair_cost_target)
     p.add_argument("--residual-rate-target", type=float, default=PipelineConfig.residual_rate_target)
     p.add_argument("--min-markets-for-review", type=int, default=PipelineConfig.min_markets_for_review)
@@ -1147,6 +1199,8 @@ def main() -> int:
         opposite_support_lookback_s=args.opposite_support_lookback_s,
         opposite_support_min_qty=args.opposite_support_min_qty,
         opposite_support_pair_cost_cap=args.opposite_support_pair_cost_cap,
+        per_market_residual_budget_usdc=args.per_market_residual_budget_usdc,
+        max_open_cost_usdc=args.max_open_cost_usdc,
         bad_pair_cost_target=args.bad_pair_cost_target,
         residual_rate_target=args.residual_rate_target,
         min_markets_for_review=args.min_markets_for_review,
