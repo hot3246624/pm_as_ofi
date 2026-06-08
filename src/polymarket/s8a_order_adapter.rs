@@ -16,6 +16,7 @@ pub const S8A_NATIVE_ORDER_ADAPTER_REVIEW_EVENT: &str = "s8a_native_order_adapte
 pub const S8A_SCOUT_ADMISSION_REVIEW_EVENT: &str = "s8a_scout_admission_review";
 pub const S8A_SESSION_GATE_REVIEW_EVENT: &str = "s8a_session_gate_review";
 pub const S8A_RUNTIME_LOOP_BINDING_REVIEW_EVENT: &str = "s8a_runtime_loop_binding_review";
+pub const S8A_RUNTIME_ORCHESTRATION_PREVIEW_EVENT: &str = "s8a_runtime_orchestration_preview";
 pub const S8A_LIMIT_MIN_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_MARKET_BUY_MIN_NOTIONAL_USDC: f64 = 1.0;
@@ -1061,6 +1062,232 @@ pub fn review_s8a_runtime_loop_binding(
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRuntimeOrchestrationPreviewStep {
+    pub snapshot: S8aScoutAdmissionSnapshot,
+    pub observed_fill: Option<S8aFillEvent>,
+    pub close_round_after_step: bool,
+    pub s7w_reconciliation_passed: bool,
+    pub realized_loss_delta_usdc: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aRuntimeOrchestrationPreviewBlockReason {
+    EmptyStepSet,
+    ActiveMarketConditionMismatch,
+    LoopBindingBlocked,
+    MissingObservedFillForAdmittedStep,
+    InventoryUpdateBlocked,
+    InvalidRealizedLossDelta,
+    RoundCloseWithoutS7wReconciliation,
+    RoundCloseWithResidualExposure,
+    SessionLossCapExceeded,
+    GrossQuoteSpendCapExceeded,
+    TotalOrderCapExceeded,
+}
+
+impl S8aRuntimeOrchestrationPreviewBlockReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::EmptyStepSet => "BLOCK_EMPTY_STEP_SET",
+            Self::ActiveMarketConditionMismatch => "BLOCK_ACTIVE_MARKET_CONDITION_MISMATCH",
+            Self::LoopBindingBlocked => "BLOCK_LOOP_BINDING_BLOCKED",
+            Self::MissingObservedFillForAdmittedStep => {
+                "BLOCK_MISSING_OBSERVED_FILL_FOR_ADMITTED_STEP"
+            }
+            Self::InventoryUpdateBlocked => "BLOCK_INVENTORY_UPDATE_BLOCKED",
+            Self::InvalidRealizedLossDelta => "BLOCK_INVALID_REALIZED_LOSS_DELTA",
+            Self::RoundCloseWithoutS7wReconciliation => {
+                "BLOCK_ROUND_CLOSE_WITHOUT_S7W_RECONCILIATION"
+            }
+            Self::RoundCloseWithResidualExposure => "BLOCK_ROUND_CLOSE_WITH_RESIDUAL_EXPOSURE",
+            Self::SessionLossCapExceeded => "BLOCK_SESSION_LOSS_CAP_EXCEEDED",
+            Self::GrossQuoteSpendCapExceeded => "BLOCK_GROSS_QUOTE_SPEND_CAP_EXCEEDED",
+            Self::TotalOrderCapExceeded => "BLOCK_TOTAL_ORDER_CAP_EXCEEDED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRuntimeOrchestrationPreviewReview {
+    pub event: &'static str,
+    pub block_reasons: Vec<S8aRuntimeOrchestrationPreviewBlockReason>,
+    pub step_reviews: Vec<S8aRuntimeLoopBindingReview>,
+    pub final_inventory: S8aInventory,
+    pub final_controller_state: BtcCompletionControllerState,
+    pub final_session_state: S8aSessionState,
+    pub active_condition_id: Option<String>,
+    pub prepared_order_count: u32,
+    pub filled_order_count: u32,
+    pub closed_round_count: u32,
+    pub orchestration_ready_for_fresh_exact_approval: bool,
+    pub effectful_execution_permitted: bool,
+}
+
+pub fn review_s8a_runtime_orchestration_preview(
+    cfg: &BtcCompletionControllerConfig,
+    initial_controller_state: &BtcCompletionControllerState,
+    initial_session_state: S8aSessionState,
+    initial_inventory: S8aInventory,
+    steps: &[S8aRuntimeOrchestrationPreviewStep],
+    context: &S8aControllerAdmissionAdapterContext,
+    evidence: &S8aRuntimeLoopBindingEvidence,
+) -> S8aRuntimeOrchestrationPreviewReview {
+    let mut block_reasons = Vec::new();
+    if steps.is_empty() {
+        block_reasons.push(S8aRuntimeOrchestrationPreviewBlockReason::EmptyStepSet);
+    }
+
+    let mut step_reviews = Vec::new();
+    let mut controller_state = initial_controller_state.clone();
+    let mut session_state = initial_session_state;
+    let mut inventory = initial_inventory;
+    let mut active_condition_id: Option<String> = None;
+    let mut prepared_order_count = 0_u32;
+    let mut filled_order_count = 0_u32;
+    let mut closed_round_count = 0_u32;
+
+    for step in steps {
+        if let Some(active_condition) = active_condition_id.as_ref() {
+            if step.snapshot.condition_id != *active_condition {
+                block_reasons
+                    .push(S8aRuntimeOrchestrationPreviewBlockReason::ActiveMarketConditionMismatch);
+                break;
+            }
+        }
+
+        let mut session_for_step = session_state;
+        if active_condition_id.is_some() {
+            session_for_step.active_market_open = false;
+        }
+        let loop_review = review_s8a_runtime_loop_binding(
+            cfg,
+            &controller_state,
+            &session_for_step,
+            inventory,
+            &step.snapshot,
+            context,
+            evidence,
+            step.observed_fill,
+        );
+        if !loop_review.loop_ready_for_fresh_exact_approval {
+            block_reasons.push(S8aRuntimeOrchestrationPreviewBlockReason::LoopBindingBlocked);
+            step_reviews.push(loop_review);
+            break;
+        }
+        if loop_review.prepared_order.is_some() {
+            prepared_order_count += 1;
+        }
+        let Some(fill) = step.observed_fill else {
+            block_reasons.push(
+                S8aRuntimeOrchestrationPreviewBlockReason::MissingObservedFillForAdmittedStep,
+            );
+            step_reviews.push(loop_review);
+            break;
+        };
+        let next_inventory = match apply_s8a_fill_to_inventory(inventory, fill) {
+            Ok(next) => next,
+            Err(_) => {
+                block_reasons
+                    .push(S8aRuntimeOrchestrationPreviewBlockReason::InventoryUpdateBlocked);
+                step_reviews.push(loop_review);
+                break;
+            }
+        };
+
+        filled_order_count += 1;
+        if fill.action == S8aAdapterOrderAction::Buy {
+            session_state.cumulative_gross_quote_spend_usdc +=
+                fill.actual_filled_qty_shares * fill.avg_fill_price;
+        }
+        session_state.total_order_submissions += 1;
+        session_state.active_round_risk_at_work_usdc = next_inventory.residual_qty();
+        session_state.active_market_open = true;
+        active_condition_id = Some(step.snapshot.condition_id.clone());
+
+        let mut condition_state = controller_state.condition_state(&step.snapshot.condition_id);
+        condition_state.yes_qty = next_inventory.yes_qty;
+        condition_state.no_qty = next_inventory.no_qty;
+        condition_state.last_accept_ts_ms = loop_review
+            .scout_admission_review
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.ts_ms);
+        controller_state.set_condition_state(step.snapshot.condition_id.clone(), condition_state);
+        inventory = next_inventory;
+
+        if !step.realized_loss_delta_usdc.is_finite() || step.realized_loss_delta_usdc < 0.0 {
+            block_reasons.push(S8aRuntimeOrchestrationPreviewBlockReason::InvalidRealizedLossDelta);
+            step_reviews.push(loop_review);
+            break;
+        }
+
+        if step.close_round_after_step {
+            if !step.s7w_reconciliation_passed {
+                block_reasons.push(
+                    S8aRuntimeOrchestrationPreviewBlockReason::RoundCloseWithoutS7wReconciliation,
+                );
+            }
+            if inventory.residual_qty() > 1e-9 {
+                block_reasons.push(
+                    S8aRuntimeOrchestrationPreviewBlockReason::RoundCloseWithResidualExposure,
+                );
+            }
+            if block_reasons.is_empty() {
+                session_state.completed_rounds += 1;
+                session_state.realized_session_loss_usdc += step.realized_loss_delta_usdc;
+                session_state.active_market_open = false;
+                session_state.active_round_risk_at_work_usdc = 0.0;
+                active_condition_id = None;
+                inventory = S8aInventory::default();
+                controller_state.set_condition_state(
+                    step.snapshot.condition_id.clone(),
+                    crate::polymarket::btc_completion_controller::BtcCompletionConditionState {
+                        yes_qty: 0.0,
+                        no_qty: 0.0,
+                        last_accept_ts_ms: condition_state.last_accept_ts_ms,
+                    },
+                );
+                closed_round_count += 1;
+            }
+        }
+
+        if session_state.realized_session_loss_usdc > S8A_SESSION_HARD_LOSS_CAP_USDC + 1e-9 {
+            block_reasons.push(S8aRuntimeOrchestrationPreviewBlockReason::SessionLossCapExceeded);
+        }
+        if session_state.cumulative_gross_quote_spend_usdc > 18.0 + 1e-9 {
+            block_reasons
+                .push(S8aRuntimeOrchestrationPreviewBlockReason::GrossQuoteSpendCapExceeded);
+        }
+        if session_state.total_order_submissions > 9 {
+            block_reasons.push(S8aRuntimeOrchestrationPreviewBlockReason::TotalOrderCapExceeded);
+        }
+
+        step_reviews.push(loop_review);
+        if !block_reasons.is_empty() {
+            break;
+        }
+    }
+
+    let orchestration_ready_for_fresh_exact_approval =
+        block_reasons.is_empty() && prepared_order_count > 0;
+
+    S8aRuntimeOrchestrationPreviewReview {
+        event: S8A_RUNTIME_ORCHESTRATION_PREVIEW_EVENT,
+        block_reasons,
+        step_reviews,
+        final_inventory: inventory,
+        final_controller_state: controller_state,
+        final_session_state: session_state,
+        active_condition_id,
+        prepared_order_count,
+        filled_order_count,
+        closed_round_count,
+        orchestration_ready_for_fresh_exact_approval,
+        effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1167,6 +1394,21 @@ mod tests {
             shared_ingress_dependency: false,
             b_owned_direct_public_ws_connection_count: 1,
         }
+    }
+
+    fn scout_snapshot_at(side: Side, observed_ts_ms: u64) -> S8aScoutAdmissionSnapshot {
+        let mut snapshot = scout_snapshot(side);
+        snapshot
+            .latest_public_buy_trade
+            .as_mut()
+            .expect("trade")
+            .event_ts_ms = observed_ts_ms.saturating_sub(10);
+        snapshot
+            .latest_public_buy_trade
+            .as_mut()
+            .expect("trade")
+            .observed_ts_ms = observed_ts_ms;
+        snapshot
     }
 
     fn clean_s8a_loop_binding_evidence() -> S8aRuntimeLoopBindingEvidence {
@@ -1747,5 +1989,151 @@ mod tests {
         assert!(review
             .block_reasons
             .contains(&S8aRuntimeLoopBindingBlockReason::InventoryUpdateBlocked));
+    }
+
+    #[test]
+    fn s8g_orchestration_preview_allows_natural_same_condition_pairing_and_close() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let steps = vec![
+            S8aRuntimeOrchestrationPreviewStep {
+                snapshot: scout_snapshot_at(Side::Yes, 1_010),
+                observed_fill: Some(S8aFillEvent {
+                    side: Side::Yes,
+                    action: S8aAdapterOrderAction::Buy,
+                    submitted_size_shares: 5.0,
+                    actual_filled_qty_shares: 5.0,
+                    avg_fill_price: 0.435,
+                }),
+                close_round_after_step: false,
+                s7w_reconciliation_passed: false,
+                realized_loss_delta_usdc: 0.0,
+            },
+            S8aRuntimeOrchestrationPreviewStep {
+                snapshot: scout_snapshot_at(Side::No, 7_010),
+                observed_fill: Some(S8aFillEvent {
+                    side: Side::No,
+                    action: S8aAdapterOrderAction::Buy,
+                    submitted_size_shares: 5.0,
+                    actual_filled_qty_shares: 5.0,
+                    avg_fill_price: 0.445,
+                }),
+                close_round_after_step: true,
+                s7w_reconciliation_passed: true,
+                realized_loss_delta_usdc: 0.0,
+            },
+        ];
+
+        let review = review_s8a_runtime_orchestration_preview(
+            &cfg,
+            &BtcCompletionControllerState::default(),
+            clean_s8a_session_state(),
+            S8aInventory::default(),
+            &steps,
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+        );
+
+        assert!(review.orchestration_ready_for_fresh_exact_approval);
+        assert!(review.block_reasons.is_empty());
+        assert_eq!(review.prepared_order_count, 2);
+        assert_eq!(review.filled_order_count, 2);
+        assert_eq!(review.closed_round_count, 1);
+        assert_eq!(review.final_inventory, S8aInventory::default());
+        assert_eq!(review.final_session_state.completed_rounds, 1);
+        assert!(!review.final_session_state.active_market_open);
+        assert_eq!(review.active_condition_id, None);
+        assert!(!review.effectful_execution_permitted);
+    }
+
+    #[test]
+    fn s8g_orchestration_preview_blocks_new_condition_while_active_market_open() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let mut second = scout_snapshot_at(Side::No, 7_010);
+        second.condition_id = "0xothercondition".to_string();
+        let steps = vec![
+            S8aRuntimeOrchestrationPreviewStep {
+                snapshot: scout_snapshot_at(Side::Yes, 1_010),
+                observed_fill: Some(S8aFillEvent {
+                    side: Side::Yes,
+                    action: S8aAdapterOrderAction::Buy,
+                    submitted_size_shares: 5.0,
+                    actual_filled_qty_shares: 5.0,
+                    avg_fill_price: 0.435,
+                }),
+                close_round_after_step: false,
+                s7w_reconciliation_passed: false,
+                realized_loss_delta_usdc: 0.0,
+            },
+            S8aRuntimeOrchestrationPreviewStep {
+                snapshot: second,
+                observed_fill: Some(S8aFillEvent {
+                    side: Side::No,
+                    action: S8aAdapterOrderAction::Buy,
+                    submitted_size_shares: 5.0,
+                    actual_filled_qty_shares: 5.0,
+                    avg_fill_price: 0.445,
+                }),
+                close_round_after_step: true,
+                s7w_reconciliation_passed: true,
+                realized_loss_delta_usdc: 0.0,
+            },
+        ];
+
+        let review = review_s8a_runtime_orchestration_preview(
+            &cfg,
+            &BtcCompletionControllerState::default(),
+            clean_s8a_session_state(),
+            S8aInventory::default(),
+            &steps,
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+        );
+
+        assert!(!review.orchestration_ready_for_fresh_exact_approval);
+        assert_eq!(
+            review.block_reasons,
+            vec![S8aRuntimeOrchestrationPreviewBlockReason::ActiveMarketConditionMismatch]
+        );
+        assert_eq!(review.prepared_order_count, 1);
+        assert_eq!(review.filled_order_count, 1);
+        assert_eq!(review.active_condition_id, Some("0xcondition".to_string()));
+    }
+
+    #[test]
+    fn s8g_orchestration_preview_requires_s7w_and_zero_residual_to_close_round() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let steps = vec![S8aRuntimeOrchestrationPreviewStep {
+            snapshot: scout_snapshot_at(Side::Yes, 1_010),
+            observed_fill: Some(S8aFillEvent {
+                side: Side::Yes,
+                action: S8aAdapterOrderAction::Buy,
+                submitted_size_shares: 5.0,
+                actual_filled_qty_shares: 3.0,
+                avg_fill_price: 0.435,
+            }),
+            close_round_after_step: true,
+            s7w_reconciliation_passed: false,
+            realized_loss_delta_usdc: 0.0,
+        }];
+
+        let review = review_s8a_runtime_orchestration_preview(
+            &cfg,
+            &BtcCompletionControllerState::default(),
+            clean_s8a_session_state(),
+            S8aInventory::default(),
+            &steps,
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+        );
+
+        assert!(!review.orchestration_ready_for_fresh_exact_approval);
+        assert!(review.block_reasons.contains(
+            &S8aRuntimeOrchestrationPreviewBlockReason::RoundCloseWithoutS7wReconciliation
+        ));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeOrchestrationPreviewBlockReason::RoundCloseWithResidualExposure));
+        assert_eq!(review.final_inventory.yes_qty, 3.0);
+        assert_eq!(review.final_inventory.residual_qty(), 3.0);
     }
 }
