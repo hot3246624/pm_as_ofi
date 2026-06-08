@@ -39,6 +39,13 @@ Outputs:
 - `rolling_24h_summary.csv`
 - `decision_register.json`
 
+Input discovery:
+
+- `scripts/inventory_nagi_ce25_b27bc_maker_shadow_inputs.py`
+- Scans bounded local CSV samples.
+- Reports whether files are pipeline-compatible and whether sampled rows contain
+  CE25-gated, public-touch, >=5-share maker-shadow opportunities.
+
 ## Gate Semantics
 
 CE25 coverage gates:
