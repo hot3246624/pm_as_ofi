@@ -371,6 +371,10 @@ class PipelineConfig:
     pair_cost_cap: float = 0.995
     residual_discount_s: float = 30.0
     hard_timeout_s: float = 180.0
+    suppress_yes_first_open: bool = False
+    quarantine_after_residual_discount: bool = False
+    allowed_coverage_gates: tuple[str, ...] = ()
+    allowed_open_sides: tuple[str, ...] = ()
     bad_pair_cost_target: float = 0.35
     residual_rate_target: float = 0.12
     min_markets_for_review: int = 100
@@ -519,6 +523,7 @@ class MakerShadowPipeline:
     def __init__(self, cfg: PipelineConfig):
         self.cfg = cfg
         self.active: dict[str, ActiveLot] = {}
+        self.quarantined_markets: set[str] = set()
         self.events: list[dict[str, Any]] = []
         self.windows: dict[str, WindowStats] = {}
 
@@ -565,6 +570,31 @@ class MakerShadowPipeline:
         if had_active_lot:
             self.emit_base(row, ts_ms, "open_skipped_completion_row", decision, side, bid_px, {})
             return
+        if slug in self.quarantined_markets:
+            self.emit_base(row, ts_ms, "open_rejected_residual_quarantine", decision, side, bid_px, {})
+            return
+        if self.cfg.allowed_coverage_gates and decision.gate_id not in self.cfg.allowed_coverage_gates:
+            self.emit_base(
+                row,
+                ts_ms,
+                "open_rejected_coverage_profile_filter",
+                decision,
+                side,
+                bid_px,
+                {"allowed_coverage_gates": list(self.cfg.allowed_coverage_gates)},
+            )
+            return
+        if self.cfg.allowed_open_sides and side not in self.cfg.allowed_open_sides:
+            self.emit_base(
+                row,
+                ts_ms,
+                "open_rejected_side_profile_filter",
+                decision,
+                side,
+                bid_px,
+                {"allowed_open_sides": list(self.cfg.allowed_open_sides)},
+            )
+            return
         self.try_open(row, ts_ms, decision, side, bid_px)
 
     def l2_quality_ok(self, row: dict[str, Any]) -> tuple[bool, str]:
@@ -585,6 +615,17 @@ class MakerShadowPipeline:
         bid_px: float | None,
     ) -> None:
         if side is None or bid_px is None or bid_px <= 0:
+            return
+        if self.cfg.suppress_yes_first_open and side == "YES":
+            self.emit_base(
+                row,
+                ts_ms,
+                "open_rejected_yes_first_suppressor",
+                decision,
+                side,
+                bid_px,
+                {"reason": "suppress_yes_first_open"},
+            )
             return
         quality_ok, quality_reason = self.l2_quality_ok(row)
         if not quality_ok:
@@ -759,6 +800,8 @@ class MakerShadowPipeline:
             self.active.pop(lot.slug, None)
         elif age_s >= self.cfg.residual_discount_s:
             self.stats(lot.window_key).residual_discount_events += 1
+            if self.cfg.quarantine_after_residual_discount:
+                self.quarantined_markets.add(lot.slug)
             self.emit(
                 {
                     "event": "residual_discount",
@@ -958,6 +1001,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--pair-cost-cap", type=float, default=PipelineConfig.pair_cost_cap)
     p.add_argument("--residual-discount-s", type=float, default=PipelineConfig.residual_discount_s)
     p.add_argument("--hard-timeout-s", type=float, default=PipelineConfig.hard_timeout_s)
+    p.add_argument("--suppress-yes-first-open", action="store_true")
+    p.add_argument("--quarantine-after-residual-discount", action="store_true")
+    p.add_argument("--allowed-coverage-gate", action="append", default=[])
+    p.add_argument("--allowed-open-side", action="append", default=[])
     p.add_argument("--bad-pair-cost-target", type=float, default=PipelineConfig.bad_pair_cost_target)
     p.add_argument("--residual-rate-target", type=float, default=PipelineConfig.residual_rate_target)
     p.add_argument("--min-markets-for-review", type=int, default=PipelineConfig.min_markets_for_review)
@@ -977,6 +1024,10 @@ def main() -> int:
         pair_cost_cap=args.pair_cost_cap,
         residual_discount_s=args.residual_discount_s,
         hard_timeout_s=args.hard_timeout_s,
+        suppress_yes_first_open=args.suppress_yes_first_open,
+        quarantine_after_residual_discount=args.quarantine_after_residual_discount,
+        allowed_coverage_gates=tuple(args.allowed_coverage_gate),
+        allowed_open_sides=tuple(args.allowed_open_side),
         bad_pair_cost_target=args.bad_pair_cost_target,
         residual_rate_target=args.residual_rate_target,
         min_markets_for_review=args.min_markets_for_review,

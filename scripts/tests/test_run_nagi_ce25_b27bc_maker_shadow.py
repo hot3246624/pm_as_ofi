@@ -145,6 +145,128 @@ class NagiCe25B27bcMakerShadowTests(unittest.TestCase):
         self.assertGreater(summary["up_first_down_residual_risk_events"], 0)
         self.assertGreater(summary["resid_rate"], 0.0)
 
+    def test_yes_first_suppressor_rejects_yes_open_without_changing_default(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            }
+        ]
+        default_pipeline = shadow_mod.MakerShadowPipeline(shadow_mod.PipelineConfig())
+        default_pipeline.run(rows)
+        self.assertIn("queue_proxy_open", [event["event"] for event in default_pipeline.events])
+
+        guarded = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(suppress_yes_first_open=True)
+        )
+        guarded.run(rows)
+        events = [event["event"] for event in guarded.events]
+        self.assertIn("open_rejected_yes_first_suppressor", events)
+        self.assertNotIn("queue_proxy_open", events)
+
+    def test_quarantine_after_residual_discount_blocks_reopen_after_timeout(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "0",
+                "remaining_s": "60",
+                "side": "NO",
+                "no_bid": "0.42",
+                "public_taker_side": "SELL",
+                "no_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "31000",
+                "remaining_s": "29",
+                "side": "NO",
+                "no_bid": "0.43",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "61000",
+                "remaining_s": "0",
+                "side": "NO",
+                "no_bid": "0.43",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "62000",
+                "remaining_s": "0",
+                "side": "NO",
+                "no_bid": "0.44",
+                "public_taker_side": "SELL",
+                "no_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(
+                quarantine_after_residual_discount=True,
+                residual_discount_s=30.0,
+                hard_timeout_s=60.0,
+            )
+        )
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertIn("residual_discount", events)
+        self.assertIn("residual_finalized", events)
+        self.assertIn("open_rejected_residual_quarantine", events)
+        self.assertEqual(events.count("queue_proxy_open"), 1)
+
+    def test_coverage_and_side_profile_filters_reject_open_candidates(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000001",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "NO",
+                "no_bid": "0.55",
+                "public_taker_side": "SELL",
+                "no_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            },
+        ]
+        gate_filtered = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(allowed_coverage_gates=("ce25_last60_50_65_primary",))
+        )
+        gate_filtered.run(rows)
+        events = [event["event"] for event in gate_filtered.events]
+        self.assertIn("open_rejected_coverage_profile_filter", events)
+        self.assertIn("queue_proxy_open", events)
+
+        side_filtered = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(allowed_open_sides=("NO",))
+        )
+        side_filtered.run(rows)
+        events = [event["event"] for event in side_filtered.events]
+        self.assertIn("open_rejected_side_profile_filter", events)
+        self.assertIn("queue_proxy_open", events)
+
     def test_limit_order_minimum_requires_five_shares(self):
         rows = [
             {
