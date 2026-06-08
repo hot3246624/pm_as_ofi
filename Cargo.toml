@@ -55,3 +55,7 @@ path = "src/bin/probe_clob_trades.rs"
 [[bin]]
 name = "probe_clob_v2"
 path = "src/bin/probe_clob_v2.rs"
+
+[[bin]]
+name = "b_strategy_canary_s8a_native_effectful_runtime"
+path = "src/bin/b_strategy_canary_s8a_native_effectful_runtime.rs"
