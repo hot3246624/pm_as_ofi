@@ -910,6 +910,8 @@ class RunnerConfig:
     rolling_entry_quality_max_open_qty_before_seed: float = 1.25
     rolling_entry_quality_min_seed_side_mid_delta_15s: float = 0.02
     rolling_entry_quality_min_seed_trade_imbalance_30s: float = -1000.0
+    limit_order_min_shares_guard: bool = False
+    limit_order_min_shares: float = 5.0
     event_lite_summary: bool = False
     pair_source_event_lite_summary: bool = False
     fill_to_balance_diagnostic_event_lite_summary: bool = False
@@ -3723,6 +3725,19 @@ class DPlusRunner:
                 status=f2b_status,
             )
             qty = capped_qty
+        if self.cfg.limit_order_min_shares_guard and 0 < qty < self.cfg.limit_order_min_shares - 1e-12:
+            block_seed(
+                "limit_order_min_shares",
+                qty=qty,
+                base_qty=base_qty,
+                target_qty=target_qty,
+                room_cost=room_cost,
+                imbalance_room=imbalance_room,
+                activation_opp_age_ms=activation_opp_age_ms,
+                opposite_seen_ms=opposite_seen_ms,
+            )
+            self.record_activation_seen(side, ts_ms)
+            return
         if qty <= self.cfg.dust_qty:
             if fill_to_balance_active:
                 self.metrics.late_repair_fill_to_balance_blocks += 1
@@ -4890,6 +4905,8 @@ async def main() -> None:
     ap.add_argument("--rolling-entry-quality-max-open-qty-before-seed", type=float, default=1.25)
     ap.add_argument("--rolling-entry-quality-min-seed-side-mid-delta-15s", type=float, default=0.02)
     ap.add_argument("--rolling-entry-quality-min-seed-trade-imbalance-30s", type=float, default=-1000.0)
+    ap.add_argument("--limit-order-min-shares-guard", action="store_true", help="default-off venue-shape guard: block limit-order intents below the configured share minimum")
+    ap.add_argument("--limit-order-min-shares", type=float, default=5.0)
     args = ap.parse_args()
 
     if (args.late_target_after_s is None) != (args.late_target_qty is None):
@@ -4948,6 +4965,8 @@ async def main() -> None:
         rolling_entry_quality_max_open_qty_before_seed=args.rolling_entry_quality_max_open_qty_before_seed,
         rolling_entry_quality_min_seed_side_mid_delta_15s=args.rolling_entry_quality_min_seed_side_mid_delta_15s,
         rolling_entry_quality_min_seed_trade_imbalance_30s=args.rolling_entry_quality_min_seed_trade_imbalance_30s,
+        limit_order_min_shares_guard=args.limit_order_min_shares_guard,
+        limit_order_min_shares=args.limit_order_min_shares,
     )
     if cfg.imbalance_qty_cap <= cfg.dust_qty:
         raise SystemExit(f"--imbalance-qty-cap must exceed dust_qty={cfg.dust_qty}; otherwise every seed is blocked")
@@ -4969,6 +4988,8 @@ async def main() -> None:
             raise SystemExit("--micro-deficit-repair-open-qty-cap must be positive")
     if cfg.activation_window_s <= 0:
         raise SystemExit("--activation-window-s must be positive")
+    if cfg.limit_order_min_shares <= cfg.dust_qty:
+        raise SystemExit("--limit-order-min-shares must exceed dust_qty")
     if cfg.pair_source_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--pair-source-event-lite-summary requires --event-lite-summary")
     if cfg.fill_to_balance_diagnostic_event_lite_summary:
