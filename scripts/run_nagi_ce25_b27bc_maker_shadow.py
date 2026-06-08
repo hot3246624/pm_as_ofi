@@ -364,7 +364,8 @@ class PipelineConfig:
     queue_conversion: float = 0.25
     queue_ahead_multiplier: float = 1.0
     max_shadow_qty: float = 60.0
-    min_shadow_qty: float = 1.0
+    min_shadow_qty: float = 5.0
+    market_order_min_usdc: float = 1.0
     max_l2_age_ms: float = 1000.0
     max_align_lag_ms: float = 1000.0
     pair_cost_cap: float = 0.995
@@ -472,6 +473,8 @@ class WindowStats:
             "resid_rate": resid_rate,
             "bad_pc_target": cfg.bad_pair_cost_target,
             "residual_rate_target": cfg.residual_rate_target,
+            "limit_order_min_shares": cfg.min_shadow_qty,
+            "market_order_min_usdc": cfg.market_order_min_usdc,
             "residual_timeouts": self.residual_timeouts,
             "residual_discount_events": self.residual_discount_events,
             "up_first_down_residual_risk_events": self.up_first_down_residual_risk_events,
@@ -904,6 +907,7 @@ class MakerShadowPipeline:
                 "ce25_coverage_gates": "implemented_as_btc5m_last60_20_35_35_50_50_65_gate_with_1_5m_35_50_negative",
                 "b27bc_residual_closer": "implemented_as_pair_cost_cap_discount_timeout_residual_accounting",
                 "xuan_fee_guard": "fee_rate_for_scoring_fixed_to_zero_and_taker_truth_required_for_any_higher_status",
+                "order_minimum_guard": "post_only_limit_shadow_requires_at_least_5_shares; market_order_min_usdc_tracked_as_1_but_not_used_by_this_maker_only_pipeline",
             },
             "overall": overall,
             "rolling_window_count": len([row for row in rows if row["window_key"] != "ALL"]),
@@ -948,6 +952,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--queue-ahead-multiplier", type=float, default=PipelineConfig.queue_ahead_multiplier)
     p.add_argument("--max-shadow-qty", type=float, default=PipelineConfig.max_shadow_qty)
     p.add_argument("--min-shadow-qty", type=float, default=PipelineConfig.min_shadow_qty)
+    p.add_argument("--market-order-min-usdc", type=float, default=PipelineConfig.market_order_min_usdc)
     p.add_argument("--max-l2-age-ms", type=float, default=PipelineConfig.max_l2_age_ms)
     p.add_argument("--max-align-lag-ms", type=float, default=PipelineConfig.max_align_lag_ms)
     p.add_argument("--pair-cost-cap", type=float, default=PipelineConfig.pair_cost_cap)
@@ -966,6 +971,7 @@ def main() -> int:
         queue_ahead_multiplier=args.queue_ahead_multiplier,
         max_shadow_qty=args.max_shadow_qty,
         min_shadow_qty=args.min_shadow_qty,
+        market_order_min_usdc=args.market_order_min_usdc,
         max_l2_age_ms=args.max_l2_age_ms,
         max_align_lag_ms=args.max_align_lag_ms,
         pair_cost_cap=args.pair_cost_cap,

@@ -225,7 +225,7 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `45` | fixed shadow round 收盘后继续追踪 45 秒；下一轮由 overlap loop 独立预启动，不再依赖上一轮退出后 systemd 重启 |
 | `PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED` | shadow loop 默认 `false` | PGT shadow 轮转默认不跑 post-close redeem lifecycle，redeem 行为单独验证 |
 | `PM_CLAIM_MONITOR` | fixed shadow 默认 `false` | PGT shadow 热启动不跑 claim monitor，避免非交易 HTTP 阻塞下一轮开盘 |
-| `PM_MIN_ORDER_SIZE` | fixed shadow 默认 `5` | PGT shadow 固定最低下单量，避免每轮启动同步探测 `/books` 拖慢开盘 |
+| `PM_MIN_ORDER_SIZE` | 默认 `5` | 最低限价挂单份额；低于 5 份的 maker/limit 机会应跳过，避免 venue minimum-order reject；fixed shadow 也使用该默认值 |
 
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 
@@ -283,7 +283,7 @@ PM_SHARED_INGRESS_ROLE=auto \
 补充：`completion_first`（completion probability 试验策略）
 - 建议单独设置：
   - `PM_STRATEGY=completion_first`
-  - `PM_BID_SIZE=2.0` 起步
+  - `PM_BID_SIZE=5.0` 起步
   - `PM_MAX_NET_DIFF=5.0`
   - `PM_PAIR_TARGET=0.98`
   - `PM_COMPLETION_SCORE_THRESHOLD=0.58`

@@ -34,6 +34,11 @@ fn with_strategy(mut c: CoordinatorConfig, strategy: StrategyKind) -> Coordinato
 }
 
 #[test]
+fn default_min_order_size_matches_limit_order_floor() {
+    assert_eq!(CoordinatorConfig::default().min_order_size, 5.0);
+}
+
+#[test]
 fn xuan_b27_dplus_auth_observer_never_allows_order_submission() {
     assert!(!XuanB27DplusMode::Disabled.allows_order_submission());
     assert!(!XuanB27DplusMode::Observer.allows_order_submission());

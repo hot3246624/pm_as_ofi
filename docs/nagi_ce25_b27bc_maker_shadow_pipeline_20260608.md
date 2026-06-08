@@ -55,6 +55,7 @@ NAGI maker queue proxy:
 - Scores maker bid opportunities at local observed bid prices.
 - Requires public SELL touch or an explicitly supplied touch proxy.
 - Uses visible depth and configurable queue conversion/haircut.
+- Requires at least 5 shares for any post-only/limit maker shadow opportunity.
 - Uses `fee_rate = 0` for scoring, but labels all results as public proxy.
 
 B27BC residual closer:
@@ -69,7 +70,23 @@ Xuan fee/taker guard:
 
 - Any higher status requires own maker telemetry.
 - Public-only and taker/ambiguous evidence remain `research_proxy`.
+- Tracks the market-order minimum as 1 USDC, but this maker-only pipeline does
+  not use market orders.
 - The decision register keeps readiness/private-truth/live/canary claims false.
+
+## Order Minimums
+
+The current operational order-size guard is:
+
+- Market orders: minimum 1 USDC.
+- Limit orders: minimum 5 shares.
+
+This pipeline is post-only maker-shadow research, so the binding rule is the
+5-share limit-order minimum. A public SELL touch or visible depth sample below
+5 shares is recorded as insufficient depth and cannot open a queue-proxy lot.
+The 1 USDC market-order floor is kept in the decision register for future
+taker/market-order guardrails, but market orders remain outside this tool's
+allowed scope.
 
 ## Current Decision Boundary
 

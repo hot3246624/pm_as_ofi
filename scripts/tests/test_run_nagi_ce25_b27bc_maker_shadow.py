@@ -145,6 +145,29 @@ class NagiCe25B27bcMakerShadowTests(unittest.TestCase):
         self.assertGreater(summary["up_first_down_residual_risk_events"], 0)
         self.assertGreater(summary["resid_rate"], 0.0)
 
+    def test_limit_order_minimum_requires_five_shares(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.42",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "4.99",
+                "public_trade_qty": "4.99",
+            }
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(shadow_mod.PipelineConfig())
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertIn("queue_proxy_touch_insufficient_depth", events)
+        self.assertNotIn("queue_proxy_open", events)
+        summary = pipeline.summary_rows()[0]
+        self.assertEqual(summary["limit_order_min_shares"], 5.0)
+        self.assertEqual(summary["market_order_min_usdc"], 1.0)
+
     def test_cli_writes_decision_register_and_rolling_summary(self):
         with tempfile.TemporaryDirectory(prefix="nagi_ce25_b27bc_shadow_") as tmp:
             root = Path(tmp)
@@ -184,6 +207,8 @@ class NagiCe25B27bcMakerShadowTests(unittest.TestCase):
             decision = json.loads((output_dir / "decision_register.json").read_text())
             self.assertEqual(decision["status"], shadow_mod.RESEARCH_STATUS)
             self.assertFalse(decision["non_claims"]["maker_fill_truth"])
+            self.assertEqual(decision["config"]["min_shadow_qty"], 5.0)
+            self.assertEqual(decision["config"]["market_order_min_usdc"], 1.0)
             self.assertTrue((output_dir / "rolling_24h_summary.csv").exists())
             self.assertTrue((output_dir / "nagi_ce25_b27bc_maker_shadow_events.jsonl").exists())
 

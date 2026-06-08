@@ -514,7 +514,7 @@ impl Default for CoordinatorConfig {
             market_end_ts: None,
             hedge_debounce_ms: 100, // Hedge orders bypass normal 500ms debounce
             max_portfolio_cost: 1.02, // Emergency hedge ceiling
-            min_order_size: 1.0,
+            min_order_size: 5.0,
             min_hedge_size: 0.0,
             hedge_round_up: false,
             hedge_min_marketable_notional: 0.0,
