@@ -381,6 +381,10 @@ class PipelineConfig:
     opposite_support_pair_cost_cap: float = 0.995
     per_market_residual_budget_usdc: float = 0.0
     max_open_cost_usdc: float = 0.0
+    reject_yes_open_after_up_residual_events: int = 0
+    reject_yes_open_when_remaining_gt_s: float = 0.0
+    reject_yes_open_in_price_bands: tuple[str, ...] = ()
+    reject_no_open_in_price_bands: tuple[str, ...] = ()
     bad_pair_cost_target: float = 0.35
     residual_rate_target: float = 0.12
     min_markets_for_review: int = 100
@@ -541,6 +545,7 @@ class MakerShadowPipeline:
         self.quarantined_markets: set[str] = set()
         self.support_history: dict[str, list[OppositeSupportTouch]] = {}
         self.market_finalized_residual_cost: dict[str, float] = {}
+        self.up_first_down_residual_events = 0
         self.events: list[dict[str, Any]] = []
         self.windows: dict[str, WindowStats] = {}
 
@@ -618,6 +623,19 @@ class MakerShadowPipeline:
             )
             self.record_opposite_support(row, ts_ms, side, bid_px)
             return
+        first_side_ok, first_side_payload = self.first_side_hazard_ok(row, ts_ms, side, bid_px)
+        if not first_side_ok:
+            self.emit_base(
+                row,
+                ts_ms,
+                "open_rejected_first_side_hazard",
+                decision,
+                side,
+                bid_px,
+                first_side_payload,
+            )
+            self.record_opposite_support(row, ts_ms, side, bid_px)
+            return
         self.try_open(row, ts_ms, decision, side, bid_px)
         self.record_opposite_support(row, ts_ms, side, bid_px)
 
@@ -629,6 +647,51 @@ class MakerShadowPipeline:
         if align_lag_ms is not None and align_lag_ms > self.cfg.max_align_lag_ms:
             return False, "align_lag_exceeds_gate"
         return True, "ok"
+
+    def first_side_hazard_ok(
+        self,
+        row: dict[str, Any],
+        ts_ms: int,
+        side: str | None,
+        bid_px: float | None,
+    ) -> tuple[bool, dict[str, Any]]:
+        if side is None or bid_px is None or bid_px <= 0:
+            return True, {}
+        band = price_band(bid_px)
+        if side == "YES":
+            if (
+                self.cfg.reject_yes_open_after_up_residual_events > 0
+                and self.up_first_down_residual_events >= self.cfg.reject_yes_open_after_up_residual_events
+            ):
+                return False, {
+                    "reason": "yes_first_after_up_residual_hazard",
+                    "up_first_down_residual_events_seen": self.up_first_down_residual_events,
+                    "reject_yes_open_after_up_residual_events": self.cfg.reject_yes_open_after_up_residual_events,
+                }
+            remaining_s = infer_remaining_s(row, ts_ms)
+            if (
+                remaining_s is not None
+                and self.cfg.reject_yes_open_when_remaining_gt_s > 0.0
+                and remaining_s > self.cfg.reject_yes_open_when_remaining_gt_s + 1e-9
+            ):
+                return False, {
+                    "reason": "yes_first_remaining_bucket_hazard",
+                    "remaining_s": remaining_s,
+                    "reject_yes_open_when_remaining_gt_s": self.cfg.reject_yes_open_when_remaining_gt_s,
+                }
+            if band in self.cfg.reject_yes_open_in_price_bands:
+                return False, {
+                    "reason": "yes_first_price_band_hazard",
+                    "price_band": band,
+                    "reject_yes_open_in_price_bands": list(self.cfg.reject_yes_open_in_price_bands),
+                }
+        if side == "NO" and band in self.cfg.reject_no_open_in_price_bands:
+            return False, {
+                "reason": "no_first_price_band_hazard",
+                "price_band": band,
+                "reject_no_open_in_price_bands": list(self.cfg.reject_no_open_in_price_bands),
+            }
+        return True, {}
 
     def record_opposite_support(
         self,
@@ -952,6 +1015,7 @@ class MakerShadowPipeline:
         age_s = lot.age_s(ts_ms)
         if lot.side == "YES" and age_s >= self.cfg.residual_discount_s:
             self.stats(lot.window_key).up_first_down_residual_risk_events += 1
+            self.up_first_down_residual_events += 1
         if age_s >= self.cfg.hard_timeout_s:
             self.finalize_residual(lot, reason="hard_timeout")
             self.active.pop(lot.slug, None)
@@ -1172,6 +1236,18 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--opposite-support-pair-cost-cap", type=float, default=PipelineConfig.opposite_support_pair_cost_cap)
     p.add_argument("--per-market-residual-budget-usdc", type=float, default=PipelineConfig.per_market_residual_budget_usdc)
     p.add_argument("--max-open-cost-usdc", type=float, default=PipelineConfig.max_open_cost_usdc)
+    p.add_argument(
+        "--reject-yes-open-after-up-residual-events",
+        type=int,
+        default=PipelineConfig.reject_yes_open_after_up_residual_events,
+    )
+    p.add_argument(
+        "--reject-yes-open-when-remaining-gt-s",
+        type=float,
+        default=PipelineConfig.reject_yes_open_when_remaining_gt_s,
+    )
+    p.add_argument("--reject-yes-open-in-price-band", action="append", default=[])
+    p.add_argument("--reject-no-open-in-price-band", action="append", default=[])
     p.add_argument("--bad-pair-cost-target", type=float, default=PipelineConfig.bad_pair_cost_target)
     p.add_argument("--residual-rate-target", type=float, default=PipelineConfig.residual_rate_target)
     p.add_argument("--min-markets-for-review", type=int, default=PipelineConfig.min_markets_for_review)
@@ -1201,6 +1277,10 @@ def main() -> int:
         opposite_support_pair_cost_cap=args.opposite_support_pair_cost_cap,
         per_market_residual_budget_usdc=args.per_market_residual_budget_usdc,
         max_open_cost_usdc=args.max_open_cost_usdc,
+        reject_yes_open_after_up_residual_events=args.reject_yes_open_after_up_residual_events,
+        reject_yes_open_when_remaining_gt_s=args.reject_yes_open_when_remaining_gt_s,
+        reject_yes_open_in_price_bands=tuple(args.reject_yes_open_in_price_band),
+        reject_no_open_in_price_bands=tuple(args.reject_no_open_in_price_band),
         bad_pair_cost_target=args.bad_pair_cost_target,
         residual_rate_target=args.residual_rate_target,
         min_markets_for_review=args.min_markets_for_review,
