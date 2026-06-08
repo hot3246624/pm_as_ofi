@@ -19,6 +19,8 @@ pub const S8A_RUNTIME_LOOP_BINDING_REVIEW_EVENT: &str = "s8a_runtime_loop_bindin
 pub const S8A_RUNTIME_ORCHESTRATION_PREVIEW_EVENT: &str = "s8a_runtime_orchestration_preview";
 pub const S8A_RUNTIME_WRAPPER_PREFLIGHT_REVIEW_EVENT: &str = "s8a_runtime_wrapper_preflight_review";
 pub const S8A_ONE_RUN_ORCHESTRATION_REVIEW_EVENT: &str = "s8a_one_run_orchestration_review";
+pub const S8A_REMOTE_RUNTIME_PROVISIONING_REVIEW_EVENT: &str =
+    "s8a_remote_runtime_provisioning_review";
 pub const S8A_REVIEWED_HOST: &str = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com";
 pub const S8A_OFFICIAL_CLOB_REST_URL: &str = "https://clob.polymarket.com";
 pub const S8A_NATIVE_RUNTIME_SCOPE: &str =
@@ -1951,6 +1953,313 @@ pub fn review_s8a_one_run_orchestration(
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRemoteRuntimeProvisioningEvidence {
+    pub one_run_orchestration_ready: bool,
+    pub remote_host: String,
+    pub remote_staging_path: String,
+    pub remote_staging_path_is_b_owned: bool,
+    pub remote_staging_path_is_service_dir: bool,
+    pub mutates_service_dir: bool,
+    pub runtime_source_sha256: String,
+    pub remote_runtime_source_sha256: String,
+    pub adapter_source_sha256: String,
+    pub remote_adapter_source_sha256: String,
+    pub clob_v2_source_sha256: String,
+    pub remote_clob_v2_source_sha256: String,
+    pub prepared_order_fixture_sha256: String,
+    pub remote_prepared_order_fixture_sha256: String,
+    pub one_run_plan_fixture_sha256: String,
+    pub remote_one_run_plan_fixture_sha256: String,
+    pub cargo_available_on_remote: bool,
+    pub node_available_on_remote: bool,
+    pub hash_bound_remote_worktree_ready: bool,
+    pub remote_service_repo_dirty_or_unbound: bool,
+    pub preview_without_approval_exit_code: Option<i32>,
+    pub no_order_auth_preview_passed: bool,
+    pub exact_order_path_preview_passed_no_submit: bool,
+    pub one_run_driver_preview_passed_no_submit: bool,
+    pub no_secret_or_raw_signature_output: bool,
+    pub no_order_cancel_merge_redeem_performed: bool,
+    pub shared_ingress_dependency: bool,
+    pub uses_c_artifacts: bool,
+    pub online_tuning_allowed: bool,
+    pub strategy_discovery_allowed: bool,
+    pub candidate_import_allowed: bool,
+    pub funding_live_latest_or_deploy_requested: bool,
+    pub effectful_execution_requested_in_review: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aRemoteRuntimeProvisioningBlockReason {
+    OneRunOrchestrationNotReady,
+    RemoteHostMismatch,
+    RemoteStagingPathNotBOwned,
+    RemoteStagingPathIsServiceDir,
+    MutatesServiceDir,
+    InvalidRuntimeSourceHash,
+    RuntimeSourceHashMismatch,
+    InvalidAdapterSourceHash,
+    AdapterSourceHashMismatch,
+    InvalidClobV2SourceHash,
+    ClobV2SourceHashMismatch,
+    InvalidPreparedOrderFixtureHash,
+    PreparedOrderFixtureHashMismatch,
+    InvalidOneRunPlanFixtureHash,
+    OneRunPlanFixtureHashMismatch,
+    RemoteCargoUnavailable,
+    RemoteNodeUnavailable,
+    HashBoundRemoteWorktreeNotReady,
+    RemoteServiceRepoDirtyOrUnbound,
+    PreviewWithoutApprovalNotRunOrNot66,
+    NoOrderAuthPreviewNotPassed,
+    ExactOrderPathPreviewNotPassedNoSubmit,
+    OneRunDriverPreviewNotPassedNoSubmit,
+    SecretOrRawSignatureOutputAllowed,
+    OrderCancelMergeRedeemPerformedInReview,
+    SharedIngressDependency,
+    CArtifactsRequested,
+    OnlineTuningAllowed,
+    StrategyDiscoveryAllowed,
+    CandidateImportRequested,
+    FundingLiveLatestOrDeployRequested,
+    EffectfulExecutionRequestedInReview,
+}
+
+impl S8aRemoteRuntimeProvisioningBlockReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OneRunOrchestrationNotReady => "BLOCK_ONE_RUN_ORCHESTRATION_NOT_READY",
+            Self::RemoteHostMismatch => "BLOCK_REMOTE_HOST_MISMATCH",
+            Self::RemoteStagingPathNotBOwned => "BLOCK_REMOTE_STAGING_PATH_NOT_B_OWNED",
+            Self::RemoteStagingPathIsServiceDir => "BLOCK_REMOTE_STAGING_PATH_IS_SERVICE_DIR",
+            Self::MutatesServiceDir => "BLOCK_MUTATES_SERVICE_DIR",
+            Self::InvalidRuntimeSourceHash => "BLOCK_INVALID_RUNTIME_SOURCE_HASH",
+            Self::RuntimeSourceHashMismatch => "BLOCK_RUNTIME_SOURCE_HASH_MISMATCH",
+            Self::InvalidAdapterSourceHash => "BLOCK_INVALID_ADAPTER_SOURCE_HASH",
+            Self::AdapterSourceHashMismatch => "BLOCK_ADAPTER_SOURCE_HASH_MISMATCH",
+            Self::InvalidClobV2SourceHash => "BLOCK_INVALID_CLOB_V2_SOURCE_HASH",
+            Self::ClobV2SourceHashMismatch => "BLOCK_CLOB_V2_SOURCE_HASH_MISMATCH",
+            Self::InvalidPreparedOrderFixtureHash => "BLOCK_INVALID_PREPARED_ORDER_FIXTURE_HASH",
+            Self::PreparedOrderFixtureHashMismatch => "BLOCK_PREPARED_ORDER_FIXTURE_HASH_MISMATCH",
+            Self::InvalidOneRunPlanFixtureHash => "BLOCK_INVALID_ONE_RUN_PLAN_FIXTURE_HASH",
+            Self::OneRunPlanFixtureHashMismatch => "BLOCK_ONE_RUN_PLAN_FIXTURE_HASH_MISMATCH",
+            Self::RemoteCargoUnavailable => "BLOCK_REMOTE_CARGO_UNAVAILABLE",
+            Self::RemoteNodeUnavailable => "BLOCK_REMOTE_NODE_UNAVAILABLE",
+            Self::HashBoundRemoteWorktreeNotReady => "BLOCK_HASH_BOUND_REMOTE_WORKTREE_NOT_READY",
+            Self::RemoteServiceRepoDirtyOrUnbound => "BLOCK_REMOTE_SERVICE_REPO_DIRTY_OR_UNBOUND",
+            Self::PreviewWithoutApprovalNotRunOrNot66 => {
+                "BLOCK_PREVIEW_WITHOUT_APPROVAL_NOT_RUN_OR_NOT_66"
+            }
+            Self::NoOrderAuthPreviewNotPassed => "BLOCK_NO_ORDER_AUTH_PREVIEW_NOT_PASSED",
+            Self::ExactOrderPathPreviewNotPassedNoSubmit => {
+                "BLOCK_EXACT_ORDER_PATH_PREVIEW_NOT_PASSED_NO_SUBMIT"
+            }
+            Self::OneRunDriverPreviewNotPassedNoSubmit => {
+                "BLOCK_ONE_RUN_DRIVER_PREVIEW_NOT_PASSED_NO_SUBMIT"
+            }
+            Self::SecretOrRawSignatureOutputAllowed => {
+                "BLOCK_SECRET_OR_RAW_SIGNATURE_OUTPUT_ALLOWED"
+            }
+            Self::OrderCancelMergeRedeemPerformedInReview => {
+                "BLOCK_ORDER_CANCEL_MERGE_REDEEM_PERFORMED_IN_REVIEW"
+            }
+            Self::SharedIngressDependency => "BLOCK_SHARED_INGRESS_DEPENDENCY",
+            Self::CArtifactsRequested => "BLOCK_C_ARTIFACTS_REQUESTED",
+            Self::OnlineTuningAllowed => "BLOCK_ONLINE_TUNING_ALLOWED",
+            Self::StrategyDiscoveryAllowed => "BLOCK_STRATEGY_DISCOVERY_ALLOWED",
+            Self::CandidateImportRequested => "BLOCK_CANDIDATE_IMPORT_REQUESTED",
+            Self::FundingLiveLatestOrDeployRequested => {
+                "BLOCK_FUNDING_LIVE_LATEST_OR_DEPLOY_REQUESTED"
+            }
+            Self::EffectfulExecutionRequestedInReview => {
+                "BLOCK_EFFECTFUL_EXECUTION_REQUESTED_IN_REVIEW"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRemoteRuntimeProvisioningReview {
+    pub event: &'static str,
+    pub block_reasons: Vec<S8aRemoteRuntimeProvisioningBlockReason>,
+    pub remote_hashes_bound: bool,
+    pub remote_runtime_available: bool,
+    pub remote_preview_gates_passed: bool,
+    pub remote_staging_only: bool,
+    pub forbidden_paths_absent: bool,
+    pub ready_for_fresh_exact_approval_request: bool,
+    pub effectful_execution_permitted: bool,
+}
+
+pub fn review_s8a_remote_runtime_provisioning(
+    evidence: &S8aRemoteRuntimeProvisioningEvidence,
+) -> S8aRemoteRuntimeProvisioningReview {
+    let mut block_reasons = Vec::new();
+    if !evidence.one_run_orchestration_ready {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::OneRunOrchestrationNotReady);
+    }
+    if evidence.remote_host != S8A_REVIEWED_HOST {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::RemoteHostMismatch);
+    }
+    if !evidence.remote_staging_path_is_b_owned {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::RemoteStagingPathNotBOwned);
+    }
+    if evidence.remote_staging_path_is_service_dir {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::RemoteStagingPathIsServiceDir);
+    }
+    if evidence.mutates_service_dir {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::MutatesServiceDir);
+    }
+
+    if !is_sha256_hex(&evidence.runtime_source_sha256)
+        || !is_sha256_hex(&evidence.remote_runtime_source_sha256)
+    {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::InvalidRuntimeSourceHash);
+    }
+    if evidence.runtime_source_sha256 != evidence.remote_runtime_source_sha256 {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::RuntimeSourceHashMismatch);
+    }
+    if !is_sha256_hex(&evidence.adapter_source_sha256)
+        || !is_sha256_hex(&evidence.remote_adapter_source_sha256)
+    {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::InvalidAdapterSourceHash);
+    }
+    if evidence.adapter_source_sha256 != evidence.remote_adapter_source_sha256 {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::AdapterSourceHashMismatch);
+    }
+    if !is_sha256_hex(&evidence.clob_v2_source_sha256)
+        || !is_sha256_hex(&evidence.remote_clob_v2_source_sha256)
+    {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::InvalidClobV2SourceHash);
+    }
+    if evidence.clob_v2_source_sha256 != evidence.remote_clob_v2_source_sha256 {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::ClobV2SourceHashMismatch);
+    }
+    if !is_sha256_hex(&evidence.prepared_order_fixture_sha256)
+        || !is_sha256_hex(&evidence.remote_prepared_order_fixture_sha256)
+    {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::InvalidPreparedOrderFixtureHash);
+    }
+    if evidence.prepared_order_fixture_sha256 != evidence.remote_prepared_order_fixture_sha256 {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::PreparedOrderFixtureHashMismatch);
+    }
+    if !is_sha256_hex(&evidence.one_run_plan_fixture_sha256)
+        || !is_sha256_hex(&evidence.remote_one_run_plan_fixture_sha256)
+    {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::InvalidOneRunPlanFixtureHash);
+    }
+    if evidence.one_run_plan_fixture_sha256 != evidence.remote_one_run_plan_fixture_sha256 {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::OneRunPlanFixtureHashMismatch);
+    }
+
+    if !evidence.cargo_available_on_remote {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::RemoteCargoUnavailable);
+    }
+    if !evidence.node_available_on_remote {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::RemoteNodeUnavailable);
+    }
+    if !evidence.hash_bound_remote_worktree_ready {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::HashBoundRemoteWorktreeNotReady);
+    }
+    if evidence.remote_service_repo_dirty_or_unbound {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::RemoteServiceRepoDirtyOrUnbound);
+    }
+    if evidence.preview_without_approval_exit_code != Some(66) {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::PreviewWithoutApprovalNotRunOrNot66);
+    }
+    if !evidence.no_order_auth_preview_passed {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::NoOrderAuthPreviewNotPassed);
+    }
+    if !evidence.exact_order_path_preview_passed_no_submit {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::ExactOrderPathPreviewNotPassedNoSubmit);
+    }
+    if !evidence.one_run_driver_preview_passed_no_submit {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::OneRunDriverPreviewNotPassedNoSubmit);
+    }
+    if !evidence.no_secret_or_raw_signature_output {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::SecretOrRawSignatureOutputAllowed);
+    }
+    if !evidence.no_order_cancel_merge_redeem_performed {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::OrderCancelMergeRedeemPerformedInReview);
+    }
+    if evidence.shared_ingress_dependency {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::SharedIngressDependency);
+    }
+    if evidence.uses_c_artifacts {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::CArtifactsRequested);
+    }
+    if evidence.online_tuning_allowed {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::OnlineTuningAllowed);
+    }
+    if evidence.strategy_discovery_allowed {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::StrategyDiscoveryAllowed);
+    }
+    if evidence.candidate_import_allowed {
+        block_reasons.push(S8aRemoteRuntimeProvisioningBlockReason::CandidateImportRequested);
+    }
+    if evidence.funding_live_latest_or_deploy_requested {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::FundingLiveLatestOrDeployRequested);
+    }
+    if evidence.effectful_execution_requested_in_review {
+        block_reasons
+            .push(S8aRemoteRuntimeProvisioningBlockReason::EffectfulExecutionRequestedInReview);
+    }
+
+    let remote_hashes_bound = is_sha256_hex(&evidence.runtime_source_sha256)
+        && evidence.runtime_source_sha256 == evidence.remote_runtime_source_sha256
+        && is_sha256_hex(&evidence.adapter_source_sha256)
+        && evidence.adapter_source_sha256 == evidence.remote_adapter_source_sha256
+        && is_sha256_hex(&evidence.clob_v2_source_sha256)
+        && evidence.clob_v2_source_sha256 == evidence.remote_clob_v2_source_sha256
+        && is_sha256_hex(&evidence.prepared_order_fixture_sha256)
+        && evidence.prepared_order_fixture_sha256 == evidence.remote_prepared_order_fixture_sha256
+        && is_sha256_hex(&evidence.one_run_plan_fixture_sha256)
+        && evidence.one_run_plan_fixture_sha256 == evidence.remote_one_run_plan_fixture_sha256;
+    let remote_runtime_available = evidence.cargo_available_on_remote
+        && evidence.node_available_on_remote
+        && evidence.hash_bound_remote_worktree_ready
+        && !evidence.remote_service_repo_dirty_or_unbound;
+    let remote_preview_gates_passed = evidence.preview_without_approval_exit_code == Some(66)
+        && evidence.no_order_auth_preview_passed
+        && evidence.exact_order_path_preview_passed_no_submit
+        && evidence.one_run_driver_preview_passed_no_submit;
+    let remote_staging_only = evidence.remote_staging_path_is_b_owned
+        && !evidence.remote_staging_path_is_service_dir
+        && !evidence.mutates_service_dir;
+    let forbidden_paths_absent = evidence.no_secret_or_raw_signature_output
+        && evidence.no_order_cancel_merge_redeem_performed
+        && !evidence.shared_ingress_dependency
+        && !evidence.uses_c_artifacts
+        && !evidence.online_tuning_allowed
+        && !evidence.strategy_discovery_allowed
+        && !evidence.candidate_import_allowed
+        && !evidence.funding_live_latest_or_deploy_requested
+        && !evidence.effectful_execution_requested_in_review;
+
+    S8aRemoteRuntimeProvisioningReview {
+        event: S8A_REMOTE_RUNTIME_PROVISIONING_REVIEW_EVENT,
+        ready_for_fresh_exact_approval_request: block_reasons.is_empty(),
+        block_reasons,
+        remote_hashes_bound,
+        remote_runtime_available,
+        remote_preview_gates_passed,
+        remote_staging_only,
+        forbidden_paths_absent,
+        effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2238,6 +2547,45 @@ mod tests {
             strategy_discovery_allowed: false,
             candidate_import_allowed: false,
             secret_or_raw_signature_output_allowed: false,
+            funding_live_latest_or_deploy_requested: false,
+            effectful_execution_requested_in_review: false,
+        }
+    }
+
+    fn clean_s8a_remote_runtime_provisioning_evidence() -> S8aRemoteRuntimeProvisioningEvidence {
+        S8aRemoteRuntimeProvisioningEvidence {
+            one_run_orchestration_ready: true,
+            remote_host: S8A_REVIEWED_HOST.to_string(),
+            remote_staging_path: "/home/ubuntu/b_strategy_staging/b_strategy_canary_s8n_fixture"
+                .to_string(),
+            remote_staging_path_is_b_owned: true,
+            remote_staging_path_is_service_dir: false,
+            mutates_service_dir: false,
+            runtime_source_sha256: hex64('a'),
+            remote_runtime_source_sha256: hex64('a'),
+            adapter_source_sha256: hex64('b'),
+            remote_adapter_source_sha256: hex64('b'),
+            clob_v2_source_sha256: hex64('c'),
+            remote_clob_v2_source_sha256: hex64('c'),
+            prepared_order_fixture_sha256: hex64('d'),
+            remote_prepared_order_fixture_sha256: hex64('d'),
+            one_run_plan_fixture_sha256: hex64('e'),
+            remote_one_run_plan_fixture_sha256: hex64('e'),
+            cargo_available_on_remote: true,
+            node_available_on_remote: true,
+            hash_bound_remote_worktree_ready: true,
+            remote_service_repo_dirty_or_unbound: false,
+            preview_without_approval_exit_code: Some(66),
+            no_order_auth_preview_passed: true,
+            exact_order_path_preview_passed_no_submit: true,
+            one_run_driver_preview_passed_no_submit: true,
+            no_secret_or_raw_signature_output: true,
+            no_order_cancel_merge_redeem_performed: true,
+            shared_ingress_dependency: false,
+            uses_c_artifacts: false,
+            online_tuning_allowed: false,
+            strategy_discovery_allowed: false,
+            candidate_import_allowed: false,
             funding_live_latest_or_deploy_requested: false,
             effectful_execution_requested_in_review: false,
         }
@@ -3244,5 +3592,113 @@ mod tests {
         assert!(review
             .block_reasons
             .contains(&S8aOneRunOrchestrationBlockReason::EffectfulExecutionRequestedInReview));
+    }
+
+    #[test]
+    fn s8n_remote_runtime_provisioning_accepts_hash_bound_preview_ready_staging() {
+        let evidence = clean_s8a_remote_runtime_provisioning_evidence();
+
+        let review = review_s8a_remote_runtime_provisioning(&evidence);
+
+        assert!(review.ready_for_fresh_exact_approval_request);
+        assert!(review.block_reasons.is_empty());
+        assert!(review.remote_hashes_bound);
+        assert!(review.remote_runtime_available);
+        assert!(review.remote_preview_gates_passed);
+        assert!(review.remote_staging_only);
+        assert!(review.forbidden_paths_absent);
+        assert!(!review.effectful_execution_permitted);
+    }
+
+    #[test]
+    fn s8n_remote_runtime_provisioning_blocks_dirty_old_repo_and_missing_runtime() {
+        let mut evidence = clean_s8a_remote_runtime_provisioning_evidence();
+        evidence.cargo_available_on_remote = false;
+        evidence.node_available_on_remote = false;
+        evidence.hash_bound_remote_worktree_ready = false;
+        evidence.remote_service_repo_dirty_or_unbound = true;
+        evidence.preview_without_approval_exit_code = None;
+        evidence.no_order_auth_preview_passed = false;
+        evidence.exact_order_path_preview_passed_no_submit = false;
+        evidence.one_run_driver_preview_passed_no_submit = false;
+
+        let review = review_s8a_remote_runtime_provisioning(&evidence);
+
+        assert!(!review.ready_for_fresh_exact_approval_request);
+        assert!(review.remote_hashes_bound);
+        assert!(review.remote_staging_only);
+        assert!(review.forbidden_paths_absent);
+        assert!(!review.remote_runtime_available);
+        assert!(!review.remote_preview_gates_passed);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::RemoteCargoUnavailable));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::RemoteNodeUnavailable));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::HashBoundRemoteWorktreeNotReady));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::RemoteServiceRepoDirtyOrUnbound));
+        assert!(review.block_reasons.contains(
+            &S8aRemoteRuntimeProvisioningBlockReason::PreviewWithoutApprovalNotRunOrNot66
+        ));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::NoOrderAuthPreviewNotPassed));
+        assert!(review.block_reasons.contains(
+            &S8aRemoteRuntimeProvisioningBlockReason::ExactOrderPathPreviewNotPassedNoSubmit
+        ));
+        assert!(review.block_reasons.contains(
+            &S8aRemoteRuntimeProvisioningBlockReason::OneRunDriverPreviewNotPassedNoSubmit
+        ));
+    }
+
+    #[test]
+    fn s8n_remote_runtime_provisioning_rejects_service_mutation_and_hash_drift() {
+        let mut evidence = clean_s8a_remote_runtime_provisioning_evidence();
+        evidence.remote_staging_path_is_b_owned = false;
+        evidence.remote_staging_path_is_service_dir = true;
+        evidence.mutates_service_dir = true;
+        evidence.remote_runtime_source_sha256 = hex64('0');
+        evidence.remote_adapter_source_sha256 = "bad-hash".to_string();
+        evidence.remote_clob_v2_source_sha256 = hex64('1');
+        evidence.remote_prepared_order_fixture_sha256 = hex64('2');
+        evidence.remote_one_run_plan_fixture_sha256 = hex64('3');
+
+        let review = review_s8a_remote_runtime_provisioning(&evidence);
+
+        assert!(!review.ready_for_fresh_exact_approval_request);
+        assert!(!review.remote_hashes_bound);
+        assert!(!review.remote_staging_only);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::RemoteStagingPathNotBOwned));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::RemoteStagingPathIsServiceDir));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::MutatesServiceDir));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::RuntimeSourceHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::InvalidAdapterSourceHash));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::AdapterSourceHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::ClobV2SourceHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::PreparedOrderFixtureHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRemoteRuntimeProvisioningBlockReason::OneRunPlanFixtureHashMismatch));
     }
 }
