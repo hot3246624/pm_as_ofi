@@ -12,6 +12,7 @@ pub mod order_manager;
 pub mod pair_arb_harvester;
 pub mod pair_ledger;
 pub mod recorder;
+pub mod s8a_order_adapter;
 pub mod strategy;
 pub mod user_ws;
 
