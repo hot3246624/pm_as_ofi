@@ -8,8 +8,9 @@ requirements into one reviewable no-submit flow.
 It intentionally performs no network IO of its own, reads no secrets, signs no
 payload, submits no orders, cancels nothing, and performs no recovery action.
 The only subprocess it may invoke is the source-controlled native runtime, and
-only in no-submit or fail-closed preview modes unless a future exact-approved
-execution path is explicitly implemented and freshly authorized.
+only in no-submit or fail-closed preview modes. S8Y made the single prepared
+order primitive closed-loop capable; this orchestrator must still grow the full
+multi-round live loop before another broad S8A exact approval is safe.
 """
 
 from __future__ import annotations
@@ -37,6 +38,8 @@ PARTIAL_FILL_ADDENDUM_SHA256 = "1545a9268e6fa6bacb164ebac5c2878193863fb59309b3a3
 THREE_ROUND_CAP_PACKET_SHA256 = "1fb20485b5e37931c7d8f087464edc9fb463aed3c41dcde90014ad5abf63852c"
 S8P_PACKET_SHA256 = "f99af862f56774a2c09578fc11c1ba24b462f4b21ffd4538e8e478ad117709a7"
 S8Q_PACKET_SHA256 = "9d076bd3e7889ff79b73801d9a575e2d925a240750c1392bb168474b427b417d"
+S8Y_PACKET_SHA256 = "972bc47a39601cbced054c02c8c56e6b3d4cb6ae1e66a3d76a489b93426a6686"
+S8Y_REMOTE_RESULT_SHA256 = "90cec9f0a9ac1da8c23979b43b8c7236d98837745a4ed137f4fdcc64fc0b6e63"
 
 
 def utc_now() -> str:
@@ -91,6 +94,8 @@ def base_payload(status: str) -> dict[str, Any]:
             "s8a_three_round_cap_packet_sha256": THREE_ROUND_CAP_PACKET_SHA256,
             "s8p_native_runtime_scope_live_scout_packet_sha256": S8P_PACKET_SHA256,
             "s8q_remote_runtime_scope_live_scout_packet_sha256": S8Q_PACKET_SHA256,
+            "s8y_closed_loop_runtime_local_remote_packet_sha256": S8Y_PACKET_SHA256,
+            "s8y_remote_closed_loop_runtime_gates_result_sha256": S8Y_REMOTE_RESULT_SHA256,
         },
         "strategy_scope": {
             "market_family": "btc-5min",
@@ -523,9 +528,9 @@ def no_submit_orchestration_preview(args: argparse.Namespace) -> int:
             "review_only_no_submit": True,
             "ready_for_fresh_exact_approval": False,
             "ready_for_fresh_exact_approval_reason": (
-                "S8T binds preview/orchestration and order-status/fill-evidence gates. "
-                "Fresh approval still requires remote S8T no-submit provisioning and "
-                "a final exact approval index."
+                "S8Y makes the single prepared-order primitive closed-loop capable, "
+                "but this orchestrator remains no-submit only. Fresh broad S8A approval "
+                "still requires full live one-run loop execution binding."
             ),
             "scout_snapshot_sha256": scout_sha,
             "one_run_plan_sha256": plan_sha,
@@ -601,7 +606,24 @@ def main(argv: list[str]) -> int:
                 Path(args.order_status_fill_evidence_json)
             )
         return no_submit_orchestration_preview(args)
-    print_json(base_payload("BLOCK_S8R_EXECUTE_MODE_REQUIRES_FUTURE_FILLED_QTY_STATUS_ADAPTER_EXIT_66"))
+    payload = base_payload("BLOCK_S8Z_EXECUTE_MODE_REQUIRES_FULL_ONE_RUN_LOOP_BINDING_EXIT_66")
+    payload.update(
+        {
+            "ready_for_fresh_exact_approval": False,
+            "single_prepared_order_primitive_closed_loop_ready": True,
+            "full_one_run_loop_execute_ready": False,
+            "orders_submitted": 0,
+            "cancels_submitted": 0,
+            "signing_performed": False,
+            "block_reasons": [
+                "FULL_ONE_RUN_LOOP_EXECUTE_NOT_IMPLEMENTED",
+                "ORCHESTRATOR_DOES_NOT_YET_POLL_LIVE_SCOUT_OVER_4H",
+                "ORCHESTRATOR_DOES_NOT_YET_REPEAT_NATURAL_ADMISSION_UP_TO_THREE_ROUNDS",
+                "ORCHESTRATOR_DOES_NOT_YET_BIND_EFFECTFUL_S7W_FINAL_RECONCILIATION",
+            ],
+        }
+    )
+    print_json(payload)
     return 66
 
 
