@@ -346,6 +346,50 @@ class NagiCe25B27bcMakerShadowTests(unittest.TestCase):
         self.assertEqual(events.count("queue_proxy_open"), 0)
         self.assertGreaterEqual(events.count("open_rejected_no_recent_opposite_support"), 2)
 
+    def test_max_open_cost_rejects_when_limit_order_minimum_cannot_fit(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.50",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "20",
+            }
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(max_open_cost_usdc=2.0)
+        )
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertIn("open_rejected_max_open_cost_below_minimum", events)
+        self.assertNotIn("queue_proxy_open", events)
+
+    def test_per_market_residual_budget_blocks_large_worst_case_open(self):
+        rows = [
+            {
+                "window_id": "w1",
+                "slug": "btc-updown-5m-1800000000",
+                "ts_ms": "1000",
+                "remaining_s": "45",
+                "side": "YES",
+                "yes_bid": "0.50",
+                "public_taker_side": "SELL",
+                "yes_bid_top5_size": "100",
+                "public_trade_qty": "10",
+            }
+        ]
+        pipeline = shadow_mod.MakerShadowPipeline(
+            shadow_mod.PipelineConfig(per_market_residual_budget_usdc=2.0)
+        )
+        pipeline.run(rows)
+        events = [event["event"] for event in pipeline.events]
+        self.assertIn("open_rejected_per_market_residual_budget", events)
+        self.assertNotIn("queue_proxy_open", events)
+
     def test_limit_order_minimum_requires_five_shares(self):
         rows = [
             {
