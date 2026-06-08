@@ -21,6 +21,8 @@ pub const S8A_RUNTIME_WRAPPER_PREFLIGHT_REVIEW_EVENT: &str = "s8a_runtime_wrappe
 pub const S8A_ONE_RUN_ORCHESTRATION_REVIEW_EVENT: &str = "s8a_one_run_orchestration_review";
 pub const S8A_REMOTE_RUNTIME_PROVISIONING_REVIEW_EVENT: &str =
     "s8a_remote_runtime_provisioning_review";
+pub const S8A_ORDER_STATUS_FILL_EVIDENCE_REVIEW_EVENT: &str =
+    "s8a_order_status_fill_evidence_review";
 pub const S8A_REVIEWED_HOST: &str = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com";
 pub const S8A_OFFICIAL_CLOB_REST_URL: &str = "https://clob.polymarket.com";
 pub const S8A_NATIVE_RUNTIME_SCOPE: &str =
@@ -729,6 +731,341 @@ pub fn apply_s8a_fill_to_inventory(
         next.gross_quote_spend_usdc += fill.actual_filled_qty_shares * fill.avg_fill_price;
     }
     Ok(next)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aOrderStatusEvidenceSource {
+    PostOrderResponse,
+    OrderStatusApi,
+    TradeFillApi,
+}
+
+impl S8aOrderStatusEvidenceSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::PostOrderResponse => "POST_ORDER_RESPONSE",
+            Self::OrderStatusApi => "ORDER_STATUS_API",
+            Self::TradeFillApi => "TRADE_FILL_API",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aObservedOrderStatus {
+    Live,
+    Matched,
+    Filled,
+    Cancelled,
+    Rejected,
+    Failed,
+}
+
+impl S8aObservedOrderStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Live => "LIVE",
+            Self::Matched => "MATCHED",
+            Self::Filled => "FILLED",
+            Self::Cancelled => "CANCELLED",
+            Self::Rejected => "REJECTED",
+            Self::Failed => "FAILED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aOrderStatusFillEvidence {
+    pub prepared_order_sha256: String,
+    pub exact_approval_sha256: String,
+    pub expected_exact_approval_sha256: String,
+    pub exact_approval_hash_bound_to_order: bool,
+    pub prepared_order_hash_bound_to_order: bool,
+    pub approval_scope_matches_s8a: bool,
+    pub order_id: Option<String>,
+    pub failure_recorded: bool,
+    pub status_source: S8aOrderStatusEvidenceSource,
+    pub order_status: S8aObservedOrderStatus,
+    pub condition_id: String,
+    pub token_id: String,
+    pub side: Side,
+    pub action: S8aAdapterOrderAction,
+    pub condition_token_side_action_match_prepared_order: bool,
+    pub submitted_size_shares: f64,
+    pub actual_filled_qty_shares: f64,
+    pub avg_fill_price: Option<f64>,
+    pub open_order_remainder_qty_shares: f64,
+    pub filled_qty_from_exchange_or_order_status: bool,
+    pub submitted_size_counts_as_inventory: bool,
+    pub partial_fill_threshold_used: bool,
+    pub forced_complement_after_fill: bool,
+    pub no_open_order_remainder_required: bool,
+    pub prints_secret_or_raw_signature: bool,
+    pub uses_shared_ingress_or_shared_ws: bool,
+    pub uses_c_artifacts: bool,
+    pub funding_live_latest_or_deploy_requested: bool,
+    pub effectful_execution_requested_in_review: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aOrderStatusFillEvidenceBlockReason {
+    InvalidPreparedOrderHash,
+    InvalidExactApprovalHash,
+    ExactApprovalHashMismatch,
+    ExactApprovalHashNotBoundToOrder,
+    PreparedOrderHashNotBoundToOrder,
+    ApprovalScopeMismatch,
+    MissingOrderIdOrFailureRecord,
+    PreparedOrderBindingMismatch,
+    ConditionMismatch,
+    TokenMismatch,
+    SideMismatch,
+    ActionMismatch,
+    SubmittedSizeMismatch,
+    InvalidSubmittedSize,
+    InvalidActualFilledQty,
+    FilledQtyExceedsSubmittedSize,
+    MissingAverageFillPriceForPositiveFill,
+    InvalidAverageFillPrice,
+    InvalidOpenOrderRemainderQty,
+    OpenOrderRemainderPresent,
+    FilledQtyNotExchangeOrOrderStatusObserved,
+    SubmittedSizeCountsAsInventory,
+    PartialFillThresholdUsed,
+    ForcedComplementAfterFill,
+    SecretOrRawSignatureOutputAllowed,
+    SharedIngressOrSharedWsRequested,
+    CArtifactsRequested,
+    FundingLiveLatestOrDeployRequested,
+    EffectfulExecutionRequestedInReview,
+}
+
+impl S8aOrderStatusFillEvidenceBlockReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidPreparedOrderHash => "BLOCK_INVALID_PREPARED_ORDER_HASH",
+            Self::InvalidExactApprovalHash => "BLOCK_INVALID_EXACT_APPROVAL_HASH",
+            Self::ExactApprovalHashMismatch => "BLOCK_EXACT_APPROVAL_HASH_MISMATCH",
+            Self::ExactApprovalHashNotBoundToOrder => {
+                "BLOCK_EXACT_APPROVAL_HASH_NOT_BOUND_TO_ORDER"
+            }
+            Self::PreparedOrderHashNotBoundToOrder => {
+                "BLOCK_PREPARED_ORDER_HASH_NOT_BOUND_TO_ORDER"
+            }
+            Self::ApprovalScopeMismatch => "BLOCK_APPROVAL_SCOPE_MISMATCH",
+            Self::MissingOrderIdOrFailureRecord => "BLOCK_MISSING_ORDER_ID_OR_FAILURE_RECORD",
+            Self::PreparedOrderBindingMismatch => "BLOCK_PREPARED_ORDER_BINDING_MISMATCH",
+            Self::ConditionMismatch => "BLOCK_CONDITION_MISMATCH",
+            Self::TokenMismatch => "BLOCK_TOKEN_MISMATCH",
+            Self::SideMismatch => "BLOCK_SIDE_MISMATCH",
+            Self::ActionMismatch => "BLOCK_ACTION_MISMATCH",
+            Self::SubmittedSizeMismatch => "BLOCK_SUBMITTED_SIZE_MISMATCH",
+            Self::InvalidSubmittedSize => "BLOCK_INVALID_SUBMITTED_SIZE",
+            Self::InvalidActualFilledQty => "BLOCK_INVALID_ACTUAL_FILLED_QTY",
+            Self::FilledQtyExceedsSubmittedSize => "BLOCK_FILLED_QTY_EXCEEDS_SUBMITTED_SIZE",
+            Self::MissingAverageFillPriceForPositiveFill => {
+                "BLOCK_MISSING_AVERAGE_FILL_PRICE_FOR_POSITIVE_FILL"
+            }
+            Self::InvalidAverageFillPrice => "BLOCK_INVALID_AVERAGE_FILL_PRICE",
+            Self::InvalidOpenOrderRemainderQty => "BLOCK_INVALID_OPEN_ORDER_REMAINDER_QTY",
+            Self::OpenOrderRemainderPresent => "BLOCK_OPEN_ORDER_REMAINDER_PRESENT",
+            Self::FilledQtyNotExchangeOrOrderStatusObserved => {
+                "BLOCK_FILLED_QTY_NOT_EXCHANGE_OR_ORDER_STATUS_OBSERVED"
+            }
+            Self::SubmittedSizeCountsAsInventory => "BLOCK_SUBMITTED_SIZE_COUNTS_AS_INVENTORY",
+            Self::PartialFillThresholdUsed => "BLOCK_PARTIAL_FILL_THRESHOLD_USED",
+            Self::ForcedComplementAfterFill => "BLOCK_FORCED_COMPLEMENT_AFTER_FILL",
+            Self::SecretOrRawSignatureOutputAllowed => {
+                "BLOCK_SECRET_OR_RAW_SIGNATURE_OUTPUT_ALLOWED"
+            }
+            Self::SharedIngressOrSharedWsRequested => "BLOCK_SHARED_INGRESS_OR_SHARED_WS_REQUESTED",
+            Self::CArtifactsRequested => "BLOCK_C_ARTIFACTS_REQUESTED",
+            Self::FundingLiveLatestOrDeployRequested => {
+                "BLOCK_FUNDING_LIVE_LATEST_OR_DEPLOY_REQUESTED"
+            }
+            Self::EffectfulExecutionRequestedInReview => {
+                "BLOCK_EFFECTFUL_EXECUTION_REQUESTED_IN_REVIEW"
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aOrderStatusFillEvidenceReview {
+    pub event: &'static str,
+    pub block_reasons: Vec<S8aOrderStatusFillEvidenceBlockReason>,
+    pub order_id_or_failure_recorded: bool,
+    pub exact_approval_bound: bool,
+    pub prepared_order_bound: bool,
+    pub filled_qty_from_exchange_or_order_status_only: bool,
+    pub no_open_order_remainder: bool,
+    pub actual_filled_qty_ledger_ready: bool,
+    pub fill_event: Option<S8aFillEvent>,
+    pub effectful_execution_permitted: bool,
+}
+
+fn prepared_order_submitted_size_shares(order: &S8aPreparedVenueOrder) -> Option<f64> {
+    match order.amount {
+        S8aVenueAmount::Shares(value) => Some(value),
+        S8aVenueAmount::UsdcNotional(_) => None,
+    }
+}
+
+pub fn review_s8a_order_status_fill_evidence(
+    prepared_order: &S8aPreparedVenueOrder,
+    evidence: &S8aOrderStatusFillEvidence,
+) -> S8aOrderStatusFillEvidenceReview {
+    let mut block_reasons = Vec::new();
+
+    if !is_sha256_hex(&evidence.prepared_order_sha256) {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::InvalidPreparedOrderHash);
+    }
+    if !is_sha256_hex(&evidence.exact_approval_sha256)
+        || !is_sha256_hex(&evidence.expected_exact_approval_sha256)
+    {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::InvalidExactApprovalHash);
+    }
+    if evidence.exact_approval_sha256 != evidence.expected_exact_approval_sha256 {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::ExactApprovalHashMismatch);
+    }
+    if !evidence.exact_approval_hash_bound_to_order {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::ExactApprovalHashNotBoundToOrder);
+    }
+    if !evidence.prepared_order_hash_bound_to_order {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::PreparedOrderHashNotBoundToOrder);
+    }
+    if !evidence.approval_scope_matches_s8a {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::ApprovalScopeMismatch);
+    }
+
+    let order_id_or_failure_recorded = evidence
+        .order_id
+        .as_ref()
+        .is_some_and(|id| !id.trim().is_empty())
+        || evidence.failure_recorded;
+    if !order_id_or_failure_recorded {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::MissingOrderIdOrFailureRecord);
+    }
+
+    if !evidence.condition_token_side_action_match_prepared_order {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::PreparedOrderBindingMismatch);
+    }
+    if evidence.condition_id != prepared_order.condition_id {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::ConditionMismatch);
+    }
+    if evidence.token_id != prepared_order.token_id {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::TokenMismatch);
+    }
+    if evidence.side != prepared_order.side {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::SideMismatch);
+    }
+    if evidence.action != prepared_order.action {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::ActionMismatch);
+    }
+
+    let expected_submitted_size = prepared_order_submitted_size_shares(prepared_order);
+    if !evidence.submitted_size_shares.is_finite() || evidence.submitted_size_shares < 0.0 {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::InvalidSubmittedSize);
+    }
+    if expected_submitted_size
+        .is_some_and(|expected| (expected - evidence.submitted_size_shares).abs() > 1e-9)
+    {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::SubmittedSizeMismatch);
+    }
+
+    if !evidence.actual_filled_qty_shares.is_finite() || evidence.actual_filled_qty_shares < 0.0 {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::InvalidActualFilledQty);
+    }
+    if evidence.actual_filled_qty_shares > evidence.submitted_size_shares + 1e-9 {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::FilledQtyExceedsSubmittedSize);
+    }
+
+    let avg_fill_price = match evidence.avg_fill_price {
+        Some(price) if price.is_finite() && (0.0..=1.0).contains(&price) => price,
+        Some(_) => {
+            block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::InvalidAverageFillPrice);
+            0.0
+        }
+        None if evidence.actual_filled_qty_shares > 0.0 => {
+            block_reasons.push(
+                S8aOrderStatusFillEvidenceBlockReason::MissingAverageFillPriceForPositiveFill,
+            );
+            0.0
+        }
+        None => 0.0,
+    };
+
+    if !evidence.open_order_remainder_qty_shares.is_finite()
+        || evidence.open_order_remainder_qty_shares < 0.0
+    {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::InvalidOpenOrderRemainderQty);
+    }
+    if evidence.no_open_order_remainder_required && evidence.open_order_remainder_qty_shares > 1e-9
+    {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::OpenOrderRemainderPresent);
+    }
+    if !evidence.filled_qty_from_exchange_or_order_status {
+        block_reasons
+            .push(S8aOrderStatusFillEvidenceBlockReason::FilledQtyNotExchangeOrOrderStatusObserved);
+    }
+    if evidence.submitted_size_counts_as_inventory {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::SubmittedSizeCountsAsInventory);
+    }
+    if evidence.partial_fill_threshold_used {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::PartialFillThresholdUsed);
+    }
+    if evidence.forced_complement_after_fill {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::ForcedComplementAfterFill);
+    }
+    if evidence.prints_secret_or_raw_signature {
+        block_reasons
+            .push(S8aOrderStatusFillEvidenceBlockReason::SecretOrRawSignatureOutputAllowed);
+    }
+    if evidence.uses_shared_ingress_or_shared_ws {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::SharedIngressOrSharedWsRequested);
+    }
+    if evidence.uses_c_artifacts {
+        block_reasons.push(S8aOrderStatusFillEvidenceBlockReason::CArtifactsRequested);
+    }
+    if evidence.funding_live_latest_or_deploy_requested {
+        block_reasons
+            .push(S8aOrderStatusFillEvidenceBlockReason::FundingLiveLatestOrDeployRequested);
+    }
+    if evidence.effectful_execution_requested_in_review {
+        block_reasons
+            .push(S8aOrderStatusFillEvidenceBlockReason::EffectfulExecutionRequestedInReview);
+    }
+
+    let no_open_order_remainder = evidence.open_order_remainder_qty_shares <= 1e-9;
+    let fill_event = if block_reasons.is_empty() {
+        Some(S8aFillEvent {
+            side: evidence.side,
+            action: evidence.action,
+            submitted_size_shares: evidence.submitted_size_shares,
+            actual_filled_qty_shares: evidence.actual_filled_qty_shares,
+            avg_fill_price,
+        })
+    } else {
+        None
+    };
+
+    S8aOrderStatusFillEvidenceReview {
+        event: S8A_ORDER_STATUS_FILL_EVIDENCE_REVIEW_EVENT,
+        actual_filled_qty_ledger_ready: fill_event.is_some(),
+        fill_event,
+        order_id_or_failure_recorded,
+        exact_approval_bound: is_sha256_hex(&evidence.exact_approval_sha256)
+            && evidence.exact_approval_sha256 == evidence.expected_exact_approval_sha256
+            && evidence.exact_approval_hash_bound_to_order
+            && evidence.approval_scope_matches_s8a,
+        prepared_order_bound: is_sha256_hex(&evidence.prepared_order_sha256)
+            && evidence.prepared_order_hash_bound_to_order
+            && evidence.condition_token_side_action_match_prepared_order,
+        filled_qty_from_exchange_or_order_status_only: evidence
+            .filled_qty_from_exchange_or_order_status,
+        no_open_order_remainder,
+        block_reasons,
+        effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -2430,6 +2767,56 @@ mod tests {
         std::iter::repeat(ch).take(64).collect()
     }
 
+    fn clean_s8s_prepared_order() -> S8aPreparedVenueOrder {
+        S8aPreparedVenueOrder {
+            condition_id: "0x1111111111111111111111111111111111111111111111111111111111111111"
+                .to_string(),
+            token_id: "1000000000000000000000000000000000000000000000000000000000000001"
+                .to_string(),
+            side: Side::Yes,
+            action: S8aAdapterOrderAction::Buy,
+            order_type: S8aVenueOrderType::Gtc,
+            limit_price: Some(0.435),
+            amount: S8aVenueAmount::Shares(5.0),
+            execution_permitted: false,
+        }
+    }
+
+    fn clean_s8s_fill_evidence() -> S8aOrderStatusFillEvidence {
+        let prepared = clean_s8s_prepared_order();
+        S8aOrderStatusFillEvidence {
+            prepared_order_sha256: hex64('a'),
+            exact_approval_sha256: hex64('b'),
+            expected_exact_approval_sha256: hex64('b'),
+            exact_approval_hash_bound_to_order: true,
+            prepared_order_hash_bound_to_order: true,
+            approval_scope_matches_s8a: true,
+            order_id: Some("0xorder-s8s-fixture".to_string()),
+            failure_recorded: false,
+            status_source: S8aOrderStatusEvidenceSource::OrderStatusApi,
+            order_status: S8aObservedOrderStatus::Matched,
+            condition_id: prepared.condition_id,
+            token_id: prepared.token_id,
+            side: prepared.side,
+            action: prepared.action,
+            condition_token_side_action_match_prepared_order: true,
+            submitted_size_shares: 5.0,
+            actual_filled_qty_shares: 3.0,
+            avg_fill_price: Some(0.435),
+            open_order_remainder_qty_shares: 2.0,
+            filled_qty_from_exchange_or_order_status: true,
+            submitted_size_counts_as_inventory: false,
+            partial_fill_threshold_used: false,
+            forced_complement_after_fill: false,
+            no_open_order_remainder_required: false,
+            prints_secret_or_raw_signature: false,
+            uses_shared_ingress_or_shared_ws: false,
+            uses_c_artifacts: false,
+            funding_live_latest_or_deploy_requested: false,
+            effectful_execution_requested_in_review: false,
+        }
+    }
+
     fn clean_s8a_orchestration_review() -> S8aRuntimeOrchestrationPreviewReview {
         let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
         let steps = vec![
@@ -3592,6 +3979,136 @@ mod tests {
         assert!(review
             .block_reasons
             .contains(&S8aOneRunOrchestrationBlockReason::EffectfulExecutionRequestedInReview));
+    }
+
+    #[test]
+    fn s8s_order_status_fill_evidence_accepts_partial_fill_from_exchange_status_only() {
+        let prepared = clean_s8s_prepared_order();
+        let evidence = clean_s8s_fill_evidence();
+
+        let review = review_s8a_order_status_fill_evidence(&prepared, &evidence);
+
+        assert!(review.block_reasons.is_empty());
+        assert!(review.actual_filled_qty_ledger_ready);
+        assert!(review.order_id_or_failure_recorded);
+        assert!(review.exact_approval_bound);
+        assert!(review.prepared_order_bound);
+        assert!(review.filled_qty_from_exchange_or_order_status_only);
+        assert!(!review.no_open_order_remainder);
+        assert!(!review.effectful_execution_permitted);
+
+        let inventory = apply_s8a_fill_to_inventory(
+            S8aInventory::default(),
+            review
+                .fill_event
+                .expect("clean evidence creates fill event"),
+        )
+        .expect("partial fill applies to inventory");
+        assert_eq!(inventory.yes_qty, 3.0);
+        assert_eq!(inventory.no_qty, 0.0);
+        assert!((inventory.gross_quote_spend_usdc - 1.305).abs() < 1e-9);
+        assert_eq!(inventory.residual_qty(), 3.0);
+    }
+
+    #[test]
+    fn s8s_order_status_fill_evidence_rejects_submitted_size_inventory_drift() {
+        let prepared = clean_s8s_prepared_order();
+        let mut evidence = clean_s8s_fill_evidence();
+        evidence.filled_qty_from_exchange_or_order_status = false;
+        evidence.submitted_size_counts_as_inventory = true;
+        evidence.partial_fill_threshold_used = true;
+        evidence.forced_complement_after_fill = true;
+        evidence.actual_filled_qty_shares = 6.0;
+        evidence.prints_secret_or_raw_signature = true;
+        evidence.uses_shared_ingress_or_shared_ws = true;
+        evidence.uses_c_artifacts = true;
+        evidence.effectful_execution_requested_in_review = true;
+
+        let review = review_s8a_order_status_fill_evidence(&prepared, &evidence);
+
+        assert!(!review.actual_filled_qty_ledger_ready);
+        assert!(review.fill_event.is_none());
+        assert!(review.block_reasons.contains(
+            &S8aOrderStatusFillEvidenceBlockReason::FilledQtyNotExchangeOrOrderStatusObserved
+        ));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::SubmittedSizeCountsAsInventory));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::PartialFillThresholdUsed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::ForcedComplementAfterFill));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::FilledQtyExceedsSubmittedSize));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::SecretOrRawSignatureOutputAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::SharedIngressOrSharedWsRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::CArtifactsRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::EffectfulExecutionRequestedInReview));
+    }
+
+    #[test]
+    fn s8s_order_status_fill_evidence_rejects_unbound_or_unclosed_attempts() {
+        let prepared = clean_s8s_prepared_order();
+        let mut evidence = clean_s8s_fill_evidence();
+        evidence.prepared_order_sha256 = "bad-hash".to_string();
+        evidence.exact_approval_sha256 = hex64('c');
+        evidence.exact_approval_hash_bound_to_order = false;
+        evidence.prepared_order_hash_bound_to_order = false;
+        evidence.approval_scope_matches_s8a = false;
+        evidence.order_id = None;
+        evidence.failure_recorded = false;
+        evidence.condition_token_side_action_match_prepared_order = false;
+        evidence.token_id = "different-token".to_string();
+        evidence.avg_fill_price = None;
+        evidence.no_open_order_remainder_required = true;
+
+        let review = review_s8a_order_status_fill_evidence(&prepared, &evidence);
+
+        assert!(!review.actual_filled_qty_ledger_ready);
+        assert!(!review.order_id_or_failure_recorded);
+        assert!(!review.exact_approval_bound);
+        assert!(!review.prepared_order_bound);
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::InvalidPreparedOrderHash));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::ExactApprovalHashMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::ExactApprovalHashNotBoundToOrder));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::PreparedOrderHashNotBoundToOrder));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::ApprovalScopeMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::MissingOrderIdOrFailureRecord));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::PreparedOrderBindingMismatch));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::TokenMismatch));
+        assert!(review.block_reasons.contains(
+            &S8aOrderStatusFillEvidenceBlockReason::MissingAverageFillPriceForPositiveFill
+        ));
+        assert!(review
+            .block_reasons
+            .contains(&S8aOrderStatusFillEvidenceBlockReason::OpenOrderRemainderPresent));
     }
 
     #[test]
