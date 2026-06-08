@@ -15,6 +15,7 @@ pub const S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT: bool = false;
 pub const S8A_NATIVE_ORDER_ADAPTER_REVIEW_EVENT: &str = "s8a_native_order_adapter_review";
 pub const S8A_SCOUT_ADMISSION_REVIEW_EVENT: &str = "s8a_scout_admission_review";
 pub const S8A_SESSION_GATE_REVIEW_EVENT: &str = "s8a_session_gate_review";
+pub const S8A_RUNTIME_LOOP_BINDING_REVIEW_EVENT: &str = "s8a_runtime_loop_binding_review";
 pub const S8A_LIMIT_MIN_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_LIMIT_ENTRY_ORDER_SIZE_SHARES: f64 = 5.0;
 pub const S8A_MARKET_BUY_MIN_NOTIONAL_USDC: f64 = 1.0;
@@ -805,6 +806,261 @@ pub fn review_s8a_new_round_gate(state: &S8aSessionState) -> S8aSessionGateRevie
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRuntimeLoopBindingEvidence {
+    pub native_effectful_runtime_source_bound: bool,
+    pub runtime_requires_fresh_exact_approval: bool,
+    pub runtime_preview_without_approval_exits_66: bool,
+    pub no_order_auth_preview_available: bool,
+    pub exact_order_path_preview_available: bool,
+    pub actual_filled_qty_ledger_enabled: bool,
+    pub submitted_size_counts_as_inventory: bool,
+    pub partial_fill_threshold_enabled: bool,
+    pub forced_complement_allowed: bool,
+    pub session_caps_bound: bool,
+    pub s7w_reconciliation_required: bool,
+    pub s7w_exact_approved_receipt_tier_required: bool,
+    pub review_only_fixture_receipt_accepted: bool,
+    pub no_open_order_remainder_required: bool,
+    pub residual_exposure_zero_required: bool,
+    pub runtime_opens_own_ws: bool,
+    pub b_owned_direct_public_ws_connection_count: u32,
+    pub shared_ingress_dependency: bool,
+    pub uses_c_artifacts: bool,
+    pub online_tuning_allowed: bool,
+    pub strategy_discovery_allowed: bool,
+    pub candidate_import_allowed: bool,
+    pub prints_secret_or_raw_signature: bool,
+    pub funding_live_latest_or_deploy_requested: bool,
+    pub effectful_execution_requested_in_review: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum S8aRuntimeLoopBindingBlockReason {
+    SessionGateBlocked,
+    ScoutAdmissionBlocked,
+    ControllerAdapterNotBound,
+    MissingPreparedOrder,
+    NativeRuntimeSourceMissing,
+    RuntimeDoesNotRequireFreshExactApproval,
+    RuntimePreviewWithoutApprovalNot66,
+    NoOrderAuthPreviewMissing,
+    ExactOrderPathPreviewMissing,
+    ActualFilledQtyLedgerMissing,
+    SubmittedSizeCountsAsInventory,
+    PartialFillThresholdEnabled,
+    ForcedComplementAllowed,
+    SessionCapsMissing,
+    S7wReconciliationMissing,
+    S7wExactApprovedReceiptTierNotRequired,
+    ReviewOnlyFixtureReceiptAccepted,
+    OpenOrderRemainderNotRequired,
+    ResidualExposureZeroNotRequired,
+    RuntimeOpensOwnWs,
+    TooManyBOwnedDirectPublicWs,
+    SharedIngressDependency,
+    CArtifactsRequested,
+    OnlineTuningAllowed,
+    StrategyDiscoveryAllowed,
+    CandidateImportRequested,
+    SecretOrRawSignatureOutputAllowed,
+    FundingLiveLatestOrDeployRequested,
+    EffectfulExecutionRequestedInReview,
+    InventoryUpdateBlocked,
+}
+
+impl S8aRuntimeLoopBindingBlockReason {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::SessionGateBlocked => "BLOCK_SESSION_GATE_BLOCKED",
+            Self::ScoutAdmissionBlocked => "BLOCK_SCOUT_ADMISSION_BLOCKED",
+            Self::ControllerAdapterNotBound => "BLOCK_CONTROLLER_ADAPTER_NOT_BOUND",
+            Self::MissingPreparedOrder => "BLOCK_MISSING_PREPARED_ORDER",
+            Self::NativeRuntimeSourceMissing => "BLOCK_NATIVE_RUNTIME_SOURCE_MISSING",
+            Self::RuntimeDoesNotRequireFreshExactApproval => {
+                "BLOCK_RUNTIME_DOES_NOT_REQUIRE_FRESH_EXACT_APPROVAL"
+            }
+            Self::RuntimePreviewWithoutApprovalNot66 => {
+                "BLOCK_RUNTIME_PREVIEW_WITHOUT_APPROVAL_NOT_66"
+            }
+            Self::NoOrderAuthPreviewMissing => "BLOCK_NO_ORDER_AUTH_PREVIEW_MISSING",
+            Self::ExactOrderPathPreviewMissing => "BLOCK_EXACT_ORDER_PATH_PREVIEW_MISSING",
+            Self::ActualFilledQtyLedgerMissing => "BLOCK_ACTUAL_FILLED_QTY_LEDGER_MISSING",
+            Self::SubmittedSizeCountsAsInventory => "BLOCK_SUBMITTED_SIZE_COUNTS_AS_INVENTORY",
+            Self::PartialFillThresholdEnabled => "BLOCK_PARTIAL_FILL_THRESHOLD_ENABLED",
+            Self::ForcedComplementAllowed => "BLOCK_FORCED_COMPLEMENT_ALLOWED",
+            Self::SessionCapsMissing => "BLOCK_SESSION_CAPS_MISSING",
+            Self::S7wReconciliationMissing => "BLOCK_S7W_RECONCILIATION_MISSING",
+            Self::S7wExactApprovedReceiptTierNotRequired => {
+                "BLOCK_S7W_EXACT_APPROVED_RECEIPT_TIER_NOT_REQUIRED"
+            }
+            Self::ReviewOnlyFixtureReceiptAccepted => "BLOCK_REVIEW_ONLY_FIXTURE_RECEIPT_ACCEPTED",
+            Self::OpenOrderRemainderNotRequired => "BLOCK_OPEN_ORDER_REMAINDER_NOT_REQUIRED",
+            Self::ResidualExposureZeroNotRequired => "BLOCK_RESIDUAL_EXPOSURE_ZERO_NOT_REQUIRED",
+            Self::RuntimeOpensOwnWs => "BLOCK_RUNTIME_OPENS_OWN_WS",
+            Self::TooManyBOwnedDirectPublicWs => "BLOCK_TOO_MANY_B_OWNED_DIRECT_PUBLIC_WS",
+            Self::SharedIngressDependency => "BLOCK_SHARED_INGRESS_DEPENDENCY",
+            Self::CArtifactsRequested => "BLOCK_C_ARTIFACTS_REQUESTED",
+            Self::OnlineTuningAllowed => "BLOCK_ONLINE_TUNING_ALLOWED",
+            Self::StrategyDiscoveryAllowed => "BLOCK_STRATEGY_DISCOVERY_ALLOWED",
+            Self::CandidateImportRequested => "BLOCK_CANDIDATE_IMPORT_REQUESTED",
+            Self::SecretOrRawSignatureOutputAllowed => {
+                "BLOCK_SECRET_OR_RAW_SIGNATURE_OUTPUT_ALLOWED"
+            }
+            Self::FundingLiveLatestOrDeployRequested => {
+                "BLOCK_FUNDING_LIVE_LATEST_OR_DEPLOY_REQUESTED"
+            }
+            Self::EffectfulExecutionRequestedInReview => {
+                "BLOCK_EFFECTFUL_EXECUTION_REQUESTED_IN_REVIEW"
+            }
+            Self::InventoryUpdateBlocked => "BLOCK_INVENTORY_UPDATE_BLOCKED",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct S8aRuntimeLoopBindingReview {
+    pub event: &'static str,
+    pub block_reasons: Vec<S8aRuntimeLoopBindingBlockReason>,
+    pub session_gate_review: S8aSessionGateReview,
+    pub scout_admission_review: S8aScoutAdmissionReview,
+    pub prepared_order: Option<S8aPreparedVenueOrder>,
+    pub projected_inventory_after_fill: Option<S8aInventory>,
+    pub inventory_update_block_reason: Option<S8aInventoryUpdateBlockReason>,
+    pub loop_ready_for_fresh_exact_approval: bool,
+    pub effectful_execution_permitted: bool,
+}
+
+pub fn review_s8a_runtime_loop_binding(
+    cfg: &BtcCompletionControllerConfig,
+    controller_state: &BtcCompletionControllerState,
+    session_state: &S8aSessionState,
+    inventory: S8aInventory,
+    snapshot: &S8aScoutAdmissionSnapshot,
+    context: &S8aControllerAdmissionAdapterContext,
+    evidence: &S8aRuntimeLoopBindingEvidence,
+    observed_fill: Option<S8aFillEvent>,
+) -> S8aRuntimeLoopBindingReview {
+    let session_gate_review = review_s8a_new_round_gate(session_state);
+    let scout_admission_review =
+        review_s8a_scout_snapshot_for_limit_entry(cfg, controller_state, snapshot, context);
+
+    let mut block_reasons = Vec::new();
+    if !session_gate_review.can_open_new_round {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::SessionGateBlocked);
+    }
+    if !scout_admission_review.scout_source_bound {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ScoutAdmissionBlocked);
+    }
+    if !scout_admission_review.controller_and_adapter_bound {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ControllerAdapterNotBound);
+    }
+    if scout_admission_review.prepared_order.is_none() {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::MissingPreparedOrder);
+    }
+    if !evidence.native_effectful_runtime_source_bound {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::NativeRuntimeSourceMissing);
+    }
+    if !evidence.runtime_requires_fresh_exact_approval {
+        block_reasons
+            .push(S8aRuntimeLoopBindingBlockReason::RuntimeDoesNotRequireFreshExactApproval);
+    }
+    if !evidence.runtime_preview_without_approval_exits_66 {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::RuntimePreviewWithoutApprovalNot66);
+    }
+    if !evidence.no_order_auth_preview_available {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::NoOrderAuthPreviewMissing);
+    }
+    if !evidence.exact_order_path_preview_available {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ExactOrderPathPreviewMissing);
+    }
+    if !evidence.actual_filled_qty_ledger_enabled {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ActualFilledQtyLedgerMissing);
+    }
+    if evidence.submitted_size_counts_as_inventory {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::SubmittedSizeCountsAsInventory);
+    }
+    if evidence.partial_fill_threshold_enabled {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::PartialFillThresholdEnabled);
+    }
+    if evidence.forced_complement_allowed {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ForcedComplementAllowed);
+    }
+    if !evidence.session_caps_bound {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::SessionCapsMissing);
+    }
+    if !evidence.s7w_reconciliation_required {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::S7wReconciliationMissing);
+    }
+    if !evidence.s7w_exact_approved_receipt_tier_required {
+        block_reasons
+            .push(S8aRuntimeLoopBindingBlockReason::S7wExactApprovedReceiptTierNotRequired);
+    }
+    if evidence.review_only_fixture_receipt_accepted {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ReviewOnlyFixtureReceiptAccepted);
+    }
+    if !evidence.no_open_order_remainder_required {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::OpenOrderRemainderNotRequired);
+    }
+    if !evidence.residual_exposure_zero_required {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::ResidualExposureZeroNotRequired);
+    }
+    if evidence.runtime_opens_own_ws {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::RuntimeOpensOwnWs);
+    }
+    if evidence.b_owned_direct_public_ws_connection_count > 1 {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::TooManyBOwnedDirectPublicWs);
+    }
+    if evidence.shared_ingress_dependency {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::SharedIngressDependency);
+    }
+    if evidence.uses_c_artifacts {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::CArtifactsRequested);
+    }
+    if evidence.online_tuning_allowed {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::OnlineTuningAllowed);
+    }
+    if evidence.strategy_discovery_allowed {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::StrategyDiscoveryAllowed);
+    }
+    if evidence.candidate_import_allowed {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::CandidateImportRequested);
+    }
+    if evidence.prints_secret_or_raw_signature {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::SecretOrRawSignatureOutputAllowed);
+    }
+    if evidence.funding_live_latest_or_deploy_requested {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::FundingLiveLatestOrDeployRequested);
+    }
+    if evidence.effectful_execution_requested_in_review {
+        block_reasons.push(S8aRuntimeLoopBindingBlockReason::EffectfulExecutionRequestedInReview);
+    }
+
+    let (projected_inventory_after_fill, inventory_update_block_reason) =
+        match observed_fill.map(|fill| apply_s8a_fill_to_inventory(inventory, fill)) {
+            Some(Ok(next_inventory)) => (Some(next_inventory), None),
+            Some(Err(reason)) => {
+                block_reasons.push(S8aRuntimeLoopBindingBlockReason::InventoryUpdateBlocked);
+                (None, Some(reason))
+            }
+            None => (None, None),
+        };
+
+    let loop_ready_for_fresh_exact_approval = block_reasons.is_empty();
+
+    S8aRuntimeLoopBindingReview {
+        event: S8A_RUNTIME_LOOP_BINDING_REVIEW_EVENT,
+        block_reasons,
+        session_gate_review,
+        prepared_order: scout_admission_review.prepared_order.clone(),
+        scout_admission_review,
+        projected_inventory_after_fill,
+        inventory_update_block_reason,
+        loop_ready_for_fresh_exact_approval,
+        effectful_execution_permitted: S8A_NATIVE_ORDER_ADAPTER_ENABLED_DEFAULT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -910,6 +1166,49 @@ mod tests {
             source_is_b_owned_direct_public_ws: true,
             shared_ingress_dependency: false,
             b_owned_direct_public_ws_connection_count: 1,
+        }
+    }
+
+    fn clean_s8a_loop_binding_evidence() -> S8aRuntimeLoopBindingEvidence {
+        S8aRuntimeLoopBindingEvidence {
+            native_effectful_runtime_source_bound: true,
+            runtime_requires_fresh_exact_approval: true,
+            runtime_preview_without_approval_exits_66: true,
+            no_order_auth_preview_available: true,
+            exact_order_path_preview_available: true,
+            actual_filled_qty_ledger_enabled: true,
+            submitted_size_counts_as_inventory: false,
+            partial_fill_threshold_enabled: false,
+            forced_complement_allowed: false,
+            session_caps_bound: true,
+            s7w_reconciliation_required: true,
+            s7w_exact_approved_receipt_tier_required: true,
+            review_only_fixture_receipt_accepted: false,
+            no_open_order_remainder_required: true,
+            residual_exposure_zero_required: true,
+            runtime_opens_own_ws: false,
+            b_owned_direct_public_ws_connection_count: 1,
+            shared_ingress_dependency: false,
+            uses_c_artifacts: false,
+            online_tuning_allowed: false,
+            strategy_discovery_allowed: false,
+            candidate_import_allowed: false,
+            prints_secret_or_raw_signature: false,
+            funding_live_latest_or_deploy_requested: false,
+            effectful_execution_requested_in_review: false,
+        }
+    }
+
+    fn clean_s8a_session_state() -> S8aSessionState {
+        S8aSessionState {
+            completed_rounds: 0,
+            active_market_open: false,
+            realized_session_loss_usdc: 0.0,
+            active_round_risk_at_work_usdc: 0.0,
+            cumulative_gross_quote_spend_usdc: 0.0,
+            total_order_submissions: 0,
+            cancel_count: 0,
+            recovery_tx_count: 0,
         }
     }
 
@@ -1235,5 +1534,218 @@ mod tests {
             .block_reasons
             .contains(&S8aSessionGateBlockReason::RealizedLossCapWouldBeExceeded));
         assert!(!review.effectful_execution_permitted);
+    }
+
+    #[test]
+    fn s8f_loop_binding_accepts_clean_review_only_chain_and_actual_fill_projection() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let session = clean_s8a_session_state();
+        let fill = S8aFillEvent {
+            side: Side::Yes,
+            action: S8aAdapterOrderAction::Buy,
+            submitted_size_shares: 5.0,
+            actual_filled_qty_shares: 3.0,
+            avg_fill_price: 0.435,
+        };
+
+        let review = review_s8a_runtime_loop_binding(
+            &cfg,
+            &state,
+            &session,
+            S8aInventory::default(),
+            &scout_snapshot(Side::Yes),
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+            Some(fill),
+        );
+
+        assert!(review.loop_ready_for_fresh_exact_approval);
+        assert!(review.block_reasons.is_empty());
+        assert!(review.session_gate_review.can_open_new_round);
+        assert!(review.scout_admission_review.controller_and_adapter_bound);
+        assert!(!review.effectful_execution_permitted);
+        let order = review.prepared_order.expect("prepared order");
+        assert_eq!(order.side, Side::Yes);
+        assert_eq!(order.amount, S8aVenueAmount::Shares(5.0));
+        let projected = review
+            .projected_inventory_after_fill
+            .expect("projected inventory");
+        assert_eq!(projected.yes_qty, 3.0);
+        assert_eq!(projected.no_qty, 0.0);
+        assert_eq!(projected.residual_qty(), 3.0);
+        assert!((projected.gross_quote_spend_usdc - 1.305).abs() < 1e-9);
+    }
+
+    #[test]
+    fn s8f_loop_binding_blocks_session_caps_before_fresh_approval() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let mut session = clean_s8a_session_state();
+        session.completed_rounds = 3;
+        session.active_market_open = true;
+
+        let review = review_s8a_runtime_loop_binding(
+            &cfg,
+            &state,
+            &session,
+            S8aInventory::default(),
+            &scout_snapshot(Side::Yes),
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+            None,
+        );
+
+        assert!(!review.loop_ready_for_fresh_exact_approval);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::SessionGateBlocked));
+        assert!(review
+            .session_gate_review
+            .block_reasons
+            .contains(&S8aSessionGateBlockReason::MaxRoundsReached));
+        assert!(review
+            .session_gate_review
+            .block_reasons
+            .contains(&S8aSessionGateBlockReason::ActiveMarketAlreadyOpen));
+        assert!(review.prepared_order.is_some());
+        assert!(!review.effectful_execution_permitted);
+    }
+
+    #[test]
+    fn s8f_loop_binding_rejects_semantic_drift_and_fixture_receipts() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let mut evidence = clean_s8a_loop_binding_evidence();
+        evidence.actual_filled_qty_ledger_enabled = false;
+        evidence.submitted_size_counts_as_inventory = true;
+        evidence.partial_fill_threshold_enabled = true;
+        evidence.forced_complement_allowed = true;
+        evidence.s7w_exact_approved_receipt_tier_required = false;
+        evidence.review_only_fixture_receipt_accepted = true;
+
+        let review = review_s8a_runtime_loop_binding(
+            &cfg,
+            &state,
+            &clean_s8a_session_state(),
+            S8aInventory::default(),
+            &scout_snapshot(Side::No),
+            &adapter_context(),
+            &evidence,
+            None,
+        );
+
+        assert!(!review.loop_ready_for_fresh_exact_approval);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::ActualFilledQtyLedgerMissing));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::SubmittedSizeCountsAsInventory));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::PartialFillThresholdEnabled));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::ForcedComplementAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::S7wExactApprovedReceiptTierNotRequired));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::ReviewOnlyFixtureReceiptAccepted));
+    }
+
+    #[test]
+    fn s8f_loop_binding_rejects_shared_sources_c_artifacts_and_effectful_review() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let mut evidence = clean_s8a_loop_binding_evidence();
+        evidence.runtime_opens_own_ws = true;
+        evidence.b_owned_direct_public_ws_connection_count = 2;
+        evidence.shared_ingress_dependency = true;
+        evidence.uses_c_artifacts = true;
+        evidence.online_tuning_allowed = true;
+        evidence.strategy_discovery_allowed = true;
+        evidence.candidate_import_allowed = true;
+        evidence.prints_secret_or_raw_signature = true;
+        evidence.funding_live_latest_or_deploy_requested = true;
+        evidence.effectful_execution_requested_in_review = true;
+
+        let review = review_s8a_runtime_loop_binding(
+            &cfg,
+            &state,
+            &clean_s8a_session_state(),
+            S8aInventory::default(),
+            &scout_snapshot(Side::Yes),
+            &adapter_context(),
+            &evidence,
+            None,
+        );
+
+        assert!(!review.loop_ready_for_fresh_exact_approval);
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::RuntimeOpensOwnWs));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::TooManyBOwnedDirectPublicWs));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::SharedIngressDependency));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::CArtifactsRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::OnlineTuningAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::StrategyDiscoveryAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::CandidateImportRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::SecretOrRawSignatureOutputAllowed));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::FundingLiveLatestOrDeployRequested));
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::EffectfulExecutionRequestedInReview));
+    }
+
+    #[test]
+    fn s8f_loop_binding_blocks_invalid_inventory_update() {
+        let cfg = BtcCompletionControllerConfig::s8a_size5_runtime_default();
+        let state = BtcCompletionControllerState::default();
+        let bad_fill = S8aFillEvent {
+            side: Side::No,
+            action: S8aAdapterOrderAction::Sell,
+            submitted_size_shares: 5.0,
+            actual_filled_qty_shares: 5.0,
+            avg_fill_price: 0.25,
+        };
+
+        let review = review_s8a_runtime_loop_binding(
+            &cfg,
+            &state,
+            &clean_s8a_session_state(),
+            S8aInventory::default(),
+            &scout_snapshot(Side::No),
+            &adapter_context(),
+            &clean_s8a_loop_binding_evidence(),
+            Some(bad_fill),
+        );
+
+        assert!(!review.loop_ready_for_fresh_exact_approval);
+        assert_eq!(
+            review.inventory_update_block_reason,
+            Some(S8aInventoryUpdateBlockReason::SellWouldExceedInventory)
+        );
+        assert!(review
+            .block_reasons
+            .contains(&S8aRuntimeLoopBindingBlockReason::InventoryUpdateBlocked));
     }
 }
