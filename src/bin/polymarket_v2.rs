@@ -10,6 +10,7 @@ use rust_decimal::prelude::{FromPrimitive, ToPrimitive};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::env;
@@ -4027,6 +4028,38 @@ fn local_price_agg_boundary_diag_window_ms() -> u64 {
         .unwrap_or(30_000)
 }
 
+fn local_price_agg_boundary_tape_enabled() -> bool {
+    env_bool("PM_LOCAL_PRICE_AGG_BOUNDARY_TAPE_ENABLED", true)
+}
+
+fn local_agg_compact_evidence_enabled() -> bool {
+    env_bool("PM_LOCAL_AGG_COMPACT_EVIDENCE_ENABLED", true)
+}
+
+fn local_agg_compact_evidence_root() -> PathBuf {
+    env_nonempty_var(&["PM_LOCAL_AGG_COMPACT_EVIDENCE_ROOT"])
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let base = PathBuf::from("data/compact_evidence");
+            match instance_id() {
+                Some(id) => base.join(id),
+                None => base,
+            }
+        })
+}
+
+fn local_agg_compact_evidence_date(round_end_ts: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(round_end_ts as i64, 0)
+        .map(|dt| dt.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "unknown-date".to_string())
+}
+
+fn local_agg_compact_evidence_path(round_end_ts: u64) -> PathBuf {
+    local_agg_compact_evidence_root()
+        .join(local_agg_compact_evidence_date(round_end_ts))
+        .join("round_evidence.jsonl")
+}
+
 fn local_price_agg_uncertainty_gate_enabled() -> bool {
     env_bool("PM_LOCAL_AGG_UNCERTAINTY_GATE_ENABLED", false)
 }
@@ -4928,12 +4961,32 @@ enum SharedIngressWireMsg {
         no_bid: f64,
         no_ask: f64,
         ts_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        event_time_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_sequence_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        l1_event_time_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        l1_source_sequence_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book_l1_source_sequence_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        l2_event_time_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        l2_source_sequence_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        book_l2_source_sequence_id: Option<String>,
         #[serde(default)]
         depth: Option<MarketBookDepthEvidence>,
     },
     MarketTradeTick {
         asset_id: String,
         trade_id: Option<String>,
+        #[serde(default)]
+        source_sequence_id: Option<String>,
+        #[serde(default)]
+        event_time_ms: Option<u64>,
         market_side: String,
         taker_side: String,
         price: f64,
@@ -4961,6 +5014,16 @@ async fn shared_ingress_send_wire_line<W: AsyncWriteExt + Unpin>(
     writer.write_all(&line).await?;
     writer.flush().await?;
     Ok(())
+}
+
+fn shared_ingress_book_source_aliases(
+    depth: Option<&MarketBookDepthEvidence>,
+) -> (Option<u64>, Option<String>) {
+    let event_time_ms = depth.and_then(MarketBookDepthEvidence::canonical_event_time_ms);
+    let source_sequence_id = depth
+        .and_then(MarketBookDepthEvidence::canonical_source_sequence_id)
+        .map(str::to_string);
+    (event_time_ms, source_sequence_id)
 }
 
 fn partial_book_tick_from_post_close_update(side: Side, bid: f64, ask: f64) -> MarketDataMsg {
@@ -5971,6 +6034,10 @@ fn append_local_price_agg_sources_probe(probe: &LocalPriceAggSourcesProbe) {
 }
 
 fn append_local_price_agg_boundary_probe(probe: &LocalPriceAggBoundaryProbe) {
+    if !local_price_agg_boundary_tape_enabled() {
+        return;
+    }
+
     let mut line = match serde_json::to_string(probe) {
         Ok(s) => s,
         Err(e) => {
@@ -9965,6 +10032,22 @@ async fn run_post_close_winner_hint_listener(
                         )
                     })
                 };
+                let router_uncertainty_gate_candidate =
+                    router_uncertainty_gate_candidate.map(|candidate| {
+                        local_agg_family_gated_selector_candidate(
+                            &slug,
+                            &symbol,
+                            round_end_ts,
+                            first_ref,
+                            first_obs,
+                            first_side,
+                            started_ms,
+                            ready_ms,
+                            deadline_ms,
+                            candidate,
+                            &compare_hit.boundary_shadow_outcomes,
+                        )
+                    });
                 if let Some(candidate) = router_uncertainty_gate_candidate {
                     local_agg_uncertainty_gate_observe_candidate(candidate);
                 }
@@ -16926,6 +17009,11 @@ struct LocalAggUncertaintyGateRoundState {
 static LOCAL_AGG_UNCERTAINTY_GATE_ROUNDS: OnceLock<
     Mutex<HashMap<u64, LocalAggUncertaintyGateRoundState>>,
 > = OnceLock::new();
+static LOCAL_AGG_COMPACT_EVIDENCE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn local_agg_compact_evidence_write_lock() -> &'static Mutex<()> {
+    LOCAL_AGG_COMPACT_EVIDENCE_WRITE_LOCK.get_or_init(|| Mutex::new(()))
+}
 
 fn local_agg_uncertainty_gate_bucket_key(level: &str, key: &[String]) -> String {
     format!("{}\x1e{}", level, key.join("\x1f"))
@@ -17059,6 +17147,14 @@ impl LocalAggUncertaintyGateModel {
         {
             return LocalAggUncertaintyGateDecision::gated("above_max_source_spread");
         }
+        if local_agg_uncertainty_gate_hype_drop_binance_tail_quarantined(candidate) {
+            return LocalAggUncertaintyGateDecision::gated(
+                "hype_drop_binance_three_source_midspread_margin_quarantine",
+            );
+        }
+        if local_agg_family_gated_selector_alt_accepted(candidate) {
+            return LocalAggUncertaintyGateDecision::accepted_family_gated_selector();
+        }
         if local_agg_uncertainty_gate_residual_family_quarantined(candidate) {
             return LocalAggUncertaintyGateDecision::gated("residual_family_quarantine");
         }
@@ -17149,6 +17245,22 @@ impl LocalAggUncertaintyGateDecision {
             train_mean_bps: f64::NAN,
             train_max_bps: f64::NAN,
             required_margin_bps: f64::NAN,
+        }
+    }
+
+    fn accepted_family_gated_selector() -> Self {
+        Self {
+            accepted: true,
+            reason: "",
+            key_level: "family_gated_selector",
+            train_n: 0,
+            train_side_errors: 0,
+            train_q_bps: f64::NAN,
+            train_q95_bps: f64::NAN,
+            train_q99_bps: f64::NAN,
+            train_mean_bps: f64::NAN,
+            train_max_bps: f64::NAN,
+            required_margin_bps: LOCAL_AGG_FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS,
         }
     }
 
@@ -17304,6 +17416,20 @@ fn local_agg_uncertainty_gate_bnb_low_source_requires_delta_history(
         && candidate.close_abs_delta_ms >= 1_000
 }
 
+fn local_agg_uncertainty_gate_hype_drop_binance_tail_quarantined(
+    candidate: &LocalAggUncertaintyGateCandidate,
+) -> bool {
+    candidate.symbol == "hype/usd"
+        && candidate.source_subset == "drop_binance"
+        && candidate.rule == "after_then_before"
+        && candidate.sources == "bybit;hyperliquid;okx"
+        && candidate.source_count == 3
+        && candidate.exact_sources == 0
+        && candidate.source_spread_bps >= 1.5
+        && candidate.direction_margin_bps >= 5.0
+        && candidate.close_abs_delta_ms <= 1_000
+}
+
 fn local_agg_uncertainty_gate_residual_family_quarantined(
     candidate: &LocalAggUncertaintyGateCandidate,
 ) -> bool {
@@ -17315,12 +17441,30 @@ fn local_agg_uncertainty_gate_residual_family_quarantined(
             candidate.rule.as_str(),
         ),
         ("bnb/usd", "bnb_okx_no_fallback", "okx", "after_then_before")
+            | (
+                "bnb/usd",
+                "coinbase_older_hard_fallback_subsets_age5000_20000",
+                "coinbase",
+                "last_before"
+            )
             | ("bnb/usd", "drop_okx", "binance;bybit", "after_then_before")
             | (
                 "doge/usd",
                 "doge_binance_fallback",
                 "binance",
                 "after_then_before"
+            )
+            | (
+                "doge/usd",
+                "coinbase_older_hard_fallback_subsets_age5000_20000",
+                "coinbase",
+                "last_before"
+            )
+            | (
+                "doge/usd",
+                "doge_same_side_shallowest_pre_window",
+                "binance",
+                "last_before"
             )
             | ("doge/usd", "drop_binance", "bybit", "last_before")
             | (
@@ -17613,6 +17757,163 @@ fn local_agg_gate_candidate_from_boundary_hit(
     }
 }
 
+const LOCAL_AGG_FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS: f64 = 1.5;
+const LOCAL_AGG_FAMILY_GATED_SELECTOR_BNB_COINBASE_OLDER_MIN_MARGIN_BPS: f64 = 3.5;
+const LOCAL_AGG_FAMILY_GATED_SELECTOR_DOGE_COINBASE_OLDER_MIN_MARGIN_BPS: f64 = 3.5;
+
+fn local_agg_family_gated_selector_row_family_allowed(
+    candidate: &LocalAggUncertaintyGateCandidate,
+) -> bool {
+    matches!(
+        (
+            candidate.symbol.as_str(),
+            candidate.source_subset.as_str(),
+            candidate.rule.as_str(),
+        ),
+        ("bnb/usd", "drop_okx", "after_then_before")
+            | ("doge/usd", "doge_binance_fallback", "after_then_before")
+            | ("doge/usd", "drop_binance", "last_before")
+            | (
+                "eth/usd",
+                "eth_binance_missing_fallback",
+                "after_then_before"
+            )
+            | ("sol/usd", "sol_binance_fallback", "after_then_before")
+            | ("sol/usd", "sol_okx_missing_fallback", "after_then_before")
+            | ("xrp/usd", "only_binance_coinbase", "nearest_abs")
+    )
+}
+
+fn local_agg_family_gated_selector_alt_priority(hit: &LocalBoundaryShadowHit) -> Option<u8> {
+    if hit.source_subset_name == "sol_coinbase_fallback"
+        && hit.rule == LocalBoundaryCloseRule::AfterThenBefore
+    {
+        return Some(0);
+    }
+    if hit.source_subset_name == LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        && hit.rule == LocalBoundaryCloseRule::LastBefore
+    {
+        return Some(1);
+    }
+    None
+}
+
+fn local_agg_family_gated_selector_hit_allowed(
+    symbol: &str,
+    first_ref: f64,
+    hit: &LocalBoundaryShadowHit,
+) -> bool {
+    if symbol == "doge/usd"
+        && hit.source_subset_name == LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        && hit.rule == LocalBoundaryCloseRule::LastBefore
+    {
+        let margin = local_boundary_direction_margin_bps(hit.close_price, first_ref);
+        if margin + 1e-12 < LOCAL_AGG_FAMILY_GATED_SELECTOR_DOGE_COINBASE_OLDER_MIN_MARGIN_BPS {
+            return false;
+        }
+    }
+    if symbol == "bnb/usd"
+        && hit.source_subset_name == LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        && hit.rule == LocalBoundaryCloseRule::LastBefore
+    {
+        let margin = local_boundary_direction_margin_bps(hit.close_price, first_ref);
+        if margin + 1e-12 < LOCAL_AGG_FAMILY_GATED_SELECTOR_BNB_COINBASE_OLDER_MIN_MARGIN_BPS {
+            return false;
+        }
+    }
+    true
+}
+
+fn local_agg_family_gated_selector_alt_accepted(
+    candidate: &LocalAggUncertaintyGateCandidate,
+) -> bool {
+    if candidate.direction_margin_bps + 1e-12
+        < LOCAL_AGG_FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS
+    {
+        return false;
+    }
+    if candidate.source_subset == "sol_coinbase_fallback" {
+        return candidate.symbol == "sol/usd"
+            && candidate.rule == "after_then_before"
+            && candidate.sources == "coinbase"
+            && candidate.source_count == 1
+            && candidate.exact_sources == 0;
+    }
+    if candidate.symbol == "doge/usd"
+        && candidate.source_subset == LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        && candidate.rule == "last_before"
+        && candidate.direction_margin_bps + 1e-12
+            < LOCAL_AGG_FAMILY_GATED_SELECTOR_DOGE_COINBASE_OLDER_MIN_MARGIN_BPS
+    {
+        return false;
+    }
+    if candidate.symbol == "bnb/usd"
+        && candidate.source_subset == LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        && candidate.rule == "last_before"
+        && candidate.direction_margin_bps + 1e-12
+            < LOCAL_AGG_FAMILY_GATED_SELECTOR_BNB_COINBASE_OLDER_MIN_MARGIN_BPS
+    {
+        return false;
+    }
+    candidate.source_subset == LOCAL_BOUNDARY_COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        && candidate.rule == "last_before"
+        && candidate.sources == "coinbase"
+        && candidate.source_count == 1
+        && candidate.source_spread_bps <= 1e-12
+        && candidate.close_abs_delta_ms >= LOCAL_BOUNDARY_COINBASE_OLDER_MIN_AGE_MS
+        && candidate.close_abs_delta_ms <= LOCAL_BOUNDARY_COINBASE_OLDER_MAX_AGE_MS
+}
+
+fn local_agg_family_gated_selector_candidate(
+    slug: &str,
+    symbol: &str,
+    round_end_ts: u64,
+    first_ref: f64,
+    first_obs: f64,
+    first_side: Side,
+    started_ms: u64,
+    ready_ms: u64,
+    deadline_ms: u64,
+    candidate: LocalAggUncertaintyGateCandidate,
+    boundary_shadow_outcomes: &[LocalBoundaryShadowOutcome],
+) -> LocalAggUncertaintyGateCandidate {
+    if !local_agg_uncertainty_gate_residual_family_quarantined(&candidate)
+        || !local_agg_family_gated_selector_row_family_allowed(&candidate)
+    {
+        return candidate;
+    }
+    let Some(hit) = boundary_shadow_outcomes
+        .iter()
+        .filter_map(|outcome| outcome.hit.as_ref())
+        .filter(|hit| {
+            local_agg_family_gated_selector_alt_priority(hit).is_some()
+                && local_agg_family_gated_selector_hit_allowed(symbol, first_ref, hit)
+                && local_boundary_direction_margin_bps(hit.close_price, first_ref) + 1e-12
+                    >= LOCAL_AGG_FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS
+        })
+        .min_by_key(|hit| {
+            (
+                local_agg_family_gated_selector_alt_priority(hit).unwrap_or(9),
+                local_agg_gate_median_abs_delta_ms(&hit.source_contributions, round_end_ts),
+            )
+        })
+    else {
+        return candidate;
+    };
+    local_agg_gate_candidate_from_boundary_hit(
+        slug,
+        symbol,
+        round_end_ts,
+        first_ref,
+        first_obs,
+        first_side,
+        started_ms,
+        ready_ms,
+        deadline_ms,
+        hit,
+    )
+}
+
 fn local_agg_gate_candidate_from_close_only_hit(
     slug: &str,
     symbol: &str,
@@ -17672,6 +17973,179 @@ fn local_agg_gate_fmt_f64(value: f64) -> String {
     }
 }
 
+fn local_agg_compact_opt_f64(value: f64) -> Option<f64> {
+    if value.is_finite() {
+        Some(value)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LocalAggCompactEvidenceRow<'a> {
+    schema_version: u8,
+    event: &'static str,
+    emitted_ms: u64,
+    phase: &'static str,
+    slug: &'a str,
+    symbol: &'a str,
+    round_end_ts: u64,
+    policy: &'static str,
+    source_subset: &'a str,
+    rule: &'a str,
+    min_sources: usize,
+    gate_status: &'a str,
+    gate_reason: &'a str,
+    row_gate_status: &'a str,
+    row_gate_reason: &'static str,
+    gate_key_level: &'static str,
+    gate_train_n: usize,
+    gate_train_side_errors: usize,
+    gate_train_q_bps: Option<f64>,
+    gate_train_q95_bps: Option<f64>,
+    gate_train_q99_bps: Option<f64>,
+    gate_train_mean_bps: Option<f64>,
+    gate_train_max_bps: Option<f64>,
+    gate_required_margin_bps: Option<f64>,
+    round_observed_candidates: usize,
+    round_max_margin_bps: Option<f64>,
+    round_max_margin_limit_bps: Option<f64>,
+    local_side_vs_rtds_open: String,
+    rtds_side: String,
+    side_match_vs_rtds_open: bool,
+    local_close: f64,
+    local_close_ts_ms: u64,
+    rtds_open: f64,
+    rtds_close: f64,
+    close_abs_diff: f64,
+    close_diff_bps: f64,
+    direction_margin_bps: f64,
+    local_sources: &'a str,
+    local_source_count: usize,
+    local_close_spread_bps: f64,
+    local_close_exact_sources: usize,
+    close_abs_delta_ms: u64,
+    local_started_ms: u64,
+    local_ready_ms: u64,
+    local_deadline_ms: u64,
+    local_elapsed_ms: u64,
+    ready_delay_ms: u64,
+}
+
+fn append_local_agg_compact_evidence(
+    candidate: &LocalAggUncertaintyGateCandidate,
+    phase: &'static str,
+    gate_status: &str,
+    gate_reason: &str,
+    row_gate_status: &str,
+    row_decision: &LocalAggUncertaintyGateDecision,
+    observed_candidates: usize,
+    round_max_margin_bps: Option<f64>,
+    round_max_margin_limit_bps: f64,
+) {
+    if !local_agg_compact_evidence_enabled() {
+        return;
+    }
+    if !matches!(phase, "final" | "final_update") {
+        return;
+    }
+
+    let path = local_agg_compact_evidence_path(candidate.round_end_ts);
+    if let Some(parent) = path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            warn!(
+                "⚠️ local_agg_compact_evidence mkdir failed: path={} err={}",
+                parent.display(),
+                e
+            );
+            return;
+        }
+    }
+
+    let row = LocalAggCompactEvidenceRow {
+        schema_version: 1,
+        event: "local_agg_round_evidence",
+        emitted_ms: unix_now_millis_u64(),
+        phase,
+        slug: &candidate.slug,
+        symbol: &candidate.symbol,
+        round_end_ts: candidate.round_end_ts,
+        policy: "boundary_symbol_router_v1",
+        source_subset: &candidate.source_subset,
+        rule: &candidate.rule,
+        min_sources: candidate.min_sources,
+        gate_status,
+        gate_reason,
+        row_gate_status,
+        row_gate_reason: row_decision.reason,
+        gate_key_level: row_decision.key_level,
+        gate_train_n: row_decision.train_n,
+        gate_train_side_errors: row_decision.train_side_errors,
+        gate_train_q_bps: local_agg_compact_opt_f64(row_decision.train_q_bps),
+        gate_train_q95_bps: local_agg_compact_opt_f64(row_decision.train_q95_bps),
+        gate_train_q99_bps: local_agg_compact_opt_f64(row_decision.train_q99_bps),
+        gate_train_mean_bps: local_agg_compact_opt_f64(row_decision.train_mean_bps),
+        gate_train_max_bps: local_agg_compact_opt_f64(row_decision.train_max_bps),
+        gate_required_margin_bps: local_agg_compact_opt_f64(row_decision.required_margin_bps),
+        round_observed_candidates: observed_candidates,
+        round_max_margin_bps: round_max_margin_bps.and_then(local_agg_compact_opt_f64),
+        round_max_margin_limit_bps: local_agg_compact_opt_f64(round_max_margin_limit_bps),
+        local_side_vs_rtds_open: format!("{:?}", candidate.local_side),
+        rtds_side: format!("{:?}", candidate.rtds_side),
+        side_match_vs_rtds_open: candidate.side_match,
+        local_close: candidate.local_close,
+        local_close_ts_ms: candidate.local_close_ts_ms,
+        rtds_open: candidate.rtds_open,
+        rtds_close: candidate.rtds_close,
+        close_abs_diff: candidate.close_abs_diff,
+        close_diff_bps: candidate.close_diff_bps,
+        direction_margin_bps: candidate.direction_margin_bps,
+        local_sources: &candidate.sources,
+        local_source_count: candidate.source_count,
+        local_close_spread_bps: candidate.source_spread_bps,
+        local_close_exact_sources: candidate.exact_sources,
+        close_abs_delta_ms: candidate.close_abs_delta_ms,
+        local_started_ms: candidate.started_ms,
+        local_ready_ms: candidate.ready_ms,
+        local_deadline_ms: candidate.deadline_ms,
+        local_elapsed_ms: candidate.ready_ms.saturating_sub(candidate.started_ms),
+        ready_delay_ms: candidate
+            .ready_ms
+            .saturating_sub(candidate.round_end_ts.saturating_mul(1_000)),
+    };
+
+    let mut line = match serde_json::to_string(&row) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("⚠️ local_agg_compact_evidence serialize failed: {}", e);
+            return;
+        }
+    };
+    line.push('\n');
+
+    let _guard = match local_agg_compact_evidence_write_lock().lock() {
+        Ok(guard) => guard,
+        Err(e) => {
+            warn!("⚠️ local_agg_compact_evidence write lock poisoned: {}", e);
+            return;
+        }
+    };
+    let mut file = match OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            warn!(
+                "⚠️ local_agg_compact_evidence write open failed: path={} err={}",
+                path.display(),
+                e
+            );
+            return;
+        }
+    };
+    if let Err(e) = file.write_all(line.as_bytes()).and_then(|_| file.flush()) {
+        warn!("⚠️ local_agg_compact_evidence write failed: {}", e);
+    }
+}
+
 fn local_agg_uncertainty_gate_emit_candidate(
     model: &LocalAggUncertaintyGateModel,
     candidate: &LocalAggUncertaintyGateCandidate,
@@ -17701,6 +18175,17 @@ fn local_agg_uncertainty_gate_emit_candidate(
     } else {
         "gated"
     };
+    append_local_agg_compact_evidence(
+        candidate,
+        phase,
+        gate_status,
+        gate_reason,
+        row_gate_status,
+        &row_decision,
+        observed_candidates,
+        round_max_margin_bps,
+        model.config.max_round_max_margin_bps,
+    );
     let round_max = round_max_margin_bps.unwrap_or(f64::NAN);
     let line = format!(
         "🧪 local_price_agg_uncertainty_gate_shadow | phase={} slug={} symbol={} round_end_ts={} policy=boundary_symbol_router_v1 source_subset={} rule={} min_sources={} gate_status={} gate_reason={} row_gate_status={} row_gate_reason={} gate_key_level={} gate_train_n={} gate_train_side_errors={} gate_train_q_bps={} gate_train_q95_bps={} gate_train_q99_bps={} gate_train_mean_bps={} gate_train_max_bps={} gate_required_margin_bps={} round_observed_candidates={} round_max_margin_bps={} round_max_margin_limit_bps={} local_side_vs_rtds_open={:?} rtds_side={:?} side_match_vs_rtds_open={} local_close={:.15}@{} rtds_open={:.15} rtds_close={:.15} close_abs_diff={:.12e} close_diff_bps={:.6} direction_margin_bps={:.6} local_sources={} local_close_spread_bps={:.6} local_close_exact_sources={} close_abs_delta_ms={} local_started_ms={} local_ready_ms={} local_deadline_ms={} local_elapsed_ms={}",
@@ -19721,6 +20206,16 @@ fn parse_source_sequence_id(value: &Value) -> Option<String> {
     None
 }
 
+fn synthetic_trade_source_sequence_id(value: &Value) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"polymarket_trade_source_v1\0");
+    match serde_json::to_vec(value) {
+        Ok(raw) => hasher.update(raw),
+        Err(_) => hasher.update(value.to_string().as_bytes()),
+    }
+    format!("synthetic_trade_{}", hex::encode(hasher.finalize()))
+}
+
 fn parse_source_event_time_ms(value: &Value) -> Option<u64> {
     for key in [
         "source_event_time_ms",
@@ -19930,13 +20425,17 @@ fn market_book_depth_evidence(
     best_ask_size: Option<f64>,
 ) -> Option<MarketBookDepthEvidence> {
     let side = classify_side(asset_id, settings)?;
+    let event_time_ms = parse_source_event_time_ms(source)
+        .or_else(|| fallback_source.and_then(parse_source_event_time_ms));
+    let source_sequence_id = parse_source_sequence_id(source)
+        .or_else(|| fallback_source.and_then(parse_source_sequence_id));
     Some(MarketBookDepthEvidence {
         market_side: Some(side.as_str().to_string()),
         asset_id: Some(asset_id.to_string()),
-        event_time_ms: parse_source_event_time_ms(source)
-            .or_else(|| fallback_source.and_then(parse_source_event_time_ms)),
-        source_sequence_id: parse_source_sequence_id(source)
-            .or_else(|| fallback_source.and_then(parse_source_sequence_id)),
+        event_time_ms,
+        source_sequence_id: source_sequence_id.clone(),
+        l2_event_time_ms: event_time_ms,
+        l2_source_sequence_id: source_sequence_id,
         best_bid,
         best_ask,
         best_bid_size,
@@ -19983,8 +20482,8 @@ fn market_book_depth_tick_from_evidence(depth: &MarketBookDepthEvidence) -> Opti
         best_ask_size,
         best_bid_drop_qty,
         best_ask_drop_qty,
-        event_time_ms: depth.event_time_ms,
-        source_sequence_id: depth.source_sequence_id.clone(),
+        event_time_ms: depth.canonical_event_time_ms(),
+        source_sequence_id: depth.canonical_source_sequence_id().map(str::to_string),
         ts: Instant::now(),
     })
 }
@@ -20242,12 +20741,18 @@ fn parse_ws_message(settings: &Settings, value: &Value) -> Vec<MarketDataMsg> {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(str::to_string);
+                let source_sequence_id = parse_source_sequence_id(value)
+                    .or_else(|| trade_id.clone())
+                    .or_else(|| Some(synthetic_trade_source_sequence_id(value)));
+                let event_time_ms = parse_source_event_time_ms(value);
 
                 if price > 0.0 {
                     if let Some(ms) = market_side {
                         msgs.push(MarketDataMsg::TradeTick {
                             asset_id: asset_id.to_string(),
                             trade_id,
+                            source_sequence_id,
+                            event_time_ms,
                             market_side: ms,
                             taker_side,
                             price,
@@ -21073,6 +21578,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                             MarketDataMsg::TradeTick {
                                                 asset_id,
                                                 trade_id,
+                                                source_sequence_id,
+                                                event_time_ms,
                                                 market_side,
                                                 taker_side,
                                                 price,
@@ -21084,6 +21591,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                 feed.publish(SharedIngressWireMsg::MarketTradeTick {
                                                     asset_id: asset_id.clone(),
                                                     trade_id: trade_id.clone(),
+                                                    source_sequence_id: source_sequence_id.clone(),
+                                                    event_time_ms: *event_time_ms,
                                                     market_side: market_side.as_str().to_string(),
                                                     taker_side: taker_side.as_str().to_string(),
                                                     price: *price,
@@ -21123,12 +21632,24 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                         ..
                                                     } = &full
                                                     {
+                                                        let (event_time_ms, source_sequence_id) =
+                                                            shared_ingress_book_source_aliases(
+                                                                depth.as_ref(),
+                                                            );
                                                         feed.publish(SharedIngressWireMsg::MarketBookTick {
                                                             yes_bid: *yes_bid,
                                                             yes_ask: *yes_ask,
                                                             no_bid: *no_bid,
                                                             no_ask: *no_ask,
                                                             ts_ms: recv_ms,
+                                                            event_time_ms,
+                                                            source_sequence_id: source_sequence_id.clone(),
+                                                            l1_event_time_ms: event_time_ms,
+                                                            l1_source_sequence_id: source_sequence_id.clone(),
+                                                            book_l1_source_sequence_id: source_sequence_id.clone(),
+                                                            l2_event_time_ms: event_time_ms,
+                                                            l2_source_sequence_id: source_sequence_id.clone(),
+                                                            book_l2_source_sequence_id: source_sequence_id,
                                                             depth: depth.clone(),
                                                         });
                                                     }
@@ -21196,6 +21717,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                             MarketDataMsg::TradeTick {
                                                 asset_id,
                                                 trade_id,
+                                                source_sequence_id,
+                                                event_time_ms,
                                                 market_side,
                                                 taker_side,
                                                 price,
@@ -21207,6 +21730,8 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                 feed.publish(SharedIngressWireMsg::MarketTradeTick {
                                                     asset_id: asset_id.clone(),
                                                     trade_id: trade_id.clone(),
+                                                    source_sequence_id: source_sequence_id.clone(),
+                                                    event_time_ms: *event_time_ms,
                                                     market_side: market_side.as_str().to_string(),
                                                     taker_side: taker_side.as_str().to_string(),
                                                     price: *price,
@@ -21246,12 +21771,24 @@ async fn run_market_ws_broker_feed(settings: Settings, feed: Arc<SharedMarketIng
                                                         ..
                                                     } = &full
                                                     {
+                                                        let (event_time_ms, source_sequence_id) =
+                                                            shared_ingress_book_source_aliases(
+                                                                depth.as_ref(),
+                                                            );
                                                         feed.publish(SharedIngressWireMsg::MarketBookTick {
                                                             yes_bid: *yes_bid,
                                                             yes_ask: *yes_ask,
                                                             no_bid: *no_bid,
                                                             no_ask: *no_ask,
                                                             ts_ms: recv_ms,
+                                                            event_time_ms,
+                                                            source_sequence_id: source_sequence_id.clone(),
+                                                            l1_event_time_ms: event_time_ms,
+                                                            l1_source_sequence_id: source_sequence_id.clone(),
+                                                            book_l1_source_sequence_id: source_sequence_id.clone(),
+                                                            l2_event_time_ms: event_time_ms,
+                                                            l2_source_sequence_id: source_sequence_id.clone(),
+                                                            book_l2_source_sequence_id: source_sequence_id,
                                                             depth: depth.clone(),
                                                         });
                                                     }
@@ -21491,15 +22028,27 @@ async fn run_market_ws_remote_with_wall_guard(
                         continue;
                     };
                     match msg {
-                            SharedIngressWireMsg::MarketTradeTick { asset_id, trade_id, market_side, taker_side, price, size, .. } => {
+                            SharedIngressWireMsg::MarketTradeTick {
+                                asset_id,
+                                trade_id,
+                                source_sequence_id,
+                                event_time_ms,
+                                market_side,
+                                taker_side,
+                                price,
+                                size,
+                                ..
+                            } => {
                                 session_wire_trade_tick_count =
                                     session_wire_trade_tick_count.saturating_add(1);
                                 let market_side = if market_side.eq_ignore_ascii_case("YES") { Side::Yes } else { Side::No };
                                 let taker_side = if taker_side.eq_ignore_ascii_case("BUY") { TakerSide::Buy } else { TakerSide::Sell };
-                                let md_msg = MarketDataMsg::TradeTick {
-                                    asset_id,
-                                    trade_id,
-                                    market_side,
+                                    let md_msg = MarketDataMsg::TradeTick {
+                                        asset_id,
+                                        trade_id,
+                                        source_sequence_id,
+                                        event_time_ms,
+                                        market_side,
                                     taker_side,
                                     price,
                                     size,
@@ -22167,6 +22716,8 @@ async fn run_market_ws(
                                             MarketDataMsg::TradeTick {
                                                 asset_id,
                                                 trade_id,
+                                                source_sequence_id,
+                                                event_time_ms,
                                                 market_side,
                                                 taker_side,
                                                 price,
@@ -22185,8 +22736,10 @@ async fn run_market_ws(
                                                         *taker_side,
                                                         *price,
                                                         *size,
-                                                        trade_id.as_deref(),
-                                                            Some(unix_now_millis_u64()),
+                                                            trade_id.as_deref(),
+                                                            (*event_time_ms).or(Some(unix_now_millis_u64())),
+                                                            source_sequence_id.as_deref(),
+                                                            *event_time_ms,
                                                         );
                                                     }
                                                     try_broadcast_dry_run_touch_md(
@@ -22379,6 +22932,8 @@ async fn run_market_ws(
                                                     MarketDataMsg::TradeTick {
                                                         asset_id,
                                                         trade_id,
+                                                        source_sequence_id,
+                                                        event_time_ms,
                                                         market_side,
                                                         taker_side,
                                                         price,
@@ -22399,8 +22954,10 @@ async fn run_market_ws(
                                                                 *taker_side,
                                                                 *price,
                                                                 *size,
-                                                                trade_id.as_deref(),
-                                                                    Some(unix_now_millis_u64()),
+                                                                    trade_id.as_deref(),
+                                                                    (*event_time_ms).or(Some(unix_now_millis_u64())),
+                                                                    source_sequence_id.as_deref(),
+                                                                    *event_time_ms,
                                                                 );
                                                             }
                                                             try_broadcast_dry_run_touch_md(
@@ -25709,6 +26266,7 @@ mod tests {
             "size": "100",
             "side": "SELL",
             "trade_id": "tid-123",
+            "timestamp": 1_746_000_000_123_u64,
         });
 
         let msgs = parse_ws_message(&settings, &value);
@@ -25717,6 +26275,8 @@ mod tests {
             MarketDataMsg::TradeTick {
                 asset_id,
                 trade_id,
+                source_sequence_id,
+                event_time_ms,
                 market_side,
                 taker_side,
                 price,
@@ -25725,6 +26285,8 @@ mod tests {
             } => {
                 assert_eq!(asset_id, "111");
                 assert_eq!(trade_id.as_deref(), Some("tid-123"));
+                assert_eq!(source_sequence_id.as_deref(), Some("tid-123"));
+                assert_eq!(*event_time_ms, Some(1_746_000_000_123));
                 assert_eq!(*market_side, Side::Yes);
                 assert_eq!(*taker_side, TakerSide::Sell);
                 assert!((*price - 0.50).abs() < 1e-9);
@@ -25732,6 +26294,55 @@ mod tests {
             }
             other => panic!("unexpected message: {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parse_ws_message_last_trade_price_synthesizes_source_id_without_trade_id() {
+        let settings = Settings {
+            market_slug: Some("btc-updown-5m-test".to_string()),
+            market_id: "0xmarket".to_string(),
+            yes_asset_id: "111".to_string(),
+            no_asset_id: "222".to_string(),
+            ws_base_url: String::new(),
+            rest_url: String::new(),
+            private_key: None,
+            funder_address: None,
+            custom_feature: false,
+        };
+        let value = json!({
+            "event_type": "last_trade_price",
+            "asset_id": "111",
+            "price": "0.50",
+            "size": "100",
+            "side": "SELL",
+            "timestamp": 1_746_000_000_123_u64,
+        });
+
+        let first = parse_ws_message(&settings, &value);
+        let second = parse_ws_message(&settings, &value);
+        assert_eq!(first.len(), 1);
+        assert_eq!(second.len(), 1);
+        let first_source = match &first[0] {
+            MarketDataMsg::TradeTick {
+                trade_id,
+                source_sequence_id,
+                event_time_ms,
+                ..
+            } => {
+                assert!(trade_id.is_none());
+                assert_eq!(*event_time_ms, Some(1_746_000_000_123));
+                source_sequence_id.as_deref().expect("source id")
+            }
+            other => panic!("unexpected message: {other:?}"),
+        };
+        let second_source = match &second[0] {
+            MarketDataMsg::TradeTick {
+                source_sequence_id, ..
+            } => source_sequence_id.as_deref().expect("source id"),
+            other => panic!("unexpected message: {other:?}"),
+        };
+        assert!(first_source.starts_with("synthetic_trade_"));
+        assert_eq!(first_source, second_source);
     }
 
     #[test]
@@ -25776,10 +26387,55 @@ mod tests {
         assert_eq!(depth.asset_id.as_deref(), Some("111"));
         assert_eq!(depth.event_time_ms, Some(1_746_000_000_123));
         assert_eq!(depth.source_sequence_id.as_deref(), Some("42"));
+        assert_eq!(depth.l2_event_time_ms, Some(1_746_000_000_123));
+        assert_eq!(depth.l2_source_sequence_id.as_deref(), Some("42"));
         assert_eq!(depth.best_bid, Some(0.49));
         assert_eq!(depth.best_ask, Some(0.51));
         assert_eq!(depth.best_bid_size, Some(12.5));
         assert_eq!(depth.best_ask_size, Some(4.5));
+    }
+
+    #[test]
+    fn test_shared_ingress_market_book_tick_serializes_top_level_source_aliases() {
+        let depth = MarketBookDepthEvidence {
+            event_time_ms: Some(1_746_000_000_123),
+            source_sequence_id: Some("book-seq-42".to_string()),
+            l2_event_time_ms: Some(1_746_000_000_123),
+            l2_source_sequence_id: Some("book-seq-42".to_string()),
+            ..Default::default()
+        };
+        let (event_time_ms, source_sequence_id) = shared_ingress_book_source_aliases(Some(&depth));
+        let value = serde_json::to_value(SharedIngressWireMsg::MarketBookTick {
+            yes_bid: 0.49,
+            yes_ask: 0.51,
+            no_bid: 0.48,
+            no_ask: 0.52,
+            ts_ms: 1_746_000_000_456,
+            event_time_ms,
+            source_sequence_id: source_sequence_id.clone(),
+            l1_event_time_ms: event_time_ms,
+            l1_source_sequence_id: source_sequence_id.clone(),
+            book_l1_source_sequence_id: source_sequence_id.clone(),
+            l2_event_time_ms: event_time_ms,
+            l2_source_sequence_id: source_sequence_id.clone(),
+            book_l2_source_sequence_id: source_sequence_id,
+            depth: Some(depth),
+        })
+        .expect("book wire msg should serialize");
+
+        assert_eq!(value["kind"].as_str(), Some("market_book_tick"));
+        assert_eq!(value["l1_source_sequence_id"].as_str(), Some("book-seq-42"));
+        assert_eq!(
+            value["book_l1_source_sequence_id"].as_str(),
+            Some("book-seq-42")
+        );
+        assert_eq!(value["l2_source_sequence_id"].as_str(), Some("book-seq-42"));
+        assert_eq!(
+            value["book_l2_source_sequence_id"].as_str(),
+            Some("book-seq-42")
+        );
+        assert_eq!(value["l1_event_time_ms"].as_u64(), Some(1_746_000_000_123));
+        assert_eq!(value["l2_event_time_ms"].as_u64(), Some(1_746_000_000_123));
     }
 
     #[test]

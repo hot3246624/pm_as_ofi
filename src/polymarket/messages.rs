@@ -46,6 +46,8 @@ pub enum MarketDataMsg {
     TradeTick {
         asset_id: String,
         trade_id: Option<String>,
+        source_sequence_id: Option<String>,
+        event_time_ms: Option<u64>,
         market_side: Side,
         taker_side: TakerSide,
         price: f64,

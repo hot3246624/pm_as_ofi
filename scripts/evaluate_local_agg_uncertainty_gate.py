@@ -180,8 +180,11 @@ def exact_bucket(row: dict) -> str:
 
 RESIDUAL_FAMILY_QUARANTINE = {
     ("bnb/usd", "bnb_okx_no_fallback", "okx", "after_then_before"),
+    ("bnb/usd", "coinbase_older_hard_fallback_subsets_age5000_20000", "coinbase", "last_before"),
     ("bnb/usd", "drop_okx", "binance;bybit", "after_then_before"),
     ("doge/usd", "doge_binance_fallback", "binance", "after_then_before"),
+    ("doge/usd", "coinbase_older_hard_fallback_subsets_age5000_20000", "coinbase", "last_before"),
+    ("doge/usd", "doge_same_side_shallowest_pre_window", "binance", "last_before"),
     ("doge/usd", "drop_binance", "bybit", "last_before"),
     ("doge/usd", "drop_binance", "bybit;coinbase;okx", "last_before"),
     ("doge/usd", "drop_binance", "bybit;okx", "last_before"),
@@ -191,6 +194,85 @@ RESIDUAL_FAMILY_QUARANTINE = {
     ("sol/usd", "sol_okx_missing_fallback", "okx", "after_then_before"),
     ("xrp/usd", "only_binance_coinbase", "binance", "nearest_abs"),
 }
+
+
+FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS = 1.5
+FAMILY_GATED_SELECTOR_BNB_COINBASE_OLDER_MIN_MARGIN_BPS = 3.5
+FAMILY_GATED_SELECTOR_DOGE_COINBASE_OLDER_MIN_MARGIN_BPS = 3.5
+COINBASE_OLDER_SHADOW_SOURCE_SUBSET = "coinbase_older_hard_fallback_subsets_age5000_20000"
+
+
+def family_gated_selector_alt_reason(row: dict) -> str | None:
+    margin = to_float(row.get("direction_margin_bps"))
+    if margin is None or margin + 1e-12 < FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS:
+        return None
+    symbol = str(row.get("symbol", ""))
+    subset = str(row.get("source_subset", ""))
+    rule = str(row.get("rule", ""))
+    sources = str(row.get("sources", ""))
+    source_count = to_int(row.get("source_count"))
+    exact_sources = to_int(row.get("exact_sources")) or 0
+    spread = to_float(row.get("source_spread_bps")) or 0.0
+    delta_ms = to_float(row.get("close_abs_delta_ms"))
+    if (
+        symbol == "sol/usd"
+        and subset == "sol_coinbase_fallback"
+        and rule == "after_then_before"
+        and sources == "coinbase"
+        and source_count == 1
+        and exact_sources == 0
+    ):
+        return "family_gated_selector"
+    if (
+        subset == COINBASE_OLDER_SHADOW_SOURCE_SUBSET
+        and rule == "last_before"
+        and sources == "coinbase"
+        and source_count == 1
+        and spread <= 1e-12
+        and delta_ms is not None
+        and 5_000.0 <= delta_ms <= 20_000.0
+    ):
+        if (
+            symbol == "bnb/usd"
+            and margin + 1e-12
+            < FAMILY_GATED_SELECTOR_BNB_COINBASE_OLDER_MIN_MARGIN_BPS
+        ):
+            return None
+        if (
+            symbol == "doge/usd"
+            and margin + 1e-12
+            < FAMILY_GATED_SELECTOR_DOGE_COINBASE_OLDER_MIN_MARGIN_BPS
+        ):
+            return None
+        return "family_gated_selector"
+    return None
+
+
+def hype_drop_binance_tail_quarantine_reason(row: dict) -> str | None:
+    if (
+        str(row.get("symbol", "")) != "hype/usd"
+        or str(row.get("source_subset", "")) != "drop_binance"
+        or str(row.get("rule", "")) != "after_then_before"
+        or str(row.get("sources", "")) != "bybit;hyperliquid;okx"
+    ):
+        return None
+    source_count = to_int(row.get("source_count"))
+    exact_sources = to_int(row.get("exact_sources")) or 0
+    spread = to_float(row.get("source_spread_bps"))
+    margin = to_float(row.get("direction_margin_bps"))
+    delta_ms = to_float(row.get("close_abs_delta_ms"))
+    if (
+        source_count == 3
+        and exact_sources == 0
+        and spread is not None
+        and spread >= 1.5
+        and margin is not None
+        and margin >= 5.0
+        and delta_ms is not None
+        and delta_ms <= 1_000.0
+    ):
+        return "hype_drop_binance_three_source_midspread_margin_quarantine"
+    return None
 
 
 def residual_family_quarantine_reason(row: dict) -> str | None:
@@ -400,6 +482,22 @@ def gate_row(
         return False, {
             "gate_status": row.get("status", "not_ok"),
             "gate_reason": row.get("filter_reason") or row.get("status", "not_ok"),
+        }
+    if reason := hype_drop_binance_tail_quarantine_reason(row):
+        return False, {"gate_status": "gated", "gate_reason": reason}
+    if reason := family_gated_selector_alt_reason(row):
+        return True, {
+            "gate_status": "accepted",
+            "gate_reason": "",
+            "gate_key_level": reason,
+            "gate_train_n": 0,
+            "gate_train_side_errors": 0,
+            "gate_train_q_bps": None,
+            "gate_train_q95_bps": None,
+            "gate_train_q99_bps": None,
+            "gate_train_mean_bps": None,
+            "gate_train_max_bps": None,
+            "gate_required_margin_bps": FAMILY_GATED_SELECTOR_MIN_ALT_DIRECTION_MARGIN_BPS,
         }
     if reason := residual_family_quarantine_reason(row):
         return False, {"gate_status": "gated", "gate_reason": reason}

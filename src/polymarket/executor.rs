@@ -1033,9 +1033,15 @@ impl Executor {
                 let depth_ref = depth.as_ref();
                 let evidence_ref = evidence.as_ref();
                 let depth_event_time_ms = depth_ref
-                    .and_then(|book_depth| book_depth.event_time_ms)
+                    .and_then(|book_depth| book_depth.canonical_event_time_ms())
                     .or_else(|| {
                         evidence_ref.and_then(|touch_evidence| touch_evidence.event_time_ms)
+                    });
+                let depth_source_sequence_id = depth_ref
+                    .and_then(|book_depth| book_depth.canonical_source_sequence_id())
+                    .or_else(|| {
+                        evidence_ref
+                            .and_then(|touch_evidence| touch_evidence.source_sequence_id.as_deref())
                     });
                 let depth_event_lag_ms = depth_event_time_ms
                     .map(|event_time_ms| emit_unix_ms.saturating_sub(event_time_ms));
@@ -1058,10 +1064,13 @@ impl Executor {
                             .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.market_side.map(|side| side.as_str()))),
                         "depth_asset_id": depth_ref.and_then(|book_depth| book_depth.asset_id.as_deref()),
                         "depth_event_time_ms": depth_event_time_ms,
+                        "l2_event_time_ms": depth_event_time_ms,
+                        "book_l2_event_time_ms": depth_event_time_ms,
                         "depth_event_lag_ms": depth_event_lag_ms,
-                        "depth_source_sequence_id": depth_ref
-                            .and_then(|book_depth| book_depth.source_sequence_id.as_deref())
-                            .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.source_sequence_id.as_deref())),
+                        "l2_event_lag_ms": depth_event_lag_ms,
+                        "depth_source_sequence_id": depth_source_sequence_id,
+                        "l2_source_sequence_id": depth_source_sequence_id,
+                        "book_l2_source_sequence_id": depth_source_sequence_id,
                         "depth_best_bid": depth_ref
                             .and_then(|book_depth| book_depth.best_bid)
                             .or_else(|| evidence_ref.and_then(|touch_evidence| touch_evidence.best_bid)),
@@ -3904,6 +3913,8 @@ mod tests {
             asset_id: Some("yes-asset".to_string()),
             event_time_ms: Some(1_746_000_000_001),
             source_sequence_id: Some("seq-depth-1".to_string()),
+            l2_event_time_ms: Some(1_746_000_000_001),
+            l2_source_sequence_id: Some("seq-depth-1".to_string()),
             best_bid: Some(0.49),
             best_ask: Some(0.50),
             best_bid_size: Some(12.0),
@@ -4415,6 +4426,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("trade-1".to_string()),
+            source_sequence_id: Some("trade-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,
@@ -4491,6 +4504,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("trade-1".to_string()),
+            source_sequence_id: Some("trade-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,
@@ -4568,6 +4583,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("trade-1".to_string()),
+            source_sequence_id: Some("trade-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,
@@ -4594,6 +4611,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("trade-2".to_string()),
+            source_sequence_id: Some("trade-2".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,
@@ -4671,6 +4690,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("trade-1".to_string()),
+            source_sequence_id: Some("trade-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,
@@ -4696,6 +4717,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("trade-2".to_string()),
+            source_sequence_id: Some("trade-2".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,
@@ -4771,6 +4794,8 @@ mod tests {
         exec.handle_dry_run_market_data(MarketDataMsg::TradeTick {
             asset_id: "1".to_string(),
             trade_id: Some("dust-trade".to_string()),
+            source_sequence_id: Some("dust-trade".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.50,

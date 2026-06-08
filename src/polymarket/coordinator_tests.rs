@@ -767,6 +767,8 @@ async fn public_trade_snapshot_retains_latest_sell_after_buy_tick() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "yes".to_string(),
             trade_id: Some("sell-1".to_string()),
+            source_sequence_id: Some("sell-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.522,
@@ -778,6 +780,8 @@ async fn public_trade_snapshot_retains_latest_sell_after_buy_tick() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "yes".to_string(),
             trade_id: Some("buy-1".to_string()),
+            source_sequence_id: Some("buy-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Buy,
             price: 0.530,
@@ -805,6 +809,8 @@ async fn public_trade_snapshot_tracks_latest_sell_per_side() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "yes".to_string(),
             trade_id: Some("yes-sell-1".to_string()),
+            source_sequence_id: Some("yes-sell-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Sell,
             price: 0.522,
@@ -816,6 +822,8 @@ async fn public_trade_snapshot_tracks_latest_sell_per_side() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "no".to_string(),
             trade_id: Some("no-sell-1".to_string()),
+            source_sequence_id: Some("no-sell-1".to_string()),
+            event_time_ms: None,
             market_side: Side::No,
             taker_side: TakerSide::Sell,
             price: 0.478,
@@ -827,6 +835,8 @@ async fn public_trade_snapshot_tracks_latest_sell_per_side() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "no".to_string(),
             trade_id: Some("no-buy-1".to_string()),
+            source_sequence_id: Some("no-buy-1".to_string()),
+            event_time_ms: None,
             market_side: Side::No,
             taker_side: TakerSide::Buy,
             price: 0.480,
@@ -870,6 +880,8 @@ async fn public_buy_pressure_tracks_recent_high_low_flow() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "yes".to_string(),
             trade_id: Some("yes-buy-1".to_string()),
+            source_sequence_id: Some("yes-buy-1".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Buy,
             price: 0.61,
@@ -881,6 +893,8 @@ async fn public_buy_pressure_tracks_recent_high_low_flow() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "no".to_string(),
             trade_id: Some("no-buy-1".to_string()),
+            source_sequence_id: Some("no-buy-1".to_string()),
+            event_time_ms: None,
             market_side: Side::No,
             taker_side: TakerSide::Buy,
             price: 0.39,
@@ -892,6 +906,8 @@ async fn public_buy_pressure_tracks_recent_high_low_flow() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "yes".to_string(),
             trade_id: Some("yes-buy-2".to_string()),
+            source_sequence_id: Some("yes-buy-2".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Buy,
             price: 0.62,
@@ -924,6 +940,8 @@ async fn public_buy_pressure_prunes_by_lookback_from_latest_high_buy() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "no".to_string(),
             trade_id: Some("old-no-buy".to_string()),
+            source_sequence_id: Some("old-no-buy".to_string()),
+            event_time_ms: None,
             market_side: Side::No,
             taker_side: TakerSide::Buy,
             price: 0.39,
@@ -935,6 +953,8 @@ async fn public_buy_pressure_prunes_by_lookback_from_latest_high_buy() {
         .handle_market_data(MarketDataMsg::TradeTick {
             asset_id: "yes".to_string(),
             trade_id: Some("fresh-yes-buy".to_string()),
+            source_sequence_id: Some("fresh-yes-buy".to_string()),
+            event_time_ms: None,
             market_side: Side::Yes,
             taker_side: TakerSide::Buy,
             price: 0.61,

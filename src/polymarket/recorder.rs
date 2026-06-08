@@ -28,6 +28,7 @@ pub enum RecorderMarketMode {
     Structured,
     Raw,
     Hybrid,
+    OpsOnly,
 }
 
 impl RecorderMarketMode {
@@ -35,6 +36,9 @@ impl RecorderMarketMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "raw" => Self::Raw,
             "hybrid" => Self::Hybrid,
+            "ops" | "ops_only" | "ops-only" | "events" | "events_only" | "events-only" => {
+                Self::OpsOnly
+            }
             _ => Self::Structured,
         }
     }
@@ -52,6 +56,7 @@ impl RecorderMarketMode {
             Self::Structured => "structured",
             Self::Raw => "raw",
             Self::Hybrid => "hybrid",
+            Self::OpsOnly => "ops_only",
         }
     }
 }
@@ -157,8 +162,25 @@ pub struct RecorderSessionMeta {
 pub struct MarketBookDepthEvidence {
     pub market_side: Option<String>,
     pub asset_id: Option<String>,
+    #[serde(default, alias = "source_event_time_ms")]
     pub event_time_ms: Option<u64>,
+    #[serde(default)]
     pub source_sequence_id: Option<String>,
+    #[serde(
+        default,
+        alias = "book_l2_event_time_ms",
+        alias = "strict_l2_event_time_ms"
+    )]
+    pub l2_event_time_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "book_l2_source_sequence_id",
+        alias = "strict_l2_source_sequence_id",
+        alias = "l2_source_row_id",
+        alias = "strict_l2_row_id",
+        alias = "book_l2_source_row_id"
+    )]
+    pub l2_source_sequence_id: Option<String>,
     pub best_bid: Option<f64>,
     pub best_ask: Option<f64>,
     pub best_bid_size: Option<f64>,
@@ -167,6 +189,18 @@ pub struct MarketBookDepthEvidence {
     pub best_ask_size_delta: Option<f64>,
     pub best_bid_drop_qty: Option<f64>,
     pub best_ask_drop_qty: Option<f64>,
+}
+
+impl MarketBookDepthEvidence {
+    pub fn canonical_event_time_ms(&self) -> Option<u64> {
+        self.event_time_ms.or(self.l2_event_time_ms)
+    }
+
+    pub fn canonical_source_sequence_id(&self) -> Option<&str> {
+        self.source_sequence_id
+            .as_deref()
+            .or(self.l2_source_sequence_id.as_deref())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -401,14 +435,15 @@ impl RecorderHandle {
         });
         if let Some(depth) = depth {
             if let Some(obj) = payload.as_object_mut() {
+                let event_time_ms = depth.canonical_event_time_ms();
+                let source_sequence_id = depth.canonical_source_sequence_id();
                 insert_opt_string(obj, "market_side", depth.market_side.as_deref());
                 insert_opt_string(obj, "asset_id", depth.asset_id.as_deref());
-                insert_opt_u64(obj, "event_time_ms", depth.event_time_ms);
-                insert_opt_string(
-                    obj,
-                    "source_sequence_id",
-                    depth.source_sequence_id.as_deref(),
-                );
+                insert_opt_u64(obj, "event_time_ms", event_time_ms);
+                insert_opt_u64(obj, "l1_event_time_ms", event_time_ms);
+                insert_opt_string(obj, "source_sequence_id", source_sequence_id);
+                insert_opt_string(obj, "l1_source_sequence_id", source_sequence_id);
+                insert_opt_string(obj, "book_l1_source_sequence_id", source_sequence_id);
                 insert_opt_f64(obj, "best_bid", depth.best_bid);
                 insert_opt_f64(obj, "best_ask", depth.best_ask);
                 insert_opt_f64(obj, "best_bid_size", depth.best_bid_size);
@@ -452,10 +487,14 @@ impl RecorderHandle {
         size: f64,
         trade_id: Option<&str>,
         trade_ts_ms: Option<u64>,
+        source_sequence_id: Option<&str>,
+        event_time_ms: Option<u64>,
     ) {
         if !self.market_mode.captures_structured() {
             return;
         }
+        let source_sequence_id = source_sequence_id.or(trade_id);
+        let event_time_ms = event_time_ms.or(trade_ts_ms);
         self.try_send_md(
             meta,
             json!({
@@ -467,6 +506,10 @@ impl RecorderHandle {
                 "size": size,
                 "trade_id": trade_id.unwrap_or_default(),
                 "trade_ts_ms": trade_ts_ms.unwrap_or_default(),
+                "source_sequence_id": source_sequence_id.unwrap_or_default(),
+                "trade_source_sequence_id": source_sequence_id.unwrap_or_default(),
+                "event_time_ms": event_time_ms.unwrap_or_default(),
+                "trade_event_time_ms": event_time_ms.unwrap_or_default(),
             }),
             RecorderStream::MarketMd,
         );
@@ -757,6 +800,8 @@ mod tests {
             asset_id: Some("yes-asset".to_string()),
             event_time_ms: Some(1_746_000_000_050),
             source_sequence_id: Some("seq-17".to_string()),
+            l2_event_time_ms: Some(1_746_000_000_050),
+            l2_source_sequence_id: Some("seq-17".to_string()),
             best_bid: Some(0.48),
             best_ask: Some(0.52),
             best_bid_size: Some(12.5),
@@ -775,6 +820,8 @@ mod tests {
             0.51,
             10.0,
             None,
+            Some(1_746_000_000_000),
+            Some("trade-seq-1"),
             Some(1_746_000_000_000),
         );
         rec.emit_own_order_event(
@@ -805,6 +852,16 @@ mod tests {
             "structured trade should carry trade_ts_ms"
         );
         assert_eq!(
+            market_rows[1]["payload"]["source_sequence_id"].as_str(),
+            Some("trade-seq-1"),
+            "structured trade should carry source sequence id"
+        );
+        assert_eq!(
+            market_rows[1]["payload"]["event_time_ms"].as_u64(),
+            Some(1_746_000_000_000),
+            "structured trade should carry event time"
+        );
+        assert_eq!(
             market_rows[0]["payload"]["market_side"].as_str(),
             Some("YES"),
             "structured book depth should carry market side"
@@ -823,6 +880,16 @@ mod tests {
             market_rows[0]["payload"]["source_sequence_id"].as_str(),
             Some("seq-17"),
             "structured book depth should carry source sequence id"
+        );
+        assert_eq!(
+            market_rows[0]["payload"]["l1_source_sequence_id"].as_str(),
+            Some("seq-17"),
+            "structured L1 book should carry compatible L1 source id"
+        );
+        assert_eq!(
+            market_rows[0]["payload"]["l1_event_time_ms"].as_u64(),
+            Some(1_746_000_000_050),
+            "structured L1 book should carry event time"
         );
         assert_eq!(event_rows.len(), 1, "own_order_events should be recorded");
         assert_eq!(
@@ -867,6 +934,12 @@ mod tests {
                 true,
                 "recorder_mode_hybrid",
             ),
+            (
+                RecorderMarketMode::OpsOnly,
+                false,
+                false,
+                "recorder_mode_ops_only",
+            ),
         ];
 
         for (market_mode, expect_raw, expect_structured, label) in modes {
@@ -894,6 +967,8 @@ mod tests {
                 2.0,
                 Some("tid-1"),
                 Some(1_746_000_000_100),
+                Some("tid-1"),
+                Some(1_746_000_000_100),
             );
             drop(rec);
 
@@ -903,6 +978,7 @@ mod tests {
             let dir = root.join(date).join(meta.slug);
             let raw_rows = read_jsonl(&dir.join("market_ws.jsonl"));
             let structured_rows = read_jsonl(&dir.join("market_md.jsonl"));
+            let meta_rows = read_jsonl(&dir.join("meta.jsonl"));
 
             assert_eq!(
                 !raw_rows.is_empty(),
@@ -914,6 +990,11 @@ mod tests {
                 !structured_rows.is_empty(),
                 expect_structured,
                 "structured rows presence should match market mode {}",
+                market_mode.as_str()
+            );
+            assert!(
+                !meta_rows.is_empty(),
+                "ops/meta rows should be written in market mode {}",
                 market_mode.as_str()
             );
 

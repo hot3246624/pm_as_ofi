@@ -1403,6 +1403,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Buy,
                 size: 100.0,
@@ -1414,6 +1416,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Sell,
                 size: 60.0,
@@ -1460,6 +1464,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Sell,
                 size: 50.0,
@@ -1525,6 +1531,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Sell,
                 size: 50.0,
@@ -1539,6 +1547,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Buy,
                 size: 60.0,
@@ -1589,6 +1599,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Sell,
                 size: 50.0,
@@ -1657,6 +1669,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Buy,
                 size: 5_000.0,
@@ -1683,6 +1697,8 @@ mod tests {
             .send(MarketDataMsg::TradeTick {
                 asset_id: "".to_string(),
                 trade_id: None,
+                source_sequence_id: None,
+                event_time_ms: None,
                 market_side: Side::Yes,
                 taker_side: TakerSide::Sell,
                 size: 4_000.0,
