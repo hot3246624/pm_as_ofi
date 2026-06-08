@@ -186,6 +186,51 @@ assert late_guard_summary["metrics"]["candidates"] == 0
 assert late_guard_summary["blocked"]["late_pair_ask_pressure"] == 1
 assert late_guard_summary["event_lite"]["block_by_reason_offset_bucket"]["late_pair_ask_pressure"]["offset_ge_120"] == 1
 
+late_low_risk_out = out_dir / "late_low_price_risk_guard"
+late_low_risk_out.mkdir(parents=True, exist_ok=True)
+late_low_risk_cfg = mod.RunnerConfig(
+    edge=0.07,
+    activation_mode="none",
+    cooldown_ms=0,
+    target_qty=5.0,
+    fill_haircut=1.0,
+    imbalance_qty_cap=5.0,
+    seed_l1_cap=1.10,
+    seed_offset_max_s=300.0,
+    event_lite_summary=True,
+    late_low_price_risk_guard=True,
+    late_low_price_risk_after_s=175.0,
+    late_low_price_risk_seed_price_max=0.10,
+    late_low_price_risk_min_pair_ask=1.00,
+)
+late_low_risk_runner = mod.DPlusRunner("btc-updown-5m-1900000001", late_low_risk_out, late_low_risk_cfg)
+late_low_risk_runner.on_book(
+    {
+        "kind": "market_book_tick",
+        "ts_ms": 1_900_000_191_000,
+        "yes_bid": 0.08,
+        "yes_ask": 0.09,
+        "no_bid": 0.99,
+        "no_ask": 1.00,
+    }
+)
+late_low_risk_runner.on_trade(
+    {
+        "kind": "market_trade_tick",
+        "ts_ms": 1_900_000_191_000,
+        "source_sequence_id": "seq-late-low-price-risk",
+        "market_side": "YES",
+        "taker_side": "SELL",
+        "price": 0.17,
+        "size": 10.0,
+    }
+)
+late_low_risk_runner.write_summary(final=True)
+late_low_risk_summary = json.loads(late_low_risk_runner.summary_path.read_text())
+assert late_low_risk_summary["metrics"]["candidates"] == 0
+assert late_low_risk_summary["blocked"]["late_low_price_risk"] == 1
+assert late_low_risk_summary["event_lite"]["block_by_reason_offset_bucket"]["late_low_price_risk"]["offset_ge_120"] == 1
+
 multi_out = out_dir / "enabled_multi"
 multi_out.mkdir(parents=True, exist_ok=True)
 for runner in (high_runner, missing_runner, eligible_runner):
@@ -234,6 +279,7 @@ manifest = {
         "completion_eligible_residual_classified": True,
         "final_salvage_on_summary_clears_eligible_residual": True,
         "late_pair_ask_pressure_guard_blocks_late_expensive_pair_ask": True,
+        "late_low_price_risk_guard_blocks_late_low_price_expensive_pair_ask": True,
         "aggregate_merges_completion_residual_diagnostics": True,
         "cli_requires_event_lite": True,
     },
@@ -254,6 +300,7 @@ manifest = {
         "eligible_summary": str(eligible_runner.summary_path),
         "final_salvage_summary": str(final_salvage_runner.summary_path),
         "late_pair_ask_pressure_guard_summary": str(late_guard_runner.summary_path),
+        "late_low_price_risk_guard_summary": str(late_low_risk_runner.summary_path),
         "multi_aggregate_report": str(multi_out / "aggregate_report.json"),
     },
 }

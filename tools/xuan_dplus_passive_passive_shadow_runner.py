@@ -953,6 +953,10 @@ class RunnerConfig:
     late_pair_ask_pressure_repair_improving_after_s: float | None = None
     late_pair_ask_pressure_max_pair_ask: float = 1.00
     late_pair_ask_pressure_inventory_mode: str = "all"
+    late_low_price_risk_guard: bool = False
+    late_low_price_risk_after_s: float = 175.0
+    late_low_price_risk_seed_price_max: float = 0.10
+    late_low_price_risk_min_pair_ask: float = 1.00
     limit_order_min_shares_guard: bool = False
     limit_order_min_shares: float = 5.0
     event_lite_summary: bool = False
@@ -3749,6 +3753,17 @@ class DPlusRunner:
             block_seed("late_pair_ask_pressure", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
             self.record_activation_seen(side, ts_ms)
             return
+        if (
+            self.cfg.late_low_price_risk_guard
+            and risk_increasing_seed
+            and offset is not None
+            and offset >= self.cfg.late_low_price_risk_after_s
+            and seed_px <= self.cfg.late_low_price_risk_seed_price_max + 1e-12
+            and l1_pair >= self.cfg.late_low_price_risk_min_pair_ask - 1e-12
+        ):
+            block_seed("late_low_price_risk", target_qty=target_qty, opposite_seen_ms=opposite_seen_ms)
+            self.record_activation_seen(side, ts_ms)
+            return
         activation_ok, activation_opp_age_ms = self.activation_allows_seed(side, ts_ms)
         if risk_increasing_seed and not activation_ok:
             blocked_quote_intent_id = self.blocked_quote_intent_id(side, ts_ms)
@@ -5133,6 +5148,10 @@ async def main() -> None:
     ap.add_argument("--late-pair-ask-pressure-repair-improving-after-s", type=float, default=None)
     ap.add_argument("--late-pair-ask-pressure-max-pair-ask", type=float, default=1.00)
     ap.add_argument("--late-pair-ask-pressure-inventory-mode", choices=["all", "risk_increasing", "repair_or_pairing_improving"], default="all")
+    ap.add_argument("--late-low-price-risk-guard", action="store_true", help="default-off guard: block late risk-increasing low-price seeds when pair ask is already too expensive")
+    ap.add_argument("--late-low-price-risk-after-s", type=float, default=175.0)
+    ap.add_argument("--late-low-price-risk-seed-price-max", type=float, default=0.10)
+    ap.add_argument("--late-low-price-risk-min-pair-ask", type=float, default=1.00)
     ap.add_argument("--limit-order-min-shares-guard", action="store_true", help="default-off venue-shape guard: block limit-order intents below the configured share minimum")
     ap.add_argument("--limit-order-min-shares", type=float, default=5.0)
     args = ap.parse_args()
@@ -5201,6 +5220,10 @@ async def main() -> None:
         late_pair_ask_pressure_repair_improving_after_s=args.late_pair_ask_pressure_repair_improving_after_s,
         late_pair_ask_pressure_max_pair_ask=args.late_pair_ask_pressure_max_pair_ask,
         late_pair_ask_pressure_inventory_mode=args.late_pair_ask_pressure_inventory_mode,
+        late_low_price_risk_guard=args.late_low_price_risk_guard,
+        late_low_price_risk_after_s=args.late_low_price_risk_after_s,
+        late_low_price_risk_seed_price_max=args.late_low_price_risk_seed_price_max,
+        late_low_price_risk_min_pair_ask=args.late_low_price_risk_min_pair_ask,
         limit_order_min_shares_guard=args.limit_order_min_shares_guard,
         limit_order_min_shares=args.limit_order_min_shares,
     )
@@ -5234,6 +5257,12 @@ async def main() -> None:
         raise SystemExit("--late-pair-ask-pressure-repair-improving-after-s must be non-negative")
     if cfg.late_pair_ask_pressure_max_pair_ask <= 0:
         raise SystemExit("--late-pair-ask-pressure-max-pair-ask must be positive")
+    if cfg.late_low_price_risk_after_s < 0:
+        raise SystemExit("--late-low-price-risk-after-s must be non-negative")
+    if cfg.late_low_price_risk_seed_price_max <= 0:
+        raise SystemExit("--late-low-price-risk-seed-price-max must be positive")
+    if cfg.late_low_price_risk_min_pair_ask <= 0:
+        raise SystemExit("--late-low-price-risk-min-pair-ask must be positive")
     if cfg.pair_source_event_lite_summary and not cfg.event_lite_summary:
         raise SystemExit("--pair-source-event-lite-summary requires --event-lite-summary")
     if cfg.fill_to_balance_diagnostic_event_lite_summary:
