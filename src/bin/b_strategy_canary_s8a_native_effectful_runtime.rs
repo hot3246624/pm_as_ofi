@@ -24,7 +24,7 @@ use serde_json::json;
 use sha2::Digest;
 use uuid::Uuid;
 
-const SCOPE: &str = "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME";
+const SCOPE: &str = "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME_S8H";
 const REVIEWED_HOST: &str = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com";
 const OFFICIAL_CLOB_REST_URL: &str = "https://clob.polymarket.com";
 const ORDER_PRIMITIVE_NAME: &str = "clob_v2.build_signed_limit_order_v2/post_order_v2";
