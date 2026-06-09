@@ -41,6 +41,7 @@ S8P_PACKET_SHA256 = "f99af862f56774a2c09578fc11c1ba24b462f4b21ffd4538e8e478ad117
 S8Q_PACKET_SHA256 = "9d076bd3e7889ff79b73801d9a575e2d925a240750c1392bb168474b427b417d"
 S8Y_PACKET_SHA256 = "972bc47a39601cbced054c02c8c56e6b3d4cb6ae1e66a3d76a489b93426a6686"
 S8Y_REMOTE_RESULT_SHA256 = "90cec9f0a9ac1da8c23979b43b8c7236d98837745a4ed137f4fdcc64fc0b6e63"
+S9M_ORCHESTRATOR_SOURCE_SHA256 = "f0cf3d5c94479d65a155cada966c7ae74413e2bde7201e888060f5872c1a9b2b"
 EXACT_APPROVED_RECEIPT_TIER = "EXACT_APPROVED_PRIMITIVE_RECEIPT"
 
 
@@ -2138,6 +2139,150 @@ def s9m_execute_file_writer_preview(args: argparse.Namespace) -> int:
     return 0 if not failures else 2
 
 
+def s9o_exact_approval_readiness_preview(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    if args.reviewed_host != REVIEWED_HOST:
+        failures.append("REVIEWED_HOST_MISMATCH")
+    if args.rest_url != OFFICIAL_CLOB_REST_URL:
+        failures.append("REST_URL_MUST_BE_OFFICIAL_CLOB")
+    if args.approval_scope != SCOPE:
+        failures.append("APPROVAL_SCOPE_MISMATCH")
+    if args.order_primitive_name != ORDER_PRIMITIVE_NAME:
+        failures.append("ORDER_PRIMITIVE_NAME_MISMATCH")
+    if not args.no_submit:
+        failures.append("NO_SUBMIT_REQUIRED")
+    if args.execute_approved:
+        failures.append("EXECUTE_APPROVED_FORBIDDEN_IN_S9O_REVIEW")
+    if args.print_secret or args.print_raw_signature:
+        failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
+    if args.use_shared_ingress or args.use_c_artifacts:
+        failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
+    if args.allow_online_tuning or args.allow_candidate_import:
+        failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
+
+    s9n_path = Path(args.s9n_remote_result_json)
+    if not s9n_path.exists():
+        failures.append("S9N_REMOTE_RESULT_JSON_MISSING")
+        s9n_sha = None
+        s9n_result: Any = {}
+    else:
+        s9n_sha = sha256_file(s9n_path)
+        if args.expected_s9n_remote_result_sha256 and s9n_sha != args.expected_s9n_remote_result_sha256:
+            failures.append("S9N_REMOTE_RESULT_SHA256_MISMATCH")
+        s9n_result = load_json(s9n_path)
+
+    source_sha = sha256_file(Path(__file__).resolve())
+    s9n_gates = s9n_result.get("gates") if isinstance(s9n_result, dict) else {}
+    broad_gate = (
+        s9n_gates.get("broad_execute_fail_closed")
+        if isinstance(s9n_gates, dict) and isinstance(s9n_gates.get("broad_execute_fail_closed"), dict)
+        else {}
+    )
+    broad_failures = broad_gate.get("failures") if isinstance(broad_gate, dict) else []
+    if not isinstance(broad_failures, list):
+        broad_failures = []
+
+    required_remote_gate_statuses = {
+        "s9m_execute_file_writer_preview": "PASS_S9M_EXECUTE_MODE_FILE_WRITER_BINDING_PREVIEW",
+        "execute_no_submit": "PASS_S9C_APPROVED_LOOP_EXECUTE_DRY_RUN_NO_SUBMIT",
+        "s9k_compatibility": "PASS_S9K_LIVE_OUTPUT_FILE_BINDING_PREVIEW",
+        "orchestration_no_submit": "PASS_S8T_ONE_RUN_ORCHESTRATOR_WITH_FILL_EVIDENCE_NO_SUBMIT_PREVIEW",
+    }
+    if isinstance(s9n_result, dict):
+        if s9n_result.get("status") != "PASS_S9N_REMOTE_NO_SUBMIT_GATES":
+            failures.append("S9N_REMOTE_GATES_NOT_PASS")
+        if s9n_result.get("source_sha256") != args.expected_s9m_orchestrator_source_sha256:
+            failures.append("S9N_SOURCE_HASH_NOT_EXPECTED_S9M_SOURCE")
+        if s9n_result.get("service_dir_mutated") is not False:
+            failures.append("S9N_SERVICE_DIR_MUTATED")
+        if s9n_result.get("execution_performed") is not False:
+            failures.append("S9N_REPORTED_EFFECTFUL_EXECUTION")
+        if s9n_result.get("orders_submitted") not in (0, 0.0):
+            failures.append("S9N_REPORTED_ORDER_SUBMISSION")
+        if s9n_result.get("signing_performed") is not False:
+            failures.append("S9N_REPORTED_SIGNING")
+        if not isinstance(s9n_gates, dict):
+            failures.append("S9N_GATES_MISSING")
+        else:
+            for gate_name, expected_status in required_remote_gate_statuses.items():
+                gate = s9n_gates.get(gate_name)
+                if not isinstance(gate, dict) or gate.get("status") != expected_status:
+                    failures.append(f"S9N_{gate_name.upper()}_NOT_PASS")
+                if isinstance(gate, dict) and gate.get("failures") not in ([], None):
+                    failures.append(f"S9N_{gate_name.upper()}_HAS_FAILURES")
+            if not isinstance(broad_gate, dict):
+                failures.append("S9N_BROAD_EXECUTE_FAIL_CLOSED_GATE_MISSING")
+            else:
+                if broad_gate.get("status") != "BLOCK_S9C_APPROVED_LOOP_EXECUTE_FAIL_CLOSED":
+                    failures.append("S9N_BROAD_EXECUTE_NOT_FAIL_CLOSED")
+                if int(broad_gate.get("rc", -1)) != 2:
+                    failures.append("S9N_BROAD_EXECUTE_RC_NOT_2")
+                if broad_gate.get("orders_submitted") not in (0, 0.0):
+                    failures.append("S9N_BROAD_EXECUTE_SUBMITTED_ORDERS")
+                if broad_gate.get("signing_performed") is not False:
+                    failures.append("S9N_BROAD_EXECUTE_PERFORMED_SIGNING")
+                if "S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE" not in broad_failures:
+                    failures.append("S9N_BROAD_EXECUTE_REVIEW_ONLY_BLOCKER_MISSING")
+    else:
+        failures.append("S9N_REMOTE_RESULT_NOT_OBJECT")
+
+    broad_execute_blocker_present = (
+        "S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE" in broad_failures
+    )
+    exact_approval_index_ready = not failures and not broad_execute_blocker_present
+    decision = (
+        "DRAFT_EXACT_APPROVAL_INDEX_ALLOWED"
+        if exact_approval_index_ready
+        else "KEEP_BROAD_S8A_BLOCKED_PENDING_SOURCE_CONTROLLED_EXECUTE_SWITCH"
+    )
+
+    payload = base_payload(
+        "PASS_S9O_APPROVAL_READINESS_REVIEW_BLOCKER_CONFIRMED"
+        if not failures and broad_execute_blocker_present
+        else "PASS_S9O_APPROVAL_READINESS_REVIEW_READY_FOR_INDEX"
+        if exact_approval_index_ready
+        else "BLOCK_S9O_APPROVAL_READINESS_REVIEW"
+    )
+    payload.update(
+        {
+            "schema_version": "B_STRATEGY_CANARY_S9O_EXACT_APPROVAL_READINESS_PREVIEW_v1",
+            "review_only_no_submit": True,
+            "exact_approval_text_issued": False,
+            "exact_approval_index_ready": exact_approval_index_ready,
+            "decision": decision,
+            "decision_reason": (
+                "S9N remote no-submit gates passed, but broad non-no-submit execute still "
+                "contains an explicit review-only blocker. Issuing a broad exact approval "
+                "now would likely consume another approval zero-order. The next useful "
+                "source-controlled step is to replace that blocker with a fresh-approval-"
+                "gated execute switch, then rerun no-submit/fail-closed gates and draft "
+                "a new approval index."
+                if broad_execute_blocker_present
+                else "All S9N gates pass and no broad execute review-only blocker was detected."
+            ),
+            "s9n_remote_result_path": str(s9n_path),
+            "s9n_remote_result_sha256": s9n_sha,
+            "current_source_sha256": source_sha,
+            "expected_s9m_orchestrator_source_sha256": args.expected_s9m_orchestrator_source_sha256,
+            "s9n_bound_source_sha256": s9n_result.get("source_sha256") if isinstance(s9n_result, dict) else None,
+            "broad_execute_blocker_present": broad_execute_blocker_present,
+            "broad_execute_failures": broad_failures,
+            "required_remote_gate_statuses": required_remote_gate_statuses,
+            "next_source_controlled_step": (
+                "S9P: add a fresh-exact-approval-gated broad execute switch that allows "
+                "the already-reviewed S9M file-writer path only when all hash/scope/cap "
+                "guards are bound; keep preview/no-approval paths fail-closed."
+            ),
+            "failures": failures,
+            "secret_values_read": False,
+            "secret_values_printed": False,
+            "raw_signature_output": False,
+        }
+    )
+    print_json(payload)
+    return 0 if not failures else 2
+
+
 def derive_order_status_fill_evidence(
     template: Any,
     prepared_order: dict[str, Any],
@@ -2434,6 +2579,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "s9i-current-run-reconciliation-preview",
             "s9k-live-output-file-binding-preview",
             "s9m-execute-file-writer-preview",
+            "s9o-exact-approval-readiness-preview",
             "execute",
         ),
         required=True,
@@ -2460,6 +2606,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="scripts/fixtures/s9i_current_run_reconciliation_inputs_preview.json",
     )
     parser.add_argument("--expected-s9i-current-run-input-sha256", required=False)
+    parser.add_argument(
+        "--s9n-remote-result-json",
+        default=".tmp_xuan/remote_results/S9N_REMOTE_GATES_RESULT_20260608T204000Z.json",
+    )
+    parser.add_argument("--expected-s9n-remote-result-sha256", required=False)
+    parser.add_argument("--expected-s9m-orchestrator-source-sha256", default=S9M_ORCHESTRATOR_SOURCE_SHA256)
     parser.add_argument("--output-dir", default=".tmp_xuan/s8r_one_run_orchestrator_preview")
     parser.add_argument("--exact-approval-sha256", default="a" * 64)
     parser.add_argument("--expected-exact-approval-sha256", default="a" * 64)
@@ -2525,6 +2677,10 @@ def main(argv: list[str]) -> int:
         if not args.expected_s9i_current_run_input_sha256:
             args.expected_s9i_current_run_input_sha256 = sha256_file(Path(args.s9i_current_run_input_json))
         return s9m_execute_file_writer_preview(args)
+    if args.mode == "s9o-exact-approval-readiness-preview":
+        if not args.expected_s9n_remote_result_sha256:
+            args.expected_s9n_remote_result_sha256 = sha256_file(Path(args.s9n_remote_result_json))
+        return s9o_exact_approval_readiness_preview(args)
     if not args.expected_one_run_plan_sha256:
         args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
     if not args.expected_s7w_final_reconciliation_sha256:
