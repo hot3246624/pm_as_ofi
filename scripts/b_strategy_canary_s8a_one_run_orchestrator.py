@@ -28,7 +28,7 @@ from typing import Any
 
 SCOPE = (
     "B_STRATEGY_CANARY_S8A_MICRO_SHORT_CYCLE_ONE_RUN_MAX_THREE_ROUNDS_"
-    "BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME_S8X"
+    "BTC5M_SIZE5_15USDC_LOSS_CAP_NATIVE_RUNTIME_S9Q"
 )
 REVIEWED_HOST = "ubuntu@ec2-52-209-13-135.eu-west-1.compute.amazonaws.com"
 OFFICIAL_CLOB_REST_URL = "https://clob.polymarket.com"
@@ -42,6 +42,7 @@ S8Q_PACKET_SHA256 = "9d076bd3e7889ff79b73801d9a575e2d925a240750c1392bb168474b427
 S8Y_PACKET_SHA256 = "972bc47a39601cbced054c02c8c56e6b3d4cb6ae1e66a3d76a489b93426a6686"
 S8Y_REMOTE_RESULT_SHA256 = "90cec9f0a9ac1da8c23979b43b8c7236d98837745a4ed137f4fdcc64fc0b6e63"
 S9M_ORCHESTRATOR_SOURCE_SHA256 = "f0cf3d5c94479d65a155cada966c7ae74413e2bde7201e888060f5872c1a9b2b"
+S9Q_EFFECTFUL_EXECUTE_SWITCH = "S9Q_FRESH_EXACT_APPROVAL_GATED_EXECUTE_SWITCH_v1"
 EXACT_APPROVED_RECEIPT_TIER = "EXACT_APPROVED_PRIMITIVE_RECEIPT"
 
 
@@ -214,6 +215,12 @@ def child_signing(child: dict[str, Any]) -> bool | None:
     return None
 
 
+def child_failures(child: dict[str, Any]) -> list[Any]:
+    parsed = child.get("stdout_json")
+    failures = parsed.get("failures") if isinstance(parsed, dict) else []
+    return failures if isinstance(failures, list) else []
+
+
 def assert_no_submit_child(label: str, child: dict[str, Any], expected_rc: int | None, failures: list[str]) -> None:
     if expected_rc is not None and child["returncode"] != expected_rc:
         failures.append(f"{label}_RC_MISMATCH")
@@ -243,6 +250,28 @@ def exact_args(args: argparse.Namespace) -> list[str]:
         args.order_primitive_name,
         "--order-primitive-source-sha256",
         args.order_primitive_source_sha256,
+    ]
+
+
+def orchestrator_self_args(args: argparse.Namespace) -> list[str]:
+    return [
+        "--runtime-bin",
+        args.runtime_bin,
+        "--reviewed-host",
+        args.reviewed_host,
+        "--rest-url",
+        args.rest_url,
+        "--scout-snapshot-json",
+        args.scout_snapshot_json,
+        "--one-run-plan-json",
+        args.one_run_plan_json,
+        "--order-status-fill-evidence-json",
+        args.order_status_fill_evidence_json,
+        "--s7w-final-reconciliation-json",
+        args.s7w_final_reconciliation_json,
+        "--s9i-current-run-input-json",
+        args.s9i_current_run_input_json,
+        *exact_args(args),
     ]
 
 
@@ -1063,13 +1092,13 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
         failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
     if args.allow_online_tuning or args.allow_candidate_import:
         failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
-    if not args.no_submit and args.exact_approval_sha256 == "a" * 64:
-        failures.append("PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
-    if not args.no_submit and args.order_primitive_source_sha256 == "b" * 64:
-        failures.append("PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
     if not args.no_submit:
-        failures.append("S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE")
-        failures.append("BROAD_S8A_EFFECTFUL_RUN_REMAINS_BLOCKED_ZERO_ORDER")
+        if not args.s9q_enable_effectful_execute:
+            failures.append("S9Q_EFFECTFUL_EXECUTE_SWITCH_REQUIRED")
+        if args.exact_approval_sha256 == "a" * 64:
+            failures.append("PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
+        if args.order_primitive_source_sha256 == "b" * 64:
+            failures.append("PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
 
     runtime = Path(args.runtime_bin)
     plan = Path(args.one_run_plan_json)
@@ -1163,6 +1192,7 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
     total_orders = 0
     total_cancels = 0
     signing_performed = False
+    actual_execution_results: list[dict[str, Any]] = []
 
     attempts = plan_payload.get("attempts") if isinstance(plan_payload, dict) else None
     if failures or not isinstance(attempts, list):
@@ -1254,6 +1284,11 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
                 failures.append(f"ATTEMPT_{idx}_RUNTIME_EXECUTE_FAILED_CLOSED")
                 child_results.append(child)
                 break
+            if not isinstance(execution_result, dict):
+                failures.append(f"ATTEMPT_{idx}_RUNTIME_EXECUTION_RESULT_MISSING")
+                child_results.append(child)
+                break
+            actual_execution_results.append(execution_result)
             total_orders += int(parsed.get("orders_submitted", 0) or 0)
             total_cancels += int(parsed.get("cancel_submissions", 0) or 0)
             signing_performed = signing_performed or bool(parsed.get("signing_performed"))
@@ -1326,6 +1361,45 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
         if failures:
             break
 
+    if not args.no_submit and not failures:
+        current_run_input_path = Path(args.s9i_current_run_input_json)
+        if not current_run_input_path.exists():
+            failures.append("S9Q_CURRENT_RUN_RECONCILIATION_INPUT_TEMPLATE_MISSING")
+        else:
+            current_run_input_sha = sha256_file(current_run_input_path)
+            if current_run_input_sha != args.expected_s9i_current_run_input_sha256:
+                failures.append("S9Q_CURRENT_RUN_RECONCILIATION_INPUT_TEMPLATE_SHA256_MISMATCH")
+            current_run_inputs = load_json(current_run_input_path)
+            s9m_manifest, s9m_failures = s9m_write_current_run_file_bundle(
+                args=args,
+                plan_payload=plan_payload,
+                template=current_run_inputs,
+                output_dir=Path(args.output_dir) / "s9q_execute_file_writer_from_actual_runtime",
+                execution_results=actual_execution_results,
+                prefix="S9Q_FROM_ACTUAL_RUNTIME",
+            )
+            failures.extend(s9m_failures)
+            s9m_execute_file_writer_preview_payload = {
+                "source": "S9Q_ACTUAL_RUNTIME_EXECUTION_RESULT_FILE_WRITER",
+                "passed": not s9m_failures,
+                "manifest": s9m_manifest,
+                "failures": s9m_failures,
+            }
+            s9i_current_run_reconciliation_preview = {
+                "source": "S9Q_ACTUAL_RUNTIME_DERIVED_S9I_INPUT",
+                "input_path": s9m_manifest.get("assembled_s9i_current_run_input_path"),
+                "input_sha256": s9m_manifest.get("assembled_s9i_current_run_input_sha256"),
+                "passed": s9m_manifest.get("s9i_validation_passed") is True,
+                "input_failures": s9m_manifest.get("s9i_failures"),
+            }
+            s9g_reconciliation_preview = {
+                "source": "S9Q_ACTUAL_RUNTIME_DERIVED_S9G_EVIDENCE",
+                "path": s9m_manifest.get("derived_s9g_evidence_path"),
+                "sha256": s9m_manifest.get("derived_s9g_evidence_sha256"),
+                "passed": s9m_manifest.get("s9g_validation_passed") is True,
+                "failures": s9m_manifest.get("s9g_failures"),
+            }
+
     child_summaries = [
         {
             "label": child["label"],
@@ -1343,18 +1417,20 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
     status = (
         "PASS_S9C_APPROVED_LOOP_EXECUTE_DRY_RUN_NO_SUBMIT"
         if args.no_submit and not failures
-        else "PASS_S9C_APPROVED_LOOP_EXECUTED_AND_RECONCILED"
+        else "PASS_S9Q_APPROVED_LOOP_EXECUTED_AND_RECONCILED"
         if not failures
         else "BLOCK_S9C_APPROVED_LOOP_EXECUTE_FAIL_CLOSED"
     )
     payload = base_payload(status)
     payload.update(
         {
-            "schema_version": "B_STRATEGY_CANARY_S9C_APPROVED_LOOP_EXECUTE_v1",
+            "schema_version": "B_STRATEGY_CANARY_S9Q_FRESH_APPROVAL_GATED_LOOP_EXECUTE_v1",
             "review_only_no_submit": args.no_submit,
-            "effectful_execution_permitted": False,
+            "effectful_execution_permitted": (not args.no_submit and args.s9q_enable_effectful_execute and not failures),
+            "s9q_effectful_execute_switch": S9Q_EFFECTFUL_EXECUTE_SWITCH,
+            "s9q_effectful_execute_switch_enabled": args.s9q_enable_effectful_execute,
             "execution_performed": not args.no_submit and not failures,
-            "broad_effectful_execute_blocked_until_s7w_final_reconciliation": not args.no_submit,
+            "broad_effectful_execute_blocked_until_s7w_final_reconciliation": not args.no_submit and bool(failures),
             "orders_submitted": total_orders,
             "cancels_submitted": total_cancels,
             "signing_performed": signing_performed,
@@ -2283,6 +2359,174 @@ def s9o_exact_approval_readiness_preview(args: argparse.Namespace) -> int:
     return 0 if not failures else 2
 
 
+def s9q_execute_switch_readiness_preview(args: argparse.Namespace) -> int:
+    failures: list[str] = []
+    if args.reviewed_host != REVIEWED_HOST:
+        failures.append("REVIEWED_HOST_MISMATCH")
+    if args.rest_url != OFFICIAL_CLOB_REST_URL:
+        failures.append("REST_URL_MUST_BE_OFFICIAL_CLOB")
+    if args.approval_scope != SCOPE:
+        failures.append("APPROVAL_SCOPE_MISMATCH")
+    if args.order_primitive_name != ORDER_PRIMITIVE_NAME:
+        failures.append("ORDER_PRIMITIVE_NAME_MISMATCH")
+    if not args.no_submit:
+        failures.append("NO_SUBMIT_REQUIRED")
+    if args.execute_approved:
+        failures.append("EXECUTE_APPROVED_FORBIDDEN_IN_S9Q_REVIEW")
+    if args.s9q_enable_effectful_execute:
+        failures.append("S9Q_EFFECTFUL_SWITCH_FORBIDDEN_IN_REVIEW_PREVIEW")
+    if args.print_secret or args.print_raw_signature:
+        failures.append("SECRET_OR_RAW_SIGNATURE_OUTPUT_REQUESTED")
+    if args.use_shared_ingress or args.use_c_artifacts:
+        failures.append("FORBIDDEN_SHARED_OR_C_DEPENDENCY_REQUESTED")
+    if args.allow_online_tuning or args.allow_candidate_import:
+        failures.append("FORBIDDEN_ONLINE_TUNING_OR_CANDIDATE_IMPORT")
+    if not hash64(args.exact_approval_sha256) or args.exact_approval_sha256 != args.expected_exact_approval_sha256:
+        failures.append("EXACT_APPROVAL_SHA256_MISMATCH_OR_INVALID")
+    if not hash64(args.order_primitive_source_sha256):
+        failures.append("ORDER_PRIMITIVE_SOURCE_SHA256_NOT_64HEX")
+
+    source_sha = sha256_file(Path(__file__).resolve())
+    children: list[dict[str, Any]] = []
+    output_dir = Path(args.output_dir)
+    common_expected_args = [
+        "--expected-one-run-plan-sha256",
+        args.expected_one_run_plan_sha256,
+        "--expected-s9i-current-run-input-sha256",
+        args.expected_s9i_current_run_input_sha256,
+    ]
+
+    if not failures:
+        no_submit_child = run_child(
+            "s9q_execute_no_submit_regression",
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--mode",
+                "execute",
+                *orchestrator_self_args(args),
+                *common_expected_args,
+                "--output-dir",
+                str(output_dir / "s9q_execute_no_submit_regression"),
+                "--execute-approved",
+                "--no-submit",
+            ],
+        )
+        children.append(no_submit_child)
+        assert_no_submit_child("S9Q_EXECUTE_NO_SUBMIT_REGRESSION", no_submit_child, 0, failures)
+        if child_status(no_submit_child) != "PASS_S9C_APPROVED_LOOP_EXECUTE_DRY_RUN_NO_SUBMIT":
+            failures.append("S9Q_EXECUTE_NO_SUBMIT_STATUS_NOT_PASS")
+        if child_failures(no_submit_child):
+            failures.append("S9Q_EXECUTE_NO_SUBMIT_HAS_FAILURES")
+
+        without_switch_child = run_child(
+            "s9q_execute_without_switch_fail_closed",
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--mode",
+                "execute",
+                *orchestrator_self_args(args),
+                *common_expected_args,
+                "--output-dir",
+                str(output_dir / "s9q_execute_without_switch_fail_closed"),
+                "--execute-approved",
+            ],
+        )
+        children.append(without_switch_child)
+        assert_no_submit_child("S9Q_EXECUTE_WITHOUT_SWITCH_FAIL_CLOSED", without_switch_child, 2, failures)
+        without_switch_failures = child_failures(without_switch_child)
+        if "S9Q_EFFECTFUL_EXECUTE_SWITCH_REQUIRED" not in without_switch_failures:
+            failures.append("S9Q_EXECUTE_WITHOUT_SWITCH_MISSING_SWITCH_BLOCKER")
+        if "S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE" in without_switch_failures:
+            failures.append("S9Q_OLD_S9M_REVIEW_ONLY_BLOCKER_STILL_PRESENT")
+
+        switch_placeholder_child = run_child(
+            "s9q_execute_with_switch_placeholder_hash_fail_closed",
+            [
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--mode",
+                "execute",
+                *orchestrator_self_args(args),
+                *common_expected_args,
+                "--output-dir",
+                str(output_dir / "s9q_execute_with_switch_placeholder_hash_fail_closed"),
+                "--execute-approved",
+                "--s9q-enable-effectful-execute",
+            ],
+        )
+        children.append(switch_placeholder_child)
+        assert_no_submit_child("S9Q_EXECUTE_WITH_SWITCH_PLACEHOLDER_FAIL_CLOSED", switch_placeholder_child, 2, failures)
+        switch_placeholder_failures = child_failures(switch_placeholder_child)
+        if "PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE" not in switch_placeholder_failures:
+            failures.append("S9Q_SWITCH_PLACEHOLDER_HASH_NOT_BLOCKED")
+        if "PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE" not in switch_placeholder_failures:
+            failures.append("S9Q_SWITCH_PLACEHOLDER_ORDER_SOURCE_NOT_BLOCKED")
+        if "S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE" in switch_placeholder_failures:
+            failures.append("S9Q_SWITCH_OLD_S9M_REVIEW_ONLY_BLOCKER_STILL_PRESENT")
+
+    child_summaries = [
+        {
+            "label": child["label"],
+            "returncode": child["returncode"],
+            "status": child_status(child),
+            "orders_submitted": child_orders(child),
+            "signing_performed": child_signing(child),
+            "failures": child_failures(child),
+            "stdout_sha256": child["stdout_sha256"],
+            "stderr_sha256": child["stderr_sha256"],
+            "stdout_parse_error": child["stdout_parse_error"],
+        }
+        for child in children
+    ]
+    old_blocker_absent = all(
+        "S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE"
+        not in child_failures(child)
+        for child in children
+    )
+    payload = base_payload(
+        "PASS_S9Q_FRESH_APPROVAL_GATED_EXECUTE_SWITCH_READINESS_PREVIEW"
+        if not failures
+        else "BLOCK_S9Q_FRESH_APPROVAL_GATED_EXECUTE_SWITCH_READINESS_PREVIEW"
+    )
+    payload.update(
+        {
+            "schema_version": "B_STRATEGY_CANARY_S9Q_FRESH_APPROVAL_GATED_EXECUTE_SWITCH_PREVIEW_v1",
+            "review_only_no_submit": True,
+            "exact_approval_text_issued": False,
+            "exact_approval_index_ready": not failures,
+            "s9q_effectful_execute_switch": S9Q_EFFECTFUL_EXECUTE_SWITCH,
+            "s9q_effectful_execute_switch_source_controlled": True,
+            "old_s9m_review_only_blocker_absent": old_blocker_absent,
+            "no_submit_regression_passed": (
+                bool(children)
+                and child_status(children[0]) == "PASS_S9C_APPROVED_LOOP_EXECUTE_DRY_RUN_NO_SUBMIT"
+                and children[0]["returncode"] == 0
+            ),
+            "without_switch_fails_closed": (
+                len(children) > 1
+                and children[1]["returncode"] == 2
+                and "S9Q_EFFECTFUL_EXECUTE_SWITCH_REQUIRED" in child_failures(children[1])
+            ),
+            "switch_with_placeholder_hashes_fails_closed": (
+                len(children) > 2
+                and children[2]["returncode"] == 2
+                and "PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE"
+                in child_failures(children[2])
+            ),
+            "current_source_sha256": source_sha,
+            "child_gates": child_summaries,
+            "failures": failures,
+            "secret_values_read": False,
+            "secret_values_printed": False,
+            "raw_signature_output": False,
+        }
+    )
+    print_json(payload)
+    return 0 if not failures else 2
+
+
 def derive_order_status_fill_evidence(
     template: Any,
     prepared_order: dict[str, Any],
@@ -2580,6 +2824,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "s9k-live-output-file-binding-preview",
             "s9m-execute-file-writer-preview",
             "s9o-exact-approval-readiness-preview",
+            "s9q-execute-switch-readiness-preview",
             "execute",
         ),
         required=True,
@@ -2620,6 +2865,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--order-primitive-source-sha256", default="b" * 64)
     parser.add_argument("--no-submit", action="store_true")
     parser.add_argument("--execute-approved", action="store_true")
+    parser.add_argument("--s9q-enable-effectful-execute", action="store_true")
     parser.add_argument("--print-secret", action="store_true")
     parser.add_argument("--print-raw-signature", action="store_true")
     parser.add_argument("--use-shared-ingress", action="store_true")
@@ -2681,6 +2927,12 @@ def main(argv: list[str]) -> int:
         if not args.expected_s9n_remote_result_sha256:
             args.expected_s9n_remote_result_sha256 = sha256_file(Path(args.s9n_remote_result_json))
         return s9o_exact_approval_readiness_preview(args)
+    if args.mode == "s9q-execute-switch-readiness-preview":
+        if not args.expected_one_run_plan_sha256:
+            args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
+        if not args.expected_s9i_current_run_input_sha256:
+            args.expected_s9i_current_run_input_sha256 = sha256_file(Path(args.s9i_current_run_input_json))
+        return s9q_execute_switch_readiness_preview(args)
     if not args.expected_one_run_plan_sha256:
         args.expected_one_run_plan_sha256 = sha256_file(Path(args.one_run_plan_json))
     if not args.expected_s7w_final_reconciliation_sha256:
