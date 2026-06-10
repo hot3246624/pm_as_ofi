@@ -1099,6 +1099,13 @@ def s9c_approved_loop_execute(args: argparse.Namespace) -> int:
             failures.append("PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
         if args.order_primitive_source_sha256 == "b" * 64:
             failures.append("PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE")
+        if args.s9q_enable_effectful_execute:
+            current_run_input_path = Path(args.s9i_current_run_input_json)
+            current_run_input_parts = set(current_run_input_path.parts)
+            if "scripts" in current_run_input_parts and "fixtures" in current_run_input_parts:
+                failures.append("S9Q_CURRENT_RUN_RECONCILIATION_INPUT_MUST_NOT_BE_SOURCE_FIXTURE")
+            if "preview" in current_run_input_path.name.lower():
+                failures.append("S9Q_CURRENT_RUN_RECONCILIATION_INPUT_MUST_NOT_BE_PREVIEW_FIXTURE")
 
     runtime = Path(args.runtime_bin)
     plan = Path(args.one_run_plan_json)
@@ -2463,6 +2470,10 @@ def s9q_execute_switch_readiness_preview(args: argparse.Namespace) -> int:
             failures.append("S9Q_SWITCH_PLACEHOLDER_HASH_NOT_BLOCKED")
         if "PLACEHOLDER_ORDER_PRIMITIVE_SOURCE_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE" not in switch_placeholder_failures:
             failures.append("S9Q_SWITCH_PLACEHOLDER_ORDER_SOURCE_NOT_BLOCKED")
+        if "S9Q_CURRENT_RUN_RECONCILIATION_INPUT_MUST_NOT_BE_SOURCE_FIXTURE" not in switch_placeholder_failures:
+            failures.append("S9Q_SWITCH_SOURCE_FIXTURE_INPUT_NOT_BLOCKED")
+        if "S9Q_CURRENT_RUN_RECONCILIATION_INPUT_MUST_NOT_BE_PREVIEW_FIXTURE" not in switch_placeholder_failures:
+            failures.append("S9Q_SWITCH_PREVIEW_FIXTURE_INPUT_NOT_BLOCKED")
         if "S9M_EXECUTE_FILE_WRITER_BINDING_STILL_REVIEW_ONLY_FOR_EFFECTFUL_EXECUTE" in switch_placeholder_failures:
             failures.append("S9Q_SWITCH_OLD_S9M_REVIEW_ONLY_BLOCKER_STILL_PRESENT")
 
@@ -2513,6 +2524,13 @@ def s9q_execute_switch_readiness_preview(args: argparse.Namespace) -> int:
                 len(children) > 2
                 and children[2]["returncode"] == 2
                 and "PLACEHOLDER_EXACT_APPROVAL_HASH_FORBIDDEN_FOR_EFFECTFUL_EXECUTE"
+                in child_failures(children[2])
+            ),
+            "switch_blocks_source_fixture_current_run_input": (
+                len(children) > 2
+                and "S9Q_CURRENT_RUN_RECONCILIATION_INPUT_MUST_NOT_BE_SOURCE_FIXTURE"
+                in child_failures(children[2])
+                and "S9Q_CURRENT_RUN_RECONCILIATION_INPUT_MUST_NOT_BE_PREVIEW_FIXTURE"
                 in child_failures(children[2])
             ),
             "current_source_sha256": source_sha,
