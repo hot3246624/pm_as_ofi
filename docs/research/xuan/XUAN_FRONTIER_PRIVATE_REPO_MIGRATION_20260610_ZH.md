@@ -56,6 +56,7 @@ git archive --format=tar HEAD | tar -x -C "$DST"
 cd "$DST"
 git init -b main
 git add .
+git add -f Cargo.lock
 git commit -m "Initial xuan frontier private snapshot"
 
 gh repo create hot3246624/xuan-frontier --private --source=. --remote=origin --push
@@ -70,6 +71,8 @@ The snapshot includes tracked files at current `HEAD`, including:
 - S9Q guarded execute switch source.
 - S9Q fixture-source reconciliation hard gate.
 - S8/S9 native runtime and adapter source as committed.
+- `Cargo.lock` for reproducible standalone Rust builds.
+- `scripts/b_strategy_storage_retention.sh` for B-owned remote staging retention.
 - This handoff/migration documentation if committed before migration.
 
 The snapshot intentionally excludes untracked runtime artifacts such as `.tmp_xuan/`, raw local caches, and ignored build outputs. Persist required artifact hashes in documentation instead of committing large temporary files.
@@ -91,4 +94,3 @@ Expected current test state:
 
 - `s8a_order_adapter`: 37 passed
 - `btc_completion_controller`: 47 passed
-
