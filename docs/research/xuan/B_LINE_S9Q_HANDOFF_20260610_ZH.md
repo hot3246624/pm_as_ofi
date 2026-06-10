@@ -4,11 +4,13 @@
 
 S9Q review-only work is complete. No order, cancel, signing, merge, redeem, funding, live/latest/deploy, shared-ingress, shared-WS, or C artifact path was used.
 
-Latest source commit:
+Latest S9Q source commit:
 
 - Branch: `codex/s8a-runtime-readiness-20260608`
 - Commit: `217a3d9e36849bd44d156bf935fb2f904eb3eaf4`
 - Purpose: replace the old broad execute blocker with a fresh-exact-approval-gated S9Q execute switch, and block source/preview fixture current-run reconciliation inputs in effectful mode.
+
+The handoff and private-repo migration docs were added after that source commit. Use current `HEAD` for repository migration, and use the S9Q source commit above for exact approval binding unless a later source change is made.
 
 S9Q local packet:
 
@@ -79,4 +81,3 @@ If the default `scripts/fixtures/s9i_current_run_reconciliation_inputs_preview.j
 3. Before any future exact-approved run, fresh SSH preflight must verify the hash-bound B-owned staging worktree, runtime/source/binary hashes, preview without approval exit 66, no-order-auth-preview PASS, no-submit gates PASS, and fail-closed gates PASS.
 4. If drafting exact approval, bind commit `217a3d9e36849bd44d156bf935fb2f904eb3eaf4`, packet sha256 `4dab98e7d9dfcf0f06f695d5e83e721f6ddf8b6abf6248383d1a3a3122c438e2`, remote result sha256 `8aa611f459476fb37aec24c02ad407c39a7af86a7087573ee9d377843039a44f`, and the non-fixture current-run reconciliation input requirement.
 5. If effectful execution is not explicitly authorized with fresh exact text, stay review-only and write artifacts/scorecards only.
-
