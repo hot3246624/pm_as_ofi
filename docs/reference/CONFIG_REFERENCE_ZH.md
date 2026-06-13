@@ -161,6 +161,8 @@ profile 说明：
 | `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed seed clip `57.6` |
 | `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed seed clip `30.0` |
 | `xuan_ladder_v1` | 最新 xuan public 行为 shadow 近似 + profit guard | 开盘后 4s 开始；收盘前 25s 停新 first leg；seed pair cap `1.040`；completion cap 按 residual age 分层；fresh residual 不花 repair budget；age >= 90s 可用 `1.010` stale exposure insurance；age >= 45s 或 remaining <= 45s 才允许真实 surplus repair budget，且总 pair cost 仍封顶 `1.030`；亏损闭合后新 first leg 启用 breakeven-path brake；clip 随轮内时间梯度变化 |
+| `nagi777_v1` | 学 nagi777 (5m 高量 PnL 机器，btc-updown-5m 等高 ROI 短窗) | 5m 激进参与 (V1 deep dig: 30338 5m rounds/4334 BTC5m, L2 depth L1~461 5lvl~1460, rescore 84k seeds/pair~0.89/res~0.025/44% clean)。local 0.35 + L2 bias 早 seed 高 volume，紧 cap 0.975 保 cost，clip120+ 保 part，gates 保 res (xuan baseline)。ce25_nagi last60 搜索证据。**Research/shadow only**，必须先跑 V1 health check (uv --strict-duckdb)。并行：L2 full、boundary gate、pair_arb 同步。 |
+| `balanced_pnl_v1` | 新 balanced profile (crazy backtest search) | 综合权衡低配对成本( tighter caps ~0.98)、低残仓( stricter residual gate + insurance)、高参与( earlier entry gated by residual/L2)。weights e.g. (0.4 cost, 0.4 clean, 0.2 part)。用 V1 DuckDB + xuan rescore 搜索 Pareto。冲突时优先 clean_closed >0.90 + pair_p90<1.03。 |
 
 Replay profile 下的 `fixed seed clip` 是 replay 搜索里的实际 seed clip；`xuan_ladder_v1` 使用内置时间梯度 clip。它们都会绕过 legacy seed 缩量逻辑，例如 “no immediate completion 时乘 `0.60`” 和 thin-slack clip haircut；否则 shadow 样本会变成不同策略，不能直接验证 replay/xuan 候选。
 
@@ -215,6 +217,7 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
 | `PM_PAIR_ARB_TIER_1_MULT` | `0.60` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
 | `PM_PAIR_ARB_TIER_2_MULT` | `0.20` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_MIN_OPEN_EDGE_FOR_RISK_ADD` | `0.0` | 新利润优化参数：risk-increasing 加仓的最小 open_edge 门槛。0=关闭（默认）。正值（如0.0008）可过滤低edge坏仓。需经 backtest_pair_arb.py + replay 调参后启用。pair_arb 内动态 margin 已随 live open_edge 自动调整激进程度。 |
 
 验证时建议同时观察两组日志：
 - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形

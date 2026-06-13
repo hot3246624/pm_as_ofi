@@ -58,6 +58,12 @@ impl QuoteStrategy for PairArbStrategy {
 
         let mid_yes = (ub.yes_bid + ub.yes_ask) / 2.0;
         let mid_no = (ub.no_bid + ub.no_ask) / 2.0;
+        // Profit lever for future: when local/self-built price agg (or oracle lag hints) provide
+        // high-confidence synthetic mid with low latency, we can bias mid_yes/mid_no here for
+        // better excess estimation, *provided* it doesn't conflict with strict pair_cost goal.
+        // Example (disabled): if local_conf > 0.9 { mid_yes = 0.6*mid_yes + 0.4*local_yes_mid }
+        // This is especially powerful for 5m rounds; for 15m pair_arb keep book-dominant for now.
+        // See coordinator oracle_lag paths and scripts/pm_research for local fusion.
 
         // 1) Base pricing via A-S + Gabagool
         let excess = f64::max(0.0, (mid_yes + mid_no) - cfg.pair_target);
@@ -81,10 +87,74 @@ impl QuoteStrategy for PairArbStrategy {
             raw_no -= overflow / 2.0;
         }
 
-        let yes_size = Self::candidate_size_for_side(inv, Side::Yes, cfg.bid_size);
-        let no_size = Self::candidate_size_for_side(inv, Side::No, cfg.bid_size);
+        let mut yes_size = Self::candidate_size_for_side(inv, Side::Yes, cfg.bid_size);
+        let mut no_size = Self::candidate_size_for_side(inv, Side::No, cfg.bid_size);
         let yes_risk_effect = Self::candidate_risk_effect(inv, Side::Yes, yes_size);
         let no_risk_effect = Self::candidate_risk_effect(inv, Side::No, no_size);
+
+        // V1-aligned profit opt (per Backtest V1 + completion/residual adapter + PGT xuan/nagi absorption - 往死里干):
+        // Use pair_ledger residual to bias pairing sizes higher when there is significant
+        // unpaired first-leg exposure. This improves capital efficiency and P&L realization
+        // (aligns with V1 residual adapter + xuan rescore focus on completion quality).
+        // Nagi777 sync (deep dig): for 5m slugs (V1 core 30338 5m rounds /4334 BTC5m, rescore 84k seeds, L2 depth~1460 5lvl), extra residual boost + local timing note for low cost.
+        // Sync from aggressive PGT xuan_ladder + nagi777_v1 (high part via 15s entry +0.35 local + L2 slack; res_share~0.025 baseline).
+        // Only affects pairing legs; risk-increasing still gated by min_open_edge + tiers. Parallel: nagi volume style in pair too.
+        if let Some(active) = input.pair_ledger.active_tranche {
+            let res = active.residual_qty.max(0.0);
+            if res > cfg.bid_size * 1.5 {
+                let res_boost = (res / (cfg.bid_size * 4.0)).clamp(0.0, 1.5);
+                // Parallel nagi 5m sync (deep dig V1 30338 5m / rescore low res 0.025 baseline + L2 depth): extra boost for high part 5m volume style (ce25 last60 tail).
+                // Nagi high seeds need faster residual cleanup to keep clean_closed high while participating.
+                let nagi_5m_extra = if res > cfg.bid_size * 3.0 { 0.25 } else { 0.0 }; // 猛烈推进 全都要: 5m nagi (V1 daily 19.5 var, low-seed p5 thin clean 0.24 risk from data, L2 p5=5/p95 750/med831, ce25 last60/low-px/high-stop from 14 policies, boundary open high remaining ~23 seeds) extra res for clean + high part
+                let l2_depth_val = input.l2_depth.map_or(831.0, |d| d.bid_depth_5lvl.min(d.ask_depth_5lvl));
+                let l2_depth_size_mult: f64 = 1.0 + (l2_depth_val / 20000.0);
+                let p5_risk_cap = std::env::var("PM_NAGI_5M_P5_RISK_CAP")
+                    .ok()
+                    .and_then(|v| v.parse::<f64>().ok())
+                    .unwrap_or(0.75);
+                let thin_book_risk = p5_risk_cap.max(0.5); // p5=5 cap from low-seed data
+                let remaining_secs = coordinator.seconds_to_market_end().unwrap_or(u64::MAX);
+                let uncertainty_gate = {
+                    let slug = coordinator.cfg().slug.as_deref();
+                    let round_end_ts = coordinator.cfg().market_end_ts;
+                    crate::polymarket::strategy::get_boundary_uncertainty_with_fallback(slug, round_end_ts)
+                };
+                let boundary_open_size = if remaining_secs > 240 && !uncertainty_gate { 1.05 } else { 1.0 }; // high remaining 5m open (boundary dataset tie)
+                let ce25_last60_res_boost = if res > cfg.bid_size * 2.0 { 0.1 } else { 0.0 }; // ce25 last60 for res boost in 5m
+                let ce25_high_stop_res_boost = if res > cfg.bid_size * 1.5 { 0.05 } else { 0.0 }; // ce25 high price stop for res in 5m
+                // Q4 zone (0.3125-0.35) mild residual boost: 7-9 actions directionally positive.
+                // OVERFITTING FIX: removed micro core (0.3125-0.33125) boost — only 2 trades.
+                let q4_zone_res_boost = {
+                    let yes_mid = (input.book.yes_bid + input.book.yes_ask) / 2.0;
+                    let no_mid = (input.book.no_bid + input.book.no_ask) / 2.0;
+                    let in_q4 = (yes_mid >= 0.3125 && yes_mid <= 0.35)
+                        || (no_mid >= 0.3125 && no_mid <= 0.35);
+                    if in_q4 && res > cfg.bid_size * 2.0 { 0.05 } else { 0.0 } // mild (was 0.15)
+                };
+                if yes_risk_effect == PairArbRiskEffect::PairingOrReducing {
+                    yes_size = (yes_size * (1.0 + res_boost + nagi_5m_extra + ce25_last60_res_boost + ce25_high_stop_res_boost + q4_zone_res_boost) * l2_depth_size_mult.min(1.15) * thin_book_risk * boundary_open_size).min(cfg.bid_size * 3.0);
+                }
+                if no_risk_effect == PairArbRiskEffect::PairingOrReducing {
+                    no_size = (no_size * (1.0 + res_boost + nagi_5m_extra + ce25_last60_res_boost + ce25_high_stop_res_boost + q4_zone_res_boost) * l2_depth_size_mult.min(1.15) * thin_book_risk * boundary_open_size).min(cfg.bid_size * 3.0);
+                }
+            }
+        }
+
+        // Crazy profit iteration: scale size up on high open_edge / utility for better capital efficiency on good opportunities.
+        // Only for pairing or high-utility risk adds; capped to avoid blowing max_net.
+        // Also lightly bias raw price toward better fill when utility signals strong pairing value (still capped by pair_target/VWAP).
+        let edge_mult = (1.0 + (current_open_edge / 0.003).clamp(0.0, 0.8)).min(1.8);  // up to ~1.8x on strong edge
+        let util_boost_ticks = if current_utility > 0.002 { (current_utility / 0.001).clamp(0.0, 3.0) } else { 0.0 };
+        if current_utility > 0.001 || current_open_edge > 0.001 {
+            if yes_risk_effect == PairArbRiskEffect::PairingOrReducing || (yes_risk_effect == PairArbRiskEffect::RiskIncreasing && current_open_edge >= cfg.pair_arb.min_open_edge_for_risk_add) {
+                yes_size = (yes_size * edge_mult).min(cfg.bid_size * 2.0);
+                raw_yes += util_boost_ticks * cfg.tick_size * 0.3;  // gentle pull for better fill prob on high value
+            }
+            if no_risk_effect == PairArbRiskEffect::PairingOrReducing || (no_risk_effect == PairArbRiskEffect::RiskIncreasing && current_open_edge >= cfg.pair_arb.min_open_edge_for_risk_add) {
+                no_size = (no_size * edge_mult).min(cfg.bid_size * 2.0);
+                raw_no += util_boost_ticks * cfg.tick_size * 0.3;
+            }
+        }
 
         // 1b) Tiered avg-cost cap for same-side risk-increasing candidate.
         // Tier for risk-increasing leg enters earlier (3.5/8) than the global
@@ -160,13 +230,20 @@ impl QuoteStrategy for PairArbStrategy {
         }
 
         // 2) Inventory Cost Clamp (VWAP ceiling)
+        // Profit opt: when current_open_edge is strongly positive, we can afford a slightly
+        // tighter (smaller) safety margin on the pair-cost ceiling. This lets us be more
+        // aggressive on good-edge opportunities without blowing the long-term pair target.
+        // Conversely, when edge is marginal we stay conservative.
         let mut disable_yes_by_cost = false;
         let mut disable_no_by_cost = false;
-        let effective_pair_cost_margin = if inv.net_diff.abs() < PAIR_ARB_NET_EPS {
+        let base_margin = if inv.net_diff.abs() < PAIR_ARB_NET_EPS {
             0.0
         } else {
             cfg.pair_arb.pair_cost_safety_margin
         };
+        // Scale margin down (more aggressive) when open_edge > 0.002, up to 40% reduction.
+        let edge_boost = (current_open_edge / 0.005).clamp(0.0, 1.0); // 0.5% edge = full boost
+        let effective_pair_cost_margin = base_margin * (1.0 - 0.4 * edge_boost);
         if inv.no_qty > f64::EPSILON && inv.no_avg_cost > 0.0 {
             let raw_yes_before = raw_yes;
             let yes_ceiling = Self::vwap_ceiling(
@@ -467,8 +544,8 @@ impl PairArbStrategy {
         inv: &crate::polymarket::messages::InventoryState,
         _book: &crate::polymarket::coordinator::Book,
         _current_metrics: &StrategyInventoryMetrics,
-        _current_utility: f64,
-        _current_open_edge: f64,
+        current_utility: f64,
+        current_open_edge: f64,
         side: Side,
         price: f64,
         size: f64,
@@ -506,6 +583,27 @@ impl PairArbStrategy {
             );
             return false;
         }
+
+        // Profit optimization: for risk-increasing adds, require a minimum positive open_edge.
+        // This avoids "paying" to add inventory when the immediate pair-cost edge is poor.
+        // Low edge risk adds are the silent profit killer (adverse selection + opportunity cost).
+        let min_edge = coordinator.cfg().pair_arb.min_open_edge_for_risk_add;
+        if matches!(risk_effect, PairArbRiskEffect::RiskIncreasing)
+            && current_open_edge < min_edge
+        {
+            quotes.note_pair_arb_skip_inventory_gate(); // reuse note or could add specific
+            debug!(
+                "🧭 pair_arb skip low_open_edge_risk | side={} open_edge={:.5} min={} price={:.4} size={:.2} utility={:.4}",
+                side.as_str(),
+                current_open_edge,
+                min_edge,
+                price,
+                size,
+                current_utility,
+            );
+            return false;
+        }
+
         let Some(_projected) = coordinator.simulate_buy(inv, side, size, price) else {
             quotes.note_pair_arb_skip_simulate_buy_none();
             trace!(

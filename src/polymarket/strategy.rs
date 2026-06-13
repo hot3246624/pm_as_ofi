@@ -376,11 +376,20 @@ impl StrategyKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct L2BookDepth {
+    pub(crate) bid_depth_5lvl: f64,
+    pub(crate) ask_depth_5lvl: f64,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct StrategyTickInput<'a> {
     pub(crate) inv: &'a InventoryState,
+    #[allow(dead_code)]
     pub(crate) settled_inv: &'a InventoryState,
+    #[allow(dead_code)]
     pub(crate) working_inv: &'a InventoryState,
+    #[allow(dead_code)]
     pub(crate) inventory: &'a InventorySnapshot,
     pub(crate) pair_ledger: &'a PairLedgerSnapshot,
     pub(crate) episode_metrics: &'a EpisodeMetrics,
@@ -388,7 +397,140 @@ pub(crate) struct StrategyTickInput<'a> {
     pub(crate) metrics: &'a StrategyInventoryMetrics,
     pub(crate) ofi: Option<&'a OfiSnapshot>,
     pub(crate) glft: Option<&'a GlftSignalSnapshot>,
+    pub(crate) l2_depth: Option<L2BookDepth>,
 }
+
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
+static BOUNDARY_TAPE_CACHE: OnceLock<HashMap<(String, u64), String>> = OnceLock::new();
+static L2_DEPTH_TAPE_CACHE: OnceLock<HashMap<(String, u64), L2BookDepth>> = OnceLock::new();
+
+pub(crate) fn extract_symbol_from_slug(slug: &str) -> String {
+    let slug_lower = slug.to_ascii_lowercase();
+    if slug_lower.contains("btc") {
+        "btc".to_string()
+    } else if slug_lower.contains("eth") {
+        "eth".to_string()
+    } else {
+        slug_lower.split('-').next().unwrap_or(&slug_lower).to_string()
+    }
+}
+
+pub(crate) fn get_boundary_status(symbol: &str, round_end_ts: u64) -> Option<String> {
+    let cache = BOUNDARY_TAPE_CACHE.get_or_init(|| {
+        let path_str = std::env::var("PM_LOCAL_AGG_BOUNDARY_TAPE_PATH")
+            .unwrap_or_else(|_| "logs/local_price_agg_boundary_tape.jsonl".to_string());
+        load_boundary_tape(&path_str)
+    });
+    cache.get(&(symbol.to_lowercase(), round_end_ts)).cloned()
+}
+
+fn load_boundary_tape(path_str: &str) -> HashMap<(String, u64), String> {
+    let mut map = HashMap::new();
+    let file = match std::fs::File::open(path_str) {
+        Ok(f) => f,
+        Err(_) => return map,
+    };
+    use std::io::{BufRead, BufReader};
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            symbol: String,
+            round_end_ts: u64,
+            status: String,
+        }
+        if let Ok(probe) = serde_json::from_str::<Probe>(line) {
+            map.insert((probe.symbol.to_lowercase(), probe.round_end_ts), probe.status);
+        }
+    }
+    map
+}
+
+pub(crate) fn get_boundary_uncertainty_with_fallback(slug: Option<&str>, round_end_ts: Option<u64>) -> bool {
+    if let (Some(slug_str), Some(end_ts)) = (slug, round_end_ts) {
+        let symbol = extract_symbol_from_slug(slug_str);
+        if let Some(status) = get_boundary_status(&symbol, end_ts) {
+            return status == "insufficient_sources" || status == "filtered" || status == "unresolved";
+        }
+    }
+    std::env::var("PM_LOCAL_AGG_UNCERTAINTY_GATE_ENABLED")
+        .map_or(false, |v| v == "true" || v == "1" || v == "yes")
+}
+
+pub(crate) fn get_l2_depth(symbol: &str, round_end_ts: u64) -> Option<L2BookDepth> {
+    let cache = L2_DEPTH_TAPE_CACHE.get_or_init(|| {
+        if let Ok(path_str) = std::env::var("PM_L2_DEPTH_TAPE_PATH") {
+            load_l2_depth_tape(&path_str)
+        } else {
+            HashMap::new()
+        }
+    });
+    cache.get(&(symbol.to_lowercase(), round_end_ts)).cloned()
+}
+
+fn load_l2_depth_tape(path_str: &str) -> HashMap<(String, u64), L2BookDepth> {
+    let mut map = HashMap::new();
+    let file = match std::fs::File::open(path_str) {
+        Ok(f) => f,
+        Err(_) => return map,
+    };
+    use std::io::{BufRead, BufReader};
+    let reader = BufReader::new(file);
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        #[derive(serde::Deserialize)]
+        struct Probe {
+            symbol: String,
+            round_end_ts: u64,
+            bid_depth_5lvl: f64,
+            ask_depth_5lvl: f64,
+        }
+        if let Ok(probe) = serde_json::from_str::<Probe>(line) {
+            map.insert(
+                (probe.symbol.to_lowercase(), probe.round_end_ts),
+                L2BookDepth {
+                    bid_depth_5lvl: probe.bid_depth_5lvl,
+                    ask_depth_5lvl: probe.ask_depth_5lvl,
+                },
+            );
+        }
+    }
+    map
+}
+
+pub(crate) fn get_l2_depth_with_fallback(slug: Option<&str>, round_end_ts: Option<u64>) -> Option<L2BookDepth> {
+    if let (Some(slug_str), Some(end_ts)) = (slug, round_end_ts) {
+        let symbol = extract_symbol_from_slug(slug_str);
+        if let Some(depth) = get_l2_depth(&symbol, end_ts) {
+            return Some(depth);
+        }
+    }
+    let bid_env = std::env::var("PM_L2_BID_DEPTH_5LVL").ok().and_then(|v| v.parse::<f64>().ok());
+    let ask_env = std::env::var("PM_L2_ASK_DEPTH_5LVL").ok().and_then(|v| v.parse::<f64>().ok());
+    if let (Some(bid), Some(ask)) = (bid_env, ask_env) {
+        Some(L2BookDepth { bid_depth_5lvl: bid, ask_depth_5lvl: ask })
+    } else {
+        None
+    }
+}
+
 
 pub(crate) struct StrategyRegistry;
 

@@ -1022,8 +1022,10 @@ impl StrategyCoordinator {
         }
 
         let remaining_secs = self.seconds_to_market_end().unwrap_or(u64::MAX);
-        let open_pair_band =
-            pgt_effective_open_pair_band_value(self.cfg.open_pair_band, remaining_secs);
+        let open_pair_band_yes =
+            pgt_effective_open_pair_band_value(self.cfg.open_pair_band, remaining_secs, Some(ub.yes_bid));
+        let open_pair_band_no =
+            pgt_effective_open_pair_band_value(self.cfg.open_pair_band, remaining_secs, Some(ub.no_bid));
         let yes = self.pgt_shadow_taker_open_candidate_for_side(
             ub,
             Side::Yes,
@@ -1032,7 +1034,7 @@ impl StrategyCoordinator {
             st.hedge_dispatched_for(Side::Yes),
             yes_toxic_blocked,
             yes_stale,
-            open_pair_band,
+            open_pair_band_yes,
         );
         let no = self.pgt_shadow_taker_open_candidate_for_side(
             ub,
@@ -1042,7 +1044,7 @@ impl StrategyCoordinator {
             st.hedge_dispatched_for(Side::No),
             no_toxic_blocked,
             no_stale,
-            open_pair_band,
+            open_pair_band_no,
         );
 
         match (yes, no) {

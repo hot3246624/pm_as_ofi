@@ -30,6 +30,23 @@ use tokio::time::sleep;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
+// Use extracted ingress module (monolith shrink wave)
+use pm_as_ofi::polymarket::ingress::{
+    now_ms, shared_ingress_broker_bias_cache_path, shared_ingress_broker_lock_path,
+    shared_ingress_broker_log_path, shared_ingress_broker_manifest_path,
+    shared_ingress_broker_replace_existing, shared_ingress_broker_runtime_log_root,
+    shared_ingress_build_id, shared_ingress_chainlink_socket_path,
+    shared_ingress_clients_dir, shared_ingress_idle_exit_enabled,
+    shared_ingress_local_price_socket_path, shared_ingress_market_socket_path,
+    shared_ingress_protocol_version, shared_ingress_role, shared_ingress_root,
+    shared_ingress_schema_version, set_shared_ingress_role_override, sorted_symbol_vec,
+    SharedIngressBrokerCapabilities, SharedIngressBrokerManifest, SharedIngressClientLease,
+    SharedIngressRole,
+    SHARED_INGRESS_BROKER_STALE_MS, SHARED_INGRESS_CLIENT_STALE_MS, SHARED_INGRESS_LOCK_STALE_MS,
+    SHARED_INGRESS_BROKER_START_TIMEOUT_MS, SHARED_INGRESS_HEARTBEAT_INTERVAL_MS,
+    SHARED_INGRESS_IDLE_SHUTDOWN_GRACE_MS,
+};
+
 // V2 Actor modules
 use pm_as_ofi::polymarket::claims::{
     execute_market_merge, maybe_auto_claim, run_auto_claim_once, scan_claimable_positions,
@@ -120,186 +137,14 @@ fn env_flag_or(name: &str, default: bool) -> bool {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SharedIngressRole {
-    Standalone,
-    Broker,
-    Client,
-    Auto,
-}
-
-static SHARED_INGRESS_ROLE_OVERRIDE: OnceLock<SharedIngressRole> = OnceLock::new();
-
-fn shared_ingress_role() -> SharedIngressRole {
-    if let Some(role) = SHARED_INGRESS_ROLE_OVERRIDE.get() {
-        return *role;
-    }
-    match env::var("PM_SHARED_INGRESS_ROLE")
-        .ok()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "broker" => SharedIngressRole::Broker,
-        "client" => SharedIngressRole::Client,
-        "auto" => SharedIngressRole::Auto,
-        _ => SharedIngressRole::Standalone,
-    }
-}
-
-fn set_shared_ingress_role_override(role: SharedIngressRole) {
-    let _ = SHARED_INGRESS_ROLE_OVERRIDE.set(role);
-}
-
-fn shared_ingress_root() -> PathBuf {
-    env::var("PM_SHARED_INGRESS_ROOT")
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("run/shared-ingress-main"))
-}
-
-fn shared_ingress_chainlink_socket_path() -> PathBuf {
-    shared_ingress_root().join("chainlink.sock")
-}
-
-fn shared_ingress_local_price_socket_path() -> PathBuf {
-    shared_ingress_root().join("local_price.sock")
-}
-
-const SHARED_INGRESS_PROTOCOL_VERSION: u32 = 1;
-const SHARED_INGRESS_SCHEMA_VERSION: u32 = 1;
-const SHARED_INGRESS_HEARTBEAT_INTERVAL_MS: u64 = 1_000;
-const SHARED_INGRESS_BROKER_STALE_MS: u64 = 5_000;
-const SHARED_INGRESS_CLIENT_STALE_MS: u64 = 5_000;
-const SHARED_INGRESS_IDLE_SHUTDOWN_GRACE_MS: u64 = 8_000;
-const SHARED_INGRESS_BROKER_START_TIMEOUT_MS: u64 = 12_000;
-const SHARED_INGRESS_LOCK_STALE_MS: u64 = 15_000;
-
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct SharedIngressBrokerCapabilities {
-    #[serde(default = "shared_ingress_market_enabled_default")]
-    market_enabled: bool,
-    #[serde(default)]
-    chainlink_symbols: Vec<String>,
-    #[serde(default)]
-    local_price_symbols: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SharedIngressBrokerManifest {
-    protocol_version: u32,
-    #[serde(default = "shared_ingress_schema_version")]
-    schema_version: u32,
-    build_id: String,
-    #[serde(default = "shared_ingress_default_capabilities")]
-    capabilities: SharedIngressBrokerCapabilities,
-    pid: u32,
-    started_ms: u64,
-    last_heartbeat_ms: u64,
-    chainlink_socket: String,
-    local_price_socket: String,
-    market_socket: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SharedIngressClientLease {
-    protocol_version: u32,
-    #[serde(default = "shared_ingress_schema_version")]
-    schema_version: u32,
-    build_id: String,
-    instance_id: String,
-    pid: u32,
-    started_ms: u64,
-    last_heartbeat_ms: u64,
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_else(|_| Duration::from_secs(0))
-        .as_millis() as u64
-}
-
-fn shared_ingress_protocol_version() -> u32 {
-    SHARED_INGRESS_PROTOCOL_VERSION
-}
-
-fn shared_ingress_schema_version() -> u32 {
-    SHARED_INGRESS_SCHEMA_VERSION
-}
-
-fn shared_ingress_market_enabled_default() -> bool {
-    true
-}
-
-fn shared_ingress_default_capabilities() -> SharedIngressBrokerCapabilities {
-    SharedIngressBrokerCapabilities {
-        market_enabled: true,
-        chainlink_symbols: Vec::new(),
-        local_price_symbols: Vec::new(),
-    }
-}
-
-fn shared_ingress_build_id() -> String {
-    static BUILD_ID: OnceLock<String> = OnceLock::new();
-    BUILD_ID
-        .get_or_init(|| {
-            let exe = env::current_exe().ok();
-            let meta = exe.as_ref().and_then(|p| fs::metadata(p).ok());
-            let modified_ms = meta
-                .as_ref()
-                .and_then(|m| m.modified().ok())
-                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            let len = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-            format!("exe:{}:{}", modified_ms, len)
-        })
-        .clone()
-}
-
-fn shared_ingress_idle_exit_enabled() -> bool {
-    env_flag_or("PM_SHARED_INGRESS_IDLE_EXIT_ENABLED", false)
-}
-
-fn shared_ingress_broker_replace_existing() -> bool {
-    env_flag_or("PM_SHARED_INGRESS_BROKER_REPLACE_EXISTING", false)
-}
-
-fn shared_ingress_broker_log_path() -> PathBuf {
-    shared_ingress_root().join("broker.log")
-}
-
-fn shared_ingress_broker_runtime_log_root() -> PathBuf {
-    shared_ingress_root().join("broker-runtime")
-}
-
-fn shared_ingress_broker_bias_cache_path() -> PathBuf {
-    shared_ingress_root().join("local_price_agg_bias_cache.broker.json")
-}
-
-fn shared_ingress_broker_manifest_path() -> PathBuf {
-    shared_ingress_root().join("broker_manifest.json")
-}
-
-fn shared_ingress_broker_lock_path() -> PathBuf {
-    shared_ingress_root().join("broker.lock")
-}
-
-fn shared_ingress_clients_dir() -> PathBuf {
-    shared_ingress_root().join("clients")
-}
+// Shared ingress types + pure helpers have been extracted to pm_as_ofi::polymarket::ingress
+// (monolith reduction wave). Complex async broker/client/lease/spawn logic remains here
+// for now and calls the extracted helpers via the use above. Further waves will move
+// more (cleanup, manifest IO, lock acquisition, sidecar spawn, in-proc supervisor, etc.).
 
 fn shared_ingress_client_lease_path() -> PathBuf {
     let instance = instance_id().unwrap_or_else(|| "shared-ingress-client".to_string());
     shared_ingress_clients_dir().join(format!("{}-{}.json", instance, std::process::id()))
-}
-
-fn shared_ingress_market_socket_path() -> PathBuf {
-    shared_ingress_root().join("market.sock")
 }
 
 fn write_json_pretty_atomic<T: Serialize>(path: &PathBuf, value: &T) -> anyhow::Result<()> {
@@ -335,14 +180,9 @@ fn is_broker_manifest_healthy(manifest: &SharedIngressBrokerManifest) -> bool {
         && PathBuf::from(&manifest.market_socket).exists()
 }
 
-fn sorted_symbol_vec(symbols: &HashSet<String>) -> Vec<String> {
-    let mut out: Vec<String> = symbols.iter().cloned().collect();
-    out.sort();
-    out
-}
-
 fn shared_ingress_required_capabilities_from_env() -> SharedIngressBrokerCapabilities {
     let coord_cfg = CoordinatorConfig::from_env();
+    info!("🧩 effective startup config | {}", coord_cfg.effective_summary());
     let prefixes = parse_multi_market_prefixes_from_env();
     let chainlink_symbols = shared_ingress_hub_symbols(&prefixes, &coord_cfg);
     let local_price_symbols =
@@ -18671,6 +18511,7 @@ async fn run_inproc_supervisor(prefixes: Vec<String>) -> anyhow::Result<()> {
     );
 
     let coord_cfg = CoordinatorConfig::from_env();
+    info!("🧩 effective startup config | {}", coord_cfg.effective_summary());
     let shared_ingress = SharedIngressRuntime::build(&prefixes, &coord_cfg);
 
     // Oracle-lag execution now runs per-market directly on WinnerHint hot path.
@@ -20246,6 +20087,7 @@ async fn run_market_ingress_broker(
 
 async fn run_shared_ingress_broker() -> anyhow::Result<()> {
     let coord_cfg = CoordinatorConfig::from_env();
+    info!("🧩 effective startup config | {}", coord_cfg.effective_summary());
     let prefixes = parse_multi_market_prefixes_from_env();
     let hub_symbols = shared_ingress_hub_symbols(&prefixes, &coord_cfg);
     let local_price_symbols =

@@ -13,5 +13,9 @@ pub mod recorder;
 pub mod strategy;
 pub mod user_ws;
 
+// ─── Shared ingress (multi-process broker/client for market/Chainlink/local-price feeds)
+// Extracted from the giant bin to reduce monolith size and enable testing.
+pub mod ingress;
+
 // ─── Shared data types ───
 pub mod types;
