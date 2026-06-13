@@ -787,11 +787,25 @@ impl StrategyCoordinator {
             if pair_arb_force_freshness_republish {
                 needs_reprice = true;
             }
+            let size_grew_significantly = size > slot_size + 0.5; // meaningful growth e.g. additional first-leg partial/full fills
             let pgt_buy_retain_candidate = self.cfg.strategy.is_pair_gated_tranche_arb()
                 && slot_direction == Some(slot.direction)
                 && slot.direction == TradeDirection::Buy
                 && (reason == BidReason::Provide || (slot_size - size).abs() <= 0.1);
-            if needs_reprice && pgt_buy_retain_candidate {
+            // GitHub #7 / hedge partial fill fix: when the desired *completion/hedge* size
+            // has grown because the first leg received more (partial or full) fills, force
+            // republish with the larger size. Do *not* retain the old smaller live order on the
+            // opposing (up/down) leg. Size growth on Hedge is a first-class must-replace signal.
+            // We deliberately do *not* force on pure Provide/seed size drift (there are explicit
+            // tests and low-cadence policy that "same price + size-only should not reprice seed").
+            if size_grew_significantly && reason == BidReason::Hedge {
+                needs_reprice = true;
+                debug!(
+                    "📈 hedge size grew due to first-leg progress | slot={:?} old_size={:.2} new_size={:.2} reason={:?} (GitHub #7 partial-fill hedge fix)",
+                    slot, slot_size, size, reason
+                );
+            }
+            if needs_reprice && pgt_buy_retain_candidate && !(size_grew_significantly && reason == BidReason::Hedge) {
                 if slot_reason != Some(reason) {
                     debug!(
                         "🔁 PGT mode-transition reprice {:?}: live_reason={:?} new_reason={:?} strategic_target={:.4} live={:.4}",
@@ -820,14 +834,26 @@ impl StrategyCoordinator {
                     );
                 }
             }
-            if !needs_reprice && pgt_buy_retain_candidate {
+            if !needs_reprice && pgt_buy_retain_candidate && !(size_grew_significantly && reason == BidReason::Hedge) {
                 self.stats.retain_hits = self.stats.retain_hits.saturating_add(1);
                 self.stats.pgt_dispatch_retain = self.stats.pgt_dispatch_retain.saturating_add(1);
                 return;
             }
             // PairArb is BUY-only and pair-cost-first:
             // both candidate roles are state/event-driven and hold between
+            // IMPORTANT: size growth on pairing/risk-reducing legs (due to more fills on the other side)
+            // must still force a larger order even if price is "close". The general size_change_triggers_reprice
+            // + the explicit size_grew_significantly guard above cover this for #7-style partial fill growth.
             // discrete triggers (fill/failed/merge/phase/reset).
+            let pair_arb_size_grew = self.cfg.strategy.is_pair_arb()
+                && (size > slot_size + 0.5)
+                && slot.direction == TradeDirection::Buy;
+            if pair_arb_size_grew {
+                // Mirror of #7 hedge size growth fix: when pairing/risk-reducing leg needs more
+                // size because the other side filled more, force the larger order (do not retain
+                // old partial size).
+                needs_reprice = true;
+            }
             if needs_reprice
                 && self.cfg.strategy.is_pair_arb()
                 && slot_direction == Some(slot.direction)
@@ -836,6 +862,7 @@ impl StrategyCoordinator {
                 && !pair_arb_state_changed
                 && !pair_arb_fill_recheck_pending
                 && !pair_arb_cross_reject_reprice_pending
+                && !pair_arb_size_grew
             {
                 let tick = self.cfg.tick_size.max(1e-9);
                 let delta_ticks = (price - slot_price) / tick;

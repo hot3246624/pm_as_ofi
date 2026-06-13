@@ -204,6 +204,22 @@ OFI 不参与状态机切换，不定义 `5/10` 状态阶梯，不替代 `pair_t
 
 ## 6. 实盘检查点
 
+**回测纪律（严格遵循 Backtest V1 同事 2026-06-11 说明）**：
+- 任何严肃多资产（7币种）或宣称“可推广”的回测，必须先跑：
+  cd /Users/hot/web3Scientist/poly_trans_research
+  export POLY_BT_ROOT=/Users/hot/web3Scientist/poly_backtest_data
+  uv run --with duckdb python scripts/validate_multiasset_backtest_v1_local_install.py --strict-duckdb
+  （必须 status=OK, query_ok=true, hash_ok=true）
+- 只认 manifest 发布的 DuckDB（core/L2 replay store）、audit pack、xuan rescore。
+- 本 legacy backtest_pair_arb.py 仅用于快速 pair_arb 原型；真实研究走 V1 search-safe + L2 evidence + completion/residual adapter + capital ledger。
+- 当前 V1 口径：strategy_research_ready=true, shadow_design_ready=true，但 shadow_start_ready=false, promotion_ready=false, private_truth_ready=false, deployable=false。
+- BTC parity 仍 BLOCKED（新 V1 normalized adapter 与旧 baseline 语义未证明等价）。
+- 绝不从 no-order shadow 标记 live/deploy ready。所有 order 相关字段保持 false，直到真实 owner execution truth reconcile。
+- 数据覆盖仅限指定 2026-05 日期；新日期需外部 V1 重建。
+- 原则：只用 manifest 数据；不要把 public/profile 结果当 private truth；legacy SQLite 回测结果不作为 promotion 依据。
+
+这些纪律确保我们少走弯路，专注研究质量而非过早 live。pair_arb 作为 engineering baseline，吸收 V1 洞见（residual adapter、xuan rescore、L2）来提升真实 edge。
+
 重点观察四项：
 
 1. `net_bucket` 穿越 `5/10` 后，下一单是否立即切到对应状态语义

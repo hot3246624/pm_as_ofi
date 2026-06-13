@@ -208,6 +208,8 @@ Replay profile 会保留上述 seed clip 作为实际下单目标，不再套用
 
 2026-05-01 xuan 最新 public trade 行为分析后新增 shadow profile：
 
+**学 nagi777 (疯狂吸收轮, 并行全上)**: nagi777 在 5m 高量短窗突出。V1 deep dig (health OK, manifest): 30338 5m rounds (4334 BTC5m), rescore 5m BTC ~19.5 seeds/mkt / pair~0.89 / res_share~0.025 / clean~0.44; L2 BTC L1~461 5lvl~1460; ce25_nagi (last60 tail down o240_300, pc0.97-0.99, low px tail)。`nagi777_v1` 现带**真实动态 L2+boundary fusion** (res_factor + remaining early open signal + slack proxy, ce25 consts NAGI_CE25_*) + pair_arb 并行 nagi 5m extra res boost。**先 health uv --strict-duckdb**，research/shadow only。详见 CONFIG + pair_gated_tranche.rs nagi777_v1() + backtest py (real rescore grid, 输出 Rust 建议)。xuan clean baseline + nagi volume (L2/local/ce25 last60)。并行持续全上：L2 input join、boundary gate 代码、更多 grid、hybrid。
+
 ```text
 PM_PGT_SHADOW_PROFILE=xuan_ladder_v1
 PM_PAIR_TARGET=0.975

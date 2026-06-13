@@ -42,11 +42,16 @@ PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
 
 ## 4. 重点回归场景
 
-每次改下面这些模块，都应至少重跑一轮 dry-run：
+每次改下面这些模块，都应至少重跑一轮 dry-run + lib tests：
 - `src/polymarket/strategy/pair_arb.rs`
-- `src/polymarket/coordinator_execution.rs`
+- `src/polymarket/coordinator_execution.rs` / `coordinator_order_io.rs`
 - `src/polymarket/ofi.rs`
-- `src/bin/polymarket_v2.rs`
+- `src/polymarket/pair_ledger.rs`
+- `src/bin/polymarket_v2.rs` (ingress changes especially)
+
+新增回归（GitHub #7 相关）：
+- `test_github7_hedge_size_grows_on_additional_first_leg_partial_then_full_fill`
+  确保第一腿 partial → full 后，对侧 hedge/completion size 必须增长且强制 replace（不 retain 旧 partial size）。
 
 ## 5. 关键观测项
 

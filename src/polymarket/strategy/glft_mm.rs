@@ -382,6 +382,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(quotes.yes_buy.is_none());
@@ -423,6 +424,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(quotes.yes_buy.is_some(), "expected YES buy slot");
@@ -465,6 +467,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         let yes_buy = quotes.yes_buy.expect("YES buy quote expected");
@@ -511,6 +514,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(
@@ -556,6 +560,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(
@@ -611,6 +616,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(
@@ -654,6 +660,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(
@@ -697,6 +704,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(
@@ -744,6 +752,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: Some(&snapshot),
+                l2_depth: None,
             },
         );
         assert!(

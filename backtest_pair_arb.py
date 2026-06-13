@@ -1,23 +1,33 @@
 #!/usr/bin/env python3
 """
-Pair-Arb Strategy Backtester
-============================
-Faithful reimplementation of the production pair_arb.rs logic in Python,
-driven by tick-level replay from btc5m.db.
+Pair-Arb Strategy Backtester (Legacy BTC-focused, V1-aware)
+===========================================================
+**IMPORTANT: Per Backtest V1 colleague instructions (2026-06-11)**:
+- This is a local research tool, NOT production/promotion/live ready.
+- For serious multi-asset (7 assets: BNB/BTC/DOGE/ETH/HYPE/SOL/XRP) or any claims, 
+  ALWAYS use the validated Backtest V1 platform:
+    cd /Users/hot/web3Scientist/poly_trans_research
+    export POLY_BT_ROOT=/Users/hot/web3Scientist/poly_backtest_data
+    uv run --with duckdb python scripts/validate_multiasset_backtest_v1_local_install.py --strict-duckdb
+  (Health check must pass with query_ok=true, hashes match, etc.)
+- Use ONLY manifest-published data (e.g. replay_store_multiasset_core_v1 DuckDB, audit packs).
+- Do NOT treat no-order shadow, public results, or this legacy backtester as private truth or deployable.
+- Current V1 readiness (as of note): strategy_research_ready=true, shadow_design_ready=true, 
+  but shadow_start_ready=false, strategy_promotion_ready=false, private_truth_ready=false, deployable=false.
+- BTC parity still BLOCKED (baseline not proven equivalent in V1 normalized adapter).
+- Data coverage: specific May 2026 dates only; newer dates require external V1 rebuild (not local here).
+- Respect boundaries: this legacy SQLite BTC simulator is for quick pair_arb prototyping only.
+  Full research/shadow must go through V1 DuckDB + L2 evidence + xuan rescore + capital ledger.
 
-Core parameters from .env (v1.0.0-stable):
-  pair_target  = 0.97
-  bid_size     = 5.0
-  max_net_diff = 5.0
-  tier_1_mult  = 0.50
-  tier_2_mult  = 0.15
-  tick_size    = 0.01
-  risk_open_cutoff_secs = 240
-  pair_cost_safety_margin = 0.02
+Faithful reimplementation of the production pair_arb.rs logic in Python (for quick iteration).
+Core parameters from .env.
 
 Fill model (Conservative):
   Our YES bid filled when market ask_up <= our_bid (someone sells into us)
   Our NO  bid filled when market ask_down <= our_bid
+
+To migrate to V1 multi-asset: load from DuckDB market_meta / md_book_l1, use completion/residual adapter,
+xuan rescore for candidate filtering, and run against search-safe rows.
 """
 
 import sqlite3
@@ -56,7 +66,7 @@ class Config:
     fill_model: str = "conservative"  # "conservative" or "aggressive"
 
 # ============================================================
-# Inventory State
+# Inventory State + simple P&L attribution (for profit optimization)
 # ============================================================
 @dataclass
 class Inventory:
@@ -78,7 +88,39 @@ class Inventory:
             if new_total > 0:
                 self.no_avg_cost = (self.no_qty * self.no_avg_cost + qty * price) / new_total
             self.no_qty = new_total
-            self.net_diff = self.yes_qty - self.no_qty
+
+@dataclass
+class BacktestStats:
+    """Profit-focused metrics (pair cost realization, edge capture, residual risk)."""
+    total_fills: int = 0
+    yes_fills: int = 0
+    no_fills: int = 0
+    total_notional: float = 0.0
+    realized_pair_pnl: float = 0.0  # from paired closes (simplified)
+    cumulative_excess_captured: float = 0.0  # sum (mid_sum - pair_target) at entry time * size
+    max_residual_cost: float = 0.0
+    end_residual_cost: float = 0.0
+    estimated_maker_rebate: float = 0.0  # placeholder, real depends on venue rebate rate
+    worst_pair_cost: float = 0.0
+
+    def update_on_fill(self, side: str, qty: float, price: float, current_mid_sum: float, pair_target: float):
+        self.total_fills += 1
+        if side == "YES":
+            self.yes_fills += 1
+        else:
+            self.no_fills += 1
+        notional = qty * price
+        self.total_notional += notional
+        # Rough edge capture at fill time (positive when we buy into excess)
+        excess = max(0.0, current_mid_sum - pair_target)
+        self.cumulative_excess_captured += excess * qty
+        # Placeholder rebate (e.g. 0.5bp maker)
+        self.estimated_maker_rebate += notional * 0.00005
+
+    def finalize(self, final_inv: Inventory, pair_target: float):
+        self.end_residual_cost = abs(final_inv.net_diff) * pair_target  # conservative
+        self.max_residual_cost = max(self.max_residual_cost, self.end_residual_cost)
+        self.worst_pair_cost = max(self.worst_pair_cost, final_inv.yes_avg_cost + final_inv.no_avg_cost)
 
 # ============================================================
 # Core Strategy Logic (matching pair_arb.rs)
@@ -370,6 +412,7 @@ def run_backtest(db_path: str, cfg: Config, limit: int = 0, verbose: bool = Fals
     residual_win = 0
     residual_lose = 0
     window_pnls = []
+    profit_stats = BacktestStats()  # new profit-focused aggregator (edge capture, residual risk, rebates)
 
     for sett in settlements:
         cid = sett["condition_id"]
@@ -414,6 +457,8 @@ def run_backtest(db_path: str, cfg: Config, limit: int = 0, verbose: bool = Fals
             if active_yes_bid > 0 and check_fill(active_yes_bid, ask_up, cfg.fill_model):
                 inv.update_after_fill("YES", active_yes_size, active_yes_bid)
                 fills.append(("YES", active_yes_bid, active_yes_size, rem))
+                mid_sum = (bid_up + ask_up + bid_down + ask_down) / 2.0 if (bid_up > 0 and ask_up > 0) else cfg.pair_target
+                profit_stats.update_on_fill("YES", active_yes_size, active_yes_bid, mid_sum, cfg.pair_target)
                 active_yes_bid = 0.0
                 active_yes_size = 0.0
                 last_quote_ts = 0  # force requote
@@ -421,6 +466,8 @@ def run_backtest(db_path: str, cfg: Config, limit: int = 0, verbose: bool = Fals
             if active_no_bid > 0 and check_fill(active_no_bid, ask_down, cfg.fill_model):
                 inv.update_after_fill("NO", active_no_size, active_no_bid)
                 fills.append(("NO", active_no_bid, active_no_size, rem))
+                mid_sum = (bid_up + ask_up + bid_down + ask_down) / 2.0 if (bid_up > 0 and ask_up > 0) else cfg.pair_target
+                profit_stats.update_on_fill("NO", active_no_size, active_no_bid, mid_sum, cfg.pair_target)
                 active_no_bid = 0.0
                 active_no_size = 0.0
                 last_quote_ts = 0
@@ -444,6 +491,7 @@ def run_backtest(db_path: str, cfg: Config, limit: int = 0, verbose: bool = Fals
         total_fills += len(fills)
         total_pairs += result["paired_qty"]
         window_pnls.append(result["total_pnl"])
+        profit_stats.finalize(inv, cfg.pair_target)  # aggregate residual/edge stats across windows
 
         has_residual = (result["residual_yes"] > 0.01 or result["residual_no"] > 0.01)
         if has_residual:
@@ -485,6 +533,14 @@ def run_backtest(db_path: str, cfg: Config, limit: int = 0, verbose: bool = Fals
     print(f"  📊 Avg P&L/window:     {total_pnl/max(n_windows,1):+.4f} USDC")
     if total_pairs > 0:
         print(f"  📊 Avg pair cost:      {(total_paired_pnl/total_pairs):.4f} profit/pair")
+
+    # New profit attribution from BacktestStats (crazy iteration)
+    print("\n  [Profit Attribution - new in crazy round]")
+    print(f"    Cumulative excess captured: {profit_stats.cumulative_excess_captured:+.3f}")
+    print(f"    Est. maker rebate:          {profit_stats.estimated_maker_rebate:+.3f}")
+    print(f"    End residual cost (est):    {profit_stats.end_residual_cost:.3f}")
+    print(f"    Max residual cost seen:     {profit_stats.max_residual_cost:.3f}")
+    print(f"    Total fills tracked:        {profit_stats.total_fills}")
 
     # Distribution analysis
     if window_pnls:

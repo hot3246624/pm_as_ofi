@@ -161,43 +161,12 @@ profile 说明：
 | `replay_focused_v1` | 当前 BTC 5m replay 最优 shadow 候选 | 跳过开盘前 75s；seed pair cap `0.980`；early completion cap `0.975`；late completion cap `0.995`；fixed seed clip `57.6` |
 | `replay_lower_clip_v1` | 更保守低 clip 候选 | 跳过开盘前 60s；seed pair cap `0.970`；early completion cap `0.975`；late completion cap `1.000`；fixed seed clip `30.0` |
 | `xuan_ladder_v1` | 最新 xuan public 行为 shadow 近似 + profit guard | 开盘后 4s 开始；收盘前 25s 停新 first leg；seed pair cap `1.040`；completion cap 按 residual age 分层；fresh residual 不花 repair budget；age >= 90s 可用 `1.010` stale exposure insurance；age >= 45s 或 remaining <= 45s 才允许真实 surplus repair budget，且总 pair cost 仍封顶 `1.030`；亏损闭合后新 first leg 启用 breakeven-path brake；clip 随轮内时间梯度变化 |
-| `xuan_high_pressure_v1` | high-side public BUY pressure settlement-alpha paper-shadow | 开盘后 60s 开始；收盘前 120s 停新仓；只在 dry-run/shadow 报价；触发条件为 5s high-side BUY qty `>=10` 且 high/low BUY qty ratio `>=1.0`；BUY price band `[0.50,0.65]`；clip `10.0`；public flow haircut `0.10`；side cap `100`；market gross cap `250`；trade fresh `1500ms`；seed cooldown `1000ms`；该 profile 是 settlement inventory，不按 pair-completion residual 解释 |
+| `nagi777_v1` | 学 nagi777 (5m 高量 PnL 机器，btc-updown-5m 等高 ROI 短窗) | 5m 激进参与 (V1 deep dig: 30338 5m rounds/4334 BTC5m, L2 depth L1~461 5lvl~1460, rescore 84k seeds/pair~0.89/res~0.025/44% clean)。local 0.35 + L2 bias 早 seed 高 volume，紧 cap 0.975 保 cost，clip120+ 保 part，gates 保 res (xuan baseline)。ce25_nagi last60 搜索证据。**Research/shadow only**，必须先跑 V1 health check (uv --strict-duckdb)。并行：L2 full、boundary gate、pair_arb 同步。 |
+| `balanced_pnl_v1` | 新 balanced profile (crazy backtest search) | 综合权衡低配对成本( tighter caps ~0.98)、低残仓( stricter residual gate + insurance)、高参与( earlier entry gated by residual/L2)。weights e.g. (0.4 cost, 0.4 clean, 0.2 part)。用 V1 DuckDB + xuan rescore 搜索 Pareto。冲突时优先 clean_closed >0.90 + pair_p90<1.03。 |
 
 Replay profile 下的 `fixed seed clip` 是 replay 搜索里的实际 seed clip；`xuan_ladder_v1` 使用内置时间梯度 clip。它们都会绕过 legacy seed 缩量逻辑，例如 “no immediate completion 时乘 `0.60`” 和 thin-slack clip haircut；否则 shadow 样本会变成不同策略，不能直接验证 replay/xuan 候选。
 
 注意：这些都是 public market-side replay / xuan public trade 行为得出的 shadow profile，不是实盘盈利证明。promotion 到 enforce 前需要用小额实盘验证 maker queue / completion fill truth。
-
-### Xuan/B27 D+ Observer / Canary 配置
-
-`xuan_b27_dplus` 是研究线专用策略名，用于区别其它 agent 的泛 D+ 思路。当前 Rust 入口仍默认不输出报价、不下单；`observer/auth_observer` 只写 recorder events。`canary` 已有 preview planner、execution-controller、OMS adapter surface、runtime wiring gate 和 runtime source-truth gate，但全部默认关闭。自有 order accepted、authenticated User WS fill parsed、wallet balance、round-claim redeem execution evidence、post-merge cashflow snapshot 生产者已接入 runtime source-truth 状态；EOA redeem tx hash 或 SAFE relayer tx id + wait-confirm success 都可作为 redeem confirmation，未确认的 SAFE submit 仍不能 PASS。G2 canary runbook、本地 canary acceptance fixture smoke、exact launch/review plan smoke、post-run review/secret-sentinel smoke、approval-envelope verifier smoke、refusal-only launcher smoke、exact-run executor contract smoke、executor dry-run skeleton smoke、executor preflight smoke、executor payload allowlist smoke、shadow edge-sample extraction smoke、no-order shadow run artifact smoke、shadow acceptance input discovery smoke、realized outcome-label producer smoke、outcome-label bridge smoke、shadow performance evidence smoke 和 Rust shadow/dry-run 策略验收 runner smoke、Rust shadow/dry-run 策略验收 smoke 已就绪；contract、dry-run 和 executor preflight 已强制消费 payload allowlist，并重新计算 payload hash/mode/shebang 防止过期清单漂移。executor preflight 还会本地验证 future remote run-root 规划：`worktree` 与 `g2_canary_run_*` 必须同属 `/home/ubuntu/xuan_research_runs/xuan_research_*`，否则返回 `REFUSED_REMOTE_RUN_ROOT_PLAN_INVALID`，且不会 mkdir/SSH/sync。当前 canary readiness 已降级为 `CANARY_NOT_READY_SHADOW_DRY_RUN_STRATEGY_ACCEPTANCE_MISSING`：read-only User WS acceptance 只证明链路安全，不证明策略表现；observer artifact 抽出的 `observer_edge_only_not_realized` 样本只能证明候选边际存在，不能作为 performance evidence；realized outcome-label producer/bridge 已证明独立 labels 可进入 performance/acceptance gate；shadow acceptance input discovery 已确认当前 non-fixture real candidate 为 0，真实 labels / run artifact 仍缺失；下一道 gate 是 Rust no-order shadow/dry-run 策略验收，而不是 G2 read-write canary 授权。
-
-| 参数 | 默认值 | 说明 |
-| --- | --- | --- |
-| `PM_STRATEGY` | unset | 设为 `xuan_b27_dplus` 或 `xuan-b27-dplus` 才选择该策略；旧名 `dplus_passive_redeem` 仅作为兼容 alias |
-| `PM_XUAN_B27_DPLUS_MODE` | `disabled` | D+ 模式：`disabled / observer / auth_observer / canary`。默认禁用 |
-| `PM_XUAN_B27_DPLUS_EDGE` | `0.040` | 研究模型使用的被动第一腿改善预算 |
-| `PM_XUAN_B27_DPLUS_TARGET_QTY` | `5` | 单侧目标数量；observer/canary 初期必须小量 |
-| `PM_XUAN_B27_DPLUS_SEED_PX_LO` | `0.010` | 允许 seed 的价格下界 |
-| `PM_XUAN_B27_DPLUS_SEED_PX_HI` | `0.990` | 允许 seed 的价格上界 |
-| `PM_XUAN_B27_DPLUS_IMBALANCE_QTY_CAP` | `2` | 内部库存不平衡上限 |
-| `PM_XUAN_B27_DPLUS_SALVAGE_NET_CAP` | `0.950` | salvage 允许的净 pair cost 上限 |
-| `PM_XUAN_B27_DPLUS_MAX_OPEN_COST_USDC` | `50` | canary 级别 open cost 硬上限 |
-| `PM_XUAN_B27_DPLUS_MAX_STRATEGY_EXPOSURE_USDC` | `100` | canary 级别策略总敞口硬上限 |
-| `PM_XUAN_B27_DPLUS_MAX_LIVE_ORDERS` | `2` | canary 级别 live order 数硬上限 |
-| `PM_XUAN_B27_DPLUS_POST_ONLY` | `true` | canary 时会被强制为 `true` |
-| `PM_XUAN_B27_DPLUS_ALLOW_PASSIVE_TAKER` | `false` | canary 时会被强制为 `false` |
-| `PM_XUAN_B27_DPLUS_STOP_ON_UNKNOWN` | `true` | canary 时会被强制为 `true` |
-| `PM_XUAN_B27_DPLUS_EXPLICIT_CANARY_APPROVAL` | `false` | canary runtime gate 的显式批准开关；单独设置仍不足以下单 |
-| `PM_XUAN_B27_DPLUS_RUNTIME_WIRING_ENABLED` | `false` | 允许 D+ runtime gate 尝试把本地 adapter commands 送入 OMS channel；默认关闭 |
-| `PM_XUAN_B27_DPLUS_OMS_ADAPTER_ENABLED` | `false` | 允许 OMS adapter surface 产生命令值；默认关闭 |
-
-硬约束：
-
-- `observer` / `auth_observer` 不得进入下单路径。
-- 当前已实现事件：`xuan_b27_dplus_observer_tick`、`xuan_b27_dplus_canary_blocked_not_implemented`、`xuan_b27_dplus_canary_runtime_gate`。
-- `canary` 只能 post-only maker-only，且任何 UNKNOWN 状态必须 stop。
-- runtime gate 还要求代码内 `account_truth_ready=true` 且 runtime source-truth status 全部为 `PASS`：`order_truth / fill_truth / wallet_truth / redeem_truth / cashflow_truth`。这些状态默认 `UNKNOWN`，不能通过 env 覆盖；当前 order/fill、wallet/cashflow producer、redeem confirmation producer、G2 runbook smoke、canary acceptance fixture smoke、launch/review plan smoke、post-run review/secret-sentinel smoke、approval-envelope verifier smoke、refusal-only launcher smoke、exact-run executor contract smoke、executor dry-run skeleton smoke、executor preflight smoke、executor payload allowlist smoke、shadow edge-sample extraction smoke、no-order shadow run artifact smoke、shadow acceptance input discovery smoke、realized outcome-label producer smoke、outcome-label bridge smoke、shadow performance evidence smoke 和 Rust shadow/dry-run 策略验收 runner smoke、Rust shadow/dry-run 策略验收 smoke 已接入 readiness/status gates；contract/dry-run/preflight 还会拒绝缺失、不安全或相对当前文件已漂移的 payload allowlist，preflight 还会拒绝 remote worktree/run-dir 不同 root 的计划。即使这些 plumbing gate 全部 PASS，缺少真实 `PASS_RUST_SHADOW_STRATEGY_ACCEPTANCE` artifact 时也不能启动网络 canary。
-- 在 source-of-truth recorder / D+ lot ledger / cashflow reconciler 就绪前，不允许把该策略解释为生产可用。
 
 ### PGT Shadow Loop 启动控制
 
@@ -218,14 +187,14 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_PGT_FIXED_AUTO_BUILD` | fixed 单轮默认 `true`；shadow loop 默认 `false` | 单轮 `run_pgt_fixed_shadow_next.sh` 仍会按需 build；连续 loop 内禁用每轮 build，避免外部源码 mtime 变化导致错过开盘 |
 | `PM_PGT_FIXED_PRESTART_SECS` | `10` | fixed worker 在目标 round start 前约 10 秒启动；覆盖 Rust 进程启动、shared-ingress client 握手与 feed attach 的热路径开销 |
 | `PM_PGT_FIXED_INTERVAL_SECS` | `300` | fixed BTC 5m round 的生命周期长度；用于迟到启动防护，不参与策略报价 |
-| `PM_PGT_FIXED_STALE_SKIP_GRACE_SECS` | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` 或 shadow loop 默认 `45` | fixed worker 醒来后若已超过 `round_start + interval + grace`，直接 `stale_target_skipped` 并以 `76` 退出，避免机器睡眠/DNS 卡顿后记录零 tick 伪样本 |
+| `PM_PGT_FIXED_STALE_SKIP_GRACE_SECS` | `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` 或 `2` | fixed worker 醒来后若已超过 `round_start + interval + grace`，直接 `stale_target_skipped` 并以 `76` 退出，避免机器睡眠/DNS 卡顿后记录零 tick 伪样本 |
 | `PM_PGT_SHADOW_LOOP_OVERLAP` | `true` | shadow loop 使用 overlapping scheduler，每轮提前调度下一个 fixed worker，避免当前 worker 到 end+grace 后才串行启动下一轮 |
 | `PM_PGT_FIXED_INSTANCE_PER_ROUND` | overlap loop 默认 `true` | overlapping worker 按 round timestamp 拆分 `PM_INSTANCE_ID`、log root 与 recorder root，避免前后轮短暂重叠时互相覆盖 |
 | `PM_PGT_SHADOW_LOOP_BACKOFF_SEC` | `1` | 正常轮转退出后的重启间隔 |
-| `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `45` | fixed shadow round 收盘后继续追踪 45 秒；下一轮由 overlap loop 独立预启动，不再依赖上一轮退出后 systemd 重启 |
+| `PM_MARKET_WS_HARD_CUTOFF_GRACE_SECS` | shadow loop 默认 `2` | fixed shadow round 收盘后快速退出，避免下一轮迟到 |
 | `PM_PGT_SHADOW_REDEEM_LIFECYCLE_ENABLED` | shadow loop 默认 `false` | PGT shadow 轮转默认不跑 post-close redeem lifecycle，redeem 行为单独验证 |
 | `PM_CLAIM_MONITOR` | fixed shadow 默认 `false` | PGT shadow 热启动不跑 claim monitor，避免非交易 HTTP 阻塞下一轮开盘 |
-| `PM_MIN_ORDER_SIZE` | 默认 `5` | 最低限价挂单份额；低于 5 份的 maker/limit 机会应跳过，避免 venue minimum-order reject；fixed shadow 也使用该默认值 |
+| `PM_MIN_ORDER_SIZE` | fixed shadow 默认 `5` | PGT shadow 固定最低下单量，避免每轮启动同步探测 `/books` 拖慢开盘 |
 
 ## 3. 当前推荐策略模板（pair_arb 验证基线）
 
@@ -246,9 +215,9 @@ PM_SHARED_INGRESS_ROLE=auto \
 | `PM_TOXIC_RECOVERY_HOLD_MS` | `1200` | toxic 恢复冷却 |
 | `PM_AS_SKEW_FACTOR` | `0.06` | 三段库存 skew 的基础强度（pair_arb） |
 | `PM_AS_TIME_DECAY_K` | `1.0` | 后半段库存叠加的时间衰减（pair_arb） |
-| `PM_PAIR_ARB_TIER_MODE` | `discrete` | 分段库存模式：`disabled`（关闭 tier cap，并回退非分段库存曲线）、`discrete`（阶梯）或 `continuous`（平滑） |
-| `PM_PAIR_ARB_TIER_1_MULT` | `0.60` | 仅 risk-increasing：`|net_diff| >= 3.5` 的主仓侧 avg-cost cap |
-| `PM_PAIR_ARB_TIER_2_MULT` | `0.20` | 仅 risk-increasing：`|net_diff| >= 8` 的主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_1_MULT` | `0.60` | `5 <= |net_diff| < 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_TIER_2_MULT` | `0.20` | `|net_diff| >= 10` 时主仓侧 avg-cost cap |
+| `PM_PAIR_ARB_MIN_OPEN_EDGE_FOR_RISK_ADD` | `0.0` | 新利润优化参数：risk-increasing 加仓的最小 open_edge 门槛。0=关闭（默认）。正值（如0.0008）可过滤低edge坏仓。需经 backtest_pair_arb.py + replay 调参后启用。pair_arb 内动态 margin 已随 live open_edge 自动调整激进程度。 |
 
 验证时建议同时观察两组日志：
 - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
@@ -279,27 +248,6 @@ PM_SHARED_INGRESS_ROLE=auto \
   - 胜方价格 `>0.993` 时不做 taker；maker 仍允许挂单。
 - 实盘前操作清单见：
   - [ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/runbooks/ORACLE_LAG_SNIPING_LIVE_CHECKLIST_ZH.md)
-
-补充：`completion_first`（completion probability 试验策略）
-- 建议单独设置：
-  - `PM_STRATEGY=completion_first`
-  - `PM_BID_SIZE=5.0` 起步
-  - `PM_MAX_NET_DIFF=5.0`
-  - `PM_PAIR_TARGET=0.98`
-  - `PM_COMPLETION_SCORE_THRESHOLD=0.58`
-  - `PM_COMPLETION_TTL_SECS=30`
-  - `PM_COMPLETION_REENTRY_COOLDOWN_SECS=10`
-  - `PM_COMPLETION_TRADE_RECENCY_SECS=8`
-  - `PM_COMPLETION_SEED_SIZE_MULT=0.50`
-  - `PM_COMPLETION_REPAIR_SIZE_MULT=1.00`
-- 运行语义：
-  - flat 时只有在 completion score 过阈值后才双边 seed；
-  - 首腿成交后切到 `opposite-only repair`，不再继续同侧摊低成本；
-  - residual 超过 TTL 后升级为价格受限的 opposite-side `FAK` repair；
-  - `FAK` 上限价仍受动态 pair band 约束，不做无上限追单；
-  - 配对完成或 merge 后进入短 cooldown，避免瞬时连续 re-entry。
-- 详细设计与自检见：
-  - [STRATEGY_COMPLETION_FIRST_ZH.md](/Users/hot/web3Scientist/pm_as_ofi/docs/STRATEGY_COMPLETION_FIRST_ZH.md)
 
 ## 4. `glft_mm` 专属参数（仅 challenger 使用）
 
@@ -420,10 +368,3 @@ PM_SHARED_INGRESS_ROLE=auto \
 补充说明：
 - `PM_OPEN_PAIR_BAND` 主要服务 `gabagool_grid`
 - `PM_AS_SKEW_FACTOR` / `PM_AS_TIME_DECAY_K` 是 `pair_arb` 核心参数
-## Completion First
-- `PM_STRATEGY=completion_first`
-  - 独立 BTC 5m completion-first 策略
-  - 兼容别名：`xuan_clone`
-- `PM_COMPLETION_FIRST_MODE=shadow|enforce`
-  - `shadow`：只计算/记录，不真实下单
-  - `enforce`：后续实盘模式预留

@@ -25,6 +25,8 @@ A3. 7-market 设置下，cohort surplus bank 能正常累积。
 
 V1.1 的目标：把 A1/A2/A3 变成**可测量、可裁决**的 gate，而不是"假设它成立"。
 
+**猛干迭代 (crazy absorption round)**: 当前代码已加强 xuan_ladder_v1 的 residual gate (XUAN_LADDER_MAX_RESIDUAL_FOR_NEW_SEED)、cost brake on loss-closed、pre-merge bias clip 等，直接从 xuan deep dive + V1.1 吸收。backtest 必须严格用 V1 DuckDB + xuan rescore manifest 验证 fidelity (clean_closed per bucket, same_side_add_ratio)。所有 shadow 仅 research，绝不 promotion。 pair_arb 已同步 residual boost。
+
 ---
 
 ## 2. 六处增量（与 V1 的差异）

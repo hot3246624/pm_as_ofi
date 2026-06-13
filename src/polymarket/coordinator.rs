@@ -121,6 +121,10 @@ pub struct PairArbStrategyConfig {
     /// PairArb risk-open cutoff window (seconds to market end).
     /// Remaining <= this threshold blocks new risk-increasing buys.
     pub risk_open_cutoff_secs: u64,
+    /// Minimum open_edge required to allow risk-increasing buys (profit optimization lever).
+    /// 0.0 = disabled (full compatibility). Positive value (e.g. 0.0008) filters low-edge risk adds.
+    /// Tune via backtest_pair_arb.py + replay data. See pair_arb.rs for rationale.
+    pub min_open_edge_for_risk_add: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -349,6 +353,8 @@ pub struct OracleLagSnipingStrategyConfig {
 pub struct CoordinatorConfig {
     /// Strategy implementation selected at runtime.
     pub strategy: StrategyKind,
+    /// Market slug.
+    pub slug: Option<String>,
     /// Total pair cost ceiling.
     pub pair_target: f64,
     /// Early-entry pair band used by unified buy-only strategies before a full pair is locked.
@@ -449,6 +455,7 @@ impl Default for CoordinatorConfig {
     fn default() -> Self {
         Self {
             strategy: StrategyKind::GabagoolGrid,
+            slug: None,
             pair_target: 0.99,
             open_pair_band: 0.99,
             max_net_diff: 5.0,
@@ -473,6 +480,7 @@ impl Default for CoordinatorConfig {
                 tier_2_mult: 0.60,
                 pair_cost_safety_margin: 0.02,
                 risk_open_cutoff_secs: 180,
+                min_open_edge_for_risk_add: 0.0,  // 0 = off (safe default). Set >0 e.g. 0.0008 after tuning for profit mode.
             },
             completion_first: CompletionFirstStrategyConfig {
                 market_enabled: false,
@@ -539,6 +547,9 @@ impl Default for CoordinatorConfig {
 impl CoordinatorConfig {
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
+        if let Ok(v) = std::env::var("POLYMARKET_MARKET_SLUG") {
+            cfg.slug = Some(v);
+        }
         cfg.strategy = StrategyKind::from_env_or_default(cfg.strategy);
         cfg.apply_common_env();
         cfg.apply_glft_env();
@@ -550,7 +561,45 @@ impl CoordinatorConfig {
         cfg.apply_runtime_env();
         cfg.apply_endgame_env();
         cfg.finalize_invariants();
+        cfg.validate_and_warn();
         cfg
+    }
+
+    /// Basic sanity + live-danger warnings. Called from from_env.
+    /// Crazy-iteration step toward real typed config with schema / clap.
+    pub fn validate_and_warn(&self) {
+        if self.bid_size <= 0.0 {
+            eprintln!("⚠️ CONFIG: bid_size <= 0 — orders will be skipped");
+        }
+        if self.max_net_diff < self.bid_size * 1.5 {
+            eprintln!(
+                "⚠️ CONFIG: max_net_diff ({:.1}) is very tight vs bid_size ({:.1}) — may thrash on first fill",
+                self.max_net_diff, self.bid_size
+            );
+        }
+        if self.pair_target > 1.05 || self.pair_target < 0.80 {
+            eprintln!("⚠️ CONFIG: pair_target {:.3} looks suspicious (typical 0.95-1.00)", self.pair_target);
+        }
+        if self.stale_ttl_ms < 500 {
+            eprintln!("⚠️ CONFIG: very low stale_ttl_ms — may over-cancel on brief blips");
+        }
+    }
+
+    /// Dump the effective (post-env) config as a compact string for logs / run headers.
+    /// Helps with "what actually ran" forensics (addresses the 100+ env var hell from analysis).
+    pub fn effective_summary(&self) -> String {
+        format!(
+            "strategy={} pair_target={:.3} max_net_diff={:.1} bid_size={:.1} reprice_th={:.4} debounce_ms={} pair_arb_tiers=({:.2},{:.2}) min_edge_risk={:.5}",
+            self.strategy.as_str(),
+            self.pair_target,
+            self.max_net_diff,
+            self.bid_size,
+            self.reprice_threshold,
+            self.debounce_ms,
+            self.pair_arb.tier_1_mult,
+            self.pair_arb.tier_2_mult,
+            self.pair_arb.min_open_edge_for_risk_add,
+        )
     }
 
     fn apply_common_env(&mut self) {
@@ -747,6 +796,15 @@ impl CoordinatorConfig {
         if let Ok(v) = std::env::var("PM_PAIR_ARB_RISK_OPEN_CUTOFF_SECS") {
             if let Ok(secs) = v.parse::<u64>() {
                 self.pair_arb.risk_open_cutoff_secs = secs;
+            }
+        }
+        if let Ok(v) = std::env::var("PM_PAIR_ARB_MIN_OPEN_EDGE_FOR_RISK_ADD") {
+            if let Ok(f) = v.parse::<f64>() {
+                if f >= 0.0 {
+                    self.pair_arb.min_open_edge_for_risk_add = f;
+                } else {
+                    warn!("⚠️ Ignoring negative PM_PAIR_ARB_MIN_OPEN_EDGE_FOR_RISK_ADD, using {}", self.pair_arb.min_open_edge_for_risk_add);
+                }
             }
         }
     }
@@ -2187,6 +2245,7 @@ impl StrategyCoordinator {
         self.oracle_lag_is_selected
     }
 
+    #[allow(dead_code)]
     pub(crate) fn oracle_lag_defer_to_round_tail(&self) -> bool {
         self.oracle_lag_defer_to_round_tail
     }
@@ -3797,6 +3856,10 @@ impl StrategyCoordinator {
 
         // Priority 4: Strategy quote + unified flow-risk overlay + execution.
         let metrics = self.derive_inventory_metrics(&decision_inv);
+        let l2_depth = crate::polymarket::strategy::get_l2_depth_with_fallback(
+            self.cfg.slug.as_deref(),
+            self.cfg.market_end_ts,
+        );
         let input = StrategyTickInput {
             inv: &decision_inv,
             settled_inv: &settled_inv,
@@ -3808,6 +3871,7 @@ impl StrategyCoordinator {
             metrics: &metrics,
             ofi: Some(&ofi),
             glft: glft_snapshot.as_ref(),
+            l2_depth,
         };
         let mut quotes = self.cfg.strategy.compute_quotes(self, input);
         if self.cfg.strategy == StrategyKind::XuanB27Dplus {
