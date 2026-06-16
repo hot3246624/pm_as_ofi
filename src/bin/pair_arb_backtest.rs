@@ -126,6 +126,9 @@ struct Config {
     entry_pair_max_ask_sum: f64,
     require_two_sided_entry: bool,
     pairing_only_when_residual: bool,
+    stop_loss_threshold: f64,
+    exit_window_secs: f64,
+    exit_loss_limit: f64,
 }
 
 impl Default for Config {
@@ -156,6 +159,9 @@ impl Default for Config {
             entry_pair_max_ask_sum: 0.0,
             require_two_sided_entry: false,
             pairing_only_when_residual: false,
+            stop_loss_threshold: 1.0, // default to disabled (1.0) since we saw 0.08 was bad
+            exit_window_secs: 10.0,
+            exit_loss_limit: 0.05,
         }
     }
 }
@@ -167,6 +173,7 @@ struct Inventory {
     no_qty: f64,
     no_avg_cost: f64,
     net_diff: f64,
+    realized_pnl: f64,
 }
 
 impl Inventory {
@@ -183,6 +190,31 @@ impl Inventory {
                 self.no_avg_cost = (self.no_qty * self.no_avg_cost + qty * price) / new_total;
             }
             self.no_qty = new_total;
+        }
+        self.net_diff = self.yes_qty - self.no_qty;
+    }
+
+    fn sell_residual(&mut self, side_yes: bool, qty: f64, price: f64) {
+        if side_yes {
+            let qty_to_sell = qty.min(self.yes_qty);
+            if qty_to_sell > 0.0 {
+                self.realized_pnl += qty_to_sell * (price - self.yes_avg_cost);
+                self.yes_qty -= qty_to_sell;
+                if self.yes_qty <= PAIR_ARB_NET_EPS {
+                    self.yes_qty = 0.0;
+                    self.yes_avg_cost = 0.0;
+                }
+            }
+        } else {
+            let qty_to_sell = qty.min(self.no_qty);
+            if qty_to_sell > 0.0 {
+                self.realized_pnl += qty_to_sell * (price - self.no_avg_cost);
+                self.no_qty -= qty_to_sell;
+                if self.no_qty <= PAIR_ARB_NET_EPS {
+                    self.no_qty = 0.0;
+                    self.no_avg_cost = 0.0;
+                }
+            }
         }
         self.net_diff = self.yes_qty - self.no_qty;
     }
@@ -770,8 +802,8 @@ fn compute_settlement(inv: Inventory, outcome: &str) -> WindowResult {
         residual_yes,
         residual_no,
         residual_cost,
-        residual_pnl,
-        total_pnl: paired_pnl + residual_pnl,
+        residual_pnl: residual_pnl + inv.realized_pnl,
+        total_pnl: paired_pnl + residual_pnl + inv.realized_pnl,
     }
 }
 
@@ -916,6 +948,46 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                 last_quote_ts = 0;
             }
 
+            // Stop-Loss Exit Check
+            let residual = inv.net_diff.abs();
+            if residual > PAIR_ARB_NET_EPS {
+                let (sell_yes, avg_cost, bid_price) = if inv.net_diff > 0.0 {
+                    (true, inv.yes_avg_cost, tick.bid_up)
+                } else {
+                    (false, inv.no_avg_cost, tick.bid_down)
+                };
+                if bid_price > 0.0 && avg_cost > 0.0 && bid_price < avg_cost - cfg.stop_loss_threshold {
+                    let fee = fee_per_share(bid_price, cfg.taker_fee_rate);
+                    inv.sell_residual(sell_yes, residual, bid_price - fee);
+                    fills = fills.saturating_add(1);
+                    active_yes_bid = 0.0;
+                    active_yes_size = 0.0;
+                    active_no_bid = 0.0;
+                    active_no_size = 0.0;
+                    last_quote_ts = 0;
+                }
+            }
+
+            // End-of-window Early Exit Check
+            let residual = inv.net_diff.abs();
+            if residual > PAIR_ARB_NET_EPS && tick.remaining_sec <= cfg.exit_window_secs {
+                let (sell_yes, avg_cost, bid_price) = if inv.net_diff > 0.0 {
+                    (true, inv.yes_avg_cost, tick.bid_up)
+                } else {
+                    (false, inv.no_avg_cost, tick.bid_down)
+                };
+                if bid_price > 0.0 && avg_cost > 0.0 && bid_price >= avg_cost - cfg.exit_loss_limit {
+                    let fee = fee_per_share(bid_price, cfg.taker_fee_rate);
+                    inv.sell_residual(sell_yes, residual, bid_price - fee);
+                    fills = fills.saturating_add(1);
+                    active_yes_bid = 0.0;
+                    active_yes_size = 0.0;
+                    active_no_bid = 0.0;
+                    active_no_size = 0.0;
+                    last_quote_ts = 0;
+                }
+            }
+
             if tick.ts - last_quote_ts >= 2 {
                 let q = compute_quotes(cfg, inv, *tick, total_window_sec);
                 active_yes_bid = q.yes_bid;
@@ -923,6 +995,23 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                 active_no_bid = q.no_bid;
                 active_no_size = q.no_size;
                 last_quote_ts = tick.ts;
+            }
+        }
+
+        if let Some(last_tick) = window.ticks.last() {
+            let residual = inv.net_diff.abs();
+            if residual > PAIR_ARB_NET_EPS {
+                let (sell_yes, bid_price) = if inv.net_diff > 0.0 {
+                    (true, last_tick.bid_up)
+                } else {
+                    (false, last_tick.bid_down)
+                };
+                let fee = fee_per_share(bid_price, cfg.taker_fee_rate);
+                let net_exit_px = (bid_price - fee).max(0.0);
+                inv.sell_residual(sell_yes, residual, net_exit_px);
+                if net_exit_px > 0.0 {
+                    fills = fills.saturating_add(1);
+                }
             }
         }
 
@@ -1040,10 +1129,12 @@ fn run_json(
             "max_quote_age_secs": cfg.max_quote_age_secs,
             "min_ask_depth": cfg.min_ask_depth,
             "entry_pair_max_ask_sum": cfg.entry_pair_max_ask_sum,
-            "require_two_sided_entry": cfg.require_two_sided_entry,
             "pairing_only_when_residual": cfg.pairing_only_when_residual,
             "initial_balance": if cfg.initial_balance.is_finite() { json!(cfg.initial_balance) } else { json!("inf") },
             "fill_model": cfg.fill_model.to_string(),
+            "stop_loss_threshold": cfg.stop_loss_threshold,
+            "exit_window_secs": cfg.exit_window_secs,
+            "exit_loss_limit": cfg.exit_loss_limit,
             "limit": limit,
             "skip": skip,
         },
@@ -1166,6 +1257,7 @@ fn main() -> anyhow::Result<()> {
              --entry-pair-max-ask-sum <v[,..]>\n\
              --require-two-sided-entry\n\
              --pairing-only-when-residual\n\
+             --stop-loss-threshold <v[,v2,...]>\n\
              --jsonl\n"
         );
         return Ok(());
@@ -1226,6 +1318,12 @@ fn main() -> anyhow::Result<()> {
         .map_err(anyhow::Error::msg)?;
     let tier_modes = parse_vec::<TierMode>(get_arg("--tier-mode"), TierMode::Discrete)
         .map_err(anyhow::Error::msg)?;
+    let stop_loss_thresholds =
+        parse_vec_f64(get_arg("--stop-loss-threshold"), 1.0).map_err(anyhow::Error::msg)?;
+    let exit_window_secs_values =
+        parse_vec_f64(get_arg("--exit-window-secs"), 0.0).map_err(anyhow::Error::msg)?;
+    let exit_loss_limit_values =
+        parse_vec_f64(get_arg("--exit-loss-limit"), 1.0).map_err(anyhow::Error::msg)?;
     let jsonl = has_flag("--jsonl");
 
     let conn = Connection::open(&db)?;
@@ -1282,36 +1380,42 @@ fn main() -> anyhow::Result<()> {
                                                         {
                                                             for &tier_mode in &tier_modes {
                                                                 for &fill_model in &fill_models {
-                                                                    run_id =
-                                                                        run_id.saturating_add(1);
-                                                                    let cfg = Config {
-                                                                        max_net_diff,
-                                                                        pair_target,
-                                                                        bid_size,
-                                                                        tier_1_mult: tier1,
-                                                                        tier_2_mult: tier2,
-                                                                        risk_open_cutoff_secs:
-                                                                            cutoff,
-                                                                        pair_cost_safety_margin:
-                                                                            margin,
-                                                                        initial_balance,
-                                                                        tier_mode,
-                                                                        fill_model,
-                                                                        salvage_net_cap,
-                                                                        salvage_start_remaining_secs,
-                                                                        taker_fee_rate,
-                                                                        directional_risk_filter_bps,
-                                                                        directional_entry_min_bps,
-                                                                        directional_price_source,
-                                                                        reject_stale,
-                                                                        require_ws_fresh,
-                                                                        max_quote_age_secs,
-                                                                        min_ask_depth,
-                                                                        entry_pair_max_ask_sum,
-                                                                        require_two_sided_entry,
-                                                                        pairing_only_when_residual,
-                                                                        ..Config::default()
-                                                                    };
+                                                                    for &stop_loss_threshold in &stop_loss_thresholds {
+                                                                        for &exit_window_secs in &exit_window_secs_values {
+                                                                            for &exit_loss_limit in &exit_loss_limit_values {
+                                                                                run_id =
+                                                                                    run_id.saturating_add(1);
+                                                                                let cfg = Config {
+                                                                                    max_net_diff,
+                                                                                    pair_target,
+                                                                                    bid_size,
+                                                                                    tier_1_mult: tier1,
+                                                                                    tier_2_mult: tier2,
+                                                                                    risk_open_cutoff_secs:
+                                                                                        cutoff,
+                                                                                    pair_cost_safety_margin:
+                                                                                        margin,
+                                                                                    initial_balance,
+                                                                                    tier_mode,
+                                                                                    fill_model,
+                                                                                    salvage_net_cap,
+                                                                                    salvage_start_remaining_secs,
+                                                                                    taker_fee_rate,
+                                                                                    directional_risk_filter_bps,
+                                                                                    directional_entry_min_bps,
+                                                                                    directional_price_source,
+                                                                                    reject_stale,
+                                                                                    require_ws_fresh,
+                                                                                    max_quote_age_secs,
+                                                                                    min_ask_depth,
+                                                                                    entry_pair_max_ask_sum,
+                                                                                    require_two_sided_entry,
+                                                                                    pairing_only_when_residual,
+                                                                                    stop_loss_threshold,
+                                                                                    exit_window_secs,
+                                                                                    exit_loss_limit,
+                                                                                    ..Config::default()
+                                                                                };
 
                                                                     let agg =
                                                                         run_backtest(&windows, cfg);
@@ -1398,6 +1502,9 @@ fn main() -> anyhow::Result<()> {
                                                         avg_win,
                                                         avg_loss,
                                                         );
+                                                                            }
+                                                                        }
+                                                                    }
                                                                 }
                                                             }
                                                         }
