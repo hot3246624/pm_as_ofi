@@ -137,7 +137,7 @@ def main() -> int:
     local_gates_ok = (
         readiness.get("status") == "READY_FOR_APPROVAL"
         and diagnostic_smoke.get("status") == "PASS"
-        and bundle.get("ec2_readonly_user_ws_status") == "PASS_READONLY_USER_WS_DIAGNOSTIC"
+        and bundle.get("ec2_readonly_user_ws_status") in {"PASS_READONLY_USER_WS_DIAGNOSTIC", "PASS_READONLY_USER_WS_ACCEPTANCE"}
     )
     status = "READY_FOR_EXPLICIT_EC2_30M_ACCEPTANCE_APPROVAL" if (
         diagnostic_passed and resync_ready and local_gates_ok

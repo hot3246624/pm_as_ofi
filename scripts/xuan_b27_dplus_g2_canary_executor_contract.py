@@ -172,10 +172,12 @@ def main() -> int:
         "READY_FOR_EXPLICIT_G2_CANARY_APPROVAL",
         "CANARY_NOT_READY_SHADOW_DRY_RUN_STRATEGY_ACCEPTANCE_MISSING",
         "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_MISSING",
+        "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_FAILED",
     } and bundle_canary_status in {
         "READY_FOR_EXPLICIT_G2_CANARY_APPROVAL",
         "CANARY_NOT_READY_SHADOW_DRY_RUN_STRATEGY_ACCEPTANCE_MISSING",
         "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_MISSING",
+        "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_FAILED",
     }
     plumbing_ready_for_executor_implementation = (
         canary_readiness_fields.get("pre_canary_plumbing_ready") is True

@@ -829,6 +829,7 @@ mod tests {
             metrics: &metrics,
             ofi: None,
             glft: None,
+            l2_depth: None,
         };
 
         let quotes = COMPLETION_FIRST_STRATEGY.compute_quotes(&coord, input);
@@ -881,6 +882,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: None,
+                l2_depth: None,
             },
         );
 
@@ -949,6 +951,7 @@ mod tests {
                 metrics: &metrics,
                 ofi: None,
                 glft: None,
+                l2_depth: None,
             },
         );
 
@@ -990,6 +993,7 @@ mod tests {
             metrics: &metrics,
             ofi: None,
             glft: None,
+            l2_depth: None,
         };
 
         let base = CompletionFirstStrategy::clip_for_hour(&coord, input, 31, 14);

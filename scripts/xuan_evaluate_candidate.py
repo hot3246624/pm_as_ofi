@@ -11,28 +11,28 @@ FIXED_DB_PATH = REPO_ROOT / "xuan_research_artifacts" / "eval_compat_store.sqlit
 
 # Champion config for 612728605018
 CHAMPION_CONFIG = {
-    "max_net_diff": 0.07392415226303482,
-    "pair_target": 0.836815649272216,
-    "bid_size": 0.05547590101342342,
-    "tier_1_mult": 0.5428162946929911,
-    "tier_2_mult": 0.12234180606822159,
+    "max_net_diff": 0.5,
+    "pair_target": 0.85,
+    "bid_size": 0.2,
+    "tier_1_mult": 0.4,
+    "tier_2_mult": 0.12,
     "tier_mode": "disabled",
     "fill_model": "conservative",
-    "risk_open_cutoff_secs": 213.9670088728919,
-    "pair_cost_safety_margin": 0.014453964844929501,
+    "risk_open_cutoff_secs": 210.0,
+    "pair_cost_safety_margin": 0.02,
     "salvage_net_cap": 1.0,
-    "salvage_start_remaining_secs": 222.63348335149837,
-    "taker_fee_rate": 0.002379963708621853,
-    "directional_risk_filter_bps": 0.686474755285009,
+    "salvage_start_remaining_secs": 280.0,
+    "taker_fee_rate": 0.07,
+    "directional_risk_filter_bps": 0.0,
     "directional_entry_min_bps": 0.0,
     "directional_price_source": "price",
     "entry_pair_max_ask_sum": 0.0,
-    "reject_stale": True,
-    "require_ws_fresh": True,
-    "max_quote_age_secs": 15.861068745758187,
-    "min_ask_depth": 1.494336281180137,
+    "reject_stale": False,
+    "require_ws_fresh": False,
+    "max_quote_age_secs": 0.0,
+    "min_ask_depth": 0.0,
     "require_two_sided_entry": False,
-    "pairing_only_when_residual": True,
+    "pairing_only_when_residual": False,
     "initial_balance": "10000",
     "stop_loss_threshold": 1.0,
     "exit_window_secs": 10.0,
@@ -116,7 +116,8 @@ def run_backtest(db_path, limit=300):
         "--initial-balance", CHAMPION_CONFIG["initial_balance"],
         "--stop-loss-threshold", str(CHAMPION_CONFIG["stop_loss_threshold"]),
         "--exit-window-secs", str(CHAMPION_CONFIG["exit_window_secs"]),
-        "--exit-loss-limit", str(CHAMPION_CONFIG["exit_loss_limit"])
+        "--exit-loss-limit", str(CHAMPION_CONFIG["exit_loss_limit"]),
+        "--salvage-failure-probability", "0.10"
     ]
     if CHAMPION_CONFIG["reject_stale"]:
         cmd.append("--reject-stale")

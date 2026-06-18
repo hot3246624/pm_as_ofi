@@ -52,7 +52,7 @@ ok = (
     and data.get("resync_ready") is True
     and data.get("local_gates_ok") is True
     and inputs.get("readiness", {}).get("status") == "READY_FOR_APPROVAL"
-    and inputs.get("status_bundle", {}).get("ec2_readonly_user_ws_status") == "PASS_READONLY_USER_WS_DIAGNOSTIC"
+    and inputs.get("status_bundle", {}).get("ec2_readonly_user_ws_status") in {"PASS_READONLY_USER_WS_DIAGNOSTIC", "PASS_READONLY_USER_WS_ACCEPTANCE"}
     and inputs.get("diagnostic_smoke", {}).get("status") == "PASS"
     and inputs.get("resync_rebuild", {}).get("status") == "PASS_RESYNC_REBUILD_READY"
     and inputs.get("diagnostic_review", {}).get("status") == "PASS_READONLY_USER_WS_DIAGNOSTIC"

@@ -196,7 +196,7 @@ supervision_plan = data.get("wait_stop_supervision_plan") or {}
 pullback_plan = data.get("artifact_pullback_review_plan") or {}
 phase_plan = data.get("phase_plan") or []
 local_artifact_dir = (
-    "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/"
+    "/Users/hot/web3Scientist/pm_as_ofi/"
     "xuan_research_artifacts/xuan_b27_dplus_g2_canary_artifacts_20990101T000000Z"
 )
 ok = (

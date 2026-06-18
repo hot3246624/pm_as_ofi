@@ -45,6 +45,7 @@ def main():
         "--initial-balance", CHAMPION_CONFIG["initial_balance"],
         "--exit-window-secs", exit_window_secs_grid,
         "--exit-loss-limit", exit_loss_limit_grid,
+        "--salvage-failure-probability", "0.10",
     ]
     if CHAMPION_CONFIG["reject_stale"]:
         cmd.append("--reject-stale")

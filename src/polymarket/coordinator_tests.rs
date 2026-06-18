@@ -24,6 +24,7 @@ fn cfg() -> CoordinatorConfig {
         debounce_ms: 0, // disable for tests
         as_skew_factor: 0.03,
         dry_run: false,
+        min_order_size: 1.0,
         ..CoordinatorConfig::default()
     }
 }
@@ -1942,7 +1943,7 @@ async fn test_pair_gated_tranche_absent_intent_retain_does_not_clear_safe_seed()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
-            + 120,
+            + 300,
     );
     let (o, i, m, _, mut er, mut coord) = make(config);
     let _ = o.send(OfiSnapshot::default());
@@ -1957,6 +1958,8 @@ async fn test_pair_gated_tranche_absent_intent_retain_does_not_clear_safe_seed()
 
     let ub = book(0.29, 0.35, 0.20, 0.24);
     let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
+    coord.yes_last_ts = std::time::Instant::now();
+    coord.slot_last_ts[OrderSlot::YES_BUY.index()] = std::time::Instant::now();
     coord
         .apply_provide_side_action(
             &InventoryState::default(),
@@ -1968,10 +1971,10 @@ async fn test_pair_gated_tranche_absent_intent_retain_does_not_clear_safe_seed()
         )
         .await;
 
-    assert!(
-        timeout(Duration::from_millis(20), er.recv()).await.is_err(),
-        "PGT absent-intent retain should not emit clear while the seed is still maker-safe"
-    );
+    if let Ok(msg) = timeout(Duration::from_millis(20), er.recv()).await {
+        println!("Received unexpected message: {:?}", msg);
+        panic!("PGT absent-intent retain should not emit clear while the seed is still maker-safe");
+    }
     assert!(
         coord.slot_target(OrderSlot::YES_BUY).is_some(),
         "PGT retain should keep the active flat seed target"
@@ -1991,7 +1994,7 @@ async fn test_pair_gated_tranche_absent_intent_clears_on_seed_side_flip() {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()
-            + 120,
+            + 300,
     );
     let (o, i, m, _, mut er, mut coord) = make(config);
     let _ = o.send(OfiSnapshot::default());
@@ -2013,6 +2016,8 @@ async fn test_pair_gated_tranche_absent_intent_clears_on_seed_side_flip() {
 
     let ub = book(0.41, 0.43, 0.39, 0.41);
     let _ = m.send(bt(ub.yes_bid, ub.yes_ask, ub.no_bid, ub.no_ask));
+    coord.no_last_ts = std::time::Instant::now();
+    coord.slot_last_ts[OrderSlot::NO_BUY.index()] = std::time::Instant::now();
     coord
         .apply_provide_side_action(
             &InventoryState::default(),

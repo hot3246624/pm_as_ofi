@@ -77,6 +77,8 @@ const XUAN_LADDER_REOPEN_AFTER_CLOSED_PAIR_COST: f64 = 0.985;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MIN_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_AFTER_CLOSED_MAX_BUY_FILLS: u64 = 2;
 const XUAN_LADDER_REOPEN_PROJECTED_PAIR_CAP: f64 = 0.980;
+pub(crate) const XUAN_PAIR_ASK_RESCUE_GAP_COOLDOWN_SECS: u64 = 5;
+pub(crate) const XUAN_PAIR_ASK_RESCUE_PAIR_CAP: f64 = 1.010;
 const XUAN_LADDER_SEED_TAKER_COMPLETION_PAIR_CAP: f64 = 0.995;
 const XUAN_LADDER_SEED_MAKER_COMPLETION_PAIR_CAP: f64 = 0.990;
 const XUAN_LADDER_FIRST_SEED_FULL_CLIP_MAX_PRICE: f64 = 0.34;
@@ -454,6 +456,54 @@ fn get_p5_thin_risk(tuning_cap: f64, l2_depth: Option<crate::polymarket::strateg
     }
 }
 
+pub(crate) fn pgt_absent_seed_retain_allowed(
+    remaining_secs: u64,
+    slot_last_ts_elapsed: std::time::Duration,
+) -> bool {
+    if remaining_secs == u64::MAX {
+        return false;
+    }
+    if remaining_secs <= HARD_NO_NEW_OPEN_SECS {
+        return false;
+    }
+    if remaining_secs <= TAIL_COMPLETION_ONLY_SECS {
+        return slot_last_ts_elapsed <= std::time::Duration::from_millis(500);
+    }
+    if remaining_secs <= 120 {
+        return slot_last_ts_elapsed <= std::time::Duration::from_millis(1_200);
+    }
+    slot_last_ts_elapsed <= std::time::Duration::from_secs(4)
+}
+
+pub(crate) fn pgt_pair_ask_rescue_exec_enabled() -> bool {
+    read_bool_env("PM_PGT_PAIR_ASK_RESCUE_EXEC_ENABLED").unwrap_or(false)
+}
+
+pub(crate) fn pgt_shadow_taker_open_exec_enabled() -> bool {
+    read_bool_env("PM_PGT_SHADOW_TAKER_OPEN_EXEC_ENABLED").unwrap_or(false)
+}
+
+pub(crate) fn pgt_settlement_alpha_taker_open_exec_enabled() -> bool {
+    read_bool_env("PM_PGT_SETTLEMENT_ALPHA_TAKER_OPEN_EXEC_ENABLED").unwrap_or(false)
+}
+
+pub(crate) fn pgt_settlement_alpha_inventory_net_cap() -> Option<f64> {
+    std::env::var("PM_PGT_SETTLEMENT_ALPHA_INVENTORY_NET_CAP")
+        .ok()
+        .and_then(|raw| raw.parse::<f64>().ok())
+        .and_then(|cap| if cap.is_finite() && cap >= 0.0 { Some(cap) } else { None })
+}
+
+fn read_bool_env(name: &str) -> Option<bool> {
+    let raw = std::env::var(name).ok()?;
+    let normalized = raw.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => Some(false),
+    }
+}
+
 struct CompletionPlan {
     intent: StrategyIntent,
     taker_shadow_would_close: bool,
@@ -769,6 +819,7 @@ impl PairGatedTrancheStrategy {
             side,
             size,
             risk_effect,
+            coordinator.cfg().pair_arb.tier_mode,
             coordinator.cfg().pair_arb.tier_1_mult,
             coordinator.cfg().pair_arb.tier_2_mult,
         ) {
@@ -887,6 +938,14 @@ impl PairGatedTrancheStrategy {
             false
         };
         if tuning.profile == PgtShadowProfile::Nagi777V1 {
+            // Opposite depth gate (oq10): reject if L2 depth is too thin (< 50.0)
+            if let Some(depth) = input.l2_depth {
+                let min_depth = depth.bid_depth_5lvl.min(depth.ask_depth_5lvl);
+                if min_depth < 50.0 {
+                    quotes.note_pgt_seed_reject_no_visible_breakeven_path();
+                    return None;
+                }
+            }
             let effective_taker_close_pair_cap = if price >= NAGI_FASTPAIR_UP_ALPHA_LO && price <= NAGI_FASTPAIR_UP_ALPHA_HI {
                 tuning.taker_close_pair_cap.max(NAGI_FASTPAIR_UP_PC_CAP)
             } else {
@@ -1082,6 +1141,10 @@ impl PairGatedTrancheStrategy {
             seed_visible_completion_clip_mult(open_pair_band, price, opp_ask, tick)
         };
         let mut size = quantize_tenth(size * open_path_mult.min(visible_slack_mult));
+        if tuning.profile == PgtShadowProfile::Nagi777V1 && !visible_taker_completion_ok {
+            // Gen-10 champion non_instant_clip_factor = 0.25 (scale target_qty down)
+            size = quantize_tenth(tuning.fixed_clip_qty.unwrap_or(tuning.base_clip_qty) * 0.25);
+        }
         if pgt_xuan_ladder_maker_only_seed_clip_caps(
             tuning,
             input.episode_metrics.round_buy_fill_count,
@@ -3630,6 +3693,7 @@ mod tests {
             yes_ask: 0.41,
             no_bid: 0.59,
             no_ask: 0.60,
+            depth: None,
             ts: Instant::now(),
         });
         let (om_tx, _om_rx) = mpsc::channel(16);

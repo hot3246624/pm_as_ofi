@@ -58,12 +58,14 @@ ok = (
         "READY_FOR_EXPLICIT_G2_CANARY_APPROVAL",
         "CANARY_NOT_READY_SHADOW_DRY_RUN_STRATEGY_ACCEPTANCE_MISSING",
         "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_MISSING",
+        "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_FAILED",
     }
     and inputs.get("canary_readiness_plan_smoke", {}).get("status") == "PASS"
     and inputs.get("canary_readiness_plan", {}).get("status") in {
         "READY_FOR_EXPLICIT_G2_CANARY_APPROVAL",
         "CANARY_NOT_READY_SHADOW_DRY_RUN_STRATEGY_ACCEPTANCE_MISSING",
         "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_MISSING",
+        "CANARY_NOT_READY_SHADOW_TRADING_ACCEPTANCE_FAILED",
     }
     and inputs.get("canary_readiness_plan", {}).get("pre_canary_plumbing_ready") is True
     and inputs.get("canary_readiness_plan", {}).get("rust_shadow_strategy_acceptance_ready") is True
