@@ -1,6 +1,0 @@
-REMOTE_SHADOW_RUN_STARTED 2026-05-18T15:12:51Z user=pmofi remote_base=/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_late_target_20260518T151251Z
-hypothesis=target_qty=5 with late_target_qty=2 after 75s preserves early sample while reducing late residual tail versus static cap=1.25
-repo_path=/srv/pm_as_ofi/repo
-shared_ingress_root=/srv/pm_as_ofi/shared-ingress-main
-argv=/usr/bin/python3 runner --round-offsets 0..11 --duration-s 1800 --edge 0.05 --target-qty 5 --late-target-after-s 75 --late-target-qty 2 --imbalance-qty-cap 1.25 --pairing-only-when-residual
-REMOTE_SHADOW_RUN_FINISHED 2026-05-18T15:18:08Z rc=255

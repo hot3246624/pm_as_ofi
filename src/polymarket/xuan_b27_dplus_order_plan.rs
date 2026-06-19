@@ -51,6 +51,9 @@ pub(crate) struct XuanB27DplusOrderPlanInput<'a> {
     pub book: Book,
     pub market_session_id: &'a str,
     pub candidate_prefix: &'a str,
+    pub rolling_taker_failure_rate: Option<f64>,
+    pub websocket_lag_ms: Option<u64>,
+    pub order_ack_latency_ms: Option<u64>,
 }
 
 pub(crate) fn build_xuan_b27_dplus_canary_order_plan(
@@ -58,6 +61,22 @@ pub(crate) fn build_xuan_b27_dplus_canary_order_plan(
 ) -> XuanB27DplusOrderPlan {
     let mut block_reasons = Vec::new();
     let cfg = input.cfg;
+
+    if let Some(rate) = input.rolling_taker_failure_rate {
+        if rate > 0.05 {
+            block_reasons.push("rolling_taker_failure_rate_exceeds_threshold");
+        }
+    }
+    if let Some(lag) = input.websocket_lag_ms {
+        if lag > 1000 {
+            block_reasons.push("websocket_lag_exceeds_threshold");
+        }
+    }
+    if let Some(latency) = input.order_ack_latency_ms {
+        if latency > 2000 {
+            block_reasons.push("order_ack_latency_exceeds_threshold");
+        }
+    }
 
     if cfg.mode != XuanB27DplusMode::Canary {
         block_reasons.push("mode_not_canary");
@@ -306,6 +325,9 @@ mod tests {
             book: book(),
             market_session_id: "btc-updown-5m:cond",
             candidate_prefix: "xuan_b27_dplus:btc-updown-5m:17",
+            rolling_taker_failure_rate: None,
+            websocket_lag_ms: None,
+            order_ack_latency_ms: None,
         }
     }
 
@@ -372,5 +394,41 @@ mod tests {
             .block_reasons
             .contains(&"max_live_orders_must_be_one_or_two"));
         assert!(plan.block_reasons.contains(&"target_qty_outside_g2_cap"));
+    }
+
+    #[test]
+    fn xuan_b27_dplus_canary_order_plan_blocks_on_high_taker_failure_rate() {
+        let cfg = canary_cfg();
+        let mut input = input(&cfg);
+        input.rolling_taker_failure_rate = Some(0.06);
+        let plan = build_xuan_b27_dplus_canary_order_plan(input);
+
+        assert_eq!(plan.status, XuanB27DplusOrderPlanStatus::Blocked);
+        assert!(plan.intents.is_empty());
+        assert!(plan.block_reasons.contains(&"rolling_taker_failure_rate_exceeds_threshold"));
+    }
+
+    #[test]
+    fn xuan_b27_dplus_canary_order_plan_blocks_on_websocket_lag() {
+        let cfg = canary_cfg();
+        let mut input = input(&cfg);
+        input.websocket_lag_ms = Some(1500);
+        let plan = build_xuan_b27_dplus_canary_order_plan(input);
+
+        assert_eq!(plan.status, XuanB27DplusOrderPlanStatus::Blocked);
+        assert!(plan.intents.is_empty());
+        assert!(plan.block_reasons.contains(&"websocket_lag_exceeds_threshold"));
+    }
+
+    #[test]
+    fn xuan_b27_dplus_canary_order_plan_blocks_on_order_ack_latency() {
+        let cfg = canary_cfg();
+        let mut input = input(&cfg);
+        input.order_ack_latency_ms = Some(2500);
+        let plan = build_xuan_b27_dplus_canary_order_plan(input);
+
+        assert_eq!(plan.status, XuanB27DplusOrderPlanStatus::Blocked);
+        assert!(plan.intents.is_empty());
+        assert!(plan.block_reasons.contains(&"order_ack_latency_exceeds_threshold"));
     }
 }

@@ -1,9 +1,0 @@
-{
-  "artifact": "xuan_b27_dplus_local_status_bundle_smoke",
-  "status": "PASS",
-  "strategy": "xuan_b27_dplus",
-  "scope": "local_no_network_status_bundle_gate",
-  "bundle_manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_local_status_bundle_smoke_20260519T023048Z/status_bundle_run/manifest.json",
-  "checks_log": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b27_dplus_local_status_bundle_smoke_20260519T023048Z/checks.log",
-  "generated_at_utc": "20260519T023048Z"
-}

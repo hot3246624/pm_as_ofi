@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 use std::env;
 use std::fmt;
 use std::str::FromStr;
@@ -307,6 +308,11 @@ struct Aggregate {
     zeros: u64,
     sum_wins: f64,
     sum_losses: f64,
+    total_traded_notional: f64,
+    total_residual_notional: f64,
+    total_bad_pair_qty: f64,
+    positive_days: u64,
+    worst_day_pnl: f64,
 }
 
 fn risk_effect(inv: Inventory, side_yes: bool, size: f64) -> RiskEffect {
@@ -736,7 +742,7 @@ fn check_fill(our_bid: f64, market_ask: f64, model: FillModel) -> bool {
 
 fn fee_per_share(px: f64, rate: f64) -> f64 {
     let p = px.clamp(0.0, 1.0);
-    rate * p * (1.0 - p)
+    rate * p.min(1.0 - p)
 }
 
 fn try_salvage_completion(
@@ -895,10 +901,19 @@ fn load_windows(
 
 fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
     let mut agg = Aggregate::default();
+    let mut day_pnls = std::collections::HashMap::new();
 
     for window in windows {
+        let first_ts = window.ticks.first().map(|t| t.ts).unwrap_or(0);
+        let day = if first_ts > 5_000_000_000 {
+            first_ts / (86_400 * 1000)
+        } else {
+            first_ts / 86_400
+        };
+
         let mut inv = Inventory::default();
         let total_window_sec = 300.0;
+        let mut traded_notional = 0.0;
 
         let mut active_yes_bid = 0.0;
         let mut active_yes_size = 0.0;
@@ -909,7 +924,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
         let mut fills = 0u64;
 
         let mut cooldown_until = 0i64;
-        let mut rng = StdRng::seed_from_u64(window.ticks.first().map(|t| t.ts as u64).unwrap_or(0));
+        let mut rng = StdRng::seed_from_u64(first_ts as u64);
 
         for tick in &window.ticks {
             if tick.ask_up <= 0.0
@@ -925,6 +940,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                 if cost <= available_balance + 1e-9 {
                     inv.update_after_fill(true, active_yes_size, active_yes_bid);
                     available_balance -= cost;
+                    traded_notional += cost;
                     active_yes_bid = 0.0;
                     active_yes_size = 0.0;
                     last_quote_ts = 0;
@@ -941,6 +957,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                 if cost <= available_balance + 1e-9 {
                     inv.update_after_fill(false, active_no_size, active_no_bid);
                     available_balance -= cost;
+                    traded_notional += cost;
                     active_no_bid = 0.0;
                     active_no_size = 0.0;
                     last_quote_ts = 0;
@@ -959,6 +976,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                 agg.completion_qty += qty;
                 agg.completion_cost += cost;
                 agg.completion_fee += fee;
+                traded_notional += cost;
                 fills = fills.saturating_add(1);
                 active_yes_bid = 0.0;
                 active_yes_size = 0.0;
@@ -981,6 +999,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                     } else {
                         let fee = fee_per_share(bid_price, cfg.taker_fee_rate);
                         inv.sell_residual(sell_yes, residual, bid_price - fee);
+                        traded_notional += residual * bid_price;
                         fills = fills.saturating_add(1);
                         active_yes_bid = 0.0;
                         active_yes_size = 0.0;
@@ -1005,6 +1024,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                     } else {
                         let fee = fee_per_share(bid_price, cfg.taker_fee_rate);
                         inv.sell_residual(sell_yes, residual, bid_price - fee);
+                        traded_notional += residual * bid_price;
                         fills = fills.saturating_add(1);
                         active_yes_bid = 0.0;
                         active_yes_size = 0.0;
@@ -1039,6 +1059,7 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
                     let fee = fee_per_share(bid_price, cfg.taker_fee_rate);
                     let net_exit_px = (bid_price - fee).max(0.0);
                     inv.sell_residual(sell_yes, residual, net_exit_px);
+                    traded_notional += residual * bid_price;
                     if net_exit_px > 0.0 {
                         fills = fills.saturating_add(1);
                     }
@@ -1063,6 +1084,11 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
         agg.total_residual_cost += wr.residual_cost;
         agg.total_residual_pnl += wr.residual_pnl;
         agg.total_pnl += wr.total_pnl;
+        agg.total_traded_notional += traded_notional;
+        agg.total_residual_notional += wr.residual_cost;
+        if wr.pair_cost >= 1.0 {
+            agg.total_bad_pair_qty += wr.paired_qty;
+        }
 
         let has_residual = wr.residual_yes > 0.01 || wr.residual_no > 0.01;
         if has_residual {
@@ -1085,7 +1111,26 @@ fn run_backtest(windows: &[BacktestWindow], cfg: Config) -> Aggregate {
         } else {
             agg.zeros = agg.zeros.saturating_add(1);
         }
+
+        if first_ts > 0 {
+            *day_pnls.entry(day).or_insert(0.0) += wr.total_pnl;
+        }
     }
+
+    let mut positive_days = 0;
+    let mut worst_day_pnl = 0.0;
+    let mut has_days = false;
+    for &pnl in day_pnls.values() {
+        if pnl > 0.0 {
+            positive_days += 1;
+        }
+        if !has_days || pnl < worst_day_pnl {
+            worst_day_pnl = pnl;
+            has_days = true;
+        }
+    }
+    agg.positive_days = positive_days;
+    agg.worst_day_pnl = worst_day_pnl;
 
     agg
 }
@@ -1205,6 +1250,12 @@ fn run_json(
             "zeros": agg.zeros,
             "avg_win": avg_win,
             "avg_loss": avg_loss,
+            "total_traded_notional": agg.total_traded_notional,
+            "total_residual_notional": agg.total_residual_notional,
+            "rer": if agg.total_traded_notional > 0.0 { agg.total_residual_notional / agg.total_traded_notional } else { 0.0 },
+            "total_bad_pair_qty": agg.total_bad_pair_qty,
+            "positive_days": agg.positive_days,
+            "worst_day_pnl": agg.worst_day_pnl,
         }
     })
 }

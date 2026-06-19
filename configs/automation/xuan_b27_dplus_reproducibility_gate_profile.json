@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "name": "xuan_b27_dplus_reproducibility_gate",
+  "description": "Research-only reproducibility gate for Xuan B27 D+ pair-arb autoresearch.",
+  "research_mode_default": "nagi",
+  "research_objective": "NAGI-first residual control + CE25 architecture stability guard",
+  "thresholds": {
+    "search_safe_row_count_warn_ratio": 0.05,
+    "search_safe_row_count_block_ratio": 0.10,
+    "canonical_audit_selected_candidate_count_warn_ratio": 0.05,
+    "canonical_audit_selected_candidate_count_block_ratio": 0.10,
+    "max_fail_count": 0,
+    "max_warn_count": 0
+  },
+  "hardline_false_fields": {
+    "private_truth_ready": false,
+    "strategy_promotion_ready": false,
+    "deployable": false,
+    "live_orders_allowed": false,
+    "candidate_import_allowed": false,
+    "owner_private_truth_data_ready": false
+  },
+  "saturation_defaults": {
+    "max_wall_clock_seconds": 10800,
+    "saturation_patience_generations": 2,
+    "saturation_score_delta": 1.0,
+    "saturation_pnl_delta": 0.005
+  },
+  "notes": "Use --require-gate-pass for hard enforcement before research execution."
+}

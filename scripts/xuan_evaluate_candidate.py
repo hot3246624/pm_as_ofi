@@ -188,7 +188,7 @@ def compute_objective(metrics):
 
 def main():
     db_path = materialize_db()
-    stdout_text = run_backtest(db_path, limit=300)
+    stdout_text = run_backtest(db_path, limit=1000)
     rows = []
     for line in stdout_text.strip().split("\n"):
         if not line:
@@ -221,8 +221,13 @@ def main():
         "completion_qty": raw_metrics.get("completion_qty", 0.0),
         "paired_pnl": raw_metrics.get("paired_pnl", 0.0),
         "residual_pnl": raw_metrics.get("residual_pnl", 0.0),
+        "rer": raw_metrics.get("rer", 0.0),
+        "total_bad_pair_qty": raw_metrics.get("total_bad_pair_qty", 0.0),
+        "positive_days": raw_metrics.get("positive_days", 0),
+        "worst_day_pnl": raw_metrics.get("worst_day_pnl", 0.0),
     }
     
+    bad_pc_pct = (metrics["total_bad_pair_qty"] / metrics["paired_qty"] * 100.0) if metrics["paired_qty"] > 0 else 0.0
     objective, components = compute_objective(metrics)
     print("\n=== EVALUATION RESULTS ===")
     print(f"Total PnL:     {metrics['total_pnl']:.4f}")
@@ -233,6 +238,10 @@ def main():
     print(f"Residual Qty:  {metrics['residual_qty']:.4f}")
     print(f"Residual Loss Rate: {metrics['residual_loss_rate']*100:.1f}%")
     print(f"Fill Window Rate:   {metrics['fill_window_rate']*100:.1f}%")
+    print(f"Residual Exposure Ratio (RER): {metrics['rer']*100:.4f}%")
+    print(f"Bad Pair Cost Ratio (>= 1.0):  {bad_pc_pct:.4f}% ({metrics['total_bad_pair_qty']:.2f} / {metrics['paired_qty']:.2f} shares)")
+    print(f"Positive Days:                 {metrics['positive_days']}")
+    print(f"Worst Day PnL:                 {metrics['worst_day_pnl']:.4f}")
     print("\n--- Objective Components ---")
     for k, v in components.items():
         print(f"{k:20}: {v:+.4f}")

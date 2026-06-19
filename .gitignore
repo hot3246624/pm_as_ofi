@@ -23,3 +23,8 @@ data/
 
 # Accidental top-level market dumps.
 /btc-updown-5m
+
+# Temporary run directories and research artifacts
+/temp_*
+/xuan_research_artifacts/
+

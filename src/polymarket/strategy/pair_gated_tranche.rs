@@ -340,16 +340,16 @@ impl PgtTuning {
             seed_open_min_remaining_secs: Some(10),
             hard_no_new_open_secs: 15,
             price_aware_no_new_open_secs: 25,
-            open_pair_band_cap: Some(0.930),  // gen-6: 0.930 is hard floor. PnL +242 at 86% participation
-            completion_early_pair_cap: 0.930,  // gen-6: tighter = better net PnL despite more residuals
+            open_pair_band_cap: Some(0.980),  // gen-3 parameter sweep: optimal open band cap
+            completion_early_pair_cap: 0.982,  // gen-3 parameter sweep: optimal early pair cap
             completion_late_pair_cap: 0.980,   // gen-9: optimal late cap for rescue
             taker_close_pair_cap: 0.980,       // gen-9: optimal close cap for rescue
-            fixed_clip_qty: Some(160.0),
+            fixed_clip_qty: Some(80.0),        // optimal clip qty for participation/risk
             clip_profile: PgtClipProfile::XuanLadderV1,
             preserve_seed_clip_qty: true,
             expensive_seed_min_visible_slack_ticks: 0.3,
             seed_min_visible_breakeven_slack_ticks: -1.0,
-            base_clip_qty: 160.0,
+            base_clip_qty: 80.0,
             min_clip_qty: 35.0,
             max_clip_qty: 200.0,
             nagi_local_boost: 0.40,
@@ -3671,7 +3671,10 @@ mod tests {
         use std::time::Instant;
 
         // Set test tuning to Nagi777V1:
-        let tuning = PgtTuning::nagi777_v1();
+        let mut tuning = PgtTuning::nagi777_v1();
+        // Override parameters to restore the exact environment for the uncertainty gate test:
+        tuning.open_pair_band_cap = Some(0.930);
+        tuning.taker_close_pair_cap = 0.980;
         TEST_TUNING.with(|cell| cell.set(Some(tuning)));
 
         // Enable uncertainty gate:

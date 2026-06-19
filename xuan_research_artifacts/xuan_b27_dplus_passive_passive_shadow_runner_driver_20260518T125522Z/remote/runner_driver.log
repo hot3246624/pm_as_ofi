@@ -1,6 +1,0 @@
-REMOTE_SHADOW_RUN_STARTED 2026-05-18T12:56:00Z user=pmofi remote_base=/srv/pm_as_ofi/xuan_research_runs/xuan_research_dplus_shadow_edge005_target5_20260518T125522Z
-hypothesis=target_qty=5 with edge=0.05 and pairing-only residual improves sample size while preserving net_pair_cost_p90 <= 1.0
-repo_path=/srv/pm_as_ofi/repo
-shared_ingress_root=/srv/pm_as_ofi/shared-ingress-main
-argv=/usr/bin/python3 runner --round-offsets 0..11 --duration-s 1800 --edge 0.05 --target-qty 5 --pairing-only-when-residual
-REMOTE_SHADOW_RUN_FINISHED 2026-05-18T13:26:02Z rc=0

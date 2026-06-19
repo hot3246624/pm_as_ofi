@@ -1,7 +1,0 @@
-{
-  "candidate_export_manifest_status": "CANDIDATE_PUBLIC_ACTIVITY_ENTRY_EXPORT_MANIFEST_READY",
-  "decision_label": "KEEP_B55_CE25_PUBLIC_ACTIVITY_ENTRY_EXPORT_SPEC_READY",
-  "manifest": "/Users/hot/web3Scientist/pm_as_ofi-xuan-research/xuan_research_artifacts/xuan_b55_ce25_public_activity_entry_export_spec_smoke_20260524T072245Z/complete/manifest.json",
-  "next_executable_action": "Implement b55_ce25_public_activity_entry_exporter_fixture_v1 locally: convert already available public activity rows into the export schema for fixtures, prove fee derivation/metadata parsing fail closed, and keep real export UNKNOWN until liquidity_role and fair-source probability joins are non-fixture.",
-  "real_export_status": "UNKNOWN_REAL_PUBLIC_ACTIVITY_ENTRY_EXPORT_MISSING"
-}
