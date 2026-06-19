@@ -1,0 +1,34 @@
+{
+  "asset": "BTC",
+  "event_reason": "last_trade_price",
+  "slug": "btc-updown-5m-s8p-live-binding-fixture",
+  "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "yes": {
+    "token_id": "1000000000000000000000000000000000000000000000000000000000000001",
+    "best_ask": 0.5,
+    "top5_ask_qty": 25.0,
+    "book_age_ms": 10
+  },
+  "no": {
+    "token_id": "1000000000000000000000000000000000000000000000000000000000000002",
+    "best_ask": 0.51,
+    "top5_ask_qty": 25.0,
+    "book_age_ms": 12
+  },
+  "latest_public_buy_trade": {
+    "side": "YES",
+    "taker_side": "BUY",
+    "price": 0.49,
+    "size": 5.0,
+    "event_ts_ms": 1000,
+    "observed_ts_ms": 1010,
+    "recv_lag_ms": 10
+  },
+  "offset_s": 10.0,
+  "time_to_end_s": 250.0,
+  "forbidden_decision_fields_present": false,
+  "snapshot_index_used_as_rank": false,
+  "source_is_b_owned_direct_public_ws": true,
+  "shared_ingress_dependency": false,
+  "b_owned_direct_public_ws_connection_count": 1
+}

@@ -1,4 +1,5 @@
 // ─── Polymarket V2 Core Modules ───
+pub mod btc_completion_controller;
 pub mod claims;
 pub mod clob_v2;
 pub mod coordinator;
@@ -8,8 +9,10 @@ pub mod inventory;
 pub mod messages;
 pub mod ofi;
 pub mod order_manager;
+pub mod pair_arb_harvester;
 pub mod pair_ledger;
 pub mod recorder;
+pub mod s8a_order_adapter;
 pub mod strategy;
 pub mod user_ws;
 pub mod xuan_b27_dplus_correlation;

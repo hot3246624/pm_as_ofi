@@ -1,0 +1,97 @@
+{
+  "actual_filled_qty_ledger_updates_inventory": true,
+  "attempts": [
+    {
+      "actual_filled_qty_shares": 5.0,
+      "avg_fill_price": 0.435,
+      "close_round_after_attempt": false,
+      "exact_approved_receipt_tier_required": false,
+      "filled_qty_from_exchange_or_order_status": true,
+      "no_open_order_remainder": true,
+      "order_id_or_failure_recorded": true,
+      "positive_collateral_delta_required_for_recovery": false,
+      "prepared_order": {
+        "action": "BUY",
+        "amount": {
+          "unit": "SHARES",
+          "value": 5.0
+        },
+        "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "execution_permitted": false,
+        "forced_complement": false,
+        "limit_price": 0.435,
+        "natural_controller_admission": true,
+        "order_type": "GTC",
+        "side": "YES",
+        "source": "native_s8a_adapter",
+        "source_guard_500_passed": true,
+        "token_id": "1000000000000000000000000000000000000000000000000000000000000001"
+      },
+      "realized_loss_delta_usdc": 0.0,
+      "residual_exposure_zero": false,
+      "s7w_reconciliation_passed": false
+    },
+    {
+      "actual_filled_qty_shares": 5.0,
+      "avg_fill_price": 0.445,
+      "close_round_after_attempt": true,
+      "exact_approved_receipt_tier_required": true,
+      "filled_qty_from_exchange_or_order_status": true,
+      "no_open_order_remainder": true,
+      "order_id_or_failure_recorded": true,
+      "positive_collateral_delta_required_for_recovery": true,
+      "prepared_order": {
+        "action": "BUY",
+        "amount": {
+          "unit": "SHARES",
+          "value": 5.0
+        },
+        "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+        "execution_permitted": false,
+        "forced_complement": false,
+        "limit_price": 0.445,
+        "natural_controller_admission": true,
+        "order_type": "GTC",
+        "side": "NO",
+        "source": "native_s8a_adapter",
+        "source_guard_500_passed": true,
+        "token_id": "1000000000000000000000000000000000000000000000000000000000000002"
+      },
+      "realized_loss_delta_usdc": 0.0,
+      "residual_exposure_zero": true,
+      "s7w_reconciliation_passed": true
+    }
+  ],
+  "caps": {
+    "max_active_market_count": 1,
+    "max_cumulative_gross_quote_spend_usdc": 18.0,
+    "max_round_count": 3,
+    "max_total_order_submissions": 9,
+    "per_round_theoretical_max_loss_usdc": 5.0,
+    "session_hard_loss_cap_usdc": 15.0
+  },
+  "effectful_execution_permitted": false,
+  "exact_approval_hash_bound_to_every_submit": true,
+  "exact_approval_scope_bound_to_every_submit": true,
+  "forced_complement_allowed": false,
+  "funding_live_latest_or_deploy_requested": false,
+  "opens_ws": false,
+  "partial_fill_threshold_enabled": false,
+  "review_only_fixture_receipts_accepted": false,
+  "runtime_accepts_only_prepared_orders": true,
+  "runtime_order_result_ledger_enabled": true,
+  "s7w_reconciliation_bound_to_run_result": true,
+  "secret_or_raw_signature_output_allowed": false,
+  "shared_ingress_dependency": false,
+  "source": "native_s8a_one_run_driver",
+  "strategy_scope": {
+    "candidate_import_allowed": false,
+    "fixed_policy": "cool5_imb1.25_source_guard_500",
+    "market_family": "btc-5min",
+    "online_tuning_allowed": false,
+    "source_guard_500_required": true,
+    "strategy_discovery_allowed": false
+  },
+  "submitted_size_counts_as_inventory": false,
+  "uses_c_artifacts": false
+}

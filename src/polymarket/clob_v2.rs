@@ -14,7 +14,11 @@ use base64::Engine as _;
 use hmac::{Hmac, Mac as _};
 use polymarket_client_sdk::auth::state::Authenticated;
 use polymarket_client_sdk::auth::{Credentials, Normal};
-use polymarket_client_sdk::clob::types::response::{OrderBookSummaryResponse, PostOrderResponse};
+use polymarket_client_sdk::clob::types::request::TradesRequest;
+use polymarket_client_sdk::clob::types::response::{
+    CancelOrdersResponse, OpenOrderResponse, OrderBookSummaryResponse, PostOrderResponse,
+    TradeResponse,
+};
 use polymarket_client_sdk::clob::types::{OrderType, SignatureType};
 use polymarket_client_sdk::clob::Client as ClobClient;
 use polymarket_client_sdk::types::address;
@@ -403,6 +407,42 @@ pub async fn post_order_v2(
     let parsed = serde_json::from_str::<PostOrderResponse>(&text)
         .with_context(|| format!("failed to parse V2 /order response: {text}"))?;
     Ok(parsed)
+}
+
+pub async fn fetch_order_status_v2(
+    client: &AuthClientV2,
+    order_id: &str,
+) -> Result<OpenOrderResponse> {
+    client
+        .order(order_id)
+        .await
+        .with_context(|| format!("V2 order status request failed for {order_id}"))
+}
+
+pub async fn cancel_order_v2(
+    client: &AuthClientV2,
+    order_id: &str,
+) -> Result<CancelOrdersResponse> {
+    client
+        .cancel_order(order_id)
+        .await
+        .with_context(|| format!("V2 cancel order request failed for {order_id}"))
+}
+
+pub async fn fetch_trades_for_market_asset_v2(
+    client: &AuthClientV2,
+    market: B256,
+    asset_id: U256,
+) -> Result<Vec<TradeResponse>> {
+    let request = TradesRequest::builder()
+        .market(market)
+        .asset_id(asset_id)
+        .build();
+    let page = client
+        .trades(&request, None)
+        .await
+        .context("V2 trades request failed")?;
+    Ok(page.data)
 }
 
 pub fn marketable_limit_from_book(

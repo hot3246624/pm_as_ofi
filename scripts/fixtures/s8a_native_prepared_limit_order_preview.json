@@ -1,0 +1,17 @@
+{
+  "action": "BUY",
+  "amount": {
+    "unit": "SHARES",
+    "value": 5.0
+  },
+  "condition_id": "0x1111111111111111111111111111111111111111111111111111111111111111",
+  "execution_permitted": false,
+  "forced_complement": false,
+  "limit_price": 0.435,
+  "natural_controller_admission": true,
+  "order_type": "GTC",
+  "side": "YES",
+  "source": "native_s8a_adapter",
+  "source_guard_500_passed": true,
+  "token_id": "1000000000000000000000000000000000000000000000000000000000000001"
+}
