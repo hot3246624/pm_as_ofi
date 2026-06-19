@@ -1,181 +1,96 @@
 # pm_as_ofi
 
-Polymarket crypto up/down 市场做市与库存管理引擎。
+Polymarket crypto up/down 市场做市与库存双边配对套利管理引擎。
 
-当前仓库当前验证主线：
-- 推荐测试主策略：`pair_arb`
-- 推荐收益验证市场：`btc-updown-15m`
-- `glft_mm` 保留为 challenger / research 线
+---
 
-## 当前共享能力
+## 1. 核心策略与状态定位
 
-- `OrderSlot(side,direction)` 四槽位执行层：`YesBuy / YesSell / NoBuy / NoSell`
-- 共享 OFI 热度/毒性引擎、stale gate、生命周期去抖
-- 共享执行治理：`keep-if-safe`、post-only 安全垫、slot 级 cancel/reprice
-- 共享风控：`PM_MAX_NET_DIFF`、outcome floor、endgame、recycle、claim
+目前仓库的主要验证与研究主线已升级为高频双边配对套利架构：
 
-## 内置策略定位
+| 策略标识 | 核心定位 | 状态 | 备注 |
+| --- | --- | --- | --- |
+| `xuan_b27_dplus` | 优势侧 Maker 建仓 + 限制价差双边对齐配平 + 双阶段早退 | **验证主线** | 通过实盘只读干跑验证 |
+| `nagi777_v1` | 完成感知入场 (CAE) + 动态 Clip 分散 + 兜底风控对齐 | **优化主线** | 扫参优化版 (Clip=80, Cap=0.980) |
+| `pair_arb` | 基础双边对冲套利（A-S 风格） | 基线 / 备用 | 历史经典款 |
+| `glft_mm` | 真双边做市、slot-keyed 挂单、外锚驱动 | 实验 / Challenger | 队列研究线 |
 
-| 策略 | 定位 | 状态 |
-| --- | --- | --- |
-| `pair_arb` | pair cost + A-S 风格双边买入策略 | 推荐（当前验证主线） |
-| `glft_mm` | 真双边、slot-keyed、外锚驱动 | challenger |
-| `gabagool_grid` | buy-only utility 基线 | 可用 |
-| `gabagool_corridor` | `gabagool_grid` 的 corridor 变体 | research |
-| `dip_buy` | 单边抄底 | 实验 |
-| `phase_builder` | 分阶段单边建仓 | 实验 |
+---
 
-## 快速开始
+## 2. 最近研发成果与就绪状态
 
-1. 复制模板并填写凭证
+我们近期完成了对 `xuan_b27_dplus` 和 `nagi777` 的核心安全和数学对齐升级：
 
+1. **手续费率数学偏差修正**：
+   - 将 Rust 回测引擎 ([pair_arb_backtest.rs](file:///Users/hot/web3Scientist/pm_as_ofi/src/bin/pair_arb_backtest.rs)) 与 Python 验证脚本的手续费计算公式完全对齐为官方类目费率口径，即：
+     $$\text{fee\_per\_share} = \text{rate} \times \min(p, 1.0 - p)$$
+     彻底消除了原先在 $p=0.5$ 附近存在的 2 倍费率少算漏洞。
+
+2. **内置三维物理熔断器 (Circuit Breaker)**：
+   - 保护策略在网络拥堵、连接退化或交易所响应滞后时及时避险。在 [xuan_b27_dplus_order_plan.rs](file:///Users/hot/web3Scientist/pm_as_ofi/src/polymarket/xuan_b27_dplus_order_plan.rs) 中实现以下自动熔断：
+     * **滚动 Taker 交易失败率** $\ge 5\%$
+     * **WebSocket 连接延迟 (Lag)** $\ge 1000\text{ms}$
+     * **订单确认 (ACK) 延迟** $\ge 2000\text{ms}$
+
+3. **L2 深度数据验证**：
+   - 基于 3.5 天 L2 真实深度的 Unified Fee-Inclusive ledger 回测取得 **+4.21 USDC** 净收益，残仓敞口比 (RER) 严格控制在 **0.3004%**。
+
+---
+
+## 3. 实盘只读干跑 (Dry-Run) 验证指南
+
+本引擎支持以完全安全的**只读/只观测 (Auth-Observer)** 模式运行。全程在 `PM_DRY_RUN=true` 约束下挂载，绝对不提交任何真实订单。
+
+### 步骤 1：启动 Shared Ingress Broker
+拉起后台常驻数据网关服务：
 ```bash
-cp .env.example .env
+PM_SHARED_INGRESS_IDLE_EXIT_ENABLED=false ./scripts/run_shared_ingress_broker.sh
+```
+通过 preflight 脚本检查 sockets 状态：
+```bash
+python3 scripts/xuan_b27_dplus_shared_ingress_preflight.py --root /Users/hot/web3Scientist/pm_as_ofi/run/shared-ingress-main
 ```
 
-2. 先跑 dry-run
-
+### 步骤 2：启动 Market WS 只读观测器
 ```bash
-cargo run --bin polymarket_v2
+python3 scripts/xuan_b27_dplus_auth_observer_dry_run.py \
+  --approved-no-order-observer \
+  --duration-seconds 120 \
+  --market-slug btc-updown-5m
 ```
 
-3. 做静态校验
-
+### 步骤 3：启动 User WS 专有链路观测器
 ```bash
-cargo check
-cargo test --lib
-cargo test --bin polymarket_v2
+python3 scripts/xuan_b27_dplus_readonly_user_ws_observer.py \
+  --approved-readonly-user-ws \
+  --duration-seconds 120 \
+  --market-slug btc-updown-5m
 ```
 
-4. 小仓 live
-
+### 步骤 4：运行只读审计检查
+运行结束后，对输出文件夹执行 summary 门禁验证，确保未发生任何写动作违规：
 ```bash
-PM_DRY_RUN=false cargo run --bin polymarket_v2 --release
+# 审计 Market 观测输出
+python3 scripts/xuan_b27_dplus_summarize_observer_run.py xuan_research_artifacts/xuan_b27_dplus_auth_observer_<timestamp>
+
+# 审计 User WS 观测输出
+python3 scripts/xuan_b27_dplus_summarize_readonly_user_ws_run.py xuan_research_artifacts/xuan_b27_dplus_user_ws_observer_<timestamp>
 ```
 
-## Live Truth Capture
+---
 
-- 默认关闭：只有显式设置 `PM_RECORDER_ENABLED=true` 才会落盘。
-- 默认 market 口径是 `structured`，也就是写 `market_md.jsonl`，记录完整 `L1 book + trades`。
-- `user_ws.jsonl`、`events.jsonl`、`meta.jsonl` 会继续保留，用于回放真实 order/fill/inventory/tranche/capital 语义。
-- `market_ws.jsonl` 只在 `PM_RECORDER_MARKET_MODE=raw` 或 `hybrid` 时写入，作为 parser/debug 取证，不再是默认主路径。
+## 4. 项目瘦身与规范声明
 
-推荐 live 配置：
+为了保持代码库的轻量级和清晰的历史记录，我们在仓库中作了以下清理和优化：
+- **移除临时运行文件夹**：所有本地生成的 `temp_*` 临时测试与状态诊断目录已被清理并加入 `.gitignore`，不再提交至版本库。
+- **排除海量历史日志/数据库**：将 `xuan_research_artifacts/` 目录从 Git 版本跟踪中移除（本地保留），避免 7GB+ 级别的 SQLite 文件和数千个 JSON 文件污染代码库。
 
-```bash
-PM_DRY_RUN=false \
-PM_RECORDER_ENABLED=true \
-PM_RECORDER_MARKET_MODE=structured \
-cargo run --bin polymarket_v2 --release
-```
+---
 
-推荐 dry-run 录制（用于链路冒烟，不发真实 REST 下单）：
-
-```bash
-PM_DRY_RUN=true \
-PM_RECORDER_ENABLED=true \
-PM_RECORDER_MARKET_MODE=structured \
-PM_DRY_RUN_FILL_PROBABILITY=1.0 \
-cargo run --bin polymarket_v2 --release
-```
-
-如果要在 `oracle_lag_sniping` 的 dry-run 中验证“下单 -> simulated fill -> inventory/tranche”全链路，还需额外开启：
-
-```bash
-PM_ORACLE_LAG_DRYRUN_EXECUTE=true
-```
-
-推荐直接使用单市场 BTC 5m dry-run 命令（低流量，适合链路验收）：
-
-```bash
-PM_DRY_RUN=true \
-PM_STRATEGY=oracle_lag_sniping \
-POLYMARKET_MARKET_SLUG=btc-updown-5m \
-PM_RECORDER_ENABLED=true \
-PM_RECORDER_MARKET_MODE=structured \
-PM_RECORDER_ROOT=data/recorder_oracle_lag_dryrun \
-PM_DRY_RUN_FILL_PROBABILITY=1.0 \
-PM_LOCAL_PRICE_AGG_DECISION_ENABLED=true \
-PM_ORACLE_LAG_DRYRUN_ALLOW_FALLBACK_OPEN=true \
-PM_ORACLE_LAG_DRYRUN_EXECUTE=true \
-cargo run --bin polymarket_v2 --release
-```
-
-若用多市场 dry-run（inproc），只跑 BTC 可设置：
-
-```bash
-PM_MULTI_MARKET_PREFIXES=btc-updown-5m
-```
-
-注意：`PM_ORACLE_LAG_DRYRUN_EXECUTE` 只用于 `PM_DRY_RUN=true` 的链路演练；live 时不要开启。
-
-排查 market parser 或 replay 偏差时再切到：
-
-```bash
-PM_RECORDER_MARKET_MODE=hybrid
-```
-
-会后离线构建 replay：
-
-```bash
-python3 scripts/build_replay_db.py --input-root data/recorder --output-root data/replay --date 2026-04-26
-```
-
-dry-run 录制后可做最小验收：
-
-```bash
-sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
-sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_budget_events;"
-sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_inventory_events;"
-```
-
-针对 `oracle_lag_sniping` dry-run 全链路，建议额外确认以下表非 0：
-
-```bash
-sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM own_order_events;"
-sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM pair_tranche_events;"
-sqlite3 data/replay/2026-04-26/crypto_5m.sqlite "SELECT count(*) FROM capital_state_events;"
-```
-
-## 推荐阅读顺序
+## 5. 开发人员建议阅读顺序
 
 1. `docs/README.md`
-2. `docs/architecture/STRATEGY_V2_CORE_ZH.md`
-3. `docs/strategies/STRATEGY_PAIR_ARB_ZH.md`
-4. `docs/strategies/STRATEGY_GLFT_MM_ZH.md`
-5. `docs/strategies/STRATEGY_GABAGOOL_GRID_ZH.md`
-6. `docs/reference/CONFIG_REFERENCE_ZH.md`
-7. `docs/runbooks/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
-8. `docs/reference/TESTING.md`
-9. `docs/reference/ADDING_STRATEGY_ZH.md`
-
-## 当前推荐验证参数基线（pair_arb）
-
-以 `.env.example` 为准，核心值如下：
-
-```env
-PM_STRATEGY=pair_arb
-POLYMARKET_MARKET_SLUG="btc-updown-15m"
-PM_BID_SIZE=5.0
-PM_MAX_NET_DIFF=15.0
-PM_PAIR_TARGET=0.98
-PM_AS_SKEW_FACTOR=0.06
-PM_AS_TIME_DECAY_K=1.0
-PM_REPRICE_THRESHOLD=0.020
-PM_DEBOUNCE_MS=700
-PM_OFI_ADAPTIVE=true
-PM_OFI_ADAPTIVE_MIN=120.0
-PM_OFI_ADAPTIVE_MAX=1800.0
-PM_OFI_RATIO_ENTER=0.70
-PM_OFI_RATIO_EXIT=0.40
-PM_AUTO_CLAIM=true
-```
-
-说明：
-- 建议先 `5m` 做机制冒烟，再用 `15m` 做收益验证。
-- 这是当前准备验证的保守配置，不是利润最大化配置。
-- 当前 `pair_arb` 已去掉方向对冲 overlay 和尾盘强制市价对冲路径，运行形态是 `UnifiedBuys`。
-- `pair_arb` 的 dry-run 重点看两类日志：
-  - `PairArbGate(30s)`：候选保留/跳过/OFI 软塑形
-  - `LIVE_OBS`：执行稳定性与 `pair_arb_softened_ratio`
-- `glft_mm` 仍可运行，但不建议作为当前生产主线。
+2. `docs/strategies/XUAN_M0001_MAKER_SHADOW_RUNNER_SPEC_ZH.md` (Maker 队列 shadow 详解)
+3. `docs/architecture/STRATEGY_V2_CORE_ZH.md`
+4. `docs/strategies/STRATEGY_PAIR_GATED_TRANCHE_V1_1_ZH.md`
+5. `docs/runbooks/GO_LIVE_PAIR_ARB_CHECKLIST_ZH.md`
