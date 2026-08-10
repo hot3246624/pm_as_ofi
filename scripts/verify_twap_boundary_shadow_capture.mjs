@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 
-import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { fileLineCount, forEachJsonl, readJsonl, sha256File } from "./collect_twap_boundary_shadow.mjs";
 
 function parseArgs(argv) {
   const args = { runDir: null, output: null, expectSourceCommit: null, expectCodeSha256: null };
@@ -29,19 +29,6 @@ function parseArgs(argv) {
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
-}
-
-function readJsonl(filePath) {
-  if (!fs.existsSync(filePath)) return [];
-  return fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line));
-}
-
-function sha256File(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
-}
-
-function lineCount(filePath) {
-  return fs.readFileSync(filePath, "utf8").split("\n").filter(Boolean).length;
 }
 
 function parseRoundStart(slug) {
@@ -91,7 +78,10 @@ function verify(args) {
   const summary = readJson(path.join(runDir, "summary.json"));
   const metadata = readJsonl(path.join(runDir, "market_metadata.jsonl"));
   const ticks = readJsonl(path.join(runDir, "twap_ticks.jsonl"));
-  const books = readJsonl(path.join(runDir, "book_events.jsonl"));
+  let bookEventCount = 0;
+  forEachJsonl(path.join(runDir, "book_events.jsonl"), () => {
+    bookEventCount += 1;
+  });
   const boundaries = readJsonl(path.join(runDir, "boundary_observations.jsonl"));
   const settlements = readJsonl(path.join(runDir, "settlement_observations.jsonl"));
 
@@ -103,7 +93,7 @@ function verify(args) {
       present,
       sha256_match: present && sha256File(filePath) === expected.sha256,
       bytes_match: present && fs.statSync(filePath).size === expected.bytes,
-      lines_match: present && lineCount(filePath) === expected.lines,
+      lines_match: present && fileLineCount(filePath) === expected.lines,
     };
   });
   const manifestPass = manifestFiles.every((row) => row.present && row.sha256_match && row.bytes_match && row.lines_match);
@@ -198,7 +188,7 @@ function verify(args) {
       checkpoint: { updated_at: checkpoint.updated_at, counts: checkpoint.counts, ws_states: checkpoint.ws_states, ws_reconnects: checkpoint.ws_reconnects, gap_events: checkpoint.gap_events },
       source_commit: manifest.source_commit ?? null,
     },
-    counts: { metadata: metadata.length, twap_ticks: ticks.length, book_events: books.length, boundaries: boundaries.length, settlements: settlements.length },
+    counts: { metadata: metadata.length, twap_ticks: ticks.length, book_events: bookEventCount, boundaries: boundaries.length, settlements: settlements.length },
     round_alignment: { rows: roundRows.length, aligned, misaligned: roundRows.length - aligned, unresolved_windows: unresolvedWindows, examples: roundRows.slice(0, 10) },
     public_gamma_label: candidateLabel,
     timing,
