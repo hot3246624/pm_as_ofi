@@ -445,6 +445,24 @@ function firstTick(state, asset, windowS, predicate) {
   return state.twapTicks.find((tick) => tick.asset === asset && tick.window_s === windowS && predicate(tick)) || null;
 }
 
+function isSignedInteger(value) {
+  return /^-?\d+$/.test(String(value || ""));
+}
+
+function compareTwapTicks(left, right) {
+  const leftExact = left?.full_accuracy_value;
+  const rightExact = right?.full_accuracy_value;
+  if (isSignedInteger(leftExact) && isSignedInteger(rightExact)) {
+    const leftInteger = BigInt(leftExact);
+    const rightInteger = BigInt(rightExact);
+    return leftInteger < rightInteger ? -1 : leftInteger > rightInteger ? 1 : 0;
+  }
+  const leftDisplay = Number(left?.value);
+  const rightDisplay = Number(right?.value);
+  if (!Number.isFinite(leftDisplay) || !Number.isFinite(rightDisplay)) return null;
+  return leftDisplay < rightDisplay ? -1 : leftDisplay > rightDisplay ? 1 : 0;
+}
+
 function boundaryObservation(state, meta, observedAtMs) {
   const windowS = meta.twap_window_s || 30;
   const startMs = meta.start_ts * 1000;
@@ -457,7 +475,8 @@ function boundaryObservation(state, meta, observedAtMs) {
   const endTick = endBefore || endAfter;
   const startValue = startTick?.value ?? null;
   const endValue = endTick?.value ?? null;
-  const candidateSide = startValue == null || endValue == null ? "unknown" : endValue >= startValue ? "Up" : "Down";
+  const valueComparison = startTick && endTick ? compareTwapTicks(endTick, startTick) : null;
+  const candidateSide = valueComparison == null ? "unknown" : valueComparison >= 0 ? "Up" : "Down";
   const tokenSummaries = {};
   for (const tokenId of meta.token_ids) {
     const book = state.books.get(tokenId);
@@ -477,6 +496,8 @@ function boundaryObservation(state, meta, observedAtMs) {
     end_tick_selection: endBefore ? "latest_at_or_before_end" : endAfter ? "first_at_or_after_end" : "missing",
     candidate_start_value: startValue,
     candidate_end_value: endValue,
+    candidate_start_full_accuracy_value: startTick?.full_accuracy_value ?? null,
+    candidate_end_full_accuracy_value: endTick?.full_accuracy_value ?? null,
     candidate_side: candidateSide,
     candidate_label_kind: "diagnostic_only_not_settlement_truth",
     token_books: tokenSummaries,
@@ -534,6 +555,10 @@ function connectRtds(state) {
     (raw) => handleRtdsMessage(state, raw),
     () => {
       state.wsStates.rtds = "open";
+      const sendPing = () => {
+        if (socket.readyState === WebSocket.OPEN) socket.send("PING");
+      };
+      socket.__pingInterval = setInterval(sendPing, 5000);
       socket.send(JSON.stringify({
         action: "subscribe",
         subscriptions: state.args.windows.map((windowS) => ({ topic: `crypto_prices_twap_${windowS === 30 ? "thirty" : "sixty"}`, type: "update" })),
@@ -542,6 +567,10 @@ function connectRtds(state) {
     },
     () => {
       state.wsStates.rtds = "closed";
+      if (socket.__pingInterval) {
+        clearInterval(socket.__pingInterval);
+        socket.__pingInterval = null;
+      }
       if (!state.stopping) {
         state.gapEvents.push({ ts: nowIso(), source: "rtds", error: "socket_closed" });
         state.wsReconnects.rtds += 1;
@@ -644,6 +673,7 @@ async function finish(state, started, reason) {
   state.stopping = true;
   for (const interval of state.intervals) clearInterval(interval);
   for (const socket of state.sockets) {
+    if (socket.__pingInterval) clearInterval(socket.__pingInterval);
     try { socket.close(); } catch { /* best effort close */ }
   }
   const endedAtMs = Date.now();
