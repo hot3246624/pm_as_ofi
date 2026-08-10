@@ -43,3 +43,21 @@ node collect_twap_boundary_shadow.mjs \
 ```
 
 The durable handoff is `STARTED.json`, periodic `CHECKPOINT.json`, `EXIT.json`, `manifest.json`, and `summary.json`, with JSONL raw observations alongside them. A bounded smoke run validates connectivity; it grants no alpha, PnL, capacity, or live-readiness claim. A longer prospective capture requires a separate frozen research decision after the engineering gate.
+
+After `EXIT.json` exists, run the read-only terminal verifier against the same
+directory. It checks the no-submit terminal contract, manifest hashes/line
+counts, slug-derived round boundaries, exact TWAP fields, public Gamma label
+matching, RTDS/CLOB timing summaries, boundary L2 depth, reconnect gaps, and
+the missing local-candidate causal join fields:
+
+```text
+node verify_twap_boundary_shadow_capture.mjs \
+  --run-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<run_tag> \
+  --expect-source-commit <hash> \
+  --expect-code-sha256 <collector_sha256>
+```
+
+The verifier's `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE` result is expected
+when the collector capture is not joined to an external-source tape and a
+local `local_ready_ms` candidate. It must never be upgraded to PnL, execution,
+or live authority from public Gamma/CLOB observations alone.

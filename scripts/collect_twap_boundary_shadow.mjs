@@ -942,6 +942,7 @@ function buildManifest(state, started, endedAtMs, reason) {
     credentials_loaded: false,
     network_authority: "specified_ec2",
     source_commit: state.args.sourceCommit,
+    code_sha256: sha256File(path.resolve(process.argv[1])),
     source_urls: { gamma: GAMMA_URL, rtds: RTDS_URL, clob_market: CLOB_URL },
     args: state.args,
     counts: state.counts,
@@ -994,6 +995,7 @@ async function main() {
     network_authority: "specified_ec2",
     forbidden_actions: ["submit_order", "cancel_order", "sign", "redeem", "merge", "funding", "credential_import", "service_mutation"],
     source_commit: args.sourceCommit,
+    code_sha256: sha256File(path.resolve(process.argv[1])),
     source_urls: { gamma: GAMMA_URL, rtds: RTDS_URL, clob_market: CLOB_URL },
     args,
   };
