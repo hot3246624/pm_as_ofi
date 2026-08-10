@@ -63,6 +63,19 @@ node verify_twap_boundary_shadow_capture.mjs \
   --expect-code-sha256 <collector_sha256>
 ```
 
+For a completed run whose older collector missed an explicit Gamma stream
+window, the public-label comparison can be reproduced without reading the
+large CLOB tape:
+
+```text
+node audit_twap_boundary_shadow_candidate_labels.mjs \
+  --run-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<run_tag>
+```
+
+Its `POSTHOC_LABEL_ALIGNMENT_ONLY` result compares exact E18 RTDS start/end
+ticks with Gamma's public outcome; it is not synthetic-predictor accuracy or
+economic evidence.
+
 The verifier's `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE` result is expected
 when the collector capture is not joined to an external-source tape and a
 local `local_ready_ms` candidate. It must never be upgraded to PnL, execution,

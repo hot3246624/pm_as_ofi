@@ -159,7 +159,11 @@ finalizer（hash `d7a008bff71686a3f132bc0c68dfe0d2ddda21c51a74cb3225f82bb936930c
 原始 metadata 的 `twap_window_s` 因旧解析器没有识别当前 Gamma description 中的
 `...twap-30s-streams` 而为 null。该描述是显式窗口元数据，不是从更新频率推断；只读
 后处理用 exact E18 start/end tick 重新绑定后，9/9 `candidate_side` 与 Gamma public
-outcome 一致。这个 `9/9` 证明的是 **RTDS tick 与 public label 的一致性**，不是外部
+outcome 一致。可复现的派生报告由
+`scripts/audit_twap_boundary_shadow_candidate_labels.mjs` 生成，当前 EC2 输出为
+`/home/ubuntu/b_strategy_staging/pm_as_ofi/twap_boundary_shadow_capture_reprice_20260810T155731Z/posthoc_candidate_label_audit.json`
+（报告 hash `2986ac6d9024a688dfa7523b1707b6b88a7d9b75503f28b449cbc7a738dcd005`）。
+这个 `9/9` 证明的是 **RTDS tick 与 public label 的一致性**，不是外部
 source tape/local synthetic predictor 的准确率，也不是 alpha。当前分支已把该显式 URL
 映射补进 collector，避免后续 capture 再出现同一字段缺口。
 
