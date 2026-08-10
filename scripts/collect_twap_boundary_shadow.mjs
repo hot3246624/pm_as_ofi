@@ -247,10 +247,10 @@ function normalizeMarket(event, args, fetchedAtMs) {
   const parsedSlug = parseSlug(slug);
   if (!parsedSlug || !args.assets.includes(parsedSlug.asset)) return null;
   const market = Array.isArray(event?.markets) ? event.markets[0] || {} : event || {};
-  const startMs = parseTimestampMs(event?.startDate || market?.startDate);
-  const endMs = parseTimestampMs(event?.endDate || market?.endDate);
-  const startTs = startMs != null ? startMs / 1000 : parsedSlug.startTs;
-  const endTs = endMs != null ? endMs / 1000 : parsedSlug.endTs;
+  // Gamma's startDate is the market creation time, not the 5m round start.
+  // The generated slug is the canonical boundary key for this market family.
+  const startTs = parsedSlug.startTs;
+  const endTs = parsedSlug.endTs;
   const tokenIds = jsonMaybe(market?.clobTokenIds ?? event?.clobTokenIds, []);
   const outcomes = jsonMaybe(market?.outcomes ?? event?.outcomes, ["Up", "Down"]);
   const outcomePrices = jsonMaybe(market?.outcomePrices ?? event?.outcomePrices, []);
