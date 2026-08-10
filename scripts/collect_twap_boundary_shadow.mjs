@@ -166,7 +166,12 @@ function assetSymbol(asset) {
 
 function inferTwapWindow(description) {
   const text = String(description || "");
-  const match = text.match(/(?:over|using|based on)[^\n]{0,80}?(30|60)[- ]second/i) || text.match(/(30|60)[- ]second[^\n]{0,80}?TWAP/i);
+  // Current Gamma descriptions identify the authoritative stream as, for
+  // example, `btc-usd-twap-30s-streams`. Treat that explicit metadata as the
+  // window mapping; never infer a window from RTDS update cadence.
+  const match = text.match(/\btwap-(30|60)s\b/i)
+    || text.match(/\btwap\s*[:\-]\s*(30|60)s\b/i)
+    || text.match(/\b(30|60)[- ]second\b/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -1083,6 +1088,7 @@ export {
   buildSummary,
   fileLineCount,
   forEachJsonl,
+  inferTwapWindow,
   readJsonl,
   sha256File,
 };

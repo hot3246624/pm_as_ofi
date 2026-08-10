@@ -15,6 +15,12 @@ values are lookback windows, not publication cadence. RTDS has no history or
 replay after a disconnect, so gaps are evidence gaps rather than carried-forward
 prices. See the [official TWAP contract](https://docs.polymarket.com/market-data/chainlink-twap).
 
+Gamma descriptions that explicitly identify a stream such as
+`btc-usd-twap-30s-streams` are treated as the symbol/window mapping. The
+collector never infers the window from update frequency; if no explicit
+30s/60s mapping exists, it records `candidate_side=unknown` and does not score
+that boundary.
+
 For CLOB latency work, `price_change` and optional `best_bid_ask` events are
 the public quote-transition tape; `receive_ms` is recorded locally and is the
 timestamp used for the public-reprice lead measurement. See the [official

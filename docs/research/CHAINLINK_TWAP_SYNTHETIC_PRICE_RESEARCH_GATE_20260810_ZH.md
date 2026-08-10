@@ -1,8 +1,8 @@
 # Chainlink TWAP 合成价格研究 Gate
 
-更新时间：2026-08-10  
-研究分支：`codex/twap-boundary-shadow-migration`  
-collector 修复基线：`d30b7f7a06eb30e93e032bc1b4432910fdee7ec5`
+更新时间：2026-08-11
+研究分支：`codex/twap-boundary-shadow-migration`
+当前验收基线：`03d8632dcf8da9b4081d5416c9622f544467f4f8`
 
 本项目的核心对象是 **5m round 结束后的 oracle-lag / stale-quote 交易**：在 round end 之后，用外部 source tape 形成 local synthetic price，争取在 Polymarket CLOB 盘口和 RTDS/Chainlink final label 完成重定价之前获得低延迟决策。第一道 gate 是 **price aggregation + latency lead**，不是完整 maker 账户审计。
 
@@ -23,7 +23,7 @@ collector 修复基线：`d30b7f7a06eb30e93e032bc1b4432910fdee7ec5`
 
 ### 2.1 Chainlink TWAP boundary shadow
 
-固定修复后的 capture 已经证明了工程链路可以工作：
+固定修复后的 capture 已经证明了工程链路可以工作，但早期低分辨率样本仍有 CLOB 断线：
 
 - Gamma round 起点按 slug 正确绑定，14/14 个 boundary 对齐；
 - 14 个 boundary 中仅 8 个在 capture 内观察到 public Gamma outcome；
@@ -32,9 +32,13 @@ collector 修复基线：`d30b7f7a06eb30e93e032bc1b4432910fdee7ec5`
 - boundary 时没有 token 同时具备 best bid 和 best ask，不能构成 orderable public book；
 - public ask depth 不能证明私有队列位置、成交概率或真实残仓成本。
 
+旧 capture 的 `candidate_match_count=5/8` 只能作为 public-label 复核，且该目录记录了 4 次 CLOB `socket_closed`/reconnect，不能作为 gap-free latency 或策略准确率样本。
+
 因此该 lane 是 **settlement label / latency / stale-book observation infrastructure**；它本身不是 alpha，但正好用于测量盘后交易所需的领先窗口。
 
-当前 collector 的窄修复在 `d30b7f7a0`：
+前一轮 collector 的窄修复在 `d30b7f7a0`；当前分支在此基础上由
+`03d8632dc` 继续收紧终态核验，并补上 Gamma `twap-30s/60s` 显式 stream
+URL 的窗口映射：
 
 - 按 RTDS 要求发送 5 秒 heartbeat `PING`；
 - 用 `full_accuracy_value` 的 exact E18 整数比较 candidate side；
@@ -116,6 +120,54 @@ lead_ms = public_final_or_reprice_receive_ms - local_ready_ms
 
 这仍不等于 local aggregator。collector 没有代替 Binance/Coinbase/OKX/Bybit/Hyperliquid tape，也没有产生 `local_ready_ms`；它只是把“合成候选 → RTDS benchmark → CLOB public reprice”的因果 join 所需观测字段补齐。下一轮 capture 必须使用这份高分辨率 JSONL；旧的 1 秒节流 capture 只能用于 connectivity/metadata 复核，不能用于亚秒 stale-quote 结论。
 
+### 2.1.1 高分辨率终态验收（EC2，2026-08-10 UTC）
+
+目录：`/home/ubuntu/b_strategy_staging/pm_as_ofi/twap_boundary_shadow_capture_reprice_20260810T155731Z/`。
+该 run 使用的是修复前的 collector source commit
+`ded5856dff4a9869285b81962745a443c11b2c9e`（代码 hash
+`69e642a71549a24a22cf1062b3d6f922aa5b377aec1ec70cc66b3066a7f03d2e`），
+因 `book_events.jsonl` 达到 1,489,752,620 bytes，原 collector 在 summary
+阶段触发 Node `ERR_STRING_TOO_LONG`；raw JSONL 完整保留，随后由 recovery
+finalizer（hash `d7a008bff71686a3f132bc0c68dfe0d2ddda21c51a74cb3225f82bb936930cea`）
+重建终态。该工程故障不是策略失败，但必须计入证据链。
+
+终态 verifier 结果为 `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE`，其工程契约均通过：
+
+- `terminal=true`、`mode=no-submit`、`live_orders_submitted=0`、`credentials_loaded=false`、`open_runs=[]`；
+- 102 个 metadata rows、4,769 个 RTDS ticks、1,249,130 个 CLOB event rows、14 个 boundary、9 个 Gamma public observations；
+- slug 派生的 5m round `102/102` 对齐；4,769/4,769 tick 保留 `observation_ts` 与 exact decimal/E18；manifest hash/bytes/lines 全部通过；
+- RTDS reconnect `0`，CLOB reconnect `1`，gap `1`（`2026-08-10T16:02:27.324Z`，`socket_closed`）。因此不能作全样本 gap-free 的 latency/strategy 结论，受影响 round 必须剔除或标记 incomplete。
+
+### 2.1.2 这次终态数据实际说明了什么
+
+时间口径必须分开：
+
+| 量 | 观测结果 | 正确解释 |
+| --- | ---: | --- |
+| boundary poll lag | p50 `311ms`，p95/max `359ms` | 1 秒 poll 的 round-end 检测诊断，不是交易延迟 |
+| RTDS observation → receive | p50 `1,643ms`，p95 `2,275ms`，max `3,014ms` | Chainlink observation 到 EC2 收到 RTDS 的延迟 |
+| RTDS publisher → receive | p50 `237ms`，p95 `382ms`，max `734ms` | RTDS 发布到 EC2 收到的传输/处理延迟 |
+| CLOB event → receive | p50 `10ms`，p95 `40ms`，p99 `112ms`，max `2,479ms` | 公开 CLOB event 的本地接收延迟 |
+| first post-boundary quote | p50 `28ms`，p95/max `53/66ms` | 公开 quote 出现的接收滞后 |
+| first quote reprice | p50 `3,519ms`，p90/max `111,908/112,224ms` | 当前事件定义下的首次明显重定价诊断，长尾必须逐 round 复核，不能直接当可交易窗口 |
+
+边界 L2 只有 28 个 token rows，均有 book；14 个 token rows 有 best ask，best ask
+中位数为 `0.01`，ask depth within 1¢ 的中位数为 `4,594.86` shares（最小
+`93.99`，最大 `43,838.14`）。`orderable_boundary_count=0`；这是公开可见深度，
+不是队列、成交或订单接受证据。
+
+原始 metadata 的 `twap_window_s` 因旧解析器没有识别当前 Gamma description 中的
+`...twap-30s-streams` 而为 null。该描述是显式窗口元数据，不是从更新频率推断；只读
+后处理用 exact E18 start/end tick 重新绑定后，9/9 `candidate_side` 与 Gamma public
+outcome 一致。这个 `9/9` 证明的是 **RTDS tick 与 public label 的一致性**，不是外部
+source tape/local synthetic predictor 的准确率，也不是 alpha。当前分支已把该显式 URL
+映射补进 collector，避免后续 capture 再出现同一字段缺口。
+
+真正使 verifier 不能升级的原因仍是 causal join 缺失：capture 没有
+`source_timestamp_cutoff_ms`、`local_ready_ms`、`local_candidate_price/side`、
+`decision_deadline_ms`，且 CLOB 有 gap。因此本 run 可授予 **工程 shadow Go + latency/
+aggregation research input Go**，不能授予策略经济学或 live Go。
+
 ## 4. 后置成本与执行约束
 
 费用不是第一道 latency/aggregation gate，但在确认存在 stale-quote lead 后必须进入净值评估。
@@ -148,7 +200,13 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 不能使用 round end 之后的 external tick 或 public outcome 作为 feature。
 
-当前 local-agg challenger 的状态文件为 `action=no_current_run`、`eval_rows=0`；因此 5 月的 `T+300ms`、coverage 和 bps 数字只能作为历史工程线索，不能当作本次 Gate 的当前通过证据。推进顺序必须是：先用已有 immutable logs 做 schema/causal 可用性审计，再用修复后的高分辨率 CLOB collector 做一次 bounded EC2 no-submit capture，最后把同一 round 的 local candidate 与 public reprice 做 join；不能再用 Gamma settlement match 代替这条链路。
+当前 local-agg challenger 的状态文件为 `action=no_current_run`、`eval_rows=0`；因此 5 月的 `T+300ms`、coverage 和 bps 数字只能作为历史工程线索，不能当作本次 Gate 的当前通过证据。高分辨率 EC2 no-submit capture 已完成并已终态化；现在不应再启动另一个只收 Gamma/RTDS/CLOB 的 capture，而应先把已有 immutable local-agg/source logs 与该 capture 按同一 round、同一 EC2 时钟口径做 causal join。不能再用 Gamma settlement match 代替这条链路。
+
+当前下一道最小 Gate 是：
+
+1. 从已有 local-agg/source tape 冻结 `source_timestamp_cutoff_ms`、`local_ready_ms`、candidate price/side、source gap 和 `preclose_ready`；没有这些字段的 round 只能标记 missing，不能补齐或 hindsight filter。
+2. 将每个 candidate 与同 round 的 RTDS observation/publisher/receive 和 CLOB first post-quote/first reprice join；CLOB reconnect/gap round 直接剔除或单独报告。
+3. 先只读出 coverage、side/error、`lead_ms`、stale-quote duration 和 public depth；通过后才进入 fee-inclusive decision-value stress。若现有 immutable logs 根本没有 local-ready 字段，才申请一次带 local candidate instrumentation 的 bounded prospective no-submit capture，而不是重复公共 benchmark capture。
 
 ### Phase B：预注册 synthetic candidate
 
