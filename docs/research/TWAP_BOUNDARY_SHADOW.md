@@ -61,3 +61,16 @@ The verifier's `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE` result is expected
 when the collector capture is not joined to an external-source tape and a
 local `local_ready_ms` candidate. It must never be upgraded to PnL, execution,
 or live authority from public Gamma/CLOB observations alone.
+
+If a bounded run has complete raw JSONL and `collector_exit` but lacks terminal
+artifacts because a summary reader failed, use the recovery finalizer once:
+
+```text
+node finalize_twap_boundary_shadow_capture.mjs \
+  --run-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<run_tag> \
+  --collector-path /home/ubuntu/b_strategy_staging/pm_as_ofi/<collector_path>
+```
+
+The finalizer preserves the raw files, records the exact source error in
+`manifest.json`, and emits `EXIT.reason=duration_elapsed_recovered_after_summary_failure`.
+It must not be used to turn an open or partial run into a pass.

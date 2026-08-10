@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import process from "node:process";
+import { pathToFileURL } from "node:url";
 
 const RTDS_URL = "wss://ws-live-data.polymarket.com";
 const CLOB_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
@@ -70,13 +71,72 @@ function writeJson(outDir, name, value) {
 }
 
 function sha256File(filePath) {
-  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  const hash = crypto.createHash("sha256");
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  try {
+    let bytesRead = 0;
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) hash.update(buffer.subarray(0, bytesRead));
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return hash.digest("hex");
 }
 
 function fileLineCount(filePath) {
   if (!fs.existsSync(filePath)) return 0;
-  const text = fs.readFileSync(filePath, "utf8");
-  return text ? text.split("\n").filter(Boolean).length : 0;
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let bytesRead = 0;
+  let lines = 0;
+  let sawAnyByte = false;
+  let lastByte = null;
+  try {
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) {
+        sawAnyByte = true;
+        for (let i = 0; i < bytesRead; i += 1) {
+          if (buffer[i] === 0x0a) lines += 1;
+          lastByte = buffer[i];
+        }
+      }
+    } while (bytesRead > 0);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return sawAnyByte && lastByte !== 0x0a ? lines + 1 : lines;
+}
+
+function forEachJsonl(filePath, onRow) {
+  if (!fs.existsSync(filePath)) return 0;
+  const fd = fs.openSync(filePath, "r");
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  let carry = "";
+  let bytesRead = 0;
+  let rows = 0;
+  const consume = (text, final = false) => {
+    const parts = text.split("\n");
+    if (!final) carry = parts.pop() || "";
+    for (const line of parts) {
+      if (!line) continue;
+      onRow(JSON.parse(line));
+      rows += 1;
+    }
+  };
+  try {
+    do {
+      bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead > 0) consume(carry + buffer.toString("utf8", 0, bytesRead));
+    } while (bytesRead > 0);
+    if (carry) consume(carry, true);
+  } finally {
+    fs.closeSync(fd);
+  }
+  return rows;
 }
 
 function jsonMaybe(value, fallback) {
@@ -765,12 +825,8 @@ function connectClob(state) {
 }
 
 function readJsonl(filePath) {
-  if (!fs.existsSync(filePath)) return [];
   const rows = [];
-  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
-    if (!line) continue;
-    try { rows.push(JSON.parse(line)); } catch { /* ignore a partial terminal line */ }
-  }
+  try { forEachJsonl(filePath, (row) => rows.push(row)); } catch { /* ignore a partial terminal line */ }
   return rows;
 }
 
@@ -826,55 +882,52 @@ function quoteKey(quote) {
 }
 
 function buildClobTimingSummary(state, boundaryRows) {
-  const eventRows = readJsonl(path.join(state.outDir, "book_events.jsonl"));
+  const eventPath = path.join(state.outDir, "book_events.jsonl");
   const eventToReceive = [];
   let missingEventTimestamp = 0;
   let negativeEventLatency = 0;
-  for (const row of eventRows) {
-    const eventTsMs = parseTimestampMs(row.event_ts_ms ?? row.event_ts);
-    if (eventTsMs == null) {
-      missingEventTimestamp += 1;
-      continue;
+  let eventRows = 0;
+  const boundaryByToken = new Map();
+  for (const boundary of boundaryRows) {
+    const endMs = Number(boundary.end_ts) * 1000;
+    for (const tokenId of Object.keys(boundary.token_books || {})) {
+      boundaryByToken.set(tokenId, { endMs, before: null, firstPost: null, reprice: null });
     }
-    const latency = row.receive_ms - eventTsMs;
-    if (latency < 0) negativeEventLatency += 1;
-    else eventToReceive.push(latency);
   }
-
+  forEachJsonl(eventPath, (row) => {
+    eventRows += 1;
+    const eventTsMs = parseTimestampMs(row.event_ts_ms ?? row.event_ts);
+    if (eventTsMs == null) missingEventTimestamp += 1;
+    else {
+      const latency = row.receive_ms - eventTsMs;
+      if (latency < 0) negativeEventLatency += 1;
+      else eventToReceive.push(latency);
+    }
+    const boundary = boundaryByToken.get(String(row.asset_id));
+    if (!boundary || !Number.isFinite(row.receive_ms)) return;
+    if (row.receive_ms <= boundary.endMs) {
+      boundary.before = row;
+      return;
+    }
+    if (!boundary.firstPost) boundary.firstPost = row;
+    if (!boundary.reprice && boundary.before) {
+      const baselineKey = quoteKey(eventQuote(boundary.before));
+      const quote = eventQuote(row);
+      if (quoteKey(quote) !== baselineKey && (quote.best_bid != null || quote.best_ask != null)) boundary.reprice = row;
+    }
+  });
   const repriceLags = [];
   const postQuoteLags = [];
   let baselineMissing = 0;
   let postEventMissing = 0;
-  for (const boundary of boundaryRows) {
-    const endMs = Number(boundary.end_ts) * 1000;
-    const tokenIds = Object.keys(boundary.token_books || {});
-    for (const tokenId of tokenIds) {
-      const rows = eventRows
-        .filter((row) => String(row.asset_id) === tokenId && Number.isFinite(row.receive_ms))
-        .sort((left, right) => left.receive_ms - right.receive_ms);
-      const before = rows.filter((row) => row.receive_ms <= endMs).at(-1);
-      const after = rows.filter((row) => row.receive_ms >= endMs);
-      if (!before) {
-        baselineMissing += 1;
-        continue;
-      }
-      if (!after.length) {
-        postEventMissing += 1;
-        continue;
-      }
-      const baselineQuote = eventQuote(before);
-      const firstPost = after[0];
-      postQuoteLags.push(firstPost.receive_ms - endMs);
-      const baselineKey = quoteKey(baselineQuote);
-      const reprice = after.find((row) => {
-        const quote = eventQuote(row);
-        return quoteKey(quote) !== baselineKey && (quote.best_bid != null || quote.best_ask != null);
-      });
-      if (reprice) repriceLags.push(reprice.receive_ms - endMs);
-    }
+  for (const boundary of boundaryByToken.values()) {
+    if (!boundary.before) baselineMissing += 1;
+    if (!boundary.firstPost) postEventMissing += 1;
+    else postQuoteLags.push(boundary.firstPost.receive_ms - boundary.endMs);
+    if (boundary.reprice) repriceLags.push(boundary.reprice.receive_ms - boundary.endMs);
   }
   return {
-    event_rows: eventRows.length,
+    event_rows: eventRows,
     event_to_receive_ms: distribution(eventToReceive),
     negative_event_latency_count: negativeEventLatency,
     missing_event_timestamp_count: missingEventTimestamp,
@@ -924,7 +977,7 @@ function buildSummary(state, endedAtMs, reason) {
   };
 }
 
-function buildManifest(state, started, endedAtMs, reason) {
+function buildManifest(state, started, endedAtMs, reason, codePath = process.argv[1]) {
   const outputNames = ["STARTED.json", "CHECKPOINT.json", "market_metadata.jsonl", "twap_ticks.jsonl", "book_events.jsonl", "boundary_observations.jsonl", "settlement_observations.jsonl", "summary.json", "run.log"];
   const files = {};
   for (const name of outputNames) {
@@ -942,7 +995,7 @@ function buildManifest(state, started, endedAtMs, reason) {
     credentials_loaded: false,
     network_authority: "specified_ec2",
     source_commit: state.args.sourceCommit,
-    code_sha256: sha256File(path.resolve(process.argv[1])),
+    code_sha256: sha256File(path.resolve(codePath)),
     source_urls: { gamma: GAMMA_URL, rtds: RTDS_URL, clob_market: CLOB_URL },
     args: state.args,
     counts: state.counts,
@@ -1017,7 +1070,19 @@ async function main() {
   process.once("SIGTERM", stop);
 }
 
-main().catch((error) => {
-  console.error(error.stack || error);
-  process.exitCode = 1;
-});
+const invokedScriptUrl = process.argv[1] ? pathToFileURL(process.argv[1]).href : null;
+if (invokedScriptUrl === import.meta.url) {
+  main().catch((error) => {
+    console.error(error.stack || error);
+    process.exitCode = 1;
+  });
+}
+
+export {
+  buildManifest,
+  buildSummary,
+  fileLineCount,
+  forEachJsonl,
+  readJsonl,
+  sha256File,
+};
