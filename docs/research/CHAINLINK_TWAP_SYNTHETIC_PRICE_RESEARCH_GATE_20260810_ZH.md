@@ -4,18 +4,20 @@
 研究分支：`codex/twap-boundary-shadow-migration`  
 collector 修复基线：`d30b7f7a06eb30e93e032bc1b4432910fdee7ec5`
 
+本项目的核心对象是 **5m round 结束后的 oracle-lag / stale-quote 交易**：在 round end 之后，用外部 source tape 形成 local synthetic price，争取在 Polymarket CLOB 盘口和 RTDS/Chainlink final label 完成重定价之前获得低延迟决策。第一道 gate 是 **price aggregation + latency lead**，不是完整 maker 账户审计。
+
 ## 1. 结论先行
 
 | 路线 | 当前结论 | 含义 |
 | --- | --- | --- |
 | 直接复制 RTDS / Gamma outcome | **Strategy No-Go** | 公开 settlement label 不是 prediction alpha |
-| 纯 public CLOB L2 套利 | **Economics No-Go** | 没有私有 queue、fill、partial fill 和账户账本真相 |
+| public CLOB stale-quote 观测 | **Research Input Go** | 用于量化盘后错价窗口；不能单独宣称 live PnL |
 | 未扣费 taker pair / completion | **Economics No-Go** | 5m crypto fee 已经改变旧 pair-arb 的成本假设 |
 | 外部 source tape → synthetic TWAP predictor | **Conditional Research Go** | 只值得做 bounded no-submit 研究，不得直接 promotion |
 | maker + fair-value + rebate | **第二阶段 Conditional Go** | 必须先有 fill、adverse selection、inventory 和 rebate 证据 |
 | live orders / credentials / service promotion | **No-Go** | 本 Gate 不授予任何 live authority |
 
-这不是整个项目失败。项目已经形成了可复用的行情、回放、费用和安全闸门；尚未成立的是“这些 public/readiness 证据可以转换成稳定净收益”的经济命题。
+这不是整个项目失败。项目已经形成了可复用的外部价格源、local aggregator、RTDS label 和 CLOB book 观测链路；尚未成立的是“local lead 足以在成本和真实订单路径下稳定转化为净收益”的后置命题。私有 queue/fill/ledger 是 live promotion 的后置 gate，不应阻塞第一轮 latency/aggregation 研究。
 
 ## 2. 当前证据分层
 
@@ -30,7 +32,7 @@ collector 修复基线：`d30b7f7a06eb30e93e032bc1b4432910fdee7ec5`
 - boundary 时没有 token 同时具备 best bid 和 best ask，不能构成 orderable public book；
 - public ask depth 不能证明私有队列位置、成交概率或真实残仓成本。
 
-因此该 lane 是 **label / latency / book-observation infrastructure**，不是已验证的 alpha。
+因此该 lane 是 **settlement label / latency / stale-book observation infrastructure**；它本身不是 alpha，但正好用于测量盘后交易所需的领先窗口。
 
 当前 collector 的窄修复在 `d30b7f7a0`：
 
@@ -49,7 +51,7 @@ collector 修复基线：`d30b7f7a06eb30e93e032bc1b4432910fdee7ec5`
 - accepted max error `8.152221bps`；
 - `>=5bps` tail `44`。
 
-这说明当前 selector/gate 可以通过“过滤掉不确定样本”提高安全性，但还没有证明在足够覆盖率下产生可交易净收益。现有 evaluator 主要评估 `close_diff_bps` 和 side，不等于 fee-inclusive CLOB PnL。
+这说明当前 selector/gate 可以通过“过滤掉不确定样本”提高安全性，但仍需把研究重点放回盘后交易的两个主指标：**local ready latency** 和 **在 CLOB 重定价之前的 final-side/price convergence**。旧 convergence 记录曾观察到 local p50 约 `25–42ms`、p95/max 约 `215–273ms`，而 RTDS p50 约 `1.3–1.4s`、部分 run 的 p95/max 达到约 `6.6s`；这正是本项目最有价值的机制证据。现有 evaluator 还没有把这些 lead milliseconds 与 CLOB stale-quote window 逐 round 对齐，因此下一步应先完成 latency/price replay，再做 fee-inclusive PnL。
 
 ### 2.3 Pair/completion / maker research
 
@@ -67,7 +69,7 @@ Pair-Gated Tranche V1.1 已经显式承认三个关键假设仍需裁决：公�
 - RTDS 没有断线后的历史 replay；
 - Chainlink 的采样边界、权重、rounding 和 missing-input 行为没有完整公开，不能自行声称复刻 settlement。
 
-所以 RTDS 最适合做 **label、benchmark 和 latency reference**。真正可能产生 edge 的位置是：
+所以 RTDS 最适合做 **label、benchmark 和 latency reference**。盘后交易真正要验证的是：
 
 ```text
 external pre-boundary tape
@@ -76,10 +78,20 @@ synthetic estimate before round end
         ↓
 Polymarket CLOB mispricing / maker quote / completion decision
         ↓
-fee + spread + fill + inventory adjusted decision value
+usable stale-quote window before public repricing
 ```
 
-## 4. 费用与执行硬约束
+核心量化对象是：
+
+```text
+lead_ms = public_final_or_reprice_receive_ms - local_ready_ms
+```
+
+其中 `public_final_or_reprice_receive_ms` 至少分别记录 RTDS final 到达和 CLOB 首次明显重定价；Gamma outcome 只作离线标签，不进入热路径。
+
+## 4. 后置成本与执行约束
+
+费用不是第一道 latency/aggregation gate，但在确认存在 stale-quote lead 后必须进入净值评估。
 
 官方[费用文档](https://docs.polymarket.com/trading/fees)当前给出的 crypto `feeRate=0.07`，公式为：
 
@@ -100,11 +112,12 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 在新 capture 前，必须确认现有数据是否已经具备：
 
 1. 每个 round 的 `round_start_ts / round_end_ts`；
-2. exact RTDS open/close value 和 observation timestamp；
-3. 决策时刻之前的外部 source event/receive tape；
-4. 决策时刻的 CLOB best bid/ask 和至少 top-5 depth；
-5. market-specific fee configuration；
-6. source gap、reconnect、late tick 和 missing round 标记。
+2. 决策时刻之前的外部 source event/receive tape；
+3. exact RTDS final value、`payload.timestamp` 和本地 receive time；
+4. CLOB best bid/ask、top-5 depth、quote/reprice receive time；
+5. local aggregator ready time、candidate price/side 和 source gap；
+6. market-specific fee configuration，作为第二阶段成本字段；
+7. reconnect、late tick 和 missing round 标记。
 
 不能使用 round end 之后的 external tick 或 public outcome 作为 feature。
 
@@ -124,20 +137,19 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 `candidate_side` 只能作为预测输出；Gamma outcome 只能作为 public label；RTDS close 不能反向进入 feature。
 
-### Phase C：净 decision-value gate
+### Phase C：盘后价格/时延 Gate
 
 每个 accepted candidate 必须同时报告：
 
-- side correctness；
+- local ready latency 的 p50/p95/max；
+- `lead_ms` 相对 RTDS final 和 CLOB 首次重定价的分布；
+- 在每个 causal cutoff 下的 side correctness；
 - absolute/signed TWAP error；
-- decision latency；
-- public book 可见性和 top-1/top-5 支持量；
-- assumed fill probability 和 partial fill；
-- taker fee 或 maker rebate model；
-- residual inventory / unwind cost；
-- conservative fee-inclusive net decision value。
+- CLOB stale quote 的持续时间、best ask/bid 和 top-1/top-5 可见深度；
+- source gap、coverage、reconnect 和 late-tick rate；
+- 第二阶段再加入 taker fee、spread、slippage、fill probability、partial fill、rebate 和 residual cost。
 
-单独的 `side=0`、`close_diff_bps<5`、public depth 或 simulated PnL 都不能单独触发 promotion。必须在时间外样本和成本 stress 下仍保留正的保守净 decision value；否则立即 No-Go。
+单独的 `side=0`、`close_diff_bps<5` 或 public depth 都不能单独触发 promotion；第一道 Research Go 要求是：在严格 causal cutoff 下，local estimator 稳定早于 RTDS/CLOB public repricing，并保留足够 coverage。完成这道 gate 后，才进入 fee-inclusive decision value；最终 live promotion 仍需真实订单路径证据。
 
 ### Phase D：仅在字段缺失时做一次 prospective capture
 
@@ -145,21 +157,22 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 ## 6. 明确停止条件
 
-以下任一条件成立，直接停止 direct-TWAP 路线：
+以下任一条件成立，直接停止 direct-TWAP / synthetic-lag 路线：
 
 - edge 只在 RTDS/Gamma public label 出现之后才出现；
-- synthetic predictor 在严格 causal cutoff 下不能稳定给出 margin；
-- fee/slippage/fill/residual stress 后净值不为正；
-- accepted 样本依赖极低 coverage 或 hindsight filtering；
-- public book 看起来有深度，但无法建立私有 fill/queue/ledger bridge。
+- local ready 没有稳定早于 RTDS final 或 CLOB 首次重定价；
+- synthetic predictor 在严格 causal cutoff 下不能稳定给出 side/price convergence；
+- stale-quote window 只存在于极低 coverage 或 hindsight filtering 样本；
+- 在第二阶段加入费用和合理滑点后，剩余 margin 不足以覆盖交易成本。
 
 当前允许继续的唯一主线是：
 
 ```text
 external-source synthetic predictor
-→ no-submit causal replay
-→ public execution-proxy stress
-→ separate private-truth requirement
+→ no-submit causal latency/price replay
+→ CLOB stale-quote window measurement
+→ fee-inclusive decision-value stress
+→ separate private-truth requirement before live
 ```
 
 本文件不授权 credential load、order submit/cancel、sign、redeem、funding、shared ingress/live service mutation 或旧 Rust 热路径修改。
