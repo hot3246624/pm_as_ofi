@@ -9,7 +9,6 @@ const RTDS_URL = "wss://ws-live-data.polymarket.com";
 const CLOB_URL = "wss://ws-subscriptions-clob.polymarket.com/ws/market";
 const GAMMA_URL = "https://gamma-api.polymarket.com/events";
 const ROUND_SECONDS = 300;
-const BOOK_EMIT_MIN_INTERVAL_MS = 1000;
 const DEFAULT_ASSETS = ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "HYPE"];
 const DEFAULT_WINDOWS = [30, 60];
 
@@ -19,6 +18,7 @@ function parseArgs(argv) {
     pollSeconds: 10,
     assets: DEFAULT_ASSETS,
     windows: DEFAULT_WINDOWS,
+    bookEmitMinIntervalMs: 0,
     outDir: null,
     sourceCommit: null,
   };
@@ -33,11 +33,12 @@ function parseArgs(argv) {
     else if (arg === "--poll-seconds") args.pollSeconds = Number(next());
     else if (arg === "--assets") args.assets = next().split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
     else if (arg === "--windows") args.windows = next().split(",").map((x) => Number(x.trim())).filter(Boolean);
+    else if (arg === "--book-emit-min-interval-ms") args.bookEmitMinIntervalMs = Number(next());
     else if (arg === "--out-dir") args.outDir = next();
     else if (arg === "--source-commit") args.sourceCommit = next();
     else if (arg === "--no-submit") continue;
     else if (arg === "--help") {
-      console.log("Usage: collect_twap_boundary_shadow.mjs --out-dir DIR [--duration-seconds N] [--poll-seconds N] [--assets BTC,ETH] [--windows 30,60] [--source-commit HASH] --no-submit");
+      console.log("Usage: collect_twap_boundary_shadow.mjs --out-dir DIR [--duration-seconds N] [--poll-seconds N] [--assets BTC,ETH] [--windows 30,60] [--book-emit-min-interval-ms N] [--source-commit HASH] --no-submit");
       process.exit(0);
     } else throw new Error(`unknown argument: ${arg}`);
   }
@@ -47,6 +48,9 @@ function parseArgs(argv) {
   }
   if (!Number.isFinite(args.pollSeconds) || args.pollSeconds < 2 || args.pollSeconds > 60) {
     throw new Error("--poll-seconds must be between 2 and 60");
+  }
+  if (!Number.isInteger(args.bookEmitMinIntervalMs) || args.bookEmitMinIntervalMs < 0 || args.bookEmitMinIntervalMs > 60_000) {
+    throw new Error("--book-emit-min-interval-ms must be an integer between 0 and 60000");
   }
   if (args.windows.some((windowS) => ![30, 60].includes(windowS))) throw new Error("--windows only supports 30 and 60");
   if (!args.assets.length || !args.windows.length) throw new Error("assets and windows must not be empty");
@@ -117,6 +121,30 @@ function parseTimestampMs(value) {
   if (Number.isFinite(number)) return number < 10_000_000_000 ? number * 1000 : number;
   const parsed = Date.parse(String(value));
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseDecimal(value) {
+  const text = String(value ?? "").trim();
+  const match = /^([+-]?)(\d+)(?:\.(\d+))?$/.exec(text);
+  if (!match) return null;
+  const sign = match[1] === "-" ? -1 : 1;
+  const fraction = match[3] || "";
+  const digits = `${match[2]}${fraction}`.replace(/^0+(?=\d)/, "") || "0";
+  const magnitude = BigInt(digits);
+  return { sign: magnitude === 0n ? 1 : sign, magnitude, scale: fraction.length };
+}
+
+function compareDecimalStrings(left, right) {
+  const leftParsed = parseDecimal(left);
+  const rightParsed = parseDecimal(right);
+  if (!leftParsed || !rightParsed) return null;
+  if (leftParsed.sign !== rightParsed.sign) return leftParsed.sign < rightParsed.sign ? -1 : 1;
+  const scale = Math.max(leftParsed.scale, rightParsed.scale);
+  const leftMagnitude = leftParsed.magnitude * (10n ** BigInt(scale - leftParsed.scale));
+  const rightMagnitude = rightParsed.magnitude * (10n ** BigInt(scale - rightParsed.scale));
+  if (leftMagnitude === rightMagnitude) return 0;
+  const magnitudeComparison = leftMagnitude < rightMagnitude ? -1 : 1;
+  return leftParsed.sign === 1 ? magnitudeComparison : -magnitudeComparison;
 }
 
 function compactLevels(levelMap, side, limit = 10) {
@@ -254,6 +282,8 @@ function normalizeMarket(event, args, fetchedAtMs) {
   const tokenIds = jsonMaybe(market?.clobTokenIds ?? event?.clobTokenIds, []);
   const outcomes = jsonMaybe(market?.outcomes ?? event?.outcomes, ["Up", "Down"]);
   const outcomePrices = jsonMaybe(market?.outcomePrices ?? event?.outcomePrices, []);
+  const description = String(event?.description || market?.description || "");
+  const twapWindowS = inferTwapWindow(description);
   return {
     slug,
     asset: parsedSlug.asset,
@@ -264,8 +294,9 @@ function normalizeMarket(event, args, fetchedAtMs) {
     closed: Boolean(event?.closed ?? market?.closed),
     closed_time: event?.closedTime || market?.closedTime || null,
     active: Boolean(event?.active ?? market?.active),
-    twap_window_s: inferTwapWindow(event?.description || market?.description),
-    description: String(event?.description || market?.description || ""),
+    twap_window_s: twapWindowS,
+    twap_window_source: twapWindowS == null ? null : "gamma_description",
+    description,
     token_ids: tokenIds.map(String),
     outcomes: outcomes.map(String),
     outcome_prices: outcomePrices.map(String),
@@ -336,9 +367,52 @@ function sendClobSubscription(state, force = false) {
   const fingerprint = ids.join(",");
   if (!force && socket.__subFingerprint === fingerprint) return;
   if (!ids.length) return;
-  socket.send(JSON.stringify({ assets_ids: ids, type: "market" }));
+  socket.send(JSON.stringify({ assets_ids: ids, type: "market", custom_feature_enabled: true }));
   socket.__subFingerprint = fingerprint;
   log(state, "clob_subscribed", { assets: ids.length });
+}
+
+function normalizeClobMessage(message) {
+  if (message?.topic !== "market" || !message.payload) return message;
+  const payload = message.payload;
+  const timestamp = payload.timestamp ?? null;
+  if (message.type === "book") {
+    return {
+      event_type: "book",
+      market: payload.market || null,
+      asset_id: payload.tokenId || payload.assetId || payload.asset_id || null,
+      timestamp,
+      hash: payload.hash || null,
+      bids: payload.bids,
+      asks: payload.asks,
+    };
+  }
+  if (message.type === "price_change") {
+    const changes = Array.isArray(payload.priceChanges) ? payload.priceChanges : payload.price_changes;
+    return {
+      event_type: "price_change",
+      market: payload.market || null,
+      timestamp,
+      price_changes: (Array.isArray(changes) ? changes : []).map((change) => ({
+        ...change,
+        asset_id: change.asset_id || change.assetId || change.tokenId,
+        best_bid: change.best_bid ?? change.bestBid ?? null,
+        best_ask: change.best_ask ?? change.bestAsk ?? null,
+      })),
+    };
+  }
+  if (message.type === "best_bid_ask") {
+    return {
+      event_type: "best_bid_ask",
+      market: payload.market || null,
+      asset_id: payload.tokenId || payload.assetId || payload.asset_id || null,
+      timestamp,
+      best_bid: payload.best_bid ?? payload.bestBid ?? null,
+      best_ask: payload.best_ask ?? payload.bestAsk ?? null,
+      spread: payload.spread ?? null,
+    };
+  }
+  return message;
 }
 
 function updateBookFromSnapshot(state, message, receiveMs) {
@@ -370,31 +444,58 @@ function updateBookFromPriceChange(state, message, receiveMs) {
       book = { bids: new Map(), asks: new Map(), market: message.market || null, last_event_ts: null, last_receive_ms: receiveMs };
       state.books.set(assetId, book);
     }
-    const map = change.side === "BUY" ? book.bids : book.asks;
+    const side = String(change.side || "").toUpperCase();
+    if (side !== "BUY" && side !== "SELL") continue;
+    const map = side === "BUY" ? book.bids : book.asks;
     const key = priceNumber.toFixed(6);
     if (size <= 0) map.delete(key); else map.set(key, size);
     book.market = message.market || book.market;
     book.last_event_ts = message.timestamp || book.last_event_ts;
     book.last_receive_ms = receiveMs;
-    writeBookEvent(state, assetId, "price_change", { ...message, price_change: change }, receiveMs);
+    writeBookEvent(state, assetId, "price_change", { ...message, price_change: change }, receiveMs, {
+      best_bid: change.best_bid,
+      best_ask: change.best_ask,
+    });
   }
 }
 
-function writeBookEvent(state, assetId, eventKind, message, receiveMs) {
+function updateBookFromBestBidAsk(state, message, receiveMs) {
+  const assetId = String(message.asset_id || "");
+  if (!assetId) return;
+  let book = state.books.get(assetId);
+  if (!book) {
+    book = { bids: new Map(), asks: new Map(), market: message.market || null, last_event_ts: null, last_receive_ms: receiveMs };
+    state.books.set(assetId, book);
+  }
+  book.market = message.market || book.market;
+  book.last_event_ts = message.timestamp || book.last_event_ts;
+  book.last_receive_ms = receiveMs;
+  writeBookEvent(state, assetId, "best_bid_ask", message, receiveMs, {
+    best_bid: message.best_bid,
+    best_ask: message.best_ask,
+  });
+}
+
+function writeBookEvent(state, assetId, eventKind, message, receiveMs, eventQuote = {}) {
   const book = state.books.get(assetId);
   if (!book) return;
   const lastEmittedMs = state.bookLastEmittedMs.get(assetId) || 0;
-  if (receiveMs - lastEmittedMs < BOOK_EMIT_MIN_INTERVAL_MS && eventKind !== "book" && lastEmittedMs > 0) return;
+  if (receiveMs - lastEmittedMs < state.args.bookEmitMinIntervalMs && eventKind !== "book" && lastEmittedMs > 0) return;
   state.bookLastEmittedMs.set(assetId, receiveMs);
   const summary = bookSummary(book);
+  const eventTsMs = parseTimestampMs(message.timestamp);
   appendJsonl(state.outDir, "book_events.jsonl", {
     receive_ts: nowIso(receiveMs),
     receive_ms: receiveMs,
     event_ts: message.timestamp || null,
+    event_ts_ms: eventTsMs,
+    event_to_receive_ms: eventTsMs == null ? null : receiveMs - eventTsMs,
     event_kind: eventKind,
     market_id: message.market || book.market || null,
     asset_id: assetId,
     slug: state.tokenToMarket.get(assetId) || null,
+    event_best_bid: eventQuote.best_bid == null ? null : String(eventQuote.best_bid),
+    event_best_ask: eventQuote.best_ask == null ? null : String(eventQuote.best_ask),
     ...summary,
   });
   state.counts.book_events += 1;
@@ -408,7 +509,7 @@ function handleRtdsMessage(state, raw) {
   const symbol = String(payload.symbol || "").toLowerCase();
   const asset = symbol.split("/")[0]?.toUpperCase();
   if (!state.args.assets.includes(asset)) return;
-  const windowS = asNumber(payload.window_s);
+  const windowS = asNumber(payload.window_s ?? payload.windowSeconds);
   if (!state.args.windows.includes(windowS)) return;
   const receiveMs = Date.now();
   const row = {
@@ -420,6 +521,7 @@ function handleRtdsMessage(state, raw) {
     symbol,
     asset,
     window_s: windowS,
+    value_decimal: payload.value == null ? null : String(payload.value),
     value: asNumber(payload.value),
     full_accuracy_value: payload.full_accuracy_value == null ? null : String(payload.full_accuracy_value),
   };
@@ -431,9 +533,11 @@ function handleRtdsMessage(state, raw) {
 function handleClobMessage(state, raw) {
   let message;
   try { message = JSON.parse(raw); } catch { return; }
+  message = normalizeClobMessage(message);
   const receiveMs = Date.now();
   if (message.event_type === "book") updateBookFromSnapshot(state, message, receiveMs);
   else if (message.event_type === "price_change") updateBookFromPriceChange(state, message, receiveMs);
+  else if (message.event_type === "best_bid_ask") updateBookFromBestBidAsk(state, message, receiveMs);
 }
 
 function latestTick(state, asset, windowS, predicate) {
@@ -457,52 +561,99 @@ function compareTwapTicks(left, right) {
     const rightInteger = BigInt(rightExact);
     return leftInteger < rightInteger ? -1 : leftInteger > rightInteger ? 1 : 0;
   }
-  const leftDisplay = Number(left?.value);
-  const rightDisplay = Number(right?.value);
-  if (!Number.isFinite(leftDisplay) || !Number.isFinite(rightDisplay)) return null;
-  return leftDisplay < rightDisplay ? -1 : leftDisplay > rightDisplay ? 1 : 0;
+  return compareDecimalStrings(left?.value_decimal ?? left?.value, right?.value_decimal ?? right?.value);
+}
+
+function tickTiming(tick) {
+  if (!tick) return null;
+  const observationMs = parseTimestampMs(tick.observation_ts);
+  const publisherMs = parseTimestampMs(tick.publisher_ts);
+  return {
+    observation_ms: observationMs,
+    publisher_ms: publisherMs,
+    receive_ms: tick.receive_ms ?? null,
+    observation_to_receive_ms: observationMs == null ? null : tick.receive_ms - observationMs,
+    publisher_to_receive_ms: publisherMs == null ? null : tick.receive_ms - publisherMs,
+    publisher_minus_observation_ms: observationMs == null || publisherMs == null ? null : publisherMs - observationMs,
+  };
 }
 
 function boundaryObservation(state, meta, observedAtMs) {
-  const windowS = meta.twap_window_s || 30;
+  const windowS = meta.twap_window_s;
   const startMs = meta.start_ts * 1000;
   const endMs = meta.end_ts * 1000;
-  const startBefore = latestTick(state, meta.asset, windowS, (tick) => Number(tick.observation_ts) <= startMs);
-  const startAfter = firstTick(state, meta.asset, windowS, (tick) => Number(tick.observation_ts) >= startMs);
-  const endBefore = latestTick(state, meta.asset, windowS, (tick) => Number(tick.observation_ts) <= endMs);
-  const endAfter = firstTick(state, meta.asset, windowS, (tick) => Number(tick.observation_ts) >= endMs);
-  const startTick = startBefore || startAfter;
-  const endTick = endBefore || endAfter;
-  const startValue = startTick?.value ?? null;
-  const endValue = endTick?.value ?? null;
-  const valueComparison = startTick && endTick ? compareTwapTicks(endTick, startTick) : null;
-  const candidateSide = valueComparison == null ? "unknown" : valueComparison >= 0 ? "Up" : "Down";
   const tokenSummaries = {};
   for (const tokenId of meta.token_ids) {
     const book = state.books.get(tokenId);
     tokenSummaries[tokenId] = book ? { ...bookSummary(book), book_receive_ts: nowIso(book.last_receive_ms), book_age_ms: observedAtMs - book.last_receive_ms } : null;
   }
-  return {
+  const base = {
     observed_at: nowIso(observedAtMs),
     observed_at_ms: observedAtMs,
+    round_end_detection_lag_ms: observedAtMs - endMs,
     slug: meta.slug,
     asset: meta.asset,
     start_ts: meta.start_ts,
     end_ts: meta.end_ts,
     twap_window_s: windowS,
+    twap_window_source: meta.twap_window_source,
+    token_books: tokenSummaries,
+    orderable_diagnostic: Object.values(tokenSummaries).some((book) => book?.best_ask != null && book?.best_bid != null),
+    public_settlement_source: "gamma_outcome_prices_only",
+  };
+  if (![30, 60].includes(windowS)) {
+    return {
+      ...base,
+      window_resolution: "missing_or_ambiguous_market_metadata",
+      start_tick: null,
+      end_tick: null,
+      start_tick_selection: "missing_window_mapping",
+      end_tick_selection: "missing_window_mapping",
+      candidate_start_value: null,
+      candidate_end_value: null,
+      candidate_start_full_accuracy_value: null,
+      candidate_end_full_accuracy_value: null,
+      candidate_side: "unknown",
+      candidate_label_kind: "diagnostic_only_not_settlement_truth",
+    };
+  }
+  const startBefore = latestTick(state, meta.asset, windowS, (tick) => {
+    const observationMs = parseTimestampMs(tick.observation_ts);
+    return observationMs != null && observationMs <= startMs;
+  });
+  const startAfter = firstTick(state, meta.asset, windowS, (tick) => {
+    const observationMs = parseTimestampMs(tick.observation_ts);
+    return observationMs != null && observationMs >= startMs;
+  });
+  const endBefore = latestTick(state, meta.asset, windowS, (tick) => {
+    const observationMs = parseTimestampMs(tick.observation_ts);
+    return observationMs != null && observationMs <= endMs;
+  });
+  const endAfter = firstTick(state, meta.asset, windowS, (tick) => {
+    const observationMs = parseTimestampMs(tick.observation_ts);
+    return observationMs != null && observationMs >= endMs;
+  });
+  const startTick = startBefore || startAfter;
+  const endTick = endBefore || endAfter;
+  const startValue = startTick?.value_decimal ?? startTick?.value ?? null;
+  const endValue = endTick?.value_decimal ?? endTick?.value ?? null;
+  const valueComparison = startTick && endTick ? compareTwapTicks(endTick, startTick) : null;
+  const candidateSide = valueComparison == null ? "unknown" : valueComparison >= 0 ? "Up" : "Down";
+  return {
+    ...base,
+    window_resolution: "explicit_gamma_description_mapping",
     start_tick: startTick,
     end_tick: endTick,
     start_tick_selection: startBefore ? "latest_at_or_before_start" : startAfter ? "first_at_or_after_start" : "missing",
     end_tick_selection: endBefore ? "latest_at_or_before_end" : endAfter ? "first_at_or_after_end" : "missing",
     candidate_start_value: startValue,
     candidate_end_value: endValue,
+    start_tick_timing: tickTiming(startTick),
+    end_tick_timing: tickTiming(endTick),
     candidate_start_full_accuracy_value: startTick?.full_accuracy_value ?? null,
     candidate_end_full_accuracy_value: endTick?.full_accuracy_value ?? null,
     candidate_side: candidateSide,
     candidate_label_kind: "diagnostic_only_not_settlement_truth",
-    token_books: tokenSummaries,
-    orderable_diagnostic: Object.values(tokenSummaries).some((book) => book?.best_ask != null && book?.best_bid != null),
-    public_settlement_source: "gamma_outcome_prices_only",
   };
 }
 
@@ -589,10 +740,18 @@ function connectClob(state) {
     (raw) => handleClobMessage(state, raw),
     () => {
       state.wsStates.clob = "open";
+      const sendPing = () => {
+        if (socket.readyState === WebSocket.OPEN) socket.send("PING");
+      };
+      socket.__pingInterval = setInterval(sendPing, 10_000);
       sendClobSubscription(state, true);
     },
     () => {
       state.wsStates.clob = "closed";
+      if (socket.__pingInterval) {
+        clearInterval(socket.__pingInterval);
+        socket.__pingInterval = null;
+      }
       if (!state.stopping) {
         state.gapEvents.push({ ts: nowIso(), source: "clob", error: "socket_closed" });
         state.wsReconnects.clob += 1;
@@ -605,12 +764,131 @@ function connectClob(state) {
   state.sockets.push(socket);
 }
 
-function buildSummary(state, endedAtMs, reason) {
-  const settlements = [];
-  const settlementPath = path.join(state.outDir, "settlement_observations.jsonl");
-  if (fs.existsSync(settlementPath)) {
-    for (const line of fs.readFileSync(settlementPath, "utf8").split("\n")) if (line) settlements.push(JSON.parse(line));
+function readJsonl(filePath) {
+  if (!fs.existsSync(filePath)) return [];
+  const rows = [];
+  for (const line of fs.readFileSync(filePath, "utf8").split("\n")) {
+    if (!line) continue;
+    try { rows.push(JSON.parse(line)); } catch { /* ignore a partial terminal line */ }
   }
+  return rows;
+}
+
+function distribution(values) {
+  const finite = values.filter((value) => Number.isFinite(value)).sort((a, b) => a - b);
+  if (!finite.length) return { count: 0, min: null, p50: null, p90: null, p95: null, p99: null, max: null };
+  const quantile = (q) => finite[Math.min(finite.length - 1, Math.floor((finite.length - 1) * q))];
+  return {
+    count: finite.length,
+    min: finite[0],
+    p50: quantile(0.5),
+    p90: quantile(0.9),
+    p95: quantile(0.95),
+    p99: quantile(0.99),
+    max: finite[finite.length - 1],
+  };
+}
+
+function buildRtdsTimingSummary(state) {
+  const observationToReceive = [];
+  const publisherToReceive = [];
+  const publisherMinusObservation = [];
+  let missingObservation = 0;
+  let missingPublisher = 0;
+  for (const tick of state.twapTicks) {
+    const observationMs = parseTimestampMs(tick.observation_ts);
+    const publisherMs = parseTimestampMs(tick.publisher_ts);
+    if (observationMs == null) missingObservation += 1;
+    else observationToReceive.push(tick.receive_ms - observationMs);
+    if (publisherMs == null) missingPublisher += 1;
+    else publisherToReceive.push(tick.receive_ms - publisherMs);
+    if (observationMs != null && publisherMs != null) publisherMinusObservation.push(publisherMs - observationMs);
+  }
+  return {
+    tick_rows: state.twapTicks.length,
+    missing_observation_timestamp_count: missingObservation,
+    missing_publisher_timestamp_count: missingPublisher,
+    observation_to_receive_ms: distribution(observationToReceive),
+    publisher_to_receive_ms: distribution(publisherToReceive),
+    publisher_minus_observation_ms: distribution(publisherMinusObservation),
+  };
+}
+
+function eventQuote(row) {
+  return {
+    best_bid: row.event_best_bid ?? (row.best_bid == null ? null : String(row.best_bid)),
+    best_ask: row.event_best_ask ?? (row.best_ask == null ? null : String(row.best_ask)),
+  };
+}
+
+function quoteKey(quote) {
+  return `${quote.best_bid ?? ""}|${quote.best_ask ?? ""}`;
+}
+
+function buildClobTimingSummary(state, boundaryRows) {
+  const eventRows = readJsonl(path.join(state.outDir, "book_events.jsonl"));
+  const eventToReceive = [];
+  let missingEventTimestamp = 0;
+  let negativeEventLatency = 0;
+  for (const row of eventRows) {
+    const eventTsMs = parseTimestampMs(row.event_ts_ms ?? row.event_ts);
+    if (eventTsMs == null) {
+      missingEventTimestamp += 1;
+      continue;
+    }
+    const latency = row.receive_ms - eventTsMs;
+    if (latency < 0) negativeEventLatency += 1;
+    else eventToReceive.push(latency);
+  }
+
+  const repriceLags = [];
+  const postQuoteLags = [];
+  let baselineMissing = 0;
+  let postEventMissing = 0;
+  for (const boundary of boundaryRows) {
+    const endMs = Number(boundary.end_ts) * 1000;
+    const tokenIds = Object.keys(boundary.token_books || {});
+    for (const tokenId of tokenIds) {
+      const rows = eventRows
+        .filter((row) => String(row.asset_id) === tokenId && Number.isFinite(row.receive_ms))
+        .sort((left, right) => left.receive_ms - right.receive_ms);
+      const before = rows.filter((row) => row.receive_ms <= endMs).at(-1);
+      const after = rows.filter((row) => row.receive_ms >= endMs);
+      if (!before) {
+        baselineMissing += 1;
+        continue;
+      }
+      if (!after.length) {
+        postEventMissing += 1;
+        continue;
+      }
+      const baselineQuote = eventQuote(before);
+      const firstPost = after[0];
+      postQuoteLags.push(firstPost.receive_ms - endMs);
+      const baselineKey = quoteKey(baselineQuote);
+      const reprice = after.find((row) => {
+        const quote = eventQuote(row);
+        return quoteKey(quote) !== baselineKey && (quote.best_bid != null || quote.best_ask != null);
+      });
+      if (reprice) repriceLags.push(reprice.receive_ms - endMs);
+    }
+  }
+  return {
+    event_rows: eventRows.length,
+    event_to_receive_ms: distribution(eventToReceive),
+    negative_event_latency_count: negativeEventLatency,
+    missing_event_timestamp_count: missingEventTimestamp,
+    boundary_token_pairs: boundaryRows.reduce((sum, row) => sum + Object.keys(row.token_books || {}).length, 0),
+    baseline_missing_count: baselineMissing,
+    post_event_missing_count: postEventMissing,
+    first_post_quote_receive_lag_ms: distribution(postQuoteLags),
+    first_quote_reprice_receive_lag_ms: distribution(repriceLags),
+  };
+}
+
+function buildSummary(state, endedAtMs, reason) {
+  const settlements = readJsonl(path.join(state.outDir, "settlement_observations.jsonl"));
+  const boundaryRows = readJsonl(path.join(state.outDir, "boundary_observations.jsonl"));
   const matches = settlements.filter((x) => x.candidate_match === true).length;
   const scored = settlements.filter((x) => typeof x.candidate_match === "boolean").length;
   return {
@@ -621,6 +899,8 @@ function buildSummary(state, endedAtMs, reason) {
     live_orders_submitted: 0,
     credentials_loaded: false,
     economic_claim: "none",
+    book_emit_min_interval_ms: state.args.bookEmitMinIntervalMs,
+    boundary_observation_poll_interval_ms: 1000,
     counts: state.counts,
     market_count: state.metadata.size,
     boundary_count: state.counts.boundaries,
@@ -628,6 +908,8 @@ function buildSummary(state, endedAtMs, reason) {
     scored_settlement_count: scored,
     candidate_match_count: matches,
     candidate_match_rate: scored ? matches / scored : null,
+    rtds_timing: buildRtdsTimingSummary(state),
+    clob_timing: buildClobTimingSummary(state, boundaryRows),
     markets_with_any_book: [...state.metadata.values()].filter((meta) => meta.token_ids.some((id) => state.books.has(id))).length,
     websocket_states: state.wsStates,
     websocket_reconnects: state.wsReconnects,
@@ -636,6 +918,7 @@ function buildSummary(state, endedAtMs, reason) {
     caveats: [
       "Candidate side is a diagnostic comparison of observed TWAP ticks, not an exchange or settlement authority.",
       "Public CLOB books are top-of-book/depth observations and do not reveal private queue, fill, or maker truth.",
+      "round_end_detection_lag_ms is a 1-second polling diagnostic; first_quote_reprice_receive_lag_ms is the event-level latency field for research.",
       "This bounded run grants no alpha, PnL, capacity, or live-readiness claim.",
     ],
   };

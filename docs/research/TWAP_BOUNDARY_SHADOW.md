@@ -8,6 +8,18 @@ This lane is a bounded, public-data, no-submit collector for the post-Chainlink-
 - Polymarket RTDS `crypto_prices_twap_thirty` and `crypto_prices_twap_sixty` updates.
 - Polymarket CLOB market WebSocket book and price-change events.
 
+For RTDS, `payload.timestamp` is the Chainlink observation time, the outer
+`timestamp` is the RTDS publisher time, and `payload.value` /
+`full_accuracy_value` must remain exact decimal/integer data. The 30s/60s
+values are lookback windows, not publication cadence. RTDS has no history or
+replay after a disconnect, so gaps are evidence gaps rather than carried-forward
+prices. See the [official TWAP contract](https://docs.polymarket.com/market-data/chainlink-twap).
+
+For CLOB latency work, `price_change` and optional `best_bid_ask` events are
+the public quote-transition tape; `receive_ms` is recorded locally and is the
+timestamp used for the public-reprice lead measurement. See the [official
+Market Stream contract](https://docs.polymarket.com/market-data/realtime-data#market-stream).
+
 The collector uses Node 22 built-in `fetch` and `WebSocket`; it does not install packages or load credentials.
 
 ## Safety boundary
@@ -25,6 +37,7 @@ node collect_twap_boundary_shadow.mjs \
   --poll-seconds 10 \
   --assets BTC,ETH,SOL,XRP,DOGE,BNB,HYPE \
   --windows 30,60 \
+  --book-emit-min-interval-ms 0 \
   --source-commit <hash> \
   --no-submit
 ```

@@ -67,7 +67,7 @@ Pair-Gated Tranche V1.1 已经显式承认三个关键假设仍需裁决：公�
 - `payload.timestamp` 是 Chainlink observation time，外层 timestamp 是 RTDS publisher time；
 - `full_accuracy_value` 是 exact signed E18 value；
 - RTDS 没有断线后的历史 replay；
-- Chainlink 的采样边界、权重、rounding 和 missing-input 行为没有完整公开，不能自行声称复刻 settlement。
+- Chainlink 的采样边界、权重、rounding 和 missing-input 行为没有完整公开，不能自行声称复刻 settlement；本地合成器应以 side/保守价格区间和公开 outcome label 做实证校准，而不是宣称 bit-for-bit 复刻。
 
 所以 RTDS 最适合做 **label、benchmark 和 latency reference**。盘后交易真正要验证的是：
 
@@ -88,6 +88,33 @@ lead_ms = public_final_or_reprice_receive_ms - local_ready_ms
 ```
 
 其中 `public_final_or_reprice_receive_ms` 至少分别记录 RTDS final 到达和 CLOB 首次明显重定价；Gamma outcome 只作离线标签，不进入热路径。
+
+### 3.1 官方实时数据契约审计（2026-08-10）
+
+官方 TWAP 页和 Market Stream 页对本项目有四个不可省略的字段约束：
+
+| 官方字段/事件 | 在本项目中的正确解释 | 研究实现要求 |
+| --- | --- | --- |
+| `payload.timestamp` | Chainlink observation time | 作为观测年龄与 round boundary 对齐字段 |
+| RTDS 外层 `timestamp` | RTDS publisher submission time | 与本地 `receive_ms` 分开记录，不能当作到达时间 |
+| `payload.value` / `full_accuracy_value` | exact decimal / signed E18 fixed-point | 以字符串或整数比较；不能用 JS `number` 决定 side |
+| `windowSeconds` / `window_s` | 30s/60s lookback window | 必须有显式 symbol+window 映射；不能从更新频率推断 |
+| CLOB `book` | 完整公开 book snapshot | 记录 top-of-book、top-5、深度和本地接收时间 |
+| CLOB `price_change` / `best_bid_ask` | 公开 quote transition | 记录每个事件的 event timestamp、本地接收时间、best bid/ask |
+
+官方还明确：RTDS 订阅从下一次更新开始，断线后没有 snapshot/history/replay；直接客户端需每 5 秒发送 `PING` 并自行 reconnect/resubscribe。CLOB Market WebSocket 也要求应用层 heartbeat，并提供 `price_change` 与可选 `best_bid_ask` 事件。这意味着“没有 tick”不能被静默当作价格不变，必须按 round 标记为 gap 或 incomplete。
+
+这次窄范围 collector 修复把上述契约落实到研究输出：
+
+- `twap_ticks.jsonl` 同时保留 `observation_ts`、`publisher_ts`、`receive_ms`、`value_decimal` 和 `full_accuracy_value`；
+- `book_events.jsonl` 默认取消每 token 1 秒节流，兼容官方新旧 CLOB event shape，记录 `event_ts_ms`、`event_to_receive_ms`、事件级 best bid/ask，并开启 `custom_feature_enabled`；
+- CLOB 连接补 10 秒 `PING`，RTDS 继续按官方 5 秒 `PING`；
+- `boundary_observations.jsonl` 增加 `round_end_detection_lag_ms` 和 start/end tick timing，未能从 Gamma 明确解析 30/60 窗口时不再默认 30，而是 `candidate_side=unknown`；
+- `summary.json` 新增 RTDS observation/publisher 到本地接收的分布，以及按 boundary/token 对齐的 first quote/reprice lag 诊断。
+
+注意：`round_end_detection_lag_ms` 仍是 1 秒 boundary poll 的观测诊断，不是交易时延；真正用于下一道 gate 的是逐事件 `first_quote_reprice_receive_lag_ms`，并且必须与 `local_ready_ms` 在同一 round、同一主机时钟口径下 join。
+
+这仍不等于 local aggregator。collector 没有代替 Binance/Coinbase/OKX/Bybit/Hyperliquid tape，也没有产生 `local_ready_ms`；它只是把“合成候选 → RTDS benchmark → CLOB public reprice”的因果 join 所需观测字段补齐。下一轮 capture 必须使用这份高分辨率 JSONL；旧的 1 秒节流 capture 只能用于 connectivity/metadata 复核，不能用于亚秒 stale-quote 结论。
 
 ## 4. 后置成本与执行约束
 
@@ -121,6 +148,8 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 不能使用 round end 之后的 external tick 或 public outcome 作为 feature。
 
+当前 local-agg challenger 的状态文件为 `action=no_current_run`、`eval_rows=0`；因此 5 月的 `T+300ms`、coverage 和 bps 数字只能作为历史工程线索，不能当作本次 Gate 的当前通过证据。推进顺序必须是：先用已有 immutable logs 做 schema/causal 可用性审计，再用修复后的高分辨率 CLOB collector 做一次 bounded EC2 no-submit capture，最后把同一 round 的 local candidate 与 public reprice 做 join；不能再用 Gamma settlement match 代替这条链路。
+
 ### Phase B：预注册 synthetic candidate
 
 读取 label 之前冻结：
@@ -131,6 +160,7 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 - source inclusion/exclusion；
 - source timestamp cutoff；
 - candidate side / price mapping；
+- `local_ready_ms - round_end_ms` 的 signed 值；若候选在 round end 前已准备好，标记 `preclose_ready=true`，不能把它伪装成 round end 后的计算延迟；
 - minimum margin；
 - missing-data action（通常为 skip，而不是下注）；
 - fee、spread、slippage、partial-fill、residual 和 latency stress。
