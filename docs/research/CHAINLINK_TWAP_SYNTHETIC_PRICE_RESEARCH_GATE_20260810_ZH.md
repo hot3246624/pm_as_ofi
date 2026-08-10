@@ -2,7 +2,7 @@
 
 更新时间：2026-08-11
 研究分支：`codex/twap-boundary-shadow-migration`
-当前验收基线：`03d8632dcf8da9b4081d5416c9622f544467f4f8`
+当前验收基线：`504b8a36f3a19dd2d0f9bf4c999b11cbd26378ee`
 
 本项目的核心对象是 **5m round 结束后的 oracle-lag / stale-quote 交易**：在 round end 之后，用外部 source tape 形成 local synthetic price，争取在 Polymarket CLOB 盘口和 RTDS/Chainlink final label 完成重定价之前获得低延迟决策。第一道 gate 是 **price aggregation + latency lead**，不是完整 maker 账户审计。
 
