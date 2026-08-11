@@ -15,6 +15,12 @@ values are lookback windows, not publication cadence. RTDS has no history or
 replay after a disconnect, so gaps are evidence gaps rather than carried-forward
 prices. See the [official TWAP contract](https://docs.polymarket.com/market-data/chainlink-twap).
 
+An open RTDS socket is not sufficient coverage evidence. The collector tracks
+freshness per configured asset/window stream; a stream silent beyond
+`--rtds-stale-ms` is recorded as a gap and forces reconnect/resubscribe. At a
+round boundary, both selected start and end observations must be within
+`--boundary-tick-max-distance-ms` or the candidate is `unknown`.
+
 Gamma descriptions that explicitly identify a stream such as
 `btc-usd-twap-30s-streams` are treated as the symbol/window mapping. The
 collector never infers the window from update frequency; if no explicit
@@ -44,6 +50,8 @@ node collect_twap_boundary_shadow.mjs \
   --assets BTC,ETH,SOL,XRP,DOGE,BNB,HYPE \
   --windows 30,60 \
   --book-emit-min-interval-ms 0 \
+  --rtds-stale-ms 10000 \
+  --boundary-tick-max-distance-ms 5000 \
   --source-commit <hash> \
   --no-submit
 ```
@@ -52,8 +60,9 @@ The durable handoff is `STARTED.json`, periodic `CHECKPOINT.json`, `EXIT.json`, 
 
 After `EXIT.json` exists, run the read-only terminal verifier against the same
 directory. It checks the no-submit terminal contract, manifest hashes/line
-counts, slug-derived round boundaries, exact TWAP fields, public Gamma label
-matching, RTDS/CLOB timing summaries, boundary L2 depth, reconnect gaps, and
+counts, slug-derived round boundaries, exact TWAP fields, freshness-qualified
+public Gamma label diagnostics, RTDS per-stream tail coverage, CLOB timing,
+boundary L2 depth, reconnect gaps, and
 the missing local-candidate causal join fields:
 
 ```text
@@ -72,9 +81,25 @@ node audit_twap_boundary_shadow_candidate_labels.mjs \
   --run-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<run_tag>
 ```
 
-Its `POSTHOC_LABEL_ALIGNMENT_ONLY` result compares exact E18 RTDS start/end
-ticks with Gamma's public outcome; it is not synthetic-predictor accuracy or
-economic evidence.
+Only rows whose selected start and end observations are within the configured
+boundary-distance gate are scored. `diagnostic_candidate_side` is retained for
+debugging but must not be reported as accuracy when coverage is incomplete.
+
+To test the actual taker mechanism, map Gamma's posthoc winner label to its
+token and stream the raw CLOB tape once:
+
+```text
+node audit_twap_boundary_winner_ask_window.mjs \
+  --run-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<run_tag> \
+  --horizon-ms 120000 \
+  --thresholds 0.90,0.95,0.98,0.99,1.00
+```
+
+This reports the winner-token best ask at the boundary and any later public
+ask below each threshold. It does not prove order acceptance or fill, but a
+reliable result with no winning ask below the frozen limit is sufficient to
+reject the stale-ask mechanism for that sample. Aggregate first reprice across
+both tokens must not be used as a substitute.
 
 The verifier's `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE` result is expected
 when the collector capture is not joined to an external-source tape and a

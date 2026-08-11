@@ -20,6 +20,8 @@ function parseArgs(argv) {
     assets: DEFAULT_ASSETS,
     windows: DEFAULT_WINDOWS,
     bookEmitMinIntervalMs: 0,
+    rtdsStaleMs: 10_000,
+    boundaryTickMaxDistanceMs: 5_000,
     outDir: null,
     sourceCommit: null,
   };
@@ -35,11 +37,13 @@ function parseArgs(argv) {
     else if (arg === "--assets") args.assets = next().split(",").map((x) => x.trim().toUpperCase()).filter(Boolean);
     else if (arg === "--windows") args.windows = next().split(",").map((x) => Number(x.trim())).filter(Boolean);
     else if (arg === "--book-emit-min-interval-ms") args.bookEmitMinIntervalMs = Number(next());
+    else if (arg === "--rtds-stale-ms") args.rtdsStaleMs = Number(next());
+    else if (arg === "--boundary-tick-max-distance-ms") args.boundaryTickMaxDistanceMs = Number(next());
     else if (arg === "--out-dir") args.outDir = next();
     else if (arg === "--source-commit") args.sourceCommit = next();
     else if (arg === "--no-submit") continue;
     else if (arg === "--help") {
-      console.log("Usage: collect_twap_boundary_shadow.mjs --out-dir DIR [--duration-seconds N] [--poll-seconds N] [--assets BTC,ETH] [--windows 30,60] [--book-emit-min-interval-ms N] [--source-commit HASH] --no-submit");
+      console.log("Usage: collect_twap_boundary_shadow.mjs --out-dir DIR [--duration-seconds N] [--poll-seconds N] [--assets BTC,ETH] [--windows 30,60] [--book-emit-min-interval-ms N] [--rtds-stale-ms N] [--boundary-tick-max-distance-ms N] [--source-commit HASH] --no-submit");
       process.exit(0);
     } else throw new Error(`unknown argument: ${arg}`);
   }
@@ -53,6 +57,12 @@ function parseArgs(argv) {
   if (!Number.isInteger(args.bookEmitMinIntervalMs) || args.bookEmitMinIntervalMs < 0 || args.bookEmitMinIntervalMs > 60_000) {
     throw new Error("--book-emit-min-interval-ms must be an integer between 0 and 60000");
   }
+  if (!Number.isInteger(args.rtdsStaleMs) || args.rtdsStaleMs < 3_000 || args.rtdsStaleMs > 120_000) {
+    throw new Error("--rtds-stale-ms must be an integer between 3000 and 120000");
+  }
+  if (!Number.isInteger(args.boundaryTickMaxDistanceMs) || args.boundaryTickMaxDistanceMs < 0 || args.boundaryTickMaxDistanceMs > 120_000) {
+    throw new Error("--boundary-tick-max-distance-ms must be an integer between 0 and 120000");
+  }
   if (args.windows.some((windowS) => ![30, 60].includes(windowS))) throw new Error("--windows only supports 30 and 60");
   if (!args.assets.length || !args.windows.length) throw new Error("assets and windows must not be empty");
   return args;
@@ -62,8 +72,21 @@ function nowIso(ms = Date.now()) {
   return new Date(ms).toISOString();
 }
 
-function appendJsonl(outDir, name, row) {
-  fs.appendFileSync(path.join(outDir, name), `${JSON.stringify(row)}\n`);
+function appendJsonl(state, name, row) {
+  let fd = state.jsonlFds.get(name);
+  if (fd == null) {
+    fd = fs.openSync(path.join(state.outDir, name), "a");
+    state.jsonlFds.set(name, fd);
+  }
+  fs.writeSync(fd, `${JSON.stringify(row)}\n`);
+}
+
+function closeJsonlWriters(state) {
+  for (const fd of state.jsonlFds.values()) {
+    try { fs.fsyncSync(fd); } catch { /* best effort flush */ }
+    try { fs.closeSync(fd); } catch { /* best effort close */ }
+  }
+  state.jsonlFds.clear();
 }
 
 function writeJson(outDir, name, value) {
@@ -307,8 +330,14 @@ function createState(args, outDir) {
     boundaryObserved: new Set(),
     settlementObserved: new Set(),
     gapEvents: [],
+    jsonlFds: new Map(),
     wsStates: { rtds: "starting", clob: "starting" },
     wsReconnects: { rtds: 0, clob: 0 },
+    rtdsSocket: null,
+    rtdsOpenedAtMs: null,
+    lastRtdsReceiveMs: null,
+    rtdsLastReceiveByStream: new Map(),
+    rtdsSilenceDetected: false,
     intervals: [],
     sockets: [],
     counts: { metadata: 0, twap_ticks: 0, book_events: 0, boundaries: 0, settlements: 0 },
@@ -331,6 +360,9 @@ function writeCheckpoint(state) {
     markets: state.metadata.size,
     ws_states: state.wsStates,
     ws_reconnects: state.wsReconnects,
+    rtds_last_receive_ms: state.lastRtdsReceiveMs,
+    rtds_tail_silence_ms: state.lastRtdsReceiveMs == null ? null : Date.now() - state.lastRtdsReceiveMs,
+    rtds_silence_detected: state.rtdsSilenceDetected,
     gap_events: state.gapEvents,
   });
 }
@@ -392,7 +424,7 @@ function upsertMetadata(state, meta) {
   const fingerprint = stableMetadataFingerprint(meta);
   if (state.metadataFingerprints.get(meta.slug) !== fingerprint) {
     state.metadataFingerprints.set(meta.slug, fingerprint);
-    appendJsonl(state.outDir, "market_metadata.jsonl", meta);
+    appendJsonl(state, "market_metadata.jsonl", meta);
     state.counts.metadata += 1;
   }
   return !previous;
@@ -548,8 +580,9 @@ function writeBookEvent(state, assetId, eventKind, message, receiveMs, eventQuot
   if (receiveMs - lastEmittedMs < state.args.bookEmitMinIntervalMs && eventKind !== "book" && lastEmittedMs > 0) return;
   state.bookLastEmittedMs.set(assetId, receiveMs);
   const summary = bookSummary(book);
+  const { bids, asks, ...compactSummary } = summary;
   const eventTsMs = parseTimestampMs(message.timestamp);
-  appendJsonl(state.outDir, "book_events.jsonl", {
+  appendJsonl(state, "book_events.jsonl", {
     receive_ts: nowIso(receiveMs),
     receive_ms: receiveMs,
     event_ts: message.timestamp || null,
@@ -561,7 +594,8 @@ function writeBookEvent(state, assetId, eventKind, message, receiveMs, eventQuot
     slug: state.tokenToMarket.get(assetId) || null,
     event_best_bid: eventQuote.best_bid == null ? null : String(eventQuote.best_bid),
     event_best_ask: eventQuote.best_ask == null ? null : String(eventQuote.best_ask),
-    ...summary,
+    ...compactSummary,
+    ...(eventKind === "book" ? { bids, asks } : {}),
   });
   state.counts.book_events += 1;
 }
@@ -577,6 +611,8 @@ function handleRtdsMessage(state, raw) {
   const windowS = asNumber(payload.window_s ?? payload.windowSeconds);
   if (!state.args.windows.includes(windowS)) return;
   const receiveMs = Date.now();
+  state.lastRtdsReceiveMs = receiveMs;
+  state.rtdsLastReceiveByStream.set(`${asset}:${windowS}`, receiveMs);
   const row = {
     receive_ts: nowIso(receiveMs),
     receive_ms: receiveMs,
@@ -591,7 +627,7 @@ function handleRtdsMessage(state, raw) {
     full_accuracy_value: payload.full_accuracy_value == null ? null : String(payload.full_accuracy_value),
   };
   state.twapTicks.push(row);
-  appendJsonl(state.outDir, "twap_ticks.jsonl", row);
+  appendJsonl(state, "twap_ticks.jsonl", row);
   state.counts.twap_ticks += 1;
 }
 
@@ -703,7 +739,16 @@ function boundaryObservation(state, meta, observedAtMs) {
   const startValue = startTick?.value_decimal ?? startTick?.value ?? null;
   const endValue = endTick?.value_decimal ?? endTick?.value ?? null;
   const valueComparison = startTick && endTick ? compareTwapTicks(endTick, startTick) : null;
-  const candidateSide = valueComparison == null ? "unknown" : valueComparison >= 0 ? "Up" : "Down";
+  const startObservationMs = parseTimestampMs(startTick?.observation_ts);
+  const endObservationMs = parseTimestampMs(endTick?.observation_ts);
+  const startDistanceMs = startObservationMs == null ? null : Math.abs(startObservationMs - startMs);
+  const endDistanceMs = endObservationMs == null ? null : Math.abs(endObservationMs - endMs);
+  const boundaryCoverageComplete = startDistanceMs != null
+    && endDistanceMs != null
+    && startDistanceMs <= state.args.boundaryTickMaxDistanceMs
+    && endDistanceMs <= state.args.boundaryTickMaxDistanceMs;
+  const diagnosticCandidateSide = valueComparison == null ? "unknown" : valueComparison >= 0 ? "Up" : "Down";
+  const candidateSide = boundaryCoverageComplete ? diagnosticCandidateSide : "unknown";
   return {
     ...base,
     window_resolution: "explicit_gamma_description_mapping",
@@ -711,6 +756,10 @@ function boundaryObservation(state, meta, observedAtMs) {
     end_tick: endTick,
     start_tick_selection: startBefore ? "latest_at_or_before_start" : startAfter ? "first_at_or_after_start" : "missing",
     end_tick_selection: endBefore ? "latest_at_or_before_end" : endAfter ? "first_at_or_after_end" : "missing",
+    start_boundary_distance_ms: startDistanceMs,
+    end_boundary_distance_ms: endDistanceMs,
+    boundary_tick_max_distance_ms: state.args.boundaryTickMaxDistanceMs,
+    boundary_coverage_complete: boundaryCoverageComplete,
     candidate_start_value: startValue,
     candidate_end_value: endValue,
     start_tick_timing: tickTiming(startTick),
@@ -718,6 +767,7 @@ function boundaryObservation(state, meta, observedAtMs) {
     candidate_start_full_accuracy_value: startTick?.full_accuracy_value ?? null,
     candidate_end_full_accuracy_value: endTick?.full_accuracy_value ?? null,
     candidate_side: candidateSide,
+    diagnostic_candidate_side: diagnosticCandidateSide,
     candidate_label_kind: "diagnostic_only_not_settlement_truth",
   };
 }
@@ -728,7 +778,7 @@ function recordBoundariesAndSettlements(state) {
     if (meta.end_ts * 1000 <= nowMs && nowMs <= (meta.end_ts + 105) * 1000 && !state.boundaryObserved.has(meta.slug)) {
       const observation = boundaryObservation(state, meta, nowMs);
       state.boundaryObserved.add(meta.slug);
-      appendJsonl(state.outDir, "boundary_observations.jsonl", observation);
+      appendJsonl(state, "boundary_observations.jsonl", observation);
       state.counts.boundaries += 1;
     }
     if (meta.end_ts * 1000 + 75_000 <= nowMs && nowMs <= (meta.end_ts + 180) * 1000 && !state.settlementObserved.has(meta.slug)) {
@@ -743,7 +793,7 @@ function recordBoundariesAndSettlements(state) {
             if (row.slug === meta.slug) candidateSide = row.candidate_side;
           }
         }
-        appendJsonl(state.outDir, "settlement_observations.jsonl", {
+        appendJsonl(state, "settlement_observations.jsonl", {
           observed_at: nowIso(nowMs),
           observed_at_ms: nowMs,
           slug: meta.slug,
@@ -771,6 +821,11 @@ function connectRtds(state) {
     (raw) => handleRtdsMessage(state, raw),
     () => {
       state.wsStates.rtds = "open";
+      state.rtdsSocket = socket;
+      state.rtdsOpenedAtMs = Date.now();
+      state.lastRtdsReceiveMs = null;
+      state.rtdsLastReceiveByStream.clear();
+      state.rtdsSilenceDetected = false;
       const sendPing = () => {
         if (socket.readyState === WebSocket.OPEN) socket.send("PING");
       };
@@ -783,12 +838,17 @@ function connectRtds(state) {
     },
     () => {
       state.wsStates.rtds = "closed";
+      if (state.rtdsSocket === socket) state.rtdsSocket = null;
       if (socket.__pingInterval) {
         clearInterval(socket.__pingInterval);
         socket.__pingInterval = null;
       }
       if (!state.stopping) {
-        state.gapEvents.push({ ts: nowIso(), source: "rtds", error: "socket_closed" });
+        state.gapEvents.push({
+          ts: nowIso(),
+          source: "rtds",
+          error: state.rtdsSilenceDetected ? "socket_closed_after_tick_silence" : "socket_closed",
+        });
         state.wsReconnects.rtds += 1;
         setTimeout(() => { if (!state.stopping) connectRtds(state); }, 2000);
       }
@@ -797,6 +857,35 @@ function connectRtds(state) {
   );
   socket.__kind = "rtds";
   state.sockets.push(socket);
+}
+
+function checkRtdsSilence(state) {
+  const socket = state.rtdsSocket;
+  if (state.stopping || state.rtdsSilenceDetected || !socket || socket.readyState !== WebSocket.OPEN) return;
+  const nowMs = Date.now();
+  const staleStreams = [];
+  for (const asset of state.args.assets) {
+    for (const windowS of state.args.windows) {
+      const key = `${asset}:${windowS}`;
+      const lastReceiveMs = state.rtdsLastReceiveByStream.get(key) ?? state.rtdsOpenedAtMs;
+      const silenceMs = lastReceiveMs == null ? null : nowMs - lastReceiveMs;
+      if (silenceMs != null && silenceMs > state.args.rtdsStaleMs) {
+        staleStreams.push({ asset, window_s: windowS, last_receive_ms: state.rtdsLastReceiveByStream.get(key) ?? null, silence_ms: silenceMs });
+      }
+    }
+  }
+  if (!staleStreams.length) return;
+  state.rtdsSilenceDetected = true;
+  const gap = {
+    ts: nowIso(nowMs),
+    source: "rtds",
+    error: "tick_silence",
+    stale_threshold_ms: state.args.rtdsStaleMs,
+    stale_streams: staleStreams,
+  };
+  state.gapEvents.push(gap);
+  log(state, "rtds_tick_silence", gap);
+  try { socket.close(); } catch { /* close handler owns reconnect */ }
 }
 
 function connectClob(state) {
@@ -850,12 +939,14 @@ function distribution(values) {
   };
 }
 
-function buildRtdsTimingSummary(state) {
+function buildRtdsTimingSummary(state, endedAtMs = Date.now()) {
+  const staleThresholdMs = state.args.rtdsStaleMs ?? 10_000;
   const observationToReceive = [];
   const publisherToReceive = [];
   const publisherMinusObservation = [];
   let missingObservation = 0;
   let missingPublisher = 0;
+  const streams = new Map();
   for (const tick of state.twapTicks) {
     const observationMs = parseTimestampMs(tick.observation_ts);
     const publisherMs = parseTimestampMs(tick.publisher_ts);
@@ -864,7 +955,34 @@ function buildRtdsTimingSummary(state) {
     if (publisherMs == null) missingPublisher += 1;
     else publisherToReceive.push(tick.receive_ms - publisherMs);
     if (observationMs != null && publisherMs != null) publisherMinusObservation.push(publisherMs - observationMs);
+    const key = `${tick.asset}:${tick.window_s}`;
+    let stream = streams.get(key);
+    if (!stream) {
+      stream = { asset: tick.asset, window_s: tick.window_s, receive_ms: [], observation_ms: [] };
+      streams.set(key, stream);
+    }
+    if (Number.isFinite(tick.receive_ms)) stream.receive_ms.push(tick.receive_ms);
+    if (observationMs != null) stream.observation_ms.push(observationMs);
   }
+  const streamRows = [...streams.values()].map((stream) => {
+    stream.receive_ms.sort((a, b) => a - b);
+    stream.observation_ms.sort((a, b) => a - b);
+    const receiveGaps = stream.receive_ms.slice(1).map((value, index) => value - stream.receive_ms[index]);
+    const lastReceiveMs = stream.receive_ms.at(-1) ?? null;
+    return {
+      asset: stream.asset,
+      window_s: stream.window_s,
+      tick_rows: stream.receive_ms.length,
+      first_receive_ms: stream.receive_ms[0] ?? null,
+      last_receive_ms: lastReceiveMs,
+      last_observation_ms: stream.observation_ms.at(-1) ?? null,
+      max_interarrival_ms: receiveGaps.length ? Math.max(...receiveGaps) : null,
+      tail_silence_ms: lastReceiveMs == null ? null : endedAtMs - lastReceiveMs,
+    };
+  }).sort((a, b) => `${a.asset}:${a.window_s}`.localeCompare(`${b.asset}:${b.window_s}`));
+  const firstReceiveMs = state.twapTicks.reduce((earliest, tick) => Number.isFinite(tick.receive_ms) ? Math.min(earliest, tick.receive_ms) : earliest, Infinity);
+  const lastReceiveMs = state.twapTicks.reduce((latest, tick) => Number.isFinite(tick.receive_ms) ? Math.max(latest, tick.receive_ms) : latest, -Infinity);
+  const tailSilenceMs = Number.isFinite(lastReceiveMs) ? endedAtMs - lastReceiveMs : null;
   return {
     tick_rows: state.twapTicks.length,
     missing_observation_timestamp_count: missingObservation,
@@ -872,6 +990,12 @@ function buildRtdsTimingSummary(state) {
     observation_to_receive_ms: distribution(observationToReceive),
     publisher_to_receive_ms: distribution(publisherToReceive),
     publisher_minus_observation_ms: distribution(publisherMinusObservation),
+    first_receive_ms: Number.isFinite(firstReceiveMs) ? firstReceiveMs : null,
+    last_receive_ms: Number.isFinite(lastReceiveMs) ? lastReceiveMs : null,
+    tail_silence_ms: tailSilenceMs,
+    stale_threshold_ms: staleThresholdMs,
+    stale_at_exit: tailSilenceMs == null || tailSilenceMs > staleThresholdMs,
+    streams: streamRows,
   };
 }
 
@@ -966,7 +1090,7 @@ function buildSummary(state, endedAtMs, reason) {
     scored_settlement_count: scored,
     candidate_match_count: matches,
     candidate_match_rate: scored ? matches / scored : null,
-    rtds_timing: buildRtdsTimingSummary(state),
+    rtds_timing: buildRtdsTimingSummary(state, endedAtMs),
     clob_timing: buildClobTimingSummary(state, boundaryRows),
     markets_with_any_book: [...state.metadata.values()].filter((meta) => meta.token_ids.some((id) => state.books.has(id))).length,
     websocket_states: state.wsStates,
@@ -976,7 +1100,7 @@ function buildSummary(state, endedAtMs, reason) {
     caveats: [
       "Candidate side is a diagnostic comparison of observed TWAP ticks, not an exchange or settlement authority.",
       "Public CLOB books are top-of-book/depth observations and do not reveal private queue, fill, or maker truth.",
-      "round_end_detection_lag_ms is a 1-second polling diagnostic; first_quote_reprice_receive_lag_ms is the event-level latency field for research.",
+      "round_end_detection_lag_ms is a 1-second polling diagnostic; first_quote_reprice_receive_lag_ms mixes both tokens and is not a candidate-side tradable-window metric.",
       "This bounded run grants no alpha, PnL, capacity, or live-readiness claim.",
     ],
   };
@@ -1020,6 +1144,7 @@ async function finish(state, started, reason) {
   }
   const endedAtMs = Date.now();
   log(state, "collector_exit", { reason, counts: state.counts });
+  closeJsonlWriters(state);
   const summary = buildSummary(state, endedAtMs, reason);
   writeJson(state.outDir, "summary.json", summary);
   writeJson(state.outDir, "CHECKPOINT.json", { ...summary, checkpoint: true });
@@ -1068,6 +1193,7 @@ async function main() {
     writeCheckpoint(state);
   }, args.pollSeconds * 1000));
   state.intervals.push(setInterval(() => recordBoundariesAndSettlements(state), 1000));
+  state.intervals.push(setInterval(() => checkRtdsSilence(state), 1000));
   state.intervals.push(setInterval(() => writeCheckpoint(state), 10000));
   const timer = setTimeout(() => finish(state, started, "duration_elapsed"), args.durationSeconds * 1000);
   const stop = () => { clearTimeout(timer); finish(state, started, "signal").then(() => process.exit(0)); };

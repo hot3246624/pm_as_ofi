@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
-import { fileLineCount, forEachJsonl, readJsonl, sha256File } from "./collect_twap_boundary_shadow.mjs";
+import { fileLineCount, forEachJsonl, inferTwapWindow, readJsonl, sha256File } from "./collect_twap_boundary_shadow.mjs";
 
 function parseArgs(argv) {
   const args = { runDir: null, output: null, expectSourceCommit: null, expectCodeSha256: null };
@@ -54,6 +54,71 @@ function stats(values) {
 
 function check(condition, reason) {
   return { status: condition ? "PASS" : "FAIL", reason };
+}
+
+function timestampMs(value) {
+  if (value == null) return null;
+  const number = Number(value);
+  if (Number.isFinite(number)) return number < 100_000_000_000 ? number * 1000 : number;
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function rtdsCoverage(started, exit, ticks) {
+  const staleThresholdMs = Number(started.args?.rtdsStaleMs) || 10_000;
+  const expectedStreams = [];
+  for (const asset of started.args?.assets || []) {
+    for (const windowS of started.args?.windows || []) expectedStreams.push(`${asset}:${windowS}`);
+  }
+  const byStream = new Map();
+  for (const tick of ticks) {
+    const key = `${tick.asset}:${tick.window_s}`;
+    if (!byStream.has(key)) byStream.set(key, []);
+    const receiveMs = Number(tick.receive_ms);
+    if (Number.isFinite(receiveMs)) byStream.get(key).push(receiveMs);
+  }
+  const exitedAtMs = timestampMs(exit.exited_at);
+  const streams = [...new Set([...expectedStreams, ...byStream.keys()])].sort().map((key) => {
+    const values = (byStream.get(key) || []).sort((left, right) => left - right);
+    const gaps = values.slice(1).map((value, index) => value - values[index]);
+    const lastReceiveMs = values.at(-1) ?? null;
+    const tailSilenceMs = lastReceiveMs == null || exitedAtMs == null ? null : exitedAtMs - lastReceiveMs;
+    return {
+      stream: key,
+      tick_rows: values.length,
+      first_receive_ms: values[0] ?? null,
+      last_receive_ms: lastReceiveMs,
+      max_interarrival_ms: gaps.length ? Math.max(...gaps) : null,
+      tail_silence_ms: tailSilenceMs,
+      complete_at_exit: values.length > 0 && tailSilenceMs != null && tailSilenceMs <= staleThresholdMs,
+    };
+  });
+  const lastReceiveMs = ticks.reduce((latest, tick) => Number.isFinite(Number(tick.receive_ms)) ? Math.max(latest, Number(tick.receive_ms)) : latest, -Infinity);
+  const tailSilenceMs = Number.isFinite(lastReceiveMs) && exitedAtMs != null ? exitedAtMs - lastReceiveMs : null;
+  return {
+    stale_threshold_ms: staleThresholdMs,
+    exited_at_ms: exitedAtMs,
+    last_tick_receive_ms: Number.isFinite(lastReceiveMs) ? lastReceiveMs : null,
+    tail_silence_ms: tailSilenceMs,
+    expected_stream_count: expectedStreams.length,
+    observed_stream_count: byStream.size,
+    streams,
+    complete: streams.length > 0 && streams.every((stream) => stream.complete_at_exit),
+  };
+}
+
+function selectBoundaryTick(rows, boundaryMs) {
+  let before = null;
+  let after = null;
+  for (const row of rows) {
+    const observedMs = timestampMs(row.observation_ts);
+    if (observedMs == null) continue;
+    if (observedMs <= boundaryMs && (!before || observedMs > timestampMs(before.observation_ts))) before = row;
+    if (observedMs >= boundaryMs && (!after || observedMs < timestampMs(after.observation_ts))) after = row;
+  }
+  const row = before || after || null;
+  const observedMs = timestampMs(row?.observation_ts);
+  return { row, distance_ms: observedMs == null ? null : Math.abs(observedMs - boundaryMs) };
 }
 
 function verify(args) {
@@ -114,15 +179,53 @@ function verify(args) {
   const unresolvedWindows = roundRows.filter((row) => ![30, 60].includes(row.twap_window_s)).length;
   const exactTickRows = ticks.filter((row) => row.observation_ts != null && (row.full_accuracy_value != null || row.value_decimal != null)).length;
 
-  const matchRows = settlements.filter((row) => typeof row.candidate_match === "boolean");
-  const matchCount = matchRows.filter((row) => row.candidate_match === true).length;
-  const mismatchCount = matchRows.filter((row) => row.candidate_match === false).length;
+  const maxBoundaryDistanceMs = Number(started.args?.boundaryTickMaxDistanceMs) || 5_000;
+  const metadataBySlug = new Map(metadata.map((row) => [row.slug, row]));
+  const ticksByStream = new Map();
+  for (const tick of ticks) {
+    const key = `${tick.asset}:${tick.window_s}`;
+    if (!ticksByStream.has(key)) ticksByStream.set(key, []);
+    ticksByStream.get(key).push(tick);
+  }
+  const labelRows = settlements.map((settlement) => {
+    const market = metadataBySlug.get(settlement.slug);
+    const windowS = market?.twap_window_s ?? inferTwapWindow(market?.description);
+    const stream = ticksByStream.get(`${market?.asset}:${windowS}`) || [];
+    const start = selectBoundaryTick(stream, Number(market?.start_ts) * 1000);
+    const end = selectBoundaryTick(stream, Number(market?.end_ts) * 1000);
+    let diagnosticSide = "unknown";
+    if (/^-?\d+$/.test(String(start.row?.full_accuracy_value ?? "")) && /^-?\d+$/.test(String(end.row?.full_accuracy_value ?? ""))) {
+      diagnosticSide = BigInt(end.row.full_accuracy_value) >= BigInt(start.row.full_accuracy_value) ? "Up" : "Down";
+    }
+    const qualified = start.distance_ms != null && end.distance_ms != null
+      && start.distance_ms <= maxBoundaryDistanceMs && end.distance_ms <= maxBoundaryDistanceMs;
+    return {
+      settlement,
+      diagnostic_side: diagnosticSide,
+      diagnostic_match: ["Up", "Down"].includes(diagnosticSide) && ["Up", "Down"].includes(settlement.outcome)
+        ? diagnosticSide === settlement.outcome : null,
+      qualified,
+      qualified_match: qualified && ["Up", "Down"].includes(diagnosticSide) && ["Up", "Down"].includes(settlement.outcome)
+        ? diagnosticSide === settlement.outcome : null,
+      start_distance_ms: start.distance_ms,
+      end_distance_ms: end.distance_ms,
+    };
+  });
+  const diagnosticMatchRows = labelRows.filter((row) => typeof row.diagnostic_match === "boolean");
+  const qualifiedMatchRows = labelRows.filter((row) => typeof row.qualified_match === "boolean");
+  const matchCount = qualifiedMatchRows.filter((row) => row.qualified_match).length;
+  const mismatchCount = qualifiedMatchRows.filter((row) => !row.qualified_match).length;
   const candidateLabel = {
     settlement_rows: settlements.length,
-    scored_rows: matchRows.length,
+    scored_rows: qualifiedMatchRows.length,
     matches: matchCount,
     mismatches: mismatchCount,
-    match_rate: matchRows.length ? matchCount / matchRows.length : null,
+    match_rate: qualifiedMatchRows.length ? matchCount / qualifiedMatchRows.length : null,
+    incomplete_boundary_coverage_rows: settlements.length - qualifiedMatchRows.length,
+    max_boundary_distance_ms: maxBoundaryDistanceMs,
+    diagnostic_unqualified_scored_rows: diagnosticMatchRows.length,
+    diagnostic_unqualified_matches: diagnosticMatchRows.filter((row) => row.diagnostic_match === true).length,
+    boundary_distance_examples: labelRows.map((row) => ({ slug: row.settlement.slug, start_distance_ms: row.start_distance_ms, end_distance_ms: row.end_distance_ms, qualified: row.qualified })),
     interpretation: "public Gamma outcome label only; not execution or account truth",
   };
 
@@ -157,6 +260,8 @@ function verify(args) {
   const exactContract = check(ticks.length > 0 && exactTickRows === ticks.length, `${exactTickRows}/${ticks.length} TWAP rows retain observation_ts and exact decimal/E18 value`);
   const manifestContract = check(manifestPass, "all manifest-bound files match sha256, byte count, and JSONL line count");
   const timingContract = check(summary.rtds_timing != null && summary.clob_timing != null, "summary contains RTDS and CLOB timing distributions");
+  const coverage = rtdsCoverage(started, exit, ticks);
+  const rtdsCoverageContract = check(coverage.complete, `${coverage.streams.filter((stream) => stream.complete_at_exit).length}/${coverage.streams.length} RTDS streams are fresh at EXIT within ${coverage.stale_threshold_ms}ms`);
 
   const gapEvents = summary.gap_events || [];
   const reconnects = summary.websocket_reconnects || {};
@@ -165,7 +270,9 @@ function verify(args) {
     "external source event timestamp cutoff <= round_end is not present in TWAP collector capture",
     "local candidate to CLOB reprice join is not proven by public capture alone",
   ];
-  const strategyGate = gapEvents.length === 0 && (reconnects.rtds || 0) === 0 && timingContract.status === "PASS" && causalMissing.length === 0;
+  const strategyGate = gapEvents.length === 0 && (reconnects.rtds || 0) === 0 && timingContract.status === "PASS" && rtdsCoverageContract.status === "PASS" && causalMissing.length === 0;
+  const winnerAskPath = path.join(runDir, "winner_ask_window_audit.json");
+  const winnerAskAudit = fs.existsSync(winnerAskPath) ? readJson(winnerAskPath) : null;
 
   return {
     schema_version: 1,
@@ -181,6 +288,7 @@ function verify(args) {
       round_boundaries: roundContract,
       exact_twap_fields: exactContract,
       timing_fields: timingContract,
+      rtds_coverage: rtdsCoverageContract,
     },
     terminal_contract: {
       exit,
@@ -191,6 +299,14 @@ function verify(args) {
     counts: { metadata: metadata.length, twap_ticks: ticks.length, book_events: bookEventCount, boundaries: boundaries.length, settlements: settlements.length },
     round_alignment: { rows: roundRows.length, aligned, misaligned: roundRows.length - aligned, unresolved_windows: unresolvedWindows, examples: roundRows.slice(0, 10) },
     public_gamma_label: candidateLabel,
+    rtds_coverage: coverage,
+    winner_ask_mechanism_audit: winnerAskAudit == null ? null : {
+      sha256: sha256File(winnerAskPath),
+      counts: winnerAskAudit.counts,
+      baseline_winner_best_ask: winnerAskAudit.baseline_winner_best_ask,
+      aggregate_by_threshold: winnerAskAudit.aggregate_by_threshold,
+      interpretation: "posthoc public winner-token ask survival; not a causal local candidate or private fill claim",
+    },
     timing,
     boundary_l2: {
       token_rows: boundaryL2.length,
@@ -210,7 +326,7 @@ function verify(args) {
       interpretation: "This capture validates public benchmark/reprice instrumentation, not local synthetic strategy economics.",
     },
     research_decision: {
-      engineering_shadow: forbiddenAuthority.status === "PASS" && manifestContract.status === "PASS" && roundContract.status === "PASS" ? "GO" : "NO-GO",
+      engineering_shadow: forbiddenAuthority.status === "PASS" && manifestContract.status === "PASS" && roundContract.status === "PASS" && rtdsCoverageContract.status === "PASS" ? "GO" : "NO-GO",
       latency_aggregation_strategy: strategyGate ? "CONDITIONAL_RESEARCH_GO_CANDIDATE" : "NO-GO_PENDING_CAUSAL_JOIN_OR_GAP_REPAIR",
       economics: "NO-GO",
       live: "NO-GO",
@@ -219,6 +335,7 @@ function verify(args) {
       "Gamma public outcomes are labels only.",
       "Public CLOB depth is visible liquidity, not queue position or fill truth.",
       "A CLOB reconnect or missing source cutoff invalidates the affected round for strategy scoring.",
+      "An open RTDS socket is not evidence of complete data; per-stream tail freshness is a terminal contract.",
     ],
     manifest_file_check: manifestFiles,
   };

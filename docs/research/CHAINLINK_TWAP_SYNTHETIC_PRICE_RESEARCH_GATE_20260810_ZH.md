@@ -2,7 +2,7 @@
 
 更新时间：2026-08-11
 研究分支：`codex/twap-boundary-shadow-migration`
-当前验收基线：`504b8a36f3a19dd2d0f9bf4c999b11cbd26378ee`
+本轮审计父提交：`3973aaf00a9f7323589d731fdacb0c11a997ceeb`
 
 本项目的核心对象是 **5m round 结束后的 oracle-lag / stale-quote 交易**：在 round end 之后，用外部 source tape 形成 local synthetic price，争取在 Polymarket CLOB 盘口和 RTDS/Chainlink final label 完成重定价之前获得低延迟决策。第一道 gate 是 **price aggregation + latency lead**，不是完整 maker 账户审计。
 
@@ -11,13 +11,13 @@
 | 路线 | 当前结论 | 含义 |
 | --- | --- | --- |
 | 直接复制 RTDS / Gamma outcome | **Strategy No-Go** | 公开 settlement label 不是 prediction alpha |
-| public CLOB stale-quote 观测 | **Research Input Go** | 用于量化盘后错价窗口；不能单独宣称 live PnL |
+| public CLOB stale-quote 观测 | **机制输入 Go；当前样本 taker No-Go** | 9/9 胜方 token 在边界前已为 `0.99/1.00`，没有低于 `$1` 的可买 ask |
 | 未扣费 taker pair / completion | **Economics No-Go** | 5m crypto fee 已经改变旧 pair-arb 的成本假设 |
-| 外部 source tape → synthetic TWAP predictor | **Conditional Research Go** | 只值得做 bounded no-submit 研究，不得直接 promotion |
+| 外部 source tape → TWAP-specific predictor | **Pivot / Conditional Continue** | 只值得做一次 near-flat/final-flip 的因果回放，不得直接 promotion |
 | maker + fair-value + rebate | **第二阶段 Conditional Go** | 必须先有 fill、adverse selection、inventory 和 rebate 证据 |
 | live orders / credentials / service promotion | **No-Go** | 本 Gate 不授予任何 live authority |
 
-这不是整个项目失败。项目已经形成了可复用的外部价格源、local aggregator、RTDS label 和 CLOB book 观测链路；尚未成立的是“local lead 足以在成本和真实订单路径下稳定转化为净收益”的后置命题。私有 queue/fill/ledger 是 live promotion 的后置 gate，不应阻塞第一轮 latency/aggregation 研究。
+这不是整个项目失败。工程底座（外部价格 tape、RTDS exact tick、CLOB event tape、Gamma public label、终态证据）是正确的；但原机制论证把**旧边界 spot 聚合器**当成了 **30 秒 TWAP estimator**，又把双 token 的任意首次 reprice 当成胜方可成交窗口。当前方向必须收窄为 **Pivot / Conditional Continue**：先证明“TWAP-specific candidate 在边界后产生时，胜方 ask 仍可买”，再谈成本或执行。私有 queue/fill/ledger 仍是 live promotion 的后置 gate，不是本轮盘后时延研究的前置条件。
 
 ## 2. 当前证据分层
 
@@ -48,14 +48,16 @@ URL 的窗口映射：
 
 本线的目标是用 Binance、Coinbase、OKX、Bybit、Hyperliquid 等外部 tape，在 round end 之前估算 Chainlink 的最终 TWAP，而不是复制 RTDS 传输链路。设计见[外部 tape 补齐计划](../LOCAL_AGG_EXTERNAL_TAPE_BACKFILL_PLAN_ZH.md)。
 
-已有历史 replay 曾出现较好的 gated error/side 结果，但后续主 run 仍记录过：
+已有历史 replay 曾出现较好的 gated error/side 结果，但它们评估的是 round open/close 附近的边界 spot 聚合，不是官方 30 秒 TWAP 的时间积分。当前 Rust 热路径订阅的是 `crypto_prices_chainlink`；selector 选择边界点或 weighted close point，而不是对最后 30 秒 event-time tape 做冻结的 TWAP 积分。因此以下历史数字只能作为多源边界价格工程先验：
 
 - accepted rows `1114`；
 - accepted side errors `3`；
 - accepted max error `8.152221bps`；
 - `>=5bps` tail `44`。
 
-这说明当前 selector/gate 可以通过“过滤掉不确定样本”提高安全性，但仍需把研究重点放回盘后交易的两个主指标：**local ready latency** 和 **在 CLOB 重定价之前的 final-side/price convergence**。旧 convergence 记录曾观察到 local p50 约 `25–42ms`、p95/max 约 `215–273ms`，而 RTDS p50 约 `1.3–1.4s`、部分 run 的 p95/max 达到约 `6.6s`；这正是本项目最有价值的机制证据。现有 evaluator 还没有把这些 lead milliseconds 与 CLOB stale-quote window 逐 round 对齐，因此下一步应先完成 latency/price replay，再做 fee-inclusive PnL。
+这些结果说明多源 tape 和 gate 有工程价值，但不能证明 TWAP side。旧 convergence 记录的 local p50 `25–42ms` 也不是严格的实测 TWAP ready latency：dataset builder 的 `--cap-local-ready-lag-ms` 会把缺失或过晚的 `local_ready_ms` 改写成 `round_end + cap`，属于离线 deadline simulation。它不能与 RTDS 的实测接收延迟直接相减后宣称 lead。
+
+正确下一步不是继续优化旧 selector，而是在已有 event-time source tape 上新增独立的 **TWAP-specific offline estimator**，冻结窗口、source cutoff、缺失行为和 ready time；不修改旧 Rust 热路径。只有该 estimator 与同 round 胜方/candidate-side ask 的存活窗口完成因果 join 后，才能谈 lead。
 
 ### 2.3 Pair/completion / maker research
 
@@ -76,22 +78,22 @@ Pair-Gated Tranche V1.1 已经显式承认三个关键假设仍需裁决：公�
 所以 RTDS 最适合做 **label、benchmark 和 latency reference**。盘后交易真正要验证的是：
 
 ```text
-external pre-boundary tape
+last-30s external event-time tape
         ↓
-synthetic estimate before round end
+preregistered TWAP-specific side/interval estimate
         ↓
-Polymarket CLOB mispricing / maker quote / completion decision
+candidate_ready_ms + candidate token mapping
         ↓
-usable stale-quote window before public repricing
+candidate-side best ask/depth and ask withdrawal/raise time
 ```
 
 核心量化对象是：
 
 ```text
-lead_ms = public_final_or_reprice_receive_ms - local_ready_ms
+usable_window_ms = candidate_side_ask_end_ms - candidate_ready_ms
 ```
 
-其中 `public_final_or_reprice_receive_ms` 至少分别记录 RTDS final 到达和 CLOB 首次明显重定价；Gamma outcome 只作离线标签，不进入热路径。
+其中必须先要求 `candidate_ready_ms >= round_end_ms`（纯盘后路径）且该时刻存在价格低于冻结上限的 candidate-side ask。RTDS final 到达与双 token 任意 reprice 只作诊断；Gamma outcome 只作离线标签，不进入热路径。
 
 ### 3.1 官方实时数据契约审计（2026-08-10）
 
@@ -113,10 +115,11 @@ lead_ms = public_final_or_reprice_receive_ms - local_ready_ms
 - `twap_ticks.jsonl` 同时保留 `observation_ts`、`publisher_ts`、`receive_ms`、`value_decimal` 和 `full_accuracy_value`；
 - `book_events.jsonl` 默认取消每 token 1 秒节流，兼容官方新旧 CLOB event shape，记录 `event_ts_ms`、`event_to_receive_ms`、事件级 best bid/ask，并开启 `custom_feature_enabled`；
 - CLOB 连接补 10 秒 `PING`，RTDS 继续按官方 5 秒 `PING`；
-- `boundary_observations.jsonl` 增加 `round_end_detection_lag_ms` 和 start/end tick timing，未能从 Gamma 明确解析 30/60 窗口时不再默认 30，而是 `candidate_side=unknown`；
+- RTDS 增加逐 stream silence watchdog；socket 即使仍为 open，只要 tick 超过 freshness threshold 就记录 gap、关闭并重连；
+- `boundary_observations.jsonl` 增加 `round_end_detection_lag_ms`、start/end tick timing 和 5 秒 freshness gate；窗口不明或任一边界 tick 不新鲜时 `candidate_side=unknown`；
 - `summary.json` 新增 RTDS observation/publisher 到本地接收的分布，以及按 boundary/token 对齐的 first quote/reprice lag 诊断。
 
-注意：`round_end_detection_lag_ms` 仍是 1 秒 boundary poll 的观测诊断，不是交易时延；真正用于下一道 gate 的是逐事件 `first_quote_reprice_receive_lag_ms`，并且必须与 `local_ready_ms` 在同一 round、同一主机时钟口径下 join。
+注意：`round_end_detection_lag_ms` 仍是 1 秒 boundary poll 的观测诊断，不是交易时延；`first_quote_reprice_receive_lag_ms` 混合胜负两个 token，也不是可交易窗口。下一道 gate 必须使用 **candidate-side ask at candidate-ready**，并与 `local_ready_ms` 在同一 round、同一主机时钟口径下 join。
 
 这仍不等于 local aggregator。collector 没有代替 Binance/Coinbase/OKX/Bybit/Hyperliquid tape，也没有产生 `local_ready_ms`；它只是把“合成候选 → RTDS benchmark → CLOB public reprice”的因果 join 所需观测字段补齐。下一轮 capture 必须使用这份高分辨率 JSONL；旧的 1 秒节流 capture 只能用于 connectivity/metadata 复核，不能用于亚秒 stale-quote 结论。
 
@@ -131,12 +134,16 @@ lead_ms = public_final_or_reprice_receive_ms - local_ready_ms
 finalizer（hash `d7a008bff71686a3f132bc0c68dfe0d2ddda21c51a74cb3225f82bb936930cea`）
 重建终态。该工程故障不是策略失败，但必须计入证据链。
 
-终态 verifier 结果为 `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE`，其工程契约均通过：
+终态 verifier 结果为 `CONDITIONAL_RESEARCH_INSUFFICIENT_EVIDENCE`。原 verifier 通过了文件、round 和 exact-value 契约，但**遗漏了 RTDS silent-tail freshness 契约**：
+
+修正后的 `terminal_verification.json` sha256 为
+`3a0aaff28f5819bc839b6f79bd2bd45571ff6a927cc927bab35debfa62c356e3`。
 
 - `terminal=true`、`mode=no-submit`、`live_orders_submitted=0`、`credentials_loaded=false`、`open_runs=[]`；
 - 102 个 metadata rows、4,769 个 RTDS ticks、1,249,130 个 CLOB event rows、14 个 boundary、9 个 Gamma public observations；
 - slug 派生的 5m round `102/102` 对齐；4,769/4,769 tick 保留 `observation_ts` 与 exact decimal/E18；manifest hash/bytes/lines 全部通过；
-- RTDS reconnect `0`，CLOB reconnect `1`，gap `1`（`2026-08-10T16:02:27.324Z`，`socket_closed`）。因此不能作全样本 gap-free 的 latency/strategy 结论，受影响 round 必须剔除或标记 incomplete。
+- RTDS reconnect `0`，但最后一条 RTDS tick 于 `16:03:59.371Z` 到达，run 到 `16:07:59.204Z` 才退出，silent tail 为 `239,833ms`；socket 仍显示 open，证明“无 reconnect”不等于无 gap；
+- CLOB reconnect `1`，gap `1`（`2026-08-10T16:02:27.324Z`，`socket_closed`）。因此不能作全样本 gap-free 的 latency/strategy 结论，受影响 round 必须标记 incomplete。
 
 ### 2.1.2 这次终态数据实际说明了什么
 
@@ -149,28 +156,26 @@ finalizer（hash `d7a008bff71686a3f132bc0c68dfe0d2ddda21c51a74cb3225f82bb936930c
 | RTDS publisher → receive | p50 `237ms`，p95 `382ms`，max `734ms` | RTDS 发布到 EC2 收到的传输/处理延迟 |
 | CLOB event → receive | p50 `10ms`，p95 `40ms`，p99 `112ms`，max `2,479ms` | 公开 CLOB event 的本地接收延迟 |
 | first post-boundary quote | p50 `28ms`，p95/max `53/66ms` | 公开 quote 出现的接收滞后 |
-| first quote reprice | p50 `3,519ms`，p90/max `111,908/112,224ms` | 当前事件定义下的首次明显重定价诊断，长尾必须逐 round 复核，不能直接当可交易窗口 |
+| first quote reprice | p50 `3,519ms`，p90/max `111,908/112,224ms` | 双 token 任意 quote 变化；**不是胜方/candidate-side 可交易窗口** |
 
-边界 L2 只有 28 个 token rows，均有 book；14 个 token rows 有 best ask，best ask
-中位数为 `0.01`，ask depth within 1¢ 的中位数为 `4,594.86` shares（最小
-`93.99`，最大 `43,838.14`）。`orderable_boundary_count=0`；这是公开可见深度，
-不是队列、成交或订单接受证据。
+边界 L2 的旧汇总把胜负 token 混在一起：`best ask=0.01` 和数千 shares 深度主要是**败方 token**，不能支持“边界后仍可低价买到胜方”。按 Gamma outcome 事后映射胜方 token 后，9/9 round 在边界前最后公开 quote 均为 `best_bid=0.99, best_ask=1.00`；最后 snapshot 到边界前 3–522ms，期间没有 CLOB gap。对 `<0.90/<0.95/<0.98/<0.99/<1.00` 五个阈值，边界可买数均为 `0/9`，边界后 120 秒首次可买数也均为 `0/9`。这给当前样本的**纯盘后 taker stale-winner-ask**一个 scoped No-Go。
+
+可复现报告：`scripts/audit_twap_boundary_winner_ask_window.mjs`；EC2 输出
+`winner_ask_window_audit.json` 的 sha256 为
+`d1f6f0d82239d14288ebeb5186856d2ef3abf7c8b8e7c4501204d1acdbaf2725`。
 
 原始 metadata 的 `twap_window_s` 因旧解析器没有识别当前 Gamma description 中的
-`...twap-30s-streams` 而为 null。该描述是显式窗口元数据，不是从更新频率推断；只读
-后处理用 exact E18 start/end tick 重新绑定后，9/9 `candidate_side` 与 Gamma public
-outcome 一致。可复现的派生报告由
+`...twap-30s-streams` 而为 null。该描述是显式窗口元数据，不是从更新频率推断。只读
+后处理最初报告 9/9 `candidate_side` 与 Gamma public outcome 一致，但 freshness 审计后发现这 **9/9 全部不合格**：前 6 个 round 的 start tick 晚了 `180,000ms`，后 3 个 round 的 end tick 早了 `62,000–64,000ms`，没有一条同时具备 5 秒内的 start/end tick。
+
+可复现的派生报告由
 `scripts/audit_twap_boundary_shadow_candidate_labels.mjs` 生成，当前 EC2 输出为
 `/home/ubuntu/b_strategy_staging/pm_as_ofi/twap_boundary_shadow_capture_reprice_20260810T155731Z/posthoc_candidate_label_audit.json`
-（报告 hash `2986ac6d9024a688dfa7523b1707b6b88a7d9b75503f28b449cbc7a738dcd005`）。
-这个 `9/9` 证明的是 **RTDS tick 与 public label 的一致性**，不是外部
-source tape/local synthetic predictor 的准确率，也不是 alpha。当前分支已把该显式 URL
-映射补进 collector，避免后续 capture 再出现同一字段缺口。
+（报告 hash `69133c846db0164776083557f4a9b20573496188d6eac915722116bb78b78e81`）。严格 scored=`0/9`、match rate=`null`；原 9/9 仅保留为 `diagnostic_unqualified`，不得再称准确率。当前分支已把显式 URL 映射、边界 freshness gate 和 RTDS silence watchdog 补进 collector/verifier。
 
-真正使 verifier 不能升级的原因仍是 causal join 缺失：capture 没有
+真正使 verifier 不能升级的原因是 **三重缺口**：RTDS 边界覆盖不完整、胜方 ask 已在边界前重定价、以及 causal join 缺失。capture 没有
 `source_timestamp_cutoff_ms`、`local_ready_ms`、`local_candidate_price/side`、
-`decision_deadline_ms`，且 CLOB 有 gap。因此本 run 可授予 **工程 shadow Go + latency/
-aggregation research input Go**，不能授予策略经济学或 live Go。
+`decision_deadline_ms`，且 CLOB 有 gap。因此本 run 只能授予**原始数据链路/恢复工程价值**；不能授予完整 shadow pass、策略经济学或 live Go。
 
 ## 4. 后置成本与执行约束
 
@@ -204,13 +209,13 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 不能使用 round end 之后的 external tick 或 public outcome 作为 feature。
 
-当前 local-agg challenger 的状态文件为 `action=no_current_run`、`eval_rows=0`；因此 5 月的 `T+300ms`、coverage 和 bps 数字只能作为历史工程线索，不能当作本次 Gate 的当前通过证据。高分辨率 EC2 no-submit capture 已完成并已终态化；现在不应再启动另一个只收 Gamma/RTDS/CLOB 的 capture，而应先把已有 immutable local-agg/source logs 与该 capture 按同一 round、同一 EC2 时钟口径做 causal join。不能再用 Gamma settlement match 代替这条链路。
+当前 local-agg challenger 的状态为 `action=no_current_run`、`eval_rows=0`；因此旧 `T+300ms`、coverage 和 bps 数字只能作为历史工程线索，不能当作当前 Gate 证据。高分辨率 EC2 capture 与历史 local-agg/source logs 只有在**同一 round、同一 clock domain、具备最后 30 秒逐事件 tape**时才有 join 资格；不能用不重叠日期或离线 cap 伪造 `local_ready_ms`。不能再用 Gamma settlement match 代替这条链路。
 
 当前下一道最小 Gate 是：
 
-1. 从已有 local-agg/source tape 冻结 `source_timestamp_cutoff_ms`、`local_ready_ms`、candidate price/side、source gap 和 `preclose_ready`；没有这些字段的 round 只能标记 missing，不能补齐或 hindsight filter。
-2. 将每个 candidate 与同 round 的 RTDS observation/publisher/receive 和 CLOB first post-quote/first reprice join；CLOB reconnect/gap round 直接剔除或单独报告。
-3. 先只读出 coverage、side/error、`lead_ms`、stale-quote duration 和 public depth；通过后才进入 fee-inclusive decision-value stress。若现有 immutable logs 根本没有 local-ready 字段，才申请一次带 local candidate instrumentation 的 bounded prospective no-submit capture，而不是重复公共 benchmark capture。
+1. 用已有 source tape 做 outcome-blind 工程 gate：实现最后 30 秒 event-time TWAP-specific estimator，冻结 source、权重、cutoff、missing action、candidate interval/side；它只能验证机制和接口。
+2. 只在存在同 round 的 RTDS/CLOB tape 时回放；candidate ready 后按 **candidate token** 查询 ask/size，禁止使用双 token first reprice。主筛选样本是 near-flat 和最后数秒发生 side flip 的 round，强趋势 round 只作负控。
+3. 若现有 immutable 数据没有同 round causal fields，才授权一次 rolling 24h、no-submit prospective capture，同时采集 source candidate、RTDS 与 CLOB。首日若 candidate-side ask survival 近乎为零，直接 scoped No-Go；只有首日通过冻结门槛才授权第二独立日期。
 
 ### Phase B：预注册 synthetic candidate
 
@@ -234,14 +239,15 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 每个 accepted candidate 必须同时报告：
 
 - local ready latency 的 p50/p95/max；
-- `lead_ms` 相对 RTDS final 和 CLOB 首次重定价的分布；
+- `candidate_ready_ms - round_end_ms` 以及 candidate-ready 时刻的 ask/size；
+- `usable_window_ms`（candidate-side ask 撤走/提价时间减 candidate ready）；
 - 在每个 causal cutoff 下的 side correctness；
 - absolute/signed TWAP error；
 - CLOB stale quote 的持续时间、best ask/bid 和 top-1/top-5 可见深度；
 - source gap、coverage、reconnect 和 late-tick rate；
 - 第二阶段再加入 taker fee、spread、slippage、fill probability、partial fill、rebate 和 residual cost。
 
-单独的 `side=0`、`close_diff_bps<5` 或 public depth 都不能单独触发 promotion；第一道 Research Go 要求是：在严格 causal cutoff 下，local estimator 稳定早于 RTDS/CLOB public repricing，并保留足够 coverage。完成这道 gate 后，才进入 fee-inclusive decision value；最终 live promotion 仍需真实订单路径证据。
+单独的 `side=0`、`close_diff_bps<5`、RTDS lead 或败方 public depth 都不能触发 promotion。第一道 Research Go 要求是：在严格 causal cutoff 下，TWAP-specific candidate 具有可接受 side/interval 质量，且 candidate ready 时胜方/candidate-side 仍有低于冻结限价、具有最低深度的 ask。完成这道 gate 后，才进入 fee-inclusive decision value；最终 live promotion 仍需真实订单路径证据。
 
 ### Phase D：仅在字段缺失时做一次 prospective capture
 
@@ -249,10 +255,11 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 ## 6. 明确停止条件
 
-以下任一条件成立，直接停止 direct-TWAP / synthetic-lag 路线：
+以下任一条件成立，直接停止纯盘后 direct-TWAP / synthetic-lag 路线：
 
 - edge 只在 RTDS/Gamma public label 出现之后才出现；
-- local ready 没有稳定早于 RTDS final 或 CLOB 首次重定价；
+- 在 near-flat/final-flip round 中，candidate ready 时胜方/candidate-side ask 仍近乎总是 `1.00` 或已撤空；
+- local ready 没有稳定早于 candidate-side ask 撤走/提价；
 - synthetic predictor 在严格 causal cutoff 下不能稳定给出 side/price convergence；
 - stale-quote window 只存在于极低 coverage 或 hindsight filtering 样本；
 - 在第二阶段加入费用和合理滑点后，剩余 margin 不足以覆盖交易成本。
@@ -260,9 +267,9 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 当前允许继续的唯一主线是：
 
 ```text
-external-source synthetic predictor
-→ no-submit causal latency/price replay
-→ CLOB stale-quote window measurement
+external-source TWAP-specific predictor
+→ near-flat/final-flip causal replay
+→ candidate-side ask survival measurement
 → fee-inclusive decision-value stress
 → separate private-truth requirement before live
 ```
