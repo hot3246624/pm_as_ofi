@@ -34,6 +34,43 @@ Market Stream contract](https://docs.polymarket.com/market-data/realtime-data#ma
 
 The collector uses Node 22 built-in `fetch` and `WebSocket`; it does not install packages or load credentials.
 
+## External source tape and causal replay
+
+The public RTDS/CLOB collector alone cannot answer the post-close question. To
+close that gap, the branch now contains a separate no-submit source-tape
+collector for public Binance, OKX, Bybit, and Coinbase spot WebSockets:
+
+```text
+node collect_external_twap_source_tape.mjs \
+  --out-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<source_run> \
+  --duration-seconds 900 \
+  --assets BTC,ETH,SOL,XRP,DOGE,BNB,HYPE \
+  --sources binance,okx,bybit,coinbase \
+  --no-submit
+```
+
+Each `source_ticks.jsonl` row keeps `symbol`, source, event-time
+`event_ts_ms`, local `receive_ms`, and price/bid/ask fields. Source feeds are
+research proxies; they are not Chainlink settlement truth. A source collector
+run must overlap the RTDS/CLOB run in wall-clock time before it can be joined.
+
+The frozen offline replay is:
+
+```text
+python3 replay_twap_candidate_ask_survival.py \
+  --capture-dir /home/ubuntu/b_strategy_staging/pm_as_ofi/<clob_rtds_run> \
+  --source-tape /home/ubuntu/b_strategy_staging/pm_as_ofi/<source_run>/source_ticks.jsonl \
+  --output /home/ubuntu/b_strategy_staging/pm_as_ofi/<clob_rtds_run>/twap_candidate_ask_survival_replay.json
+```
+
+The default proxy integrates each source over the last 30 seconds using only
+`event_ts_ms <= round_end_ms` and, when present, `receive_ms <= round_end_ms +
+300ms`; it takes the equal-source median, records `candidate_ready_ms`, maps
+the candidate side to its token, and measures that token's ask/depth after
+ready. Missing source receive timestamps are retained as event-time-only
+diagnostics and cannot prove runtime latency. The replay is outcome-blind;
+Gamma settlement is an optional label only.
+
 ## Safety boundary
 
 Every run writes `mode=no-submit`, `live_orders_submitted=0`, `credentials_loaded=false`, `open_runs=[]` at exit, and lists order/sign/redeem/funding/service mutations as forbidden. The `candidate_side` field is only a diagnostic comparison of observed TWAP ticks. `settlement_observations` use public Gamma outcome prices and must not be treated as private execution or settlement authority.

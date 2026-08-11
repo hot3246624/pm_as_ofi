@@ -251,7 +251,14 @@ Public market WebSocket 只能提供公开 book、price change 和 last-trade �
 
 ### Phase D：仅在字段缺失时做一次 prospective capture
 
-如果 Phase A 证明关键 causal field 缺失，才允许一次 bounded、no-submit、约 24h 的 prospective capture。它只能验证实时可用性、覆盖率、断线行为和初步 conservative decision value，不能单独授予 formal strategy Go。
+如果 Phase A 证明关键 causal field 缺失，才允许一次 bounded、no-submit、约 24h 的 prospective capture。它必须同时采集：
+
+- 外部 source 的 `event_ts_ms / receive_ms / price`；
+- RTDS `payload.timestamp / publisher timestamp / receive_ms`；
+- CLOB candidate-token `book / price_change / best_bid_ask`；
+- 同一主机上的 capture start/exit、source gap、candidate ready 和 round key。
+
+短 capture 只做 producer compatibility、字段覆盖和断线工程验收；它只能验证实时可用性、覆盖率、断线行为和初步 conservative decision value，不能单独授予 formal strategy Go。首个合格日期仍必须通过 frozen candidate-side ask survival gate，才允许第二个独立日期。
 
 ## 6. 明确停止条件
 
